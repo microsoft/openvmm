@@ -651,3 +651,196 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Verify that a fault taken by the *physical* SMMU on an accelerated stream is
+/// forwarded to the guest's Event queue.
+///
+/// An accelerated stream translates in hardware, so the VMM is not in its DMA
+/// data path and cannot observe — let alone synthesize — its faults. They are
+/// reported by the physical SMMU and reach the VMM only through the iommufd
+/// vEVENTQ, which is the path under test.
+///
+/// `edu` is a deterministic fault generator here: it has no in-tree Linux
+/// driver, so with `iommu.passthrough=0` its IOMMU group gets a translating
+/// default domain that nothing ever populates, and any DMA it initiates hits an
+/// unmapped IOVA. The guest programs the DMA itself with `devmem`, so the fault
+/// is produced on demand rather than raced for.
+///
+/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator pass.
+#[vmm_test_with(openvmm, requires(edu_initiator), configs(linux_direct_aarch64))]
+async fn assigned_device_smmu_accel_fault_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    let edu_bdf = incubator_vfio_bdf("edu-initiator")?;
+
+    tracing::info!(%edu_bdf, "assigning the edu fault generator behind an accelerated SMMU");
+
+    let edu_cdev = open_vfio_cdev(&edu_bdf)?;
+    let iommufd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/iommu")
+        .context("failed to open /dev/iommu")?;
+
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology(1, 1, 3)
+                .with_smmu_accel(&["s0rc0"])
+                .with_custom_config(move |c| {
+                    c.hypervisor.with_hv = false;
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        cmdline.push_str(" iommu.passthrough=0");
+                    }
+                    for rc in &mut c.pcie_root_complexes {
+                        if rc.name == "s0rc0" {
+                            for port in &mut rc.ports {
+                                port.acs_capabilities_supported = Some(0x5D);
+                            }
+                        }
+                    }
+                    c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                        port_name: "s0rc0rp1".into(),
+                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: edu_bdf,
+                            cdev: edu_cdev,
+                            iommufd,
+                            iommu_id: "iommu0".into(),
+                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                        }
+                        .into_resource(),
+                    });
+                })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Find edu inside the guest by its PCI ID, since its guest BDF is assigned
+    // by the guest's own enumeration rather than inherited from the host.
+    const EDU_VENDOR_DEVICE: &str = "0x11e8";
+    let mut guest_bdf = None;
+    for entry in cmd!(sh, "ls /sys/bus/pci/devices")
+        .read()
+        .await?
+        .split_whitespace()
+    {
+        let device = sh
+            .read_file(format!("/sys/bus/pci/devices/{entry}/device"))
+            .await?;
+        if device.trim() == EDU_VENDOR_DEVICE {
+            guest_bdf = Some(entry.to_string());
+            break;
+        }
+    }
+    let guest_bdf = guest_bdf.context("the assigned edu device did not enumerate in the guest")?;
+
+    // The SMMU's StreamID for a device on segment 0 is its RID, so the fault
+    // the guest logs must name exactly this value.
+    let (bus, dev, func) = {
+        let (_segment, rest) = guest_bdf
+            .split_once(':')
+            .context("unexpected guest BDF format")?;
+        let (bus, rest) = rest
+            .split_once(':')
+            .context("unexpected guest BDF format")?;
+        let (dev, func) = rest
+            .split_once('.')
+            .context("unexpected guest BDF format")?;
+        (
+            u32::from_str_radix(bus, 16)?,
+            u32::from_str_radix(dev, 16)?,
+            u32::from_str_radix(func, 16)?,
+        )
+    };
+    let expected_sid = (bus << 8) | (dev << 3) | func;
+    tracing::info!(guest_bdf, expected_sid, "located the assigned edu device");
+
+    // Nothing binds edu, so its default domain stays empty and any IOVA it
+    // touches faults. Confirm the domain is translating rather than identity —
+    // an identity domain would make the DMA below succeed silently.
+    let group_type = sh
+        .read_file(format!("/sys/bus/pci/devices/{guest_bdf}/iommu_group/type"))
+        .await?;
+    anyhow::ensure!(
+        matches!(group_type.trim(), "DMA" | "DMA-FQ"),
+        "expected edu in a translating SMMU domain, got {:?}",
+        group_type.trim()
+    );
+
+    // Enable memory-space decode and bus mastering so edu decodes its BARs and
+    // can initiate DMA. 0x0006 = MEM (bit 1) | BUSMASTER (bit 2) at COMMAND.
+    let cfg = format!("/sys/bus/pci/devices/{guest_bdf}/config");
+    cmd!(sh, "dd of={cfg} bs=1 seek=4 count=2 conv=notrunc")
+        .stdin([0x06u8, 0x00u8])
+        .ignore_stdout()
+        .run()
+        .await
+        .context("failed to enable MEM|BUSMASTER on the assigned edu device")?;
+
+    let resource = sh
+        .read_file(format!("/sys/bus/pci/devices/{guest_bdf}/resource"))
+        .await?;
+    let bar0 = resource
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().next())
+        .context("edu BAR0 missing from its sysfs resource list")?;
+    let bar0 = u64::from_str_radix(bar0.trim().trim_start_matches("0x"), 16)
+        .context("failed to parse the edu BAR0 base")?;
+
+    let devmem_write = async |addr: u64, val: u64| -> anyhow::Result<()> {
+        let addr = format!("{addr:#x}");
+        let val = format!("{val:#x}");
+        cmd!(sh, "devmem {addr} 64 {val}").run().await
+    };
+
+    // edu BAR0 register map: 0x80 DMA source, 0x88 destination, 0x90 byte
+    // count, 0x98 command (bit 0 RUN, bit 1 direction, 1 = edu buffer -> bus).
+    // edu's internal buffer is addressed at 0x40000; the destination is an
+    // arbitrary bus address that the empty default domain cannot translate.
+    const EDU_BUF: u64 = 0x40000;
+    const UNMAPPED_IOVA: u64 = 0x1_0000_0000;
+    devmem_write(bar0 + 0x80, EDU_BUF).await?;
+    devmem_write(bar0 + 0x88, UNMAPPED_IOVA).await?;
+    devmem_write(bar0 + 0x90, 4).await?;
+    devmem_write(bar0 + 0x98, 3).await?; // RUN | TO_PCI
+
+    // edu runs the transfer on a ~100ms timer, and the fault then crosses the
+    // physical SMMU, the host kernel, the vEVENTQ and the guest's Event queue
+    // interrupt before it is logged.
+    let expected = format!("sid: {expected_sid:#x}");
+    let mut timer = PolledTimer::new(&driver);
+    let mut dmesg = String::new();
+    for _ in 0..30 {
+        dmesg = cmd!(sh, "dmesg").read().await?;
+        if dmesg
+            .lines()
+            .any(|l| l.contains("arm-smmu-v3") && l.contains(&expected))
+        {
+            tracing::info!("guest logged the forwarded SMMU fault");
+            agent.power_off().await?;
+            vm.wait_for_clean_teardown().await?;
+            return Ok(());
+        }
+        timer.sleep(Duration::from_millis(200)).await;
+    }
+
+    let smmu_lines: Vec<&str> = dmesg
+        .lines()
+        .filter(|l| l.contains("arm-smmu-v3"))
+        .collect();
+    anyhow::bail!(
+        "the guest never logged an SMMU event naming {expected:?}; the physical SMMU's \
+         fault did not reach the guest Event queue. SMMU lines:\n{}",
+        smmu_lines.join("\n")
+    )
+}

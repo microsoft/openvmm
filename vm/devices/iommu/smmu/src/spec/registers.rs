@@ -497,6 +497,34 @@ impl QueueBase {
     }
 }
 
+/// SMMU_EVENTQ_PROD: Event queue producer index (§6.3.130).
+#[bitfield(u32)]
+#[derive(PartialEq, Eq, Inspect)]
+pub struct EventqProd {
+    /// Write index with wrap bit (bits `[19:0]`).
+    #[bits(20)]
+    pub wr: u32,
+    #[bits(11)]
+    _reserved: u32,
+    /// Event queue overflowed flag. An overflow condition is present while
+    /// this differs from `EventqCons.ovackflg` (§7.4).
+    pub ovflg: bool,
+}
+
+/// SMMU_EVENTQ_CONS: Event queue consumer index (§6.3.131).
+#[bitfield(u32)]
+#[derive(PartialEq, Eq, Inspect)]
+pub struct EventqCons {
+    /// Read index with wrap bit (bits `[19:0]`).
+    #[bits(20)]
+    pub rd: u32,
+    #[bits(11)]
+    _reserved: u32,
+    /// Overflow acknowledge flag, written by software to match
+    /// `EventqProd.ovflg` once it is safe to report another overflow.
+    pub ovackflg: bool,
+}
+
 /// SMMU_CMDQ_CONS: Command queue consumer index.
 ///
 /// Has an error field in the upper bits that indicates the reason for a

@@ -44,10 +44,26 @@
 //!   ones, which is why the SMMU never has to be told a StreamID changed.
 
 use anyhow::Context as _;
+use pal_async::driver::PollImpl;
+use pal_async::driver::SpawnDriver;
+use pal_async::fd::PollFdReady;
+use pal_async::interest::InterestSlot;
+use pal_async::interest::PollEvents;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
 use parking_lot::Mutex;
+use std::fs::File;
+use std::io;
+use std::io::Read as _;
+use std::os::fd::AsRawFd as _;
 use std::sync::Arc;
+use std::sync::Weak;
+use std::task::Poll;
+use vfio_sys::iommufd::IommuVeventArmSmmuv3;
 use vfio_sys::iommufd::IommufdCtx;
+use vfio_sys::iommufd::IommufdVeventHeader;
 use vfio_sys::iommufd::ViommuAlloc;
+use zerocopy::FromBytes;
 
 /// Query the physical SMMUv3's capabilities for a device bound to iommufd.
 ///
@@ -182,6 +198,28 @@ impl Drop for NestingParent {
     }
 }
 
+/// The host vIOMMU standing for one emulated SMMU.
+///
+/// Refcounted separately from [`SmmuAccelState`] so the vEVENTQ poll task can
+/// hold it: the queue is a kernel object nested under the vIOMMU and keeps a
+/// reference on it, so the vIOMMU cannot be destroyed until the task has closed
+/// the queue fd and destroyed the queue.
+struct Viommu {
+    ctx: Arc<IommufdCtx>,
+    /// Keeps the nesting parent alive for at least as long as this vIOMMU.
+    _parent: Arc<NestingParent>,
+    id: u32,
+}
+
+impl Drop for Viommu {
+    fn drop(&mut self) {
+        self.ctx.destroy(self.id).unwrap_or_else(|e| {
+            panic!("smmu accel: failed to destroy vIOMMU {:#x}: {e:#}", self.id)
+        });
+        tracing::info!(viommu_id = self.id, "destroyed vIOMMU");
+    }
+}
+
 /// Per-SMMU iommufd objects for HW-accelerated nested translation.
 ///
 /// Created lazily on first VFIO device attachment for an accel-capable SMMU.
@@ -196,10 +234,8 @@ impl Drop for NestingParent {
 pub struct SmmuAccelState {
     /// The iommufd context (shared with IoasManager).
     ctx: Arc<IommufdCtx>,
-    /// Keeps the nesting parent alive for at least as long as this vIOMMU.
-    _parent: Arc<NestingParent>,
-    /// Virtual IOMMU ID (one per emulated SMMU instance).
-    viommu_id: u32,
+    /// The host vIOMMU every object below is allocated under.
+    viommu: Arc<Viommu>,
     /// Shared, persistent nested HWPT with an abort STE (`Config=0b000`).
     /// Devices in ABORT attach here (rather than detaching), staying vIOMMU
     /// members. One per vIOMMU.
@@ -208,6 +244,10 @@ pub struct SmmuAccelState {
     /// bypass over the S2 parent). Devices in BYPASS attach here for identity
     /// GPA→HPA. One per vIOMMU.
     bypass_hwpt_id: u32,
+    /// Forwards host SMMU faults for this vIOMMU's streams into the guest's
+    /// Event queue. Dropping the handle cancels the task, which then tears the
+    /// queue down in order and releases its own vIOMMU reference.
+    _veventq: Task<()>,
 }
 
 impl SmmuAccelState {
@@ -221,6 +261,8 @@ impl SmmuAccelState {
         dev_id: u32,
         parent: Arc<NestingParent>,
         viommu_id: u32,
+        vsmmu: &Arc<smmu::SmmuSharedState>,
+        driver: &dyn SpawnDriver,
     ) -> anyhow::Result<Self> {
         let viommu = PendingIommufdObject::new(&ctx, viommu_id, "vIOMMU");
 
@@ -267,16 +309,21 @@ impl SmmuAccelState {
             "created SMMU accel state (vIOMMU)"
         );
 
-        let viommu_id = viommu.into_id();
+        let viommu = Arc::new(Viommu {
+            ctx: ctx.clone(),
+            _parent: parent,
+            id: viommu.into_id(),
+        });
+        let veventq = spawn_veventq(&ctx, &viommu, vsmmu, driver)?;
         let abort_hwpt_id = abort_hwpt.into_id();
         let bypass_hwpt_id = bypass_hwpt.into_id();
 
         Ok(Self {
             ctx,
-            _parent: parent,
-            viommu_id,
+            viommu,
             abort_hwpt_id,
             bypass_hwpt_id,
+            _veventq: veventq,
         })
     }
 }
@@ -289,7 +336,7 @@ impl SmmuAccelState {
     pub fn alloc_vdevice(&self, dev_id: u32, vsid: u32) -> anyhow::Result<VDevice> {
         let id = self
             .ctx
-            .vdevice_alloc(self.viommu_id, dev_id, vsid.into())
+            .vdevice_alloc(self.viommu.id, dev_id, vsid.into())
             .with_context(|| {
                 format!("failed to allocate vDevice for dev_id={dev_id}, vsid={vsid:#x}")
             })?;
@@ -330,18 +377,224 @@ impl Drop for SmmuAccelState {
     fn drop(&mut self) {
         // Runs once the cache entry and every stream backend behind this vSMMU
         // are gone, so each backend has already destroyed its own nested HWPT
-        // and vDevice. Children before the vIOMMU they nest under.
+        // and vDevice. These are the last children of the vIOMMU this state
+        // owns directly; the vIOMMU itself outlives them, and outlives the
+        // vEVENTQ task too, until the last `Arc<Viommu>` goes.
         for (id, kind) in [
             (self.bypass_hwpt_id, "bypass HWPT"),
             (self.abort_hwpt_id, "abort HWPT"),
-            (self.viommu_id, "vIOMMU"),
         ] {
             self.ctx
                 .destroy(id)
                 .unwrap_or_else(|e| panic!("smmu accel: failed to destroy {kind} {id:#x}: {e:#}"));
         }
-        tracing::debug!(viommu_id = self.viommu_id, "destroyed SMMU accel state");
+        tracing::debug!(viommu_id = self.viommu.id, "destroyed SMMU accel state");
     }
+}
+
+/// Host-side buffering for physical SMMU events awaiting forwarding.
+///
+/// This absorbs event bursts and userspace scheduling latency independently
+/// of the guest's Event queue, which also receives emulated SMMU events.
+const HOST_VEVENTQ_DEPTH: u32 = 256;
+
+/// vEVENT sequence numbers are monotonic over `[0, i32::MAX]`, wrapping to 0.
+const VEVENT_SEQUENCE_MODULUS: u32 = i32::MAX as u32 + 1;
+
+/// A header plus one ARM SMMUv3 record. The kernel only ever writes whole
+/// records, so a read buffer sized in multiples of this is never truncated.
+const VEVENT_RECORD_LEN: usize =
+    size_of::<IommufdVeventHeader>() + size_of::<IommuVeventArmSmmuv3>();
+
+/// How many records to drain per read.
+const VEVENT_BATCH_LEN: usize = VEVENT_RECORD_LEN * 16;
+
+/// An iommufd object destroyed when this handle drops.
+struct OwnedIommufdObject {
+    ctx: Arc<IommufdCtx>,
+    id: u32,
+    kind: &'static str,
+}
+
+impl Drop for OwnedIommufdObject {
+    fn drop(&mut self) {
+        self.ctx.destroy(self.id).unwrap_or_else(|e| {
+            panic!(
+                "smmu accel: failed to destroy {} {:#x}: {e:#}",
+                self.kind, self.id
+            )
+        });
+    }
+}
+
+/// One vIOMMU's virtual event queue: the host's channel for SMMU faults taken
+/// by streams that translate in hardware, and so are invisible to the emulator.
+///
+/// Field order is load-bearing, because teardown has to run inwards: the
+/// readiness registration (which unregisters the fd, and so must precede the
+/// close), then the fd (which holds a kernel reference on the queue), then the
+/// queue object, and only then this reference to the vIOMMU it nests under.
+struct VEventQ {
+    fd_ready: PollImpl<dyn PollFdReady>,
+    file: File,
+    _object: OwnedIommufdObject,
+    _viommu: Arc<Viommu>,
+}
+
+impl VEventQ {
+    /// Waits for and reads the next batch of whole event records.
+    async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        std::future::poll_fn(|cx| {
+            loop {
+                // Clear readiness *before* reading, so an event arriving after
+                // the read leaves the fd marked ready rather than having its
+                // wakeup clobbered by a later clear.
+                self.fd_ready.clear_fd_ready(InterestSlot::Read);
+                match (&self.file).read(buf) {
+                    // An empty queue reads as zero bytes rather than failing
+                    // with `EAGAIN`; the fd never reaches end of file.
+                    Ok(0) => {}
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                    r => return Poll::Ready(r),
+                }
+                std::task::ready!(self.fd_ready.poll_fd_ready(
+                    cx,
+                    InterestSlot::Read,
+                    PollEvents::IN
+                ));
+            }
+        })
+        .await
+    }
+}
+
+/// Allocates this vIOMMU's virtual event queue and spawns the task forwarding
+/// its records into the guest's Event queue.
+fn spawn_veventq(
+    ctx: &Arc<IommufdCtx>,
+    viommu: &Arc<Viommu>,
+    vsmmu: &Arc<smmu::SmmuSharedState>,
+    driver: &dyn SpawnDriver,
+) -> anyhow::Result<Task<()>> {
+    let (queue_id, file) = ctx
+        .veventq_alloc(
+            viommu.id,
+            vfio_sys::iommufd::IOMMU_VEVENTQ_TYPE_ARM_SMMUV3,
+            HOST_VEVENTQ_DEPTH,
+        )
+        .context("failed to allocate vEVENTQ for accel SMMU")?;
+    let pending = PendingIommufdObject::new(ctx, queue_id, "vEVENTQ");
+    let fd_ready = match driver.new_dyn_fd_ready(file.as_raw_fd()) {
+        Ok(fd_ready) => fd_ready,
+        Err(err) => {
+            // Close the fd before `pending` destroys the queue: the fd holds a
+            // kernel reference that would make the destroy fail.
+            drop(file);
+            return Err(err).context("failed to register the vEVENTQ fd for polling");
+        }
+    };
+    let queue = VEventQ {
+        fd_ready,
+        file,
+        _object: OwnedIommufdObject {
+            ctx: ctx.clone(),
+            id: pending.into_id(),
+            kind: "vEVENTQ",
+        },
+        _viommu: viommu.clone(),
+    };
+    tracing::info!(viommu_id = viommu.id, queue_id, "allocated vEVENTQ");
+    Ok(Spawn::spawn(
+        &driver,
+        "smmu-veventq",
+        forward_veventq(queue, Arc::downgrade(vsmmu)),
+    ))
+}
+
+/// Forwards host SMMU events for this vIOMMU's streams into the guest's Event
+/// queue until the emulated SMMU goes away or the task is cancelled.
+async fn forward_veventq(mut queue: VEventQ, vsmmu: Weak<smmu::SmmuSharedState>) {
+    let mut buf = [0; VEVENT_BATCH_LEN];
+    let mut last_sequence = None;
+    loop {
+        let len = match queue.read(&mut buf).await {
+            Ok(len) => len,
+            Err(err) => {
+                tracing::error!(
+                    error = &err as &dyn std::error::Error,
+                    "smmu accel: vEVENTQ read failed; host events can no longer reach the guest"
+                );
+                return;
+            }
+        };
+        let Some(vsmmu) = vsmmu.upgrade() else {
+            return;
+        };
+        let mut stream = &buf[..len];
+        while let Some(event) = next_vevent(&mut stream, &mut last_sequence) {
+            if event.lost > 0 {
+                tracelimit::warn_ratelimited!(
+                    lost = event.lost,
+                    "smmu accel: host vEVENTQ events lost"
+                );
+            }
+            if let Some(record) = event.record {
+                vsmmu.record_accel_event(record);
+            }
+        }
+    }
+}
+
+/// One entry decoded from the vEVENTQ stream.
+struct VEvent {
+    /// How many records the host discarded immediately before this one.
+    lost: u32,
+    /// The event record, absent when the header only reports loss.
+    record: Option<[u64; 4]>,
+}
+
+/// Pops the next entry off the vEVENTQ stream, returning `None` once it is
+/// exhausted or found to be truncated.
+///
+/// The stream is a packed run of headers, each followed by an ARM SMMUv3 record
+/// unless it carries `LOST_EVENTS`. Every reported event consumes a sequence
+/// number, including ones the host had no room to queue, so a gap between
+/// adjacent headers counts exactly the records lost in between.
+fn next_vevent(stream: &mut &[u8], last_sequence: &mut Option<u32>) -> Option<VEvent> {
+    if stream.is_empty() {
+        return None;
+    }
+    let (header, rest) = IommufdVeventHeader::read_from_prefix(stream)
+        .inspect_err(|_| {
+            tracelimit::warn_ratelimited!(len = stream.len(), "smmu accel: truncated vEVENT header")
+        })
+        .ok()?;
+    *stream = rest;
+
+    let gap = last_sequence.map_or(0, |last| {
+        (header.sequence.wrapping_sub(last) % VEVENT_SEQUENCE_MODULUS).saturating_sub(1)
+    });
+    *last_sequence = Some(header.sequence);
+
+    // A `LOST_EVENTS` header stands in for a record the host could not queue,
+    // and carries no data of its own.
+    if header.flags & vfio_sys::iommufd::IOMMU_VEVENTQ_FLAG_LOST_EVENTS != 0 {
+        return Some(VEvent {
+            lost: gap + 1,
+            record: None,
+        });
+    }
+
+    let (event, rest) = IommuVeventArmSmmuv3::read_from_prefix(stream)
+        .inspect_err(|_| {
+            tracelimit::warn_ratelimited!(len = stream.len(), "smmu accel: truncated vEVENT record")
+        })
+        .ok()?;
+    *stream = rest;
+    Some(VEvent {
+        lost: gap,
+        record: Some(event.evt),
+    })
 }
 
 /// Per-device iommufd stream backend for HW-accelerated nested S1.
@@ -521,7 +774,7 @@ impl IommufdStreamBackend {
                 .hwpt_alloc(
                     0, // flags: not a nest parent
                     self.dev_id,
-                    self.accel.viommu_id, // parent is the vIOMMU
+                    self.accel.viommu.id, // parent is the vIOMMU
                     vfio_sys::iommufd::IOMMU_HWPT_DATA_ARM_SMMUV3,
                     Some(&ste_data),
                 )
@@ -571,7 +824,7 @@ impl smmu::Invalidate for SmmuAccelState {
         // kernel's ARM SMMUv3 invalidate command expects, so the emulator's
         // batch buffer is forwarded directly with no copy.
         match self.ctx.hwpt_invalidate(
-            self.viommu_id,
+            self.viommu.id,
             vfio_sys::iommufd::IOMMU_VIOMMU_INVALIDATE_DATA_ARM_SMMUV3,
             entries,
         ) {
@@ -718,5 +971,109 @@ impl AccelStream {
     /// clears the captured BDF.
     pub fn unbind(&mut self) {
         self.bound = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+    use zerocopy::IntoBytes;
+
+    fn push_header(stream: &mut Vec<u8>, flags: u32, sequence: u32) {
+        stream.extend_from_slice(IommufdVeventHeader { flags, sequence }.as_bytes());
+    }
+
+    fn push_record(stream: &mut Vec<u8>, flags: u32, sequence: u32, evt: [u64; 4]) {
+        push_header(stream, flags, sequence);
+        stream.extend_from_slice(IommuVeventArmSmmuv3 { evt }.as_bytes());
+    }
+
+    fn drain(stream: &[u8], last_sequence: &mut Option<u32>) -> Vec<(u32, Option<[u64; 4]>)> {
+        let mut stream = stream;
+        let mut out = Vec::new();
+        while let Some(event) = next_vevent(&mut stream, last_sequence) {
+            out.push((event.lost, event.record));
+        }
+        out
+    }
+
+    #[test]
+    fn vevent_stream_yields_each_record() {
+        let mut stream = Vec::new();
+        push_record(&mut stream, 0, 0, [1, 2, 3, 4]);
+        push_record(&mut stream, 0, 1, [5, 6, 7, 8]);
+
+        assert_eq!(
+            drain(&stream, &mut None),
+            [(0, Some([1, 2, 3, 4])), (0, Some([5, 6, 7, 8]))]
+        );
+    }
+
+    #[test]
+    fn vevent_sequence_gap_counts_lost_records() {
+        let mut stream = Vec::new();
+        push_record(&mut stream, 0, 3, [0; 4]);
+        // Sequences 4 and 5 never arrive, so two records were lost.
+        push_record(&mut stream, 0, 6, [9; 4]);
+
+        assert_eq!(
+            drain(&stream, &mut None),
+            [(0, Some([0; 4])), (2, Some([9; 4]))]
+        );
+    }
+
+    #[test]
+    fn vevent_sequence_wraps_at_i32_max() {
+        let mut stream = Vec::new();
+        push_record(&mut stream, 0, i32::MAX as u32, [0; 4]);
+        push_record(&mut stream, 0, 0, [1; 4]);
+        push_record(&mut stream, 0, 3, [2; 4]);
+
+        assert_eq!(
+            drain(&stream, &mut None),
+            [(0, Some([0; 4])), (0, Some([1; 4])), (2, Some([2; 4]))]
+        );
+    }
+
+    /// A trailing `LOST_EVENTS` header stands in for a record the host could
+    /// not queue, and carries no data.
+    #[test]
+    fn vevent_lost_events_header_reports_loss_without_a_record() {
+        let mut stream = Vec::new();
+        push_record(&mut stream, 0, 0, [7; 4]);
+        push_header(
+            &mut stream,
+            vfio_sys::iommufd::IOMMU_VEVENTQ_FLAG_LOST_EVENTS,
+            2,
+        );
+
+        // Sequence 1 was lost as well as the record this header stands for.
+        assert_eq!(drain(&stream, &mut None), [(0, Some([7; 4])), (2, None)]);
+    }
+
+    /// A read that ends mid-record must not be misparsed; the kernel only
+    /// writes whole records, so this can only mean a malformed stream.
+    #[test]
+    fn vevent_truncated_record_stops_the_stream() {
+        let mut stream = Vec::new();
+        push_record(&mut stream, 0, 0, [7; 4]);
+        push_header(&mut stream, 0, 1);
+
+        assert_eq!(drain(&stream, &mut None), [(0, Some([7; 4]))]);
+    }
+
+    /// Loss accounting continues across reads.
+    #[test]
+    fn vevent_sequence_carries_across_reads() {
+        let mut last_sequence = None;
+
+        let mut first = Vec::new();
+        push_record(&mut first, 0, 10, [0; 4]);
+        assert_eq!(drain(&first, &mut last_sequence), [(0, Some([0; 4]))]);
+
+        let mut second = Vec::new();
+        push_record(&mut second, 0, 13, [1; 4]);
+        assert_eq!(drain(&second, &mut last_sequence), [(2, Some([1; 4]))]);
     }
 }

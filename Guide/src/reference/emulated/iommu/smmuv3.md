@@ -143,7 +143,14 @@ have observed. With a fixed `oas=N`, a value larger than the host's is rejected.
 
 ### Fault reporting
 
-Faults raised by a stream that the physical SMMU is actively translating
-originate in hardware, not in the emulator, so they must be relayed from the
-host to the guest's event queue. That relay is not yet implemented, so
-faults from accelerated streams are currently not visible to the guest.
+Faults raised by a stream the physical SMMU is actively translating originate
+in hardware, not in the emulator, so the VMM never sees the transaction that
+caused them. The host reports them on a virtual event queue attached to the
+vIOMMU; the VMM drains that queue and writes each record into the guest's
+event queue unchanged, since the host has already expressed the StreamID in
+the guest's namespace.
+
+If the host virtual event queue itself overflows, the VMM logs the loss and
+continues forwarding the records that remain available. It cannot represent
+that loss as a guest event queue overflow, because `EVENTQ_PROD.OVFLG`
+specifically means the guest's event queue was full.

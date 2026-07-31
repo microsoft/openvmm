@@ -37,6 +37,7 @@ use std::sync::Weak;
 use vmcore::irqfd::IrqFd;
 use vmcore::irqfd::IrqFdRoute;
 use vmcore::line_interrupt::LineInterrupt;
+use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
 /// The context a host-assignment backend needs to wire a VFIO device into
@@ -399,10 +400,12 @@ struct QueueErrorState {
     evtq_enabled: bool,
     /// Whether the EVTQ interrupt is enabled (IRQ_CTRL.EVENTQ_IRQEN).
     evtq_irqen: bool,
-    /// Producer index (advanced by the SMMU when writing events).
-    evtq_prod: u32,
-    /// Consumer index (advanced by the guest via MMIO).
-    evtq_cons: u32,
+    /// SMMU_EVENTQ_PROD: write index, advanced by the SMMU as it writes
+    /// events, plus the overflow flag.
+    evtq_prod: registers::EventqProd,
+    /// SMMU_EVENTQ_CONS: read index, advanced by the guest via MMIO, plus the
+    /// overflow acknowledge flag.
+    evtq_cons: registers::EventqCons,
 
     // -- Global error registers (toggle protocol) --
     /// GERROR register — individual error bits toggled by the SMMU.
@@ -424,6 +427,17 @@ pub(crate) struct SavedQueueState {
     pub evtq_cons: u32,
     pub gerror: u32,
     pub gerrorn: u32,
+}
+
+fn evtq_index_mask(log2size: u8) -> u32 {
+    (1 << (log2size + 1)) - 1
+}
+
+/// Whether the Event queue is empty, i.e. the effective producer and consumer
+/// indices agree. The overflow handshake in bit 31 is independent of emptiness.
+fn evtq_indices_equal(qs: &QueueErrorState) -> bool {
+    let mask = evtq_index_mask(qs.evtq_log2size);
+    qs.evtq_prod.wr() & mask == qs.evtq_cons.rd() & mask
 }
 
 impl SmmuSharedState {
@@ -461,8 +475,8 @@ impl SmmuSharedState {
                 evtq_log2size: 0,
                 evtq_enabled: false,
                 evtq_irqen: false,
-                evtq_prod: 0,
-                evtq_cons: 0,
+                evtq_prod: registers::EventqProd::new(),
+                evtq_cons: registers::EventqCons::new(),
                 gerror: registers::Gerror::new(),
                 gerrorn: registers::Gerror::new(),
                 gerror_irqen: false,
@@ -672,6 +686,11 @@ impl SmmuSharedState {
         let mut qs = self.queue_state.lock();
         qs.evtq_base_addr = base_addr;
         qs.evtq_log2size = log2size;
+        let mask = evtq_index_mask(log2size);
+        let prod = qs.evtq_prod.wr() & mask;
+        let cons = qs.evtq_cons.rd() & mask;
+        qs.evtq_prod.set_wr(prod);
+        qs.evtq_cons.set_rd(cons);
     }
 
     /// Updates the event queue enabled state (called on CR0 writes).
@@ -722,12 +741,24 @@ impl SmmuSharedState {
         self.update_gerror_irq(&qs);
     }
 
-    /// Signals an EVTQ overflow by making GERROR.EVTQ_ABT_ERR active.
+    /// Enters the Event queue overflow condition (§7.4), recording that one or
+    /// more event records were discarded.
     ///
-    /// Per spec, sets the bit to the inverse of GERRORN.EVTQ_ABT_ERR.
-    /// If the error is already active this is a no-op (the bit value
-    /// doesn't change). Called from `write_event` under the same lock.
+    /// The condition is present while `EVENTQ_PROD.OVFLG != EVENTQ_CONS`.`OVACKFLG`,
+    /// and the SMMU only toggles OVFLG when the two agree — a second overflow
+    /// cannot be indicated before software acknowledges the first.
     fn signal_evtq_overflow(&self, qs: &mut QueueErrorState) {
+        if qs.evtq_prod.ovflg() == qs.evtq_cons.ovackflg() {
+            qs.evtq_prod.set_ovflg(!qs.evtq_prod.ovflg());
+        }
+    }
+
+    /// Activates GERROR.EVENTQ_ABT_ERR after an external abort accessing the
+    /// Event queue (§7.2.2).
+    ///
+    /// Per the toggle protocol the bit is set to the inverse of GERRORN's, so
+    /// this is a no-op while the error is already unacknowledged.
+    fn signal_evtq_abt_err(&self, qs: &mut QueueErrorState) {
         let new_val = !qs.gerrorn.eventq_abt_err();
         qs.gerror.set_eventq_abt_err(new_val);
         self.update_gerror_irq(qs);
@@ -751,9 +782,12 @@ impl SmmuSharedState {
     /// Deasserts the EVTQ wired interrupt if the queue is now empty.
     pub(crate) fn set_evtq_cons(&self, cons: u32) {
         let mut qs = self.queue_state.lock();
-        qs.evtq_cons = cons;
+        let cons = registers::EventqCons::from(cons);
+        qs.evtq_cons = registers::EventqCons::new()
+            .with_rd(cons.rd() & evtq_index_mask(qs.evtq_log2size))
+            .with_ovackflg(cons.ovackflg());
         // Deassert EVTQ IRQ when the guest has drained all events.
-        if qs.evtq_irqen && qs.evtq_prod == qs.evtq_cons {
+        if qs.evtq_irqen && evtq_indices_equal(&qs) {
             if let Some(irq) = &self.evtq_irq {
                 irq.set_level(false);
             }
@@ -762,14 +796,24 @@ impl SmmuSharedState {
 
     /// Returns the current event queue producer index (for guest reads
     /// of EVENTQ_PROD on page 1).
-    pub(crate) fn evtq_prod(&self) -> u32 {
+    pub(crate) fn evtq_prod(&self) -> registers::EventqProd {
         self.queue_state.lock().evtq_prod
     }
 
     /// Returns the current event queue consumer index (for guest reads
     /// of EVENTQ_CONS on page 1).
-    pub(crate) fn evtq_cons(&self) -> u32 {
+    pub(crate) fn evtq_cons(&self) -> registers::EventqCons {
         self.queue_state.lock().evtq_cons
+    }
+
+    /// Initializes the Event queue producer register while the queue is
+    /// disabled, as required before enabling or reinitializing it.
+    pub(crate) fn set_evtq_prod(&self, prod: u32) {
+        let mut qs = self.queue_state.lock();
+        let prod = registers::EventqProd::from(prod);
+        qs.evtq_prod = registers::EventqProd::new()
+            .with_wr(prod.wr() & evtq_index_mask(qs.evtq_log2size))
+            .with_ovflg(prod.ovflg());
     }
 
     /// Resets event queue and GERROR state (called on device reset).
@@ -779,8 +823,8 @@ impl SmmuSharedState {
         qs.evtq_log2size = 0;
         qs.evtq_enabled = false;
         qs.evtq_irqen = false;
-        qs.evtq_prod = 0;
-        qs.evtq_cons = 0;
+        qs.evtq_prod = registers::EventqProd::new();
+        qs.evtq_cons = registers::EventqCons::new();
         qs.gerror = registers::Gerror::new();
         qs.gerrorn = registers::Gerror::new();
         qs.gerror_irqen = false;
@@ -807,8 +851,8 @@ impl SmmuSharedState {
             gerror_irqen: _,
         } = *qs;
         SavedQueueState {
-            evtq_prod,
-            evtq_cons,
+            evtq_prod: evtq_prod.into(),
+            evtq_cons: evtq_cons.into(),
             gerror: gerror.into(),
             gerrorn: gerrorn.into(),
         }
@@ -827,15 +871,15 @@ impl SmmuSharedState {
             gerrorn,
         } = state;
         let mut qs = self.queue_state.lock();
-        qs.evtq_prod = evtq_prod;
-        qs.evtq_cons = evtq_cons;
+        qs.evtq_prod = registers::EventqProd::from(evtq_prod);
+        qs.evtq_cons = registers::EventqCons::from(evtq_cons);
         qs.gerror = registers::Gerror::from(gerror);
         qs.gerrorn = registers::Gerror::from(gerrorn);
         self.update_gerror_irq(&qs);
         // Sync EVTQ wired interrupt line to match restored queue state.
         if qs.evtq_irqen {
             if let Some(irq) = &self.evtq_irq {
-                irq.set_level(qs.evtq_prod != qs.evtq_cons);
+                irq.set_level(!evtq_indices_equal(&qs));
             }
         }
     }
@@ -1185,26 +1229,35 @@ impl SmmuSharedState {
 
     /// Write an event record directly to the guest's event queue.
     ///
-    /// Called from per-device DMA fault paths and from the emulator's
-    /// command processing. If the queue is full, drops the event and
-    /// logs a warning. If an event is successfully written, pulses
-    /// the EVTQ wired SPI interrupt (if enabled).
+    /// Called from per-device DMA fault paths, from the emulator's command
+    /// processing, and from the host fault forwarding path
+    /// ([`record_accel_event`](Self::record_accel_event)).
+    ///
+    /// Per §7.2.1 the queue is writable only when it is enabled, not full, and
+    /// free of an unacknowledged access-abort condition; an event that cannot
+    /// be written is discarded. Discarding because the queue is *full*
+    /// additionally enters the overflow condition (§7.4) — the other two cases
+    /// do not.
     pub(crate) fn write_event(&self, event: EvtEntry) {
         let mut qs = self.queue_state.lock();
         if !qs.evtq_enabled {
             return;
         }
+        if qs.gerror.eventq_abt_err() != qs.gerrorn.eventq_abt_err() {
+            tracelimit::warn_ratelimited!(
+                "smmu: EVTQ access abort unacknowledged, discarding event"
+            );
+            return;
+        }
 
         let max_entries = 1u32 << qs.evtq_log2size;
         let index_mask = (max_entries << 1) - 1;
-        let prod = qs.evtq_prod & index_mask;
-        let cons = qs.evtq_cons & index_mask;
+        let prod = qs.evtq_prod.wr() & index_mask;
+        let cons = qs.evtq_cons.rd() & index_mask;
 
         // Check if the queue is full. Full when the index bits match but
         // the wrap bit differs: (prod ^ cons) == max_entries.
         if (prod ^ cons) == max_entries {
-            // Signal EVTQ overflow via GERROR.EVTQ_ABT_ERR — updates
-            // the GERROR register and interrupt line under the same lock.
             self.signal_evtq_overflow(&mut qs);
             tracelimit::warn_ratelimited!("smmu: EVTQ full, dropping event");
             return;
@@ -1220,11 +1273,15 @@ impl SmmuSharedState {
                 entry_addr,
                 "smmu: failed to write EVTQ entry to guest memory"
             );
+            // A failed queue write is an external abort on the Event queue
+            // (§7.2.2). The abort is synchronous here, so PROD is not advanced
+            // and every entry below it remains valid.
+            self.signal_evtq_abt_err(&mut qs);
             return;
         }
 
-        // Advance EVTQ_PROD.
-        qs.evtq_prod = (prod + 1) & index_mask;
+        // Advance EVTQ_PROD, leaving the overflow flag untouched.
+        qs.evtq_prod.set_wr((prod + 1) & index_mask);
 
         // Assert EVTQ wired interrupt — held high while queue is non-empty.
         // Deasserted when the guest drains events via CONS writes.
@@ -1233,6 +1290,25 @@ impl SmmuSharedState {
                 irq.set_level(true);
             }
         }
+    }
+
+    /// Records an event the physical SMMU reported for an accelerated stream.
+    ///
+    /// `record` is a raw SMMUv3 event record (§7.3): four little-endian
+    /// quadwords whose StreamID is already expressed in this SMMU's stream
+    /// namespace. Accelerated streams translate in hardware, so their faults
+    /// are detected by the physical SMMU rather than by this emulator, and this
+    /// is the only path by which they reach the guest.
+    pub fn record_accel_event(&self, record: [u64; 4]) {
+        let event = EvtEntry::read_from_bytes(record.as_bytes())
+            .expect("an SMMUv3 event record is exactly one EvtEntry");
+        tracing::debug!(
+            event_id = event.header.event_id().0,
+            sid = event.sid,
+            input_addr = event.input_addr,
+            "smmu: host SMMU event for an accelerated stream"
+        );
+        self.write_event(event);
     }
 
     /// Creates a translator for PCI devices behind this SMMU.
@@ -1785,7 +1861,7 @@ mod tests {
 
     /// Count events in the EVTQ by reading EVTQ_PROD from shared state.
     fn evtq_event_count(state: &SmmuSharedState) -> u32 {
-        state.evtq_prod()
+        state.evtq_prod().into()
     }
 
     // =========================================================================
