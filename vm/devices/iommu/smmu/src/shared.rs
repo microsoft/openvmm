@@ -1533,14 +1533,14 @@ mod tests {
         assert_eq!(fault.event_id, EventId::F_TRANSLATION);
         assert_eq!(
             fault.to_string(),
-            "SMMU DMA fault: event 0x10 SID 0x12 addr 0x3456"
+            "SMMU DMA fault: event F_TRANSLATION SID 0x12 addr 0x3456"
         );
 
         let abort = SmmuDmaFault::no_event_abort(0x12, 0x3456);
         assert_eq!(abort.event_id, EventId(0));
         assert_eq!(
             abort.to_string(),
-            "SMMU DMA fault: event 0x00 SID 0x12 addr 0x3456"
+            "SMMU DMA fault: event 0x0 SID 0x12 addr 0x3456"
         );
     }
 
