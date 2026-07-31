@@ -68,6 +68,19 @@ use zerocopy::IntoBytes;
 
 const SNP_IMPORT_CHUNK_PAGES: usize = 256;
 
+const SNP_HYPERV_CPUID_FUNCTIONS: [u32; 10] = [
+    hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
+    hvdef::HV_CPUID_FUNCTION_HV_INTERFACE,
+    hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION,
+    hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES,
+    hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+    hvdef::HV_CPUID_FUNCTION_MS_HV_IMPLEMENTATION_LIMITS,
+    hvdef::HV_CPUID_FUNCTION_MS_HV_HARDWARE_FEATURES,
+    hvdef::HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES,
+    hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
+    hvdef::VIRTUALIZATION_STACK_CPUID_PROPERTIES,
+];
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, inspect::Inspect)]
 pub(crate) enum SnpLaunchState {
     NotStarted,
@@ -94,6 +107,8 @@ struct ModifyGpaHostAccessHeader {
 
 const GHCB_RAX_VALID_BIT: u64 =
     1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, rax) / size_of::<u64>());
+const GHCB_RBX_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, rbx) / size_of::<u64>() - 64);
 const GHCB_RCX_VALID_BIT: u64 =
     1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, rcx) / size_of::<u64>() - 64);
 const GHCB_RDX_VALID_BIT: u64 =
@@ -108,6 +123,11 @@ const GHCB_SW_EXIT_INFO2_VALID_BIT: u64 =
     1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, sw_exit_info2) / size_of::<u64>() - 64);
 const GHCB_SW_SCRATCH_VALID_BIT: u64 =
     1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, sw_scratch) / size_of::<u64>() - 64);
+const GHCB_XCR0_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, xcr0) / size_of::<u64>() - 64);
+const GHCB_XSS_VALID_BIT: u64 =
+    1 << (std::mem::offset_of!(x86defs::snp::GhcbSaveArea, xss) / size_of::<u64>());
+const SVM_EXITCODE_CPUID: u64 = 0x72;
 const GHCB_SHARED_BUFFER_OFFSET: u64 =
     std::mem::offset_of!(x86defs::snp::GhcbPage, shared_buffer) as u64;
 const SVM_NAE_SNP_AP_CREATE: u32 = 1;
@@ -294,8 +314,8 @@ fn parse_snp_gpa_range(range: hvdef::hypercall::HvGpaRange) -> Result<(u64, u64)
     Ok((start_pfn, page_count))
 }
 
-fn sanitize_snp_cpuid(function: u32, index: u32, values: &mut [u32; 4]) {
-    if function == x86defs::cpuid::CpuidFunction::VersionAndFeatures.0 {
+fn sanitize_snp_cpuid(function: u32, index: u32, expose_hypervisor: bool, values: &mut [u32; 4]) {
+    if function == x86defs::cpuid::CpuidFunction::VersionAndFeatures.0 && !expose_hypervisor {
         values[2] &= !(1 << 31);
     }
     if function == x86defs::cpuid::CpuidFunction::ExtendedStateEnumeration.0 && index == 1 {
@@ -306,6 +326,61 @@ fn sanitize_snp_cpuid(function: u32, index: u32, values: &mut [u32; 4]) {
         values[2] = 0;
         values[3] = 0;
     }
+}
+
+fn get_snp_cpuid_values(
+    vcpufd: &VcpuFd,
+    function: u32,
+    index: u32,
+    xfem: u64,
+    xss: u64,
+    expose_hypervisor: bool,
+) -> Result<[u32; 4], mshv_ioctls::MshvError> {
+    let mut values = vcpufd.get_cpuid_values(function, index, xfem, xss)?;
+    sanitize_snp_cpuid(function, index, expose_hypervisor, &mut values);
+    Ok(values)
+}
+
+fn snp_cpuid_overrides(expose_hypervisor: bool) -> [virt::CpuidLeaf; 2] {
+    [
+        // Make the hypervisor-present bit match the guest contract.
+        virt::CpuidLeaf::new(
+            x86defs::cpuid::CpuidFunction::VersionAndFeatures.0,
+            [0, 0, u32::from(expose_hypervisor) << 31, 0],
+        )
+        .masked([0, 0, 1 << 31, 0]),
+        // Do not expose supervisor state without an SNP extended-state page.
+        virt::CpuidLeaf::new(
+            x86defs::cpuid::CpuidFunction::ExtendedStateEnumeration.0,
+            [0; 4],
+        )
+        .indexed(1)
+        .masked([0, 0, u32::MAX, u32::MAX]),
+    ]
+}
+
+fn add_snp_hyperv_cpuid_leaves(page: &mut x86defs::snp::HvPspCpuidPage) -> Result<(), usize> {
+    let mut count = page.count as usize;
+    if count > x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX {
+        return Err(count);
+    }
+
+    for function in SNP_HYPERV_CPUID_FUNCTIONS {
+        if page.cpuid_leaf_info[..count]
+            .iter()
+            .any(|leaf| leaf.eax_in == function && leaf.ecx_in == 0)
+        {
+            continue;
+        }
+        if count == x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX {
+            return Err(count + 1);
+        }
+
+        page.cpuid_leaf_info[count].eax_in = function;
+        count += 1;
+    }
+    page.count = count as u32;
+    Ok(())
 }
 
 fn snp_hv_cpuid_overrides(native_max_leaf: u32) -> [virt::CpuidLeaf; 3] {
@@ -383,7 +458,7 @@ impl virt::Hypervisor for LinuxMshv {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
-        let snp = match config.isolation {
+        let snp = match config.isolation.isolation_type() {
             virt::IsolationType::None => false,
             virt::IsolationType::Snp => true,
             _ => return Err(ErrorInner::IsolationNotSupported.into()),
@@ -424,7 +499,7 @@ impl virt::Hypervisor for LinuxMshv {
 
         if snp {
             let snp_policy = mshv_bindings::snp::get_default_snp_guest_policy();
-            let vmgexit_offloads = mshv_bindings::snp::get_default_vmgexit_offload_features();
+            let vmgexit_offloads = snp_vmgexit_offloads(config.snp_disable_cpuid_offload);
             // SAFETY: These generated C unions always contain a valid u64 view.
             let (snp_policy, vmgexit_offloads) =
                 unsafe { (snp_policy.as_uint64, vmgexit_offloads.as_uint64) };
@@ -508,6 +583,19 @@ fn snp_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
         .with_direct_synthetic_timers(true)
 }
 
+fn snp_vmgexit_offloads(disable_cpuid: bool) -> mshv_bindings::hv_sev_vmgexit_offload {
+    let mut offloads = mshv_bindings::snp::get_default_vmgexit_offload_features();
+    if disable_cpuid {
+        // SAFETY: The generated accessors correspond to fields in the active
+        // bitfield member of this C union.
+        unsafe {
+            offloads.__bindgen_anon_1.set_nae_cpuid(0);
+            offloads.__bindgen_anon_1.set_msr_cpuid(0);
+        }
+    }
+    offloads
+}
+
 impl MshvProtoPartition<'_> {
     /// Build partition capabilities from partition properties instead of
     /// CPUID.
@@ -539,7 +627,7 @@ impl MshvProtoPartition<'_> {
             .get_partition_property(HvPartitionPropertyCode::MaxXsaveDataSize.0)
             .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
 
-        let reset_rdx = if self.config.isolation == virt::IsolationType::Snp {
+        let reset_rdx = if self.config.isolation.isolation_type() == virt::IsolationType::Snp {
             0
         } else {
             let mut assoc = [HvRegisterAssoc::from((HvX64RegisterName::Rdx, 0u64))];
@@ -612,14 +700,19 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        let isolation = self.config.isolation.isolation_type();
         let mut cpuid = config.cpuid.to_vec();
-        if self.config.isolation == virt::IsolationType::Snp && self.config.hv_config.is_some() {
-            let native_max_leaf = self
-                .bsp
-                .get_cpuid_values(hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION, 0, 0, 0)
-                .map(|values| values[0])
-                .unwrap_or(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION);
-            cpuid.extend(snp_hv_cpuid_overrides(native_max_leaf));
+        if isolation == virt::IsolationType::Snp {
+            let expose_hypervisor = self.config.hv_config.is_some();
+            cpuid.extend(snp_cpuid_overrides(expose_hypervisor));
+            if expose_hypervisor {
+                let native_max_leaf = self
+                    .bsp
+                    .get_cpuid_values(hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION, 0, 0, 0)
+                    .map(|values| values[0])
+                    .unwrap_or(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION);
+                cpuid.extend(snp_hv_cpuid_overrides(native_max_leaf));
+            }
         }
         let cpuid = virt::CpuidLeafSet::new(cpuid);
 
@@ -688,6 +781,8 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                     self.caps_from_properties()?
                 }
             };
+            caps.hv1 = self.config.hv_config.is_some();
+            caps.hv1_reference_tsc_page = self.config.hv_config.is_some();
             caps.xsaves_state_bv_broken = true;
             caps.can_freeze_time = true;
             caps
@@ -716,9 +811,10 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             software_devices: ApicSoftwareDevices::new(apic_id_map),
             snp_launch_state: Mutex::new(SnpLaunchState::NotStarted),
             snp_sev_features: Mutex::new(None),
-            isolation: self.config.isolation,
+            snp_cpuid_offloads_enabled: !self.config.snp_disable_cpuid_offload,
+            isolation,
             // SNP partition creation set TimeFreeze=1 before this object was built.
-            time_frozen: Mutex::new(self.config.isolation.is_isolated()),
+            time_frozen: Mutex::new(isolation.is_isolated()),
         });
 
         let partition = MshvPartition {
@@ -748,6 +844,25 @@ mod tests {
     use super::*;
     use test_with_tracing::test;
     use zerocopy::FromZeros;
+
+    #[test]
+    fn can_disable_snp_cpuid_offloads() {
+        let enabled = snp_vmgexit_offloads(false);
+        let disabled = snp_vmgexit_offloads(true);
+
+        // SAFETY: These generated C unions contain the bitfield member used by
+        // get_default_vmgexit_offload_features() and snp_vmgexit_offloads().
+        unsafe {
+            assert_eq!(enabled.__bindgen_anon_1.nae_cpuid(), 1);
+            assert_eq!(enabled.__bindgen_anon_1.msr_cpuid(), 1);
+            assert_eq!(disabled.__bindgen_anon_1.nae_cpuid(), 0);
+            assert_eq!(disabled.__bindgen_anon_1.msr_cpuid(), 0);
+            assert_eq!(
+                disabled.__bindgen_anon_1.nae_rdmsr(),
+                enabled.__bindgen_anon_1.nae_rdmsr()
+            );
+        }
+    }
 
     #[test]
     fn snp_partition_creation_uses_isolation_flags() {
@@ -792,6 +907,45 @@ mod tests {
         assert!(privileges.start_virtual_processor());
         assert!(privileges.isolation());
         assert_eq!(leaves[2].result, [0, 2, 0, 0]);
+    }
+
+    #[test]
+    fn snp_cpuid_overrides_match_sanitization() {
+        let hidden = snp_cpuid_overrides(false);
+        assert_eq!(hidden[0].result[2], 0);
+        assert_eq!(hidden[0].mask[2], 1 << 31);
+
+        let exposed = snp_cpuid_overrides(true);
+        assert_eq!(exposed[0].result[2], 1 << 31);
+        assert_eq!(exposed[0].mask[2], 1 << 31);
+
+        assert_eq!(
+            exposed[1].function,
+            x86defs::cpuid::CpuidFunction::ExtendedStateEnumeration.0
+        );
+        assert_eq!(exposed[1].index, Some(1));
+        assert_eq!(exposed[1].result[2..], [0, 0]);
+        assert_eq!(exposed[1].mask[2..], [u32::MAX, u32::MAX]);
+    }
+
+    #[test]
+    fn adds_hyperv_leaves_to_snp_cpuid_page() {
+        let mut page = x86defs::snp::HvPspCpuidPage::new_zeroed();
+        page.count = 1;
+        page.cpuid_leaf_info[0].eax_in = hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION;
+
+        add_snp_hyperv_cpuid_leaves(&mut page).unwrap();
+
+        assert_eq!(page.count as usize, SNP_HYPERV_CPUID_FUNCTIONS.len());
+        for function in SNP_HYPERV_CPUID_FUNCTIONS {
+            assert_eq!(
+                page.cpuid_leaf_info[..page.count as usize]
+                    .iter()
+                    .filter(|leaf| leaf.eax_in == function && leaf.ecx_in == 0)
+                    .count(),
+                1
+            );
+        }
     }
 
     #[test]
@@ -1085,10 +1239,7 @@ mod tests {
                 .with_gpa_large_page_number(512)
                 .into_bits(),
         );
-        assert_eq!(
-            parse_snp_gpa_range(range).unwrap(),
-            (512 * 512, 512 * 512)
-        );
+        assert_eq!(parse_snp_gpa_range(range).unwrap(), (512 * 512, 512 * 512));
 
         range = hvdef::hypercall::HvGpaRange(
             hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
@@ -1106,14 +1257,25 @@ mod tests {
         sanitize_snp_cpuid(
             x86defs::cpuid::CpuidFunction::VersionAndFeatures.0,
             0,
+            false,
             &mut values,
         );
         assert_eq!(values[2], 0);
+
+        let mut values = [0, 0, 1 << 31, 0];
+        sanitize_snp_cpuid(
+            x86defs::cpuid::CpuidFunction::VersionAndFeatures.0,
+            0,
+            true,
+            &mut values,
+        );
+        assert_eq!(values[2], 1 << 31);
 
         let mut values = [0xb, 0x240, 0x1800, 1];
         sanitize_snp_cpuid(
             x86defs::cpuid::CpuidFunction::ExtendedStateEnumeration.0,
             1,
+            false,
             &mut values,
         );
         assert_eq!(values, [0xb, 0x240, 0, 0]);
@@ -1240,13 +1402,49 @@ impl MshvPartitionInner {
         if count > x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX {
             return Err(ErrorInner::TooManySnpCpuidEntries(count).into());
         }
+        if self.caps.hv1 {
+            // TODO: Determine the correct long-term strategy for exposing
+            // synthetic Hyper-V CPUID leaves to direct-boot SNP guests: include
+            // them in the measured CPUID page, rely on GHCB CPUID fallback, or
+            // support both based on the guest contract.
+            //
+            // The loader creates this page with the architectural x86 and AMD
+            // leaves needed by an SNP guest. Add the synthetic Hyper-V leaf
+            // requests here because their values depend on the MSHV partition
+            // configuration. The loop below queries MSHV for every requested
+            // leaf and writes the results into this page before it is imported
+            // through the SNP launch API. The PSP consequently measures these
+            // synthetic values along with the rest of the CPUID page.
+            //
+            // This is not inherently required by the SNP or GHCB protocols. A
+            // guest can treat a synthetic leaf absent from the measured table
+            // as unsupported by that table and retry it through the GHCB CPUID
+            // protocol. With CPUID VMGEXIT offloading enabled, the hypervisor
+            // can answer that request using the CPUID intercept results
+            // registered above. With offloading disabled, OpenVMM answers the
+            // forwarded MSR or page-protocol request.
+            //
+            // Some Linux versions instead treat an absent, out-of-range
+            // synthetic leaf as a successful all-zero result. In particular,
+            // returning zeros for 0x40000000 prevents Hyper-V vendor detection
+            // and therefore disables the entire Hyper-V guest interface. Keep
+            // appending the leaves for compatibility with those guests. A
+            // guest that returns -EOPNOTSUPP for missing synthetic leaves does
+            // not require this augmentation.
+            add_snp_hyperv_cpuid_leaves(&mut page).map_err(ErrorInner::TooManySnpCpuidEntries)?;
+        }
+        let count = page.count as usize;
 
         for leaf in &mut page.cpuid_leaf_info[..count] {
-            let mut values = self
-                .bsp_vcpufd
-                .get_cpuid_values(leaf.eax_in, leaf.ecx_in, leaf.xfem_in, leaf.xss_in)
-                .map_err(|e| ErrorInner::SnpCpuid(e.into()))?;
-            sanitize_snp_cpuid(leaf.eax_in, leaf.ecx_in, &mut values);
+            let values = get_snp_cpuid_values(
+                &self.bsp_vcpufd,
+                leaf.eax_in,
+                leaf.ecx_in,
+                leaf.xfem_in,
+                leaf.xss_in,
+                self.caps.hv1,
+            )
+            .map_err(|e| ErrorInner::SnpCpuid(e.into()))?;
             leaf.eax_out = values[0];
             leaf.ebx_out = values[1];
             leaf.ecx_out = values[2];
@@ -1618,6 +1816,24 @@ impl virt::BindProcessor for MshvProcessorBinder {
 }
 
 impl MshvProcessor<'_> {
+    fn ensure_cpuid_intercept_expected(
+        cpuid_offloads_enabled: bool,
+        protocol: &'static str,
+        function: u32,
+        index: u32,
+    ) -> Result<(), VpHaltReason> {
+        if cpuid_offloads_enabled {
+            tracelimit::warn_ratelimited!(
+                protocol,
+                function,
+                index,
+                "unexpected SNP CPUID intercept while CPUID offloads are enabled"
+            );
+            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        }
+        Ok(())
+    }
+
     async fn emulate(
         &mut self,
         message: &HvMessage,
@@ -1865,12 +2081,43 @@ impl MshvProcessor<'_> {
             "SNP VMGEXIT"
         );
 
+        // CPUID requests reach userspace only when the corresponding VMGEXIT
+        // offloads are disabled. The negotiation, registration, shutdown, and
+        // normal page-protocol operations are always handled here.
         match ghcb_op {
             GHCB_INFO_SPECIAL_DBGPRINT => {}
             GHCB_INFO_HYP_FEATURE_REQUEST if ghcb_data == 0 => {
                 let features = GHCB_HYP_FEATURE_SEV_SNP | GHCB_HYP_FEATURE_SEV_SNP_AP_CREATION;
                 let response = GHCB_INFO_HYP_FEATURE_RESPONSE as u64
                     | u64::from(features) << GHCB_INFO_BIT_WIDTH;
+                self.sev_set_reg(HvX64RegisterName::Ghcb, response)?;
+            }
+            GHCB_INFO_CPUID_REQUEST => {
+                let function = (info.ghcb_msr >> 32) as u32;
+                let register = ((info.ghcb_msr >> 30) & 3) as usize;
+                Self::ensure_cpuid_intercept_expected(
+                    self.partition.snp_cpuid_offloads_enabled,
+                    "MSR",
+                    function,
+                    0,
+                )?;
+                let values = get_snp_cpuid_values(
+                    self.runner.vcpufd,
+                    function,
+                    0,
+                    0,
+                    0,
+                    self.partition.caps.hv1,
+                )
+                .map_err(|err| {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        function,
+                        "failed to service SNP MSR CPUID request"
+                    );
+                    VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+                })?;
+                let response = GHCB_INFO_CPUID_RESPONSE as u64 | u64::from(values[register]) << 32;
                 self.sev_set_reg(HvX64RegisterName::Ghcb, response)?;
             }
             GHCB_INFO_SEV_INFO_REQUEST => {
@@ -1973,6 +2220,64 @@ impl MshvProcessor<'_> {
         }
 
         match info.ghcb_page.standard.sw_exit_code {
+            SVM_EXITCODE_CPUID => {
+                let cpuid_offloads_enabled = self.partition.snp_cpuid_offloads_enabled;
+                let ghcb = self
+                    .runner
+                    .ghcb_page()
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                if !ghcb_rax_is_valid(ghcb) || ghcb.save.valid_bitmap1 & GHCB_RCX_VALID_BIT == 0 {
+                    return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                }
+
+                let function = ghcb.save.rax as u32;
+                let index = ghcb.save.rcx as u32;
+                Self::ensure_cpuid_intercept_expected(
+                    cpuid_offloads_enabled,
+                    "NAE",
+                    function,
+                    index,
+                )?;
+                let xfem = if ghcb.save.valid_bitmap1 & GHCB_XCR0_VALID_BIT != 0 {
+                    ghcb.save.xcr0
+                } else {
+                    1
+                };
+                let xss = if ghcb.save.valid_bitmap0 & GHCB_XSS_VALID_BIT != 0 {
+                    ghcb.save.xss
+                } else {
+                    0
+                };
+                let values = get_snp_cpuid_values(
+                    self.runner.vcpufd,
+                    function,
+                    index,
+                    xfem,
+                    xss,
+                    self.partition.caps.hv1,
+                )
+                .map_err(|err| {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        function,
+                        index,
+                        "failed to service SNP GHCB CPUID request"
+                    );
+                    VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+                })?;
+
+                let ghcb = self
+                    .runner
+                    .ghcb_page()
+                    .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+                set_ghcb_rax(ghcb, u64::from(values[0]));
+                ghcb.save.rbx = u64::from(values[1]);
+                ghcb.save.rcx = u64::from(values[2]);
+                ghcb.save.rdx = u64::from(values[3]);
+                ghcb.save.valid_bitmap1 |=
+                    GHCB_RBX_VALID_BIT | GHCB_RCX_VALID_BIT | GHCB_RDX_VALID_BIT;
+                ghcb.save.sw_exit_info1 = 0;
+            }
             exit_code if exit_code == u64::from(SVM_EXITCODE_IOIO_PROT) => {
                 let exit_info = u32::try_from(info.ghcb_page.standard.sw_exit_info1)
                     .map_err(|_| VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;

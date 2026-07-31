@@ -269,6 +269,8 @@ struct MshvPartitionInner {
     /// created AP is validated against this BSP value, making it the canonical
     /// feature set for subsequent requests.
     snp_sev_features: Mutex<Option<u64>>,
+    #[cfg(guest_arch = "x86_64")]
+    snp_cpuid_offloads_enabled: bool,
     isolation: virt::IsolationType,
     /// Set to `true` when partition time is frozen (e.g. during reset).
     /// The first VP to enter `run_vp` after a freeze will thaw time.
@@ -470,13 +472,13 @@ impl MshvVpRunner<'_> {
 
     #[cfg(guest_arch = "x86_64")]
     fn reg_page(&mut self) -> &mut hvdef::HvX64RegisterPage {
-       let page = self
-           .reg_page
-           .expect("register page is unavailable for isolated VPs");
-       // SAFETY: VP is stopped (returned from run()), so we have exclusive
-       // access. The pointer is the kernel's VP register-page mapping and
-       // remains valid for the processor borrow.
-       unsafe { &mut *page }
+        let page = self
+            .reg_page
+            .expect("register page is unavailable for isolated VPs");
+        // SAFETY: VP is stopped (returned from run()), so we have exclusive
+        // access. The pointer is the kernel's VP register-page mapping and
+        // remains valid for the processor borrow.
+        unsafe { &mut *page }
     }
 
     #[cfg(guest_arch = "x86_64")]

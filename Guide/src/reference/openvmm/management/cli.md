@@ -89,13 +89,18 @@ describes the source definitions.
   --hypervisor kvm
   ```
 * `--isolation <MODE>`: Enable a confidential or isolated VM mode.
-  Supported modes include `vbs` and, for `x86_64` guests on KVM, `snp`.
+  Supported modes include `vbs` and, for `x86_64` guests on KVM or MSHV,
+  `snp`.
 
   SNP support is currently limited to Linux direct boot and is intended for
-  bring-up. It does not support UEFI, Hyper-V enlightenments, VTL2, VMBus,
-  or hugetlb-backed memory. In addition to the minimal emulated chipset and
-  serial console, optional devices are limited to virtio devices attached
-  through PCIe.
+  bring-up. MSHV SNP can expose Hyper-V enlightenments with `--hv --no-vmbus`;
+  VMBus devices remain unsupported. SNP does not support UEFI, VTL2, or
+  hugetlb-backed memory. In addition to the minimal emulated chipset and serial
+  console, optional devices are limited to virtio devices attached through
+  PCIe.
+* `--snp-disable-cpuid-offload`: Disable MSHV handling of SNP GHCB CPUID
+  requests so they are forwarded to OpenVMM. The default is offloading enabled.
+  This diagnostic option requires `--hypervisor mshv --isolation snp`.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and
