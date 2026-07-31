@@ -157,7 +157,7 @@ impl NvramServices {
                 .is_some_and(|json| !json.as_bytes().is_empty());
 
             nvram
-                .inject_vars_on_first_boot(base_template_vars.clone(), custom_uefi_json)
+                .inject_vars_on_first_boot(base_template_vars.as_ref(), custom_uefi_json)
                 .await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
@@ -186,7 +186,7 @@ impl NvramServices {
     /// hard-coded and configured UEFI vars.
     async fn inject_vars_on_first_boot(
         &mut self,
-        base_template_vars: Option<BaseTemplateVars>,
+        base_template_vars: Option<&BaseTemplateVars>,
         custom_uefi_json: Option<UefiVarsDeltaJson>,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
@@ -203,7 +203,7 @@ impl NvramServices {
             .map(|json| hyperv_uefi_custom_vars_json::parse_delta_json(json.as_bytes()))
             .transpose()
             .map_err(NvramSetupError::LoadCustomUefiJson)?;
-        let final_vars = FinalVars::resolve(base_template_vars, custom_template_delta)
+        let final_vars = FinalVars::resolve(base_template_vars.cloned(), custom_template_delta)
             .map_err(NvramSetupError::ApplyCustomTemplate)?;
 
         tracing::info!("No NVRAM variables (first boot). Loading in initial NVRAM values.");
@@ -786,7 +786,7 @@ mod tests {
             hyperv_uefi_custom_vars_json::parse_template_json(base_template.as_bytes()).unwrap();
 
         nvram
-            .inject_vars_on_first_boot(Some(base_template_vars), None)
+            .inject_vars_on_first_boot(Some(&base_template_vars), None)
             .await
             .unwrap();
 
