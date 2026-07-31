@@ -146,7 +146,14 @@ impl NvramServices {
         };
 
         if !is_restoring {
-            let base_template_vars = base_template_json
+            let is_first_boot = nvram
+                .services
+                .is_empty()
+                .await
+                .map_err(NvramSetupError::BadNvramStorage)?;
+            let base_template_vars = (is_first_boot || secure_boot_enabled)
+                .then_some(base_template_json)
+                .flatten()
                 .map(|template_json| {
                     hyperv_uefi_custom_vars_json::parse_template_json(template_json.as_bytes())
                 })
@@ -156,9 +163,11 @@ impl NvramServices {
                 .as_ref()
                 .is_some_and(|json| !json.as_bytes().is_empty());
 
-            nvram
-                .inject_vars_on_first_boot(base_template_vars.as_ref(), custom_uefi_json)
-                .await?;
+            if is_first_boot {
+                nvram
+                    .inject_initial_vars(base_template_vars.as_ref(), custom_uefi_json)
+                    .await?;
+            }
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
 
@@ -182,23 +191,12 @@ impl NvramServices {
         self.services.prepare_for_boot();
     }
 
-    /// Check if this is the VM's first boot, and if so, inject various
-    /// hard-coded and configured UEFI vars.
-    async fn inject_vars_on_first_boot(
+    /// Inject hard-coded and configured UEFI variables into empty NVRAM.
+    async fn inject_initial_vars(
         &mut self,
         base_template_vars: Option<&BaseTemplateVars>,
         custom_uefi_json: Option<UefiVarsDeltaJson>,
     ) -> Result<(), NvramSetupError> {
-        // "First boot" is marked by having no variables in nvram storage
-        if !self
-            .services
-            .is_empty()
-            .await
-            .map_err(NvramSetupError::BadNvramStorage)?
-        {
-            return Ok(());
-        }
-
         let custom_template_delta = custom_uefi_json
             .map(|json| hyperv_uefi_custom_vars_json::parse_delta_json(json.as_bytes()))
             .transpose()
@@ -737,19 +735,24 @@ mod tests {
     }
 
     #[async_test]
-    async fn invalid_delta_is_ignored_after_first_boot() {
+    async fn invalid_templates_are_ignored_after_first_boot_without_secure_boot() {
         let mut storage = InMemoryNvram::new();
         let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
         storage
             .set_variable(name, guid::Guid::default(), 0, vec![1], EFI_TIME::default())
             .await
             .unwrap();
-        let mut nvram = nvram_services(storage);
 
-        nvram
-            .inject_vars_on_first_boot(None, Some(b"not json".to_vec().into()))
-            .await
-            .unwrap();
+        NvramServices::new(
+            Box::new(storage),
+            Some(b"not json".to_vec().into()),
+            Some(b"not json".to_vec().into()),
+            false,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
     }
 
     #[async_test]
@@ -758,7 +761,7 @@ mod tests {
 
         assert!(matches!(
             nvram
-                .inject_vars_on_first_boot(None, Some(append_without_base_json().into()))
+                .inject_initial_vars(None, Some(append_without_base_json().into()))
                 .await,
             Err(NvramSetupError::ApplyCustomTemplate(
                 ApplyDeltaError::AppendWithoutBase
@@ -772,7 +775,7 @@ mod tests {
 
         assert!(matches!(
             nvram
-                .inject_vars_on_first_boot(None, Some(b"not json".to_vec().into()))
+                .inject_initial_vars(None, Some(b"not json".to_vec().into()))
                 .await,
             Err(NvramSetupError::LoadCustomUefiJson(_))
         ));
@@ -786,7 +789,7 @@ mod tests {
             hyperv_uefi_custom_vars_json::parse_template_json(base_template.as_bytes()).unwrap();
 
         nvram
-            .inject_vars_on_first_boot(Some(&base_template_vars), None)
+            .inject_initial_vars(Some(&base_template_vars), None)
             .await
             .unwrap();
 
