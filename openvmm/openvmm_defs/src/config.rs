@@ -130,6 +130,13 @@ pub enum LinuxIsolationConfig {
     },
 }
 
+/// SMBIOS (DMI) identity configuration, shared with the Guest Emulation
+/// Transport and the firmware load paths. Defined in [`smbios_defs`] so that
+/// both `openvmm_defs` and `get_resources` reference a single representation.
+pub use smbios_defs::SmbiosBiosOverrides;
+pub use smbios_defs::SmbiosConfig;
+pub use smbios_defs::SmbiosSystemOverrides;
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -139,6 +146,8 @@ pub enum LoadMode {
         enable_serial: bool,
         isolation: LinuxIsolationConfig,
         boot_mode: LinuxDirectBootMode,
+        // Boxed to keep the `Linux` variant from dominating `LoadMode`'s size.
+        smbios: Box<SmbiosConfig>,
     },
     Uefi {
         firmware: File,
@@ -151,7 +160,10 @@ pub enum LoadMode {
         enable_vpci_boot: bool,
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
-        bios_guid: Guid,
+        // Boxed to keep the `Uefi` variant from dominating `LoadMode`'s size.
+        // The VM's BIOS GUID is sourced from `smbios.system.uuid`, so UEFI and
+        // Linux direct boot share a single UUID origin.
+        smbios: Box<SmbiosConfig>,
         enable_vmbus: bool,
         force_dma_bounce: bool,
         enable_hv: bool,
@@ -163,6 +175,10 @@ pub enum LoadMode {
         boot_order: [PcatBootDevice; 4],
         /// Whether the guest firmware should enable hibernation (S4) support.
         hibernation_enabled: bool,
+        // Boxed to keep the `Pcat` variant from dominating `LoadMode`'s size.
+        // Only the system UUID and serial number are honored; the PCAT BIOS ROM
+        // self-describes everything else, so other overrides are rejected.
+        smbios: Box<SmbiosConfig>,
     },
     Igvm {
         file: File,

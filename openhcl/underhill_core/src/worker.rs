@@ -2712,11 +2712,15 @@ async fn new_underhill_vm(
                 num_lock_enabled: dps.general.num_lock_enabled,
                 smbios: firmware_pcat::config::SmbiosConstants {
                     bios_guid: dps.general.bios_guid,
-                    system_serial_number: dps.smbios.serial_number.clone(),
-                    base_board_serial_number: (dps.smbios).base_board_serial_number.clone(),
-                    chassis_serial_number: (dps.smbios).chassis_serial_number.clone(),
-                    chassis_asset_tag: (dps.smbios).chassis_asset_tag.clone(),
-                    bios_lock_string: dps.smbios.bios_lock_string.clone(),
+                    system_serial_number: dps.smbios.serial_number.clone().into_bytes(),
+                    base_board_serial_number: dps
+                        .smbios
+                        .base_board_serial_number
+                        .clone()
+                        .into_bytes(),
+                    chassis_serial_number: dps.smbios.chassis_serial_number.clone().into_bytes(),
+                    chassis_asset_tag: dps.smbios.chassis_asset_tag.clone().into_bytes(),
+                    bios_lock_string: dps.smbios.bios_lock_string.clone().into_bytes(),
                     processor_manufacturer: dps.smbios.processor_manufacturer.clone(),
                     processor_version: dps.smbios.processor_version.clone(),
                     cpu_info_bundle: Some(firmware_pcat::config::SmbiosProcessorInfoBundle {
