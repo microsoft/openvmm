@@ -453,12 +453,14 @@ The syntax is a comma-separated key/value list:
   that the devices use the `--iommu` cdev path with a single shared context.
   Without it, assigning a VFIO device behind an SMMU is rejected.
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
-  `auto` (the default) advertises a fixed 48 bits, which covers typical
-  configurations. Very large RAM or an explicitly pinned high MMIO/ECAM
-  base can exceed this, requiring an explicit larger `oas=` (e.g. `oas=52`).
-  A fixed `N` must be one of the SMMUv3-legal encodings: `32`, `36`, `40`,
-  `42`, `44`, `48`, or `52`. Under `accel` the value is capped by the
-  physical SMMU's OAS.
+  `auto` (the default) starts at 48 bits, which covers typical configurations.
+  Under `accel`, a device attached before VM start changes it to the physical
+  SMMU's OAS. VM start freezes the advertised value, so later hotplug validates
+  against it rather than changing it. Very large RAM or an explicitly pinned
+  high MMIO/ECAM base can exceed 48 bits, requiring an explicit larger `oas=`
+  (e.g. `oas=52`). A fixed `N` must be one of the SMMUv3-legal encodings: `32`,
+  `36`, `40`, `42`, `44`, `48`, or `52`, and cannot exceed the physical
+  SMMU's OAS under `accel`.
 
 ```sh
 # Enable an emulated SMMU on root complex rc0
