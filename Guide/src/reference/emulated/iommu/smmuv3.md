@@ -133,9 +133,11 @@ re-establishes it afterwards.
 ### Output address size
 
 The advertised output address size (`IDR5.OAS`) cannot exceed the physical
-SMMU's. With `oas=auto` the emulated SMMU adopts the host's OAS once the
-first device attaches; with a fixed `oas=N`, a value larger than the host's
-is rejected.
+SMMU's. With `oas=auto`, an accelerated device attached before the VM starts
+causes the emulated SMMU to adopt the host's OAS. Starting the VM freezes the
+advertised value. A device hotplugged after that point must support the frozen
+OAS; attachment fails rather than changing a capability the guest may already
+have observed. With a fixed `oas=N`, a value larger than the host's is rejected.
 
 ### Fault reporting
 

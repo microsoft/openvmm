@@ -345,8 +345,8 @@ pub struct SmmuSharedState {
     /// accelerated S1 translation. When `false`, all devices use the
     /// software page table walk path.
     accel: bool,
-    /// How the advertised OAS is resolved against the host SMMU at
-    /// device-attach time (see [`resolve_host_caps`](Self::resolve_host_caps)).
+    /// How the advertised OAS is resolved against the host SMMU before
+    /// capabilities are frozen (see [`resolve_host_caps`](Self::resolve_host_caps)).
     oas_policy: crate::SmmuOasPolicy,
     /// Accelerated stream registrations and the host vIOMMU they share. This
     /// is shared because VFIO devices can be added or removed while the
@@ -355,6 +355,9 @@ pub struct SmmuSharedState {
 }
 
 struct SharedStateInner {
+    /// Whether guest-visible identification registers are fixed. Set when the
+    /// device first starts and never cleared by stop or reset.
+    capabilities_frozen: bool,
     /// Whether the SMMU is enabled (CR0.SMMUEN).
     enabled: bool,
     /// Mirror of `GBPA.ABORT`, kept in sync on GBPA writes. Selects the
@@ -370,8 +373,9 @@ struct SharedStateInner {
     /// used to derive `oas_mask`.
     oas_bits: u8,
     /// Host SMMU capabilities, once an accelerated VFIO device has bound and
-    /// [`SmmuSharedState::resolve_host_caps`] has finalized the host-derived
-    /// parameters. `None` until then (and always `None` for non-accel SMMUs).
+    /// [`SmmuSharedState::resolve_host_caps`] has resolved or validated the
+    /// host-derived parameters. `None` until then (and always `None` for
+    /// non-accel SMMUs).
     /// A second device reporting different host caps is rejected — a single
     /// vSMMU cannot be backed by two physical SMMUs.
     resolved_host_caps: Option<crate::HostSmmuCaps>,
@@ -428,8 +432,8 @@ impl SmmuSharedState {
     /// `oas_bits` is the initial output address size in bits (e.g., 40 for a
     /// 40-bit physical address space). Computed addresses for STE/CD/PT
     /// fetches are truncated to this width, matching hardware behavior per
-    /// SMMUv3 §3.4. `oas_policy` controls whether the value is finalized
-    /// against the host SMMU at device-attach time (see
+    /// SMMUv3 §3.4. `oas_policy` controls whether the value can be resolved
+    /// against a host SMMU before capabilities are frozen (see
     /// [`Self::resolve_host_caps`]).
     pub(crate) fn new(
         guest_memory: GuestMemory,
@@ -442,6 +446,7 @@ impl SmmuSharedState {
         let oas_mask = (1u64 << oas_bits) - 1;
         Arc::new(Self {
             inner: RwLock::new(SharedStateInner {
+                capabilities_frozen: false,
                 enabled: false,
                 gbpa_abort: false,
                 strtab_base: 0,
@@ -480,15 +485,20 @@ impl SmmuSharedState {
         self.inner.read().oas_bits
     }
 
+    /// Freezes guest-visible capabilities before the VM can observe them.
+    pub(crate) fn freeze_capabilities(&self) {
+        self.inner.write().capabilities_frozen = true;
+    }
+
     /// Binds this vSMMU to the physical SMMU and host vIOMMU backing an
     /// accelerated device.
     ///
     /// Called when a VFIO device behind this SMMU binds to iommufd, which is
     /// when the backing hardware is first known. The first call validates
-    /// host/guest compatibility and finalizes the host-derived vSMMU
-    /// parameters; later calls must name the same physical SMMU *and* the same
-    /// vIOMMU, since one vSMMU can span neither two of the former nor two of
-    /// the latter.
+    /// host/guest compatibility and resolves mutable pre-start parameters or
+    /// validates frozen ones; later calls must name the same physical SMMU
+    /// *and* the same vIOMMU, since one vSMMU can span neither two of the former
+    /// nor two of the latter.
     ///
     /// The vIOMMU is held weakly: the strong references belong to the stream
     /// backends, so it is released along with the last accelerated device, and
@@ -515,15 +525,15 @@ impl SmmuSharedState {
         Ok(())
     }
 
-    /// Finalizes the host-derived vSMMU parameters against the physical SMMU
-    /// backing an accelerated device, and validates host/guest compatibility.
+    /// Resolves or validates host-derived vSMMU parameters against the physical
+    /// SMMU backing an accelerated device.
     ///
     /// Runs once per vSMMU: the first device validates compatibility (TTF,
-    /// TTENDIAN, GRAN4K) and applies every host-derived parameter according to
-    /// its configured policy (currently OAS — `auto` adopts the host value;
-    /// `fixed` is validated as an upper bound). Subsequent devices must report
-    /// identical host caps; a mismatch is rejected, since a single vSMMU cannot
-    /// be backed by two different physical SMMUs.
+    /// TTENDIAN, GRAN4K). Before capabilities are frozen, `auto` adopts the host
+    /// OAS. Afterward, the advertised OAS is immutable and must not exceed the
+    /// host's. `fixed` is always validated as an upper bound. Subsequent devices
+    /// must report identical host caps; a mismatch is rejected, since a single
+    /// vSMMU cannot be backed by two different physical SMMUs.
     ///
     /// The compatibility checks cover only the features this emulator
     /// actually advertises that the host hardware must honor when walking the
@@ -581,8 +591,10 @@ impl SmmuSharedState {
             anyhow::bail!("host SMMU does not support the 4KB translation granule (IDR5.GRAN4K=0)");
         }
 
-        // OAS: decode the host's IDR5.OAS encoding (may be a reserved value),
-        // then `auto` adopts the host value while `fixed` must not exceed it.
+        // OAS: decode the host's IDR5.OAS encoding (may be a reserved value).
+        // Before the device starts, `auto` adopts the host value. Once
+        // capabilities are guest-visible, both policies only validate the
+        // already-advertised value.
         let host_oas_bits = caps.oas.bits().ok_or_else(|| {
             anyhow::anyhow!(
                 "host SMMU reported an unknown OAS encoding ({})",
@@ -590,9 +602,17 @@ impl SmmuSharedState {
             )
         })?;
         match self.oas_policy {
-            crate::SmmuOasPolicy::Auto { .. } => {
+            crate::SmmuOasPolicy::Auto { .. } if !inner.capabilities_frozen => {
                 inner.oas_bits = host_oas_bits;
                 inner.oas_mask = (1u64 << host_oas_bits) - 1;
+            }
+            crate::SmmuOasPolicy::Auto { .. } => {
+                if inner.oas_bits > host_oas_bits {
+                    anyhow::bail!(
+                        "advertised SMMU OAS {} exceeds host SMMU OAS {host_oas_bits}",
+                        inner.oas_bits
+                    );
+                }
             }
             crate::SmmuOasPolicy::Fixed(oas) => {
                 if oas > host_oas_bits {
@@ -2261,7 +2281,11 @@ mod tests {
     /// An accel-mode shared state with the given OAS policy.
     fn make_accel_state(policy: crate::SmmuOasPolicy) -> Arc<SmmuSharedState> {
         let gm = GuestMemory::allocate(0x1000);
-        SmmuSharedState::new(gm, 40, policy, true, None, None)
+        let oas_bits = match policy {
+            crate::SmmuOasPolicy::Auto { provisional } => provisional,
+            crate::SmmuOasPolicy::Fixed(bits) => bits,
+        };
+        SmmuSharedState::new(gm, oas_bits, policy, true, None, None)
     }
 
     #[test]
@@ -2279,6 +2303,34 @@ mod tests {
         };
         state.resolve_host_caps(caps).unwrap();
         assert_eq!(state.oas_bits(), 48);
+    }
+
+    #[test]
+    fn resolve_host_caps_auto_after_freeze_preserves_advertised_oas() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Auto { provisional: 40 });
+        state.freeze_capabilities();
+
+        state.resolve_host_caps(compatible_host_caps()).unwrap();
+        assert_eq!(state.oas_bits(), 40);
+
+        // A later device with the same physical-SMMU capabilities is accepted
+        // without changing the guest-visible OAS.
+        state.resolve_host_caps(compatible_host_caps()).unwrap();
+        assert_eq!(state.oas_bits(), 40);
+    }
+
+    #[test]
+    fn resolve_host_caps_auto_after_freeze_rejects_narrower_host() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Auto { provisional: 40 });
+        state.freeze_capabilities();
+        let caps = crate::HostSmmuCaps {
+            oas: Ips::IPS_36,
+            ..compatible_host_caps()
+        };
+
+        let err = state.resolve_host_caps(caps).unwrap_err().to_string();
+        assert!(err.contains("advertised SMMU OAS 40 exceeds host SMMU OAS 36"));
+        assert_eq!(state.oas_bits(), 40);
     }
 
     #[test]

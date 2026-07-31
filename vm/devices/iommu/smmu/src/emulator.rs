@@ -32,9 +32,8 @@ use vmcore::save_restore::SaveRestore;
 ///
 /// The OAS the SMMU advertises in IDR5 is resolved in two stages. The initial
 /// advertised value is carried by this policy up front. For accelerated SMMUs
-/// the final value also depends on the physical SMMU backing the device, which
-/// is only known once a VFIO device is bound to iommufd — see
-/// [`SmmuSharedState::bind_accel_viommu`].
+/// the final value can also depend on a physical SMMU bound before the device
+/// starts — see [`SmmuSharedState::bind_accel_viommu`].
 ///
 /// Both variants carry a concrete OAS supplied by the caller. This crate
 /// deliberately defines no default, so that the choice for `auto` is made once
@@ -42,11 +41,11 @@ use vmcore::save_restore::SaveRestore;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmmuOasPolicy {
     /// Advertise `provisional` initially. For non-accel SMMUs this is the final
-    /// advertised OAS. For accel SMMUs it is a provisional value that is
-    /// replaced by the host SMMU's OAS when a device attaches.
+    /// advertised OAS. For accel SMMUs, a device attached before VM start
+    /// replaces it with the host SMMU's OAS. VM start freezes the value.
     Auto {
-        /// Initial advertised OAS in bits, used until (for accel) the host
-        /// SMMU's OAS is adopted at device attach.
+        /// Initial advertised OAS in bits, used unless an accelerated device
+        /// supplies the host SMMU's OAS before VM start.
         provisional: u8,
     },
     /// Use a fixed OAS in bits. For accel, this is an upper bound that must
@@ -58,11 +57,10 @@ pub enum SmmuOasPolicy {
 ///
 /// Decoded from a host SMMUv3's `IDR0..IDR5` register values (as returned by
 /// `IOMMU_GET_HW_INFO`) via [`HostSmmuCaps::from_idr`], and handed to
-/// [`SmmuSharedState::bind_accel_viommu`], which finalizes the host-derived
-/// vSMMU parameters and validates host/guest compatibility the first time a
-/// VFIO device binds. Keeping this a plain value type (with the IDR decoding
-/// owned by this crate) avoids a dependency from the `smmu` crate on the
-/// iommufd bindings.
+/// [`SmmuSharedState::bind_accel_viommu`], which resolves mutable pre-start
+/// parameters or validates frozen ones and checks host/guest compatibility.
+/// Keeping this a plain value type (with the IDR decoding owned by this crate)
+/// avoids a dependency from the `smmu` crate on the iommufd bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostSmmuCaps {
     /// Host SMMUv3 output address size (IDR5.OAS field). Resolved to a bit
@@ -367,8 +365,8 @@ impl SmmuDevice {
             registers::IDR3 => self.idr3,
             registers::IDR4 => self.idr4,
             registers::IDR5 => {
-                // OAS is resolved dynamically (accel finalizes it against the
-                // host SMMU at device-attach time); the granule bits are fixed.
+                // OAS may be resolved against an accelerated host SMMU before
+                // the device starts; start freezes it. Granule bits are fixed.
                 let oas = self.shared_state.oas_bits();
                 self.idr5
                     .with_oas(crate::spec::cd::Ips::from_bits(oas).0)
@@ -991,7 +989,9 @@ impl ChipsetDevice for SmmuDevice {
 }
 
 impl ChangeDeviceState for SmmuDevice {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        self.shared_state.freeze_capabilities();
+    }
 
     async fn stop(&mut self) {}
 
@@ -2306,6 +2306,39 @@ mod tests {
             ttendian: Idr0TtEndian::LE,
             gran4k: true,
         }
+    }
+
+    #[test]
+    fn test_start_freezes_auto_oas() {
+        let gm = GuestMemory::allocate(0x1000);
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            gm,
+            &SmmuConfig {
+                sidsize: 16,
+                oas_policy: SmmuOasPolicy::Auto { provisional: 40 },
+                accel: true,
+            },
+            None,
+            None,
+        );
+        dev.start();
+
+        let caps = HostSmmuCaps {
+            oas: crate::spec::cd::Ips::IPS_36,
+            ..test_host_caps()
+        };
+        let err = dev
+            .shared_state
+            .bind_accel_viommu(caps, &MockViommu::new())
+            .expect_err("post-start attachment must not shrink the advertised OAS")
+            .to_string();
+
+        assert!(err.contains("advertised SMMU OAS 40 exceeds host SMMU OAS 36"));
+        assert_eq!(
+            Idr5::from(read32(&mut dev, IDR5)).oas(),
+            crate::spec::cd::Ips::IPS_40.0
+        );
     }
 
     /// Write a valid STE with the given `Config` at `sid` in the test stream
