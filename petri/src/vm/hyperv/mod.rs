@@ -365,20 +365,21 @@ impl PetriVmmBackend for HyperVPetriBackend {
             // Hypervisor support is needed for this to work.
             let is_not_vbs = !matches!(config.firmware.isolation(), Some(IsolationType::Vbs));
 
-            // The Hyper-V serial device for ARM doesn't support additional
-            // serial ports yet.
-            let is_x86 = matches!(config.arch, MachineArch::X86_64);
+            let current_winver = windows_version::OsVersion::current();
+            tracing::debug!(?current_winver, "host windows version");
 
             // The registry key to enable additional COM ports is only
             // available in newer builds of Windows.
-            let current_winver = windows_version::OsVersion::current();
-            tracing::debug!(?current_winver, "host windows version");
-            // This is the oldest working build used in CI
-            // TODO: determine the actual minimum version
-            const COM3_MIN_WINVER: u32 = 27813;
-            let is_supported_winver = current_winver.build >= COM3_MIN_WINVER;
+            const COM3_MIN_WINVER_X64: u32 = 27653;
+            const COM3_MIN_WINVER_AARCH64: u32 = 29627;
 
-            properties.is_openhcl && is_not_vbs && is_x86 && is_supported_winver
+            let is_supported_winver = current_winver.build
+                >= match config.arch {
+                    MachineArch::X86_64 => COM3_MIN_WINVER_X64,
+                    MachineArch::Aarch64 => COM3_MIN_WINVER_AARCH64,
+                };
+
+            properties.is_openhcl && is_not_vbs && is_supported_winver
         };
 
         // devnote: The imc_hiv and management_vtl_settings temp files are
@@ -391,7 +392,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             && matches!(properties.os_flavor, OsFlavor::Windows)
             && !properties.is_isolated
         {
-            let mut imc_hive_file = tempfile::NamedTempFile::new().context("creating tempfile")?;
+            let mut imc_hive_file = tempfile::Builder::new()
+                .prefix("imc-")
+                .tempfile_in(temp_dir.path())
+                .context("creating IMC hive tempfile")?;
             imc_hive_file
                 .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
                 .context("failed to write imc hive")?;
@@ -405,8 +409,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             .openhcl_config()
             .and_then(|c| c.vtl2_settings.as_ref())
         {
-            let mut vtl2_settings_file =
-                tempfile::NamedTempFile::new().context("creating tempfile")?;
+            let mut vtl2_settings_file = tempfile::Builder::new()
+                .prefix("vtl2-settings-")
+                .tempfile_in(temp_dir.path())
+                .context("creating VTL2 settings tempfile")?;
             vtl2_settings_file
                 .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
                 .context("writing settings to tempfile")?;

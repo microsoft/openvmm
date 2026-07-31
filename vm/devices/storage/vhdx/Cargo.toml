@@ -1,0 +1,34 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vhdx"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitfield-struct.workspace = true
+bitvec = { workspace = true, features = ["std"] }
+crc32c.workspace = true
+event-listener.workspace = true
+futures.workspace = true
+guid.workspace = true
+mesh.workspace = true
+pal_async.workspace = true
+parking_lot = { workspace = true, features = ["arc_lock"] }
+thiserror.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { workspace = true, features = [
+    "Win32_Storage_Vhd",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

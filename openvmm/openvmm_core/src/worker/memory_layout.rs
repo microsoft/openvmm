@@ -340,7 +340,7 @@ pub(super) fn resolve_memory_layout(
         );
         let (name, size) = match kind {
             // SMMUv3: 128 KiB region (two 64 KiB pages).
-            PcieIommuConfig::Smmu => ("smmu", SMMU_SIZE),
+            PcieIommuConfig::Smmu { .. } => ("smmu", SMMU_SIZE),
             // AMD IOMMU: 16 KiB per AMD IOMMU spec §3.4.
             PcieIommuConfig::AmdVi => ("amd-iommu", 0x4000),
             // Intel VT-d: 4 KiB per VT-d spec.
@@ -430,7 +430,7 @@ pub(super) fn resolve_memory_layout(
     // until `allocate`.
     let iommu_ranges = match iommu_kind {
         None => ResolvedIommuRanges::None,
-        Some(PcieIommuConfig::Smmu) => ResolvedIommuRanges::Smmu(iommu_ranges),
+        Some(PcieIommuConfig::Smmu { .. }) => ResolvedIommuRanges::Smmu(iommu_ranges),
         Some(PcieIommuConfig::AmdVi) => ResolvedIommuRanges::AmdVi(iommu_ranges),
         Some(PcieIommuConfig::IntelVtd) => ResolvedIommuRanges::IntelVtd(iommu_ranges),
     };

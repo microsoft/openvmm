@@ -68,8 +68,14 @@ pub fn build_qemu_command(
     for (i, device) in devices.iter().enumerate() {
         let rp_id = format!("hosting_rp{i}");
         let addr = EXTRA_DEVICE_ADDR_BASE + i;
-        cmd.arg("-device")
-            .arg(format!("pcie-root-port,id={rp_id},addr={addr:#x}"));
+        // Each root port needs a unique `slot` within its chassis. QEMU
+        // defaults every pcie-root-port to `chassis=0,slot=0`, so a second
+        // port collides with "Can't add chassis slot, error -16" (EBUSY).
+        // Number the slots from 1.
+        let slot = i + 1;
+        cmd.arg("-device").arg(format!(
+            "pcie-root-port,id={rp_id},addr={addr:#x},slot={slot}"
+        ));
 
         match device {
             DeviceConfig::VirtioBlk(cfg) => {
@@ -80,6 +86,28 @@ pub fn build_qemu_command(
                     .arg(format!("null-co,node-name={node_name},size={size_bytes}"));
                 cmd.arg("-device")
                     .arg(format!("virtio-blk-pci,drive={node_name},bus={rp_id},iommu_platform=on,disable-legacy=on,romfile="));
+            }
+            DeviceConfig::Edu(cfg) => {
+                // A conventional PCI endpoint with a register-programmed DMA
+                // engine. Widen `dma_mask` when provided so the engine can
+                // address high aarch64 guest physical addresses (its 28-bit
+                // default would clamp them).
+                let mut dev = format!("edu,bus={rp_id}");
+                if let Some(mask) = &cfg.dma_mask {
+                    dev.push_str(&format!(",dma_mask={mask}"));
+                }
+                cmd.arg("-device").arg(dev);
+            }
+            DeviceConfig::IvshmemPlain(cfg) => {
+                // BAR2 is a prefetchable, RAM-backed memory window served by a
+                // host memory backend — a valid P2P DMA target BAR.
+                let mem_id = format!("ivshmem_mem{i}");
+                let size_bytes = parse_size(&cfg.size)
+                    .with_context(|| format!("invalid size for device '{}'", cfg.name))?;
+                cmd.arg("-object")
+                    .arg(format!("memory-backend-ram,id={mem_id},size={size_bytes}"));
+                cmd.arg("-device")
+                    .arg(format!("ivshmem-plain,memdev={mem_id},bus={rp_id}"));
             }
         }
     }
@@ -335,14 +363,13 @@ pub async fn setup_vfio_devices(
     let mut env = BTreeMap::new();
     let mut capabilities = Vec::new();
 
-    // Collect (device_index, config) for devices that need VFIO binding.
+    // Collect (device_index, device) for devices that need VFIO binding.
+    // VFIO binding is device-type-agnostic: any extra device behind its own
+    // root port can be unbound from its driver and rebound to vfio-pci.
     let vfio_devices: Vec<_> = devices
         .iter()
         .enumerate()
-        .filter_map(|(i, d)| match d {
-            DeviceConfig::VirtioBlk(cfg) if cfg.vfio => Some((i, cfg)),
-            DeviceConfig::VirtioBlk(_) => None,
-        })
+        .filter(|(_, d)| d.vfio())
         .collect();
 
     if vfio_devices.is_empty() {
@@ -351,7 +378,8 @@ pub async fn setup_vfio_devices(
 
     tracing::info!("setting up {} VFIO device(s)", vfio_devices.len());
 
-    for (device_index, cfg) in &vfio_devices {
+    for (device_index, device) in &vfio_devices {
+        let name = device.name();
         let addr = EXTRA_DEVICE_ADDR_BASE + device_index;
 
         // The root port for this device is deterministically at
@@ -365,17 +393,13 @@ pub async fn setup_vfio_devices(
             .await
             .with_context(|| {
                 format!(
-                    "failed to read secondary bus number for device '{}' (root port {rp_bdf})",
-                    cfg.name
+                    "failed to read secondary bus number for device '{name}' (root port {rp_bdf})"
                 )
             })?;
         // sysfs reports the secondary bus number in decimal.
         let secondary_bus_str = String::from_utf8_lossy(&secondary_bus_raw);
         let secondary_bus: u8 = secondary_bus_str.trim().parse().with_context(|| {
-            format!(
-                "unexpected secondary bus number {secondary_bus_str:?} for device '{}'",
-                cfg.name
-            )
+            format!("unexpected secondary bus number {secondary_bus_str:?} for device '{name}'")
         })?;
         let bdf = format!("0000:{secondary_bus:02x}:00.0");
 
@@ -385,12 +409,11 @@ pub async fn setup_vfio_devices(
             .await
             .with_context(|| {
                 format!(
-                    "no device found behind root port {rp_bdf} (expected {bdf}) for device '{}'",
-                    cfg.name
+                    "no device found behind root port {rp_bdf} (expected {bdf}) for device '{name}'"
                 )
             })?;
 
-        tracing::info!(name = %cfg.name, %bdf, %addr, "binding device to vfio-pci");
+        tracing::info!(%name, %bdf, %addr, "binding device to vfio-pci");
 
         // Unbind from current driver
         let _ = client
@@ -418,17 +441,15 @@ pub async fn setup_vfio_devices(
         // Export env var: name "test-disk" → INCUBATOR_VFIO_BDF_TEST_DISK
         let env_name = format!(
             "INCUBATOR_VFIO_BDF_{}",
-            cfg.name.to_uppercase().replace('-', "_")
+            name.to_uppercase().replace('-', "_")
         );
         tracing::info!(%env_name, %bdf, "VFIO device ready");
         env.insert(env_name, bdf);
 
-        // Advertise the capability this device provides, now that it has been
-        // successfully provisioned. Tests gate on this via
-        // `requires(...)`.
-        if let Some(capability) = &cfg.provides {
-            capabilities.push(capability.clone());
-        }
+        // Advertise the capability this device provides (derived from its
+        // name), now that it has been successfully provisioned. Tests gate on
+        // this via `requires(...)`.
+        capabilities.push(device.capability());
     }
 
     // Advertise all provisioned capabilities to the guest command via

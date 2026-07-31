@@ -67,6 +67,67 @@ pub struct EcdsaPublicKeyInner {
 }
 
 impl EcdsaPublicKeyInner {
+    pub fn new(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+        let nid = match curve {
+            EcdsaCurve::P384 => openssl::nid::Nid::SECP384R1,
+        };
+        let group =
+            openssl::ec::EcGroup::from_curve_name(nid).map_err(|e| err(e, "creating EC group"))?;
+        let mut ctx =
+            openssl::bn::BigNumContext::new().map_err(|e| err(e, "creating BigNumContext"))?;
+
+        // `public_key` is the raw `Qx || Qy` affine coordinates. Prepend the
+        // `0x04` uncompressed-point tag and let OpenSSL parse the encoding,
+        // which rejects a wrong-length input and a point that is not on the
+        // curve.
+        let mut encoded = Vec::with_capacity(1 + public_key.len());
+        encoded.push(0x04);
+        encoded.extend_from_slice(public_key);
+        let point = openssl::ec::EcPoint::from_bytes(&group, &encoded, &mut ctx)
+            .map_err(|e| err(e, "parsing EC public key point"))?;
+        let ec_key = openssl::ec::EcKey::from_public_key(&group, &point)
+            .map_err(|e| err(e, "constructing EC public key"))?;
+        ec_key
+            .check_key()
+            .map_err(|e| err(e, "validating EC public key"))?;
+        let pkey = openssl::pkey::PKey::from_ec_key(ec_key)
+            .map_err(|e| err(e, "converting EC key to PKey"))?;
+
+        Ok(Self { pkey, curve })
+    }
+
+    pub fn from_public_key_der(spki_der: &[u8]) -> Result<Self, EcdsaError> {
+        let pkey = openssl::pkey::PKey::public_key_from_der(spki_der)
+            .map_err(|e| err(e, "parsing SubjectPublicKeyInfo"))?;
+        Self::from_pkey(pkey)
+    }
+
+    /// Wrap an already-parsed OpenSSL public key as an ECDSA public key,
+    /// determining the curve from the key and validating it. Fails if the key
+    /// is not an EC key on a supported curve.
+    pub(crate) fn from_pkey(
+        pkey: openssl::pkey::PKey<openssl::pkey::Public>,
+    ) -> Result<Self, EcdsaError> {
+        let ec_key = pkey
+            .ec_key()
+            .map_err(|e| err(e, "public key is not an EC key"))?;
+        // Determine the curve from the key rather than requiring the caller to
+        // specify it.
+        let curve = match ec_key.group().curve_name() {
+            Some(openssl::nid::Nid::SECP384R1) => EcdsaCurve::P384,
+            _ => {
+                return Err(err(
+                    openssl::error::ErrorStack::get(),
+                    "unsupported or unrecognized EC curve",
+                ));
+            }
+        };
+        ec_key
+            .check_key()
+            .map_err(|e| err(e, "validating EC public key"))?;
+        Ok(Self { pkey, curve })
+    }
+
     pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
         let key_size = self.curve.key_size();
         // A signature must be exactly `r || s`, each `key_size` bytes. Any

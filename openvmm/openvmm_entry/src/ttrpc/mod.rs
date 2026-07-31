@@ -5,6 +5,21 @@
 
 #![cfg(any(feature = "ttrpc", feature = "grpc"))]
 
+// The fd-passing protocol relies on `SCM_RIGHTS` and so exists only on unix.
+#[cfg(unix)]
+mod fd_passing;
+
+#[cfg(unix)]
+use fd_passing::FdRegistry;
+
+/// On non-unix platforms the fd-passing protocol does not exist. The registry
+/// is still threaded through the shared NIC configuration code, so provide an
+/// empty placeholder there; it is never populated or resolved.
+#[cfg(not(unix))]
+#[derive(Clone, Default)]
+struct FdRegistry {}
+
+use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -48,11 +63,13 @@ use openvmm_defs::config::NumaDistance;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieGenericInitiatorConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::UefiConsoleMode;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -86,6 +103,7 @@ use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 
 #[derive(mesh::MeshPayload)]
 pub struct Parameters {
@@ -97,6 +115,9 @@ pub struct Parameters {
 pub enum RpcTransport {
     Ttrpc,
     Grpc,
+    /// Auto-detect ttrpc vs. gRPC per connection, based on the first byte of
+    /// the stream.
+    Auto,
 }
 
 impl std::fmt::Display for RpcTransport {
@@ -104,6 +125,7 @@ impl std::fmt::Display for RpcTransport {
         f.pad(match self {
             RpcTransport::Ttrpc => "ttrpc",
             RpcTransport::Grpc => "grpc",
+            RpcTransport::Auto => "auto",
         })
     }
 }
@@ -114,6 +136,148 @@ enum ResolvedTransport {
     Ttrpc,
     #[cfg(feature = "grpc")]
     Grpc,
+    Auto,
+}
+
+impl ResolvedTransport {
+    /// Returns whether ttrpc connections are permitted in this mode.
+    #[cfg(feature = "ttrpc")]
+    fn allows_ttrpc(self) -> bool {
+        match self {
+            ResolvedTransport::Ttrpc => true,
+            #[cfg(feature = "grpc")]
+            ResolvedTransport::Grpc => false,
+            ResolvedTransport::Auto => true,
+        }
+    }
+
+    /// Returns whether gRPC connections are permitted in this mode.
+    #[cfg(feature = "grpc")]
+    fn allows_grpc(self) -> bool {
+        match self {
+            #[cfg(feature = "ttrpc")]
+            ResolvedTransport::Ttrpc => false,
+            ResolvedTransport::Grpc => true,
+            ResolvedTransport::Auto => true,
+        }
+    }
+}
+
+/// The RPC server accept loop.
+///
+/// This owns the accept loop rather than delegating to
+/// [`mesh_rpc::Server::run`], so that the protocol used for each connection can
+/// be chosen based on the compiled-in features and the configured transport,
+/// including auto-detecting ttrpc vs. gRPC from the first byte on the wire.
+///
+/// Neither ttrpc nor gRPC has an explicit negotiation phase, but their first
+/// byte on the wire is distinct, so a single non-consuming peek is enough to
+/// classify a connection:
+///
+/// * ttrpc frames begin with a big-endian `u32` length field whose most
+///   significant byte is always zero (messages are capped well under 16 MiB),
+///   so the first byte is `0x00`.
+/// * gRPC uses HTTP/2 cleartext, whose client connection preface begins with
+///   the ASCII bytes `"PRI "`, so the first byte is `b'P'`.
+/// * The OpenVMM fd-passing protocol (UNIX only) begins with a handshake whose
+///   first byte is `0xFD`, distinct from both of the above.
+mod dispatch {
+    use super::FdRegistry;
+    use super::ResolvedTransport;
+    use futures::FutureExt;
+    use pal_async::driver::Driver;
+    use pal_async::socket::AsSockRef;
+    use pal_async::socket::PolledSocket;
+    use std::io::Read;
+    use std::io::Write;
+    use unicycle::FuturesUnordered;
+    use unix_socket::UnixListener;
+    use unix_socket::UnixStream;
+
+    /// Runs the RPC server, listening on `listener` and servicing connections
+    /// until `cancel`, dispatching each connection according to `transport`.
+    pub(super) async fn run(
+        server: &mesh_rpc::Server,
+        driver: &(impl Driver + ?Sized),
+        listener: UnixListener,
+        cancel: mesh::OneshotReceiver<()>,
+        transport: ResolvedTransport,
+        registry: FdRegistry,
+    ) -> anyhow::Result<()> {
+        let mut listener = PolledSocket::new(driver, listener)?;
+        let mut tasks = FuturesUnordered::new();
+        let mut cancel = cancel.fuse();
+        loop {
+            let conn = futures::select! { // merge semantics
+                r = listener.accept().fuse() => r,
+                _ = tasks.next() => continue,
+                _ = cancel => break,
+            };
+            if let Ok(conn) = conn.and_then(|(conn, _)| PolledSocket::new(driver, conn)) {
+                let registry = registry.clone();
+                tasks.push(async move {
+                    let _ = serve(server, conn, transport, &registry)
+                        .await
+                        .map_err(|err| {
+                            tracing::error!(
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "connection error"
+                            )
+                        });
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Services a single connection.
+    ///
+    /// The protocol is always determined by peeking the first byte of the
+    /// stream; the configured `transport` only restricts which protocols are
+    /// permitted (e.g. a ttrpc-only server rejects a gRPC client).
+    async fn serve(
+        server: &mesh_rpc::Server,
+        mut conn: PolledSocket<UnixStream>,
+        transport: ResolvedTransport,
+        registry: &FdRegistry,
+    ) -> anyhow::Result<()> {
+        // Wait for the client to send data (returning early if it hangs up
+        // first) and classify the protocol from its first byte.
+        let Some(first_byte) = peek_first_byte(&mut conn).await? else {
+            return Ok(());
+        };
+
+        // The fd-passing protocol (UNIX only) is allowed in every transport
+        // mode; it shares the socket with ttrpc/gRPC and is selected by its
+        // distinct magic first byte.
+        #[cfg(not(unix))]
+        let _ = registry;
+
+        match first_byte {
+            #[cfg(feature = "ttrpc")]
+            0x00 if transport.allows_ttrpc() => server.serve_connection(conn).await,
+            #[cfg(feature = "grpc")]
+            b'P' if transport.allows_grpc() => server.serve_connection_grpc(conn).await,
+            #[cfg(unix)]
+            super::fd_passing::MAGIC_FIRST_BYTE => super::fd_passing::serve(conn, registry).await,
+            byte => {
+                anyhow::bail!("unrecognized or disallowed rpc protocol (first byte {byte:#04x})")
+            }
+        }
+    }
+
+    /// Waits for the first byte of the stream to be available and returns it
+    /// without consuming it, so the chosen protocol handler sees a pristine
+    /// stream.
+    ///
+    /// Returns `None` if the peer closed the connection before sending any data.
+    async fn peek_first_byte(
+        conn: &mut PolledSocket<impl AsSockRef + Read + Write>,
+    ) -> std::io::Result<Option<u8>> {
+        let mut buf = [0u8; 1];
+        let n = conn.peek(&mut buf).await?;
+        Ok((n != 0).then_some(buf[0]))
+    }
 }
 
 pub struct TtrpcWorker {
@@ -136,6 +300,7 @@ impl Worker for TtrpcWorker {
                 RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
                 #[cfg(feature = "grpc")]
                 RpcTransport::Grpc => ResolvedTransport::Grpc,
+                RpcTransport::Auto => ResolvedTransport::Auto,
                 #[expect(clippy::allow_attributes)]
                 #[allow(unreachable_patterns)]
                 transport => bail!("unsupported transport {transport}"),
@@ -156,9 +321,10 @@ impl Worker for TtrpcWorker {
                 vm_controller_events: None,
                 controller_task: None,
                 wait_vm_response: None,
-                halted: false,
+                lifecycle: VmLifecycle::Uninitialized,
                 rpc_tasks: Vec::new(),
                 transport: self.transport,
+                registry: FdRegistry::default(),
             };
             service.run(self.listener, recv).await?;
             Ok(())
@@ -177,18 +343,13 @@ impl VmService {
         let mut inspect_service_recv = server.add_service::<InspectService>();
 
         let transport = self.transport;
+        let registry = self.registry.clone();
         let (cancel_send, cancel_recv) = mesh::oneshot();
         let server_task = self.driver.spawn("ttrpc-server", {
             let driver = self.driver.clone();
             async move {
-                let r = match transport {
-                    #[cfg(feature = "ttrpc")]
-                    ResolvedTransport::Ttrpc => server.run(&driver, listener, cancel_recv).await,
-                    #[cfg(feature = "grpc")]
-                    ResolvedTransport::Grpc => {
-                        server.run_grpc(&driver, listener, cancel_recv).await
-                    }
-                };
+                let r = dispatch::run(&server, &driver, listener, cancel_recv, transport, registry)
+                    .await;
                 match &r {
                     Ok(()) => tracing::debug!("ttrpc server shutting down"),
                     Err(err) => tracing::error!(
@@ -340,6 +501,24 @@ struct Vm {
     consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
 }
 
+enum VmLifecycle {
+    Uninitialized,
+    Running,
+    Paused,
+    Halted(String),
+}
+
+impl From<&VmLifecycle> for vmservice::VmState {
+    fn from(lifecycle: &VmLifecycle) -> Self {
+        match lifecycle {
+            VmLifecycle::Uninitialized => vmservice::VmState::Uninitialized,
+            VmLifecycle::Running => vmservice::VmState::Running,
+            VmLifecycle::Paused => vmservice::VmState::Paused,
+            VmLifecycle::Halted(_) => vmservice::VmState::Halted,
+        }
+    }
+}
+
 struct VmService {
     driver: DefaultDriver,
     vm: Option<Arc<Vm>>,
@@ -347,11 +526,12 @@ struct VmService {
     vm_controller_events: Option<mesh::Receiver<VmControllerEvent>>,
     controller_task: Option<Task<()>>,
     wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
-    /// Set when the guest has halted, so that a later `WaitVm` completes
-    /// immediately instead of blocking forever. Cleared on `CreateVm`.
-    halted: bool,
+    lifecycle: VmLifecycle,
     rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
+    /// Registry of file descriptors passed in over the fd-passing protocol,
+    /// resolvable by name (e.g. for tap NIC backends).
+    registry: FdRegistry,
 }
 
 fn grpc_error(err: anyhow::Error) -> Status {
@@ -394,13 +574,14 @@ impl VmService {
             }
             vmservice::Vm::Quit((), response) => {
                 // Shut down the controller (which stops and joins the worker).
+                // Drop the VM's device RPC channels first; see `teardown_vm`.
+                self.vm.take();
                 if let Some(controller) = self.vm_controller.take() {
                     controller.send(VmControllerRpc::Quit);
                 }
                 if let Some(task) = self.controller_task.take() {
                     task.await;
                 }
-                self.vm.take();
                 self.vm_controller_events.take();
                 if let Some((_, wait_response)) = self.wait_vm_response.take() {
                     wait_response.send(Err(grpc_error(anyhow!("VM quit"))));
@@ -408,72 +589,40 @@ impl VmService {
                 response.send(Ok(()));
                 return HandleAction::Quit;
             }
-            request => {
-                let vm = match &self.vm {
-                    Some(vm) => vm.clone(),
-                    None => {
-                        request.fail(grpc_error(anyhow!("VM not created yet")));
-                        return HandleAction::None;
-                    }
-                };
-                match request {
-                    vmservice::Vm::PauseVm((), response) => {
-                        let r = Ok(self.pause_vm(&vm));
-                        self.start_rpc(response, r);
-                    }
-                    vmservice::Vm::ResumeVm((), response) => {
-                        let r = Ok(self.resume_vm(&vm));
-                        self.start_rpc(response, r);
-                    }
-                    vmservice::Vm::WaitVm((), response) => {
-                        if self.wait_vm_response.is_some() {
-                            response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
-                        } else if self.halted {
-                            // Guest already halted before WaitVm was called;
-                            // complete immediately.
-                            response.send(Ok(()));
-                        } else {
-                            self.wait_vm_response = Some((ctx.clone(), response));
-                        }
-                    }
-                    vmservice::Vm::ModifyResource(request, response) => {
-                        let r = self.modify_resource(&vm, request);
-                        self.start_rpc(response, r);
-                    }
-                    vmservice::Vm::AddPcieDevice(request, response) => {
-                        let worker_rpc = vm.worker_rpc.clone();
-                        self.start_rpc(
-                            response,
-                            Ok(async move {
-                                let vmservice::AddPcieDeviceRequest { port_name, device } = request;
-                                let resource =
-                                    build_pcie_device(device.context("missing device")?).await?;
-                                worker_rpc
-                                    .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
-                                    .await
-                                    .map_err(anyhow::Error::from)
-                            }),
-                        );
-                    }
-                    vmservice::Vm::RemovePcieDevice(request, response) => {
-                        let recv = vm
-                            .worker_rpc
-                            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
-                        self.start_rpc(
-                            response,
-                            Ok(async move { recv.await.map_err(anyhow::Error::from) }),
-                        );
-                    }
-
-                    r @ vmservice::Vm::CapabilitiesVm(_, _)
-                    | r @ vmservice::Vm::PropertiesVm(_, _) => {
-                        r.fail(grpc_error(anyhow!("not supported")))
-                    }
-
-                    vmservice::Vm::CreateVm(_, _)
-                    | vmservice::Vm::TeardownVm(_, _)
-                    | vmservice::Vm::Quit(_, _) => unreachable!(),
-                };
+            vmservice::Vm::CapabilitiesVm((), response) => {
+                response.send(Ok(self.build_capabilities()));
+            }
+            vmservice::Vm::PropertiesVm(_request, response) => {
+                response.send(Ok(self.build_properties()));
+            }
+            vmservice::Vm::PauseVm((), response) => {
+                response.send(map_grpc(self.pause_vm().await));
+            }
+            vmservice::Vm::ResumeVm((), response) => {
+                response.send(map_grpc(self.resume_vm().await));
+            }
+            vmservice::Vm::WaitVm((), response) => {
+                if self.vm.is_none() {
+                    response.send(Err(grpc_error(anyhow!("VM not created yet"))));
+                } else if self.wait_vm_response.is_some() {
+                    response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
+                } else if matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+                    response.send(Ok(()));
+                } else {
+                    self.wait_vm_response = Some((ctx.clone(), response));
+                }
+            }
+            vmservice::Vm::ModifyResource(request, response) => {
+                let r = self.modify_resource(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::AddPcieDevice(request, response) => {
+                let r = self.add_pcie_device(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::RemovePcieDevice(request, response) => {
+                let r = self.remove_pcie_device(request);
+                self.start_rpc(response, r);
             }
         }
         HandleAction::None
@@ -544,34 +693,13 @@ impl VmService {
             bail!("VM already created");
         }
 
-        // Reset halt state for the new VM.
-        self.halted = false;
+        // Snapshot the fd registry so tap NIC backends can resolve descriptors
+        // passed in over the fd-passing protocol.
+        let registry = self.registry.clone();
 
-        let load_mode = match req_config
-            .boot_config
-            .context("missing boot configuration")?
-        {
-            vmservice::vm_config::BootConfig::DirectBoot(boot) => {
-                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
-                let initrd = if boot.initrd_path.is_empty() {
-                    None
-                } else {
-                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
-                };
-                LoadMode::Linux {
-                    kernel,
-                    initrd,
-                    cmdline: boot.kernel_cmdline,
-                    custom_dsdt: None,
-                    enable_serial: true,
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
-                }
-            }
-            vmservice::vm_config::BootConfig::Uefi(_) => {
-                anyhow::bail!("uefi not yet supported")
-            }
-        };
-
+        // Serial ports are set up before the boot configuration because UEFI
+        // needs to know whether any are present to decide whether to enable its
+        // serial console.
         let mut ports = [(); 4].map(|_| None);
         for port in req_config.serial_config.iter().flat_map(|c| &c.ports) {
             let pc = ports
@@ -582,12 +710,126 @@ impl VmService {
                 format!("failed to {} serial socket: {}", action, port.socket_path)
             })?);
         }
+        let any_serial_configured = ports.iter().any(|port| port.is_some());
+        let com1_configured = ports[0].is_some();
 
-        let chipset_builder = VmManifestBuilder::new(
-            vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
-            vm_manifest_builder::MachineArch::X86_64,
-        )
-        .with_serial(ports);
+        #[cfg(guest_arch = "aarch64")]
+        let arch = vm_manifest_builder::MachineArch::Aarch64;
+        #[cfg(guest_arch = "x86_64")]
+        let arch = vm_manifest_builder::MachineArch::X86_64;
+
+        // The boot configuration also determines the base chipset, since the
+        // firmware and the device model have to agree on the platform.
+        let (load_mode, base_chipset_type, uefi_config) = match req_config
+            .boot_config
+            .take()
+            .context("missing boot configuration")?
+        {
+            vmservice::vm_config::BootConfig::DirectBoot(boot) => {
+                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
+                let initrd = if boot.initrd_path.is_empty() {
+                    None
+                } else {
+                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
+                };
+                (
+                    LoadMode::Linux {
+                        kernel,
+                        initrd,
+                        cmdline: boot.kernel_cmdline,
+                        enable_serial: true,
+                        boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    },
+                    vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
+                    None,
+                )
+            }
+            vmservice::vm_config::BootConfig::Uefi(uefi) => {
+                let firmware = File::open(&uefi.firmware_path).with_context(|| {
+                    format!("failed to open uefi firmware {}", uefi.firmware_path)
+                })?;
+                let initial_variables = uefi.initial_variables.unwrap_or_default();
+                let base_template_json = match (arch, initial_variables.secure_boot_template()) {
+                    (_, vmservice::uefi::initial_variables::SecureBootTemplate::None) => {
+                        None
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::X86_64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                    ) => Some(
+                        firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows(),
+                    ),
+                    (
+                        vm_manifest_builder::MachineArch::Aarch64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                    ) => Some(
+                        firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_windows(),
+                    ),
+                    (
+                        vm_manifest_builder::MachineArch::X86_64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                    ) => Some(
+                        firmware_uefi_resources::x64_secure_boot_templates::microsoft_uefi_ca(),
+                    ),
+                    (
+                        vm_manifest_builder::MachineArch::Aarch64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                    ) => Some(
+                        firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_uefi_ca(),
+                    ),
+                };
+                (
+                    LoadMode::Uefi {
+                        firmware,
+                        enable_serial: any_serial_configured,
+                        // Route the firmware console to COM1 when it is
+                        // available. The firmware's default console is the
+                        // video device, so without this the firmware and
+                        // anything it launches would have nowhere to write on a
+                        // VM with no graphics adapter.
+                        uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
+                        bios_guid: Guid::new_random(),
+                        enable_vmbus: true,
+                        // Everything below is fixed for now. The proto has no
+                        // way to express these yet; fields will be added as
+                        // callers need them.
+                        //
+                        // Note that memory protections match the CLI in
+                        // defaulting to off, since Linux currently fails to
+                        // boot with them enabled.
+                        enable_memory_protections: false,
+                        enable_debugging: false,
+                        disable_frontpage: false,
+                        enable_tpm: false,
+                        enable_battery: false,
+                        enable_vpci_boot: false,
+                        default_boot_always_attempt: false,
+                        force_dma_bounce: false,
+                    },
+                    vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
+                    Some((base_template_json, uefi.secure_boot_enabled)),
+                )
+            }
+        };
+
+        let mut chipset_builder =
+            VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if let Some((base_template_json, secure_boot_enabled)) = uefi_config {
+            // The UEFI helper device backs the firmware's variable store and
+            // runtime services, so it is required for a UEFI boot. The store is
+            // ephemeral: with no VMGS file configured there is nowhere to
+            // persist boot entries or secure boot state across reboots.
+            chipset_builder = chipset_builder.with_uefi(vm_manifest_builder::UefiManifest::new(
+                arch,
+                base_template_json,
+                None,
+                secure_boot_enabled,
+                firmware_uefi_resources::LogLevel::make_default(),
+                None,
+                EphemeralNonVolatileStoreHandle.into_resource(),
+                None,
+            ));
+        }
         let layout_config = chipset_builder.layout_config();
         let chipset = chipset_builder
             .build()
@@ -616,7 +858,7 @@ impl VmService {
                         mem_size,
                         prefetch_memory: false,
                         private_memory: false,
-                        transparent_hugepages: false,
+                        transparent_hugepages: true,
                         hugepages: false,
                         hugepage_size: None,
                         host_numa_node: None,
@@ -636,22 +878,21 @@ impl VmService {
 
         // Build the PCIe topology (root complexes, switches, and the devices
         // attached behind their ports).
-        let (pcie_root_complexes, pcie_switches, pcie_devices) =
-            if let Some(pcie) = req_config.pcie.take() {
-                build_pcie_topology(pcie).await?
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
-            };
+        let pcie = if let Some(pcie) = req_config.pcie.take() {
+            build_pcie_topology(pcie, &registry).await?
+        } else {
+            BuiltPcieTopology::default()
+        };
 
         let mut config = Config {
             // TODO: devices, other stuff
             load_mode,
             ide_disks: vec![],
             floppy_disks: vec![],
-            pcie_root_complexes,
-            pcie_devices,
-            pcie_switches,
-            pcie_generic_initiators: vec![],
+            pcie_root_complexes: pcie.root_complexes,
+            pcie_devices: pcie.devices,
+            pcie_switches: pcie.switches,
+            pcie_generic_initiators: pcie.generic_initiators,
             vpci_devices: vec![],
             numa,
             chipset: chipset.chipset,
@@ -678,8 +919,6 @@ impl VmService {
             #[cfg(windows)]
             vpci_resources: vec![],
             vmgs: None,
-            secure_boot_enabled: false,
-            custom_uefi_vars: Default::default(),
             firmware_event_send: None,
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
@@ -688,8 +927,27 @@ impl VmService {
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
             rtc_delta_milliseconds: 0,
-            automatic_guest_reset: true,
-            efi_diagnostics_log_level: Default::default(),
+        };
+
+        let guest_power_actions = {
+            use vmservice::vm_config::GuestPowerAction as ProtoAction;
+
+            let requested = req_config.guest_power_actions.unwrap_or_default();
+            let defaults = GuestPowerActions::default();
+            let action = |value: i32, default| -> anyhow::Result<GuestPowerAction> {
+                Ok(match ProtoAction::from_i32(value) {
+                    Some(ProtoAction::Default) => default,
+                    Some(ProtoAction::Restart) => GuestPowerAction::Reset,
+                    Some(ProtoAction::Halt) => GuestPowerAction::Halt,
+                    None => bail!("unknown guest power action {value}"),
+                })
+            };
+            GuestPowerActions {
+                shutdown: action(requested.shutdown, defaults.shutdown)?,
+                reset: action(requested.reset, defaults.reset)?,
+                crash: action(requested.crash, defaults.crash)?,
+                watchdog: action(requested.watchdog, defaults.watchdog)?,
+            }
         };
 
         let mut scsi_rpc = None;
@@ -731,7 +989,9 @@ impl VmService {
                 } else {
                     None
                 };
-                config.vmbus_devices.push(parse_nic_config(nic, recv)?);
+                config
+                    .vmbus_devices
+                    .push(parse_nic_config(nic, recv, &registry)?);
             }
 
             for virtiofs in devices_config.virtiofs_config {
@@ -838,10 +1098,8 @@ impl VmService {
             memory,
             processors,
             log_file: None,
-            // The ttrpc/grpc server never exits on a guest power event; it uses
-            // the historical defaults (none of which is Exit), so the
-            // ExitRequested event handled below is unreachable here.
-            guest_power_actions: GuestPowerActions::default(),
+            crash_dump_path: None,
+            guest_power_actions,
         };
 
         // Spawn the controller task.
@@ -858,47 +1116,113 @@ impl VmService {
             consomme_rpc,
             worker_rpc: send,
         }));
+        self.lifecycle = VmLifecycle::Paused;
         Ok(())
     }
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
         let controller = self.vm_controller.take().context("vm not created")?;
+        // Drop the VM's device RPC channels before waiting on the controller.
+        // A live `ScsiControllerRequest` sender keeps the detached storvsp task
+        // running, which in turn stops the VM worker from ever finishing its
+        // stop, so waiting for the controller first would hang forever. The
+        // REPL's quit path works around the same bug.
+        self.vm.take();
         controller.send(VmControllerRpc::Quit);
         drop(controller);
         if let Some(task) = self.controller_task.take() {
             task.await;
         }
-        self.vm.take();
         self.vm_controller_events.take();
+        self.lifecycle = VmLifecycle::Uninitialized;
         if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("VM torn down"))));
         }
         Ok(())
     }
 
-    fn pause_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
-        let recv = vm.worker_rpc.call(VmRpc::Pause, ());
-        async move { recv.await.map(drop).context("pause failed") }
+    fn build_properties(&self) -> vmservice::PropertiesVmResponse {
+        let halt_reason = match &self.lifecycle {
+            VmLifecycle::Halted(reason) => Some(reason.clone()),
+            _ => None,
+        };
+        vmservice::PropertiesVmResponse {
+            memory_stats: None,
+            processor_stats: None,
+            state: vmservice::VmState::from(&self.lifecycle) as i32,
+            halt_reason,
+        }
     }
 
-    fn resume_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
-        let recv = vm.worker_rpc.call(VmRpc::Resume, ());
-        async move { recv.await.map(drop).context("resume failed") }
+    fn build_capabilities(&self) -> vmservice::CapabilitiesVmResponse {
+        use vmservice::capabilities_vm_response::Resource;
+        use vmservice::capabilities_vm_response::SupportedGuestOs;
+        use vmservice::capabilities_vm_response::SupportedResource;
+
+        vmservice::CapabilitiesVmResponse {
+            supported_resources: vec![
+                SupportedResource {
+                    resource: Resource::Scsi as i32,
+                    add: true,
+                    remove: true,
+                    update: false,
+                },
+                SupportedResource {
+                    resource: Resource::Vpci as i32,
+                    add: true,
+                    remove: true,
+                    update: false,
+                },
+                SupportedResource {
+                    resource: Resource::VmNic as i32,
+                    add: true,
+                    remove: true,
+                    update: true,
+                },
+            ],
+            supported_guest_os: vec![SupportedGuestOs::Linux as i32],
+        }
+    }
+
+    async fn pause_vm(&mut self) -> anyhow::Result<()> {
+        let vm = self.vm.clone().context("VM not created yet")?;
+        vm.worker_rpc
+            .call(VmRpc::Pause, ())
+            .await
+            .map(drop)
+            .context("pause failed")?;
+        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+            self.lifecycle = VmLifecycle::Paused;
+        }
+        Ok(())
+    }
+
+    async fn resume_vm(&mut self) -> anyhow::Result<()> {
+        let vm = self.vm.clone().context("VM not created yet")?;
+        vm.worker_rpc
+            .call(VmRpc::Resume, ())
+            .await
+            .map(drop)
+            .context("resume failed")?;
+        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+            self.lifecycle = VmLifecycle::Running;
+        }
+        Ok(())
     }
 
     fn handle_controller_event(&mut self, event: VmControllerEvent) {
         match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
-                self.halted = true;
+                self.lifecycle = VmLifecycle::Halted(reason);
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
             }
             VmControllerEvent::ExitRequested { code } => {
-                // The server leaves the guest power actions at their defaults
-                // (none is `exit`), so this should not occur in ttrpc/grpc mode;
-                // log rather than exiting the server out from under its clients.
+                // The protocol has no `exit` power action, so this should not
+                // occur in ttrpc/grpc mode; log rather than exiting the server
+                // out from under its clients.
                 tracing::warn!(code, "unexpected exit request in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {
@@ -919,6 +1243,7 @@ impl VmService {
                 // task will be awaited during final cleanup.
                 self.vm.take();
                 self.vm_controller.take();
+                self.lifecycle = VmLifecycle::Uninitialized;
             }
             VmControllerEvent::VncWorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -928,12 +1253,46 @@ impl VmService {
         }
     }
 
+    fn add_pcie_device(
+        &self,
+        request: vmservice::AddPcieDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let worker_rpc = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .clone();
+        let registry = self.registry.clone();
+        Ok(async move {
+            let vmservice::AddPcieDeviceRequest { port_name, device } = request;
+            let resource = build_pcie_device(device.context("missing device")?, &registry).await?;
+            worker_rpc
+                .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+                .await
+                .map_err(anyhow::Error::from)
+        })
+    }
+
+    fn remove_pcie_device(
+        &self,
+        request: vmservice::RemovePcieDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let recv = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
+        Ok(async move { recv.await.map_err(anyhow::Error::from) })
+    }
+
     fn modify_resource(
-        &mut self,
-        vm: &Vm,
+        &self,
         request: vmservice::ModifyResourceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         use vmservice::modify_resource_request::Resource;
+        let vm = self.vm.as_ref().context("VM not created yet")?;
         match request.resource.context("missing resource")? {
             Resource::ScsiDisk(disk) => {
                 let scsi_path = storvsp_resources::ScsiPath {
@@ -977,7 +1336,7 @@ impl VmService {
                              configure it at VM creation time"
                         );
                     }
-                    let config = parse_nic_config(nic, None)?;
+                    let config = parse_nic_config(nic, None, &self.registry)?;
                     let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
                     Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
                 } else if request.r#type == vmservice::ModifyType::Update as i32 {
@@ -1078,8 +1437,11 @@ fn parse_port_config(port: vmservice::PortConfig) -> anyhow::Result<HostPortConf
 fn parse_nic_config(
     nic: vmservice::NicConfig,
     recv: Option<mesh::Receiver<ConsommeRequest>>,
+    registry: &FdRegistry,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
     use self::vmservice::nic_config::Backend;
+    #[cfg(not(target_os = "linux"))]
+    let _ = registry;
     let endpoint = match nic.backend.context("missing backend")? {
         #[cfg(windows)]
         Backend::LegacyPortId(port_id) => net_backend_resources::dio::WindowsDirectIoHandle {
@@ -1098,11 +1460,7 @@ fn parse_nic_config(
         }
         .into_resource(),
         #[cfg(target_os = "linux")]
-        Backend::Tap(tap) => {
-            let fd = net_tap::tap::open_tap(&tap.name)
-                .with_context(|| format!("failed to open TAP device '{}'", tap.name))?;
-            net_backend_resources::tap::TapHandle { fd }.into_resource()
-        }
+        Backend::Tap(tap) => build_tap_backend(tap, registry)?,
         Backend::Consomme(consomme) => net_backend_resources::consomme::ConsommeHandle {
             cidr: if consomme.cidr.is_empty() {
                 None
@@ -1186,7 +1544,7 @@ fn build_numa_topology(numa: vmservice::NumaConfig) -> anyhow::Result<(NumaTopol
                 mem_size,
                 prefetch_memory: prefetch,
                 private_memory,
-                transparent_hugepages,
+                transparent_hugepages: transparent_hugepages.unwrap_or(true),
                 hugepages,
                 hugepage_size: hugepage_size_bytes,
                 host_numa_node,
@@ -1238,15 +1596,21 @@ fn pcie_mmio_range_config(size: u64, base: Option<u64>) -> anyhow::Result<PcieMm
 /// a list of root complexes (each carrying its root ports), a list of switches
 /// (each referencing its parent port), and a list of devices (each referencing
 /// the port it sits behind).
+#[derive(Default)]
+struct BuiltPcieTopology {
+    root_complexes: Vec<PcieRootComplexConfig>,
+    switches: Vec<PcieSwitchConfig>,
+    devices: Vec<PcieDeviceConfig>,
+    generic_initiators: Vec<PcieGenericInitiatorConfig>,
+}
+
 async fn build_pcie_topology(
     topology: vmservice::PcieTopologyConfig,
-) -> anyhow::Result<(
-    Vec<PcieRootComplexConfig>,
-    Vec<PcieSwitchConfig>,
-    Vec<PcieDeviceConfig>,
-)> {
+    registry: &FdRegistry,
+) -> anyhow::Result<BuiltPcieTopology> {
     let vmservice::PcieTopologyConfig {
         root_complexes: proto_root_complexes,
+        generic_initiators,
     } = topology;
     let mut root_complexes = Vec::new();
     let mut switches = Vec::new();
@@ -1275,6 +1639,7 @@ async fn build_pcie_topology(
                 hotplug,
                 attached,
                 devfn,
+                acs_capabilities_supported,
             } = root_port;
             ports.push(PciePortConfig {
                 name: port_name.clone(),
@@ -1282,8 +1647,11 @@ async fn build_pcie_topology(
                     .map(|d| d.try_into().context("devfn out of range"))
                     .transpose()?,
                 hotplug,
-                acs_capabilities_supported: None,
+                acs_capabilities_supported: acs_capabilities_supported
+                    .map(|acs| acs.try_into().context("ACS capability mask out of range"))
+                    .transpose()?,
                 cxl: false,
+                pasid: false,
             });
             if let Some(attached) = attached {
                 walk_pcie_attachment(port_name, attached, &mut switches, &mut pending_devices)?;
@@ -1308,14 +1676,27 @@ async fn build_pcie_topology(
 
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
-        let resource = build_pcie_device(device).await?;
+        let resource = build_pcie_device(device, registry).await?;
         devices.push(PcieDeviceConfig {
             port_name,
             resource,
         });
     }
 
-    Ok((root_complexes, switches, devices))
+    let generic_initiators = generic_initiators
+        .into_iter()
+        .map(|initiator| PcieGenericInitiatorConfig {
+            port_name: initiator.port_name,
+            node: initiator.node,
+        })
+        .collect();
+
+    Ok(BuiltPcieTopology {
+        root_complexes,
+        switches,
+        devices,
+        generic_initiators,
+    })
 }
 
 /// Walks a single proto `PcieAttachment` (the thing behind one port): either an
@@ -1344,6 +1725,7 @@ fn walk_pcie_attachment(
                     hotplug,
                     attached,
                     devfn,
+                    acs_capabilities_supported,
                 } = downstream;
                 ports.push(PciePortConfig {
                     name: downstream_name.clone(),
@@ -1351,8 +1733,11 @@ fn walk_pcie_attachment(
                         .map(|d| d.try_into().context("devfn out of range"))
                         .transpose()?,
                     hotplug,
-                    acs_capabilities_supported: None,
+                    acs_capabilities_supported: acs_capabilities_supported
+                        .map(|acs| acs.try_into().context("ACS capability mask out of range"))
+                        .transpose()?,
                     cxl: false,
+                    pasid: false,
                 });
                 if let Some(attached) = attached {
                     children.push((downstream_name, attached));
@@ -1375,12 +1760,13 @@ fn walk_pcie_attachment(
 /// function, an NVMe controller, or a VFIO-assigned host device).
 async fn build_pcie_device(
     device: vmservice::PcieDeviceKind,
+    registry: &FdRegistry,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     use vmservice::pcie_device_kind::Kind;
     let vmservice::PcieDeviceKind { kind } = device;
     Ok(match kind.context("missing PCIe device kind")? {
         Kind::Virtio(virtio) => {
-            let resource = build_virtio_device(virtio).await?;
+            let resource = build_virtio_device(virtio, registry).await?;
             VirtioPciDeviceHandle(resource).into_resource()
         }
         Kind::Nvme(nvme) => build_nvme_controller(nvme).await?,
@@ -1395,7 +1781,11 @@ async fn build_pcie_device(
 /// opened. The device must already be bound to `vfio-pci` on the host.
 #[cfg(target_os = "linux")]
 fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
-    let vmservice::VfioDevice { host_pci_address } = vfio;
+    let vmservice::VfioDevice {
+        host_pci_address,
+        bar_addresses,
+    } = vfio;
+    let bar_addresses = parse_vfio_bar_addresses(bar_addresses)?;
     // The address is joined into a sysfs path below; reject path separators so
     // it cannot escape `/sys/bus/pci/devices` (an absolute path or `..` would
     // otherwise redirect the join).
@@ -1421,9 +1811,39 @@ fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<Pci
     Ok(vfio_assigned_device_resources::VfioDeviceHandle {
         pci_id: host_pci_address,
         group,
-        bar_pt: [false; 6],
+        bar_addresses,
     }
     .into_resource())
+}
+
+#[cfg(target_os = "linux")]
+fn parse_vfio_bar_addresses(
+    entries: Vec<vmservice::VfioBarAddress>,
+) -> anyhow::Result<[vfio_assigned_device_resources::BarAddressConfig; 6]> {
+    use vfio_assigned_device_resources::BarAddressConfig;
+    use vmservice::vfio_bar_address::Source;
+
+    let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+    for entry in entries {
+        let index =
+            usize::try_from(entry.bar_index).context("VFIO BAR index does not fit usize")?;
+        let config = bar_addresses
+            .get_mut(index)
+            .with_context(|| format!("VFIO BAR index {} is out of range", entry.bar_index))?;
+        anyhow::ensure!(
+            *config == BarAddressConfig::GuestAssigned,
+            "duplicate VFIO BAR index {}",
+            entry.bar_index
+        );
+        *config = match entry.source.context("missing VFIO BAR address source")? {
+            Source::Host(()) => BarAddressConfig::HostAssigned,
+            Source::Fixed(address) => {
+                anyhow::ensure!(address != 0, "VFIO BAR fixed address must be nonzero");
+                BarAddressConfig::Fixed(address)
+            }
+        };
+    }
+    Ok(bar_addresses)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1470,6 +1890,7 @@ async fn build_nvme_controller(
 /// `VirtioDevice`.
 async fn build_virtio_device(
     device: vmservice::VirtioDevice,
+    registry: &FdRegistry,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     use vmservice::virtio_device::Kind;
     let vmservice::VirtioDevice { kind } = device;
@@ -1484,7 +1905,7 @@ async fn build_virtio_device(
             backend,
             mac_address,
         }) => {
-            let endpoint = build_nic_backend(backend.context("missing net backend")?)?;
+            let endpoint = build_nic_backend(backend.context("missing net backend")?, registry)?;
             virtio_resources::net::VirtioNetHandle {
                 max_queues: max_queues
                     .map(|q| q.try_into().context("max_queues out of range"))
@@ -1537,8 +1958,11 @@ async fn build_disk_backend(
 /// Builds a host network endpoint resource from the proto `NicBackend`.
 fn build_nic_backend(
     backend: vmservice::NicBackend,
+    registry: &FdRegistry,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     use vmservice::nic_backend::Kind;
+    #[cfg(not(target_os = "linux"))]
+    let _ = registry;
     let vmservice::NicBackend { kind } = backend;
     Ok(match kind.context("missing network backend")? {
         Kind::Consomme(vmservice::ConsommeBackend { cidr, ports }) => {
@@ -1553,11 +1977,7 @@ fn build_nic_backend(
             .into_resource()
         }
         #[cfg(target_os = "linux")]
-        Kind::Tap(vmservice::TapBackend { name }) => {
-            let fd = net_tap::tap::open_tap(name.as_ref())
-                .with_context(|| format!("failed to open TAP device '{name}'"))?;
-            net_backend_resources::tap::TapHandle { fd }.into_resource()
-        }
+        Kind::Tap(tap) => build_tap_backend(tap, registry)?,
         #[cfg(windows)]
         Kind::Dio(vmservice::DioBackend { switch_id, port_id }) => {
             net_backend_resources::dio::WindowsDirectIoHandle {
@@ -1570,6 +1990,25 @@ fn build_nic_backend(
         }
         _ => anyhow::bail!("unsupported network backend"),
     })
+}
+
+/// Resolves a proto `TapBackend` into a tap NIC endpoint resource, either by
+/// opening `/dev/net/tun` by device name or by resolving a descriptor
+/// registered via the fd-passing protocol.
+#[cfg(target_os = "linux")]
+fn build_tap_backend(
+    tap: vmservice::TapBackend,
+    registry: &FdRegistry,
+) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
+    use vmservice::tap_backend::Source;
+    let fd = match tap.source.context("missing tap source")? {
+        Source::Name(name) => net_tap::tap::open_tap(&name)
+            .with_context(|| format!("failed to open TAP device '{name}'"))?,
+        Source::FdName(fd_name) => registry
+            .resolve(&fd_name)
+            .with_context(|| format!("failed to resolve tap fd '{fd_name}'"))?,
+    };
+    Ok(net_backend_resources::tap::TapHandle { fd }.into_resource())
 }
 
 /// Builds a serial backend resource from the proto `SerialBackend`.
@@ -1647,4 +2086,46 @@ fn build_vhost_user_device(
     _vhost_user: vmservice::VhostUser,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     anyhow::bail!("vhost-user is only supported on unix hosts")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use vfio_assigned_device_resources::BarAddressConfig;
+    use vmservice::vfio_bar_address::Source;
+
+    fn vfio_bar_address(bar_index: u32, source: Option<Source>) -> vmservice::VfioBarAddress {
+        vmservice::VfioBarAddress { bar_index, source }
+    }
+
+    #[test]
+    fn parse_vfio_bar_address_config() {
+        let bars = parse_vfio_bar_addresses(vec![
+            vfio_bar_address(0, Some(Source::Host(()))),
+            vfio_bar_address(4, Some(Source::Fixed(0x11_0000_0000))),
+        ])
+        .unwrap();
+
+        assert_eq!(bars[0], BarAddressConfig::HostAssigned);
+        assert_eq!(bars[1], BarAddressConfig::GuestAssigned);
+        assert_eq!(bars[4], BarAddressConfig::Fixed(0x11_0000_0000));
+    }
+
+    #[test]
+    fn reject_invalid_vfio_bar_address_config() {
+        assert!(
+            parse_vfio_bar_addresses(vec![vfio_bar_address(6, Some(Source::Host(())))]).is_err()
+        );
+        assert!(parse_vfio_bar_addresses(vec![vfio_bar_address(0, None)]).is_err());
+        assert!(
+            parse_vfio_bar_addresses(vec![vfio_bar_address(0, Some(Source::Fixed(0)))]).is_err()
+        );
+        assert!(
+            parse_vfio_bar_addresses(vec![
+                vfio_bar_address(0, Some(Source::Host(()))),
+                vfio_bar_address(0, Some(Source::Fixed(0x1000))),
+            ])
+            .is_err()
+        );
+    }
 }

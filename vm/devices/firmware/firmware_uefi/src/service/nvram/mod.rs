@@ -17,7 +17,9 @@ pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
 use crate::UefiDevice;
-use firmware_uefi_custom_vars::CustomVars;
+use firmware_uefi_custom_vars::BaseTemplateJson;
+use firmware_uefi_custom_vars::FinalVars;
+use firmware_uefi_custom_vars::UefiVarsDeltaJson;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -38,6 +40,12 @@ mod spec_services;
 pub enum NvramSetupError {
     #[error("could not query backing nvram storage")]
     BadNvramStorage(#[source] uefi_nvram_storage::NvramStorageError),
+    #[error("failed to apply custom UEFI template variables")]
+    ApplyCustomTemplate(#[source] firmware_uefi_custom_vars::ApplyDeltaError),
+    #[error("failed to load built-in UEFI template")]
+    LoadBaseTemplate(#[source] hyperv_uefi_custom_vars_json::ParseJsonError),
+    #[error("failed to load custom UEFI variable JSON")]
+    LoadCustomUefiJson(#[source] hyperv_uefi_custom_vars_json::ParseJsonError),
     #[error("could not inject pre-boot var '{0}': {1:?}")]
     InjectPreBootVar(
         Cow<'static, ucs2::Ucs2LeSlice>,
@@ -50,10 +58,10 @@ pub enum NvramSetupError {
         EfiStatus,
         #[source] Option<NvramError>,
     ),
-    #[error("could not inject custom var '{0}': {1:?}")]
-    InjectCustomVar(String, EfiStatus, #[source] Option<NvramError>),
-    #[error("custom variable name is not valid UCS-2")]
-    CustomVarNotUcs2,
+    #[error("could not inject UEFI var '{0}': {1:?}")]
+    InjectUefiVar(String, EfiStatus, #[source] Option<NvramError>),
+    #[error("UEFI variable name is not valid UCS-2")]
+    UefiVarNotUcs2,
 }
 
 /// Implements Hyper-V specific nvram service interfaces, extensions, and
@@ -73,7 +81,8 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        custom_vars: CustomVars,
+        base_template_json: Option<BaseTemplateJson>,
+        custom_uefi_json: Option<UefiVarsDeltaJson>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
         is_restoring: bool,
@@ -84,7 +93,9 @@ impl NvramServices {
         };
 
         if !is_restoring {
-            nvram.inject_vars_on_first_boot(custom_vars).await?;
+            nvram
+                .inject_vars_on_first_boot(base_template_json, custom_uefi_json)
+                .await?;
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
         }
@@ -100,10 +111,11 @@ impl NvramServices {
     }
 
     /// Check if this is the VM's first boot, and if so, inject various
-    /// hard-coded and custom UEFI vars.
+    /// hard-coded and configured UEFI vars.
     async fn inject_vars_on_first_boot(
         &mut self,
-        custom_vars: CustomVars,
+        base_template_json: Option<BaseTemplateJson>,
+        custom_uefi_json: Option<UefiVarsDeltaJson>,
     ) -> Result<(), NvramSetupError> {
         // "First boot" is marked by having no variables in nvram storage
         if !self
@@ -114,6 +126,19 @@ impl NvramServices {
         {
             return Ok(());
         }
+
+        let base_template_vars = base_template_json
+            .map(|template_json| {
+                hyperv_uefi_custom_vars_json::parse_template_json(template_json.as_bytes())
+            })
+            .transpose()
+            .map_err(NvramSetupError::LoadBaseTemplate)?;
+        let custom_template_delta = custom_uefi_json
+            .map(|json| hyperv_uefi_custom_vars_json::parse_delta_json(json.as_bytes()))
+            .transpose()
+            .map_err(NvramSetupError::LoadCustomUefiJson)?;
+        let final_vars = FinalVars::resolve(base_template_vars, custom_template_delta)
+            .map_err(NvramSetupError::ApplyCustomTemplate)?;
 
         tracing::info!("No NVRAM variables (first boot). Loading in initial NVRAM values.");
 
@@ -159,7 +184,7 @@ impl NvramServices {
             })?
         }
 
-        self.inject_custom_vars(custom_vars).await?;
+        self.inject_final_vars(final_vars).await?;
 
         Ok(())
     }
@@ -202,28 +227,31 @@ impl NvramServices {
         Ok(())
     }
 
-    async fn inject_custom_vars(&mut self, custom_vars: CustomVars) -> Result<(), NvramSetupError> {
-        use firmware_uefi_custom_vars::CustomVar;
+    async fn inject_final_vars(&mut self, final_vars: FinalVars) -> Result<(), NvramSetupError> {
         use firmware_uefi_custom_vars::Sha256Digest;
         use firmware_uefi_custom_vars::Signature;
+        use firmware_uefi_custom_vars::UefiVar;
         use firmware_uefi_custom_vars::X509Cert;
         use uefi_nvram_specvars::signature_list::SignatureData;
         use uefi_nvram_specvars::signature_list::SignatureList;
         use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
         use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
 
-        tracing::trace!(custom_vars = ?custom_vars.custom_vars, "custom uefi vars");
+        let firmware_uefi_custom_vars::UefiVars {
+            signatures,
+            non_signature_vars,
+        } = final_vars.into_uefi_vars();
 
-        // inject freeform custom vars first, as some may require an auth bypass
-        for (name, CustomVar { guid, attr, value }) in custom_vars.custom_vars {
-            tracing::trace!(%name, "Injecting custom var");
+        // Inject non-signature vars first, as some may require an auth bypass.
+        for (name, UefiVar { guid, attr, value }) in non_signature_vars {
+            tracing::trace!(%name, "Injecting UEFI var");
 
             // the value might need to be prepended with an auth header,
             // depending on what auth mode the variable is using.
             let value = {
                 let attr = EfiVariableAttributes::from(attr);
                 if attr.contains_unsupported_bits() {
-                    return Err(NvramSetupError::InjectCustomVar(
+                    return Err(NvramSetupError::InjectUefiVar(
                         name,
                         EfiStatus::INVALID_PARAMETER,
                         Some(NvramError::AttributeNonSpec),
@@ -246,11 +274,11 @@ impl NvramServices {
             self.services
                 .set_variable(guid, &name, attr, value)
                 .await
-                .map_err(|(status, err)| NvramSetupError::InjectCustomVar(name, status, err))?;
+                .map_err(|(status, err)| NvramSetupError::InjectUefiVar(name, status, err))?;
         }
 
         // inject structured signature vars
-        if let Some(sigs) = custom_vars.signatures {
+        if let Some(sigs) = signatures {
             use uefi_specs::linux::nvram::vars as linux_vars;
             use uefi_specs::uefi::nvram::vars as uefi_vars;
 
@@ -388,6 +416,97 @@ impl NvramServices {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use firmware_uefi_custom_vars::ApplyDeltaError;
+    use pal_async::async_test;
+    use ucs2::Ucs2LeSlice;
+    use uefi_nvram_storage::EFI_TIME;
+    use uefi_nvram_storage::NvramStorage;
+    use uefi_nvram_storage::in_memory::InMemoryNvram;
+    use wchar::wchz;
+
+    fn append_without_base_json() -> Vec<u8> {
+        br#"{
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Append",
+                    "signatures": {}
+                }
+            }
+        }"#
+        .to_vec()
+    }
+
+    fn nvram_services(storage: InMemoryNvram) -> NvramServices {
+        let storage: Box<dyn VmmNvramStorage> = Box::new(storage);
+        NvramServices {
+            vsm_config: None,
+            services: NvramSpecServices::new(storage),
+        }
+    }
+
+    #[async_test]
+    async fn invalid_delta_is_ignored_after_first_boot() {
+        let mut storage = InMemoryNvram::new();
+        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
+        storage
+            .set_variable(name, guid::Guid::default(), 0, vec![1], EFI_TIME::default())
+            .await
+            .unwrap();
+        let mut nvram = nvram_services(storage);
+
+        nvram
+            .inject_vars_on_first_boot(None, Some(b"not json".to_vec().into()))
+            .await
+            .unwrap();
+    }
+
+    #[async_test]
+    async fn invalid_delta_fails_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        assert!(matches!(
+            nvram
+                .inject_vars_on_first_boot(None, Some(append_without_base_json().into()))
+                .await,
+            Err(NvramSetupError::ApplyCustomTemplate(
+                ApplyDeltaError::AppendWithoutBase
+            ))
+        ));
+    }
+
+    #[async_test]
+    async fn malformed_json_fails_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        assert!(matches!(
+            nvram
+                .inject_vars_on_first_boot(None, Some(b"not json".to_vec().into()))
+                .await,
+            Err(NvramSetupError::LoadCustomUefiJson(_))
+        ));
+    }
+
+    #[async_test]
+    async fn deferred_base_template_parses_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        nvram
+            .inject_vars_on_first_boot(
+                Some(firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (vendor, name) = uefi_specs::uefi::nvram::vars::PK();
+        assert!(nvram.services.get_variable_ucs2(vendor, name).await.is_ok());
     }
 }
 

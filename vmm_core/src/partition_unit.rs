@@ -22,7 +22,6 @@ use futures::StreamExt;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::InspectMut;
-use memory_range::MemoryRange;
 use mesh::Receiver;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -35,8 +34,8 @@ use state_unit::UnitBuilder;
 use state_unit::UnitHandle;
 use std::sync::Arc;
 use thiserror::Error;
+use virt::InitialPageImport;
 use virt::InitialRegs;
-use virt::PageVisibility;
 #[cfg(feature = "dump")]
 use virt::VpIndex;
 use vm_topology::processor::ProcessorTopology;
@@ -62,11 +61,8 @@ pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore 
     /// Scrubs the VTL state for a partition.
     fn scrub_vtl(&mut self, vtl: Vtl) -> anyhow::Result<()>;
 
-    /// Accepts pages on behalf of the loader.
-    fn accept_initial_pages(
-        &mut self,
-        pages: Vec<(MemoryRange, PageVisibility)>,
-    ) -> anyhow::Result<()>;
+    /// Finalizes initial page imports on behalf of the loader.
+    fn accept_initial_pages(&mut self, pages: Vec<InitialPageImport>) -> anyhow::Result<()>;
 
     /// Returns the guest OS ID (from `HV_X64_MSR_GUEST_OS_ID`).
     ///
@@ -128,9 +124,7 @@ impl InspectMut for PartitionUnitRunner {
 enum PartitionRequest {
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     SetInitialRegs(Rpc<(Vtl, Arc<InitialRegs>), Result<(), InitialRegError>>),
-    SetInitialPageVisibility(
-        Rpc<Vec<(MemoryRange, PageVisibility)>, Result<(), InitialVisibilityError>>,
-    ),
+    AcceptInitialPages(Rpc<Vec<InitialPageImport>, Result<(), AcceptInitialPagesError>>),
     StopVps(Rpc<(), ()>),
     StartVps,
     /// Build the partition state blob for a dump file.
@@ -179,11 +173,11 @@ pub enum InitialRegError {
     ScrubVtl(#[source] anyhow::Error),
 }
 
-/// Error returned by [`PartitionUnit::set_initial_page_visibility()`].
+/// Error returned by [`PartitionUnit::accept_initial_pages()`].
 #[derive(Debug, Error)]
-pub enum InitialVisibilityError {
-    #[error("failed to set initial page acceptance")]
-    PageAcceptance(#[source] anyhow::Error),
+pub enum AcceptInitialPagesError {
+    #[error("failed to finalize initial page imports")]
+    Finalize(#[source] anyhow::Error),
 }
 
 impl PartitionUnit {
@@ -291,12 +285,12 @@ impl PartitionUnit {
             .unwrap()
     }
 
-    pub async fn set_initial_page_visibility(
+    pub async fn accept_initial_pages(
         &mut self,
-        vis: Vec<(MemoryRange, PageVisibility)>,
-    ) -> Result<(), InitialVisibilityError> {
+        initial_pages: Vec<InitialPageImport>,
+    ) -> Result<(), AcceptInitialPagesError> {
         self.req_send
-            .call(PartitionRequest::SetInitialPageVisibility, vis)
+            .call(PartitionRequest::AcceptInitialPages, initial_pages)
             .await
             .unwrap()
     }
@@ -372,9 +366,11 @@ impl PartitionUnitRunner {
                         rpc.handle(async |(vtl, state)| self.set_initial_regs(vtl, state).await)
                             .await
                     }
-                    PartitionRequest::SetInitialPageVisibility(rpc) => {
-                        rpc.handle(async |vis| self.set_initial_page_visibility(vis).await)
-                            .await
+                    PartitionRequest::AcceptInitialPages(rpc) => {
+                        rpc.handle(async |initial_pages| {
+                            self.accept_initial_pages(initial_pages).await
+                        })
+                        .await
                     }
                     PartitionRequest::StopVps(rpc) => {
                         rpc.handle(async |()| self.stop_vps().await).await
@@ -492,15 +488,15 @@ impl PartitionUnitRunner {
         Ok(())
     }
 
-    async fn set_initial_page_visibility(
+    async fn accept_initial_pages(
         &mut self,
-        visibility: Vec<(MemoryRange, PageVisibility)>,
-    ) -> Result<(), InitialVisibilityError> {
+        initial_pages: Vec<InitialPageImport>,
+    ) -> Result<(), AcceptInitialPagesError> {
         assert!(!self.unit_started);
 
         self.partition
-            .accept_initial_pages(visibility)
-            .map_err(InitialVisibilityError::PageAcceptance)
+            .accept_initial_pages(initial_pages)
+            .map_err(AcceptInitialPagesError::Finalize)
     }
 
     fn try_start(&mut self) {

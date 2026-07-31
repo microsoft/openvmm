@@ -19,9 +19,12 @@ use tdcall::TdcallInput;
 use tdcall::TdcallOutput;
 use tdcall::tdcall_hypercall;
 use tdcall::tdcall_map_gpa;
+use tdcall::tdcall_vm_rd;
 use tdcall::tdcall_wrmsr;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::RESET_VECTOR_PAGE;
+use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
+use x86defs::tdx::TdConfigFlags;
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {
@@ -129,6 +132,22 @@ pub fn accept_pages(range: MemoryRange) -> Result<(), AcceptPagesError> {
 /// Change the visibility of pages. Note that pages that were previously host
 /// visible and are now private, must be reaccepted.
 pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
+    // If TDX Connect is present, then TDG.MEM.PAGE.RELEASE must be called before making pages host-visible.
+
+    if host_visible {
+        let flags = get_td_config_flags();
+        if flags.tdx_connect() {
+            assert!(
+                flags.page_release(),
+                "TDX Connect enabled but CONFIG_FLAGS.page_release is not set"
+            );
+
+            if let Err(err) = tdcall::release_pages(&mut TdcallInstruction, range) {
+                panic!("failed to release pages in {range}: {err:?}");
+            }
+        }
+    }
+
     if let Err(err) = tdcall_map_gpa(&mut TdcallInstruction, range, host_visible) {
         panic!(
             "failed to change page visibility for {range}, host_visible = {host_visible}: {err:?}"
@@ -209,5 +228,21 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
         hvcall()
             .tdx_start_vp(cpu as u32)
             .expect("start vp should not fail");
+    }
+}
+
+static TDX_TD_CONFIG_FLAGS: SingleThreaded<Cell<Option<TdConfigFlags>>> =
+    SingleThreaded(Cell::new(None));
+
+fn get_td_config_flags() -> TdConfigFlags {
+    if let Some(f) = TDX_TD_CONFIG_FLAGS.get() {
+        f
+    } else {
+        let res = tdcall_vm_rd(&mut TdcallInstruction, TDX_FIELD_CODE_CONFIG_FLAGS)
+            .expect("TDG.VM.RD should not fail for CONFIG_FLAGS");
+
+        let f = TdConfigFlags::from_bits(res);
+        TDX_TD_CONFIG_FLAGS.set(Some(f));
+        f
     }
 }

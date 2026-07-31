@@ -268,6 +268,8 @@ pub struct Job {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_minutes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<Concurrency>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_on: Option<Runner>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub permissions: BTreeMap<Permissions, PermissionValue>,

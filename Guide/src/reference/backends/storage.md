@@ -16,6 +16,7 @@ blob, or a layered composition of multiple backends.
 | FileDisk | [`disk_file`](https://openvmm.dev/rustdoc/linux/disk_file/index.html) | Host file | Cross-platform | Simplest backend. Blocking I/O via `unblock()`. |
 | Vhd1Disk | [`disk_vhd1`](https://openvmm.dev/rustdoc/linux/disk_vhd1/index.html) | VHD1 fixed file | Cross-platform | Parses VHD footer for geometry. |
 | VhdmpDisk | `disk_vhdmp` | Windows vhdmp driver | Windows | Dynamic and differencing VHD/VHDX. |
+| VhdxDisk | [`vhdx`](vhdx.md) | VHDX file | Cross-platform | Pure-Rust VHDX parser. Dynamic, fixed, and differencing. |
 | BlobDisk | [`disk_blob`](https://openvmm.dev/rustdoc/linux/disk_blob/index.html) | HTTP / Azure Blob | Cross-platform | Read-only. HTTP range requests. |
 | BlockDeviceDisk | [`disk_blockdevice`](https://openvmm.dev/rustdoc/linux/disk_blockdevice/index.html) | Linux block device or file | Linux | io_uring, resize via uevent, PR passthrough. Default for raw files on Linux in both OpenHCL and OpenVMM. |
 | NvmeDisk | [`disk_nvme`](https://openvmm.dev/rustdoc/linux/disk_nvme/index.html) | Physical NVMe (VFIO) | Linux/Windows | User-mode NVMe driver. Resize via AEN. |

@@ -24,7 +24,6 @@ use pal_async::driver::Driver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::timer::PolledTimer;
-use std::convert::Infallible;
 use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::io::IsTerminal;
@@ -331,13 +330,13 @@ pub struct VmArg {
     )]
     #[cfg_attr(
         windows,
-        doc = "* hyperv:GUID - A Hyper-V VM ID (with or without braces)
+        doc = "* hyperv-id:GUID - A Hyper-V VM ID (with or without braces)
 
     "
     )]
     #[cfg_attr(
         windows,
-        doc = "* NAME_OR_GUID_OR_PATH - Either a Hyper-V VM name or GUID, or a path as in vsock:PATH"
+        doc = "* NAME_OR_PATH - Either a Hyper-V VM name, or a path as in vsock:PATH"
     )]
     #[cfg_attr(not(windows), doc = "* PATH - A path as in vsock:PATH")]
     #[clap(name = "VM")]
@@ -354,7 +353,7 @@ enum VmId {
 }
 
 impl FromStr for VmId {
-    type Err = Infallible;
+    type Err = ParseVmIdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(s) = s.strip_prefix("vsock:") {
@@ -362,19 +361,19 @@ impl FromStr for VmId {
         } else {
             #[cfg(windows)]
             {
-                let (value, had_prefix) = match s.strip_prefix("hyperv:") {
-                    Some(rest) => (rest, true),
-                    None => (s, false),
-                };
-
-                // Try parsing as a GUID first (with or without braces).
-                if let Ok(guid) = value.parse::<guid::Guid>() {
+                if let Some(rest) = s.strip_prefix("hyperv-id:") {
+                    let guid = rest
+                        .parse::<guid::Guid>()
+                        .map_err(|_| ParseVmIdError::InvalidGuid(rest.to_owned()))?;
                     return Ok(Self::HyperVId(guid));
                 }
 
-                if had_prefix || !pal::windows::fs::is_unix_socket(value.as_ref()).unwrap_or(false)
-                {
-                    return Ok(Self::HyperV(value.to_owned()));
+                if let Some(name) = s.strip_prefix("hyperv:") {
+                    return Ok(Self::HyperV(name.to_owned()));
+                }
+
+                if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
+                    return Ok(Self::HyperV(s.to_owned()));
                 }
             }
             // Default to hybrid vsock since this is what OpenVMM supports for
@@ -382,6 +381,14 @@ impl FromStr for VmId {
             Ok(Self::HybridVsock(Path::new(s).to_owned()))
         }
     }
+}
+
+/// Error parsing a [`VmId`].
+#[derive(Debug, Error)]
+enum ParseVmIdError {
+    #[cfg(windows)]
+    #[error("invalid VM ID GUID '{0}' (expected a GUID, with or without braces)")]
+    InvalidGuid(String),
 }
 
 #[derive(Clone)]
@@ -1118,4 +1125,57 @@ async fn capture_packets(
         }
     }
     println!("All done.");
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::VmId;
+
+    #[test]
+    fn bare_guid_is_treated_as_name() {
+        // Fleet VM names are GUID-shaped; a bare value must be a name, not an ID.
+        let id: VmId = "1965676a-8dd3-4b46-9439-40c6a30e5b1a".parse().unwrap();
+        assert!(matches!(id, VmId::HyperV(name) if name == "1965676a-8dd3-4b46-9439-40c6a30e5b1a"));
+    }
+
+    #[test]
+    fn hyperv_prefix_is_a_name() {
+        let id: VmId = "hyperv:my-vm".parse().unwrap();
+        assert!(matches!(id, VmId::HyperV(name) if name == "my-vm"));
+    }
+
+    #[test]
+    fn hyperv_prefix_with_guid_is_still_a_name() {
+        let id: VmId = "hyperv:1965676a-8dd3-4b46-9439-40c6a30e5b1a"
+            .parse()
+            .unwrap();
+        assert!(matches!(id, VmId::HyperV(name) if name == "1965676a-8dd3-4b46-9439-40c6a30e5b1a"));
+    }
+
+    #[test]
+    fn hyperv_id_prefix_parses_guid() {
+        let id: VmId = "hyperv-id:1965676a-8dd3-4b46-9439-40c6a30e5b1a"
+            .parse()
+            .unwrap();
+        assert!(matches!(id, VmId::HyperVId(_)));
+    }
+
+    #[test]
+    fn hyperv_id_prefix_parses_braced_guid() {
+        let id: VmId = "hyperv-id:{1965676a-8dd3-4b46-9439-40c6a30e5b1a}"
+            .parse()
+            .unwrap();
+        assert!(matches!(id, VmId::HyperVId(_)));
+    }
+
+    #[test]
+    fn hyperv_id_prefix_with_invalid_guid_errors() {
+        assert!("hyperv-id:not-a-guid".parse::<VmId>().is_err());
+    }
+
+    #[test]
+    fn vsock_prefix_is_hybrid_vsock() {
+        let id: VmId = "vsock:/tmp/vm.sock".parse().unwrap();
+        assert!(matches!(id, VmId::HybridVsock(_)));
+    }
 }

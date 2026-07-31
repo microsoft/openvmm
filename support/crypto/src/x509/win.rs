@@ -6,6 +6,7 @@
 //! `der` or `x509-cert` RustCrypto crates.
 
 use super::X509Error;
+use super::X509PublicKey;
 use crate::win::KeyHandle;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -31,6 +32,7 @@ use windows::Win32::Security::Cryptography::X509_CERT;
 use windows::Win32::Security::Cryptography::X509_KEY_USAGE;
 use windows::Win32::Security::Cryptography::szOID_AUTHORITY_KEY_IDENTIFIER2;
 use windows::Win32::Security::Cryptography::szOID_COMMON_NAME;
+use windows::Win32::Security::Cryptography::szOID_ECC_PUBLIC_KEY;
 use windows::Win32::Security::Cryptography::szOID_KEY_USAGE;
 use windows::Win32::Security::Cryptography::szOID_RSA_RSA;
 use windows::Win32::Security::Cryptography::szOID_RSA_SHA256RSA;
@@ -39,6 +41,12 @@ use windows::core::PCSTR;
 
 fn err(err: windows_result::Error, op: &'static str) -> X509Error {
     X509Error(crate::BackendError(err, op))
+}
+
+/// Extract the backend error from an [`X509Error`] produced by this backend,
+/// which always wraps a backend error.
+pub(crate) fn backend_err(e: X509Error) -> crate::BackendError {
+    e.0
 }
 
 fn rsa_err(err: windows_result::Error, op: &'static str) -> crate::rsa::RsaError {
@@ -99,43 +107,55 @@ impl X509CertificateInner {
         Ok(Self(CertContext(p)))
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
+    pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         let info = &self.0.cert_info().SubjectPublicKeyInfo;
 
-        // Reject non-RSA keys. The OID is a PSTR (null-terminated ASCII).
-
+        // Dispatch on the key algorithm OID (a null-terminated ASCII PSTR).
         let oid = info.Algorithm.pszObjId;
-        // SAFETY: info points to a valid CERT_PUBLIC_KEY_INFO owned by
-        // the cert context; the OID strings produced by crypt32 and the
-        // szOID_* constants are null-terminated ASCII.
-        let is_rsa = !oid.is_null() && unsafe { oid.as_bytes() == szOID_RSA_RSA.as_bytes() };
-        if !is_rsa {
-            return Err(rsa_err(
-                windows_result::Error::from_hresult(windows::core::HRESULT(
-                    windows::Win32::Foundation::E_NOTIMPL.0,
-                )),
-                "non-RSA public key in certificate",
-            ));
-        }
+        // SAFETY: info points to a valid CERT_PUBLIC_KEY_INFO owned by the
+        // cert context; OID strings produced by crypt32 and the szOID_*
+        // constants are null-terminated ASCII.
+        let oid_bytes = (!oid.is_null()).then(|| unsafe { oid.as_bytes() });
 
-        // Import the SubjectPublicKeyInfo into a BCrypt key handle
-        let mut h = BCRYPT_KEY_HANDLE::default();
-        // SAFETY: info points to a valid CERT_PUBLIC_KEY_INFO owned by
-        // the cert context.
-        unsafe {
-            windows::Win32::Security::Cryptography::CryptImportPublicKeyInfoEx2(
-                X509_ASN_ENCODING,
-                info,
-                CRYPT_IMPORT_PUBLIC_KEY_FLAGS(0),
-                None,
-                &mut h,
-            )
+        // SAFETY: the szOID_* constants are 'static null-terminated ASCII.
+        let szoid_rsa = unsafe { szOID_RSA_RSA.as_bytes() };
+        // SAFETY: the szOID_* constants are 'static null-terminated ASCII.
+        let szoid_ecc = unsafe { szOID_ECC_PUBLIC_KEY.as_bytes() };
+
+        if oid_bytes == Some(szoid_rsa) {
+            // Import the SubjectPublicKeyInfo into a BCrypt key handle.
+            let mut h = BCRYPT_KEY_HANDLE::default();
+            // SAFETY: info points to a valid CERT_PUBLIC_KEY_INFO owned by
+            // the cert context.
+            unsafe {
+                windows::Win32::Security::Cryptography::CryptImportPublicKeyInfoEx2(
+                    X509_ASN_ENCODING,
+                    info,
+                    CRYPT_IMPORT_PUBLIC_KEY_FLAGS(0),
+                    None,
+                    &mut h,
+                )
+            }
+            .map_err(|e| err(e, "CryptImportPublicKeyInfoEx2"))?;
+            let key = KeyHandle(h);
+            Ok(X509PublicKey::Rsa(crate::rsa::RsaPublicKey(
+                crate::rsa::win::RsaPublicKeyInner(key),
+            )))
+        } else if oid_bytes == Some(szoid_ecc) {
+            // Hand the certificate's already-parsed public-key info directly to
+            // the ECDSA backend rather than extracting and re-parsing the point.
+            let inner = crate::ecdsa::win::EcdsaPublicKeyInner::from_cert_public_key_info(info)
+                .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
+            Ok(X509PublicKey::Ecdsa(crate::ecdsa::EcdsaPublicKey(inner)))
+        } else {
+            Err(err(
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_NOTIMPL,
+                    "unsupported certificate public key type",
+                ),
+                "extracting public key",
+            ))
         }
-        .map_err(|e| rsa_err(e, "CryptImportPublicKeyInfoEx2"))?;
-        let key = KeyHandle(h);
-        Ok(crate::rsa::RsaPublicKey(
-            crate::rsa::win::RsaPublicKeyInner(key),
-        ))
     }
 
     pub fn verify(
@@ -156,7 +176,7 @@ impl X509CertificateInner {
                     pbData: ctx.pbCertEncoded,
                 },
             )
-            .map_err(|X509Error(e)| crate::rsa::RsaError(e))?;
+            .map_err(|e| crate::rsa::RsaError(backend_err(e)))?;
 
         // Hash algorithm from the signature algorithm OID.
         let oid = signed.value.SignatureAlgorithm.pszObjId;
@@ -570,11 +590,19 @@ fn find_extension(info: &CERT_INFO, oid: PCSTR) -> Option<&CERT_EXTENSION> {
 
 /// RAII wrapper for a CryptoAPI-allocated decoded structure. Frees with
 /// `LocalFree` when dropped.
-struct Decoded<T> {
+pub(crate) struct Decoded<T> {
     raw: NonNull<c_void>,
     /// Layout-compatible reference to the decoded structure inside `raw`.
     value: T,
     _phantom: std::marker::PhantomData<*const T>,
+}
+
+impl<T> Decoded<T> {
+    /// Borrow the decoded value. Any pointers inside it reference the
+    /// still-alive CryptoAPI allocation owned by `self`.
+    pub(crate) fn get(&self) -> &T {
+        &self.value
+    }
 }
 
 impl<T> Drop for Decoded<T> {
@@ -590,7 +618,7 @@ impl<T> Drop for Decoded<T> {
 
 /// Decode a CryptoAPI-defined object using `CryptDecodeObjectEx` with the
 /// alloc flag. The returned `Decoded<T>` owns the buffer.
-fn decode_object<T: Copy>(
+pub(crate) fn decode_object<T: Copy>(
     struct_type: PCSTR,
     blob: &CRYPT_INTEGER_BLOB,
 ) -> Result<Decoded<T>, X509Error> {
