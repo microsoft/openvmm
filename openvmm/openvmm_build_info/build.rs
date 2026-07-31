@@ -141,12 +141,10 @@ fn main() {
     // and let the consumer judge.
     let (kind, kind_description) = if pkgversion.is_some() {
         ("custom", "custom (built with OPENVMM_PKGVERSION)")
-    } else if product_version.contains('-') {
-        // A semver prerelease component. `main` carries `-dev`, so anything
-        // built from it says so.
-        ("development", "development (not an official release)")
-    } else {
+    } else if revision.is_none() || at_release_tag {
         ("release", "release")
+    } else {
+        ("development", "development (not an official release)")
     };
 
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());

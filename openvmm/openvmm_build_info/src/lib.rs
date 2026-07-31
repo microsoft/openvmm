@@ -21,10 +21,10 @@
 /// a binary can claim about itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildKind {
-    /// Built from a tree sitting at a release version.
+    /// Built from the released source: either the published archive or an exact
+    /// checkout of its tag.
     Release,
-    /// Built from a tree working towards the next release, which carries a
-    /// semver prerelease component.
+    /// Built from any other checkout.
     Development,
     /// Built with `OPENVMM_PKGVERSION`, so the reported version is whatever
     /// the builder chose.
@@ -41,7 +41,7 @@ impl BuildKind {
         }
     }
 
-    /// Whether this build came from a tree sitting at a release version.
+    /// Whether this build came from the released source.
     ///
     /// This says nothing about *who* built it.
     pub const fn is_release(&self) -> bool {
@@ -173,19 +173,21 @@ mod tests {
         );
     }
 
-    /// A development build must say so, since that is the whole point of the
-    /// `-dev` suffix on `main`.
+    /// Only the released source reports the plain product version.
     #[test]
-    fn build_kind_matches_the_version() {
+    fn only_a_release_build_reports_the_plain_version() {
         let info = get();
         match info.kind() {
             BuildKind::Development => {
-                assert!(info.product_version().contains('-'));
                 assert!(!info.kind().is_release());
+                assert_eq!(
+                    info.version(),
+                    format!("{}+g{}", info.product_version(), &info.scm_revision()[..9])
+                );
             }
             BuildKind::Release => {
-                assert!(!info.product_version().contains('-'));
                 assert!(info.kind().is_release());
+                assert_eq!(info.version(), info.product_version());
             }
             BuildKind::Custom => {}
         }
