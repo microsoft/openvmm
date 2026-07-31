@@ -5636,7 +5636,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_build_info"
-version = "0.1.0-dev"
+version = "0.1.0"
 
 [[package]]
 name = "openvmm_core"
@@ -5764,7 +5764,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_entry"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",

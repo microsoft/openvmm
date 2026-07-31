@@ -6,6 +6,12 @@
 use std::path::Path;
 use std::process::Command;
 
+/// Prefix of the Git tag naming an OpenVMM release.
+///
+/// This is intentionally duplicated from the release tooling. Source consumers
+/// build this crate without that tooling, so build identity cannot depend on it.
+const RELEASE_TAG_PREFIX: &str = "openvmm-v";
+
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -21,6 +27,17 @@ fn git(repo: &Path, args: &[&str]) -> Option<String> {
     (!stdout.is_empty()).then_some(stdout)
 }
 
+fn git_repository_starts_at(repo: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && output.stdout.iter().all(u8::is_ascii_whitespace)
+        })
+}
+
 /// The commit this tree was built from, if it is a Git checkout at all.
 ///
 /// A released source archive has no `.git`, and neither does the tree a
@@ -31,11 +48,30 @@ fn revision(repo: &Path) -> Option<String> {
     // unrelated checkout would otherwise silently report *that* checkout's
     // HEAD. Only trust the answer if the repository we found starts exactly
     // where OpenVMM does.
-    let toplevel = git(repo, &["rev-parse", "--show-toplevel"])?;
-    if std::fs::canonicalize(&toplevel).ok()? != std::fs::canonicalize(repo).ok()? {
+    if !git_repository_starts_at(repo) {
         return None;
     }
     git(repo, &["rev-parse", "HEAD"])
+}
+
+/// Whether HEAD is the exact commit tagged for `version`.
+///
+/// A checkout without tags answers "no", which fails safely: it may report a
+/// release checkout as a development build, but never the reverse.
+fn at_release_tag(repo: &Path, version: &str) -> bool {
+    let Some(tags) = git(repo, &["tag", "--points-at", "HEAD"]) else {
+        return false;
+    };
+    let release_tag = format!("{RELEASE_TAG_PREFIX}{version}");
+    tags.lines().any(|tag| tag.trim() == release_tag)
+}
+
+/// Notice the release tag arriving after the tree was already built.
+fn watch_release_tag(repo: &Path, version: &str) {
+    let tag = format!("refs/tags/{RELEASE_TAG_PREFIX}{version}");
+    if let Some(path) = git(repo, &["rev-parse", "--git-path", &tag]) {
+        println!("cargo:rerun-if-changed={}", repo.join(path).display());
+    }
 }
 
 /// Watch just enough of `.git` to notice HEAD moving.
@@ -71,7 +107,9 @@ fn main() {
     let revision = revision(&repo_root);
     if revision.is_some() {
         watch_head(&repo_root);
+        watch_release_tag(&repo_root, product_version);
     }
+    let at_release_tag = revision.is_some() && at_release_tag(&repo_root, product_version);
 
     // `OPENVMM_PKGVERSION` lets whoever builds the binary stamp their own build
     // identity in, the way QEMU's `-Dpkgversion` and cloud-hypervisor's
@@ -84,10 +122,10 @@ fn main() {
             // Semver build metadata, so it orders identically to the plain
             // version and a build from a checkout is never mistaken for one
             // from the matching release archive.
-            Some(revision) => {
+            Some(revision) if !at_release_tag => {
                 format!("{product_version}+g{}", &revision[..9.min(revision.len())])
             }
-            None => product_version.to_owned(),
+            _ => product_version.to_owned(),
         },
     };
 

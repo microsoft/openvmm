@@ -7,7 +7,8 @@
 //! `Cargo.toml`, which is the source of truth for what a release is cut at. It
 //! therefore travels inside the source archive, and a packager building an
 //! extracted tree with no Git history still reports the right version. Git is
-//! consulted only to append the revision to a build made from a checkout.
+//! consulted only to distinguish the exact release tag from any other checkout
+//! and append the revision to the latter.
 
 #![expect(missing_docs)]
 
@@ -31,8 +32,8 @@ impl BuildInfo {
     /// The version to show a human, as reported by `openvmm --version`.
     ///
     /// This carries whatever enrichment was available at build time: a `+g`
-    /// revision suffix when built from a checkout, or a packager's own string
-    /// if they set `OPENVMM_PKGVERSION`.
+    /// revision suffix for a checkout other than the exact release tag, or a
+    /// packager's own string if they set `OPENVMM_PKGVERSION`.
     pub const fn version(&self) -> &'static str {
         self.version
     }
