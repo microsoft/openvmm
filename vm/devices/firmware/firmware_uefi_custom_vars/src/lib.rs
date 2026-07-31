@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Types and methods for defining and layering sets of custom UEFI nvram
-//! variables
+//! Types and methods for defining and layering sets of UEFI nvram variables.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
@@ -14,13 +13,84 @@ use uefi_specs::uefi::nvram::vars::EFI_GLOBAL_VARIABLE;
 
 pub mod delta;
 
-/// Collection of UEFI nvram variables that that will be injected on first boot.
+/// A complete base template deferred as raw JSON.
+#[derive(Debug, Clone, Protobuf)]
+#[mesh(transparent)]
+pub struct BaseTemplateJson(Vec<u8>);
+
+impl BaseTemplateJson {
+    /// Return the JSON bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for BaseTemplateJson {
+    fn from(json: Vec<u8>) -> Self {
+        Self(json)
+    }
+}
+
+/// A customer-provided UEFI variable delta deferred as raw JSON.
+#[derive(Debug, Clone, Protobuf)]
+#[mesh(transparent)]
+pub struct UefiVarsDeltaJson(Vec<u8>);
+
+impl UefiVarsDeltaJson {
+    /// Return the JSON bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for UefiVarsDeltaJson {
+    fn from(json: Vec<u8>) -> Self {
+        Self(json)
+    }
+}
+
+/// Collection of UEFI nvram variables that will be injected on first boot.
 #[derive(Debug, Default, Clone, Protobuf)]
-pub struct CustomVars {
+pub struct UefiVars {
     /// Secure Boot signature vars
     pub signatures: Option<Signatures>,
-    /// Any additional custom vars
-    pub custom_vars: Vec<(String, CustomVar)>,
+    /// UEFI vars that are not Secure Boot signature vars
+    pub non_signature_vars: Vec<(String, UefiVar)>,
+}
+
+/// A complete set of variables supplied by a built-in template.
+#[derive(Debug, Default, Clone, Protobuf)]
+#[mesh(transparent)]
+pub struct BaseTemplateVars(UefiVars);
+
+/// A complete set of variables ready for NVRAM injection.
+#[derive(Debug)]
+pub struct FinalVars(UefiVars);
+
+impl From<UefiVars> for BaseTemplateVars {
+    fn from(vars: UefiVars) -> Self {
+        Self(vars)
+    }
+}
+
+impl FinalVars {
+    /// Resolve an optional base template and custom delta into final variables.
+    pub fn resolve(
+        base_template: Option<BaseTemplateVars>,
+        custom_template_delta: Option<delta::UefiVarsDelta>,
+    ) -> Result<Self, ApplyDeltaError> {
+        let base_vars = base_template.map_or_else(UefiVars::default, |base| base.0);
+        let final_vars = match custom_template_delta {
+            Some(delta) => base_vars.apply_delta(delta)?,
+            None => base_vars,
+        };
+        Ok(Self(final_vars))
+    }
+
+    /// Return the finalized UEFI variables.
+    pub fn into_uefi_vars(self) -> UefiVars {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -40,7 +110,7 @@ pub enum Signature {
 }
 
 #[derive(Debug, Clone, Protobuf)]
-pub struct CustomVar {
+pub struct UefiVar {
     pub guid: Guid,
     pub attr: u32,
     pub value: Vec<u8>,
@@ -73,17 +143,17 @@ pub enum ApplyDeltaError {
     #[error("cannot use \"Default\" variable type if no base signatures are provided")]
     DefaultWithoutBase,
     #[error("cannot set restricted variable: {name}:{guid}")]
-    RestrictedCustomVar { name: String, guid: Guid },
+    RestrictedUefiVar { name: String, guid: Guid },
 }
 
-impl CustomVars {
-    /// Create a new, blank set of CustomVars.
-    pub fn new() -> CustomVars {
-        CustomVars::default()
+impl UefiVars {
+    /// Create a new, blank set of UEFI variables.
+    pub fn new() -> UefiVars {
+        UefiVars::default()
     }
 
-    /// Apply a delta on-top of an existing set of CustomVars.
-    pub fn apply_delta(self, delta: delta::CustomVarsDelta) -> Result<CustomVars, ApplyDeltaError> {
+    /// Apply a delta on top of an existing set of UEFI variables.
+    pub fn apply_delta(self, delta: delta::UefiVarsDelta) -> Result<UefiVars, ApplyDeltaError> {
         use delta::SignatureDelta;
         use delta::SignatureDeltaVec;
         use delta::SignaturesAppend;
@@ -91,7 +161,9 @@ impl CustomVars {
         use delta::SignaturesReplace;
 
         let signatures = match (self.signatures, delta.signatures) {
-            (None, SignaturesDelta::Append(..)) => return Err(ApplyDeltaError::AppendWithoutBase),
+            (None, SignaturesDelta::Append(..)) => {
+                return Err(ApplyDeltaError::AppendWithoutBase);
+            }
             (
                 None,
                 SignaturesDelta::Replace(SignaturesReplace {
@@ -228,29 +300,126 @@ impl CustomVars {
             },
         };
 
-        let mut custom_vars = self.custom_vars;
+        let mut non_signature_vars = self.non_signature_vars;
 
         // Replace overwritten vars, append new vars
-        'outer: for (new_key, new_val) in delta.custom_vars {
-            if new_key.as_str() == "dbDefault" && new_val.guid == EFI_GLOBAL_VARIABLE {
-                return Err(ApplyDeltaError::RestrictedCustomVar {
+        'outer: for (new_key, new_val) in delta.non_signature_vars {
+            if new_key == "dbDefault" && new_val.guid == EFI_GLOBAL_VARIABLE {
+                return Err(ApplyDeltaError::RestrictedUefiVar {
                     name: new_key,
                     guid: new_val.guid,
                 });
             }
 
-            for (old_key, old_val) in &mut custom_vars {
+            for (old_key, old_val) in &mut non_signature_vars {
                 if *old_key == new_key {
                     *old_val = new_val;
                     continue 'outer;
                 }
             }
-            custom_vars.push((new_key, new_val));
+            non_signature_vars.push((new_key, new_val));
         }
 
-        Ok(CustomVars {
+        Ok(UefiVars {
             signatures: Some(signatures),
-            custom_vars,
+            non_signature_vars,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::delta::SignatureDelta;
+    use crate::delta::SignatureDeltaVec;
+    use crate::delta::SignaturesAppend;
+    use crate::delta::SignaturesDelta;
+    use crate::delta::SignaturesReplace;
+    use crate::delta::UefiVarsDelta;
+
+    #[test]
+    fn no_templates_resolve_to_empty_final_vars() {
+        let vars = FinalVars::resolve(None, None).unwrap().into_uefi_vars();
+
+        assert!(vars.signatures.is_none());
+        assert!(vars.non_signature_vars.is_empty());
+    }
+
+    #[test]
+    fn append_without_base_fails() {
+        let delta = UefiVarsDelta {
+            signatures: SignaturesDelta::Append(SignaturesAppend {
+                kek: None,
+                db: None,
+                dbx: None,
+                moklist: None,
+                moklistx: None,
+            }),
+            non_signature_vars: Vec::new(),
+        };
+
+        assert!(matches!(
+            FinalVars::resolve(None, Some(delta)),
+            Err(ApplyDeltaError::AppendWithoutBase)
+        ));
+    }
+
+    #[test]
+    fn default_without_base_fails() {
+        let delta = UefiVarsDelta {
+            signatures: SignaturesDelta::Replace(SignaturesReplace {
+                pk: SignatureDelta::Default,
+                kek: SignatureDeltaVec::Default,
+                db: SignatureDeltaVec::Default,
+                dbx: SignatureDeltaVec::Default,
+                moklist: None,
+                moklistx: None,
+            }),
+            non_signature_vars: Vec::new(),
+        };
+
+        assert!(matches!(
+            FinalVars::resolve(None, Some(delta)),
+            Err(ApplyDeltaError::DefaultWithoutBase)
+        ));
+    }
+
+    #[test]
+    fn restricted_uefi_var_fails() {
+        let base_template = UefiVars {
+            signatures: Some(Signatures {
+                pk: Signature::X509(Vec::new()),
+                kek: Vec::new(),
+                db: Vec::new(),
+                dbx: Vec::new(),
+                moklist: Vec::new(),
+                moklistx: Vec::new(),
+            }),
+            non_signature_vars: Vec::new(),
+        }
+        .into();
+        let delta = UefiVarsDelta {
+            signatures: SignaturesDelta::Append(SignaturesAppend {
+                kek: None,
+                db: None,
+                dbx: None,
+                moklist: None,
+                moklistx: None,
+            }),
+            non_signature_vars: vec![(
+                "dbDefault".into(),
+                UefiVar {
+                    guid: EFI_GLOBAL_VARIABLE,
+                    attr: 0,
+                    value: Vec::new(),
+                },
+            )],
+        };
+
+        assert!(matches!(
+            FinalVars::resolve(Some(base_template), Some(delta)),
+            Err(ApplyDeltaError::RestrictedUefiVar { name, guid })
+                if name == "dbDefault" && guid == EFI_GLOBAL_VARIABLE
+        ));
     }
 }

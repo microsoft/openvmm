@@ -12,6 +12,7 @@ flowey_lib_common.workspace = true
 
 powershell_builder.workspace = true
 igvmfilegen_config.workspace = true
+opentmk_disk.workspace = true
 vmm_test_images = { workspace = true, features = ["serde"] }
 
 anyhow.workspace = true

@@ -181,6 +181,9 @@ impl SimpleFlowNode for Node {
                 let release_igvm_files_dir = rt.read(release_igvm_files_dir);
                 let test_content_dir = rt.read(test_content_dir);
 
+                let test_log_dir = test_content_dir.join("test_results");
+                let temp_dir = test_content_dir.join("temp");
+
                 let mut env = BTreeMap::new();
 
                 let windows_via_wsl2 = flowey_lib_common::_util::running_in_wsl(rt)
@@ -211,8 +214,8 @@ impl SimpleFlowNode for Node {
 
                 // Eagerly convert all known paths.
                 let converted_content_dir = wsl_convert_path(&test_content_dir)?;
-                let test_log_dir = test_content_dir.join("test_results");
                 let converted_log_dir = wsl_convert_path(&test_log_dir)?;
+                let converted_temp_dir = wsl_convert_path(&temp_dir)?;
                 let converted_disk_image_dir = disk_image_dir
                     .as_ref()
                     .map(|p| wsl_convert_path(p))
@@ -252,12 +255,15 @@ impl SimpleFlowNode for Node {
                     Ok(path.display().to_string())
                 };
 
+                if !test_content_dir.exists() {
+                    fs_err::create_dir_all(&test_content_dir)?
+                };
+
                 env.insert(
                     "VMM_TESTS_CONTENT_DIR".into(),
                     make_portable_path(converted_content_dir)?,
                 );
 
-                // use a subdir for test logs
                 if !test_log_dir.exists() {
                     fs_err::create_dir(&test_log_dir)?
                 };
@@ -265,6 +271,18 @@ impl SimpleFlowNode for Node {
                     "TEST_OUTPUT_PATH".into(),
                     make_portable_path(converted_log_dir)?,
                 );
+
+                if !temp_dir.exists() {
+                    fs_err::create_dir(&temp_dir)?
+                };
+                let portable_temp_dir = make_portable_path(converted_temp_dir)?;
+                if matches!(rt.platform().kind(), FlowPlatformKind::Windows) || windows_via_wsl2 {
+                    env.insert("TEMP".into(), portable_temp_dir.clone());
+                    env.insert("TMP".into(), portable_temp_dir.clone());
+                    env.insert("SystemTemp".into(), portable_temp_dir);
+                } else {
+                    env.insert("TMPDIR".into(), portable_temp_dir);
+                }
 
                 if let Some(disk_image_dir) = converted_disk_image_dir {
                     env.insert(
