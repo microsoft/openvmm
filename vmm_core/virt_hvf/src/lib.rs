@@ -1190,14 +1190,18 @@ impl<'p> Processor for HvfProcessor<'p> {
                         // the architected virtual-timer deadline and park on the
                         // existing VP waker. Timer expiry re-enters HVF; the
                         // subsequent VTIMER_ACTIVATED exit raises the level PPI.
-                        if let Some(deadline) = self
+                        let vtimer_deadline = self
                             .vtimer_deadline()
-                            .map_err(|err| dev.fatal_error(err.into()))?
-                        {
+                            .map_err(|err| dev.fatal_error(err.into()))?;
+                        if let Some(deadline) = vtimer_deadline {
                             self.vmtime.set_timeout_if_before(deadline);
                         }
                         if self.vmtime.poll_timeout(cx).is_ready() {
-                            self.wfi = false;
+                            if vtimer_deadline
+                                .is_some_and(|deadline| !deadline.is_after(self.vmtime.now()))
+                            {
+                                self.wfi = false;
+                            }
                             continue;
                         }
                         return Poll::Pending;
