@@ -13,7 +13,7 @@ use consomme::Consomme;
 use consomme::ConsommeParams;
 pub use consomme::IpVersion;
 pub use consomme::StaticDnsRecordError;
-pub use consomme::StaticDnsRecordType;
+pub use consomme::StaticDnsRecord;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -234,12 +234,10 @@ struct PortUnbindConfig {
 }
 
 struct AddDnsRecordConfig {
-    /// The type of record (currently only `A` is supported).
-    record_type: StaticDnsRecordType,
+    /// The type and data of the record (currently only `A` is supported).
+    record: StaticDnsRecord,
     /// The query name in presentation form (e.g. `"example.com"`).
     name: String,
-    /// The raw record data (for `A`, a 4-byte IPv4 address).
-    rdata: Vec<u8>,
 }
 
 enum ConsommeMessage {
@@ -324,18 +322,13 @@ impl ConsommeControl {
     /// if the guest sends a matching query.
     pub async fn add_dns_record(
         &self,
-        record_type: StaticDnsRecordType,
+        record: StaticDnsRecord,
         name: String,
-        rdata: Vec<u8>,
     ) -> Result<(), ConsommeMessageError> {
         self.send
             .call(
                 ConsommeMessage::AddDnsRecord,
-                AddDnsRecordConfig {
-                    record_type,
-                    name,
-                    rdata,
-                },
+                AddDnsRecordConfig { record, name },
             )
             .await
             .map_err(ConsommeMessageError::Mesh)?
@@ -681,7 +674,7 @@ fn process_message(
             rpc.handle_sync(|cfg| {
                 consomme
                     .get_mut()
-                    .add_dns_record(cfg.record_type, &cfg.name, &cfg.rdata)
+                    .add_dns_record(cfg.record, &cfg.name)
             });
         }
         ConsommeMessage::CreateVirtualAddress(rpc) => {

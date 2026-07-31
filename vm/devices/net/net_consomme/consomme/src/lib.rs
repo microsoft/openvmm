@@ -42,7 +42,7 @@ const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
 };
 
 pub use dns_records::StaticDnsRecordError;
-pub use dns_records::StaticDnsRecordType;
+pub use dns_records::StaticDnsRecord;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -867,11 +867,10 @@ impl Consomme {
     /// if the guest sends a matching query.
     pub fn add_dns_record(
         &mut self,
-        record_type: StaticDnsRecordType,
+        record: StaticDnsRecord,
         name: &str,
-        rdata: &[u8],
     ) -> Result<(), StaticDnsRecordError> {
-        self.static_dns.add(record_type, name, rdata)
+        self.static_dns.add(record, name)
     }
 
     /// Allocates a virtual address within this endpoint's subnet and routes

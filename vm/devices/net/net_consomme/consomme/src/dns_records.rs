@@ -7,13 +7,13 @@ use smoltcp::wire::DnsQueryType;
 use smoltcp::wire::DnsQuestion;
 use thiserror::Error;
 
-/// DNS record type for a static record.
+/// DNS record type and data for a static record.
 ///
-/// Only [`StaticDnsRecordType::A`] is currently supported.
+/// Only [`StaticDnsRecord::A`] is currently supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StaticDnsRecordType {
-    /// IPv4 host address; RDATA is a 4-byte address.
-    A,
+pub enum StaticDnsRecord {
+    /// IPv4 host address.
+    A([u8; 4]),
 }
 
 /// An error adding a static DNS record.
@@ -22,16 +22,10 @@ pub enum StaticDnsRecordError {
     /// The query name is empty, too long, or malformed.
     #[error("the query name is empty, too long, or malformed")]
     InvalidName,
-    /// The record data has the wrong length for the record type.
-    #[error("record data has the wrong length for the record type")]
-    InvalidData,
 }
 
 /// DNS `CLASS` value for the Internet (`IN`) class.
 const DNS_CLASS_IN: u16 = 1;
-
-/// Length in bytes of the RDATA for an `A` record.
-const A_RDATA_LEN: usize = 4;
 
 /// TTL advertised for static records.
 const DEFAULT_TTL: u32 = 60;
@@ -50,17 +44,15 @@ const ANSWER_FIXED_LEN: usize = 12;
 pub(crate) const MAX_DNS_UDP_RESPONSE_LEN: usize = 512;
 
 /// A single static DNS record.
-struct StaticDnsRecord {
+struct StaticDnsRecordEntry {
     /// Lowercased presentation-form domain name (no trailing dot).
     name: String,
-    record_type: StaticDnsRecordType,
-    /// Raw RDATA.
-    rdata: Vec<u8>,
+    record: StaticDnsRecord,
 }
 
 #[derive(Default)]
 pub struct StaticDnsRecords {
-    records: Vec<StaticDnsRecord>,
+    records: Vec<StaticDnsRecordEntry>,
 }
 
 impl StaticDnsRecords {
@@ -70,28 +62,14 @@ impl StaticDnsRecords {
     /// stored lowercased and compared case-insensitively. It must be ASCII.
     ///
     /// Returns [`StaticDnsRecordError::InvalidName`] if `name` is empty, too
-    /// long, non-ASCII, or otherwise malformed, or
-    /// [`StaticDnsRecordError::InvalidData`] if `rdata` has the wrong length
-    /// for `record_type`.
+    /// long, non-ASCII, or otherwise malformed.
     pub fn add(
         &mut self,
-        record_type: StaticDnsRecordType,
+        record: StaticDnsRecord,
         name: &str,
-        rdata: &[u8],
     ) -> Result<(), StaticDnsRecordError> {
         let name = normalize_name(name).ok_or(StaticDnsRecordError::InvalidName)?;
-        match record_type {
-            StaticDnsRecordType::A => {
-                if rdata.len() != A_RDATA_LEN {
-                    return Err(StaticDnsRecordError::InvalidData);
-                }
-            }
-        }
-        self.records.push(StaticDnsRecord {
-            name,
-            record_type,
-            rdata: rdata.to_vec(),
-        });
+        self.records.push(StaticDnsRecordEntry { name, record });
         Ok(())
     }
 
@@ -126,8 +104,10 @@ impl StaticDnsRecords {
         let answers: Vec<&[u8]> = self
             .records
             .iter()
-            .filter(|rec| rec.record_type == StaticDnsRecordType::A && rec.name == qname)
-            .map(|rec| rec.rdata.as_slice())
+            .filter_map(|rec| match &rec.record {
+                StaticDnsRecord::A(address) if rec.name == qname => Some(address.as_slice()),
+                _ => None,
+            })
             .collect();
 
         if answers.is_empty() {
@@ -293,7 +273,7 @@ mod tests {
     fn add_and_match_a_record() {
         let mut records = StaticDnsRecords::default();
         records
-            .add(StaticDnsRecordType::A, "Example.com", &[10, 0, 0, 5])
+            .add(StaticDnsRecord::A([10, 0, 0, 5]), "Example.com")
             .unwrap();
 
         let query = build_query(0x1234, "example.com", DnsQueryType::A);
@@ -325,7 +305,7 @@ mod tests {
     fn case_insensitive_match() {
         let mut records = StaticDnsRecords::default();
         records
-            .add(StaticDnsRecordType::A, "host.local", &[1, 2, 3, 4])
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "host.local")
             .unwrap();
         let query = build_query(1, "HOST.LOCAL", DnsQueryType::A);
         assert!(
@@ -339,10 +319,10 @@ mod tests {
     fn multiple_records_same_name() {
         let mut records = StaticDnsRecords::default();
         records
-            .add(StaticDnsRecordType::A, "many.test", &[1, 1, 1, 1])
+            .add(StaticDnsRecord::A([1, 1, 1, 1]), "many.test")
             .unwrap();
         records
-            .add(StaticDnsRecordType::A, "many.test", &[2, 2, 2, 2])
+            .add(StaticDnsRecord::A([2, 2, 2, 2]), "many.test")
             .unwrap();
         let query = build_query(1, "many.test", DnsQueryType::A);
         let response = records
@@ -355,7 +335,7 @@ mod tests {
     fn non_matching_name_returns_none() {
         let mut records = StaticDnsRecords::default();
         records
-            .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
             .unwrap();
         let query = build_query(1, "unknown.test", DnsQueryType::A);
         assert!(
@@ -369,7 +349,7 @@ mod tests {
     fn non_a_query_returns_none() {
         let mut records = StaticDnsRecords::default();
         records
-            .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
             .unwrap();
         // AAAA for the same name should not be answered.
         let query = build_query(1, "known.test", DnsQueryType::Aaaa);
@@ -395,7 +375,7 @@ mod tests {
     fn malformed_queries_do_not_panic() {
         let mut records = StaticDnsRecords::default();
         records
-            .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
             .unwrap();
 
         // Too short, truncated label, unterminated name, compression pointer.
@@ -440,7 +420,7 @@ mod tests {
     fn response_packets_are_ignored() {
         let mut records = StaticDnsRecords::default();
         records
-            .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
             .unwrap();
 
         // A matching query is answered...
@@ -467,7 +447,7 @@ mod tests {
         // Register more answers than a small budget can hold.
         for i in 0..20u8 {
             records
-                .add(StaticDnsRecordType::A, "many.test", &[10, 0, 0, i])
+                .add(StaticDnsRecord::A([10, 0, 0, i]), "many.test")
                 .unwrap();
         }
 
@@ -496,7 +476,7 @@ mod tests {
     fn budget_too_small_for_header_returns_none() {
         let mut records = StaticDnsRecords::default();
         records
-            .add(StaticDnsRecordType::A, "known.test", &[1, 2, 3, 4])
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
             .unwrap();
         let query = build_query(1, "known.test", DnsQueryType::A);
         // Not even the header and question fit, so no response is synthesized.
@@ -507,15 +487,9 @@ mod tests {
     fn add_validation() {
         let mut records = StaticDnsRecords::default();
 
-        // Wrong RDATA length for an A record.
-        assert_eq!(
-            records.add(StaticDnsRecordType::A, "a.test", &[1, 2, 3]),
-            Err(StaticDnsRecordError::InvalidData)
-        );
-
         // Empty name.
         assert_eq!(
-            records.add(StaticDnsRecordType::A, "", &[1, 2, 3, 4]),
+            records.add(StaticDnsRecord::A([1, 2, 3, 4]), ""),
             Err(StaticDnsRecordError::InvalidName)
         );
     }
@@ -526,20 +500,20 @@ mod tests {
 
         // Consecutive dots ("..") produce an empty label.
         assert_eq!(
-            records.add(StaticDnsRecordType::A, "a..b", &[1, 2, 3, 4]),
+            records.add(StaticDnsRecord::A([1, 2, 3, 4]), "a..b"),
             Err(StaticDnsRecordError::InvalidName)
         );
 
         // A leading dot is also an empty label.
         assert_eq!(
-            records.add(StaticDnsRecordType::A, ".example.com", &[1, 2, 3, 4]),
+            records.add(StaticDnsRecord::A([1, 2, 3, 4]), ".example.com"),
             Err(StaticDnsRecordError::InvalidName)
         );
 
         // A name longer than the maximum permitted length is rejected.
         let too_long = "a".repeat(smoltcp::config::DNS_MAX_NAME_SIZE + 1);
         assert_eq!(
-            records.add(StaticDnsRecordType::A, &too_long, &[1, 2, 3, 4]),
+            records.add(StaticDnsRecord::A([1, 2, 3, 4]), &too_long),
             Err(StaticDnsRecordError::InvalidName)
         );
 
@@ -547,13 +521,13 @@ mod tests {
         // when the overall name is within the length limit.
         let long_label = "a".repeat(MAX_LABEL_LEN + 1);
         assert_eq!(
-            records.add(StaticDnsRecordType::A, &long_label, &[1, 2, 3, 4]),
+            records.add(StaticDnsRecord::A([1, 2, 3, 4]), &long_label),
             Err(StaticDnsRecordError::InvalidName)
         );
 
         // A non-ASCII name is rejected.
         assert_eq!(
-            records.add(StaticDnsRecordType::A, "exämple.com", &[1, 2, 3, 4]),
+            records.add(StaticDnsRecord::A([1, 2, 3, 4]), "exämple.com"),
             Err(StaticDnsRecordError::InvalidName)
         );
 
@@ -561,14 +535,14 @@ mod tests {
         let max_label = "a".repeat(MAX_LABEL_LEN);
         assert!(
             records
-                .add(StaticDnsRecordType::A, &max_label, &[1, 2, 3, 4])
+                .add(StaticDnsRecord::A([1, 2, 3, 4]), &max_label)
                 .is_ok()
         );
 
         // A well-formed name (with an optional trailing dot) succeeds.
         assert!(
             records
-                .add(StaticDnsRecordType::A, "valid.example.com.", &[1, 2, 3, 4])
+                .add(StaticDnsRecord::A([1, 2, 3, 4]), "valid.example.com.")
                 .is_ok()
         );
     }

@@ -592,7 +592,7 @@ impl Client for CapturingClient {
 async fn static_dns_a_record_answered(driver: DefaultDriver) {
     let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
     consomme
-        .add_dns_record(StaticDnsRecordType::A, "example.com", &[10, 0, 0, 5])
+        .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
         .unwrap();
 
     let guest_mac = consomme.params_mut().client_mac;

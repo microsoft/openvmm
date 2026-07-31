@@ -526,14 +526,14 @@ mod tests {
 
     #[test]
     fn static_record_answered_over_tcp() {
-        use crate::dns_records::StaticDnsRecordType;
+        use crate::dns_records::StaticDnsRecord;
 
         let mut dns = DnsResolver::new_for_test(Arc::new(EchoBackend));
         let mut handler = DnsTcpHandler::new(test_flow());
 
         let mut static_dns = StaticDnsRecords::default();
         static_dns
-            .add(StaticDnsRecordType::A, "static.example", &[10, 0, 0, 9])
+            .add(StaticDnsRecord::A([10, 0, 0, 9]), "static.example")
             .unwrap();
 
         let query = build_query(0x4242, "static.example", DnsQueryType::A);
@@ -566,14 +566,14 @@ mod tests {
 
     #[test]
     fn static_miss_falls_through_to_resolver() {
-        use crate::dns_records::StaticDnsRecordType;
+        use crate::dns_records::StaticDnsRecord;
 
         let mut dns = DnsResolver::new_for_test(Arc::new(EchoBackend));
         let mut handler = DnsTcpHandler::new(test_flow());
 
         let mut static_dns = StaticDnsRecords::default();
         static_dns
-            .add(StaticDnsRecordType::A, "static.example", &[10, 0, 0, 9])
+            .add(StaticDnsRecord::A([10, 0, 0, 9]), "static.example")
             .unwrap();
 
         // Query for a name with no matching static record.
