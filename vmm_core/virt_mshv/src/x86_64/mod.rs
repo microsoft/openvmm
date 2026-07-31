@@ -207,7 +207,16 @@ fn snp_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
         .with_access_partition_reference_counter(true)
         .with_access_synic_regs(true)
         .with_access_synthetic_timer_regs(true)
-        .with_access_partition_reference_tsc(true)
+        // HACK: Do not advertise AccessPartitionReferenceTsc to the ACI SNP
+        // kernel yet. Physical Hyper-V and Cloud Hypervisor both advertise
+        // it, relying on the hypervisor/MSHV rather than userspace to service
+        // HV_X64_MSR_REFERENCE_TSC and its page. OpenVMM launch-imports GPA
+        // 0x3402000 normally; the ACI kernel then shares it as its retained
+        // Hyper-V `tsc_pg`. MSHV accepts the initial import but later reports
+        // that GPA as unaccepted when device I/O begins. Keeping ACI on the
+        // reference counter MSR makes virtio-blk write/readback work.
+        // Re-enable this after tracing and fixing MSHV's SNP PSC/host-access
+        // handling for the shared reference-TSC page.
         .with_access_frequency_regs(true)
         .with_access_intr_ctrl_regs(true)
         .with_access_vp_index(true)
