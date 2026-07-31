@@ -8,9 +8,8 @@
 //! it owns everything both the local build-and-run job
 //! ([`crate::_jobs::run_virtio_villain_tests`]) and the CI consume-archive job
 //! ([`crate::_jobs::consume_and_test_nextest_virtio_villain_archive`]) have in
-//! common, so those jobs stay thin and never drift apart. The only thing that
-//! differs between them — build from source vs. run a prebuilt archive — is
-//! expressed through the [`NextestRunKind`] passed in as [`Request::run_kind`].
+//! common, so both paths run a prebuilt nextest archive through the same host
+//! or incubator target-runner setup.
 //!
 //! Concretely, this node stages OpenVMM, the linux-direct guest kernel, and the
 //! villain guest artifact (initramfs + `tests.tsv`) into a test content dir
@@ -23,19 +22,21 @@ use crate::build_openvmm::OpenvmmOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
-use flowey_lib_common::run_cargo_nextest_run::NextestRunKind;
 use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
         /// Target triple the virtio-villain tests are built for.
-        pub target: target_lexicon::Triple,
+        pub target: crate::common::CommonTriple,
         /// The OpenVMM binary the villain crate launches (built from source by
         /// the local job, or resolved from an artifact by the consume job).
         pub openvmm: ReadVar<OpenvmmOutput>,
-        /// How to run the suite: build it from source ([`NextestRunKind::BuildAndRun`])
-        /// or run a prebuilt nextest archive ([`NextestRunKind::RunFromArchive`]).
-        pub run_kind: NextestRunKind,
+        /// Pre-built nextest archive containing the villain tests.
+        pub nextest_archive_file: ReadVar<PathBuf>,
+        /// Optional incubator profile used as the nextest target runner.
+        pub incubator_profile: Option<PathBuf>,
+        /// Build profile used for the incubator binary.
+        pub profile: crate::common::CommonProfile,
         /// Nextest profile to run under (e.g. `ci` to emit JUnit).
         pub nextest_profile: NextestProfile,
         /// Optional nextest filter expression to run only a subset of tests.
@@ -70,10 +71,11 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
+        crate::configure_nextest_incubator::imports(ctx);
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
-        ctx.import::<crate::run_cargo_nextest_run::Node>();
+        ctx.import::<crate::test_nextest_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
 
@@ -81,7 +83,9 @@ impl SimpleFlowNode for Node {
         let Request {
             target,
             openvmm,
-            run_kind,
+            nextest_archive_file,
+            incubator_profile,
+            profile,
             nextest_profile,
             nextest_filter_expr,
             run_ignored,
@@ -102,7 +106,7 @@ impl SimpleFlowNode for Node {
         let (test_log_path, get_test_log_path) = ctx.new_var();
         let extra_env = ctx.reqv(|get_env| crate::init_vmm_tests_env::Request {
             test_content_dir: test_content_dir.clone(),
-            vmm_tests_target: target.clone(),
+            vmm_tests_target: target.as_triple(),
             register_openvmm: Some(openvmm),
             register_openvmm_vhost: None,
             register_pipette_windows: None,
@@ -124,11 +128,7 @@ impl SimpleFlowNode for Node {
             use_relative_paths: false,
             disable_remote_artifacts,
             reuse_prepped_vhds: false,
-            // Linux-direct only: skip the UEFI firmware and Windows virtio-win
-            // driver downloads, which villain never uses.
-            stage_uefi: false,
-            stage_virtio_win: false,
-            stage_virtio_villain: true,
+            test_suite: crate::init_vmm_tests_env::TestSuite::VirtioVillain,
         });
 
         let mut pre_run_deps = Vec::new();
@@ -140,21 +140,6 @@ impl SimpleFlowNode for Node {
                 auto_install: None,
             });
             pre_run_deps.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
-
-            // Make /dev/kvm accessible to the test (CI machines only).
-            if !matches!(ctx.backend(), FlowBackend::Local) {
-                pre_run_deps.push(ctx.emit_rust_step(
-                    "ensure hypervisor device is accessible",
-                    |_| {
-                        |rt| {
-                            if Path::new("/dev/kvm").exists() {
-                                flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/kvm").run()?;
-                            }
-                            Ok(())
-                        }
-                    },
-                ));
-            }
         }
 
         // Use the repo's nextest config so the villain per-test slow-timeout
@@ -164,16 +149,42 @@ impl SimpleFlowNode for Node {
             .clone()
             .map(ctx, |p| p.join(".config").join("nextest.toml"));
 
-        let results = ctx.reqv(|results| crate::run_cargo_nextest_run::Request {
+        let (extra_env, nextest_target) = if let Some(profile_path) = incubator_profile {
+            let extra_env = crate::configure_nextest_incubator::configure(
+                ctx,
+                crate::configure_nextest_incubator::Params {
+                    target: target.clone(),
+                    profile,
+                    incubator: crate::configure_nextest_incubator::IncubatorSource::Build {
+                        profile_path,
+                    },
+                    pipette: crate::configure_nextest_incubator::PipetteSource::Build,
+                    repo_root: openvmm_repo_path.clone(),
+                    test_content_dir: test_content_dir.clone(),
+                    nextest_archive_file: nextest_archive_file.clone(),
+                    nextest_config_file: nextest_config_file.clone(),
+                    extra_env,
+                },
+            )?;
+            (extra_env, None)
+        } else {
+            (extra_env, Some(ReadVar::from_static(target.as_triple())))
+        };
+
+        let results = ctx.reqv(|results| crate::test_nextest_archive::Request {
             friendly_name: "virtio_villain_tests".into(),
-            run_kind,
+            nextest_archive_file,
             nextest_profile,
             nextest_filter_expr,
             nextest_working_dir: Some(openvmm_repo_path),
             nextest_config_file: Some(nextest_config_file),
+            nextest_bin: None,
+            target: nextest_target,
             run_ignored,
-            extra_env: Some(extra_env),
+            extra_env,
             pre_run_deps,
+            hugetlb_2mb_overcommit_pages: None,
+            prepare_vhost_vsock: false,
             results,
         });
 

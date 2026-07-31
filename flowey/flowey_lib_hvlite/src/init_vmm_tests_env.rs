@@ -13,6 +13,12 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+pub enum TestSuite {
+    VmmTests,
+    VirtioVillain,
+}
+
 flowey_request! {
     pub struct Request {
         /// Directory to symlink / copy test contents into. Does not need to be
@@ -68,18 +74,8 @@ flowey_request! {
         pub disable_remote_artifacts: bool,
         /// Whether to reuse VHDs created with prep_steps
         pub reuse_prepped_vhds: bool,
-        /// Whether to resolve and stage the UEFI firmware (`mu_msvm`) into the
-        /// content dir.
-        pub stage_uefi: bool,
-        /// Whether to resolve and stage the Windows `virtio-win` guest drivers
-        /// into the content dir.
-        pub stage_virtio_win: bool,
-        /// Whether to resolve and stage the virtio-villain guest artifact (the
-        /// initramfs and `tests.tsv`) into the content dir.
-        ///
-        /// Only the virtio-villain runner needs this, so its callers set this
-        /// true; the standard vmm_tests callers set it false.
-        pub stage_virtio_villain: bool,
+        /// Test suite whose artifacts should be staged into the content dir.
+        pub test_suite: TestSuite,
     }
 }
 
@@ -123,9 +119,7 @@ impl SimpleFlowNode for Node {
             use_relative_paths,
             disable_remote_artifacts,
             reuse_prepped_vhds,
-            stage_uefi,
-            stage_virtio_win,
-            stage_virtio_villain,
+            test_suite,
         } = request;
 
         let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
@@ -154,12 +148,15 @@ impl SimpleFlowNode for Node {
                     })
                 });
 
-        let uefi = stage_uefi.then(|| {
+        let stage_vmm_tests = matches!(test_suite, TestSuite::VmmTests);
+        let stage_virtio_villain = matches!(test_suite, TestSuite::VirtioVillain);
+
+        let uefi = stage_vmm_tests.then(|| {
             ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v })
         });
 
-        let virtio_win_dir = stage_virtio_win
-            .then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
+        let virtio_win_dir =
+            stage_vmm_tests.then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
 
         let virtio_villain = stage_virtio_villain
             .then(|| ctx.reqv(|v| crate::resolve_virtio_villain::Request::Get(arch, v)));

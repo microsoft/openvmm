@@ -355,7 +355,9 @@ impl PetriVmConfigOpenVmm {
             // Set so that we don't pull serial data until the guest is
             // ready. Otherwise, Linux will drop the input serial data
             // on the floor during boot.
-            if matches!(firmware, Firmware::LinuxDirect { .. }) && !properties.uses_pipette_as_init
+            if arch == MachineArch::X86_64
+                && matches!(firmware, Firmware::LinuxDirect { .. })
+                && !properties.uses_pipette_as_init
             {
                 chipset = chipset.with_serial_wait_for_rts();
             }

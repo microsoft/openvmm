@@ -8,7 +8,6 @@ use crate::build_nextest_virtio_villain_tests::NextestVirtioVillainTestsArchive;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
-use flowey_lib_common::run_cargo_nextest_run::NextestRunKind;
 
 flowey_request! {
     pub struct Params {
@@ -61,13 +60,11 @@ impl SimpleFlowNode for Node {
         let nextest_archive = nextest_villain_archive.map(ctx, |x| x.archive_file);
 
         ctx.req(crate::test_virtio_villain::Request {
-            target,
+            target: crate::common::CommonTriple::Custom(target),
             openvmm,
-            run_kind: NextestRunKind::RunFromArchive {
-                archive_file: nextest_archive,
-                target: None,
-                nextest_bin: None,
-            },
+            nextest_archive_file: nextest_archive,
+            incubator_profile: None,
+            profile: crate::common::CommonProfile::Release,
             nextest_profile: NextestProfile::Ci,
             nextest_filter_expr: None,
             run_ignored,

@@ -38,8 +38,10 @@ pub fn build_qemu_command(
     cmd.arg("-nographic");
     cmd.arg("-kernel").arg(kernel);
     cmd.arg("-initrd").arg(initrd);
-    cmd.arg("-append")
-        .arg(format!("{} rdinit=/{INIT_SCRIPT_NAME}", config.cmdline));
+    cmd.arg("-append").arg(format!(
+        "{} panic=-1 rdinit=/{INIT_SCRIPT_NAME}",
+        config.cmdline
+    ));
     cmd.arg("-no-reboot");
 
     // 9p: share the host directory into the guest
@@ -342,6 +344,45 @@ pub fn child_pipe_to_file(pipe: impl Into<std::os::unix::io::OwnedFd>) -> std::f
 #[cfg(windows)]
 pub fn child_pipe_to_file(pipe: impl Into<std::os::windows::io::OwnedHandle>) -> std::fs::File {
     std::fs::File::from(pipe.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profile::Arch;
+
+    #[test]
+    fn qemu_exits_on_kernel_panic() {
+        let config = QemuTcgConfig {
+            arch: Arch::Aarch64,
+            binary: "qemu-system-aarch64".into(),
+            machine: "virt".into(),
+            cpu: "max".into(),
+            memory: "1G".into(),
+            smp: "1".into(),
+            cmdline: "console=ttyAMA0".into(),
+        };
+
+        let command = build_qemu_command(
+            &config,
+            &[],
+            Path::new("kernel"),
+            Path::new("initrd"),
+            Path::new("share"),
+            1234,
+        )
+        .unwrap();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(
+            args.iter()
+                .any(|arg| arg == "console=ttyAMA0 panic=-1 rdinit=/tcg-init.sh")
+        );
+        assert!(args.iter().any(|arg| arg == "-no-reboot"));
+    }
 }
 
 /// Set up VFIO devices inside the incubator.

@@ -14,7 +14,6 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
-use flowey_lib_hvlite::common::CommonArch;
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
@@ -107,10 +106,8 @@ pub struct VmmTestsRunCli {
     ///
     /// `vmm-tests` (the default) is the standard suite with automatic artifact
     /// discovery. `virtio-villain` is the guest virtio conformance /
-    /// fault-injection suite; it runs on the Linux host and ignores the
-    /// vmm_tests-specific options (`--target`, `--incubator`, VHD/kernel
-    /// options), reusing only the shared options (`--dir`, `--filter`,
-    /// `--ci-profile`, `--run-ignored`, `--verbose`, `--install-missing-deps`).
+    /// fault-injection suite. VHD/kernel/UEFI options and
+    /// `--disable-secure-avic` apply only to `vmm-tests`.
     #[clap(long, value_enum, default_value_t = TestSuiteCli::VmmTests)]
     suite: TestSuiteCli,
 
@@ -209,26 +206,44 @@ impl IntoPipeline for VmmTestsRunCli {
             incubator,
         } = self;
 
+        if incubator.is_some() && target.is_none() {
+            anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
+        }
+
         // The virtio-villain suite is a separate nextest package whose test list
         // lives in a versioned guest artifact, so it can't participate in the
         // vmm_tests build-time artifact discovery below. Route it to its own job
         // (which builds a fixed artifact set), reusing the shared options.
         if matches!(suite, TestSuiteCli::VirtioVillain) {
+            let target = resolve_target(target, backend_hint)?;
+            let target_str = target.as_triple().to_string();
+            let repo_root = crate::repo_root();
+            let incubator_profile = match incubator {
+                None => None,
+                Some(Some(path)) => Some(path),
+                Some(None) => Some(default_incubator_profile(&repo_root, &target).ok_or_else(
+                    || {
+                        anyhow::anyhow!(
+                            "no default incubator profile for target {target_str}; \
+                             pass an explicit path with --incubator <PATH>"
+                        )
+                    },
+                )?),
+            };
             return into_virtio_villain_pipeline(VirtioVillainArgs {
                 backend_hint,
+                target,
+                incubator_profile,
                 dir,
                 filter,
                 ci_profile,
                 verbose,
                 run_ignored,
                 install_missing_deps,
+                release,
+                build_only,
+                copy_extras,
             });
-        }
-
-        // When --incubator is set, --target must also be specified
-        // to indicate the cross-compilation target for the incubator.
-        if incubator.is_some() && target.is_none() {
-            anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
         }
 
         let target = resolve_target(target, backend_hint)?;
@@ -499,12 +514,17 @@ impl IntoPipeline for VmmTestsRunCli {
 
 struct VirtioVillainArgs {
     backend_hint: PipelineBackendHint,
+    target: CommonTriple,
+    incubator_profile: Option<PathBuf>,
     dir: Option<PathBuf>,
     filter: String,
     ci_profile: bool,
     verbose: bool,
     run_ignored: bool,
     install_missing_deps: bool,
+    release: bool,
+    build_only: bool,
+    copy_extras: bool,
 }
 
 /// Build OpenVMM and run the virtio-villain guest conformance /
@@ -516,28 +536,18 @@ struct VirtioVillainArgs {
 fn into_virtio_villain_pipeline(args: VirtioVillainArgs) -> anyhow::Result<Pipeline> {
     let VirtioVillainArgs {
         backend_hint,
+        target,
+        incubator_profile,
         dir,
         filter,
         ci_profile,
         verbose,
         run_ignored,
         install_missing_deps,
+        release,
+        build_only,
+        copy_extras,
     } = args;
-
-    let target = match (
-        FlowArch::host(backend_hint),
-        FlowPlatform::host(backend_hint),
-    ) {
-        (FlowArch::X86_64, FlowPlatform::Linux(_)) => CommonTriple::Common {
-            arch: CommonArch::X86_64,
-            platform: CommonPlatform::LinuxGnu,
-        },
-        (FlowArch::Aarch64, FlowPlatform::Linux(_)) => CommonTriple::Common {
-            arch: CommonArch::Aarch64,
-            platform: CommonPlatform::LinuxGnu,
-        },
-        _ => anyhow::bail!("the virtio-villain suite currently requires a Linux host"),
-    };
 
     // Stage test content + publish results here, mirroring the vmm_tests `--dir`
     // (defaulting under `target/` rather than the internal flowey work dir).
@@ -581,6 +591,10 @@ fn into_virtio_villain_pipeline(args: VirtioVillainArgs) -> anyhow::Result<Pipel
         .dep_on(
             |ctx| flowey_lib_hvlite::_jobs::run_virtio_villain_tests::Params {
                 target,
+                incubator_profile,
+                release,
+                build_only,
+                copy_extras,
                 run_ignored,
                 nextest_filter_expr,
                 test_content_dir,

@@ -33,12 +33,12 @@
 # "vmm_tests", so the package(~vmm_tests) overrides below do not apply here.)
 [[profile.default.overrides]]
 filter = 'package(virtio_villain_tests)'
-slow-timeout = { period = "20s", terminate-after = 3 }
+slow-timeout = { period = "10s", terminate-after = 3 }
 threads-required = 2
 
 [[profile.ci.overrides]]
 filter = 'package(virtio_villain_tests)'
-slow-timeout = { period = "20s", terminate-after = 3 }
+slow-timeout = { period = "10s", terminate-after = 3 }
 threads-required = 2
 
 [[profile.ci.overrides]]
