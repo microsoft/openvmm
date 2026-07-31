@@ -4395,21 +4395,22 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-    displayName: print system info
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $FLOWEY_BIN v 20 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 2
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 5
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 3
-    displayName: creating new test content dir
+    displayName: print system info
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::install_dist_pkg 0
     displayName: checking if packages need to be installed
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::install_dist_pkg 1
@@ -4456,10 +4457,7 @@ jobs:
     displayName: unpack openvmm-test-virtio-win archive
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::init_vmm_tests_env 0
     displayName: setting up vmm_tests env
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::resolve_openvmm_qemu 0
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::resolve_openvmm_qemu 0
     displayName: unpack QEMU archive
   - bash: |-
       set -e
@@ -4478,12 +4476,12 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 20 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
     displayName: run 'vmm_tests' nextest tests
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 20 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 0
@@ -4501,7 +4499,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 9
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -4787,9 +4785,11 @@ jobs:
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 7
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-    displayName: creating new test content dir
-  - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::install_dist_pkg 0
+      $FLOWEY_BIN v 19 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 19 flowey_lib_common::install_dist_pkg 0
     displayName: checking if packages need to be installed
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::install_dist_pkg 1
     displayName: installing packages
@@ -4913,12 +4913,12 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 19 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
     displayName: run 'vmm_tests' nextest tests
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 19 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 0
@@ -4936,7 +4936,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -5110,9 +5110,11 @@ jobs:
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 2
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 7
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-    displayName: creating new test content dir
-  - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::download_gh_release 0
+      $FLOWEY_BIN v 18 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 18 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
   - bash: |-
       set -e
@@ -5227,17 +5229,17 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 18 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: run 'vmm_tests' nextest tests
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
     displayName: summarize failing vmm tests
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 18 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 0
@@ -5255,7 +5257,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -5429,9 +5431,11 @@ jobs:
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 15
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 16
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 14
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-    displayName: creating new test content dir
-  - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::download_gh_release 0
+      $FLOWEY_BIN v 17 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 17 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
   - bash: |-
       set -e
@@ -5541,18 +5545,23 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 17 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: run 'vmm_tests' nextest tests
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+    displayName: summarize failing vmm tests
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 17 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 0
       $FLOWEY_BIN v 17 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
       $FLOWEY_BIN v 17 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: summarize failing vmm tests
+    displayName: stopping test_igvm_agent_rpc_server
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
@@ -5564,10 +5573,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-    displayName: stopping test_igvm_agent_rpc_server
-  - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -5741,9 +5747,11 @@ jobs:
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 2
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 7
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-    displayName: creating new test content dir
-  - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::download_gh_release 0
+      $FLOWEY_BIN v 16 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 16 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
   - bash: |-
       set -e
@@ -5858,17 +5866,17 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: run 'vmm_tests' nextest tests
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
     displayName: summarize failing vmm tests
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 16 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 0
@@ -5886,7 +5894,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'

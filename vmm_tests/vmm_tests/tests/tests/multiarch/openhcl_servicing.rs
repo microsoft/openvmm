@@ -1322,10 +1322,13 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
 /// Boots a frontpage OpenHCL VM with two VTL2 NVMe -> VTL0 SCSI relays: one
 /// controller forced into fused keepalive mode (VendorID=0x1414/DeviceID=0xb111)
 /// and one normal controller. Verifies the fused device eagerly pre-creates its
-/// IO queues at init while the normal device creates them lazily.
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn nvme_fused_keepalive_enablement(
+/// IO queues at init while the normal device creates them lazily, then services
+/// the VM with NVMe keepalive. Re-verifies that the fused device is still fused
+/// and the normal device is still non-fused after the service boundary.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn nvme_fused_keepalive_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
     const VP_COUNT: u32 = 4;
     const MSIX_COUNT: u16 = 10;
@@ -1339,6 +1342,9 @@ async fn nvme_fused_keepalive_enablement(
     const NORMAL_LUN: u32 = VTL0_NVME_LUN + 1;
 
     let eager_count = (VP_COUNT as usize).min(MAX_IO_QUEUES as usize);
+
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
 
     let run_vm = async || -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
         let mut fused_updater = CellUpdater::new(false);
@@ -1460,49 +1466,70 @@ async fn nvme_fused_keepalive_enablement(
                 .collect()
         };
 
-    let vm = run_vm().await?;
-    let devices = inspect_devices(&vm).await?;
+    // Asserts exactly one fused and one non-fused device are present, returning
+    // their IO-queue `unmapped` vectors as `(fused_io, normal_io)`. `phase` is
+    // used only to make failures clear about whether they occurred before or
+    // after servicing.
+    let split_fused = |devices: &[(bool, Vec<bool>)], phase: &str| -> (Vec<bool>, Vec<bool>) {
+        assert_eq!(devices.len(), 2, "[{phase}] expected two VTL2 NVMe devices");
+        let (_, fused_io) = devices
+            .iter()
+            .find(|(fused, _)| *fused)
+            .unwrap_or_else(|| panic!("[{phase}] expected one device in fused keepalive mode"));
+        let (_, normal_io) = devices
+            .iter()
+            .find(|(fused, _)| !*fused)
+            .unwrap_or_else(|| panic!("[{phase}] expected one device in normal (non-fused) mode"));
+        (fused_io.clone(), normal_io.clone())
+    };
 
-    assert_eq!(devices.len(), 2, "expected two VTL2 NVMe devices");
+    let mut vm = run_vm().await?;
 
-    let (_, fused_io) = devices
-        .iter()
-        .find(|(fused, _)| *fused)
-        .expect("expected one device in fused keepalive mode");
-    let (_, normal_io) = devices
-        .iter()
-        .find(|(fused, _)| !*fused)
-        .expect("expected one device in normal (non-fused) mode");
-
+    // Before servicing: the fused device eagerly pre-creates its full set of
+    // unmapped IO queues while the normal device creates them lazily.
+    let (fused_io, normal_io) = split_fused(&inspect_devices(&vm).await?, "pre-servicing");
     assert_eq!(
         fused_io.len(),
         eager_count,
-        "fused keepalive device should eagerly pre-create min(max_io_queues, vp_count) = \
-         {eager_count} IO queues at init, but found {}",
+        "[pre-servicing] fused keepalive device should have min(max_io_queues, vp_count) = \
+         {eager_count} IO queues, but found {}",
         fused_io.len()
     );
     assert!(
         fused_io.iter().filter(|&&unmapped| unmapped).count() >= 1,
-        "fused keepalive device should have eagerly pre-created unmapped IO queues, \
-         but all {} queues were mapped",
+        "[pre-servicing] fused keepalive device should have eagerly pre-created unmapped IO \
+         queues, but all {} queues were mapped",
         fused_io.len()
     );
-
     assert!(
         !normal_io.is_empty(),
-        "the normal NVMe driver should have come up with at least one IO queue"
+        "[pre-servicing] the normal NVMe driver should have at least one IO queue"
     );
     assert_eq!(
         normal_io.iter().filter(|&&unmapped| unmapped).count(),
         0,
-        "a normal (non-fused) device must never eagerly pre-create unmapped IO queues"
+        "[pre-servicing] a normal (non-fused) device must never have unmapped IO queues"
     );
     assert!(
         normal_io.len() < eager_count,
-        "a normal device creates IO queues lazily, so it should have fewer than the \
-         fused eager count ({eager_count}), but found {}",
+        "[pre-servicing] a normal device creates IO queues lazily, so it should have fewer than \
+         the fused eager count ({eager_count}), but found {}",
         normal_io.len()
     );
+
+    // Exercise servicing with NVMe keepalive enabled.
+    vm.restart_openhcl(igvm_file, flags).await?;
+
+    // After servicing: the fused flag is recomputed on the restore path, so the
+    // fused device must still be fused and the normal device must still be
+    // non-fused. The `split_fused` call fails if either determination changed.
+    let (_fused_io, normal_io) = split_fused(&inspect_devices(&vm).await?, "post-servicing");
+    assert_eq!(
+        normal_io.iter().filter(|&&unmapped| unmapped).count(),
+        0,
+        "[post-servicing] a normal (non-fused) device must never have unmapped IO queues"
+    );
+
     Ok(())
 }
 

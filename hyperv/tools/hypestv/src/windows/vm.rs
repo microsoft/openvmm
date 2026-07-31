@@ -213,7 +213,7 @@ impl Vm {
             VmCommand::Nmi { vtl } => {
                 powershell_script(
                     r#"
-                    param([string]$id, [int]$vtl)
+                    param([guid]$id, [int]$vtl)
                     $ErrorActionPreference = "Stop"
                     $vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where Name = '$id'"
                     $vm | Invoke-CimMethod -Name "InjectNonMaskableInterruptEx" -Arguments @{"Vtl" = $vtl}
@@ -316,7 +316,7 @@ impl Vm {
             ParavisorCommand::CommandLine { command_line: None } => {
                 let output = powershell_script(
                     r#"
-                    param([string]$id)
+                    param([guid]$id)
                     $ErrorActionPreference = "Stop"
                     $vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where Name = '$id'"
                     $vssd = $vm | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
@@ -332,7 +332,7 @@ impl Vm {
             } => {
                 let output = powershell_script(
                     r#"
-                    param([string]$id, [string]$command_line)
+                    param([guid]$id, [string]$command_line)
                     $ErrorActionPreference = "Stop"
                     $vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where Name = '$id'"
                     $vssd = $vm | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"

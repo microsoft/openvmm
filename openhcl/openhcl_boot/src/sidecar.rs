@@ -244,6 +244,11 @@ pub fn start_sidecar<'a>(
                 base_vp,
                 vp_count: cpus.len() as u32,
             };
+            log::info!(
+                "sidecar: created node index={} base_vp={base_vp} vp_count={} vnode={local_vnode}",
+                *node_count,
+                cpus.len(),
+            );
             if initial_state.per_cpu_state_specified {
                 // If per-CPU state is specified, make sure to explicitly state that
                 // sidecar should not start the base vp of this node.
@@ -290,12 +295,17 @@ pub fn start_sidecar<'a>(
     let boot_end_reftime = minimal_rt::reftime::reference_time();
 
     let SidecarOutput { nodes, error: _ } = sidecar_output;
-    Some(SidecarConfig {
+    let config = SidecarConfig {
         num_cpus: partition_info.cpus.len(),
         start_reftime: boot_start_reftime,
         end_reftime: boot_end_reftime,
         node_params: &sidecar_params.nodes[..node_count],
         nodes: &nodes[..node_count],
         per_cpu_state: &sidecar_params.initial_state,
-    })
+    };
+    log::info!(
+        "sidecar: boot_cpus parameter: {}",
+        config.kernel_command_line()
+    );
+    Some(config)
 }

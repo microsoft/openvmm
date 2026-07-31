@@ -1373,6 +1373,7 @@ dependencies = [
  "inspect_proto",
  "mesh_rpc",
  "pal_async",
+ "powershell_builder",
  "socket2",
  "thiserror 2.0.16",
  "unix_socket",
@@ -1537,6 +1538,7 @@ dependencies = [
  "pal_uring",
  "scsi_buffers",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "uevent",
@@ -2114,6 +2116,7 @@ dependencies = [
  "guestmem",
  "guid",
  "hcl_compat_uefi_nvram_storage",
+ "hyperv_uefi_custom_vars_json",
  "inspect",
  "jiff",
  "local_clock",
@@ -2153,6 +2156,7 @@ dependencies = [
  "chipset_resources",
  "firmware_uefi_custom_vars",
  "hcl_compat_uefi_nvram_resources",
+ "hyperv_secure_boot_templates",
  "inspect",
  "mesh",
  "mesh_protobuf",
@@ -2303,6 +2307,7 @@ version = "0.0.0"
 dependencies = [
  "flowey",
  "home",
+ "powershell_builder",
  "rlimit",
  "roxmltree",
  "rustc-hash 2.1.1",
@@ -2326,6 +2331,7 @@ dependencies = [
  "flowey_lib_common",
  "igvmfilegen_config",
  "log",
+ "opentmk_disk",
  "paste",
  "powershell_builder",
  "serde",
@@ -3682,6 +3688,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "parking_lot",
+ "powershell_builder",
  "rustyline",
  "shell-words",
 ]
@@ -5582,12 +5589,37 @@ dependencies = [
  "memory_range",
  "minimal_rt",
  "nostd_spin_channel",
+ "opentmk_protocol",
  "serde",
  "serde_json",
  "spin",
  "thiserror 2.0.16",
  "uefi",
  "x86_64",
+ "zerocopy",
+]
+
+[[package]]
+name = "opentmk_disk"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "disk_vhd1",
+ "fatfs",
+ "fscommon",
+ "gptman",
+ "guid",
+ "opentmk_protocol",
+ "tempfile",
+]
+
+[[package]]
+name = "opentmk_protocol"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.16",
  "zerocopy",
 ]
 
@@ -5745,7 +5777,6 @@ dependencies = [
  "dirs",
  "disk_backend_resources",
  "disk_crypt_resources",
- "firmware_uefi_custom_vars",
  "firmware_uefi_resources",
  "floppy_resources",
  "framebuffer",
@@ -5757,8 +5788,6 @@ dependencies = [
  "getrandom 0.4.2",
  "guid",
  "hyperv_ic_resources",
- "hyperv_secure_boot_templates",
- "hyperv_uefi_custom_vars_json",
  "ide_resources",
  "input_core",
  "inspect",
@@ -6377,7 +6406,6 @@ dependencies = [
  "guid",
  "hvdef",
  "hyperv_ic_resources",
- "hyperv_secure_boot_templates",
  "ide_resources",
  "image",
  "initrd_cpio",
@@ -8841,7 +8869,6 @@ dependencies = [
  "disk_get_vmgs",
  "disk_nvme",
  "firmware_pcat",
- "firmware_uefi_custom_vars",
  "firmware_uefi_resources",
  "framebuffer",
  "fs-err",
@@ -8857,8 +8884,6 @@ dependencies = [
  "hvdef",
  "hyperv_ic_guest",
  "hyperv_ic_resources",
- "hyperv_secure_boot_templates",
- "hyperv_uefi_custom_vars_json",
  "ide",
  "ide_resources",
  "igvm",
@@ -9961,7 +9986,6 @@ name = "vm_manifest_builder"
 version = "0.0.0"
 dependencies = [
  "chipset_resources",
- "firmware_uefi_custom_vars",
  "firmware_uefi_resources",
  "getrandom 0.4.2",
  "input_core",
