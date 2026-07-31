@@ -36,7 +36,6 @@ use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
@@ -101,52 +100,9 @@ pub struct ConsommeEndpoint {
     /// Port bind/unbind requests arriving from another process (e.g. from
     /// ttrpc).
     remote_recv: Option<mesh::Receiver<ConsommeRequest>>,
-    /// Requests buffered until the next queue (re)start applies them. Coalesced
-    /// per port so the set stays bounded.
-    pending: PendingRequests,
-}
-
-/// Requests buffered while no queue owns the consomme state.
-#[derive(Default)]
-struct PendingRequests {
-    /// Bind/unbind requests, keyed by port; a newer request for a port replaces
-    /// (and completes) an older one.
-    ports: HashMap<PortKey, ConsommeRequest>,
-    /// In-proc state updates, applied in order.
-    state_updates: Vec<Rpc<ConsommeParamsUpdateFn, ()>>,
-}
-
-impl PendingRequests {
-    fn is_empty(&self) -> bool {
-        self.ports.is_empty() && self.state_updates.is_empty()
-    }
-
-    fn buffer_control(&mut self, request: ControlRequest) {
-        match request {
-            ControlRequest::Port(request) => self.buffer_request(request),
-            ControlRequest::UpdateState(rpc) => self.state_updates.push(rpc),
-        }
-    }
-
-    /// Adds a port request, coalescing it with any existing request for the
-    /// same port.
-    fn buffer_request(&mut self, request: ConsommeRequest) {
-        let key = PortKey::for_request(&request);
-        if let Some(existing) = self.ports.remove(&key) {
-            let cancels = matches!(existing, ConsommeRequest::Bind(_))
-                && matches!(request, ConsommeRequest::Unbind(_));
-            if cancels {
-                // Unbind cancels a not-yet-applied bind; complete both as no-ops.
-                into_rpc(existing).complete(Ok(()));
-                into_rpc(request).complete(Ok(()));
-                tracing::debug!(guest_port = key.guest_port, "coalesced bind and unbind");
-                return;
-            }
-            // Newer request wins; report the older one as superseded.
-            into_rpc(existing).fail(PortRequestSuperseded);
-        }
-        self.ports.insert(key, request);
-    }
+    /// Requests buffered while the queue owns the consomme state, applied in
+    /// order on the next queue restart.
+    pending: VecDeque<ControlRequest>,
 }
 
 /// Drains all currently-available items from `recv` into `buffer`, registering a
@@ -178,31 +134,6 @@ fn drain_receiver<T>(
         }
     }
     received
-}
-
-/// Coalescing key: bind/unbind for the same protocol, family, and guest port
-/// target the same forward.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct PortKey {
-    is_udp: bool,
-    is_ipv6: bool,
-    guest_port: u16,
-}
-
-impl PortKey {
-    fn for_request(request: &ConsommeRequest) -> Self {
-        let cfg = match request {
-            ConsommeRequest::Bind(rpc) | ConsommeRequest::Unbind(rpc) => rpc.input(),
-        };
-        Self {
-            is_udp: matches!(cfg.protocol, HostPortProtocol::Udp),
-            is_ipv6: matches!(
-                cfg.host_address,
-                Some(net_backend_resources::consomme::HostIpAddress::Ipv6(_))
-            ),
-            guest_port: cfg.guest_port,
-        }
-    }
 }
 
 /// Configuration for a port to forward from the host to the guest.
@@ -263,7 +194,7 @@ impl ConsommeEndpoint {
             }))),
             local_recv,
             remote_recv,
-            pending: PendingRequests::default(),
+            pending: VecDeque::new(),
         }
     }
 
@@ -277,13 +208,11 @@ impl ConsommeEndpoint {
             pending,
             ..
         } = self;
-        // Borrow each receiver and `pending` separately so the shared buffering
-        // logic can be reused for both channels without a borrow conflict.
         let mut received = drain_receiver(local_recv, cx, "control", |request| {
-            pending.buffer_control(request)
+            pending.push_back(request)
         });
         received |= drain_receiver(remote_recv, cx, "port request", |request| {
-            pending.buffer_request(request)
+            pending.push_back(ControlRequest::Port(request))
         });
         received
     }
@@ -362,20 +291,38 @@ impl ConsommeControl {
         ip_addr: Option<IpAddr>,
         host_port: u16,
         guest_port: u16,
-    ) -> Result<(), ConsommeMessageError> {
+    ) -> Result<u16, ConsommeMessageError> {
+        let (host_port_config, assigned_port) = if host_port == 0 {
+            let (send, recv) = mesh::oneshot();
+            (
+                net_backend_resources::consomme::HostPort::Dynamic(send),
+                Some(recv),
+            )
+        } else {
+            (
+                net_backend_resources::consomme::HostPort::Fixed(host_port),
+                None,
+            )
+        };
         self.send
             .call(
                 |rpc| ControlRequest::Port(ConsommeRequest::Bind(rpc)),
                 HostPortConfig {
                     protocol: protocol.into(),
                     host_address: ip_addr.map(net_backend_resources::consomme::HostIpAddress::from),
-                    host_port: net_backend_resources::consomme::HostPort::Fixed(host_port),
+                    host_port: host_port_config,
                     guest_port,
                 },
             )
             .await
             .map_err(ConsommeMessageError::Mesh)?
-            .map_err(ConsommeMessageError::Remote)
+            .map_err(ConsommeMessageError::Remote)?;
+        match assigned_port {
+            Some(recv) => recv
+                .await
+                .map_err(|err| ConsommeMessageError::Mesh(RpcError::Channel(err))),
+            None => Ok(host_port),
+        }
     }
 
     /// Unbinds a port previously reserved with bind_port(); `ip_addr` (or `None`)
@@ -482,15 +429,17 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         // request triggers the next restart.
         let pending = std::mem::take(&mut self.pending);
         queue.with_consomme_no_pool(|c| {
-            for request in pending.ports.into_values() {
-                process_port_request(c, request);
-            }
-            for rpc in pending.state_updates {
-                rpc.handle_sync(|f| {
-                    f(c.get_mut().params_mut());
-                    c.get_mut().clear_local_addr_map();
-                    c.update_dns_nameservers()
-                });
+            for request in pending {
+                match request {
+                    ControlRequest::Port(request) => process_port_request(c, request),
+                    ControlRequest::UpdateState(rpc) => {
+                        rpc.handle_sync(|f| {
+                            f(c.get_mut().params_mut());
+                            c.get_mut().clear_local_addr_map();
+                            c.update_dns_nameservers()
+                        });
+                    }
+                }
             }
         });
 
@@ -650,18 +599,6 @@ fn execute_unbind(
         IpProtocol::Udp => consomme.unbind_udp_port(family, cfg.guest_port),
     };
     result.context("failed to unbind port")
-}
-
-/// Returned to a port request superseded by a newer one for the same port.
-#[derive(Debug, Error)]
-#[error("port request superseded by a newer request for the same guest port")]
-struct PortRequestSuperseded;
-
-/// Extracts the inner RPC from a `ConsommeRequest` to complete a coalesced one.
-fn into_rpc(request: ConsommeRequest) -> mesh::rpc::FailableRpc<HostPortConfig, ()> {
-    match request {
-        ConsommeRequest::Bind(rpc) | ConsommeRequest::Unbind(rpc) => rpc,
-    }
 }
 
 /// Handle a `ConsommeRequest` (shared by both in-proc and cross-proc paths).
@@ -933,36 +870,25 @@ mod tests {
     }
 
     #[test]
-    fn unbind_cancels_pending_bind() {
+    fn requests_for_same_port_remain_ordered() {
         let mut ep = endpoint();
         ep.pending
-            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
-        assert_eq!(ep.pending.ports.len(), 1);
-        // An unbind for the same port annihilates the not-yet-applied bind.
+            .push_back(ControlRequest::Port(ConsommeRequest::Bind(Rpc::detached(
+                cfg(80),
+            ))));
         ep.pending
-            .buffer_request(ConsommeRequest::Unbind(Rpc::detached(cfg(80))));
-        assert!(ep.pending.ports.is_empty());
-    }
+            .push_back(ControlRequest::Port(ConsommeRequest::Unbind(
+                Rpc::detached(cfg(80)),
+            )));
 
-    #[test]
-    fn newer_request_supersedes_same_port() {
-        let mut ep = endpoint();
-        ep.pending
-            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
-        ep.pending
-            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
-        // The two binds collapse to a single pending entry.
-        assert_eq!(ep.pending.ports.len(), 1);
-    }
-
-    #[test]
-    fn different_ports_are_independent() {
-        let mut ep = endpoint();
-        ep.pending
-            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
-        ep.pending
-            .buffer_request(ConsommeRequest::Bind(Rpc::detached(cfg(81))));
-        assert_eq!(ep.pending.ports.len(), 2);
+        assert!(matches!(
+            ep.pending.pop_front(),
+            Some(ControlRequest::Port(ConsommeRequest::Bind(_)))
+        ));
+        assert!(matches!(
+            ep.pending.pop_front(),
+            Some(ControlRequest::Port(ConsommeRequest::Unbind(_)))
+        ));
     }
 
     #[test]
@@ -984,7 +910,7 @@ mod tests {
         // A request becomes available: read exactly once.
         send.send(ConsommeRequest::Bind(Rpc::detached(cfg(80))));
         assert!(ep.drain_channels(&mut cx));
-        assert_eq!(ep.pending.ports.len(), 1);
+        assert_eq!(ep.pending.len(), 1);
 
         // Nothing new, even though `pending` is non-empty: no re-trigger (this
         // is what stops the frontend's restart-coalescing loop from spinning).
