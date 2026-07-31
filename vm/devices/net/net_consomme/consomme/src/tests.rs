@@ -519,7 +519,7 @@ fn create_virtual_address_allocates_ipv6_link_local() {
 
 /// Build a DNS `A`-record query for `name` (transaction id `id`, RD=1).
 fn build_dns_a_query(id: u16, name: &str) -> Vec<u8> {
-    dns_records::build_query(id, name, DnsQueryType::A)
+    dns_resolver::build_query(id, name, DnsQueryType::A)
 }
 
 /// Build an Ethernet/IPv4/UDP frame carrying `dns_payload` from the guest to

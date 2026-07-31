@@ -20,7 +20,6 @@ mod dhcpv6;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
-mod dns_records;
 mod dns_resolver;
 mod icmp;
 mod local_addr_map;
@@ -41,8 +40,8 @@ const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
     max: 4 * 1024 * 1024,
 };
 
-pub use dns_records::StaticDnsRecordError;
-pub use dns_records::StaticDnsRecord;
+pub use dns_resolver::StaticDnsRecord;
+pub use dns_resolver::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -119,9 +118,7 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
-    dns: Option<dns_resolver::DnsResolver>,
-    #[inspect(skip)]
-    static_dns: dns_records::StaticDnsRecords,
+    dns: dns_resolver::DnsResolver,
     host_has_ipv6: bool,
 }
 
@@ -818,13 +815,15 @@ impl Consomme {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
                     params.nameservers = params.internal_nameservers(host_has_ipv6);
-                    Some(dns)
+                    dns
                 }
                 Err(_) => {
                     tracelimit::warn_ratelimited!(
                         "failed to initialize DNS resolver, falling back to using host DNS settings"
                     );
-                    None
+                    dns_resolver::DnsResolver::without_backend(
+                        dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
+                    )
                 }
             };
         let timeout = params.udp_timeout;
@@ -840,7 +839,6 @@ impl Consomme {
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
             dns,
-            static_dns: dns_records::StaticDnsRecords::default(),
             host_has_ipv6,
         }
     }
@@ -870,7 +868,7 @@ impl Consomme {
         record: StaticDnsRecord,
         name: &str,
     ) -> Result<(), StaticDnsRecordError> {
-        self.static_dns.add(record, name)
+        self.dns.add_static_record(record, name)
     }
 
     /// Allocates a virtual address within this endpoint's subnet and routes
@@ -1145,7 +1143,7 @@ impl<T: Client> Access<'_, T> {
 
     /// Updates the DNS nameservers based on the current consomme parameters.
     pub fn update_dns_nameservers(&mut self) {
-        if self.inner.dns.is_some() {
+        if self.inner.dns.is_available() {
             self.inner.state.params.nameservers = self
                 .inner
                 .state

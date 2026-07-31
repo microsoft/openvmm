@@ -14,7 +14,6 @@ use crate::FourTuple;
 use crate::IpAddresses;
 use crate::IpVersion;
 use crate::PortForwardKey;
-use crate::dns_records::StaticDnsRecords;
 use crate::dns_resolver::DnsResolver;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
@@ -444,19 +443,19 @@ impl<T: Client> Access<'_, T> {
                 client: self.client,
             };
             let keep = match &mut conn.backend {
-                TcpBackend::Dns(dns_handler) => match &mut self.inner.dns {
-                    Some(dns) => conn.inner.poll_dns_backend(
-                        cx,
-                        &mut sender,
-                        dns_handler,
-                        &self.inner.static_dns,
-                        dns,
-                    ),
-                    None => {
+                TcpBackend::Dns(dns_handler) => {
+                    if self.inner.dns.is_available() {
+                        conn.inner.poll_dns_backend(
+                            cx,
+                            &mut sender,
+                            dns_handler,
+                            &mut self.inner.dns,
+                        )
+                    } else {
                         tracing::warn!("DNS TCP connection without DNS resolver, dropping");
                         false
                     }
-                },
+                }
                 TcpBackend::Socket(opt_socket) => {
                     conn.inner.poll_socket_backend(cx, &mut sender, opt_socket)
                 }
@@ -526,7 +525,7 @@ impl<T: Client> Access<'_, T> {
         trace_tcp_packet(&ft, &tcp, tcp.payload.len(), "recv");
 
         let is_dns_tcp =
-            is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_some());
+            is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_available());
 
         let mut sender = Sender {
             ft: &ft,
@@ -561,9 +560,7 @@ impl<T: Client> Access<'_, T> {
                     );
                     e.remove();
                     if dns_in_flight {
-                        if let Some(dns) = &mut self.inner.dns {
-                            dns.complete_tcp_query();
-                        }
+                        self.inner.dns.complete_tcp_query();
                     }
                 }
             }
@@ -1005,7 +1002,6 @@ impl TcpConnectionInner {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         dns_handler: &mut DnsTcpHandler,
-        static_dns: &StaticDnsRecords,
         dns: &mut DnsResolver,
     ) -> bool {
         // Propagate guest FIN before the tx path so that poll_read can
@@ -1026,7 +1022,7 @@ impl TcpConnectionInner {
         // records is drained into tx_buffer within the same poll.
         let view = self.rx_buffer.view(0..self.rx_buffer.len());
         let (a, b) = view.as_slices();
-        match dns_handler.ingest(&[a, b], static_dns, dns) {
+        match dns_handler.ingest(&[a, b], dns) {
             Ok(consumed) if consumed > 0 => {
                 self.rx_buffer.consume(consumed);
             }

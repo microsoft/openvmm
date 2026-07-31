@@ -321,15 +321,7 @@ impl<T: Client> Access<'_, T> {
             );
         }
 
-        while let Some(response) =
-            self.inner
-                .dns
-                .as_mut()
-                .and_then(|dns| match dns.poll_udp_response(cx) {
-                    Poll::Ready(resp) => resp,
-                    Poll::Pending => None,
-                })
-        {
+        while let Poll::Ready(Some(response)) = self.inner.dns.poll_udp_response(cx) {
             if let Err(e) = self.send_dns_response(&response) {
                 tracelimit::error_ratelimited!(error = ?e, "Failed to send DNS response");
             }
@@ -614,12 +606,12 @@ impl<T: Client> Access<'_, T> {
             .client
             .rx_mtu()
             .saturating_sub(ETHERNET_HEADER_LEN + ip_header_len + UDP_HEADER_LEN)
-            .min(crate::dns_records::MAX_DNS_UDP_RESPONSE_LEN);
+            .min(crate::dns_resolver::MAX_DNS_UDP_RESPONSE_LEN);
 
         if let Some(response_data) = self
             .inner
-            .static_dns
-            .build_response(udp.payload(), max_response_len)
+            .dns
+            .build_static_response(udp.payload(), max_response_len)
         {
             let response = DnsResponse {
                 flow,
@@ -631,9 +623,9 @@ impl<T: Client> Access<'_, T> {
             return Ok(true);
         }
 
-        let Some(dns) = self.inner.dns.as_mut() else {
+        if !self.inner.dns.is_available() {
             return Ok(false);
-        };
+        }
 
         let request = DnsRequest {
             flow,
@@ -644,7 +636,7 @@ impl<T: Client> Access<'_, T> {
         // The response will be queued and sent later in poll_udp, unless the
         // resolver is rate-limited, in which case it returns a SERVFAIL to
         // emit immediately.
-        let immediate_response = dns.submit_udp_query(&request).map_err(|e| {
+        let immediate_response = self.inner.dns.submit_udp_query(&request).map_err(|e| {
             tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
             DropReason::Packet(smoltcp::wire::Error)
         })?;
