@@ -57,7 +57,7 @@ members = [
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   # opentmk
-  "opentmk",
+  "opentmk/opentmk_tests",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
 ]
@@ -216,6 +216,8 @@ underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
+
+opentmk = { path = "opentmk" }
 
 tmk_core = { path = "tmk/tmk_core" }
 tmk_macros = { path = "tmk/tmk_macros" }

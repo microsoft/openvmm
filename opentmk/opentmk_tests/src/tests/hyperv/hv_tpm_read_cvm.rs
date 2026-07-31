@@ -5,14 +5,14 @@ use core::ops::Range;
 
 use hvdef::Vtl;
 
-use crate::arch::tpm::Tpm;
-use crate::context::InterruptPlatformTrait;
-use crate::context::SecureInterceptPlatformTrait;
-use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecToken;
-use crate::context::VtlPlatformTrait;
-use crate::devices::tpm::{TpmDevice, TpmUtil};
-use crate::tmk_assert;
+use opentmk::arch::tpm::Tpm;
+use opentmk::context::InterruptPlatformTrait;
+use opentmk::context::SecureInterceptPlatformTrait;
+use opentmk::context::VirtualProcessorPlatformTrait;
+use opentmk::context::VpExecToken;
+use opentmk::context::VtlPlatformTrait;
+use opentmk::devices::tpm::{TpmDevice, TpmUtil};
+use opentmk::tmk_assert;
 
 /// Executes a series of tests to validate TPM read violation in a Hyper-V environment.
 pub fn exec<T>(ctx: &mut T)

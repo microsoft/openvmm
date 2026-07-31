@@ -57,11 +57,17 @@ pub struct InstrIoAccess;
 
 impl IoAccess for InstrIoAccess {
     unsafe fn inb(&self, port: u16) -> u8 {
-        io::inb(port)
+        unsafe {
+            // SAFETY: Caller assured that this port is safe to be read from
+            io::inb(port)
+        }
     }
 
     unsafe fn outb(&self, port: u16, data: u8) {
-        io::outb(port, data)
+        unsafe {
+            // SAFETY: Caller assured that this port is safe to be written to
+            io::outb(port, data)
+        }
     }
 }
 
@@ -87,16 +93,51 @@ impl<T: IoAccess> Serial<T> {
         // SAFETY: Initializing the serial port is safe.
         unsafe {
             self.io.outb(self.serial_port.value() + 1, 0x00); // Disable all interrupts
-            self.io.outb(self.serial_port.value() + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
-            self.io.outb(self.serial_port.value() + 4, 0x0F);
+            self.io.outb(self.serial_port.value() + 3, 0x80); // Enable DLAB
+            self.io.outb(self.serial_port.value(), 1); // Low byte divisor
+            self.io.outb(self.serial_port.value() + 1, 0); // High byte divisor
+            self.io.outb(self.serial_port.value() + 3, 0x03); // 8 bits, 1 stop bit, no parity
+            self.io.outb(self.serial_port.value() + 2, 0x07); // Enable FIFO, clear them
         }
     }
 
-    fn write_byte(&self, b: u8) {
+    /// Write a single byte to the serial port, blocking until the transmit
+    /// holding register is empty.
+    pub fn write_byte(&self, b: u8) {
+        let _guard = self.mutex.lock();
+        self.write_byte_unlocked(b);
+    }
+
+    fn write_byte_unlocked(&self, b: u8) {
         // SAFETY: Reading and writing text to the serial device is safe.
         unsafe {
-            while self.io.inb(self.serial_port.value() + 5) & 0x20 == 0 {}
+            while self.io.inb(self.serial_port.value() + 5) & 0x20 == 0 {
+                core::hint::spin_loop();
+            }
             self.io.outb(self.serial_port.value(), b);
+        }
+    }
+
+    /// Read a single byte from the serial port, blocking until one is
+    /// available.
+    pub fn read_byte(&self) -> u8 {
+        // SAFETY: Reading and writing text to the serial device is safe.
+        unsafe {
+            while self.io.inb(self.serial_port.value() + 5) & 1 == 0 {
+                core::hint::spin_loop();
+            }
+            self.io.inb(self.serial_port.value())
+        }
+    }
+
+    /// Drain any bytes currently pending in the receive FIFO.
+    pub fn drain(&self) {
+        unsafe {
+            // SAFETY: reading text to the serial device is safe
+            while self.io.inb(self.serial_port.value() + 5) & 1 != 0 {
+                self.io.inb(self.serial_port.value());
+                core::hint::spin_loop();
+            }
         }
     }
 }
@@ -106,9 +147,9 @@ impl<T: IoAccess> fmt::Write for Serial<T> {
         let _guard = self.mutex.lock();
         for &b in s.as_bytes() {
             if b == b'\n' {
-                self.write_byte(b'\r');
+                self.write_byte_unlocked(b'\r');
             }
-            self.write_byte(b);
+            self.write_byte_unlocked(b);
         }
         Ok(())
     }

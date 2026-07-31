@@ -5598,6 +5598,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentmk_tests"
+version = "0.0.0"
+dependencies = [
+ "hvdef",
+ "log",
+ "nostd_spin_channel",
+ "opentmk",
+ "spin",
+ "uefi",
+]
+
+[[package]]
 name = "openvmm"
 version = "0.0.0"
 dependencies = [
