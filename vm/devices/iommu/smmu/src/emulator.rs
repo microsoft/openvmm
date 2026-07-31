@@ -34,7 +34,7 @@ use vmcore::save_restore::SaveRestore;
 /// advertised value is carried by this policy up front. For accelerated SMMUs
 /// the final value also depends on the physical SMMU backing the device, which
 /// is only known once a VFIO device is bound to iommufd — see
-/// [`SmmuSharedState::bind_host_smmu`].
+/// [`SmmuSharedState::bind_accel_viommu`].
 ///
 /// Both variants carry a concrete OAS supplied by the caller. This crate
 /// deliberately defines no default, so that the choice for `auto` is made once
@@ -58,7 +58,7 @@ pub enum SmmuOasPolicy {
 ///
 /// Decoded from a host SMMUv3's `IDR0..IDR5` register values (as returned by
 /// `IOMMU_GET_HW_INFO`) via [`HostSmmuCaps::from_idr`], and handed to
-/// [`SmmuSharedState::bind_host_smmu`], which finalizes the host-derived
+/// [`SmmuSharedState::bind_accel_viommu`], which finalizes the host-derived
 /// vSMMU parameters and validates host/guest compatibility the first time a
 /// VFIO device binds. Keeping this a plain value type (with the IDR decoding
 /// owned by this crate) avoids a dependency from the `smmu` crate on the
@@ -66,7 +66,7 @@ pub enum SmmuOasPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostSmmuCaps {
     /// Host SMMUv3 output address size (IDR5.OAS field). Resolved to a bit
-    /// width (and validated) in [`SmmuSharedState::bind_host_smmu`], since
+    /// width (and validated) in [`SmmuSharedState::bind_accel_viommu`], since
     /// the encoding may be one the architecture reserves.
     pub(crate) oas: crate::spec::cd::Ips,
     /// Host translation table format support (IDR0.TTF).
@@ -85,7 +85,7 @@ impl HostSmmuCaps {
     /// crate owns the register layout, so decoding lives here rather than in
     /// the iommufd bindings. This decode is total — the only field whose value
     /// may be unrecognized is OAS, whose `Ips` encoding is interpreted in
-    /// [`SmmuSharedState::bind_host_smmu`].
+    /// [`SmmuSharedState::bind_accel_viommu`].
     pub fn from_idr(idr: [u32; 6]) -> Self {
         let idr0 = registers::Idr0::from(idr[0]);
         let idr5 = registers::Idr5::from(idr[5]);
@@ -164,7 +164,6 @@ pub struct SmmuDevice {
 
     // Control registers.
     cr0: registers::Cr0,
-    cr0ack: registers::Cr0,
     cr1: registers::Cr1,
     cr2: registers::Cr2,
     gbpa: registers::Gbpa,
@@ -330,7 +329,6 @@ impl SmmuDevice {
             aidr: 0x03, // SMMUv3.3
 
             cr0: registers::Cr0::new(),
-            cr0ack: registers::Cr0::new(),
             cr1: registers::Cr1::new(),
             cr2: registers::Cr2::new(),
             gbpa,
@@ -380,7 +378,7 @@ impl SmmuDevice {
             registers::AIDR => self.aidr,
 
             registers::CR0 => self.cr0.into(),
-            registers::CR0ACK => self.cr0ack.into(),
+            registers::CR0ACK => self.cr0.into(),
             registers::CR1 => self.cr1.into(),
             registers::CR2 => self.cr2.into(),
             registers::STATUSR => 0,
@@ -446,10 +444,10 @@ impl SmmuDevice {
 
             registers::CR0 => {
                 let requested = Self::sanitize_cr0(value);
-                let previous_ack = self.cr0ack;
+                let previous = self.cr0;
                 self.cr0 = requested;
 
-                if requested.smmuen() != previous_ack.smmuen() {
+                if requested.smmuen() != previous.smmuen() {
                     let mut policy = self.shared_state.translation_policy();
                     policy.enabled = requested.smmuen();
                     self.shared_state
@@ -457,9 +455,8 @@ impl SmmuDevice {
                 }
 
                 self.shared_state.set_evtq_enabled(requested.eventqen());
-                self.cr0ack = requested;
 
-                if !previous_ack.cmdqen() && requested.cmdqen() {
+                if !previous.cmdqen() && requested.cmdqen() {
                     self.process_cmdq();
                 }
             }
@@ -476,7 +473,7 @@ impl SmmuDevice {
                 }
                 let gbpa = Self::sanitize_gbpa(value);
 
-                if self.cr0ack.smmuen() {
+                if self.cr0.smmuen() {
                     // While enabled, GBPA only records the policy for a future
                     // disabled state and does not affect current STE policy.
                     self.shared_state.set_gbpa_abort(gbpa.abort());
@@ -669,6 +666,10 @@ impl SmmuDevice {
         self.shared_state.cmdq_err_active()
     }
 
+    /// Processes pending commands from `CMDQ_CONS` through `CMDQ_PROD`.
+    ///
+    /// Called when the guest advances `CMDQ_PROD` or enables a command queue
+    /// that already contains commands.
     fn process_cmdq(&mut self) {
         if !self.cmdq_enabled() {
             return;
@@ -862,8 +863,7 @@ impl SmmuDevice {
 
                 // TLBI_S12_VMALL is a stage-2 invalidation. This vSMMU
                 // advertises IDR0.S2P=0 (stage-1 only), so per SMMUv3 §4.4.3.2
-                // the command is illegal and must raise CERROR_ILL rather than
-                // be forwarded (the host kernel also rejects it).
+                // the command is illegal and must raise CERROR_ILL.
                 CmdOpcode::TLBI_S12_VMALL => {
                     tracelimit::warn_ratelimited!(
                         "smmu: TLBI_S12_VMALL is illegal on a stage-1-only SMMU"
@@ -1015,7 +1015,6 @@ impl ChangeDeviceState for SmmuDevice {
 
             // Control registers — reset to power-on defaults.
             cr0,
-            cr0ack,
             cr1,
             cr2,
             gbpa,
@@ -1060,7 +1059,6 @@ impl ChangeDeviceState for SmmuDevice {
         shared_state.transition_translation_policy(reset_policy, "SMMU reset");
 
         *cr0 = reset_cr0;
-        *cr0ack = reset_cr0;
         *cr1 = registers::Cr1::new();
         *cr2 = registers::Cr2::new();
         // GBPA resets to ABORT=0 (disabled-state DMA bypasses), matching the
@@ -1114,7 +1112,6 @@ impl SaveRestore for SmmuDevice {
 
             // Control registers.
             cr0,
-            cr0ack: _, // mirror of cr0 (immediate ack)
             cr1,
             cr2,
             gbpa,
@@ -1207,7 +1204,6 @@ impl SaveRestore for SmmuDevice {
             .transition_translation_policy(restored_policy, "SMMU restore");
 
         self.cr0 = restored_cr0;
-        self.cr0ack = restored_cr0;
         self.cr1 = restored_cr1;
         self.cr2 = restored_cr2;
         self.gbpa = restored_gbpa;
@@ -2179,7 +2175,7 @@ mod tests {
         }
     }
 
-    impl crate::shared::AcceleratedViommu for MockViommu {
+    impl crate::shared::Invalidate for MockViommu {
         fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize> {
             self.batches.lock().push(entries.to_vec());
             match *self.accept_limit.lock() {
@@ -2888,7 +2884,7 @@ mod tests {
 
         struct DropTrackingViommu(Arc<AtomicBool>);
 
-        impl crate::shared::AcceleratedViommu for DropTrackingViommu {
+        impl crate::shared::Invalidate for DropTrackingViommu {
             fn invalidate(&self, _entries: &[[u64; 2]]) -> Result<(), usize> {
                 Ok(())
             }
@@ -2917,7 +2913,7 @@ mod tests {
         let dropped = Arc::new(AtomicBool::new(false));
         let viommu = Arc::new(DropTrackingViommu(dropped.clone()));
         dev.shared_state
-            .bind_host_smmu(test_host_caps(), &viommu)
+            .bind_accel_viommu(test_host_caps(), &viommu)
             .expect("bind host SMMU");
 
         let registrations: Vec<_> = [0x100u32, 0x200]
@@ -2949,29 +2945,29 @@ mod tests {
     /// physical SMMU. A device arriving after the last one left may bring a
     /// new vIOMMU, since the old one is gone.
     #[test]
-    fn test_bind_host_smmu_rejects_a_second_live_viommu() {
+    fn test_bind_accel_viommu_rejects_a_second_live_viommu() {
         let dev = make_accel_device();
 
         let first = MockViommu::new();
         dev.shared_state
-            .bind_host_smmu(test_host_caps(), &first)
+            .bind_accel_viommu(test_host_caps(), &first)
             .expect("bind first vIOMMU");
         // A second device behind the same vSMMU names the same vIOMMU.
         dev.shared_state
-            .bind_host_smmu(test_host_caps(), &first)
+            .bind_accel_viommu(test_host_caps(), &first)
             .expect("rebind the same vIOMMU");
 
         let second = MockViommu::new();
         let err = dev
             .shared_state
-            .bind_host_smmu(test_host_caps(), &second)
+            .bind_accel_viommu(test_host_caps(), &second)
             .expect_err("a competing live vIOMMU must be rejected")
             .to_string();
         assert!(err.contains("cannot be backed by two"), "{err}");
 
         drop(first);
         dev.shared_state
-            .bind_host_smmu(test_host_caps(), &second)
+            .bind_accel_viommu(test_host_caps(), &second)
             .expect("bind a replacement vIOMMU once the first is gone");
     }
 
@@ -2990,7 +2986,7 @@ mod tests {
             locked_during_invalidate: AtomicBool,
         }
 
-        impl crate::shared::AcceleratedViommu for LockObservingSink {
+        impl crate::shared::Invalidate for LockObservingSink {
             fn invalidate(&self, _entries: &[[u64; 2]]) -> Result<(), usize> {
                 let shared = self.shared.upgrade().expect("SMMU shared state");
                 self.locked_during_invalidate
@@ -3017,7 +3013,7 @@ mod tests {
             locked_during_invalidate: AtomicBool::new(false),
         });
         dev.shared_state
-            .bind_host_smmu(test_host_caps(), &sink)
+            .bind_accel_viommu(test_host_caps(), &sink)
             .expect("bind host SMMU");
 
         write_cmdq_entry(&dev, 0, &cfgi_cd_entry(CmdOpcode::CFGI_CD, sid, 0));
@@ -3122,7 +3118,7 @@ mod tests {
         let dev = make_cmdq_test_device();
         let sink = MockViommu::new();
         dev.shared_state
-            .bind_host_smmu(test_host_caps(), &sink)
+            .bind_accel_viommu(test_host_caps(), &sink)
             .expect("bind host SMMU");
         (dev, sink)
     }
@@ -3380,7 +3376,7 @@ mod tests {
         let sink = MockViommu::new();
         sink.set_accept_limit(1);
         dev.shared_state
-            .bind_host_smmu(test_host_caps(), &sink)
+            .bind_accel_viommu(test_host_caps(), &sink)
             .expect("bind host SMMU");
 
         dev.guest_memory

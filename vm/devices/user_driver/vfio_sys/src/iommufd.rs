@@ -288,9 +288,8 @@ pub const IOMMU_VIOMMU_TYPE_ARM_SMMUV3: u32 = 1;
 pub enum ViommuAlloc {
     /// The kernel-assigned vIOMMU object ID.
     Allocated(u32),
-    /// The nesting parent's domain is not compatible with the device — most
-    /// commonly because it was allocated against a different physical IOMMU.
-    /// Try another parent, or allocate one against this device.
+    /// The nesting parent belongs to a different physical IOMMU than the
+    /// device. Callers may probe another candidate parent.
     Incompatible,
 }
 
@@ -642,10 +641,12 @@ impl IommufdCtx {
     /// `dev_id` is a device bound to the physical IOMMU backing this vIOMMU.
     /// `hwpt_id` is the nesting parent HWPT to associate with.
     ///
-    /// Returns [`ViommuAlloc::Incompatible`] when the kernel rejects the
-    /// pairing with `EINVAL`, which is how it reports that `hwpt_id`'s domain
-    /// belongs to a different physical IOMMU than `dev_id`. Callers probe
-    /// candidate parents with this and allocate a fresh one if none fit.
+    /// Returns [`ViommuAlloc::Incompatible`] when the nesting parent and device
+    /// belong to different physical SMMUs. For this wrapper all generic fields
+    /// are fixed to valid Arm SMMUv3 values and `hwpt_id` is supplied by
+    /// [`IommufdCtx::hwpt_alloc`] with `IOMMU_HWPT_ALLOC_NEST_PARENT`; after
+    /// those core checks, the Arm driver returns `EINVAL` only when the parent
+    /// domain's SMMU differs from the device's SMMU.
     pub fn viommu_alloc(
         &self,
         viommu_type: u32,

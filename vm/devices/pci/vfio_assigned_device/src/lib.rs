@@ -1388,10 +1388,16 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
 
         // Reset the physical device via VFIO so it starts in a clean state.
         if supports_reset {
-            vfio_device.device.reset().unwrap_or_else(|error| {
-                panic!("failed to reset VFIO device {}: {error:#}", pci_id)
-            });
-            *in_d0 = true;
+            match vfio_device.device.reset() {
+                Ok(()) => *in_d0 = true,
+                Err(error) => {
+                    tracelimit::warn_ratelimited!(
+                        pci_id = pci_id.as_str(),
+                        error = error.as_ref() as &dyn std::error::Error,
+                        "failed to reset VFIO device"
+                    );
+                }
+            }
         }
     }
 }

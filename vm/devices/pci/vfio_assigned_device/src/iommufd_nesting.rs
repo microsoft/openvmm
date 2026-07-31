@@ -8,7 +8,7 @@
 //! and page tables. The SMMU emulator decodes the guest's CMDQ commands and
 //! dispatches a [`smmu::StreamConfig`] to this module via the per-device
 //! [`smmu::AcceleratedStreamBackend`] trait, and forwards batched invalidation
-//! commands via the per-vIOMMU [`smmu::AcceleratedViommu`] trait,
+//! commands via the per-vIOMMU [`smmu::Invalidate`] trait,
 //! both of which program the host IOMMU hardware.
 //!
 //! # Architecture
@@ -31,7 +31,7 @@
 //!
 //! - [`SmmuAccelState`]: per-SMMU iommufd objects (vIOMMU). Created lazily on
 //!   first VFIO device attachment. Shared across all devices behind the same
-//!   SMMU. Implements [`smmu::AcceleratedViommu`]: invalidation is
+//!   SMMU. Implements [`smmu::Invalidate`]: invalidation is
 //!   vIOMMU-scoped, so one batched `IOMMU_HWPT_INVALIDATE` per guest command
 //!   covers every stream behind the SMMU.
 //! - [`IommufdStreamBackend`]: per-device stream backend, created during VFIO
@@ -154,14 +154,14 @@ impl NestingParent {
                 None,
             )
             .context("failed to allocate S2 parent HWPT for nesting")?;
-        tracing::info!(ioas_id, hwpt_id, dev_id, "allocated nesting parent HWPT");
+        tracing::debug!(ioas_id, hwpt_id, dev_id, "allocated nesting parent HWPT");
         Ok(Self { ctx, hwpt_id })
     }
 
     /// Attempts to build a vIOMMU for `dev_id` nesting on this parent.
     ///
     /// Returns [`ViommuAlloc::Incompatible`] if this parent belongs to a
-    /// different physical IOMMU than `dev_id`.
+    /// different physical SMMU than `dev_id`.
     pub fn alloc_viommu(&self, dev_id: u32) -> anyhow::Result<ViommuAlloc> {
         self.ctx.viommu_alloc(
             vfio_sys::iommufd::IOMMU_VIOMMU_TYPE_ARM_SMMUV3,
@@ -259,7 +259,7 @@ impl SmmuAccelState {
             "bypass HWPT",
         );
 
-        tracing::info!(
+        tracing::debug!(
             viommu_id = viommu.id(),
             s2_parent_hwpt_id = parent.hwpt_id,
             abort_hwpt_id = abort_hwpt.id(),
@@ -293,7 +293,7 @@ impl SmmuAccelState {
             .with_context(|| {
                 format!("failed to allocate vDevice for dev_id={dev_id}, vsid={vsid:#x}")
             })?;
-        tracing::info!(
+        tracing::debug!(
             dev_id,
             vdevice_id = id,
             virtual_sid = vsid,
@@ -340,7 +340,7 @@ impl Drop for SmmuAccelState {
                 .destroy(id)
                 .unwrap_or_else(|e| panic!("smmu accel: failed to destroy {kind} {id:#x}: {e:#}"));
         }
-        tracing::info!(viommu_id = self.viommu_id, "destroyed SMMU accel state");
+        tracing::debug!(viommu_id = self.viommu_id, "destroyed SMMU accel state");
     }
 }
 
@@ -563,7 +563,7 @@ impl smmu::AcceleratedStreamBackend for IommufdStreamBackend {
     }
 }
 
-impl smmu::AcceleratedViommu for SmmuAccelState {
+impl smmu::Invalidate for SmmuAccelState {
     fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize> {
         // Forward the batch of raw 128-bit CMDQ entries to the host as a single
         // ordered `IOMMU_HWPT_INVALIDATE` on this vIOMMU. Each entry is a

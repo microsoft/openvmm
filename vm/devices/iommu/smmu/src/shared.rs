@@ -22,6 +22,7 @@
 //! [`enable`](vmcore::irqfd::IrqFdRoute::enable) before forwarding to the
 //! inner irqfd route.
 
+use crate::spec::events::EventId;
 use crate::spec::events::EvtEntry;
 use crate::spec::registers;
 use crate::translate;
@@ -45,10 +46,10 @@ use zerocopy::IntoBytes;
 /// [`DmaPassthrough::HardwareNestable`](pci_core::dma::DmaPassthrough::HardwareNestable)
 /// for devices behind an accel-capable SMMU. The VFIO resolver downcasts the
 /// opaque handle to this type, binds the vSMMU to the host hardware
-/// ([`bind_host_smmu`]), and blocks the device until PCI routing gives it a
+/// ([`bind_accel_viommu`]), and blocks the device until PCI routing gives it a
 /// BDF to derive a StreamID from ([`register_accel_device`]).
 ///
-/// [`bind_host_smmu`]: SmmuSharedState::bind_host_smmu
+/// [`bind_accel_viommu`]: SmmuSharedState::bind_accel_viommu
 /// [`register_accel_device`]: SmmuSharedState::register_accel_device
 #[derive(Clone)]
 pub struct SmmuNestingContext {
@@ -72,7 +73,7 @@ pub struct SmmuNestingContext {
 /// maps each variant onto host IOMMU operations.
 ///
 /// This trait is per-device (one instance per VFIO device). Invalidation,
-/// which is vIOMMU-scoped, lives on [`AcceleratedViommu`] instead.
+/// which is vIOMMU-scoped, lives on [`Invalidate`] instead.
 ///
 /// A backend is registered against one StreamID for its whole life. The guest
 /// moving a device to a different BDF retires the registration and creates a
@@ -89,36 +90,25 @@ pub trait AcceleratedStreamBackend: Send + Sync {
     fn set_stream_config(&self, config: StreamConfig) -> anyhow::Result<()>;
 }
 
-/// The host vIOMMU backing one accelerated emulated SMMU, as the emulator sees
-/// it: a target for the guest's invalidation commands.
+/// Invalidates cached state for one accelerated emulated SMMU.
 ///
-/// Invalidation is **vIOMMU-scoped**, not device-scoped: a vIOMMU-scoped
-/// invalidate already covers every stream behind the emulated SMMU, and the
-/// host kernel offers no per-device invalidate ioctl for the nested path. So
-/// there is exactly one of these per accelerated SMMU, and a guest invalidation
-/// is forwarded **once** (not once per device), eliminating the per-device
-/// fan-out that would otherwise turn one guest command into M identical host
-/// syscalls for M devices.
+/// The emulator binds exactly one implementation to an accelerated SMMU and
+/// forwards each guest invalidation once, regardless of how many streams are
+/// registered. Consecutive forwardable CMDQ commands are delivered as one
+/// ordered batch at synchronization and configuration boundaries.
 ///
-/// The emulator accumulates consecutive forwardable CMDQ commands and flushes
-/// them here as one batch (one `IOMMU_HWPT_INVALIDATE`) at each synchronization
-/// or configuration boundary, collapsing a shootdown burst of N commands from N
-/// syscalls to one.
-///
-/// Each entry is the raw 128-bit CMDQ command as a little-endian `[qw0, qw1]`
-/// quadword pair; the host kernel parses the opcode and operands. Keeping the
-/// interface a plain `[u64; 2]` keeps this crate free of any host-IOMMU binding
-/// types.
+/// Each entry is the raw 128-bit CMDQ command as a `[qw0, qw1]` quadword pair.
+/// The implementation must interpret only commands supported by the emulator's
+/// advertised capabilities.
 ///
 /// The emulator calls this with the accelerated registration table locked, so an
 /// implementation must not re-enter [`SmmuSharedState`].
-pub trait AcceleratedViommu: Send + Sync {
-    /// Forward `entries` to the host as one ordered batch, preserving program
-    /// order.
+pub trait Invalidate: Send + Sync {
+    /// Processes `entries` as one ordered batch, preserving program order.
     ///
-    /// Returns `Ok(())` if the host handled the entire batch. Returns
-    /// `Err(handled)` if it did not, where `handled` is the number of leading
-    /// entries the host accepted — so the command at index `handled` is the
+    /// Returns `Ok(())` if the implementation handled the entire batch.
+    /// Returns `Err(handled)` if it did not, where `handled` is the number of
+    /// leading entries accepted, so the command at index `handled` is the
     /// first one that failed, and the emulator stops draining there and raises
     /// a CMDQ error. `handled` is always `< entries.len()` on the `Err` path.
     fn invalidate(&self, entries: &[[u64; 2]]) -> Result<(), usize>;
@@ -250,7 +240,7 @@ struct AccelState {
     /// along with the last device behind this SMMU without this table having to
     /// track that itself. `None` until the first accelerated device binds, and
     /// dangling once the last one goes until the next device re-sets it.
-    viommu: Option<Weak<dyn AcceleratedViommu>>,
+    viommu: Option<Weak<dyn Invalidate>>,
 }
 
 /// Exclusive access to the accelerated registration table.
@@ -287,45 +277,6 @@ impl AccelDevices<'_> {
 pub struct AccelRegistration {
     shared: Weak<SmmuSharedState>,
     sid: u32,
-}
-
-/// Reservation tying an accelerated vSMMU to one host IOMMU context.
-///
-/// Device resolution reserves the context before asking the VFIO manager to
-/// create iommufd objects, then commits the reservation once the manager has
-/// created or reused the vIOMMU. If manager setup fails, dropping the
-/// uncommitted reservation allows a later device to establish a different
-/// context. Once committed, the association remains fixed for the lifetime of
-/// the vSMMU, matching QEMU's one-vIOMMU-per-SMMUv3 model.
-pub struct AccelIommuAssociation {
-    shared: Arc<SmmuSharedState>,
-    committed: bool,
-}
-
-impl AccelIommuAssociation {
-    /// Commits this vSMMU's association after successful vIOMMU preparation.
-    pub fn commit(mut self) {
-        if self.committed {
-            return;
-        }
-        let mut association = self.shared.accel_iommu_association.lock();
-        association.reservations -= 1;
-        association.committed = true;
-        self.committed = true;
-    }
-}
-
-impl Drop for AccelIommuAssociation {
-    fn drop(&mut self) {
-        if self.committed {
-            return;
-        }
-        let mut association = self.shared.accel_iommu_association.lock();
-        association.reservations -= 1;
-        if association.reservations == 0 && !association.committed {
-            association.iommu_id = None;
-        }
-    }
 }
 
 impl AccelRegistration {
@@ -401,16 +352,6 @@ pub struct SmmuSharedState {
     /// is shared because VFIO devices can be added or removed while the
     /// chipset emulator is stopped.
     accel_state: Mutex<AccelState>,
-    /// Host IOMMU context backing this accelerated vSMMU. A vSMMU has one
-    /// vIOMMU and therefore cannot span independently managed IOAS contexts.
-    accel_iommu_association: Mutex<AccelIommuAssociationState>,
-}
-
-#[derive(Default)]
-struct AccelIommuAssociationState {
-    iommu_id: Option<String>,
-    reservations: usize,
-    committed: bool,
 }
 
 struct SharedStateInner {
@@ -526,50 +467,12 @@ impl SmmuSharedState {
             accel,
             oas_policy,
             accel_state: Mutex::new(AccelState::default()),
-            accel_iommu_association: Mutex::new(AccelIommuAssociationState::default()),
         })
     }
 
     /// Returns whether this SMMU is in accelerated mode (iommufd nested).
     pub fn is_accel(&self) -> bool {
         self.accel
-    }
-
-    /// Reserves `iommu_id` as the sole host IOMMU context backing this vSMMU.
-    ///
-    /// Concurrent setup through the same context is allowed. A different
-    /// context is rejected whether the first association is still being
-    /// prepared or has already been committed. Dropping the returned guard
-    /// before [`AccelIommuAssociation::commit`] releases a tentative
-    /// association, allowing retry after failed device setup.
-    pub fn reserve_accel_iommu(
-        self: &Arc<Self>,
-        iommu_id: &str,
-    ) -> anyhow::Result<AccelIommuAssociation> {
-        let mut association = self.accel_iommu_association.lock();
-        if let Some(existing) = &association.iommu_id {
-            if existing != iommu_id {
-                anyhow::bail!(
-                    "SMMU is already associated with host IOMMU context {existing:?}; \
-                     it cannot also use {iommu_id:?}"
-                );
-            }
-        } else {
-            association.iommu_id = Some(iommu_id.to_owned());
-        }
-
-        if association.committed {
-            return Ok(AccelIommuAssociation {
-                shared: self.clone(),
-                committed: true,
-            });
-        }
-
-        association.reservations += 1;
-        Ok(AccelIommuAssociation {
-            shared: self.clone(),
-            committed: false,
-        })
     }
 
     /// Returns the currently advertised output address size in bits.
@@ -590,12 +493,12 @@ impl SmmuSharedState {
     /// The vIOMMU is held weakly: the strong references belong to the stream
     /// backends, so it is released along with the last accelerated device, and
     /// a device hot-plugged after that supplies a freshly built one.
-    pub fn bind_host_smmu<T: AcceleratedViommu + 'static>(
+    pub fn bind_accel_viommu<T: Invalidate + 'static>(
         &self,
         caps: crate::HostSmmuCaps,
         viommu: &Arc<T>,
     ) -> anyhow::Result<()> {
-        let viommu: Arc<dyn AcceleratedViommu> = viommu.clone();
+        let viommu: Arc<dyn Invalidate> = viommu.clone();
         // Lock order is accel state before `inner`, as in
         // `transition_translation_policy`.
         let mut accel = self.accel_state.lock();
@@ -1362,10 +1265,10 @@ pub struct SmmuTranslator {
 /// The fault event has already been queued to the SMMU's event queue;
 /// this error carries the key fields for diagnostic purposes.
 #[derive(Debug, thiserror::Error)]
-#[error("SMMU DMA fault: event {event_id:#04x} SID {sid:#x} addr {input_addr:#x}")]
+#[error("SMMU DMA fault: event {event_id:#x?} SID {sid:#x} addr {input_addr:#x}")]
 pub struct SmmuDmaFault {
-    /// Event type ID.
-    event_id: u8,
+    /// Event type ID. Zero signifies that no event record was generated.
+    event_id: EventId,
     /// StreamID of the faulting device.
     sid: u32,
     /// Faulting input address.
@@ -1375,7 +1278,7 @@ pub struct SmmuDmaFault {
 impl SmmuDmaFault {
     fn from_event(event: &EvtEntry) -> Self {
         Self {
-            event_id: event.header.event_id().0,
+            event_id: event.header.event_id(),
             sid: event.sid,
             input_addr: event.input_addr,
         }
@@ -1383,10 +1286,10 @@ impl SmmuDmaFault {
 
     /// A termination with **no** event record generated — either a global
     /// abort (disabled SMMU, `GBPA.ABORT=1`) or an STE-driven abort
-    /// (`STE.Config[2]==0`). `event_id` is 0 to signify "no event".
+    /// (`STE.Config[2]==0`).
     fn no_event_abort(sid: u32, input_addr: u64) -> Self {
         Self {
-            event_id: 0,
+            event_id: EventId(0),
             sid,
             input_addr,
         }
@@ -1592,7 +1495,6 @@ mod tests {
     use crate::spec::events::EventId;
     use crate::spec::pt::ApBits;
     use crate::spec::pt::PtDesc;
-
     use crate::spec::ste::STE_SIZE;
     use crate::spec::ste::Ste;
     use crate::spec::ste::SteConfig;
@@ -1624,6 +1526,23 @@ mod tests {
     const TEST_BUS: u8 = 1;
     /// The RID for the test device: (bus << 8) | devfn.
     const TEST_RID: u32 = (TEST_BUS as u32) << 8;
+
+    #[test]
+    fn test_dma_fault_event_representation() {
+        let fault = SmmuDmaFault::from_event(&EvtEntry::translation_fault(0x12, 0x3456, false));
+        assert_eq!(fault.event_id, EventId::F_TRANSLATION);
+        assert_eq!(
+            fault.to_string(),
+            "SMMU DMA fault: event 0x10 SID 0x12 addr 0x3456"
+        );
+
+        let abort = SmmuDmaFault::no_event_abort(0x12, 0x3456);
+        assert_eq!(abort.event_id, EventId(0));
+        assert_eq!(
+            abort.to_string(),
+            "SMMU DMA fault: event 0x00 SID 0x12 addr 0x3456"
+        );
+    }
 
     fn transition_to_enabled(state: &SmmuSharedState) {
         let mut policy = state.translation_policy();
@@ -2453,44 +2372,6 @@ mod tests {
         state.resolve_host_caps(compatible_host_caps()).unwrap();
         // Same caps again (another device behind the same physical SMMU).
         state.resolve_host_caps(compatible_host_caps()).unwrap();
-    }
-
-    #[test]
-    fn accel_iommu_association_reuses_committed_context() {
-        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
-        state.reserve_accel_iommu("iommu0").unwrap().commit();
-        state.reserve_accel_iommu("iommu0").unwrap().commit();
-
-        let err = state
-            .reserve_accel_iommu("iommu1")
-            .err()
-            .expect("different context must be rejected")
-            .to_string();
-        assert!(err.contains("already associated"), "{err}");
-    }
-
-    #[test]
-    fn accel_iommu_association_rejects_competing_context() {
-        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
-        let reservation = state.reserve_accel_iommu("iommu0").unwrap();
-
-        let err = state
-            .reserve_accel_iommu("iommu1")
-            .err()
-            .expect("competing context must be rejected")
-            .to_string();
-        assert!(err.contains("already associated"), "{err}");
-
-        reservation.commit();
-    }
-
-    #[test]
-    fn accel_iommu_association_releases_failed_setup() {
-        let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
-        let reservation = state.reserve_accel_iommu("iommu0").unwrap();
-        drop(reservation);
-
-        state.reserve_accel_iommu("iommu1").unwrap().commit();
     }
 
     // =========================================================================

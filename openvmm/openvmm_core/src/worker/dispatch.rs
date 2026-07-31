@@ -2336,13 +2336,20 @@ impl InitializedVm {
                 ResolvedIommu::Smmu(resources) => resources,
                 _ => &[],
             };
-            let acpi_available = !matches!(
-                cfg.load_mode,
+            let acpi_available = match &cfg.load_mode {
                 LoadMode::Linux {
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
                     ..
+                } => false,
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    ..
                 }
-            );
+                | LoadMode::Uefi { .. }
+                | LoadMode::Pcat { .. }
+                | LoadMode::Igvm { .. }
+                | LoadMode::None => true,
+            };
             smmu_wiring::setup_smmu(
                 &cfg.pcie_root_complexes,
                 resolved,
