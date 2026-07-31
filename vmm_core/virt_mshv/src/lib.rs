@@ -269,6 +269,8 @@ struct MshvPartitionInner {
     /// created AP is validated against this BSP value, making it the canonical
     /// feature set for subsequent requests.
     snp_sev_features: Mutex<Option<u64>>,
+    #[cfg(guest_arch = "x86_64")]
+    snp_cpuid_offloads_enabled: bool,
     isolation: virt::IsolationType,
     /// Set to `true` when partition time is frozen (e.g. during reset).
     /// The first VP to enter `run_vp` after a freeze will thaw time.

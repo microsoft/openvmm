@@ -227,6 +227,8 @@ pub struct ProtoPartitionConfig<'a> {
     pub vmtime: &'a VmTimeSource,
     /// Isolation type for this partition.
     pub isolation: IsolationType,
+    /// Disable hypervisor handling of SNP GHCB CPUID requests.
+    pub snp_disable_cpuid_offload: bool,
     /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
     /// its own hypervisor.
     ///
