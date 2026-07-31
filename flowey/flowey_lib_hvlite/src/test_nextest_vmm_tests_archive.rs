@@ -37,6 +37,8 @@ flowey_request! {
         pub pre_run_deps: Vec<ReadVar<SideEffect>>,
         /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
         pub hugetlb_2mb_overcommit_pages: Option<u64>,
+        /// Load vhost-vsock and make `/dev/vhost-vsock` accessible before tests.
+        pub prepare_vhost_vsock: bool,
         /// Results of running the tests
         pub results: WriteVar<TestResults>,
     }
@@ -63,6 +65,7 @@ impl SimpleFlowNode for Node {
             mut extra_env,
             mut pre_run_deps,
             hugetlb_2mb_overcommit_pages,
+            prepare_vhost_vsock,
             results,
         } = request;
 
@@ -131,6 +134,29 @@ impl SimpleFlowNode for Node {
                                 );
                             }
 
+                            Ok(())
+                        }
+                    })
+                });
+            }
+
+            if prepare_vhost_vsock {
+                pre_run_deps.push({
+                    ctx.emit_rust_step("prepare vhost-vsock", |_| {
+                        |rt| {
+                            flowey::shell_cmd!(rt, "sudo modprobe vhost_vsock").run()?;
+                            for _ in 0..50 {
+                                if Path::new("/dev/vhost-vsock").exists() {
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                            if !Path::new("/dev/vhost-vsock").exists() {
+                                anyhow::bail!(
+                                    "/dev/vhost-vsock did not appear after loading vhost_vsock"
+                                );
+                            }
+                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/vhost-vsock").run()?;
                             Ok(())
                         }
                     })

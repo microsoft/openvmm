@@ -185,6 +185,9 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     prebuilt_initrd: Option<PathBuf>,
     // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
     use_virtio_vsock: bool,
+    // Use the Linux kernel vhost-vsock backend with this guest CID.
+    #[cfg(target_os = "linux")]
+    vhost_vsock_guest_cid: Option<u32>,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
 }
@@ -304,6 +307,9 @@ pub struct PetriVmProperties {
     pub has_agent_disk: bool,
     /// Use virtio vsock instead of VMBus-based hvsocket
     pub use_virtio_vsock: bool,
+    /// Linux kernel vhost-vsock guest CID, when that backend is enabled.
+    #[cfg(target_os = "linux")]
+    pub vhost_vsock_guest_cid: Option<u32>,
     /// VMBus is entirely disabled
     pub no_vmbus: bool,
 }
@@ -479,6 +485,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_screenshots: true,
             prebuilt_initrd: None,
             use_virtio_vsock: false,
+            #[cfg(target_os = "linux")]
+            vhost_vsock_guest_cid: None,
             no_vmbus: false,
         }
         .add_petri_scsi_controllers()
@@ -557,6 +565,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_screenshots: true,
             prebuilt_initrd: None,
             use_virtio_vsock: false,
+            #[cfg(target_os = "linux")]
+            vhost_vsock_guest_cid: None,
             no_vmbus: false,
         })
     }
@@ -665,6 +675,27 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// blacklist hv_sock instead of virtio_vsock.
     pub fn with_virtio_vsock(mut self) -> Self {
         self.use_virtio_vsock = true;
+        #[cfg(target_os = "linux")]
+        {
+            self.vhost_vsock_guest_cid = None;
+        }
+        self
+    }
+
+    /// Use the Linux kernel vhost-vsock backend for guest communication.
+    ///
+    /// The host connects directly to the guest's `AF_VSOCK` listener at
+    /// `guest_cid`. The OpenVMM backend automatically uses shared guest memory,
+    /// which is required by kernel vhost.
+    #[cfg(target_os = "linux")]
+    pub fn with_vhost_vsock(mut self, guest_cid: u32) -> Self {
+        assert!(
+            (3..u32::MAX).contains(&guest_cid),
+            "vhost-vsock guest CID must be between 3 and {}",
+            u32::MAX - 1
+        );
+        self.use_virtio_vsock = true;
+        self.vhost_vsock_guest_cid = Some(guest_cid);
         self
     }
 
@@ -993,6 +1024,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             prebuilt_initrd: self.prebuilt_initrd.clone(),
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
+            #[cfg(target_os = "linux")]
+            vhost_vsock_guest_cid: self.vhost_vsock_guest_cid,
             no_vmbus: self.no_vmbus,
         }
     }
@@ -1287,6 +1320,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .uefi_config_mut()
             .expect("Secure boot is only supported for UEFI firmware.")
             .secure_boot_template = Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority);
+        self
+    }
+
+    /// Apply a custom UEFI variable delta encoded as JSON.
+    pub fn with_custom_uefi_json(mut self, json: impl Into<Vec<u8>>) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("Custom UEFI variables are only supported for UEFI firmware.")
+            .custom_uefi_json = Some(json.into());
         self
     }
 
@@ -2345,13 +2388,15 @@ pub struct MemoryConfig {
     ///
     /// Only applies to the OpenVMM backend; ignored by Hyper-V.
     pub private_memory: Option<bool>,
-    /// Mark private guest RAM as eligible for Transparent Huge Pages (THP),
+    /// Mark guest RAM as eligible for Transparent Huge Pages (THP),
     /// improving performance for large allocations.
     ///
-    /// Defaults to `true`. Only takes effect when the guest RAM is backed by
-    /// private anonymous memory (see [`Self::private_memory`]) and only on
-    /// Linux; it is silently ignored otherwise (shared memory, hugetlb/file
-    /// backing, OpenHCL, PCAT/Gen1, or non-Linux hosts).
+    /// Defaults to `true`. Applies to private anonymous guest RAM and to
+    /// shared memfd-backed RAM, on Linux (via `madvise`) and on Windows (via
+    /// soft large pages). It has no effect on explicit hugetlb/large-page
+    /// backings (see
+    /// [`with_hugepages`](crate::openvmm::PetriVmConfigOpenVmm::with_hugepages)),
+    /// which are already huge.
     ///
     /// Only applies to the OpenVMM backend; ignored by Hyper-V.
     pub transparent_hugepages: bool,
@@ -2376,6 +2421,8 @@ pub struct UefiConfig {
     pub secure_boot_enabled: bool,
     /// Secure boot template
     pub secure_boot_template: Option<SecureBootTemplate>,
+    /// Custom UEFI variable delta JSON
+    pub custom_uefi_json: Option<Vec<u8>>,
     /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
     pub disable_frontpage: bool,
     /// Always attempt a default boot
@@ -2396,6 +2443,7 @@ impl Default for UefiConfig {
         Self {
             secure_boot_enabled: false,
             secure_boot_template: None,
+            custom_uefi_json: None,
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,

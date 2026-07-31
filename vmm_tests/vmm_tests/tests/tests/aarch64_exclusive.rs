@@ -11,6 +11,7 @@ use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use std::time::Duration;
+use vfio_assigned_device_resources::BarAddressConfig;
 use vm_resource::IntoResource;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -148,7 +149,7 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
                         cdev,
                         iommufd,
                         iommu_id: "iommu0".into(),
-                        bar_pt: [false; 6],
+                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                     }
                     .into_resource(),
                 });
@@ -309,7 +310,7 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
                         cdev: edu_cdev,
                         iommufd,
                         iommu_id: "iommu0".into(),
-                        bar_pt: [false; 6],
+                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                     }
                     .into_resource(),
                 });
@@ -320,7 +321,7 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
                         cdev: ivshmem_cdev,
                         iommufd: iommufd2,
                         iommu_id: "iommu0".into(),
-                        bar_pt: [false; 6],
+                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                     }
                     .into_resource(),
                 });

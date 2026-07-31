@@ -138,6 +138,9 @@ impl Test {
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         let logger = try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)
             .context("failed to initialize tracing")?;
+        // Record the test's identity up front, so that a test which is killed
+        // or crashes before reporting a result is still identifiable.
+        logger.log_test_start(&name);
         let mut post_test_hooks = Vec::new();
 
         // Catch test panics in order to cleanly log the panic result. Without
@@ -168,7 +171,7 @@ impl Test {
             };
             Err(err)
         });
-        logger.log_test_result(&name, &r, self.test.0.unstable().is_some());
+        logger.log_test_result(&r, self.test.0.unstable().is_some());
 
         for hook in post_test_hooks {
             tracing::info!(name = hook.name(), "Running post-test hook");

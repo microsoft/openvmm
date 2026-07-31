@@ -40,6 +40,8 @@ mod numa;
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
+/// Tests involving UEFI Secure Boot functionality.
+mod secureboot;
 /// Tests involving TPM functionality
 mod tpm;
 /// Tests for VLAN (802.1Q) support on virtual NICs.
@@ -112,6 +114,30 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_virtio_vsock()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Basic boot test using the Linux kernel vhost-vsock backend.
+///
+/// Petri connects to the guest directly through the host AF_VSOCK namespace,
+/// so successfully establishing the pipette session validates the full
+/// host-kernel-to-guest virtio-vsock path.
+#[cfg(target_os = "linux")]
+#[openvmm_test(linux_direct_x64)]
+async fn boot_vhost_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    // Avoid collisions with other vhost-vsock devices on a shared test host.
+    let guest_cid = 0x4000_0000 | (std::process::id() & 0x3fff_ffff);
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            private_memory: Some(false),
+            ..Default::default()
+        })
+        .with_vhost_vsock(guest_cid)
         .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;
