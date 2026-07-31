@@ -1257,8 +1257,7 @@ impl PetriVmConfigSetupCore<'_> {
                 name: "tpm".to_string(),
                 resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                     device: TpmDeviceHandle {
-                        // TODO
-                        version: TpmVersion::V138,
+                        version: TpmVersion::V185,
                         ppi_store,
                         nvram_store,
                         refresh_tpm_seeds: false,
