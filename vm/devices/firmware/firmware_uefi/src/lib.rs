@@ -145,7 +145,7 @@ pub struct UefiDevice {
 }
 
 impl UefiDevice {
-    pub async fn new(
+    pub(crate) async fn new(
         runtime_deps: UefiRuntimeDeps<'_>,
         cfg: UefiConfig,
         is_restoring: bool,
@@ -173,7 +173,8 @@ impl UefiDevice {
             service: UefiDeviceServices {
                 nvram: service::nvram::NvramServices::new(
                     nvram_storage,
-                    cfg.custom_uefi_vars,
+                    cfg.base_template_json,
+                    cfg.custom_uefi_json,
                     cfg.secure_boot,
                     vsm_config,
                     is_restoring,

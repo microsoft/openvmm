@@ -73,6 +73,10 @@ edition = "2024"
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
 
+# opentmk
+opentmk_protocol = { path = "opentmk_protocol" }
+opentmk_disk = { path = "opentmk/opentmk_disk" }
+
 flowey = { path = "flowey/flowey" }
 flowey_cli = { path = "flowey/flowey_cli" }
 flowey_core = { path = "flowey/flowey_core" }

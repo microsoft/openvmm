@@ -1,0 +1,16 @@
+{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Append",
+            "signatures": {
+                "dbx": [{
+                    "type": "sha256",
+                    "value": [
+                        "cGV0cmktdWVmaS1zaGEyNTYtdGVzdC1kaWdlc3QhISE="
+                    ]
+                }]
+            }
+        }
+    }
+}

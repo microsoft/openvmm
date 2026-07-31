@@ -67,11 +67,39 @@ message DirectBoot {
 }
 
 message UEFI {
+    // Variables used to initialize an empty UEFI variable store. These are
+    // ignored when the store already contains any variables.
+    message InitialVariables {
+        // A predefined set of Secure Boot-related variables. Selecting a
+        // template initializes keys and signature databases but does not
+        // enable Secure Boot enforcement.
+        enum SecureBootTemplate {
+            // Do not initialize Secure Boot-related variables from a template.
+            NONE = 0;
+            // Initialize variables with the Microsoft Windows certificate set.
+            MICROSOFT_WINDOWS = 1;
+            // Initialize variables with the Microsoft UEFI CA certificate set.
+            MICROSOFT_UEFI_CERTIFICATE_AUTHORITY = 2;
+        }
+
+        // The predefined Secure Boot variable set to use for initialization.
+        SecureBootTemplate secure_boot_template = 1;
+    }
+
+    // Path to the UEFI firmware image on the host.
     string firmware_path = 1;
-    string device_path = 2;
-    // Optional data to include for uefi boot. For Linux this could be used as the kernel
-    // commandline.
-    string optional_data = 3;
+
+    // Fields 2 and 3 were previously `device_path` and `optional_data`. They
+    // had no OpenVMM equivalent and were never honored.
+    reserved 2, 3;
+    reserved "device_path", "optional_data";
+
+    // Variables to inject when initializing an empty UEFI variable store.
+    InitialVariables initial_variables = 4;
+
+    // Whether the firmware enforces Secure Boot policy. This is independent
+    // of whether initial Secure Boot variables are supplied above.
+    bool secure_boot_enabled = 5;
 }
 
 message MemoryConfig {
@@ -460,6 +488,28 @@ message PcieAttachment {
 }
 
 message VMConfig {
+    // Action for the VMM to take when the guest triggers a power event.
+    enum GuestPowerAction {
+        // Use the default for this event.
+        DEFAULT = 0;
+        // Restart the guest.
+        RESTART = 1;
+        // Leave the virtual machine halted.
+        HALT = 2;
+    }
+
+    // Actions for the VMM to take on guest power events.
+    message GuestPowerActions {
+        // The guest powered off or hibernated. Defaults to HALT.
+        GuestPowerAction shutdown = 1;
+        // The guest requested a reset. Defaults to RESTART.
+        GuestPowerAction reset = 2;
+        // The guest triple faulted. Defaults to HALT.
+        GuestPowerAction crash = 3;
+        // The guest's watchdog timer expired. Defaults to RESTART.
+        GuestPowerAction watchdog = 4;
+    }
+
     MemoryConfig memory_config = 1;
     ProcessorConfig processor_config = 2;
     DevicesConfig devices_config = 3;
@@ -479,6 +529,9 @@ message VMConfig {
     NumaConfig numa_config = 10;
     // PCIe root complexes / ports / switches.
     PcieTopologyConfig pcie = 11;
+    // Actions to take on guest power events. Each unset action uses its
+    // default.
+    GuestPowerActions guest_power_actions = 12;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
