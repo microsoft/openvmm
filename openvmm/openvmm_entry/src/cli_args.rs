@@ -285,6 +285,44 @@ Examples:
     #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm"])]
     pub device_tree: bool,
 
+    /// SMBIOS (DMI) identity overrides for Linux direct boot (repeatable).
+    #[clap(
+        long,
+        value_name = "PARAMS",
+        value_parser = parse_smbios,
+        long_help = r#"Override SMBIOS (DMI) identity for Linux direct boot.
+
+Syntax: type=N,key=value[,key=value...]
+
+`type` selects the SMBIOS structure and is required (matching QEMU's
+`-smbios`; there is no default). Key names follow QEMU's `-smbios`
+convention. Unset keys use the loader's built-in default identity. Repeat
+--smbios to set fields across multiple structure types.
+
+Type 0 (BIOS Information):
+    vendor=<STRING>          BIOS vendor
+    version=<STRING>         BIOS version
+    date=<STRING>            BIOS release date
+    release=<MAJOR.MINOR>    System BIOS Major/Minor Release (e.g. 4.1)
+
+Type 1 (System Information):
+    manufacturer=<STRING>    system manufacturer (sys_vendor)
+    product=<STRING>         product name (product_name)
+    version=<STRING>         product version (product_version)
+    serial=<STRING>          serial number (product_serial)
+    uuid=<GUID|random>       system UUID (product_uuid); `random` generates a
+                             fresh per-VM GUID. Unset => all-zero GUID.
+    sku=<STRING>             SKU number (product_sku)
+    family=<STRING>          product family (product_family)
+
+Examples:
+    --smbios type=1,manufacturer=Contoso,product="Virtual Machine"
+    --smbios type=1,uuid=12345678-9abc-def0-1234-56789abcdef0
+    --smbios type=1,uuid=random
+    --smbios type=0,vendor=Contoso,version=1.0"#
+    )]
+    pub smbios: Vec<SmbiosCli>,
+
     /// enable vtl2 - only supported in WHP and simulated without hypervisor support currently
     ///
     /// Currently implies --get.
@@ -1557,6 +1595,212 @@ fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
     } else {
         value.parse::<u16>().context("invalid ACS capability mask")
     }
+}
+
+/// A parsed SMBIOS `release=MAJOR.MINOR` value: exactly two `u8` components
+/// separated by a dot, matching QEMU's `sscanf("%hhu.%hhu")`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmbiosRelease(pub u8, pub u8);
+
+impl FromStr for SmbiosRelease {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        let (major, minor) = value
+            .split_once('.')
+            .with_context(|| format!("invalid smbios release '{value}', expected MAJOR.MINOR"))?;
+        let major = major
+            .parse::<u8>()
+            .with_context(|| format!("invalid smbios release major '{major}'"))?;
+        let minor = minor
+            .parse::<u8>()
+            .with_context(|| format!("invalid smbios release minor '{minor}'"))?;
+        Ok(SmbiosRelease(major, minor))
+    }
+}
+
+/// A parsed SMBIOS `uuid=` value: either an explicit GUID or the literal
+/// `random`, which requests a freshly generated per-VM GUID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmbiosUuid {
+    /// Generate a fresh random GUID when the VM is created.
+    Random,
+    /// Use this fixed GUID.
+    Fixed(Guid),
+}
+
+impl FromStr for SmbiosUuid {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        if value == "random" {
+            Ok(SmbiosUuid::Random)
+        } else {
+            let guid = value
+                .parse::<Guid>()
+                .with_context(|| format!("invalid smbios uuid '{value}'"))?;
+            Ok(SmbiosUuid::Fixed(guid))
+        }
+    }
+}
+
+/// SMBIOS Type 0 (BIOS Information) overrides parsed from a `--smbios type=0,…`
+/// argument. Field names mirror `SmbiosBiosOverrides`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, vmm_cli::KeyValueArgs)]
+pub struct SmbiosBiosCli {
+    /// BIOS vendor (`vendor`).
+    pub vendor: Option<String>,
+    /// BIOS version (`version`).
+    pub version: Option<String>,
+    /// BIOS release date (`date`).
+    #[kv(key = "date")]
+    pub release_date: Option<String>,
+    /// System BIOS Major/Minor Release (`release=MAJOR.MINOR`).
+    pub release: Option<SmbiosRelease>,
+}
+
+/// SMBIOS Type 1 (System Information) overrides parsed from a `--smbios type=1,…`
+/// argument. Field names mirror `SmbiosSystemOverrides`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, vmm_cli::KeyValueArgs)]
+pub struct SmbiosSystemCli {
+    /// System manufacturer (`manufacturer`).
+    pub manufacturer: Option<String>,
+    /// System product name (`product`).
+    #[kv(key = "product")]
+    pub product_name: Option<String>,
+    /// System version (`version`).
+    pub version: Option<String>,
+    /// System serial number (`serial`).
+    #[kv(key = "serial")]
+    pub serial_number: Option<String>,
+    /// System SKU number (`sku`).
+    #[kv(key = "sku")]
+    pub sku_number: Option<String>,
+    /// System family (`family`).
+    pub family: Option<String>,
+    /// System UUID (`uuid=GUID` or `uuid=random`).
+    pub uuid: Option<SmbiosUuid>,
+}
+
+/// SMBIOS (DMI) identity overrides parsed from `--smbios` arguments, grouped by
+/// SMBIOS structure type to mirror the required `type=N` CLI prefix and the
+/// loader's `SmbiosConfig` layout.
+///
+/// Each `--smbios` argument targets exactly one type; multiple arguments are
+/// merged with [`SmbiosCli::merge`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SmbiosCli {
+    /// Type 0 (BIOS Information) overrides.
+    pub bios: SmbiosBiosCli,
+    /// Type 1 (System Information) overrides.
+    pub system: SmbiosSystemCli,
+}
+
+/// Set an override slot, erroring if it is already set.
+fn smbios_set_once<T>(slot: &mut Option<T>, key: &str, value: T) -> anyhow::Result<()> {
+    anyhow::ensure!(slot.is_none(), "duplicate smbios option '{key}'");
+    *slot = Some(value);
+    Ok(())
+}
+
+impl SmbiosCli {
+    /// Merge another parsed `--smbios` argument into this one, erroring if any
+    /// field is set by both.
+    pub fn merge(&mut self, other: SmbiosCli) -> anyhow::Result<()> {
+        let SmbiosCli {
+            bios:
+                SmbiosBiosCli {
+                    vendor,
+                    version: bios_version,
+                    release_date,
+                    release,
+                },
+            system:
+                SmbiosSystemCli {
+                    manufacturer,
+                    product_name,
+                    version: system_version,
+                    serial_number,
+                    sku_number,
+                    family,
+                    uuid,
+                },
+        } = other;
+        merge_smbios_field(&mut self.bios.vendor, vendor, 0, "vendor")?;
+        merge_smbios_field(&mut self.bios.version, bios_version, 0, "version")?;
+        merge_smbios_field(&mut self.bios.release_date, release_date, 0, "date")?;
+        merge_smbios_field(&mut self.bios.release, release, 0, "release")?;
+        merge_smbios_field(
+            &mut self.system.manufacturer,
+            manufacturer,
+            1,
+            "manufacturer",
+        )?;
+        merge_smbios_field(&mut self.system.product_name, product_name, 1, "product")?;
+        merge_smbios_field(&mut self.system.version, system_version, 1, "version")?;
+        merge_smbios_field(&mut self.system.serial_number, serial_number, 1, "serial")?;
+        merge_smbios_field(&mut self.system.sku_number, sku_number, 1, "sku")?;
+        merge_smbios_field(&mut self.system.family, family, 1, "family")?;
+        merge_smbios_field(&mut self.system.uuid, uuid, 1, "uuid")?;
+        Ok(())
+    }
+}
+
+/// Merge a single override field, erroring if both sides are set. `typ` is the
+/// SMBIOS structure type the field belongs to, included in the error message.
+fn merge_smbios_field<T>(
+    dst: &mut Option<T>,
+    src: Option<T>,
+    typ: u8,
+    key: &str,
+) -> anyhow::Result<()> {
+    if let Some(value) = src {
+        smbios_set_once(dst, &format!("type={typ} {key}"), value)?;
+    }
+    Ok(())
+}
+
+/// Parse a single `--smbios` argument: `type=N,key=value[,key=value...]`.
+///
+/// Matches QEMU's `-smbios` syntax: `type=N` is required (there is no default)
+/// and selects the key namespace; the remaining `key=value` pairs are parsed by
+/// the matching per-type `KeyValueArgs` struct. Unknown types and unknown keys
+/// are hard errors (no silent drop).
+fn parse_smbios(s: &str) -> anyhow::Result<SmbiosCli> {
+    let mut typ: Option<u8> = None;
+    let mut rest = Vec::new();
+    for part in s.split(',') {
+        let (key, value) = part
+            .split_once('=')
+            .with_context(|| format!("invalid smbios option '{part}', expected key=value"))?;
+        if key.is_empty() || value.is_empty() {
+            anyhow::bail!("invalid smbios option '{part}', expected key=value");
+        }
+        if key == "type" {
+            anyhow::ensure!(typ.is_none(), "duplicate smbios option 'type'");
+            typ = Some(
+                value
+                    .parse::<u8>()
+                    .with_context(|| format!("invalid smbios type '{value}'"))?,
+            );
+        } else {
+            rest.push(part);
+        }
+    }
+
+    let typ = typ.context("smbios option requires 'type=N' (e.g. 'type=1')")?;
+    let rest = rest.join(",");
+    Ok(match typ {
+        0 => SmbiosCli {
+            bios: rest.parse()?,
+            ..Default::default()
+        },
+        1 => SmbiosCli {
+            system: rest.parse()?,
+            ..Default::default()
+        },
+        other => anyhow::bail!("unsupported smbios type '{other}' (expected 0 or 1)"),
+    })
 }
 
 fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
@@ -4766,6 +5010,190 @@ mod tests {
                 .hugepage_size,
             Some(vmm_cli::MemorySize(3 * 1024 * 1024))
         );
+    }
+
+    #[test]
+    fn test_smbios_requires_type() {
+        // Matching QEMU, `type=` is mandatory — there is no default.
+        assert!(parse_smbios("manufacturer=Contoso,family=Foo").is_err());
+    }
+
+    #[test]
+    fn test_smbios_all_system_keys() {
+        let parsed = parse_smbios(
+            "type=1,manufacturer=M,product=P,version=V,serial=S,sku=K,family=F,\
+             uuid=12345678-9abc-def0-1234-56789abcdef0",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            SmbiosCli {
+                system: SmbiosSystemCli {
+                    manufacturer: Some("M".to_string()),
+                    product_name: Some("P".to_string()),
+                    version: Some("V".to_string()),
+                    serial_number: Some("S".to_string()),
+                    sku_number: Some("K".to_string()),
+                    family: Some("F".to_string()),
+                    uuid: Some(SmbiosUuid::Fixed(
+                        "12345678-9abc-def0-1234-56789abcdef0"
+                            .parse::<Guid>()
+                            .unwrap()
+                    )),
+                },
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn test_smbios_bios_keys() {
+        let parsed =
+            parse_smbios("type=0,vendor=Contoso,version=1.0,date=01/01/2026,release=4.1").unwrap();
+        assert_eq!(
+            parsed,
+            SmbiosCli {
+                bios: SmbiosBiosCli {
+                    vendor: Some("Contoso".to_string()),
+                    version: Some("1.0".to_string()),
+                    release_date: Some("01/01/2026".to_string()),
+                    release: Some(SmbiosRelease(4, 1)),
+                },
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn test_smbios_release_parsing() {
+        // Valid MAJOR.MINOR.
+        assert_eq!(
+            parse_smbios("type=0,release=4.1").unwrap().bios.release,
+            Some(SmbiosRelease(4, 1))
+        );
+        assert_eq!(
+            parse_smbios("type=0,release=255.0").unwrap().bios.release,
+            Some(SmbiosRelease(255, 0))
+        );
+        // Missing the dot, extra components, out-of-range, and non-numeric all
+        // error (matching QEMU's strict two-`u8` parse).
+        assert!(parse_smbios("type=0,release=4").is_err());
+        assert!(parse_smbios("type=0,release=4.1.0").is_err());
+        assert!(parse_smbios("type=0,release=256.0").is_err());
+        assert!(parse_smbios("type=0,release=x.y").is_err());
+        // `release` is a type=0 key only.
+        assert!(parse_smbios("type=1,release=4.1").is_err());
+    }
+
+    #[test]
+    fn test_smbios_uuid() {
+        // An explicit GUID parses to `Fixed`.
+        assert_eq!(
+            parse_smbios("type=1,uuid=12345678-9abc-def0-1234-56789abcdef0")
+                .unwrap()
+                .system
+                .uuid,
+            Some(SmbiosUuid::Fixed(
+                "12345678-9abc-def0-1234-56789abcdef0"
+                    .parse::<Guid>()
+                    .unwrap()
+            ))
+        );
+        // The literal `random` parses to `Random`.
+        assert_eq!(
+            parse_smbios("type=1,uuid=random").unwrap().system.uuid,
+            Some(SmbiosUuid::Random)
+        );
+    }
+
+    #[test]
+    fn test_smbios_version_disambiguated_by_type() {
+        // `version` belongs to BIOS under type=0 and System under type=1.
+        let bios = parse_smbios("type=0,version=1.0").unwrap();
+        assert_eq!(bios.bios.version.as_deref(), Some("1.0"));
+        assert_eq!(bios.system.version, None);
+
+        let system = parse_smbios("type=1,version=2.0").unwrap();
+        assert_eq!(system.system.version.as_deref(), Some("2.0"));
+        assert_eq!(system.bios.version, None);
+    }
+
+    #[test]
+    fn test_smbios_rejects_invalid() {
+        // Missing type.
+        assert!(parse_smbios("manufacturer=M").is_err());
+        // Unknown key for the type.
+        assert!(parse_smbios("type=0,manufacturer=M").is_err());
+        assert!(parse_smbios("type=1,nonsense=x").is_err());
+        // Unknown / unsupported type.
+        assert!(parse_smbios("type=2,vendor=M").is_err());
+        assert!(parse_smbios("type=bad,vendor=M").is_err());
+        // Malformed key=value.
+        assert!(parse_smbios("type=1,manufacturer").is_err());
+        assert!(parse_smbios("=value").is_err());
+        assert!(parse_smbios("type=1,manufacturer=").is_err());
+        // Duplicate key within one argument.
+        assert!(parse_smbios("type=1,manufacturer=A,manufacturer=B").is_err());
+        assert!(parse_smbios("type=0,type=1,vendor=M").is_err());
+        // Invalid UUID.
+        assert!(parse_smbios("type=1,uuid=not-a-guid").is_err());
+    }
+
+    #[test]
+    fn test_smbios_merge_across_arguments() {
+        let mut merged = SmbiosCli::default();
+        merged
+            .merge(parse_smbios("type=0,vendor=Contoso").unwrap())
+            .unwrap();
+        merged
+            .merge(parse_smbios("type=1,manufacturer=M,family=F").unwrap())
+            .unwrap();
+        assert_eq!(
+            merged,
+            SmbiosCli {
+                bios: SmbiosBiosCli {
+                    vendor: Some("Contoso".to_string()),
+                    ..Default::default()
+                },
+                system: SmbiosSystemCli {
+                    manufacturer: Some("M".to_string()),
+                    family: Some("F".to_string()),
+                    ..Default::default()
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn test_smbios_merge_rejects_conflicts() {
+        let mut merged = SmbiosCli::default();
+        merged
+            .merge(parse_smbios("type=1,manufacturer=A").unwrap())
+            .unwrap();
+        // The same field set by a second argument is a hard error.
+        assert!(
+            merged
+                .merge(parse_smbios("type=1,manufacturer=B").unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_smbios_arg_repeatable() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--smbios",
+            "type=1,manufacturer=Contoso",
+            "--smbios",
+            "type=0,vendor=Acme",
+        ])
+        .unwrap();
+        assert_eq!(opt.smbios.len(), 2);
+        assert_eq!(
+            opt.smbios[0].system.manufacturer.as_deref(),
+            Some("Contoso")
+        );
+        assert_eq!(opt.smbios[1].bios.vendor.as_deref(), Some("Acme"));
     }
 
     #[test]

@@ -134,6 +134,40 @@ as well as the generated CLI help (via `cargo run -- --help`).
   `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
   `file=<PATH>`.
+* `--smbios <PARAMS>`: Override the SMBIOS (DMI) identity reported to the
+  guest (repeatable). Uses the format
+  `type=N,key=value[,key=value...]`, following QEMU's `-smbios` syntax and
+  key names. As with QEMU, `type=N` is required (there is no default). Keys
+  left unset use the loader's built-in default identity (OpenVMM / OpenVMM
+  Virtual Machine). The system UUID defaults to the all-zero GUID unless
+  overridden with `uuid=<GUID>`; `uuid=random` requests a freshly generated
+  per-VM GUID. Unknown types and unknown keys are rejected.
+
+  Applies to both Linux direct boot and UEFI boot. On UEFI boot the firmware
+  builds the SMBIOS tables, so only `type=1` (System) fields can be
+  overridden — the firmware self-describes the BIOS, so setting any `type=0`
+  (BIOS) field is rejected with an error rather than silently ignored.
+
+  Supported keys:
+
+  | `type` | Keys | Linux `/sys/class/dmi/id/` |
+  | --- | --- | --- |
+  | `0` (BIOS) | `vendor`, `version`, `date`, `release` | `bios_vendor`, `bios_version`, `bios_date`, `bios_release` |
+  | `1` (System) | `manufacturer`, `product`, `version`, `serial`, `uuid`, `sku`, `family` | `sys_vendor`, `product_name`, `product_version`, `product_serial`, `product_uuid`, `product_sku`, `product_family` |
+
+  `version` is the free-form BIOS version string, whereas `release` is the
+  numeric System BIOS Major/Minor Release, given as `MAJOR.MINOR` (each a
+  number in `0..=255`, e.g. `release=4.1`), matching QEMU.
+
+  ```bash
+  --smbios type=1,manufacturer=Contoso,product="Virtual Machine"
+  --smbios type=1,uuid=12345678-9abc-def0-1234-56789abcdef0
+  --smbios type=1,uuid=random
+  --smbios type=1,manufacturer=Contoso --smbios type=0,vendor=Contoso,version=1.0,release=4.1
+  ```
+
+  See [Linux Direct Boot](../../devices/firmware/linux_direct.md) for how the
+  tables are delivered to the guest.
 * `--pidfile <PATH>`: Write the process ID to the specified file on startup,
   and remove it on clean exit. If the process is killed with `SIGKILL` or
   crashes, the pidfile is not removed — consumers should verify the PID is

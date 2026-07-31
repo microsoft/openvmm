@@ -718,6 +718,10 @@ impl VmService {
         #[cfg(guest_arch = "x86_64")]
         let arch = vm_manifest_builder::MachineArch::X86_64;
 
+        // SMBIOS identity is applied regardless of boot type; build it once and
+        // move it into whichever LoadMode is selected below.
+        let smbios = Box::new(smbios_config_from_proto(req_config.smbios_config.take())?);
+
         // The boot configuration also determines the base chipset, since the
         // firmware and the device model have to agree on the platform.
         let (load_mode, base_chipset_type, uefi_config) = match req_config
@@ -739,6 +743,7 @@ impl VmService {
                         cmdline: boot.kernel_cmdline,
                         enable_serial: true,
                         boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                        smbios,
                     },
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
                     None,
@@ -788,7 +793,7 @@ impl VmService {
                         // anything it launches would have nowhere to write on a
                         // VM with no graphics adapter.
                         uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
-                        bios_guid: Guid::new_random(),
+                        smbios,
                         enable_vmbus: true,
                         // Everything below is fixed for now. The proto has no
                         // way to express these yet; fields will be added as
@@ -1408,6 +1413,63 @@ fn open_socket_backend(
     } else {
         (bind_serial, "bind")
     }
+}
+
+/// Convert the proto `SMBIOSConfig` (untrusted input) into the loader's
+/// [`SmbiosConfig`](openvmm_defs::config::SmbiosConfig).
+///
+/// An absent message or absent field falls through to the loader's built-in
+/// default identity. The system UUID defaults to the all-zero GUID when unset.
+fn smbios_config_from_proto(
+    proto: Option<vmservice::SmbiosConfig>,
+) -> anyhow::Result<openvmm_defs::config::SmbiosConfig> {
+    let vmservice::SmbiosConfig { bios, system } = proto.unwrap_or_default();
+
+    let vmservice::smbios_config::Bios {
+        vendor,
+        version: bios_version,
+        release_date,
+        release,
+    } = bios.unwrap_or_default();
+    let release = release
+        .map(|r| {
+            let major = u8::try_from(r.major).context("smbios bios release major out of range")?;
+            let minor = u8::try_from(r.minor).context("smbios bios release minor out of range")?;
+            anyhow::Ok((major, minor))
+        })
+        .transpose()?;
+
+    let vmservice::smbios_config::System {
+        manufacturer,
+        product_name,
+        version: system_version,
+        serial_number,
+        sku_number,
+        family,
+        uuid,
+    } = system.unwrap_or_default();
+    let uuid = match uuid {
+        Some(uuid) => uuid.parse::<Guid>().context("invalid smbios system uuid")?,
+        None => Guid::ZERO,
+    };
+
+    Ok(openvmm_defs::config::SmbiosConfig {
+        bios: openvmm_defs::config::SmbiosBiosOverrides {
+            vendor,
+            version: bios_version,
+            release_date,
+            release,
+        },
+        system: openvmm_defs::config::SmbiosSystemOverrides {
+            manufacturer,
+            product_name,
+            version: system_version,
+            serial_number,
+            sku_number,
+            family,
+            uuid,
+        },
+    })
 }
 
 /// Convert a ttrpc `PortConfig` (untrusted input) into a `HostPortConfig`,

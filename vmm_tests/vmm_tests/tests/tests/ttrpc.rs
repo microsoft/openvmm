@@ -341,6 +341,29 @@ fn test_ttrpc_interface(
                 )
             };
 
+            // Exercise SMBIOS identity overrides on iteration 0, where pipette
+            // is available to read back the guest's DMI (see `validate_smbios`).
+            let smbios_config = (i == 0).then(|| vmservice::SmbiosConfig {
+                bios: Some(vmservice::smbios_config::Bios {
+                    vendor: Some(SMBIOS_BIOS_VENDOR.to_string()),
+                    version: Some(SMBIOS_BIOS_VERSION.to_string()),
+                    release_date: Some(SMBIOS_BIOS_DATE.to_string()),
+                    release: Some(vmservice::smbios_config::bios::Release {
+                        major: SMBIOS_BIOS_RELEASE_MAJOR,
+                        minor: SMBIOS_BIOS_RELEASE_MINOR,
+                    }),
+                }),
+                system: Some(vmservice::smbios_config::System {
+                    manufacturer: Some(SMBIOS_SYS_MANUFACTURER.to_string()),
+                    product_name: Some(SMBIOS_SYS_PRODUCT.to_string()),
+                    version: Some(SMBIOS_SYS_VERSION.to_string()),
+                    serial_number: Some(SMBIOS_SYS_SERIAL.to_string()),
+                    sku_number: Some(SMBIOS_SYS_SKU.to_string()),
+                    family: Some(SMBIOS_SYS_FAMILY.to_string()),
+                    uuid: Some(SMBIOS_SYS_UUID.to_string()),
+                }),
+            });
+
             client
                 .call()
                 .start(
@@ -401,6 +424,7 @@ fn test_ttrpc_interface(
                             hvsocket_config: (i == 0).then(|| vmservice::HvSocketConfig {
                                 path: hvsocket_path.to_string_lossy().to_string(),
                             }),
+                            smbios_config,
                             ..Default::default()
                         }),
                         log_id: String::new(),
@@ -562,6 +586,7 @@ fn test_ttrpc_interface(
                         )
                         .await?;
                         validate_pcie_config(&agent).await?;
+                        validate_smbios(&agent).await?;
                         agent.power_off().await?;
                     }
 
@@ -1080,6 +1105,69 @@ fn file_disk(path: &Path) -> vmservice::DiskBackend {
             direct: false,
         })),
     }
+}
+
+// SMBIOS (DMI) identity overrides applied on iteration 0 of the main test and
+// validated in the guest by `validate_smbios`.
+const SMBIOS_BIOS_VENDOR: &str = "Contoso BIOS";
+const SMBIOS_BIOS_VERSION: &str = "1.2.3";
+const SMBIOS_BIOS_DATE: &str = "01/01/2026";
+const SMBIOS_BIOS_RELEASE_MAJOR: u32 = 4;
+const SMBIOS_BIOS_RELEASE_MINOR: u32 = 1;
+const SMBIOS_SYS_MANUFACTURER: &str = "Contoso";
+const SMBIOS_SYS_PRODUCT: &str = "Contoso Virtual Machine";
+const SMBIOS_SYS_VERSION: &str = "9.8.7";
+const SMBIOS_SYS_SERIAL: &str = "SN-0123456789";
+const SMBIOS_SYS_SKU: &str = "SKU-CONTOSO-42";
+const SMBIOS_SYS_FAMILY: &str = "Contoso VM Family";
+// A fixed, non-default UUID: the all-zero default would not catch a byte-order
+// bug, and Linux treats a nil UUID as "not present" so `product_uuid` would not
+// even be exposed.
+const SMBIOS_SYS_UUID: &str = "12345678-9abc-def0-1234-56789abcdef0";
+
+/// Validate that the SMBIOS identity overrides passed to `CreateVm` on
+/// iteration 0 are reflected in the guest's `/sys/class/dmi/id/*`.
+async fn validate_smbios(agent: &pipette_client::PipetteClient) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    for (file, expected) in [
+        ("bios_vendor", SMBIOS_BIOS_VENDOR),
+        ("bios_version", SMBIOS_BIOS_VERSION),
+        ("bios_date", SMBIOS_BIOS_DATE),
+        ("sys_vendor", SMBIOS_SYS_MANUFACTURER),
+        ("product_name", SMBIOS_SYS_PRODUCT),
+        ("product_version", SMBIOS_SYS_VERSION),
+        ("product_serial", SMBIOS_SYS_SERIAL),
+        ("product_sku", SMBIOS_SYS_SKU),
+        ("product_family", SMBIOS_SYS_FAMILY),
+        // The kernel formats `product_uuid` little-endian (`%pUl`); a `Guid`'s
+        // Display output already matches that layout, so compare directly.
+        ("product_uuid", SMBIOS_SYS_UUID),
+    ] {
+        let actual = sh
+            .read_file(format!("/sys/class/dmi/id/{file}"))
+            .await
+            .with_context(|| format!("reading dmi id {file}"))?;
+        anyhow::ensure!(
+            actual.trim() == expected,
+            "dmi id {file}: expected {expected:?}, got {:?}",
+            actual.trim()
+        );
+    }
+
+    // `bios_release` is the SMBIOS Type 0 System BIOS Major/Minor Release,
+    // exposed by Linux as "MAJOR.MINOR".
+    let bios_release = sh
+        .read_file("/sys/class/dmi/id/bios_release")
+        .await
+        .context("reading dmi id bios_release")?;
+    let want = format!("{SMBIOS_BIOS_RELEASE_MAJOR}.{SMBIOS_BIOS_RELEASE_MINOR}");
+    anyhow::ensure!(
+        bios_release.trim() == want,
+        "dmi id bios_release: expected {want:?}, got {:?}",
+        bios_release.trim()
+    );
+
+    Ok(())
 }
 
 async fn validate_pcie_config(agent: &pipette_client::PipetteClient) -> anyhow::Result<()> {

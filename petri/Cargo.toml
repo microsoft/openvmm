@@ -37,6 +37,7 @@ netvsp_resources.workspace = true
 nvme_resources.workspace = true
 scsidisk_resources.workspace = true
 serial_core.workspace = true
+smbios_defs.workspace = true
 serial_16550_resources.workspace = true
 serial_socket.workspace = true
 storvsp_resources.workspace = true
