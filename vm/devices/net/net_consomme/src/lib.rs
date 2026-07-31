@@ -34,6 +34,7 @@ use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::HostIpAddress;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
 use pal_async::driver::Driver;
@@ -96,15 +97,13 @@ fn socket_family(socket: &socket2::Socket) -> Result<IpVersion, consomme::BindEr
 
 pub struct ConsommeEndpoint {
     endpoint_state: Arc<Mutex<Option<EndpointState>>>,
-    /// Control requests originating within this process (see
-    /// [`ConsommeControl`]).
-    local_recv: Option<mesh::Receiver<ControlRequest>>,
-    /// Port bind/unbind requests arriving from another process (e.g. from
-    /// ttrpc).
+    /// In-process requests which cannot cross a process boundary.
+    local_recv: Option<mesh::Receiver<LocalRequest>>,
+    /// Serializable requests originating either in-process or remotely.
     remote_recv: Option<mesh::Receiver<ConsommeRequest>>,
     /// Requests buffered while the queue owns the consomme state, applied in
     /// order on the next queue restart.
-    pending: VecDeque<ControlRequest>,
+    pending: VecDeque<PendingRequest>,
 }
 
 /// Drains all currently-available items from `recv` into `buffer`, registering a
@@ -166,28 +165,32 @@ impl ConsommeEndpoint {
     /// Creates a new endpoint with an in-process [`ConsommeControl`] handle for
     /// runtime bind/unbind and state updates.
     pub fn new_dynamic(state: ConsommeParams) -> (Self, ConsommeControl) {
-        let (send, recv) = mesh::channel();
+        let (remote_send, remote_recv) = mesh::channel();
+        let (local_send, local_recv) = mesh::channel();
         (
-            Self::with_state(state, Vec::new(), None, Some(recv)),
-            ConsommeControl { send },
+            Self::with_state(state, Vec::new(), Some(remote_recv), Some(local_recv)),
+            ConsommeControl {
+                remote_send,
+                local_send,
+            },
         )
     }
 
-    /// Creates a new endpoint with initial ports and a channel for runtime
-    /// port bind/unbind requests from an external source (e.g. ttrpc server).
-    pub fn new_with_port_channel(
+    /// Creates a new endpoint with initial ports and a channel for serializable
+    /// runtime requests from an external source (e.g. ttrpc server).
+    pub fn new_with_remote_channel(
         state: ConsommeParams,
         ports: Vec<PortForwardConfig>,
-        port_recv: mesh::Receiver<ConsommeRequest>,
+        remote_recv: mesh::Receiver<ConsommeRequest>,
     ) -> Self {
-        Self::with_state(state, ports, Some(port_recv), None)
+        Self::with_state(state, ports, Some(remote_recv), None)
     }
 
     fn with_state(
         state: ConsommeParams,
         ports: Vec<PortForwardConfig>,
         remote_recv: Option<mesh::Receiver<ConsommeRequest>>,
-        local_recv: Option<mesh::Receiver<ControlRequest>>,
+        local_recv: Option<mesh::Receiver<LocalRequest>>,
     ) -> Self {
         ConsommeEndpoint {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
@@ -210,11 +213,11 @@ impl ConsommeEndpoint {
             pending,
             ..
         } = self;
-        let mut received = drain_receiver(local_recv, cx, "control", |request| {
-            pending.push_back(request)
+        let mut received = drain_receiver(local_recv, cx, "local request", |request| {
+            pending.push_back(PendingRequest::Local(request))
         });
-        received |= drain_receiver(remote_recv, cx, "port request", |request| {
-            pending.push_back(ControlRequest::Port(request))
+        received |= drain_receiver(remote_recv, cx, "remote request", |request| {
+            pending.push_back(PendingRequest::Remote(request))
         });
         received
     }
@@ -232,7 +235,8 @@ impl InspectMut for ConsommeEndpoint {
 
 /// Provide dynamic updates during runtime.
 pub struct ConsommeControl {
-    send: mesh::Sender<ControlRequest>,
+    remote_send: mesh::Sender<ConsommeRequest>,
+    local_send: mesh::Sender<LocalRequest>,
 }
 
 /// Error type returned from some dynamic update functions like bind_port.
@@ -258,6 +262,8 @@ pub enum ConsommeMessageError {
 
 /// Callback to modify network state dynamically.
 pub type ConsommeParamsUpdateFn = Box<dyn Fn(&mut ConsommeParams) + Send + Sync>;
+
+type StateUpdateRequest = Rpc<ConsommeParamsUpdateFn, ()>;
 
 #[derive(Debug, Clone, Copy)]
 pub enum IpProtocol {
@@ -290,15 +296,15 @@ struct AddDnsRecordConfig {
     name: String,
 }
 
-/// In-proc control request. A superset of the cross-proc `ConsommeRequest` that
-/// also carries operations which can't cross a process boundary.
-enum ControlRequest {
-    /// Port bind/unbind (same as the cross-proc request).
-    Port(ConsommeRequest),
-    /// Update dynamic network state (in-proc only).
-    UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
+enum LocalRequest {
+    StateUpdate(StateUpdateRequest),
     AddDnsRecord(Rpc<AddDnsRecordConfig, Result<(), StaticDnsRecordError>>),
-    CreateVirtualAddress(Rpc<IpAddr, Option<IpAddr>>),
+}
+
+/// A request buffered until the endpoint regains ownership of the Consomme state.
+enum PendingRequest {
+    Remote(ConsommeRequest),
+    Local(LocalRequest),
 }
 
 impl ConsommeControl {
@@ -322,12 +328,12 @@ impl ConsommeControl {
                 None,
             )
         };
-        self.send
+        self.remote_send
             .call(
-                |rpc| ControlRequest::Port(ConsommeRequest::Bind(rpc)),
+                ConsommeRequest::Bind,
                 HostPortConfig {
                     protocol: protocol.into(),
-                    host_address: ip_addr.map(net_backend_resources::consomme::HostIpAddress::from),
+                    host_address: ip_addr.map(HostIpAddress::from),
                     host_port: host_port_config,
                     guest_port,
                 },
@@ -351,12 +357,12 @@ impl ConsommeControl {
         ip_addr: Option<IpAddr>,
         guest_port: u16,
     ) -> Result<(), ConsommeMessageError> {
-        self.send
+        self.remote_send
             .call(
-                |rpc| ControlRequest::Port(ConsommeRequest::Unbind(rpc)),
+                ConsommeRequest::Unbind,
                 HostPortConfig {
                     protocol: protocol.into(),
-                    host_address: ip_addr.map(net_backend_resources::consomme::HostIpAddress::from),
+                    host_address: ip_addr.map(HostIpAddress::from),
                     host_port: net_backend_resources::consomme::HostPort::Fixed(0),
                     guest_port,
                 },
@@ -371,8 +377,8 @@ impl ConsommeControl {
         &self,
         f: ConsommeParamsUpdateFn,
     ) -> Result<(), ConsommeMessageError> {
-        self.send
-            .call(ControlRequest::UpdateState, f)
+        self.local_send
+            .call(LocalRequest::StateUpdate, f)
             .await
             .map_err(ConsommeMessageError::Mesh)
     }
@@ -384,9 +390,9 @@ impl ConsommeControl {
         record: StaticDnsRecord,
         name: String,
     ) -> Result<(), ConsommeMessageError> {
-        self.send
+        self.local_send
             .call(
-                ControlRequest::AddDnsRecord,
+            LocalRequest::AddDnsRecord,
                 AddDnsRecordConfig { record, name },
             )
             .await
@@ -403,10 +409,14 @@ impl ConsommeControl {
         &self,
         destination: IpAddr,
     ) -> Result<IpAddr, ConsommeMessageError> {
-        self.send
-            .call(ControlRequest::CreateVirtualAddress, destination)
+        self.remote_send
+            .call(
+                ConsommeRequest::CreateVirtualAddress,
+                HostIpAddress::from(destination),
+            )
             .await
             .map_err(ConsommeMessageError::Mesh)?
+            .map(IpAddr::from)
             .ok_or(ConsommeMessageError::VirtualAddressPoolExhausted)
     }
 }
@@ -473,7 +483,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             Ok(bound)
         });
 
-        // Apply requests buffered while no queue was running (see
+        // Apply requests buffered while the queue owned the Consomme state (see
         // `wait_for_endpoint_action`). This runs regardless of whether the
         // static port-forward binding above succeeded, so the buffered RPCs
         // always complete here instead of stalling until some unrelated future
@@ -482,21 +492,20 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         queue.with_consomme_no_pool(|c| {
             for request in pending {
                 match request {
-                    ControlRequest::Port(request) => process_port_request(c, request),
-                    ControlRequest::UpdateState(rpc) => {
-                        rpc.handle_sync(|f| {
-                            f(c.get_mut().params_mut());
-                            c.get_mut().clear_local_addr_map();
-                            c.update_dns_nameservers()
-                        });
-                    }
-                    ControlRequest::AddDnsRecord(rpc) => {
-                        rpc.handle_sync(|cfg| c.get_mut().add_dns_record(cfg.record, &cfg.name));
-                    }
-                    ControlRequest::CreateVirtualAddress(rpc) => {
-                        rpc.handle_sync(|destination| {
-                            c.get_mut().create_virtual_address(destination)
-                        });
+                    PendingRequest::Remote(request) => process_remote_request(c, request),
+                    PendingRequest::Local(request) => match request {
+                        LocalRequest::StateUpdate(rpc) => {
+                            rpc.handle_sync(|f| {
+                                f(c.get_mut().params_mut());
+                                c.get_mut().clear_local_addr_map();
+                                c.update_dns_nameservers()
+                            });
+                        }
+                        LocalRequest::AddDnsRecord(rpc) => {
+                            rpc.handle_sync(|cfg| {
+                                c.get_mut().add_dns_record(cfg.record, &cfg.name)
+                            });
+                        }
                     }
                 }
             }
@@ -646,8 +655,6 @@ fn execute_unbind(
     consomme: &mut consomme::Access<'_, impl consomme::Client>,
     cfg: &HostPortConfig,
 ) -> anyhow::Result<()> {
-    use net_backend_resources::consomme::HostIpAddress;
-
     let protocol: IpProtocol = cfg.protocol.clone().into();
     let family = match &cfg.host_address {
         Some(HostIpAddress::Ipv4(_)) | None => IpVersion::Ipv4,
@@ -660,8 +667,8 @@ fn execute_unbind(
     result.context("failed to unbind port")
 }
 
-/// Handle a `ConsommeRequest` (shared by both in-proc and cross-proc paths).
-fn process_port_request(
+/// Handle a request that may have originated in-process or remotely.
+fn process_remote_request(
     consomme: &mut consomme::Access<'_, impl consomme::Client>,
     request: ConsommeRequest,
 ) {
@@ -684,6 +691,14 @@ fn process_port_request(
                     Ok(())
                 },
             );
+        }
+        ConsommeRequest::CreateVirtualAddress(rpc) => {
+            rpc.handle_sync(|destination| {
+                consomme
+                    .get_mut()
+                    .create_virtual_address(destination.into())
+                    .map(HostIpAddress::from)
+            });
         }
     }
 }
@@ -937,21 +952,45 @@ mod tests {
     fn requests_for_same_port_remain_ordered() {
         let mut ep = endpoint();
         ep.pending
-            .push_back(ControlRequest::Port(ConsommeRequest::Bind(Rpc::detached(
-                cfg(80),
-            ))));
+            .push_back(PendingRequest::Remote(ConsommeRequest::Bind(
+                Rpc::detached(cfg(80)),
+            )));
         ep.pending
-            .push_back(ControlRequest::Port(ConsommeRequest::Unbind(
+            .push_back(PendingRequest::Remote(ConsommeRequest::Unbind(
                 Rpc::detached(cfg(80)),
             )));
 
         assert!(matches!(
             ep.pending.pop_front(),
-            Some(ControlRequest::Port(ConsommeRequest::Bind(_)))
+            Some(PendingRequest::Remote(ConsommeRequest::Bind(_)))
         ));
         assert!(matches!(
             ep.pending.pop_front(),
-            Some(ControlRequest::Port(ConsommeRequest::Unbind(_)))
+            Some(PendingRequest::Remote(ConsommeRequest::Unbind(_)))
+        ));
+    }
+
+    #[test]
+    fn virtual_address_uses_remote_channel() {
+        use std::task::Context;
+        use std::task::Waker;
+
+        let (send, recv) = mesh::channel::<ConsommeRequest>();
+        let mut ep = ConsommeEndpoint::new_with_remote_channel(
+            ConsommeParams::new().unwrap(),
+            Vec::new(),
+            recv,
+        );
+        send.send(ConsommeRequest::CreateVirtualAddress(Rpc::detached(
+            HostIpAddress::Ipv4(Ipv4Addr::LOCALHOST),
+        )));
+
+        assert!(ep.drain_channels(&mut Context::from_waker(Waker::noop())));
+        assert!(matches!(
+            ep.pending.pop_front(),
+            Some(PendingRequest::Remote(
+                ConsommeRequest::CreateVirtualAddress(_)
+            ))
         ));
     }
 
@@ -961,7 +1000,7 @@ mod tests {
         use std::task::Waker;
 
         let (send, recv) = mesh::channel::<ConsommeRequest>();
-        let mut ep = ConsommeEndpoint::new_with_port_channel(
+        let mut ep = ConsommeEndpoint::new_with_remote_channel(
             ConsommeParams::new().unwrap(),
             Vec::new(),
             recv,
