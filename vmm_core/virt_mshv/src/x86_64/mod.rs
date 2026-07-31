@@ -72,6 +72,7 @@ use snp::GHCB_RCX_VALID_BIT;
 pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
+pub(crate) use snp::acquire_snp_host_access;
 use snp::ghcb_rax_is_valid;
 use snp::read_snp_start_vp_input;
 use snp::set_ghcb_gp;

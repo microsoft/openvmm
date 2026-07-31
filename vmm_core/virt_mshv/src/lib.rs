@@ -874,6 +874,19 @@ impl virt::PartitionMemoryMapper for MshvPartition {
 
 // TODO: figure out a better abstraction that also works for KVM and WHP.
 impl virt::PartitionMemoryMap for MshvPartitionInner {
+    fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
+        // TODO: The current prototype only provides the acquisition half of
+        // the host-visibility lifecycle. This is sufficient for single-threaded
+        // bring-up with no concurrent page-state changes, but the GPA attribute
+        // intercept revocation path must share serialized state with
+        // acquire_snp_host_access before concurrent use is safe.
+        #[cfg(guest_arch = "x86_64")]
+        if self.snp.is_some() {
+            return arch::acquire_snp_host_access(self, _addr, _size);
+        }
+        anyhow::bail!("acquiring host access is not supported")
+    }
+
     unsafe fn map_range(
         &self,
         data: *mut u8,
