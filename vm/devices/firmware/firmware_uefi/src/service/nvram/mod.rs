@@ -66,6 +66,29 @@ enum SignatureValue {
 /// Unique Secure Boot signatures contained in a variable or base template.
 type SignatureSet = BTreeSet<SignatureValue>;
 
+/// Secure Boot telemetry schema mirrored by legacy HCL's `UefiNvramStore.cpp`.
+#[derive(Debug)]
+#[expect(dead_code, reason = "fields are consumed by derived Debug telemetry")]
+struct SecureBootConfigReport<'a> {
+    variable_name: &'a str,
+    baseline_revision: &'a str,
+    custom_uefi_config_present: bool,
+    base_template_entries: usize,
+    loaded_entries: usize,
+    missing_entries: usize,
+    loaded_variable_bytes: usize,
+}
+
+impl SecureBootConfigReport<'_> {
+    fn log(&self) {
+        if self.missing_entries == 0 {
+            tracing::info!(CVM_ALLOWED, ?self);
+        } else {
+            tracing::warn!(CVM_ALLOWED, ?self);
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum NvramSetupError {
     #[error("could not query backing nvram storage")]
@@ -262,13 +285,13 @@ impl NvramServices {
         ];
 
         // Iterate over each secure boot variable and compare it against the base template
-        for (variable, (vendor, name), template_signatures) in variables {
+        for (variable_name, (vendor, name), template_signatures) in variables {
             let loaded_variable = match self.services.get_variable_ucs2(vendor, name).await {
                 Ok((_, data)) if !data.is_empty() => data,
                 Ok((_, data)) => {
                     tracing::warn!(
                         CVM_ALLOWED,
-                        variable,
+                        variable_name,
                         loaded_variable_bytes = data.len(),
                         "loaded secure boot template variable is missing in NVRAM"
                     );
@@ -277,7 +300,7 @@ impl NvramServices {
                 Err((EfiStatus::NOT_FOUND, _)) => {
                     tracing::warn!(
                         CVM_ALLOWED,
-                        variable,
+                        variable_name,
                         loaded_variable_bytes = 0,
                         "loaded secure boot template variable is missing in NVRAM"
                     );
@@ -286,7 +309,7 @@ impl NvramServices {
                 Err((status, error)) => {
                     tracing::warn!(
                         CVM_CONFIDENTIAL,
-                        variable,
+                        variable_name,
                         ?status,
                         ?error,
                         "failed to load secure boot variable"
@@ -301,7 +324,7 @@ impl NvramServices {
                 Err(error) => {
                     tracing::warn!(
                         CVM_CONFIDENTIAL,
-                        variable,
+                        variable_name,
                         error = &error as &dyn std::error::Error,
                         "failed to parse loaded secure boot variable"
                     );
@@ -313,41 +336,23 @@ impl NvramServices {
             if base_signatures.is_empty() {
                 tracing::warn!(
                     CVM_ALLOWED,
-                    variable,
+                    variable_name,
                     "baseline secure boot template variable contains no signatures"
                 );
                 continue;
             }
 
-            let base_template_entries = base_signatures.len();
-            let loaded_entries = loaded_signatures.len();
             let missing_entries = base_signatures.difference(&loaded_signatures).count();
-
-            if missing_entries == 0 {
-                tracing::info!(
-                    CVM_ALLOWED,
-                    variable,
-                    baseline_revision,
-                    custom_uefi_config_present,
-                    base_template_entries,
-                    loaded_entries,
-                    missing_entries,
-                    loaded_variable_bytes,
-                    "baseline secure boot template variable is present"
-                );
-            } else {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    variable,
-                    baseline_revision = baseline_revision,
-                    custom_uefi_config_present,
-                    base_template_entries,
-                    loaded_entries,
-                    missing_entries,
-                    loaded_variable_bytes,
-                    "baseline secure boot template variable is missing"
-                );
+            SecureBootConfigReport {
+                variable_name,
+                baseline_revision,
+                custom_uefi_config_present,
+                base_template_entries: base_signatures.len(),
+                loaded_entries: loaded_signatures.len(),
+                missing_entries,
+                loaded_variable_bytes,
             }
+            .log();
         }
     }
 
