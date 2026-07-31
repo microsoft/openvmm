@@ -1795,13 +1795,7 @@ impl IntoPipeline for CheckinGatesCli {
                 )
                 .gh_set_pool(gh_pools::linux_x64_gh())
                 .ado_set_pool(ado_pools::default_linux())
-                .side_effect(|done| flowey_lib_hvlite::_jobs::check_distro_build::Request {
-                    // A commit under test is not a release, so it has no
-                    // version to assemble under.
-                    identity:
-                        flowey_lib_hvlite::assemble_openvmm_source_release::IdentitySource::Snapshot,
-                    done,
-                })
+                .side_effect(|done| flowey_lib_hvlite::_jobs::check_distro_build::Request { done })
                 .finish();
 
             all_jobs.push(distro_build_job);

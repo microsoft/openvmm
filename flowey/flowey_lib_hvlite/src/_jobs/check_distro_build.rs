@@ -4,9 +4,9 @@
 //! Ensure `openvmm` still builds the way a Linux distribution package builds
 //! it.
 //!
-//! OpenVMM is meant to be built and packaged by Linux distributions from a
-//! source archive, so this configuration is a shipping interface. It differs
-//! from every other build in CI in one important way: it does not use the
+//! OpenVMM publishes a source release that distributions build and package
+//! themselves, so this configuration is a shipping interface. It differs from
+//! every other build in CI in one important way: it does not use the
 //! repository's `.packages/` provisioning, because a distribution build cannot
 //! consume prebuilt native libraries. Every native dependency comes from a
 //! distribution package instead, and the two environment overrides a packager
@@ -14,22 +14,19 @@
 //!
 //! Without this job, a change that only resolves through `.packages/` breaks
 //! downstream packagers silently, and we would not find out until someone
-//! tried to build one.
+//! tried to build a release.
 //!
-//! The build runs against an assembled source archive rather than the checkout,
-//! because building the checkout would let this pass on a tree a packager
-//! cannot reproduce: a packager has no `.git` directory and no untracked files.
+//! The build runs against the release assets themselves -- assembled by the
+//! same node the release publishes from, then verified and unpacked the way a
+//! packager would. Building the checkout instead would let this pass on a tree
+//! a packager cannot reproduce, since a packager has no `.git` directory and no
+//! untracked files.
 
 use crate::assemble_openvmm_source_release::CHECKSUM_FILE;
-use crate::assemble_openvmm_source_release::IdentitySource;
-use crate::assemble_openvmm_source_release::METADATA_FILE;
-use crate::assemble_openvmm_source_release::expected_metadata;
 use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        /// Which identity to assemble and build under.
-        pub identity: IdentitySource,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -47,7 +44,7 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request { identity, done } = request;
+        let Request { done } = request;
 
         let target = target_lexicon::triple!("x86_64-unknown-linux-gnu");
 
@@ -85,19 +82,22 @@ impl SimpleFlowNode for Node {
 
         ctx.req(flowey_lib_common::install_rust::Request::InstallTargetTriple(target.clone()));
 
-        // A commit under test is not a release, so it is assembled under a
-        // snapshot identity: a version that cannot be mistaken for one, with no
-        // tag. Everything else about the assembly and the build is what a
-        // packager does.
+        // The identity is read out of the tree, so this job and the release
+        // that publishes the same commit necessarily assemble the same archive.
+        // That is what makes running this job on a release meaningful: it
+        // proves the bytes that ship are buildable, not a lookalike.
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-        let resolved = ctx.emit_rust_stepv("resolve source archive identity", |ctx| {
+        let resolved = ctx.emit_rust_stepv("resolve source release identity", |ctx| {
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             move |rt| {
                 let output_dir = std::env::current_dir()?.join("openvmm-source-release");
                 let path = rt.read(openvmm_repo_path);
                 rt.sh.change_dir(path);
 
-                Ok((identity.resolve(rt)?, output_dir))
+                Ok((
+                    crate::assemble_openvmm_source_release::resolve_identity(rt)?,
+                    output_dir,
+                ))
             }
         });
         let identity = resolved.clone().map(ctx, |(identity, _)| identity);
@@ -120,7 +120,7 @@ impl SimpleFlowNode for Node {
                 let output_dir = rt.read(output_dir);
 
                 // A packager starts by checking the archive against the
-                // checksums shipped alongside it, so start there too.
+                // checksums we published, so start there too.
                 rt.sh.change_dir(&output_dir);
                 flowey::shell_cmd!(rt, "sha256sum --check --strict {CHECKSUM_FILE}").run()?;
 
@@ -138,23 +138,6 @@ impl SimpleFlowNode for Node {
                 let source_dir = build_root.join(identity.source_root());
                 if source_dir.join(".git").exists() {
                     anyhow::bail!("the source archive must not contain a .git directory");
-                }
-
-                // The archive carries its own identity, which is how a packager
-                // recovers a version without a `.git` directory. If that were
-                // missing or wrong, the build would still succeed and the
-                // package would be labelled incorrectly. Compare the whole
-                // document rather than just the version: this is the only place
-                // the metadata contract is exercised end to end.
-                let metadata_path = source_dir.join(METADATA_FILE);
-                let metadata: serde_json::Value =
-                    serde_json::from_slice(&fs_err::read(&metadata_path)?)
-                        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
-                let expected = expected_metadata(&identity);
-                if metadata != expected {
-                    anyhow::bail!(
-                        "the source archive declares {metadata}, but it was assembled as {expected}"
-                    );
                 }
 
                 rt.sh.change_dir(&source_dir);
@@ -190,6 +173,28 @@ impl SimpleFlowNode for Node {
                 .env("CARGO_INCREMENTAL", "0")
                 .run()?;
 
+                let binary = format!("target/{target}/release/openvmm");
+
+                // The version is the one thing about the release that lives in
+                // the tree rather than in the pipeline, so nothing else proves
+                // it survives the trip. Ask the binary a packager just built
+                // what it thinks it is, and require the answer the archive was
+                // assembled under. Without `.git` there is no revision suffix,
+                // so this is the exact version and not a prefix match.
+                //
+                // This is the whole scheme in one assertion: if it holds, a
+                // distribution's binary is labelled with the version we
+                // published.
+                let reported = flowey::shell_cmd!(rt, "{binary} --version").read()?;
+                let reported = reported.lines().next().unwrap_or_default().trim();
+                let expected = format!("openvmm {}", identity.version);
+                if reported != expected {
+                    anyhow::bail!(
+                        "the archive was assembled as {expected:?}, but the binary built from \
+                         it reports {reported:?}"
+                    );
+                }
+
                 // Building is not enough. If `openssl-sys` were to start
                 // building a vendored copy, or if some dependency were to
                 // acquire a static native library, the build would still
@@ -201,7 +206,6 @@ impl SimpleFlowNode for Node {
                 // would still be satisfied if `openvmm` linked a static
                 // OpenSSL while some unrelated shared library pulled in the
                 // system one.
-                let binary = format!("target/{target}/release/openvmm");
                 let linkage = flowey::shell_cmd!(rt, "readelf -d {binary}").read()?;
                 for lib in ["libssl.so", "libcrypto.so"] {
                     let needed = linkage
