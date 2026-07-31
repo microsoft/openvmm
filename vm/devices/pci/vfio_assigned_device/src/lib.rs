@@ -1420,7 +1420,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
         address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> IoResult {
-        if access_type != PciConfigAccessType::Type0 || address.devfn != 0 {
+        if access_type != PciConfigAccessType::Type0 {
             return IoResult::Ok;
         }
 
