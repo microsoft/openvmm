@@ -98,7 +98,7 @@ pub struct ConsommeEndpoint {
     /// In-process state updates, which cannot cross a process boundary.
     state_update_recv: Option<mesh::Receiver<StateUpdateRequest>>,
     /// Serializable requests originating either in-process or remotely.
-    remote_recv: Option<mesh::Receiver<ConsommeRequest>>,
+    request_recv: Option<mesh::Receiver<ConsommeRequest>>,
     /// Requests buffered while the queue owns the consomme state, applied in
     /// order on the next queue restart.
     pending: VecDeque<PendingRequest>,
@@ -163,17 +163,17 @@ impl ConsommeEndpoint {
     /// Creates a new endpoint with an in-process [`ConsommeControl`] handle for
     /// runtime bind/unbind and state updates.
     pub fn new_dynamic(state: ConsommeParams) -> (Self, ConsommeControl) {
-        let (remote_send, remote_recv) = mesh::channel();
+        let (request_send, request_recv) = mesh::channel();
         let (state_update_send, state_update_recv) = mesh::channel();
         (
             Self::with_state(
                 state,
                 Vec::new(),
-                Some(remote_recv),
+                Some(request_recv),
                 Some(state_update_recv),
             ),
             ConsommeControl {
-                remote_send,
+                request_send,
                 state_update_send,
             },
         )
@@ -181,18 +181,18 @@ impl ConsommeEndpoint {
 
     /// Creates a new endpoint with initial ports and a channel for serializable
     /// runtime requests from an external source (e.g. ttrpc server).
-    pub fn new_with_remote_channel(
+    pub fn new_with_request_channel(
         state: ConsommeParams,
         ports: Vec<PortForwardConfig>,
-        remote_recv: mesh::Receiver<ConsommeRequest>,
+        request_recv: mesh::Receiver<ConsommeRequest>,
     ) -> Self {
-        Self::with_state(state, ports, Some(remote_recv), None)
+        Self::with_state(state, ports, Some(request_recv), None)
     }
 
     fn with_state(
         state: ConsommeParams,
         ports: Vec<PortForwardConfig>,
-        remote_recv: Option<mesh::Receiver<ConsommeRequest>>,
+        request_recv: Option<mesh::Receiver<ConsommeRequest>>,
         state_update_recv: Option<mesh::Receiver<StateUpdateRequest>>,
     ) -> Self {
         ConsommeEndpoint {
@@ -201,7 +201,7 @@ impl ConsommeEndpoint {
                 port_forwards: ports,
             }))),
             state_update_recv,
-            remote_recv,
+            request_recv,
             pending: VecDeque::new(),
         }
     }
@@ -212,15 +212,15 @@ impl ConsommeEndpoint {
     fn drain_channels(&mut self, cx: &mut Context<'_>) -> bool {
         let Self {
             state_update_recv,
-            remote_recv,
+            request_recv,
             pending,
             ..
         } = self;
         let mut received = drain_receiver(state_update_recv, cx, "state update", |request| {
             pending.push_back(PendingRequest::StateUpdate(request))
         });
-        received |= drain_receiver(remote_recv, cx, "remote request", |request| {
-            pending.push_back(PendingRequest::Remote(request))
+        received |= drain_receiver(request_recv, cx, "request", |request| {
+            pending.push_back(PendingRequest::Request(request))
         });
         received
     }
@@ -238,7 +238,7 @@ impl InspectMut for ConsommeEndpoint {
 
 /// Provide dynamic updates during runtime.
 pub struct ConsommeControl {
-    remote_send: mesh::Sender<ConsommeRequest>,
+    request_send: mesh::Sender<ConsommeRequest>,
     state_update_send: mesh::Sender<StateUpdateRequest>,
 }
 
@@ -291,7 +291,7 @@ impl From<IpProtocol> for HostPortProtocol {
 
 /// A request buffered until the endpoint regains ownership of the Consomme state.
 enum PendingRequest {
-    Remote(ConsommeRequest),
+    Request(ConsommeRequest),
     StateUpdate(StateUpdateRequest),
 }
 
@@ -316,7 +316,7 @@ impl ConsommeControl {
                 None,
             )
         };
-        self.remote_send
+        self.request_send
             .call(
                 ConsommeRequest::Bind,
                 HostPortConfig {
@@ -345,12 +345,13 @@ impl ConsommeControl {
         ip_addr: Option<IpAddr>,
         guest_port: u16,
     ) -> Result<(), ConsommeMessageError> {
-        self.remote_send
+        self.request_send
             .call(
                 ConsommeRequest::Unbind,
                 HostPortConfig {
                     protocol: protocol.into(),
                     host_address: ip_addr.map(HostIpAddress::from),
+                    // Unbind identifies a forward by protocol, family, and guest port.
                     host_port: net_backend_resources::consomme::HostPort::Fixed(0),
                     guest_port,
                 },
@@ -380,7 +381,7 @@ impl ConsommeControl {
         &self,
         destination: IpAddr,
     ) -> Result<IpAddr, ConsommeMessageError> {
-        self.remote_send
+        self.request_send
             .call(
                 ConsommeRequest::CreateVirtualAddress,
                 HostIpAddress::from(destination),
@@ -463,7 +464,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         queue.with_consomme_no_pool(|c| {
             for request in pending {
                 match request {
-                    PendingRequest::Remote(request) => process_remote_request(c, request),
+                    PendingRequest::Request(request) => process_request(c, request),
                     PendingRequest::StateUpdate(rpc) => {
                         rpc.handle_sync(|f| {
                             f(c.get_mut().params_mut());
@@ -632,7 +633,7 @@ fn execute_unbind(
 }
 
 /// Handle a request that may have originated in-process or remotely.
-fn process_remote_request(
+fn process_request(
     consomme: &mut consomme::Access<'_, impl consomme::Client>,
     request: ConsommeRequest,
 ) {
@@ -916,21 +917,21 @@ mod tests {
     fn requests_for_same_port_remain_ordered() {
         let mut ep = endpoint();
         ep.pending
-            .push_back(PendingRequest::Remote(ConsommeRequest::Bind(
+            .push_back(PendingRequest::Request(ConsommeRequest::Bind(
                 Rpc::detached(cfg(80)),
             )));
         ep.pending
-            .push_back(PendingRequest::Remote(ConsommeRequest::Unbind(
+            .push_back(PendingRequest::Request(ConsommeRequest::Unbind(
                 Rpc::detached(cfg(80)),
             )));
 
         assert!(matches!(
             ep.pending.pop_front(),
-            Some(PendingRequest::Remote(ConsommeRequest::Bind(_)))
+            Some(PendingRequest::Request(ConsommeRequest::Bind(_)))
         ));
         assert!(matches!(
             ep.pending.pop_front(),
-            Some(PendingRequest::Remote(ConsommeRequest::Unbind(_)))
+            Some(PendingRequest::Request(ConsommeRequest::Unbind(_)))
         ));
     }
 
@@ -940,7 +941,7 @@ mod tests {
         use std::task::Waker;
 
         let (send, recv) = mesh::channel::<ConsommeRequest>();
-        let mut ep = ConsommeEndpoint::new_with_remote_channel(
+        let mut ep = ConsommeEndpoint::new_with_request_channel(
             ConsommeParams::new().unwrap(),
             Vec::new(),
             recv,
@@ -952,7 +953,7 @@ mod tests {
         assert!(ep.drain_channels(&mut Context::from_waker(Waker::noop())));
         assert!(matches!(
             ep.pending.pop_front(),
-            Some(PendingRequest::Remote(
+            Some(PendingRequest::Request(
                 ConsommeRequest::CreateVirtualAddress(_)
             ))
         ));
@@ -964,7 +965,7 @@ mod tests {
         use std::task::Waker;
 
         let (send, recv) = mesh::channel::<ConsommeRequest>();
-        let mut ep = ConsommeEndpoint::new_with_remote_channel(
+        let mut ep = ConsommeEndpoint::new_with_request_channel(
             ConsommeParams::new().unwrap(),
             Vec::new(),
             recv,
