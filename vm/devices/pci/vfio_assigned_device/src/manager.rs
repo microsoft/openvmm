@@ -666,7 +666,7 @@ pub(crate) enum IoasManagerRpc {
         vsmmu: Option<Arc<smmu::SmmuSharedState>>,
         /// The response half of the original RPC from the resolver.
         respond: FailableRpc<(), CdevPrepareResponse>,
-        /// Dispatcher notified when preparation succeeds or fails.
+        /// Dispatcher that owns the association state and caller response.
         completion_send: mesh::Sender<VfioCdevManagerRpc>,
     },
     /// Notify that a device has been dropped.
@@ -795,17 +795,12 @@ impl IoasManager {
                 } => {
                     let completion_vsmmu = vsmmu.clone();
                     let result = self.prepare_device(pci_id, cdev, vsmmu);
-                    if let Some(vsmmu) = completion_vsmmu {
-                        completion_send.send(VfioCdevManagerRpc::PrepareComplete {
-                            vsmmu,
-                            iommu_id: self.iommu_id.clone(),
-                            success: result.is_ok(),
-                        });
-                    }
-                    match result {
-                        Ok(response) => respond.complete(Ok(response)),
-                        Err(error) => respond.fail(error),
-                    }
+                    completion_send.send(VfioCdevManagerRpc::PrepareComplete {
+                        vsmmu: completion_vsmmu,
+                        iommu_id: self.iommu_id.clone(),
+                        result,
+                        respond,
+                    });
                 }
                 IoasManagerRpc::RemoveDevice(device_id) => {
                     self.remove_device(device_id);
@@ -974,9 +969,10 @@ pub(crate) enum VfioCdevManagerRpc {
     PrepareDevice(FailableRpc<CdevPrepareRequest, CdevPrepareResponse>),
     /// Complete a tentative vSMMU-to-manager association.
     PrepareComplete {
-        vsmmu: Arc<smmu::SmmuSharedState>,
+        vsmmu: Option<Arc<smmu::SmmuSharedState>>,
         iommu_id: String,
-        success: bool,
+        result: anyhow::Result<CdevPrepareResponse>,
+        respond: FailableRpc<(), CdevPrepareResponse>,
     },
     /// Inspect.
     Inspect(inspect::Deferred),
@@ -1147,8 +1143,18 @@ impl VfioCdevManager {
                 VfioCdevManagerRpc::PrepareComplete {
                     vsmmu,
                     iommu_id,
-                    success,
-                } => self.vsmmu_associations.complete(&vsmmu, &iommu_id, success),
+                    result,
+                    respond,
+                } => {
+                    if let Some(vsmmu) = vsmmu {
+                        self.vsmmu_associations
+                            .complete(&vsmmu, &iommu_id, result.is_ok());
+                    }
+                    match result {
+                        Ok(response) => respond.complete(Ok(response)),
+                        Err(error) => respond.fail(error),
+                    }
+                }
                 VfioCdevManagerRpc::Inspect(deferred) => {
                     deferred.respond(|resp| {
                         for (iommu_id, sender) in &self.managers {
