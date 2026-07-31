@@ -79,16 +79,6 @@ struct SecureBootConfigReport<'a> {
     loaded_variable_bytes: usize,
 }
 
-impl SecureBootConfigReport<'_> {
-    fn log(&self) {
-        if self.missing_entries == 0 {
-            tracing::info!(CVM_ALLOWED, ?self);
-        } else {
-            tracing::warn!(CVM_ALLOWED, ?self);
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum NvramSetupError {
     #[error("could not query backing nvram storage")]
@@ -341,7 +331,7 @@ impl NvramServices {
             }
 
             let missing_entries = base_signatures.difference(&loaded_signatures).count();
-            SecureBootConfigReport {
+            let report = SecureBootConfigReport {
                 variable_name,
                 baseline_revision,
                 custom_uefi_config_present,
@@ -349,8 +339,8 @@ impl NvramServices {
                 loaded_entries: loaded_signatures.len(),
                 missing_entries,
                 loaded_variable_bytes,
-            }
-            .log();
+            };
+            tracing::info!(CVM_ALLOWED, ?report);
         }
     }
 
