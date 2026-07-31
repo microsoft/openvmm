@@ -143,10 +143,12 @@ as well as the generated CLI help (via `cargo run -- --help`).
   overridden with `uuid=<GUID>`; `uuid=random` requests a freshly generated
   per-VM GUID. Unknown types and unknown keys are rejected.
 
-  Applies to both Linux direct boot and UEFI boot. On UEFI boot the firmware
+  Applies to Linux direct, UEFI, and PCAT boot. On UEFI boot the firmware
   builds the SMBIOS tables, so only `type=1` (System) fields can be
   overridden — the firmware self-describes the BIOS, so setting any `type=0`
-  (BIOS) field is rejected with an error rather than silently ignored.
+  (BIOS) field is rejected with an error rather than silently ignored. On
+  PCAT boot, only the `type=1` `serial` and `uuid` fields can be overridden;
+  all other fields are rejected with an error.
 
   Supported keys:
 

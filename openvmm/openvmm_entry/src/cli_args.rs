@@ -285,12 +285,12 @@ Examples:
     #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm"])]
     pub device_tree: bool,
 
-    /// SMBIOS (DMI) identity overrides for Linux direct boot (repeatable).
+    /// SMBIOS (DMI) identity overrides (repeatable).
     #[clap(
         long,
         value_name = "PARAMS",
         value_parser = parse_smbios,
-        long_help = r#"Override SMBIOS (DMI) identity for Linux direct boot.
+        long_help = r#"Override the guest's SMBIOS (DMI) identity.
 
 Syntax: type=N,key=value[,key=value...]
 
@@ -298,6 +298,10 @@ Syntax: type=N,key=value[,key=value...]
 `-smbios`; there is no default). Key names follow QEMU's `-smbios`
 convention. Unset keys use the loader's built-in default identity. Repeat
 --smbios to set fields across multiple structure types.
+
+Linux direct boot supports all listed fields. UEFI boot supports Type 1
+fields only. PCAT boot supports only Type 1 `serial` and `uuid`. Unsupported
+fields are rejected with an error.
 
 Type 0 (BIOS Information):
     vendor=<STRING>          BIOS vendor

@@ -112,12 +112,13 @@ so `/sys/class/dmi/id/*` reads consistently regardless of boot path:
 |------------|---------------|
 | `sys_vendor` | `OpenVMM` |
 | `product_name` | `OpenVMM Virtual Machine` |
-| `product_uuid` | The VM's BIOS GUID (the all-zero GUID unless set) |
+| `product_uuid` | Not exposed unless the VM's BIOS GUID is set |
 
 The `product_uuid` is sourced from the same VM BIOS GUID used by the UEFI boot
 path, so a guest reports the same UUID whether booted via UEFI or direct boot.
-It defaults to the all-zero GUID; pass `--smbios type=1,uuid=<GUID>` (or
-`uuid=random`) to override it.
+The SMBIOS UUID defaults to the all-zero GUID, which Linux treats as not
+present and therefore does not expose as `product_uuid`. Pass
+`--smbios type=1,uuid=<GUID>` (or `uuid=random`) to set it.
 
 ## CLI Usage
 
