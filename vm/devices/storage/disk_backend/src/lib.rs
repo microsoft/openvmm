@@ -308,10 +308,6 @@ impl Debug for Disk {
 struct DiskInner<T: ?Sized = dyn DynDisk> {
     sector_size: u32,
     sector_shift: u32,
-    /// The largest sector number that may appear as the end of a request, so
-    /// that the end byte offset remains representable. See
-    /// [`Disk::check_representable`].
-    max_sector: u64,
     physical_sector_size: u32,
     disk_id: Option<[u8; 16]>,
     is_fua_respected: bool,
@@ -350,7 +346,6 @@ impl Disk {
         Ok(Self(Arc::new(DiskInner {
             sector_size,
             sector_shift: sector_size.trailing_zeros(),
-            max_sector: (i64::MAX as u64) >> sector_size.trailing_zeros(),
             physical_sector_size,
             disk_id: disk.disk_id(),
             is_fua_respected: disk.is_fua_respected(),
@@ -404,6 +399,12 @@ impl Disk {
         self.0.is_read_only
     }
 
+    /// Returns the largest sector number that may appear as the end of a
+    /// request while keeping the end byte offset representable.
+    fn max_sector(&self) -> u64 {
+        (i64::MAX as u64) >> self.0.sector_shift
+    }
+
     /// Checks that a request's end byte offset is representable.
     ///
     /// This is deliberately *not* a range check: it never consults
@@ -420,7 +421,7 @@ impl Disk {
     /// wraparound.
     fn check_representable(&self, sector: u64, count: u64) -> Result<(), DiskError> {
         match sector.checked_add(count) {
-            Some(end) if end <= self.0.max_sector => Ok(()),
+            Some(end) if end <= self.max_sector() => Ok(()),
             // No disk can be 2^63 bytes, so such a sector is out of range for
             // any disk.
             _ => Err(DiskError::IllegalBlock),
@@ -452,7 +453,7 @@ impl Disk {
         block_level_only: bool,
     ) -> Result<(), DiskError> {
         self.check_representable(sector, count)?;
-        if self.0.unmap_behavior == UnmapBehavior::Ignored {
+        if self.unmap_behavior() == UnmapBehavior::Ignored {
             // This is the one place where `Disk` range checks a request, and it
             // is sound precisely because it is the one place where `Disk` does
             // not delegate: there is no backend check for it to be redundant

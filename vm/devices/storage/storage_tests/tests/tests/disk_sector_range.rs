@@ -70,7 +70,7 @@ async fn layered_read_cache_sector_range_conformance() {
 #[cfg(any(windows, target_os = "linux"))]
 #[async_test]
 async fn nvme_sector_range_conformance(driver: DefaultDriver) {
-    let mut nvme = crate::common::EmulatedNvme::new(
+    let mut nvme = crate::emulated_nvme::EmulatedNvme::new(
         driver,
         SECTOR_SIZE as u32,
         DISK_SIZE / SECTOR_SIZE,

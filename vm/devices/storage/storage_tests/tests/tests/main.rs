@@ -18,6 +18,6 @@ mod storvsc;
 // Windows. macOS exposes no equivalent. The emulated controller harness itself
 // is portable; it is only `NvmeDisk` that is not.
 #[cfg(any(windows, target_os = "linux"))]
-mod common;
+mod emulated_nvme;
 #[cfg(any(windows, target_os = "linux"))]
 mod scsidvd_nvme;

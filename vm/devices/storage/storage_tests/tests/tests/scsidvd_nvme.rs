@@ -21,7 +21,7 @@ use zerocopy::IntoBytes;
 struct ScsiDvdNvmeTest {
     scsi_dvd: SimpleScsiDvd,
     // The driver behind the namespace must outlive the disk built from it.
-    _nvme: crate::common::EmulatedNvme,
+    _nvme: crate::emulated_nvme::EmulatedNvme,
 }
 
 impl ScsiDvdNvmeTest {
@@ -31,7 +31,7 @@ impl ScsiDvdNvmeTest {
         sector_count: u64,
         read_only: bool,
     ) -> Self {
-        let mut nvme = crate::common::EmulatedNvme::new(
+        let mut nvme = crate::emulated_nvme::EmulatedNvme::new(
             driver,
             sector_size,
             sector_count,
