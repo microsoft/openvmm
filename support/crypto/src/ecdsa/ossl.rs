@@ -6,8 +6,8 @@
 use super::EcdsaCurve;
 use super::EcdsaError;
 
-fn err(e: openssl::error::ErrorStack, op: &'static str) -> EcdsaError {
-    EcdsaError(crate::BackendError(e, op))
+fn err(err: openssl::error::ErrorStack, op: &'static str) -> EcdsaError {
+    EcdsaError(crate::BackendError(err, op))
 }
 
 #[repr(C)] // Needed for the transmute in as_pub.
@@ -55,7 +55,9 @@ impl EcdsaKeyPairInner {
     }
 
     pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
-        // SAFETY: PKey<Private> can be safely treated as PKey<Public> for read-only operations.
+        // SAFETY: both types are `repr(C)` with the same field layout, and
+        // PKey<Private> can be safely treated as PKey<Public> for read-only
+        // operations.
         unsafe { std::mem::transmute::<&EcdsaKeyPairInner, &EcdsaPublicKeyInner>(self) }
     }
 }
@@ -67,7 +69,7 @@ pub struct EcdsaPublicKeyInner {
 }
 
 impl EcdsaPublicKeyInner {
-    pub fn new(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+    pub fn from_public_key_bytes(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
         let nid = match curve {
             EcdsaCurve::P384 => openssl::nid::Nid::SECP384R1,
         };
