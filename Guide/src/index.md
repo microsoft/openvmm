@@ -20,7 +20,7 @@ virtualization backends:
 | Windows             | x64 / Aarch64 | WHP (Windows Hypervisor Platform)      |
 | Linux               | x64 / Aarch64 | KVM                                    |
 |                     | x64 / Aarch64 | MSHV (Microsoft Hypervisor)            |
-| macOS 13+           | Aarch64       | Hypervisor.framework                   |
+| macOS               | Aarch64       | Hypervisor.framework                   |
 
 ## Running in the OpenHCL paravisor
 
