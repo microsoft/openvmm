@@ -117,6 +117,37 @@ pub struct GicdCtlr {
     pub rwp: bool,
 }
 
+/// ICC_CTLR_EL1 — GICv3 CPU interface control register (AArch64 EL1 view).
+#[bitfield(u64)]
+pub struct IccCtlrEl1 {
+    /// Common Binary Point Register.
+    pub cbpr: bool,
+    /// EOI mode (split priority-drop / deactivate).
+    pub eoi_mode: bool,
+    #[bits(4)]
+    _res2_5: u8,
+    /// Priority Mask Hint Enable.
+    pub pmhe: bool,
+    _res7: bool,
+    /// Number of priority bits implemented, minus one. Read-only.
+    #[bits(3)]
+    pub pri_bits: u8,
+    /// Identifier bits: 0 = 16-bit INTIDs, 1 = 24-bit INTIDs. Read-only.
+    #[bits(3)]
+    pub id_bits: u8,
+    /// SEI support. Read-only.
+    pub seis: bool,
+    /// Affinity 3 valid. Read-only.
+    pub a3v: bool,
+    _res16: bool,
+    /// Range Selector support. Read-only.
+    pub rss: bool,
+    /// Extended INTID range support. Read-only.
+    pub ext_range: bool,
+    #[bits(45)]
+    _res19_63: u64,
+}
+
 open_enum! {
     pub enum GicrRdRegister: u16 {
         CTLR = 0x0000,
