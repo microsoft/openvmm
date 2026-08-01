@@ -9,6 +9,7 @@
 //! allocator) with SPI assignments (from the SPI allocator) into resolved
 //! resources and instantiating SMMU chipset devices.
 
+use anyhow::Context as _;
 use chipset_device_resources::IRQ_LINE_SET;
 use guestmem::GuestMemory;
 use std::sync::Arc;
@@ -45,30 +46,56 @@ pub(super) struct ResolvedSmmuResources {
     pub gerr_intid: u32,
 }
 
+/// All resolved resources shared by the VM's SMMUv3 instances.
+#[derive(Default)]
+pub(super) struct ResolvedSmmu {
+    /// Per-instance MMIO and interrupt resources.
+    pub instances: Vec<ResolvedSmmuResources>,
+    /// IOVA range reserved for assigned-device MSI writes.
+    pub device_assignment_msi_iova_range: Option<memory_range::MemoryRange>,
+}
+
 /// Combines SMMU MMIO ranges from the memory layout with SPI assignments from
 /// the SPI layout into resolved resources.
 pub(super) fn resolve_smmu_resources(
     smmu_ranges: &[memory_range::MemoryRange],
     spi_layout: &crate::worker::spi_layout::ResolvedSpiLayout,
-) -> Vec<ResolvedSmmuResources> {
-    smmu_ranges
-        .iter()
-        .zip(&spi_layout.smmu)
-        .map(|(range, spis)| ResolvedSmmuResources {
-            base: range.start(),
-            evtq_intid: spis.evtq_intid,
-            gerr_intid: spis.gerr_intid,
-        })
-        .collect()
+    device_assignment_msi_iova_range: Option<memory_range::MemoryRange>,
+) -> ResolvedSmmu {
+    ResolvedSmmu {
+        instances: smmu_ranges
+            .iter()
+            .zip(&spi_layout.smmu)
+            .map(|(range, spis)| ResolvedSmmuResources {
+                base: range.start(),
+                evtq_intid: spis.evtq_intid,
+                gerr_intid: spis.gerr_intid,
+            })
+            .collect(),
+        device_assignment_msi_iova_range,
+    }
 }
 
 /// Result of [`setup_smmu`].
+#[derive(Default)]
 pub(super) struct SmmuDevicesResult {
     /// Per-RC SMMU shared state, indexed parallel to `pcie_host_bridges`.
     /// `None` for root complexes without an SMMU.
     pub shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>>,
     /// ACPI IORT configuration for each SMMU instance.
     pub configs: Vec<vmm_core::acpi_builder::AcpiSmmuConfig>,
+}
+
+fn reserved_iova_ranges(
+    accel: bool,
+    device_assignment_msi_iova_range: Option<memory_range::MemoryRange>,
+) -> anyhow::Result<Vec<memory_range::MemoryRange>> {
+    if !accel {
+        return Ok(Vec::new());
+    }
+    Ok(vec![device_assignment_msi_iova_range.context(
+        "the hypervisor does not support an accelerated device-assignment MSI IOVA reservation",
+    )?])
 }
 
 /// Instantiate SMMU chipset devices for root complexes that have SMMU
@@ -82,7 +109,7 @@ pub(super) struct SmmuDevicesResult {
 /// reserve the host's MSI IOVA window in the guest.
 pub(super) fn setup_smmu(
     root_complexes: &[openvmm_defs::config::PcieRootComplexConfig],
-    resolved_smmu_resources: &[ResolvedSmmuResources],
+    resolved: &ResolvedSmmu,
     pcie_host_bridges: &mut [PcieHostBridge],
     chipset_builder: &ChipsetBuilder<'_>,
     gm: &GuestMemory,
@@ -104,7 +131,7 @@ pub(super) fn setup_smmu(
             _ => None,
         });
 
-    for ((rc_pos, rc, accel, oas), smmu) in smmu_rcs.zip(resolved_smmu_resources) {
+    for ((rc_pos, rc, accel, oas), smmu) in smmu_rcs.zip(&resolved.instances) {
         anyhow::ensure!(
             !accel || acpi_available,
             "SMMU on root complex {}: accelerated translation requires ACPI",
@@ -157,21 +184,16 @@ pub(super) fn setup_smmu(
                 })?;
 
         shared_states[rc_pos] = Some(smmu_device.lock().shared_state().clone());
-        // When the SMMU is in accel mode (iommufd nested), the L1
-        // kernel's MSI reserved IOVA window must be identity-mapped in
-        // the L2 guest's S1 page tables. The window is 128MB–129MB
-        // (0x800_0000–0x810_0000), which is the default ARM IOMMU MSI
-        // reserved region.
-        let reserved_iova_ranges = if accel {
+        let reserved_iova_ranges =
+            reserved_iova_ranges(accel, resolved.device_assignment_msi_iova_range)
+                .with_context(|| format!("SMMU on root complex {}", rc.name))?;
+        if accel {
             // These reserved IOVA ranges become IORT RMR entries. Mark the
             // root complex so the SSDT emits a PCI Firmware _DSM (function 5,
             // preserve boot config); Linux skips RMR entries for root
             // complexes without this flag.
             pcie_host_bridges[rc_pos].preserve_boot_config = true;
-            vec![memory_range::MemoryRange::new(0x800_0000..0x810_0000)]
-        } else {
-            Vec::new()
-        };
+        }
 
         configs.push(vmm_core::acpi_builder::AcpiSmmuConfig {
             rc_index: pcie_host_bridges[rc_pos].index,
@@ -187,4 +209,34 @@ pub(super) fn setup_smmu(
         shared_states,
         configs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_RANGE: memory_range::MemoryRange = memory_range::MemoryRange::new(0x1000..0x20_0000);
+
+    #[test]
+    fn accelerated_smmu_uses_device_assignment_msi_iova_range() {
+        assert_eq!(
+            reserved_iova_ranges(true, Some(TEST_RANGE)).unwrap(),
+            [TEST_RANGE]
+        );
+    }
+
+    #[test]
+    fn non_accelerated_smmu_has_no_reserved_iova_range() {
+        assert!(
+            reserved_iova_ranges(false, Some(TEST_RANGE))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(reserved_iova_ranges(false, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn accelerated_smmu_requires_reserved_iova_range() {
+        assert!(reserved_iova_ranges(true, None).is_err());
+    }
 }

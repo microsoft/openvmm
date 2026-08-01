@@ -857,6 +857,7 @@ impl virt::Hypervisor for Whp {
                 platform_gsiv: Some(WHP_PMU_GSIV),
                 supports_gic_v3: true,
                 supports_its: false,
+                device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
             }
         }
     }
