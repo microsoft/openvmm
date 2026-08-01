@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [alias]
-xflowey = "run -p flowey_hvlite -- pipeline run"
+xflowey = "run -p flowey_hvlite --profile light -- pipeline run"
 xtask = "run -p xtask --profile light --"
 
 [env]
