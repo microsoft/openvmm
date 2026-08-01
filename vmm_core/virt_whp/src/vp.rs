@@ -336,7 +336,7 @@ impl<'a> WhpProcessor<'a> {
                 // Process the user-mode APIC, waiting for interrupts if halted.
                 let ready = self.process_apic(dev);
 
-                // TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
+                // HACK: TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
                 // The hypervisor can leave a VP halted with an interrupt
                 // pending in its offloaded APIC, with nothing left to wake it,
                 // so poll for that case periodically.
@@ -356,8 +356,9 @@ impl<'a> WhpProcessor<'a> {
                         });
 
                     if expired {
-                        let vtl = self.state.runnable_vtls.highest_set().unwrap();
-                        self.unhalt_for_pending_interrupt(vtl);
+                        let _vtl = self.state.runnable_vtls.highest_set().unwrap();
+                        #[cfg(guest_arch = "x86_64")]
+                        self.unhalt_for_pending_interrupt(_vtl);
                     }
                 }
 

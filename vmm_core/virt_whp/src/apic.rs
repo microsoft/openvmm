@@ -475,7 +475,7 @@ impl WhpProcessor<'_> {
         !halted
     }
 
-    /// TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
+    /// HACK: TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
     /// Clears the hypervisor's halt state for `vtl` if its offloaded APIC has an
     /// interrupt that should already have woken the VP.
     pub(crate) fn unhalt_for_pending_interrupt(&mut self, vtl: Vtl) {
