@@ -139,13 +139,14 @@ pub struct IccCtlrEl1 {
     pub seis: bool,
     /// Affinity 3 valid. Read-only.
     pub a3v: bool,
-    _res16: bool,
+    #[bits(2)]
+    _res16_17: u8,
     /// Range Selector support. Read-only.
     pub rss: bool,
     /// Extended INTID range support. Read-only.
     pub ext_range: bool,
-    #[bits(45)]
-    _res19_63: u64,
+    #[bits(44)]
+    _res20_63: u64,
 }
 
 open_enum! {
