@@ -13,6 +13,7 @@ pub mod build_reproducible;
 pub mod cca_tests;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
+pub mod release_openvmm;
 pub mod restore_packages;
 pub mod vmm_tests_run;
 
@@ -50,6 +51,7 @@ pub enum OpenvmmPipelines {
 pub enum OpenvmmPipelinesCi {
     CheckinGates(checkin_gates::CheckinGatesCli),
     BuildDocs(build_docs::BuildDocsCli),
+    ReleaseOpenvmm(release_openvmm::ReleaseOpenvmmCli),
 }
 
 impl IntoPipeline for OpenvmmPipelines {
@@ -70,6 +72,7 @@ impl IntoPipeline for OpenvmmPipelines {
             OpenvmmPipelines::Ci(cmd) => match cmd {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
+                OpenvmmPipelinesCi::ReleaseOpenvmm(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),
