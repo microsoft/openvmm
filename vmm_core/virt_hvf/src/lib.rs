@@ -185,7 +185,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                         + aarch64defs::GIC_REDISTRIBUTOR_SIZE
                             * self.config.processor_topology.vp_count() as u64,
             ),
-            256,
+            self.config.processor_topology.gic_nr_irqs() - 32,
         );
         let gicrs = self
             .config

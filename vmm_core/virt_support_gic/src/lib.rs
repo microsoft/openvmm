@@ -60,8 +60,12 @@ mod gicd {
     }
 
     impl Distributor {
-        pub fn new(gicd_base: u64, gicr_range: MemoryRange, max_spis: u32) -> Self {
-            let n = (max_spis as usize + 1) / 32;
+        /// Creates a distributor with `spi_count` shared peripheral interrupts,
+        /// in addition to the 32 private SGI and PPI INTIDs.
+        pub fn new(gicd_base: u64, gicr_range: MemoryRange, spi_count: u32) -> Self {
+            assert!(spi_count <= 988);
+            let intid_count = 32 + spi_count;
+            let n = intid_count.div_ceil(32) as usize;
             Self {
                 state: Mutex::new(DistributorState {
                     pending: vec![0; n],
@@ -74,7 +78,7 @@ mod gicd {
                     enable_grp0: false,
                     enable_grp1: false,
                 }),
-                max_spi_intid: 32 + max_spis - 1,
+                max_spi_intid: intid_count - 1,
                 gicr: Default::default(),
                 gicd_range: MemoryRange::new(
                     gicd_base..gicd_base + aarch64defs::GIC_DISTRIBUTOR_SIZE,
@@ -125,6 +129,9 @@ mod gicd {
         }
 
         pub fn set_pending(&self, intid: u32, pending: bool) -> Option<u32> {
+            if !(32..=self.max_spi_intid).contains(&intid) {
+                return None;
+            }
             let mut state = self.state.lock();
             let v = &mut state.pending[intid as usize / 32];
             let mask = 1 << (intid & 31);
@@ -390,7 +397,7 @@ mod gicd {
                     3 << 4
                 }
                 GicdRegister::TYPER => GicdTyper::new()
-                    .with_it_lines_number(31)
+                    .with_it_lines_number((self.max_spi_intid / 32) as u8)
                     .with_id_bits(5)
                     // Match the Hyper-V GIC interface expected by ARM64 guests.
                     .with_security_extn(true)
@@ -626,12 +633,13 @@ mod gicd {
         use aarch64defs::SystemReg;
         use aarch64defs::gic::GicdCtlr;
         use aarch64defs::gic::GicdRegister;
+        use aarch64defs::gic::GicdTyper;
         use memory_range::MemoryRange;
 
         const GICD_BASE: u64 = 0x0800_0000;
 
         fn dist() -> Distributor {
-            Distributor::new(GICD_BASE, MemoryRange::new(0x0808_0000..0x0810_0000), 988)
+            Distributor::new(GICD_BASE, MemoryRange::new(0x0808_0000..0x0810_0000), 960)
         }
 
         fn dist_with_redists(count: usize) -> (Distributor, Vec<Redistributor>) {
@@ -646,6 +654,27 @@ mod gicd {
             let ctlr: u32 = GicdCtlr::new().with_enable_grp1(true).into();
             d.write(GICD_BASE + GicdRegister::CTLR.0 as u64, &ctlr.to_ne_bytes());
             (d, redists)
+        }
+
+        #[test]
+        fn gicd_typer_reports_configured_intids() {
+            let d = dist();
+            let mut value = [0; 4];
+
+            d.read(GICD_BASE + GicdRegister::TYPER.0 as u64, &mut value);
+
+            let typer = GicdTyper::from(u32::from_ne_bytes(value));
+            assert_eq!(typer.it_lines_number(), 30);
+        }
+
+        #[test]
+        fn configured_intid_limit_bounds_spi_delivery() {
+            let d = Distributor::new(GICD_BASE, MemoryRange::new(0x0808_0000..0x0810_0000), 64);
+
+            assert_eq!(d.set_pending(95, true), None);
+            assert_eq!(d.state.lock().pending[2], 1 << 31);
+            assert_eq!(d.set_pending(96, true), None);
+            assert_eq!(d.set_pending(31, true), None);
         }
 
         fn provision_spi(d: &Distributor, intid: u32, priority: u8) {
