@@ -158,6 +158,11 @@ impl<B: DnsBackend> DnsResolver<B> {
         self.backend.is_some()
     }
 
+    /// Returns whether the resolver can answer through its backend or static records.
+    pub fn can_answer_queries(&self) -> bool {
+        self.is_available() || !self.static_records.is_empty()
+    }
+
     pub fn add_static_record(
         &mut self,
         record: StaticDnsRecord,

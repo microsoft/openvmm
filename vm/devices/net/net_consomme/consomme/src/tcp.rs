@@ -444,7 +444,7 @@ impl<T: Client> Access<'_, T> {
             };
             let keep = match &mut conn.backend {
                 TcpBackend::Dns(dns_handler) => {
-                    if self.inner.dns.is_available() {
+                    if self.inner.dns.can_answer_queries() {
                         conn.inner.poll_dns_backend(
                             cx,
                             &mut sender,
@@ -452,7 +452,7 @@ impl<T: Client> Access<'_, T> {
                             &mut self.inner.dns,
                         )
                     } else {
-                        tracing::warn!("DNS TCP connection without DNS resolver, dropping");
+                        tracing::warn!("DNS TCP connection without an answer source, dropping");
                         false
                     }
                 }
@@ -524,8 +524,11 @@ impl<T: Client> Access<'_, T> {
         };
         trace_tcp_packet(&ft, &tcp, tcp.payload.len(), "recv");
 
-        let is_dns_tcp =
-            is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_available());
+        let is_dns_tcp = is_gateway_dns_tcp(
+            &ft,
+            &self.inner.state.params,
+            self.inner.dns.can_answer_queries(),
+        );
 
         let mut sender = Sender {
             ft: &ft,
@@ -2035,8 +2038,12 @@ fn seq_min<const N: usize>(seqs: [TcpSeqNumber; N]) -> TcpSeqNumber {
 }
 
 /// Check if a TCP connection targets the gateway's DNS port.
-fn is_gateway_dns_tcp(ft: &FourTuple, params: &crate::ConsommeParams, dns_available: bool) -> bool {
-    if !dns_available || ft.dst.port() != crate::DNS_PORT {
+fn is_gateway_dns_tcp(
+    ft: &FourTuple,
+    params: &crate::ConsommeParams,
+    can_answer_queries: bool,
+) -> bool {
+    if !can_answer_queries || ft.dst.port() != crate::DNS_PORT {
         return false;
     }
     match ft.dst.ip() {

@@ -56,6 +56,10 @@ pub struct StaticDnsRecords {
 }
 
 impl StaticDnsRecords {
+    pub(super) fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
     /// Adds a static record.
     ///
     /// `name` is the query name in presentation form (e.g. `"example.com"`),

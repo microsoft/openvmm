@@ -315,6 +315,7 @@ impl DnsTcpHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS;
     use crate::dns_resolver::DnsBackend;
     use crate::dns_resolver::DnsRequest;
     use crate::dns_resolver::DnsResponse;
@@ -505,11 +506,13 @@ mod tests {
 
     #[test]
     fn static_record_answered_over_tcp() {
-        let mut dns = DnsResolver::new_for_test(Arc::new(EchoBackend));
+        let mut dns = DnsResolver::without_backend(DEFAULT_MAX_PENDING_DNS_REQUESTS);
         let mut handler = DnsTcpHandler::new(test_flow());
 
+        assert!(!dns.can_answer_queries());
         dns.add_static_record(StaticDnsRecord::A([10, 0, 0, 9]), "static.example")
             .unwrap();
+        assert!(dns.can_answer_queries());
 
         let query = build_query(0x4242, "static.example", DnsQueryType::A);
         let msg = make_tcp_dns_message(&query);
