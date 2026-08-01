@@ -12,8 +12,8 @@ use consomme::ChecksumState;
 use consomme::Consomme;
 use consomme::ConsommeParams;
 pub use consomme::IpVersion;
-pub use consomme::StaticDnsRecordError;
 pub use consomme::StaticDnsRecord;
+pub use consomme::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -671,11 +671,7 @@ fn process_message(
             });
         }
         ConsommeMessage::AddDnsRecord(rpc) => {
-            rpc.handle_sync(|cfg| {
-                consomme
-                    .get_mut()
-                    .add_dns_record(cfg.record, &cfg.name)
-            });
+            rpc.handle_sync(|cfg| consomme.get_mut().add_dns_record(cfg.record, &cfg.name));
         }
         ConsommeMessage::CreateVirtualAddress(rpc) => {
             rpc.handle_sync(|destination| consomme.get_mut().create_virtual_address(destination));
