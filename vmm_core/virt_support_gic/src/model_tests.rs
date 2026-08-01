@@ -77,6 +77,36 @@ fn targeted_sgi_reaches_only_the_selected_pe() {
 }
 
 #[test]
+fn sgi_group_mismatch_is_not_generated() {
+    let (dist, mut redists) = new_system(2);
+    online(&dist, &mut redists);
+    // Redistributor SGIs reset to Group 1 in this Hyper-V model.
+    let sgi: u64 = GicrSgi::new().with_intid(3).with_target_list(1 << 1).into();
+    let mut woken = Vec::new();
+
+    assert!(
+        dist.write_sysreg(&mut redists[0], SystemReg::ICC_SGI0R_EL1, sgi, |index| {
+            woken.push(index)
+        })
+    );
+    assert!(woken.is_empty());
+    assert!(!dist.irq_pending(&redists[1]));
+}
+
+#[test]
+fn cpu_group_change_notifies_all_possible_one_of_n_targets() {
+    let (dist, mut redists) = new_system(3);
+    let mut woken = Vec::new();
+
+    assert!(
+        dist.write_sysreg(&mut redists[0], SystemReg::ICC_IGRPEN1_EL1, 1, |index| {
+            woken.push(index)
+        })
+    );
+    assert_eq!(woken, [0, 1, 2]);
+}
+
+#[test]
 fn broadcast_sgi_reaches_every_pe_except_the_sender() {
     let (dist, mut redists) = new_system(4);
     online(&dist, &mut redists);
@@ -261,7 +291,12 @@ impl Reference {
         }
         let group_priority = Self::group_priority(priority, self.effective_bpr(group1));
         let running = Self::running_priority(self.ap0r0).min(Self::running_priority(self.ap1r0));
-        (group_priority < running).then_some((intid, group_priority))
+        let preemption_level = if running == 0xff {
+            0xff
+        } else {
+            Self::group_priority(running, self.effective_bpr(group1))
+        };
+        (group_priority < preemption_level).then_some((intid, group_priority))
     }
 
     fn ack(&mut self, group1: bool) -> u32 {
@@ -314,7 +349,11 @@ impl Reference {
             priority: self.priority,
             pmr: self.pmr,
             bpr0: self.bpr0,
-            bpr1: self.bpr1,
+            bpr1: if self.cbpr {
+                self.bpr0.saturating_add(1).min(7)
+            } else {
+                self.bpr1
+            },
             grpen0: self.grpen0,
             grpen1: self.grpen1,
             cbpr: self.cbpr,
@@ -324,7 +363,7 @@ impl Reference {
             rpr: Self::running_priority(self.ap0r0).min(Self::running_priority(self.ap1r0)),
             dist_group0: self.dist_group0,
             dist_group1: self.dist_group1,
-            irq_pending: self.select(true).is_some(),
+            irq_pending: self.select(false).is_some() || self.select(true).is_some(),
         }
     }
 }
@@ -403,7 +442,9 @@ fn sequential_operations_match_an_independent_model() {
                     let group1 = rng.boolean();
                     let value = rng.below(8) as u8;
                     let reg = if group1 {
-                        reference.bpr1 = value.max(3);
+                        if !reference.cbpr {
+                            reference.bpr1 = value.max(3);
+                        }
                         SystemReg::ICC_BPR1_EL1
                     } else {
                         reference.bpr0 = value.max(2);

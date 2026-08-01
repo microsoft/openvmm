@@ -44,6 +44,8 @@ mod gicd {
         #[inspect(iter_by_index)]
         pending: Vec<u32>,
         #[inspect(iter_by_index)]
+        line_level: Vec<u32>,
+        #[inspect(iter_by_index)]
         active: Vec<u32>,
         #[inspect(iter_by_index)]
         group: Vec<u32>,
@@ -62,6 +64,16 @@ mod gicd {
     impl Distributor {
         /// Creates a distributor with `spi_count` shared peripheral interrupts,
         /// in addition to the 32 private SGI and PPI INTIDs.
+        ///
+        /// Arm GIC Architecture Specification, Arm IHI 0069H.b:
+        /// - §2.2.1, Table 2-1: SPI INTIDs are 32-1019; 1020-1023 are special.
+        /// - §12.9.38, `GICD_TYPER.ITLinesNumber`: "maximum SPI INTID is
+        ///   32(N+1) - 1".
+        ///
+        /// Normative consequence: at most 988 SPIs are accepted and TYPER must
+        /// report the configured upper bound. Enforced by
+        /// `gicd_typer_reports_configured_intids` and
+        /// `configured_intid_limit_bounds_spi_delivery`.
         pub fn new(gicd_base: u64, gicr_range: MemoryRange, spi_count: u32) -> Self {
             assert!(spi_count <= 988);
             let intid_count = 32 + spi_count;
@@ -69,6 +81,7 @@ mod gicd {
             Self {
                 state: Mutex::new(DistributorState {
                     pending: vec![0; n],
+                    line_level: vec![0; n],
                     active: vec![0; n],
                     group: vec![0; n],
                     enable: vec![0; n],
@@ -108,12 +121,27 @@ mod gicd {
 
         /// Resolves a GICD_IROUTER value to a redistributor index. Affinity
         /// routing requires an exact MPIDR match; an unmatched affinity does not
-        /// forward the interrupt. One-of-N routing uses a deterministic PE.
-        fn route_to_pe(&self, route: u64) -> Option<usize> {
+        /// forward the interrupt. One-of-N routing uses the first eligible PE.
+        ///
+        /// Arm IHI 0069H.b §12.9.22, `GICD_IROUTER<n>`:
+        /// - IRM=0: "Interrupts routed to the PE specified by a.b.c.d."
+        /// - IRM=1: "Interrupts routed to any PE ... participating node."
+        ///
+        /// An unmatched IRM=0 affinity is CONSTRAINED UNPREDICTABLE; choosing
+        /// "not forwarded" is one permitted behavior. Selecting the first
+        /// awake, group-enabled PE for IRM=1 is a deterministic implementation
+        /// policy within architectural latitude, not a fairness claim. Enforced by
+        /// `spi_affinity_route_selects_the_target_pe`,
+        /// `unmatched_spi_affinity_preserves_pending_without_forwarding`, and
+        /// `one_of_n_spi_route_uses_a_deterministic_pe`.
+        fn route_to_pe(&self, route: u64, group1: bool) -> Option<usize> {
             const IRM: u64 = 1 << 31;
 
             if route & IRM != 0 {
-                return (!self.gicr.is_empty()).then_some(0);
+                return self
+                    .gicr
+                    .iter()
+                    .position(|gicr| gicr.eligible_for_one_of_n(group1));
             }
 
             let aff0 = (route & 0xff) as u8;
@@ -133,26 +161,46 @@ mod gicd {
                 return None;
             }
             let mut state = self.state.lock();
-            let v = &mut state.pending[intid as usize / 32];
+            let word = intid as usize / 32;
             let mask = 1 << (intid & 31);
-            if (*v & mask != 0) != pending {
+            if (state.line_level[word] & mask != 0) != pending {
                 tracing::debug!(intid, pending, "set pending");
             }
             if pending {
-                *v |= mask;
+                state.line_level[word] |= mask;
+                state.pending[word] |= mask;
                 let route = state.route.get(intid as usize).copied().unwrap_or(0);
+                let group1 = state.group[word] & mask != 0;
                 drop(state);
-                self.route_to_pe(route).map(|pe| pe as u32)
+                self.route_to_pe(route, group1).map(|pe| pe as u32)
             } else {
-                *v &= !mask;
+                state.line_level[word] &= !mask;
+                if !Self::edge_triggered(&state, intid) {
+                    state.pending[word] &= !mask;
+                }
                 None
             }
         }
 
-        pub fn irq_pending(&self, gicr: &Redistributor) -> bool {
-            self.select(gicr, true).is_some()
+        fn edge_triggered(state: &DistributorState, intid: u32) -> bool {
+            let field = (intid % 16) * 2 + 1;
+            state.cfg[intid as usize / 16] & (1 << field) != 0
         }
 
+        pub fn irq_pending(&self, gicr: &Redistributor) -> bool {
+            self.irq_pending_for_group(gicr, false) || self.irq_pending_for_group(gicr, true)
+        }
+
+        pub fn irq_pending_for_group(&self, gicr: &Redistributor, group1: bool) -> bool {
+            self.select(gicr, group1).is_some()
+        }
+
+        /// Distributor group gate.
+        ///
+        /// Arm IHI 0069H.b §4.7 and §12.9.4, `GICD_CTLR.EnableGrp*`:
+        /// a pending interrupt in a disabled group "is not ... considered" for
+        /// highest-priority selection. Pending state is retained while gated.
+        /// Enforced by `distributor_group_enable_gates_delivery_without_losing_pending_state`.
         fn group_enabled(&self, group1: bool) -> bool {
             let state = self.state.lock();
             if group1 {
@@ -171,6 +219,13 @@ mod gicd {
         /// highest-priority pending interrupt cannot pass PMR/preemption, none of
         /// lower priority can either. The redistributor and distributor locks are
         /// taken in turn, never simultaneously (matching the existing pattern).
+        ///
+        /// Arm IHI 0069H.b §1.2.4, "Sufficient priority", requires comparison
+        /// with `ICC_PMR_EL1`, the BPRs, and `ICC_RPR_EL1`. §12.2.14
+        /// `ICC_IAR1_EL1` returns the highest-priority pending interrupt only if
+        /// it has sufficient priority. Enforced by `pmr_masks_then_admits`,
+        /// `selection_prefers_higher_priority_then_lower_intid`,
+        /// `higher_priority_preempts_active`, and the independent model.
         fn select(&self, gicr: &Redistributor, group1: bool) -> Option<(u32, u8)> {
             if !self.group_enabled(group1) {
                 return None;
@@ -192,6 +247,12 @@ mod gicd {
         /// The best deliverable Group-`group1` SPI routed to `pe`: pending,
         /// inactive, enabled, and with the lowest priority byte (ties choose the
         /// lowest INTID).
+        ///
+        /// Arm IHI 0069H.b §4.8.2 defines the highest-priority pending
+        /// interrupt by numerically lowest priority; §4.7 excludes disabled
+        /// interrupts/groups. Lower-INTID tie-breaking is this implementation's
+        /// deterministic policy. Enforced by
+        /// `selection_prefers_higher_priority_then_lower_intid`.
         fn best_spi(&self, pe: usize, group1: bool) -> Option<(u32, u8)> {
             let state = self.state.lock();
             let mut best: Option<(u32, u8)> = None;
@@ -210,7 +271,7 @@ mod gicd {
                         continue;
                     }
                     let route = state.route.get(intid as usize).copied().unwrap_or(0);
-                    if self.route_to_pe(route) != Some(pe) {
+                    if self.route_to_pe(route, group1) != Some(pe) {
                         continue;
                     }
                     let pri = state.priority[intid as usize / 4].to_ne_bytes()[intid as usize % 4];
@@ -223,21 +284,60 @@ mod gicd {
             best
         }
 
+        /// Acknowledges the selected interrupt and moves it to Active state.
+        ///
+        /// Arm IHI 0069H.b §12.2.14, `ICC_IAR1_EL1`: "This read acts as an
+        /// acknowledge"; §4.1.2 Transition C moves an acknowledged edge
+        /// interrupt from Pending to Active. §2.2.1 requires special INTID 1023
+        /// when no pending interrupt has sufficient priority. Enforced by
+        /// `distributor_group_enable_gates_nonzero_pe_acknowledge`,
+        /// `spi_affinity_route_selects_the_target_pe`, and the independent
+        /// model.
+        ///
+        /// §4.1.2 Transition D requires an asserted level-sensitive interrupt
+        /// to become Active and Pending. `line_level` retains that assertion
+        /// across acknowledge; deassertion clears the retained Pending state.
+        /// Enforced by `level_spi_remains_pending_until_line_deasserts` and
+        /// `edge_spi_latches_one_pending_assertion`.
         pub fn ack(&self, gicr: &mut Redistributor, group1: bool) -> u32 {
             let Some((intid, gp)) = self.select(gicr, group1) else {
                 return 1023;
             };
             if intid < 32 {
                 gicr.activate(intid);
-            } else {
-                let mut state = self.state.lock();
-                let w = intid as usize / 32;
-                state.pending[w] &= !(1 << (intid % 32));
-                state.active[w] |= 1 << (intid % 32);
+            } else if !self.activate_spi(intid, gicr.index, group1) {
+                return 1023;
             }
             gicr.push_priority(group1, gp);
             tracing::trace!(intid, "gic ack");
             intid
+        }
+
+        fn activate_spi(&self, intid: u32, pe: usize, group1: bool) -> bool {
+            let mut state = self.state.lock();
+            let word = intid as usize / 32;
+            let mask = 1 << (intid % 32);
+            let in_group = state.group[word] & mask != 0;
+            let distributor_enabled = if group1 {
+                state.enable_grp1
+            } else {
+                state.enable_grp0
+            };
+            if !distributor_enabled
+                || state.pending[word] & !state.active[word] & state.enable[word] & mask == 0
+                || in_group != group1
+            {
+                return false;
+            }
+            let route = state.route.get(intid as usize).copied().unwrap_or(0);
+            if self.route_to_pe(route, group1) != Some(pe) {
+                return false;
+            }
+            if Self::edge_triggered(&state, intid) || state.line_level[word] & mask == 0 {
+                state.pending[word] &= !mask;
+            }
+            state.active[word] |= mask;
+            true
         }
 
         pub fn write_sysreg(
@@ -245,15 +345,52 @@ mod gicd {
             gicr: &mut Redistributor,
             reg: SystemReg,
             value: u64,
-            wake: impl FnMut(usize),
+            mut wake: impl FnMut(usize),
         ) -> bool {
             match reg {
-                SystemReg::ICC_EOIR0_EL1 => self.eoi(gicr, false, value as u32),
-                SystemReg::ICC_EOIR1_EL1 => self.eoi(gicr, true, value as u32),
-                SystemReg::ICC_DIR_EL1 => self.dir(gicr, value as u32),
+                SystemReg::ICC_EOIR0_EL1 => {
+                    let intid = value as u32;
+                    let deactivates_spi = (32..1020).contains(&intid) && !gicr.eoimode();
+                    self.eoi(gicr, false, intid);
+                    if deactivates_spi {
+                        for index in 0..self.gicr.len() {
+                            wake(index);
+                        }
+                    }
+                }
+                SystemReg::ICC_EOIR1_EL1 => {
+                    let intid = value as u32;
+                    let deactivates_spi = (32..1020).contains(&intid) && !gicr.eoimode();
+                    self.eoi(gicr, true, intid);
+                    if deactivates_spi {
+                        for index in 0..self.gicr.len() {
+                            wake(index);
+                        }
+                    }
+                }
+                SystemReg::ICC_DIR_EL1 => {
+                    let intid = value as u32;
+                    let deactivates_spi = (32..1020).contains(&intid) && gicr.eoimode();
+                    self.dir(gicr, intid);
+                    if deactivates_spi {
+                        for index in 0..self.gicr.len() {
+                            wake(index);
+                        }
+                    }
+                }
                 SystemReg::ICC_SGI0R_EL1 => self.sgi(gicr, false, value, wake),
                 SystemReg::ICC_SGI1R_EL1 => self.sgi(gicr, true, value, wake),
-                _ => return gicr.write_cpuif(reg, value),
+                _ => {
+                    let handled = gicr.write_cpuif(reg, value);
+                    if handled
+                        && matches!(reg, SystemReg::ICC_IGRPEN0_EL1 | SystemReg::ICC_IGRPEN1_EL1)
+                    {
+                        for index in 0..self.gicr.len() {
+                            wake(index);
+                        }
+                    }
+                    return handled;
+                }
             }
             true
         }
@@ -261,7 +398,7 @@ mod gicd {
         fn sgi(
             &self,
             this: &mut Redistributor,
-            _group1: bool,
+            group1: bool,
             value: u64,
             mut wake: impl FnMut(usize),
         ) {
@@ -274,7 +411,7 @@ mod gicd {
                         && gicr.mpidr.aff1() == value.aff1()
                         && (1 << gicr.mpidr.aff0()) & value.target_list() != 0)
                 {
-                    if gicr.raise(value.intid()) {
+                    if gicr.is_group1(value.intid()) == group1 && gicr.raise(value.intid()) {
                         wake(index);
                     }
                 }
@@ -290,6 +427,15 @@ mod gicd {
             Some(v)
         }
 
+        /// Performs the EOIR priority drop and, in combined mode, deactivation.
+        ///
+        /// Arm IHI 0069H.b §12.2.10, `ICC_EOIR1_EL1`: EOImode=0 "drops the
+        /// priority ... and also deactivates"; EOImode=1 "only drops the
+        /// priority". Special INTIDs are ignored. Architecturally invalid,
+        /// out-of-order EOIR writes are UNPREDICTABLE; this model assumes the
+        /// required most-recent-IAR ordering. Enforced by
+        /// `eoimode_split_completion_for_{sgi,spi}`,
+        /// `special_intids_do_not_drop_or_deactivate`, and AP nesting tests.
         fn eoi(&self, gicr: &mut Redistributor, group1: bool, intid: u32) {
             if intid >= 1020 {
                 return;
@@ -301,6 +447,12 @@ mod gicd {
             }
         }
 
+        /// Deactivates an interrupt after a split priority drop.
+        ///
+        /// Arm IHI 0069H.b §12.2.8, `ICC_DIR_EL1`: "When interrupt priority
+        /// drop is separated ... deactivates the specified interrupt." GICv3
+        /// mandates ignoring DIR when EOImode=0. Enforced by
+        /// `dir_is_ignored_when_eoimode_is_clear` and split-completion tests.
         fn dir(&self, gicr: &mut Redistributor, intid: u32) {
             if intid >= 1020 || !gicr.eoimode() {
                 return;
@@ -397,15 +549,22 @@ mod gicd {
                     3 << 4
                 }
                 GicdRegister::TYPER => GicdTyper::new()
+                    // Arm IHI 0069H.b §12.9.38:
+                    // ITLinesNumber=N reports maximum SPI 32(N+1)-1.
                     .with_it_lines_number((self.max_spi_intid / 32) as u8)
-                    .with_id_bits(5)
-                    // Match the Hyper-V GIC interface expected by ARM64 guests.
-                    .with_security_extn(true)
+                    .with_id_bits(15)
+                    // Arm IHI 0069H.b §12.9.38 requires SecurityExtn to be
+                    // RAZ when the single-security-state view reports DS=1.
+                    .with_security_extn(false)
                     .into(),
                 GicdRegister::IIDR => 0,
                 GicdRegister::TYPER2 => GicdTyper2::new().into(),
                 GicdRegister::CTLR => {
                     let state = self.state.lock();
+                    // Hyper-V platform policy: expose one Security state and
+                    // affinity routing permanently enabled. Arm IHI 0069H.b
+                    // §12.9.4 defines DS/ARE; only group enables are writable
+                    // in this model.
                     GicdCtlr::new()
                         .with_enable_grp0(state.enable_grp0)
                         .with_enable_grp1(state.enable_grp1)
@@ -506,6 +665,13 @@ mod gicd {
             Some(v)
         }
 
+        /// Implements byte/halfword priority access only.
+        ///
+        /// Arm IHI 0069H.b §12.1.3 requires byte access to
+        /// `GICD_IPRIORITYR<n>` and defines byte access to unlisted registers
+        /// as unsupported/UNPREDICTABLE. Restricting read-modify-write to plain
+        /// priority storage avoids corrupting set/clear register semantics.
+        /// Enforced by `gicd_ipriorityr_supports_subword_access`.
         fn read_subword(&self, address: GicdRegister, data: &mut [u8]) -> bool {
             if !GicdRegister::IPRIORITYR.contains(&address.0) {
                 return false;
@@ -665,6 +831,7 @@ mod gicd {
 
             let typer = GicdTyper::from(u32::from_ne_bytes(value));
             assert_eq!(typer.it_lines_number(), 30);
+            assert_eq!(typer.id_bits(), 15);
         }
 
         #[test]
@@ -687,6 +854,48 @@ mod gicd {
             let mut priorities = priority_word.to_ne_bytes();
             priorities[intid as usize % 4] = priority;
             *priority_word = u32::from_ne_bytes(priorities);
+        }
+
+        fn configure_edge(d: &Distributor, intid: u32) {
+            let mut state = d.state.lock();
+            state.cfg[intid as usize / 16] |= 2 << ((intid % 16) * 2);
+        }
+
+        #[test]
+        fn level_spi_remains_pending_until_line_deasserts() {
+            let (d, mut redists) = dist_with_redists(1);
+            let redist = &mut redists[0];
+            provision_spi(&d, 40, 0x20);
+            route_spi(&d, 40, 0);
+
+            d.set_pending(40, true);
+            assert_eq!(d.ack(redist, true), 40);
+            {
+                let state = d.state.lock();
+                assert_ne!(state.pending[1] & (1 << 8), 0);
+                assert_ne!(state.active[1] & (1 << 8), 0);
+            }
+
+            d.eoi(redist, true, 40);
+            assert_eq!(d.ack(redist, true), 40);
+            d.set_pending(40, false);
+            d.eoi(redist, true, 40);
+            assert!(!d.irq_pending(redist));
+        }
+
+        #[test]
+        fn edge_spi_latches_one_pending_assertion() {
+            let (d, mut redists) = dist_with_redists(1);
+            let redist = &mut redists[0];
+            provision_spi(&d, 40, 0x20);
+            configure_edge(&d, 40);
+            route_spi(&d, 40, 0);
+
+            d.set_pending(40, true);
+            d.set_pending(40, false);
+            assert_eq!(d.ack(redist, true), 40);
+            d.eoi(redist, true, 40);
+            assert!(!d.irq_pending(redist));
         }
 
         fn route_spi(d: &Distributor, intid: u32, route: u64) {
@@ -840,6 +1049,86 @@ mod gicd {
         }
 
         #[test]
+        fn one_of_n_spi_skips_cpu_disabled_pe() {
+            let (d, mut redists) = dist_with_redists(2);
+            redists[0].write_cpuif(SystemReg::ICC_IGRPEN1_EL1, 0);
+            provision_spi(&d, 40, 0x20);
+            route_spi(&d, 40, 1 << 31);
+
+            assert_eq!(d.set_pending(40, true), Some(1));
+            assert!(!d.irq_pending_for_group(&redists[0], true));
+            assert!(d.irq_pending_for_group(&redists[1], true));
+        }
+
+        #[test]
+        fn one_of_n_spi_skips_sleeping_pe() {
+            let (d, redists) = dist_with_redists(2);
+            let waker: u32 = aarch64defs::gic::GicrWaker::new()
+                .with_processor_sleep(true)
+                .into();
+            redists[0].shared.write(
+                aarch64defs::gic::GicrRdRegister::WAKER.0 as u64,
+                &waker.to_ne_bytes(),
+            );
+            provision_spi(&d, 40, 0x20);
+            route_spi(&d, 40, 1 << 31);
+
+            assert_eq!(d.set_pending(40, true), Some(1));
+            assert!(d.irq_pending_for_group(&redists[1], true));
+        }
+
+        #[test]
+        fn group0_pending_is_reported_separately() {
+            let (d, mut redists) = dist_with_redists(1);
+            let redist = &mut redists[0];
+            redist.write_cpuif(SystemReg::ICC_IGRPEN0_EL1, 1);
+            let ctlr: u32 = GicdCtlr::new().with_enable_grp0(true).into();
+            d.write(GICD_BASE + GicdRegister::CTLR.0 as u64, &ctlr.to_ne_bytes());
+            provision_spi(&d, 40, 0x20);
+            {
+                let mut state = d.state.lock();
+                state.group[1] &= !(1 << 8);
+            }
+            route_spi(&d, 40, 0);
+
+            d.set_pending(40, true);
+            assert!(d.irq_pending_for_group(redist, false));
+            assert!(!d.irq_pending_for_group(redist, true));
+        }
+
+        #[test]
+        fn spi_deactivation_notifies_new_one_of_n_target() {
+            let (d, mut redists) = dist_with_redists(2);
+            redists[0].write_cpuif(SystemReg::ICC_IGRPEN1_EL1, 0);
+            provision_spi(&d, 40, 0x20);
+            route_spi(&d, 40, 1 << 31);
+            d.set_pending(40, true);
+            assert_eq!(d.ack(&mut redists[1], true), 40);
+
+            redists[0].write_cpuif(SystemReg::ICC_IGRPEN1_EL1, 1);
+            let mut woken = Vec::new();
+            assert!(
+                d.write_sysreg(&mut redists[1], SystemReg::ICC_EOIR1_EL1, 40, |index| woken
+                    .push(index))
+            );
+
+            assert!(woken.contains(&0));
+            assert!(d.irq_pending_for_group(&redists[0], true));
+        }
+
+        #[test]
+        fn stale_spi_selection_cannot_activate_twice() {
+            let (d, _) = dist_with_redists(2);
+            provision_spi(&d, 40, 0x20);
+            route_spi(&d, 40, 1 << 31);
+            d.set_pending(40, true);
+
+            assert!(d.activate_spi(40, 0, true));
+            assert!(!d.activate_spi(40, 0, true));
+            assert!(!d.activate_spi(40, 1, true));
+        }
+
+        #[test]
         fn eoimode_split_completion_for_sgi() {
             let (d, mut redists) = dist_with_redists(1);
             let redist = &mut redists[0];
@@ -926,6 +1215,11 @@ mod gicr {
     use std::sync::atomic::Ordering;
 
     // The CPU interface models five priority bits without NMI or EL3 support.
+    //
+    // Arm GIC Architecture Specification, Arm IHI 0069H.b §12.2.6,
+    // ICC_CTLR_EL1.PRIbits: "number of priority bits implemented, minus one."
+    // A two-Security-state implementation must provide at least five bits.
+    // `icc_cpu_interface_round_trips` verifies PRIbits=4, meaning five bits.
 
     /// Number of implemented priority bits. With 5 bits the upper 5 bits of each
     /// 8-bit priority value are significant, so ICC_CTLR_EL1.PRIbits reads back
@@ -948,20 +1242,36 @@ mod gicr {
 
     /// Architectural minimum value of ICC_BPR0_EL1 for this configuration
     /// (writes below it read back as it; it is also the reset value).
+    ///
+    /// Arm IHI 0069H.b §4.8.3, Table 4-13 gives minimum BPR0=2 for
+    /// five implemented priority bits. §12.2.4 requires writes below the
+    /// minimum to read back as the minimum.
     pub(crate) const MIN_BPR0: u8 = 2;
 
     /// Architectural minimum value of ICC_BPR1_EL1 (`MIN_BPR0 + 1`).
+    ///
+    /// Arm IHI 0069H.b §12.2.5, ICC_BPR1_EL1.BinaryPoint requires the
+    /// Non-secure minimum to be "ICC_BPR0_EL1 + 1".
     pub(crate) const MIN_BPR1: u8 = 3;
 
     /// Running priority reported when the active-priority bitmap is empty: the
     /// lowest possible priority, so any unmasked interrupt preempts.
+    ///
+    /// Arm IHI 0069H.b §1.2.4 defines idle priority as 0xFF.
     pub(crate) const IDLE_PRIORITY: u8 = 0xff;
 
     /// SGIs are permanently enabled, matching the Hyper-V GIC interface.
+    ///
+    /// Arm IHI 0069H.b §4.7.1 makes permanent SGI enablement an
+    /// IMPLEMENTATION DEFINED choice.
     pub(crate) const SGI_ENABLE_MASK: u32 = 0x0000_ffff;
 
     /// Reset SGIs and PPIs to Non-secure Group 1, matching the Hyper-V GIC
     /// interface used by ARM64 guests.
+    ///
+    /// Arm IHI 0069H.b §12.11.12 defines `GICR_IGROUPR0` reset as
+    /// architecturally UNKNOWN. All ones is an explicit Hyper-V platform
+    /// policy within that latitude, not a universal GIC reset value.
     pub(crate) const IGROUPR0_RESET: u32 = 0xffff_ffff;
 
     /// The group-priority mask for binary point `bpr`. The binary point splits
@@ -969,6 +1279,10 @@ mod gicr {
     /// used for preemption) and a subpriority field (the low `bpr + 1` bits,
     /// ignored for preemption). Computed in u16 to avoid a shift overflow at
     /// `bpr == 7` (where there is no preemption and the mask is 0).
+    ///
+    /// Arm IHI 0069H.b §4.8.3: interrupts with the same group priority have
+    /// equal preemption rank "regardless of the subpriority". Enforced by
+    /// `group_mask_and_priority_split` and the independent model.
     pub(crate) fn group_mask(bpr: u8) -> u8 {
         (0xffu16 << (bpr + 1)) as u8
     }
@@ -982,6 +1296,10 @@ mod gicr {
     /// CBPR clear the architecture uses `BPR1 - 1` (the `VGroupBits`
     /// pseudocode); otherwise (Group 0, or CBPR set which aliases Group 1 onto
     /// BPR0) it uses BPR0.
+    ///
+    /// Arm IHI 0069H.b §4.8.3 `VGroupBits()` uses
+    /// `ICC_BPR1_EL1NS.BinaryPoint - 1` for Non-secure Group 1 when CBPR=0.
+    /// Enforced by `effective_bpr_group1_uses_bpr1_minus_one`.
     pub(crate) fn effective_bpr(group1: bool, cbpr: bool, bpr0: u8, bpr1: u8) -> u8 {
         if group1 && !cbpr {
             bpr1.saturating_sub(1)
@@ -993,6 +1311,10 @@ mod gicr {
     /// The running priority encoded by an active-priority bitmap: its lowest set
     /// bit scaled back into the 8-bit priority space, or `IDLE_PRIORITY` when
     /// the bitmap is empty.
+    ///
+    /// Arm IHI 0069H.b §12.2.20, `ICC_RPR_EL1.Priority`, returns the current
+    /// active group priority or Idle priority after all priority drops.
+    /// Enforced by `running_priority_from_active_bitmap` and AP nesting tests.
     pub(crate) fn running_priority(apr: u32) -> u8 {
         if apr == 0 {
             IDLE_PRIORITY
@@ -1058,6 +1380,20 @@ mod gicr {
         pub fn raise(&self, intid: u32) -> bool {
             let mask = 1 << intid;
             self.pending.fetch_or(mask, Ordering::Relaxed) & mask == 0
+        }
+
+        pub(super) fn eligible_for_one_of_n(&self, group1: bool) -> bool {
+            let state = self.mutable.lock();
+            !state.sleep
+                && if group1 {
+                    state.icc_grpen1
+                } else {
+                    state.icc_grpen0
+                }
+        }
+
+        pub(super) fn is_group1(&self, intid: u32) -> bool {
+            self.mutable.lock().group & (1 << intid) != 0
         }
 
         pub fn read(&self, address: u64, data: &mut [u8]) {
@@ -1276,6 +1612,13 @@ mod gicr {
         /// because the read-modify-write needed for sub-word access is only
         /// correct for plain storage registers; the set/clear registers
         /// (ISENABLER/ICENABLER/ISPENDR/...) must not be RMW'd this way.
+        ///
+        /// Arm IHI 0069H.b §12.1.3 expressly requires byte access to
+        /// `GICR_IPRIORITYR<n>` and makes byte access to unlisted registers
+        /// unsupported/UNPREDICTABLE. Enforced by
+        /// `ipriorityr_byte_write_read`,
+        /// `ipriorityr_byte_writes_dont_clobber`, and
+        /// `subword_does_not_corrupt_set_clear_registers`.
         fn sgi_write_subword(&self, address: GicrSgiRegister, data: &[u8]) -> bool {
             if !GicrSgiRegister::IPRIORITYR.contains(&address.0) {
                 return false;
@@ -1346,12 +1689,22 @@ mod gicr {
         /// BPR/CBPR group the priority, and IGRPEN/CTLR.EOImode shape ack/eoi.
         /// BPR writes are clamped to the architectural minimum for this
         /// configuration (writes below it read back as it).
+        ///
+        /// Arm IHI 0069H.b §§12.2.4-12.2.6, 12.2.15-12.2.16, and 12.2.19
+        /// define these banked CPU-interface fields. `ICC_PMR_EL1` low
+        /// unimplemented bits are RAZ/WI; `ICC_CTLR_EL1.CBPR/EOImode` select
+        /// BPR sharing and split completion. Enforced by
+        /// `icc_cpu_interface_round_trips`.
         pub(crate) fn write_cpuif(&mut self, reg: SystemReg, value: u64) -> bool {
             let mut state = self.shared.mutable.lock();
             match reg {
                 SystemReg::ICC_PMR_EL1 => state.icc_pmr = value as u8 & PRIORITY_MASK,
                 SystemReg::ICC_BPR0_EL1 => state.icc_bpr0 = ((value & 0x7) as u8).max(MIN_BPR0),
-                SystemReg::ICC_BPR1_EL1 => state.icc_bpr1 = ((value & 0x7) as u8).max(MIN_BPR1),
+                SystemReg::ICC_BPR1_EL1 => {
+                    if !state.icc_cbpr {
+                        state.icc_bpr1 = ((value & 0x7) as u8).max(MIN_BPR1);
+                    }
+                }
                 SystemReg::ICC_IGRPEN0_EL1 => state.icc_grpen0 = value & 1 != 0,
                 SystemReg::ICC_IGRPEN1_EL1 => state.icc_grpen1 = value & 1 != 0,
                 SystemReg::ICC_AP0R0_EL1 => state.icc_ap0r0 = value as u32,
@@ -1373,12 +1726,21 @@ mod gicr {
         /// wrote (clamped for BPR), exactly as real hardware does.
         ///
         /// ICC_CTLR_EL1 reports five implemented priority bits and 16-bit INTIDs.
+        /// Arm IHI 0069H.b §12.2.6 encodes PRIbits as implemented bits minus
+        /// one and IDbits=0 as 16-bit INTIDs. Enforced by
+        /// `icc_cpu_interface_round_trips`.
         pub(crate) fn read_cpuif(&self, reg: SystemReg) -> Option<u64> {
             let state = self.shared.mutable.lock();
             let value: u64 = match reg {
                 SystemReg::ICC_PMR_EL1 => state.icc_pmr.into(),
                 SystemReg::ICC_BPR0_EL1 => state.icc_bpr0.into(),
-                SystemReg::ICC_BPR1_EL1 => state.icc_bpr1.into(),
+                SystemReg::ICC_BPR1_EL1 => {
+                    if state.icc_cbpr {
+                        state.icc_bpr0.saturating_add(1).min(7).into()
+                    } else {
+                        state.icc_bpr1.into()
+                    }
+                }
                 SystemReg::ICC_IGRPEN0_EL1 => state.icc_grpen0.into(),
                 SystemReg::ICC_IGRPEN1_EL1 => state.icc_grpen1.into(),
                 SystemReg::ICC_AP0R0_EL1 => state.icc_ap0r0.into(),
@@ -1409,6 +1771,10 @@ mod gicr {
         /// This does NOT apply PMR masking or the preemption test — that is
         /// `admit`'s job — so the distributor can first pick the global winner
         /// across this PE's SGI/PPIs and the shared SPIs, then admit it once.
+        ///
+        /// Arm IHI 0069H.b §§4.7-4.8 require Pending, enabled, matching-group,
+        /// inactive candidates and numerically lowest priority selection.
+        /// Lower-INTID tie-breaking is deterministic implementation policy.
         pub(crate) fn best_candidate(&self, group1: bool) -> Option<(u32, u8)> {
             let pending = self.shared.pending.load(Ordering::Relaxed);
             if pending == 0 {
@@ -1436,6 +1802,19 @@ mod gicr {
         /// SGI/PPI on this redistributor, or an SPI selected by the distributor)
         /// using this PE's CPU-interface state. Returns the candidate's group
         /// priority if it is deliverable now, else `None`.
+        ///
+        /// Arm IHI 0069H.b:
+        /// - §12.2.19: only priority higher than PMR is signaled, so equality
+        ///   is masked.
+        /// - §4.8.5: candidate group priority must be lower than running
+        ///   priority; equal priority does not preempt.
+        /// - §§12.2.15-12.2.16: CPU-interface group enables gate signaling.
+        ///
+        /// For directly routed interrupts with IGRPEN clear, §4.7 leaves
+        /// consideration IMPLEMENTATION DEFINED; this model consistently
+        /// blocks delivery. Enforced by `pmr_masks_then_admits`,
+        /// `higher_priority_preempts_active`, `equal_priority_does_not_preempt`,
+        /// and `cpu_group_enable_gates_delivery_without_losing_pending_state`.
         pub(crate) fn admit(&self, group1: bool, priority: u8) -> Option<u8> {
             let state = self.shared.mutable.lock();
             if (group1 && !state.icc_grpen1) || (!group1 && !state.icc_grpen0) {
@@ -1450,7 +1829,12 @@ mod gicr {
             // Preemption: the candidate's group priority must be higher
             // (numerically lower) than the running priority.
             let running = running_priority(state.icc_ap0r0).min(running_priority(state.icc_ap1r0));
-            (gp < running).then_some(gp)
+            let preemption_level = if running == IDLE_PRIORITY {
+                IDLE_PRIORITY
+            } else {
+                group_priority(running, bpr)
+            };
+            (gp < preemption_level).then_some(gp)
         }
 
         /// Acknowledges `intid` (an SGI/PPI on this redistributor): clears its
@@ -1464,6 +1848,9 @@ mod gicr {
 
         /// Pushes a group priority onto this PE's active-priority bitmap for the
         /// given group (on acknowledge), raising the running priority.
+        ///
+        /// Arm IHI 0069H.b §4.8.4 defines AP registers as the active group
+        /// priorities that have not undergone priority drop.
         pub(crate) fn push_priority(&mut self, group1: bool, group_priority: u8) {
             let mut state = self.shared.mutable.lock();
             let bit = 1u32 << (group_priority >> PREEMPT_SHIFT);
@@ -1478,6 +1865,11 @@ mod gicr {
         /// for the given group — the EOI priority-drop. The IAR/EOIR nesting
         /// invariant guarantees the lowest set bit belongs to the interrupt
         /// being completed.
+        ///
+        /// Arm IHI 0069H.b §12.2.10 requires EOIR to correspond to the most
+        /// recent valid IAR; other writes are UNPREDICTABLE. This implementation
+        /// relies on that architectural software invariant. Enforced for valid
+        /// nesting by `active_priority_nests_and_unwinds`.
         pub(crate) fn pop_priority(&mut self, group1: bool) {
             let mut state = self.shared.mutable.lock();
             let apr = if group1 {
@@ -1796,6 +2188,27 @@ mod gicr {
         }
 
         #[test]
+        fn cbpr_aliases_bpr1_reads_and_ignores_writes() {
+            use aarch64defs::SystemReg;
+            use aarch64defs::gic::IccCtlrEl1;
+
+            let (mut redist, _) = Redistributor::new(0, 0, true);
+            redist.write_cpuif(SystemReg::ICC_BPR0_EL1, 4);
+            redist.write_cpuif(
+                SystemReg::ICC_CTLR_EL1,
+                IccCtlrEl1::new().with_cbpr(true).into(),
+            );
+            redist.write_cpuif(SystemReg::ICC_BPR1_EL1, 7);
+            assert_eq!(redist.read_cpuif(SystemReg::ICC_BPR1_EL1), Some(5));
+
+            redist.write_cpuif(SystemReg::ICC_CTLR_EL1, 0);
+            assert_eq!(
+                redist.read_cpuif(SystemReg::ICC_BPR1_EL1),
+                Some(super::MIN_BPR1.into())
+            );
+        }
+
+        #[test]
         fn running_priority_from_active_bitmap() {
             use super::IDLE_PRIORITY;
             use super::PREEMPT_SHIFT;
@@ -1893,6 +2306,29 @@ mod gicr {
             // Completing 20 returns to idle; now the re-raised 20 delivers again.
             redist.eoi(true, 20);
             assert_eq!(redist.ack(true), Some(20));
+        }
+
+        #[test]
+        fn candidate_bpr_regroups_running_priority_for_preemption() {
+            use aarch64defs::SystemReg;
+
+            let (mut redist, shared) = Redistributor::new(0, 0, true);
+            redist.write_cpuif(SystemReg::ICC_PMR_EL1, 0xff);
+            redist.write_cpuif(SystemReg::ICC_BPR0_EL1, 2);
+            redist.write_cpuif(SystemReg::ICC_BPR1_EL1, 5);
+            enable_cpu_group(&mut redist, false);
+            enable_cpu_group(&mut redist, true);
+            enable_group0(&shared, 20);
+            enable_group1(&shared, 21);
+            set_priority(&shared, 20, 0x28);
+            set_priority(&shared, 21, 0x20);
+
+            redist.raise(20);
+            assert_eq!(redist.ack(false), Some(20));
+            redist.raise(21);
+            // Group1 effective BPR is 4, so both 0x28 and 0x20 regroup to
+            // 0x20. Equal group priority must not preempt.
+            assert_eq!(redist.ack(true), None);
         }
 
         // An equal-priority interrupt does NOT preempt an active one (strict

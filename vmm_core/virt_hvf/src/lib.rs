@@ -1180,17 +1180,29 @@ impl<'p> Processor for HvfProcessor<'p> {
                         continue;
                     }
 
-                    if self.partition.gicd.irq_pending(&self.gicr) {
-                        // SAFETY: no requirements.
-                        unsafe {
-                            abi::hv_vcpu_set_pending_interrupt(
-                                self.vcpu.vcpu,
-                                abi::HvInterruptType::IRQ,
-                                true,
-                            )
-                        }
-                        .chk()
-                        .map_err(|err| dev.fatal_error(err.into()))?;
+                    let fiq_pending = self.partition.gicd.irq_pending_for_group(&self.gicr, false);
+                    let irq_pending = self.partition.gicd.irq_pending_for_group(&self.gicr, true);
+                    // SAFETY: no requirements.
+                    unsafe {
+                        abi::hv_vcpu_set_pending_interrupt(
+                            self.vcpu.vcpu,
+                            abi::HvInterruptType::FIQ,
+                            fiq_pending,
+                        )
+                    }
+                    .chk()
+                    .map_err(|err| dev.fatal_error(err.into()))?;
+                    // SAFETY: no requirements.
+                    unsafe {
+                        abi::hv_vcpu_set_pending_interrupt(
+                            self.vcpu.vcpu,
+                            abi::HvInterruptType::IRQ,
+                            irq_pending,
+                        )
+                    }
+                    .chk()
+                    .map_err(|err| dev.fatal_error(err.into()))?;
+                    if fiq_pending || irq_pending {
                         self.wfi = false;
                     }
 
@@ -1288,11 +1300,17 @@ impl<'p> Processor for HvfProcessor<'p> {
                                     _ => unreachable!(),
                                 }
                                 .to_ne_bytes();
-                                if !self
+                                if self
                                     .partition
                                     .gicd
                                     .write(exception.physical_address, &data[..len])
                                 {
+                                    // GIC configuration can make an already-pending
+                                    // interrupt deliverable on any PE.
+                                    for vp in &self.partition.vps {
+                                        vp.wake();
+                                    }
+                                } else {
                                     dev.write_mmio(
                                         vp_index,
                                         exception.physical_address,
