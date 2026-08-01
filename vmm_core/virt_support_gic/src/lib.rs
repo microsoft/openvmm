@@ -98,15 +98,40 @@ mod gicd {
             }
         }
 
+        /// Resolves a GICD_IROUTER value to a redistributor index. Affinity
+        /// routing requires an exact MPIDR match; an unmatched affinity does not
+        /// forward the interrupt. One-of-N routing uses a deterministic PE.
+        fn route_to_pe(&self, route: u64) -> Option<usize> {
+            const IRM: u64 = 1 << 31;
+
+            if route & IRM != 0 {
+                return (!self.gicr.is_empty()).then_some(0);
+            }
+
+            let aff0 = (route & 0xff) as u8;
+            let aff1 = ((route >> 8) & 0xff) as u8;
+            let aff2 = ((route >> 16) & 0xff) as u8;
+            let aff3 = ((route >> 32) & 0xff) as u8;
+            self.gicr.iter().position(|gicr| {
+                gicr.mpidr.aff0() == aff0
+                    && gicr.mpidr.aff1() == aff1
+                    && gicr.mpidr.aff2() == aff2
+                    && gicr.mpidr.aff3() == aff3
+            })
+        }
+
         pub fn set_pending(&self, intid: u32, pending: bool) -> Option<u32> {
-            let v = &mut self.state.lock().pending[intid as usize / 32];
+            let mut state = self.state.lock();
+            let v = &mut state.pending[intid as usize / 32];
             let mask = 1 << (intid & 31);
             if (*v & mask != 0) != pending {
                 tracing::debug!(intid, pending, "set pending");
             }
             if pending {
                 *v |= mask;
-                Some(0)
+                let route = state.route.get(intid as usize).copied().unwrap_or(0);
+                drop(state);
+                self.route_to_pe(route).map(|pe| pe as u32)
             } else {
                 *v &= !mask;
                 None
@@ -128,8 +153,8 @@ mod gicd {
 
         /// The globally highest-priority Group-`group1` interrupt deliverable to
         /// this PE right now: the best SGI/PPI on its redistributor combined with
-        /// the best SPI on the distributor (PE 0 only), then gated by this PE's
-        /// PMR and preemption state. Returns `(intid, group_priority)`.
+        /// the best SPI routed to it, then gated by this PE's PMR and preemption
+        /// state. Returns `(intid, group_priority)`.
         ///
         /// Checking only the single best candidate is sufficient: if the
         /// highest-priority pending interrupt cannot pass PMR/preemption, none of
@@ -140,26 +165,23 @@ mod gicd {
                 return None;
             }
             let mut cand = gicr.best_candidate(group1);
-            if gicr.index == 0 {
-                if let Some(spi) = self.best_spi(group1) {
-                    // Lowest priority byte wins; ties keep the lower intid (the
-                    // SGI/PPI, which is numerically below any SPI).
-                    cand = Some(match cand {
-                        Some((i, p)) if p <= spi.1 => (i, p),
-                        _ => spi,
-                    });
-                }
+            if let Some(spi) = self.best_spi(gicr.index, group1) {
+                // Lowest priority byte wins; ties keep the lower intid (the
+                // SGI/PPI, which is numerically below any SPI).
+                cand = Some(match cand {
+                    Some((i, p)) if p <= spi.1 => (i, p),
+                    _ => spi,
+                });
             }
             let (intid, pri) = cand?;
             let gp = gicr.admit(group1, pri)?;
             Some((intid, gp))
         }
 
-        /// The best deliverable Group-`group1` SPI: pending, inactive, enabled,
-        /// of the matching group, with the lowest priority byte (ties → lowest
-        /// intid). Word 0 is the per-redistributor SGI/PPI range, so the scan
-        /// starts at intid 32.
-        fn best_spi(&self, group1: bool) -> Option<(u32, u8)> {
+        /// The best deliverable Group-`group1` SPI routed to `pe`: pending,
+        /// inactive, enabled, and with the lowest priority byte (ties choose the
+        /// lowest INTID).
+        fn best_spi(&self, pe: usize, group1: bool) -> Option<(u32, u8)> {
             let state = self.state.lock();
             let mut best: Option<(u32, u8)> = None;
             for w in 1..state.pending.len() {
@@ -174,6 +196,10 @@ mod gicd {
                     deliverable &= deliverable - 1;
                     let intid = w as u32 * 32 + bit;
                     if intid > self.max_spi_intid {
+                        continue;
+                    }
+                    let route = state.route.get(intid as usize).copied().unwrap_or(0);
+                    if self.route_to_pe(route) != Some(pe) {
                         continue;
                     }
                     let pri = state.priority[intid as usize / 4].to_ne_bytes()[intid as usize % 4];
@@ -213,6 +239,7 @@ mod gicd {
             match reg {
                 SystemReg::ICC_EOIR0_EL1 => self.eoi(gicr, false, value as u32),
                 SystemReg::ICC_EOIR1_EL1 => self.eoi(gicr, true, value as u32),
+                SystemReg::ICC_DIR_EL1 => self.dir(gicr, value as u32),
                 SystemReg::ICC_SGI0R_EL1 => self.sgi(gicr, false, value, wake),
                 SystemReg::ICC_SGI1R_EL1 => self.sgi(gicr, true, value, wake),
                 _ => return gicr.write_cpuif(reg, value),
@@ -253,24 +280,30 @@ mod gicd {
         }
 
         fn eoi(&self, gicr: &mut Redistributor, group1: bool, intid: u32) {
-            // Special INTIDs (>= 1020) have no active state.
             if intid >= 1020 {
                 return;
             }
-            if intid < 32 {
-                // SGI/PPI: priority-drop + deactivate both happen on the redist.
-                gicr.eoi(group1, intid);
-                return;
-            }
-            if gicr.index != 0 {
-                return;
-            }
-            // SPI: priority-drop on the acknowledging PE, then deactivate the
-            // distributor's active bit.
             gicr.pop_priority(group1);
             tracing::trace!(intid, "gic eoi");
-            let v = &mut self.state.lock().active[intid as usize / 32];
-            *v &= !(1 << (intid & 31));
+            if !gicr.eoimode() {
+                self.deactivate_intid(gicr, intid);
+            }
+        }
+
+        fn dir(&self, gicr: &mut Redistributor, intid: u32) {
+            if intid >= 1020 || !gicr.eoimode() {
+                return;
+            }
+            tracing::trace!(intid, "gic dir");
+            self.deactivate_intid(gicr, intid);
+        }
+
+        fn deactivate_intid(&self, gicr: &mut Redistributor, intid: u32) {
+            if intid < 32 {
+                gicr.deactivate(intid);
+            } else if let Some(v) = self.state.lock().active.get_mut(intid as usize / 32) {
+                *v &= !(1 << (intid & 31));
+            }
         }
 
         fn write32(&self, address: GicdRegister, value: u32) -> bool {
@@ -567,6 +600,37 @@ mod gicd {
             Distributor::new(GICD_BASE, MemoryRange::new(0x0808_0000..0x0810_0000), 988)
         }
 
+        fn dist_with_redists(count: usize) -> (Distributor, Vec<Redistributor>) {
+            let mut d = dist();
+            let mut redists = (0..count)
+                .map(|index| d.add_redistributor(index as u64, index + 1 == count))
+                .collect::<Vec<_>>();
+            for redist in &mut redists {
+                redist.write_cpuif(SystemReg::ICC_PMR_EL1, 0xff);
+                redist.write_cpuif(SystemReg::ICC_IGRPEN1_EL1, 1);
+            }
+            let ctlr: u32 = GicdCtlr::new().with_enable_grp1(true).into();
+            d.write(GICD_BASE + GicdRegister::CTLR.0 as u64, &ctlr.to_ne_bytes());
+            (d, redists)
+        }
+
+        fn provision_spi(d: &Distributor, intid: u32, priority: u8) {
+            let mut state = d.state.lock();
+            let word = intid as usize / 32;
+            let bit = 1 << (intid % 32);
+            state.enable[word] |= bit;
+            state.group[word] |= bit;
+            let priority_word = &mut state.priority[intid as usize / 4];
+            let mut priorities = priority_word.to_ne_bytes();
+            priorities[intid as usize % 4] = priority;
+            *priority_word = u32::from_ne_bytes(priorities);
+        }
+
+        fn route_spi(d: &Distributor, intid: u32, route: u64) {
+            let address = GICD_BASE + GicdRegister::IROUTER0.0 as u64 + u64::from(intid) * 8;
+            d.write(address, &route.to_ne_bytes());
+        }
+
         // Regression: GICD IPRIORITYR writes previously landed in the ICFGR
         // `cfg` array (a copy-paste defect) instead of `priority`, so SPI
         // priority writes were dropped on read-back AND corrupted interrupt
@@ -593,8 +657,8 @@ mod gicd {
 
         #[test]
         fn distributor_group_enable_gates_delivery_without_losing_pending_state() {
-            let d = dist();
-            let (mut gicr, _shared) = Redistributor::new(0, 0, true);
+            let mut d = dist();
+            let mut gicr = d.add_redistributor(0, true);
             gicr.write_cpuif(SystemReg::ICC_PMR_EL1, 0xff);
             gicr.write_cpuif(SystemReg::ICC_IGRPEN1_EL1, 1);
             {
@@ -628,6 +692,136 @@ mod gicd {
             let ctlr: u32 = GicdCtlr::new().with_enable_grp1(true).into();
             d.write(GICD_BASE + GicdRegister::CTLR.0 as u64, &ctlr.to_ne_bytes());
             assert_eq!(d.ack(&mut gicr, true), 1);
+        }
+
+        #[test]
+        fn spi_affinity_route_selects_the_target_pe() {
+            let (d, mut redists) = dist_with_redists(2);
+            provision_spi(&d, 40, 0x40);
+            route_spi(&d, 40, 1);
+
+            assert_eq!(d.set_pending(40, true), Some(1));
+            assert!(!d.irq_pending(&redists[0]));
+            assert!(d.irq_pending(&redists[1]));
+            assert_eq!(d.ack(&mut redists[0], true), 1023);
+            assert_eq!(d.ack(&mut redists[1], true), 40);
+
+            d.write_sysreg(&mut redists[1], SystemReg::ICC_EOIR1_EL1, 40, |_| {});
+            assert_eq!(d.set_pending(40, true), Some(1));
+            assert_eq!(d.ack(&mut redists[1], true), 40);
+        }
+
+        #[test]
+        fn spi_eoi_uses_intid_not_the_current_route() {
+            let (d, mut redists) = dist_with_redists(2);
+            provision_spi(&d, 40, 0x40);
+            route_spi(&d, 40, 1);
+            d.set_pending(40, true);
+            assert_eq!(d.ack(&mut redists[1], true), 40);
+
+            route_spi(&d, 40, 0);
+            d.write_sysreg(&mut redists[1], SystemReg::ICC_EOIR1_EL1, 40, |_| {});
+            assert_eq!(
+                redists[1].read_cpuif(SystemReg::ICC_RPR_EL1),
+                Some(u64::from(super::super::gicr::IDLE_PRIORITY))
+            );
+
+            assert_eq!(d.set_pending(40, true), Some(0));
+            assert_eq!(d.ack(&mut redists[0], true), 40);
+        }
+
+        #[test]
+        fn unmatched_spi_affinity_preserves_pending_without_forwarding() {
+            let (d, mut redists) = dist_with_redists(2);
+            provision_spi(&d, 40, 0x40);
+            route_spi(&d, 40, 0xff);
+
+            assert_eq!(d.set_pending(40, true), None);
+            assert!(!d.irq_pending(&redists[0]));
+            assert!(!d.irq_pending(&redists[1]));
+
+            route_spi(&d, 40, 1);
+            assert_eq!(d.ack(&mut redists[1], true), 40);
+        }
+
+        #[test]
+        fn one_of_n_spi_route_uses_a_deterministic_pe() {
+            let (d, mut redists) = dist_with_redists(2);
+            provision_spi(&d, 40, 0x40);
+            route_spi(&d, 40, 1 << 31);
+
+            assert_eq!(d.set_pending(40, true), Some(0));
+            assert_eq!(d.ack(&mut redists[0], true), 40);
+            assert_eq!(d.ack(&mut redists[1], true), 1023);
+        }
+
+        #[test]
+        fn eoimode_split_completion_for_sgi() {
+            let (d, mut redists) = dist_with_redists(1);
+            let redist = &mut redists[0];
+            redist.write_cpuif(SystemReg::ICC_CTLR_EL1, 1 << 1);
+            redist.raise(1);
+            assert_eq!(d.ack(redist, true), 1);
+
+            assert!(d.write_sysreg(redist, SystemReg::ICC_EOIR1_EL1, 1, |_| {}));
+            assert_eq!(
+                redist.read_cpuif(SystemReg::ICC_RPR_EL1),
+                Some(u64::from(super::super::gicr::IDLE_PRIORITY))
+            );
+
+            redist.raise(1);
+            assert_eq!(d.ack(redist, true), 1023);
+            assert!(d.write_sysreg(redist, SystemReg::ICC_DIR_EL1, 1, |_| {}));
+            assert_eq!(d.ack(redist, true), 1);
+        }
+
+        #[test]
+        fn eoimode_split_completion_for_spi() {
+            let (d, mut redists) = dist_with_redists(1);
+            let redist = &mut redists[0];
+            redist.write_cpuif(SystemReg::ICC_CTLR_EL1, 1 << 1);
+            provision_spi(&d, 40, 0x40);
+            route_spi(&d, 40, 0);
+            d.set_pending(40, true);
+            assert_eq!(d.ack(redist, true), 40);
+
+            assert!(d.write_sysreg(redist, SystemReg::ICC_EOIR1_EL1, 40, |_| {}));
+            assert_eq!(d.set_pending(40, true), Some(0));
+            assert_eq!(d.ack(redist, true), 1023);
+
+            assert!(d.write_sysreg(redist, SystemReg::ICC_DIR_EL1, 40, |_| {}));
+            assert_eq!(d.ack(redist, true), 40);
+        }
+
+        #[test]
+        fn dir_is_ignored_when_eoimode_is_clear() {
+            let (d, mut redists) = dist_with_redists(1);
+            let redist = &mut redists[0];
+            redist.raise(1);
+            assert_eq!(d.ack(redist, true), 1);
+
+            assert!(d.write_sysreg(redist, SystemReg::ICC_DIR_EL1, 1, |_| {}));
+            redist.raise(1);
+            assert_eq!(d.ack(redist, true), 1023);
+
+            assert!(d.write_sysreg(redist, SystemReg::ICC_EOIR1_EL1, 1, |_| {}));
+            assert_eq!(d.ack(redist, true), 1);
+        }
+
+        #[test]
+        fn special_intids_do_not_drop_or_deactivate() {
+            let (d, mut redists) = dist_with_redists(1);
+            let redist = &mut redists[0];
+            redist.write_cpuif(SystemReg::ICC_CTLR_EL1, 1 << 1);
+            redist.raise(1);
+            assert_eq!(d.ack(redist, true), 1);
+
+            assert!(d.write_sysreg(redist, SystemReg::ICC_EOIR1_EL1, 1023, |_| {}));
+            assert_eq!(redist.read_cpuif(SystemReg::ICC_RPR_EL1), Some(0));
+            assert!(d.write_sysreg(redist, SystemReg::ICC_DIR_EL1, 1023, |_| {}));
+
+            redist.raise(1);
+            assert_eq!(d.ack(redist, true), 1023);
         }
     }
 }
@@ -1212,6 +1406,10 @@ mod gicr {
             self.shared.mutable.lock().active &= !(1 << intid);
         }
 
+        pub(crate) fn eoimode(&self) -> bool {
+            self.shared.mutable.lock().icc_eoimode
+        }
+
         #[cfg(test)]
         pub(crate) fn irq_pending(&self) -> bool {
             match self.best_candidate(true) {
@@ -1235,6 +1433,7 @@ mod gicr {
             Some(intid)
         }
 
+        #[cfg(test)]
         pub(crate) fn eoi(&mut self, group1: bool, intid: u32) {
             assert!(intid < 32);
             tracing::trace!(intid, "eoi");
