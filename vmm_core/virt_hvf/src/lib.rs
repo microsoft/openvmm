@@ -1182,6 +1182,10 @@ impl<'p> Processor for HvfProcessor<'p> {
 
                     let fiq_pending = self.partition.gicd.irq_pending_for_group(&self.gicr, false);
                     let irq_pending = self.partition.gicd.irq_pending_for_group(&self.gicr, true);
+                    // Arm IHI 0069H.b §4.6.2, Table 4-5 assigns independent
+                    // CPU-interface outputs in the single-Security-state view:
+                    // Group 0 uses FIQ and Group 1 uses IRQ. Drive both; exception
+                    // routing, not a cross-group GIC selector, determines service order.
                     // SAFETY: no requirements.
                     unsafe {
                         abi::hv_vcpu_set_pending_interrupt(

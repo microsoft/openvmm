@@ -832,6 +832,7 @@ mod gicd {
             let typer = GicdTyper::from(u32::from_ne_bytes(value));
             assert_eq!(typer.it_lines_number(), 30);
             assert_eq!(typer.id_bits(), 15);
+            assert!(!typer.security_extn());
         }
 
         #[test]
