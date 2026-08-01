@@ -3075,7 +3075,10 @@ impl<T: RingMem> NetChannel<T> {
                                 buffers_ndis_config = ?buffers.ndis_config,
                                 "failed to notify guest about VF availability post initialization"
                             );
-                            return Err(WorkerError::GuestVfNotificationFailed);
+                            return Err(match err {
+                                WorkerError::OutOfSpace => WorkerError::GuestVfNotificationFailed,
+                                err => err,
+                            });
                         }
                     }
                 }
@@ -3312,16 +3315,21 @@ impl<T: RingMem> NetChannel<T> {
                     //   fail. The guest is still expected to send a packet completion,
                     //   which will free the buffers. If the failure came from the VF
                     //   notification, it has already been traced.
-                    let response_sent = matches!(&err, WorkerError::GuestVfNotificationFailed);
-                    if !response_sent {
-                        tracelimit::error_ratelimited!(
-                            error = &err as &dyn std::error::Error,
-                            message_type = message.message_type,
-                            "failed to handle RNDIS control message, skipping"
-                        );
+                    // A Queue error means the underlying VMBus queue is no longer usable.
+                    //   Propagate it without freeing the control buffer.
+                    match err {
+                        WorkerError::GuestVfNotificationFailed => {}
+                        WorkerError::Queue(_) => return Err(err),
+                        err => {
+                            tracelimit::error_ratelimited!(
+                                error = &err as &dyn std::error::Error,
+                                message_type = message.message_type,
+                                "failed to handle RNDIS control message, skipping"
+                            );
 
-                        drop(state.rx_bufs.free(id.0));
-                        primary.free_control_buffers.push(id);
+                            drop(state.rx_bufs.free(id.0));
+                            primary.free_control_buffers.push(id);
+                        }
                     }
                 }
             } else if primary.pending_offload_change
