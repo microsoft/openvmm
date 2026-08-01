@@ -124,11 +124,13 @@ re-establishes it afterwards.
   group/container interface cannot express nested translation.
 - All devices behind one accelerated SMMU must share a single iommufd
   context, because the emulated SMMU maps to exactly one host vIOMMU.
-- The guest must boot with ACPI. The host IOMMU reserves an IOVA window for
-  its MSI doorbell, and that window is described to the guest as an IORT
-  Reserved Memory Range so the guest identity-maps it in stage 1. Without
-  it, MSIs from assigned devices would not reach the host interrupt
-  controller.
+- The guest must boot with ACPI. One MSI IOVA range is shared between the
+  physical-SMMU implementation and the guest: the backend uses it for assigned
+  device MSI writes, and the IORT describes the same range as Reserved Memory
+  so the guest identity-maps it in stage 1. Linux's Arm SMMU driver currently
+  requires its fixed 128 MiB--129 MiB range. A hypervisor-backed SMMU can let
+  OpenVMM select the range and pass its base during partition creation.
+  Without the matching RMR, assigned-device MSIs can fault in guest stage 1.
 
 ### Output address size
 
