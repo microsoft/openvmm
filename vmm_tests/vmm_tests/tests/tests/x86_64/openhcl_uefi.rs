@@ -386,12 +386,18 @@ async fn vtl2_ram_32k_aligned_across_three_numa_nodes<T: PetriVmmBackend>(
     let vtl2_ranges = vtl2_ranges
         .as_object()
         .context("VTL2 memory ranges are not an object")?;
-    anyhow::ensure!(
-        vtl2_ranges.len() == 3,
-        "expected one VTL2 RAM range per NUMA node, got {vtl2_ranges:?}"
-    );
+    let expected_ram_per_node = (VTL2_RAM_SIZE / 3).next_multiple_of(ALIGNMENT_GRANULARITY);
+    let mut ram_per_node = [0; 3];
 
     for entry in vtl2_ranges.values() {
+        let vnode = entry
+            .get("vnode")
+            .and_then(serde_json::Value::as_u64)
+            .context("VTL2 memory vnode is not an integer")?;
+        let vnode = usize::try_from(vnode).context("VTL2 memory vnode does not fit in usize")?;
+        let node_ram = ram_per_node
+            .get_mut(vnode)
+            .with_context(|| format!("unexpected VTL2 memory vnode {vnode}"))?;
         let range = entry
             .get("range")
             .and_then(serde_json::Value::as_str)
@@ -408,10 +414,19 @@ async fn vtl2_ram_32k_aligned_across_three_numa_nodes<T: PetriVmmBackend>(
         let start = parse_address(start)?;
         let end = parse_address(end)?;
 
+        anyhow::ensure!(start < end, "VTL2 RAM range {range} is empty or reversed");
         anyhow::ensure!(
             start.is_multiple_of(ALIGNMENT_GRANULARITY)
                 && end.is_multiple_of(ALIGNMENT_GRANULARITY),
             "VTL2 RAM range {range} is not aligned to {ALIGNMENT_GRANULARITY:#x}"
+        );
+        *node_ram += end - start;
+    }
+
+    for (vnode, node_ram) in ram_per_node.into_iter().enumerate() {
+        anyhow::ensure!(
+            node_ram >= expected_ram_per_node,
+            "VTL2 RAM on vnode {vnode} is {node_ram:#x}, expected at least {expected_ram_per_node:#x}"
         );
     }
 
