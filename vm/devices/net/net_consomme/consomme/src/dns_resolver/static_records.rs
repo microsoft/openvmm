@@ -96,17 +96,17 @@ impl StaticDnsRecords {
 
         // `Question::parse` also validates that the class is `IN`.
         let (_, question) = DnsQuestion::parse(packet.payload()).ok()?;
-        if question.type_ != DnsQueryType::A {
-            return None;
-        }
-
         let qname = decode_name(&packet, question.name)?;
         let answers: Vec<&[u8]> = self
             .records
             .iter()
             .filter_map(|rec| match &rec.record {
-                StaticDnsRecord::A(address) if rec.name == qname => Some(address.as_slice()),
-                _ => None,
+                StaticDnsRecord::A(address)
+                    if question.type_ == DnsQueryType::A && rec.name == qname =>
+                {
+                    Some(address.as_slice())
+                }
+                StaticDnsRecord::A(_) => None,
             })
             .collect();
 
@@ -117,6 +117,11 @@ impl StaticDnsRecords {
         let mut total = DNS_HEADER_LEN + question.buffer_len();
 
         if total > max_len {
+            tracelimit::warn_ratelimited!(
+                required_len = total,
+                max_len,
+                "static DNS response buffer is too small for the header and question"
+            );
             return None;
         }
 
