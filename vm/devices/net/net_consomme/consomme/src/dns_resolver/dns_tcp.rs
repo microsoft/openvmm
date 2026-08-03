@@ -35,6 +35,9 @@ pub enum DnsTcpError {
     /// The query was rate-limited by the resolver backend.
     #[error("DNS TCP query rate-limited")]
     RateLimited,
+    /// No resolver backend is available for a query not answered by static records.
+    #[error("DNS resolver backend unavailable")]
+    BackendUnavailable,
     /// The DNS response exceeded the maximum allowed TCP message size.
     #[error("DNS TCP response too large")]
     ResponseTooLarge,
@@ -172,6 +175,16 @@ impl DnsTcpHandler {
             );
             self.frame_response(response);
             return Ok(true);
+        }
+
+        if !dns.is_available() {
+            tracing::trace!(
+                msg_len,
+                src = %self.flow.src,
+                dst = %self.flow.dst,
+                "dns_tcp: no resolver backend available for static-record miss",
+            );
+            return Err(DnsTcpError::BackendUnavailable);
         }
 
         // Submit the raw DNS query (without the TCP length prefix).
@@ -568,5 +581,22 @@ mod tests {
             }
             other => panic!("expected resolver response, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn static_miss_without_backend_is_not_rate_limited() {
+        let mut dns = DnsResolver::without_backend(DEFAULT_MAX_PENDING_DNS_REQUESTS);
+        let mut handler = DnsTcpHandler::new(test_flow());
+
+        dns.add_static_record(StaticDnsRecord::A([10, 0, 0, 9]), "static.example")
+            .unwrap();
+
+        let query = build_query(0x0001, "other.example", DnsQueryType::A);
+        let msg = make_tcp_dns_message(&query);
+
+        assert!(matches!(
+            handler.ingest(&[&msg], &mut dns),
+            Err(DnsTcpError::BackendUnavailable)
+        ));
     }
 }
