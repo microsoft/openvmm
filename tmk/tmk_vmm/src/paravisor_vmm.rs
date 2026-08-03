@@ -109,6 +109,11 @@ async fn start_vp(
     mut runner: RunnerBuilder,
     isolation: virt::IsolationType,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
+    #[cfg(guest_arch = "aarch64")]
+    if let Some(gic) = vp.gic_v3_model() {
+        runner.set_gic(gic);
+    }
+
     let vp_thread = std::thread::spawn(move || {
         let pool = pal_uring::IoUringPool::new("vp", 256).unwrap();
         let driver = pool.client().initiator().clone();

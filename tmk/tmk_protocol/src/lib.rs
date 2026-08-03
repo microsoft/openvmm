@@ -13,6 +13,26 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 use zerocopy::TryFromBytes;
 
+/// Fixed AArch64 platform configuration used by `tmk_vmm` and AArch64 TMKs.
+pub mod aarch64 {
+    /// Guest MMIO base address of the GICv3 distributor.
+    ///
+    /// The distributor occupies a 64-KiB frame starting at `0xff00_0000`.
+    pub const GIC_DISTRIBUTOR_BASE: u64 = 0xff00_0000;
+    /// Guest MMIO base address of the first GICv3 redistributor.
+    ///
+    /// Each VP uses a 128-KiB redistributor region containing one 64-KiB
+    /// redistributor frame and one 64-KiB SGI/PPI frame.
+    pub const GIC_REDISTRIBUTOR_BASE: u64 = 0xff02_0000;
+    /// Architectural virtual timer PPI.
+    pub const VIRTUAL_TIMER_PPI: u32 = 20;
+    /// Total number of GIC interrupts exposed by the test platform.
+    ///
+    /// This provides SGIs 0-15, PPIs 16-31, and SPIs 32-255. Architectural
+    /// INTIDs 256-1019 are not implemented by this test platform.
+    pub const GIC_INTERRUPT_COUNT: u32 = 256;
+}
+
 /// Start input from the VMM to the TMK.
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable)]
