@@ -287,7 +287,7 @@ pub struct Options {
     /// (OPENHCL_VFIO_IOMMUFD_CDEV=1)
     /// Use the modern VFIO cdev + iommufd noiommu interface for assigned
     /// devices (NVMe and MANA) instead of the legacy VFIO group + container
-    /// interface. Defaults to off (legacy).
+    /// interface. Defaults to on; set OPENHCL_VFIO_IOMMUFD_CDEV=0 for legacy.
     pub vfio_iommufd_cdev: bool,
 
     /// (OPENHCL_TEST_CONFIG=\<TestScenarioConfig\>)
@@ -497,9 +497,10 @@ impl Options {
                     })
                     .unwrap_or(KeepAliveConfig::Disabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
-        // Opt in with OPENHCL_VFIO_IOMMUFD_CDEV=1; defaults to the legacy VFIO
-        // group + container interface.
-        let vfio_iommufd_cdev = parse_env_bool("OPENHCL_VFIO_IOMMUFD_CDEV");
+        // Default to the VFIO cdev + iommufd interface. The flag is retained as
+        // an escape hatch: set OPENHCL_VFIO_IOMMUFD_CDEV=0 to fall back to the
+        // legacy VFIO group + container interface.
+        let vfio_iommufd_cdev = parse_env_bool_opt("OPENHCL_VFIO_IOMMUFD_CDEV").unwrap_or(true);
         let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
