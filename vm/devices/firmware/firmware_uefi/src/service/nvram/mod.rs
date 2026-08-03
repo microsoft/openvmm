@@ -136,24 +136,38 @@ impl NvramServices {
         };
 
         if !is_restoring {
-            let is_first_boot = nvram
+            let is_nvram_empty = nvram
                 .services
                 .is_empty()
                 .await
                 .map_err(NvramSetupError::BadNvramStorage)?;
-            let base_template_vars = (is_first_boot || secure_boot_enabled)
-                .then_some(base_template_json)
-                .flatten()
+            let base_template_vars = match base_template_json
+                .filter(|_| is_nvram_empty || secure_boot_enabled)
                 .map(|template_json| {
                     hyperv_uefi_custom_vars_json::parse_template_json(template_json.as_bytes())
                 })
                 .transpose()
-                .map_err(NvramSetupError::LoadBaseTemplate)?;
+            {
+                Ok(vars) => vars,
+                Err(error) if !is_nvram_empty => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        error = &error as &dyn std::error::Error,
+                        "failed to parse baseline secure boot template; skipping configuration report"
+                    );
+                    None
+                }
+                Err(error) => return Err(NvramSetupError::LoadBaseTemplate(error)),
+            };
+
+            // Top-level configuration reads the VMGS CUSTOM_UEFI entry on every boot and
+            // populates this value when the entry is valid, matching legacy HCL. The delta
+            // itself is only applied below when NVRAM is empty.
             let custom_uefi_config_present = custom_uefi_json
                 .as_ref()
                 .is_some_and(|json| !json.as_bytes().is_empty());
 
-            if is_first_boot {
+            if is_nvram_empty {
                 nvram
                     .inject_initial_vars(base_template_vars.as_ref(), custom_uefi_json)
                     .await?;
@@ -742,6 +756,43 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[async_test]
+    async fn invalid_base_template_is_ignored_after_first_boot_with_secure_boot() {
+        let mut storage = InMemoryNvram::new();
+        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
+        storage
+            .set_variable(name, guid::Guid::default(), 0, vec![1], EFI_TIME::default())
+            .await
+            .unwrap();
+
+        NvramServices::new(
+            Box::new(storage),
+            Some(b"not json".to_vec().into()),
+            None,
+            true,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[async_test]
+    async fn invalid_base_template_fails_on_first_boot() {
+        assert!(matches!(
+            NvramServices::new(
+                Box::new(InMemoryNvram::new()),
+                Some(b"not json".to_vec().into()),
+                None,
+                false,
+                None,
+                false,
+            )
+            .await,
+            Err(NvramSetupError::LoadBaseTemplate(_))
+        ));
     }
 
     #[async_test]
