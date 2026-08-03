@@ -4,6 +4,7 @@
 //! Provides processor topology related cpuid leaves.
 
 use crate::CpuidLeaf;
+use std::cmp::min;
 use thiserror::Error;
 use vm_topology::processor::ProcessorTopology;
 use x86defs::cpuid::CacheParametersEax;
@@ -106,11 +107,18 @@ fn cache_parameters_cpuid(
             break;
         }
         let mut eax = CacheParametersEax::new();
+        // Only 6 bits are available in the cache parameters CPUID leaf (04H)
+        // so use a saturated value here as the maximum to avoid a panic later.
+        const MAX_CORES_PER_SOCKET: u32 = 1 << 6;
         if topology.smt_enabled() {
-            eax.set_cores_per_socket_minus_one((topology.reserved_vps_per_socket() / 2) - 1);
+            eax.set_cores_per_socket_minus_one(
+                min(MAX_CORES_PER_SOCKET, topology.reserved_vps_per_socket() / 2) - 1,
+            );
             eax.set_threads_sharing_cache_minus_one(1);
         } else {
-            eax.set_cores_per_socket_minus_one(topology.reserved_vps_per_socket() - 1);
+            eax.set_cores_per_socket_minus_one(
+                min(MAX_CORES_PER_SOCKET, topology.reserved_vps_per_socket()) - 1,
+            );
             eax.set_threads_sharing_cache_minus_one(0);
         }
 

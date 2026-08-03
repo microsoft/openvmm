@@ -3995,7 +3995,7 @@ jobs:
     - self-hosted
     - Windows
     - X64
-    - TDX
+    - GNR
     - Baremetal
     permissions:
       contents: read
