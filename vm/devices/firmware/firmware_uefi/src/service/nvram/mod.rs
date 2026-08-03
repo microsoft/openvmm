@@ -161,7 +161,7 @@ impl NvramServices {
             };
 
             // Top-level configuration reads the VMGS CUSTOM_UEFI entry on every boot and
-            // populates this value when the entry is valid, matching legacy HCL. The delta
+            // populates this value when the entry is non-empty, matching legacy HCL. The delta
             // itself is only applied below when NVRAM is empty.
             let custom_uefi_config_present = custom_uefi_json
                 .as_ref()

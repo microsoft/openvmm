@@ -76,6 +76,8 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
     vm: &PetriVm<T>,
     custom_uefi_config_present: bool,
 ) -> Result<(), anyhow::Error> {
+    const EXPECTED_VARIABLES: [&str; 4] = ["PK", "KEK", "db", "dbx"];
+
     let mut kmsg = vm.kmsg().await?;
     let mut reported_variables = BTreeSet::new();
 
@@ -83,7 +85,7 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
         let data = data.context("reading kmsg")?;
         let message = kmsg::KmsgParsedEntry::new(&data).unwrap();
         let raw = message.message.as_raw();
-        let Some(variable_name) = ["PK", "KEK", "db", "dbx"].into_iter().find(|name| {
+        let Some(variable_name) = EXPECTED_VARIABLES.into_iter().find(|name| {
             raw.contains("SecureBootConfigReport")
                 && raw.contains(&format!("variable_name: {name:?}"))
         }) else {
@@ -102,12 +104,14 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
         );
         reported_variables.insert(variable_name);
 
-        if reported_variables.len() == 4 {
+        if reported_variables.len() == EXPECTED_VARIABLES.len() {
             return Ok(());
         }
     }
 
-    anyhow::bail!("missing Secure Boot reports for {reported_variables:?}")
+    let expected_variables = BTreeSet::from(EXPECTED_VARIABLES);
+    let missing_variables: Vec<_> = expected_variables.difference(&reported_variables).collect();
+    anyhow::bail!("missing Secure Boot reports for {missing_variables:?}")
 }
 
 async fn secure_boot_config_report_test<T: PetriVmmBackend>(
@@ -291,7 +295,7 @@ async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
 ) -> Result<(), anyhow::Error> {
     let (_temp_dir, vmgs_path) =
-        create_custom_uefi_vmgs(vmgstool.get(), REPLACE_WITHOUT_DBX_JSON).await?;
+        create_uefi_vmgs(vmgstool.get(), Some(REPLACE_WITHOUT_DBX_JSON)).await?;
 
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
