@@ -128,7 +128,7 @@ impl StaticDnsRecords {
         let mut fit = 0;
         for rdata in &answers {
             let answer_len = ANSWER_FIXED_LEN + rdata.len();
-            if total + answer_len > max_len {
+            if fit == u16::MAX as usize || total + answer_len > max_len {
                 break;
             }
 
@@ -474,6 +474,25 @@ mod tests {
         assert_eq!(u16::from_be_bytes([response[6], response[7]]), 2);
         assert_ne!(response[2] & 0x02, 0, "TC must be set when answers dropped");
         assert!(response.len() <= budget);
+    }
+
+    #[test]
+    fn answer_count_is_truncated_to_header_limit() {
+        let mut records = StaticDnsRecords::default();
+        for _ in 0..=u16::MAX {
+            records
+                .add(StaticDnsRecord::A([10, 0, 0, 1]), "many.test")
+                .unwrap();
+        }
+
+        let query = build_query(1, "many.test", DnsQueryType::A);
+        let response = records.build_response(&query, usize::MAX).unwrap();
+
+        assert_eq!(
+            u16::from_be_bytes([response[6], response[7]]),
+            u16::MAX
+        );
+        assert_ne!(response[2] & 0x02, 0, "TC must be set when answers dropped");
     }
 
     #[test]
