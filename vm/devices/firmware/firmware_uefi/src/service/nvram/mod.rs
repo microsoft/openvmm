@@ -153,7 +153,7 @@ impl NvramServices {
                     tracing::warn!(
                         CVM_ALLOWED,
                         error = &error as &dyn std::error::Error,
-                        "failed to parse baseline secure boot template; skipping configuration report"
+                        "secure boot configuration report skipped: failed to parse baseline template"
                     );
                     None
                 }
@@ -262,21 +262,15 @@ impl NvramServices {
         base_template_vars: Option<&BaseTemplateVars>,
         custom_uefi_config_present: bool,
     ) {
-        // Get the baseline revision
-        let baseline_revision = if base_template_vars.is_some() {
-            BASELINE_REVISION
-        } else {
-            "none"
-        };
-
         // Get the signatures from the base template
         let Some(signatures) = base_template_vars.and_then(BaseTemplateVars::signatures) else {
             tracing::warn!(
                 CVM_ALLOWED,
-                "no baseline secure boot signatures available; skipping configuration report"
+                "secure boot configuration report skipped: baseline signatures are unavailable"
             );
             return;
         };
+        let baseline_revision = BASELINE_REVISION;
 
         // Defines all the secure boot variables to evaluate against the base template
         let variables = [
@@ -295,7 +289,7 @@ impl NvramServices {
                         CVM_ALLOWED,
                         variable_name,
                         loaded_variable_bytes = data.len(),
-                        "loaded secure boot template variable is missing in NVRAM"
+                        "secure boot configuration report skipped: variable is empty"
                     );
                     continue;
                 }
@@ -304,7 +298,7 @@ impl NvramServices {
                         CVM_ALLOWED,
                         variable_name,
                         loaded_variable_bytes = 0,
-                        "loaded secure boot template variable is missing in NVRAM"
+                        "secure boot configuration report skipped: variable was not found in NVRAM"
                     );
                     continue;
                 }
@@ -314,7 +308,7 @@ impl NvramServices {
                         variable_name,
                         ?status,
                         ?error,
-                        "failed to load secure boot variable"
+                        "secure boot configuration report skipped: failed to read variable"
                     );
                     continue;
                 }
@@ -328,7 +322,7 @@ impl NvramServices {
                         CVM_CONFIDENTIAL,
                         variable_name,
                         error = &error as &dyn std::error::Error,
-                        "failed to parse loaded secure boot variable"
+                        "secure boot configuration report skipped: failed to parse variable"
                     );
                     continue;
                 }
@@ -339,7 +333,7 @@ impl NvramServices {
                 tracing::warn!(
                     CVM_ALLOWED,
                     variable_name,
-                    "baseline secure boot template variable contains no signatures"
+                    "secure boot configuration report skipped: baseline contains no signatures"
                 );
                 continue;
             }
