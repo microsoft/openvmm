@@ -313,13 +313,6 @@ impl NvramServices {
 
                 let mut var_data: Vec<u8> = Vec::new();
 
-                if attr.time_based_authenticated_write_access() {
-                    // a dummy header needs to be present, even through no
-                    // actual validation will be performed while nvram is still
-                    // in SetupMode (i.e: until `pk` is injected).
-                    var_data.extend(EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes());
-                }
-
                 for sig in sigs {
                     match sig {
                         Signature::X509(certs) => {
@@ -352,6 +345,16 @@ impl NvramServices {
 
                 if var_data.is_empty() {
                     continue;
+                }
+
+                if attr.time_based_authenticated_write_access() {
+                    // a dummy header needs to be present, even through no
+                    // actual validation will be performed while nvram is still
+                    // in SetupMode (i.e: until `pk` is injected).
+                    let mut authenticated_var_data =
+                        EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes().to_vec();
+                    authenticated_var_data.extend(var_data);
+                    var_data = authenticated_var_data;
                 }
 
                 self.services
@@ -507,6 +510,44 @@ mod tests {
 
         let (vendor, name) = uefi_specs::uefi::nvram::vars::PK();
         assert!(nvram.services.get_variable_ucs2(vendor, name).await.is_ok());
+    }
+
+    #[async_test]
+    async fn omitted_dbx_is_not_injected_on_first_boot() {
+        let custom_vars = br#"{
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Replace",
+                    "signatures": {
+                        "PK": { "type": "x509", "value": ["Jw=="] },
+                        "KEK": [{ "type": "x509", "value": ["Jw=="] }],
+                        "db": [{ "type": "x509", "value": ["Jw=="] }]
+                    }
+                }
+            }
+        }"#;
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        nvram
+            .inject_vars_on_first_boot(None, Some(custom_vars.to_vec().into()))
+            .await
+            .unwrap();
+
+        let (pk_vendor, pk_name) = uefi_specs::uefi::nvram::vars::PK();
+        assert!(
+            nvram
+                .services
+                .get_variable_ucs2(pk_vendor, pk_name)
+                .await
+                .is_ok()
+        );
+
+        let (dbx_vendor, dbx_name) = uefi_specs::uefi::nvram::vars::DBX();
+        assert!(matches!(
+            nvram.services.get_variable_ucs2(dbx_vendor, dbx_name).await,
+            Err((EfiStatus::NOT_FOUND, _))
+        ));
     }
 }
 
