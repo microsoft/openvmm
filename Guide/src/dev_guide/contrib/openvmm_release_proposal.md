@@ -96,7 +96,14 @@ snapshot because no release preparation job exists in ordinary CI.
 
 ## Decisions requiring consensus
 
+The statuses below record the proposal author's current direction. **Open
+question** means maintainers are specifically being asked to choose between the
+alternatives. **Proposed direction** means feedback is still welcome, but the
+RFC recommends that choice.
+
 ### 1. Canonical product version
+
+**Status: Proposed direction**
 
 **Proposal:** Store a stable `MAJOR.MINOR.PATCH` in
 `[workspace.package] version` in the root `Cargo.toml`. Keep the most recently
@@ -113,6 +120,8 @@ source that could disagree with the tree.
 
 ### 2. Development-build identity
 
+**Status: Open question**
+
 **Proposal:** A normal Git checkout reports
 `<VERSION>+g<9-character-commit>`, identified as a development build.
 
@@ -124,9 +133,12 @@ the commit only through a separate detailed version field.
 
 This is the largest open design question. The simpler alternative requires
 less build logic but makes concise version output ambiguous between an
-official release and an arbitrary checkout.
+official release and an arbitrary checkout. Maintainer feedback should decide
+which behavior the initial implementation uses.
 
 ### 3. Exact release-tag checkout
+
+**Status: Open question**
 
 **Proposal:** A checkout reports an official release identity only when
 exactly one `openvmm-v<VERSION>` tag points at `HEAD`. Missing, mismatched, or
@@ -137,9 +149,12 @@ release-tag checkout.
 
 The alternative is simpler and leaves provenance as the only proof of an
 official build, but developers rebuilding a release tag would not get the same
-concise version as archive builders.
+concise version as archive builders. Maintainer feedback should decide whether
+exact-tag detection is worth its additional build logic.
 
 ### 4. Build from an extracted archive
+
+**Status: Proposed direction**
 
 **Proposal:** A build with no applicable Git repository reports plain
 `<VERSION>` as a release-shaped build.
@@ -160,32 +175,36 @@ differently unless every packager reproduces the release environment.
 
 ### 5. Distribution package override
 
-**Proposal:** Allow a builder to set `OPENVMM_PKGVERSION` and classify the
-result as a custom build.
+**Status: Proposed direction**
 
-This lets a distribution expose its package release, for example
-`0.2.0-4`, without claiming that its binary is the project-produced official
-build.
+**Proposal:** Do not add a package-version override. The OpenVMM binary reports
+the committed product version, while a distribution records its package
+revision in its own package metadata.
 
-**Alternative:** Omit the override and require package metadata to remain
-outside the OpenVMM binary.
+This is independent of release identity. Builds from the published archive
+already recover the committed Cargo version without an environment variable.
+
+**Alternative:** Add an `OPENVMM_PKGVERSION` environment variable that replaces
+the displayed identity with builder-supplied text and classifies the result as
+a custom build.
+
+The alternative gives downstream packagers another identity surface to manage
+and is not required to build an official source archive.
 
 ### 6. Identity integration surfaces
 
-The prototype exposes identity through:
+**Status: Proposed direction**
 
-- concise `openvmm -V`;
-- detailed `openvmm --version`;
-- startup telemetry;
-- saved-state product metadata;
-- an extractable binary metadata section;
-- Windows VERSIONINFO, including a prerelease flag for development builds.
+**Proposal:** Limit the initial implementation to concise `openvmm -V` and
+detailed `openvmm --version` output.
 
-These surfaces do not need to be accepted as one decision. The minimum useful
-implementation could start with CLI output and add other integrations only
-when their consumers and value are clear.
+Startup telemetry, saved-state metadata, an extractable binary metadata
+section, and Windows VERSIONINFO changes would be separate follow-up proposals.
+They should be added only when their consumers and value are clear.
 
 ### 7. Manual draft publication
+
+**Status: Proposed direction**
 
 **Proposal:** A manually dispatched workflow creates a draft GitHub release.
 A maintainer reviews the ordinary GitHub draft and clicks **Publish release**,
@@ -218,9 +237,11 @@ implementation. In particular:
 
 - Is distinguishing development builds in concise version output valuable?
 - Should an exact release-tag checkout receive release identity?
-- Should Git-free archive builds be release-shaped or require an override?
-- Which identity integration surfaces have demonstrated consumers?
-- Is manual draft publication the right initial safety boundary?
+- Are there objections to Git-free archive builds using the committed version?
+- Is there a demonstrated need for a downstream package-version override?
+- Are CLI outputs sufficient for the initial identity implementation?
+- Are there objections to manual draft publication as the initial safety
+  boundary?
 
 Implementation details should be revised or removed when they do not follow
 from an accepted decision.
