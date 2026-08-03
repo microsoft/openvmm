@@ -43,6 +43,13 @@ mod ioctl {
         request_code_none!(VFIO_TYPE, VFIO_BASE + 20),
         super::VfioDeviceDetachIommufdPt
     );
+
+    // VFIO_DEVICE_FEATURE = _IO(VFIO_TYPE, VFIO_BASE + 17)
+    nix::ioctl_readwrite_bad!(
+        vfio_device_feature,
+        request_code_none!(VFIO_TYPE, VFIO_BASE + 17),
+        super::VfioDeviceFeature
+    );
 }
 
 // Kernel ABI structs — must match `include/uapi/linux/vfio.h` exactly.
@@ -67,6 +74,23 @@ pub struct VfioDeviceDetachIommufdPt {
     pub argsz: u32,
     pub flags: u32,
 }
+
+/// `struct vfio_device_feature` — header for the `VFIO_DEVICE_FEATURE` ioctl.
+///
+/// A feature op carries this header optionally followed by feature-specific
+/// data; `KEEP_ALIVE` carries no data, so the bare header suffices.
+#[repr(C)]
+pub struct VfioDeviceFeature {
+    pub argsz: u32,
+    pub flags: u32,
+}
+
+// `flags` bits for `VfioDeviceFeature`, from `include/uapi/linux/vfio.h`.
+// Note: `GET` is `1 << 16` and `SET` is `1 << 17`; using the wrong bit makes
+// the kernel's `vfio_check_feature()` reject the op with `EINVAL`.
+const VFIO_DEVICE_FEATURE_SET: u32 = 1 << 17;
+/// Feature index `VFIO_DEVICE_FEATURE_KEEP_ALIVE` (Microsoft addition).
+const VFIO_DEVICE_FEATURE_KEEP_ALIVE: u32 = 11;
 
 /// A VFIO device opened via the cdev interface (`/dev/vfio/devices/vfioN`).
 ///
@@ -123,6 +147,27 @@ impl CdevDevice {
     /// After detaching, the device is in a blocking DMA state.
     pub fn detach_ioas(&self) -> anyhow::Result<()> {
         detach_iommufd_pt(self.file.as_fd())
+    }
+
+    /// Mark this device to be preserved across a servicing reload of the owning
+    /// userspace, via `VFIO_DEVICE_FEATURE_KEEP_ALIVE`.
+    ///
+    /// The kernel keeps the device's bus-master state and avoids resetting it
+    /// when the device fd is closed and later reopened. This uses the extensible
+    /// `VFIO_DEVICE_FEATURE` framework (SET op), which supersedes the legacy
+    /// group `VFIO_GROUP_KEEP_ALIVE` ioctl and works on any VFIO device fd.
+    pub fn set_keep_alive(&self) -> anyhow::Result<()> {
+        let mut feature = VfioDeviceFeature {
+            argsz: size_of::<VfioDeviceFeature>() as u32,
+            flags: VFIO_DEVICE_FEATURE_SET | VFIO_DEVICE_FEATURE_KEEP_ALIVE,
+        };
+        // SAFETY: the device fd is valid and the struct is correctly sized;
+        // the KEEP_ALIVE feature carries no trailing data.
+        unsafe {
+            ioctl::vfio_device_feature(self.file.as_raw_fd(), &mut feature)
+                .context("VFIO_DEVICE_FEATURE_KEEP_ALIVE failed")?;
+        }
+        Ok(())
     }
 
     /// Convert to a standard [`Device`](super::Device) for config space,
