@@ -18,6 +18,7 @@ use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::PagePoolAllocatorSpawner;
 use std::sync::Arc;
 use user_driver::DmaClient;
+use user_driver::iommufd_dma::IommufdIoas;
 use user_driver::lockmem::LockedMemorySpawner;
 
 /// Save restore support for [`OpenhclDmaManager`].
@@ -193,7 +194,11 @@ impl virt::VtlMemoryProtection for DmaManagerLowerVtl {
 }
 
 impl DmaManagerInner {
-    fn new_dma_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+    fn new_dma_client(
+        &self,
+        params: DmaClientParameters,
+        iommufd_ioas: Option<Arc<IommufdIoas>>,
+    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
         // Allocate the inner client that actually performs the allocations.
         let backing = {
             let DmaClientParameters {
@@ -311,7 +316,11 @@ impl DmaManagerInner {
             }
         };
 
-        Ok(Arc::new(OpenhclDmaClient { backing, params }))
+        Ok(Arc::new(OpenhclDmaClient {
+            backing,
+            params,
+            iommufd_ioas,
+        }))
     }
 }
 
@@ -374,7 +383,17 @@ impl OpenhclDmaManager {
     /// Creates a new DMA client with the given device name and lower VTL
     /// policy.
     pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
-        self.inner.new_dma_client(params)
+        self.inner.new_dma_client(params, None)
+    }
+
+    /// Creates a new DMA client whose buffers are additionally mapped into the
+    /// given iommufd noiommu IOAS, for use with a cdev-based VFIO device.
+    pub fn new_client_with_iommufd_ioas(
+        &self,
+        params: DmaClientParameters,
+        iommufd_ioas: Arc<IommufdIoas>,
+    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+        self.inner.new_dma_client(params, Some(iommufd_ioas))
     }
 
     /// Returns a [`DmaClientSpawner`] for creating DMA clients.
@@ -413,7 +432,23 @@ pub struct DmaClientSpawner {
 impl DmaClientSpawner {
     /// Creates a new DMA client with the given parameters.
     pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
-        self.inner.new_dma_client(params)
+        self.inner.new_dma_client(params, None)
+    }
+
+    /// Creates a new DMA client whose buffers are additionally mapped into the
+    /// given iommufd noiommu IOAS, for use with a cdev-based VFIO device.
+    pub fn new_client_with_iommufd_ioas(
+        &self,
+        params: DmaClientParameters,
+        iommufd_ioas: Arc<IommufdIoas>,
+    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+        self.inner.new_dma_client(params, Some(iommufd_ioas))
+    }
+
+    /// Opens a fresh iommufd context and allocates a new noiommu IOAS to back a
+    /// single cdev-based VFIO device and its DMA clients.
+    pub fn new_iommufd_ioas(&self) -> anyhow::Result<Arc<IommufdIoas>> {
+        IommufdIoas::new_noiommu()
     }
 }
 
@@ -470,6 +505,11 @@ impl DmaClientBacking {
 pub struct OpenhclDmaClient {
     backing: DmaClientBacking,
     params: DmaClientParameters,
+    /// When present, buffers allocated by this client are mapped into a
+    /// cdev-based VFIO device's noiommu IOAS, and their PFNs reflect the
+    /// physical addresses recovered from the kernel.
+    #[inspect(skip)]
+    iommufd_ioas: Option<Arc<IommufdIoas>>,
 }
 
 impl DmaClient for OpenhclDmaClient {
@@ -477,10 +517,25 @@ impl DmaClient for OpenhclDmaClient {
         &self,
         total_size: usize,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        self.backing.allocate_dma_buffer(total_size)
+        let block = self.backing.allocate_dma_buffer(total_size)?;
+        match &self.iommufd_ioas {
+            Some(ioas) => ioas.map_block(block),
+            None => Ok(block),
+        }
     }
 
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        // Pending buffers are persistent allocations being re-attached after a
+        // servicing/keepalive restart. When this client maps into an iommufd
+        // IOAS, that IOAS (and its buffer mappings) is preserved across the
+        // restart along with the iommufd fd, so the buffers are already mapped
+        // and their pool-provided PFNs are still the correct physical pages.
+        // Re-mapping here would collide with the surviving mappings, so return
+        // the backing blocks unchanged regardless of `iommufd_ioas`.
         self.backing.attach_pending_buffers()
+    }
+
+    fn iommufd_ioas(&self) -> Option<Arc<IommufdIoas>> {
+        self.iommufd_ioas.clone()
     }
 }
