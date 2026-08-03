@@ -488,10 +488,7 @@ mod tests {
         let query = build_query(1, "many.test", DnsQueryType::A);
         let response = records.build_response(&query, usize::MAX).unwrap();
 
-        assert_eq!(
-            u16::from_be_bytes([response[6], response[7]]),
-            u16::MAX
-        );
+        assert_eq!(u16::from_be_bytes([response[6], response[7]]), u16::MAX);
         assert_ne!(response[2] & 0x02, 0, "TC must be set when answers dropped");
     }
 
