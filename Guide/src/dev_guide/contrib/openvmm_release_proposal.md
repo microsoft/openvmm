@@ -112,12 +112,6 @@ released version until a reviewed pull request selects the next version.
 This makes the version available to Cargo and to downstream builders without
 requiring Git metadata.
 
-**Alternative:** Derive the product version from a tag or pipeline input.
-
-The alternative avoids a committed release version, but source archives would
-need generated metadata or a build-time override, creating another identity
-source that could disagree with the tree.
-
 ### 2. Development-build identity
 
 **Status: Open question**
