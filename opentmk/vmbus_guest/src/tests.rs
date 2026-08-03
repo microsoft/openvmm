@@ -549,7 +549,7 @@ mod connection_tests {
 
     #[test]
     fn encode_initiate_contact_pre_copper_no_client_id() {
-        let bytes = encode_initiate_contact(Version::Win10Rs5, None, FeatureFlags::supported());
+        let bytes = encode_initiate_contact(Version::Win10Rs5, None, FeatureFlags::supported(), (0, 0));
         assert_eq!(bytes.len(), HEADER_SIZE + size_of::<InitiateContact>());
         let ic: InitiateContact = crate::message::parse(&bytes).unwrap();
         assert_eq!(ic.version_requested, Version::Win10Rs5.raw());
@@ -563,7 +563,7 @@ mod connection_tests {
     #[test]
     fn encode_initiate_contact_copper_uses_v2() {
         let bytes =
-            encode_initiate_contact(Version::Copper, Some(CLIENT_ID), FeatureFlags::supported());
+            encode_initiate_contact(Version::Copper, Some(CLIENT_ID), FeatureFlags::supported(), (0, 0));
         assert_eq!(bytes.len(), HEADER_SIZE + size_of::<InitiateContact2>());
         let ic2: InitiateContact2 = crate::message::parse(&bytes).unwrap();
         assert_eq!(
@@ -575,7 +575,7 @@ mod connection_tests {
 
     #[test]
     fn encode_initiate_contact_v1_no_target_info() {
-        let bytes = encode_initiate_contact(Version::Win10, None, FeatureFlags::supported());
+        let bytes = encode_initiate_contact(Version::Win10, None, FeatureFlags::supported(), (0, 0));
         let ic: InitiateContact = crate::message::parse(&bytes).unwrap();
         assert_eq!(ic.interrupt_page_or_target_info, 0);
     }
@@ -1406,8 +1406,11 @@ mod interrupt_tests {
 
     #[test]
     fn eom_register_constant_matches_spec() {
-        // Sanity: EOM register index is 0x40000084 per Hyper-V TLFS.
-        assert_eq!(HV_REGISTER_EOM, 0x40000084);
+        // Sanity: EOM virtual register (used with HvCallSetVpRegisters)
+        // is 0x000A0014 — see hvdef::HvX64RegisterName::Eom. The
+        // 0x40000084 value is the x86 MSR index, which is only valid
+        // for the WrMSR instruction path.
+        assert_eq!(HV_REGISTER_EOM, 0x000A0014);
     }
 }
 
@@ -1455,7 +1458,9 @@ mod synic_tests {
         let mut ctx = MockCtx::default();
         program_synic_registers(&mut ctx, 0x1000, 0x2000, VMBUS_INTERRUPT_VECTOR).unwrap();
 
-        assert_eq!(ctx.calls.len(), 1);
+        // Two hypercalls: SetVpRegisters (the write) + GetVpRegisters
+        // (the readback we added for post-hoc verification).
+        assert_eq!(ctx.calls.len(), 2);
         let (code, input, rep) = &ctx.calls[0];
         assert_eq!(*code, HypercallCode::HvCallSetVpRegisters.0 as u64);
         assert_eq!(*rep, Some(4));
@@ -1480,10 +1485,15 @@ mod synic_tests {
         assert!(siefp.enabled());
         assert_eq!(siefp.base_gpn(), 2);
 
-        // SINT2 third: vector = 0xF3, masked = false, auto_eoi = true.
+        // SINT2 third: vector = 0xF3, masked = false, auto_eoi = true,
+        // polling = true. `masked=false` is required — the host's
+        // `HvCallPostMessage` refuses masked SINTs with
+        // `InvalidSynicState`; `polling=true` still suppresses CPU
+        // interrupt injection so we can poll the SIMP slot.
         let sint2: HvSynicSint = regs[2].value.as_u64().into();
         assert_eq!(sint2.vector(), VMBUS_INTERRUPT_VECTOR);
         assert!(!sint2.masked());
+        assert!(sint2.polling());
         assert!(sint2.auto_eoi());
 
         // SCONTROL fourth: enabled.

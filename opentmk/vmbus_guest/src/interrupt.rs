@@ -48,7 +48,11 @@ use hvdef::HvRegisterValue;
 use opentmk::context::HypercallTrait;
 
 /// End-of-message register index used to ack a pending message.
-pub const HV_REGISTER_EOM: u32 = 0x40000084;
+///
+/// This is the **virtual register** identifier (`HvRegisterName`)
+/// used with `HvCallSetVpRegisters`, NOT the x86 MSR index
+/// (`0x40000084`). See `hvdef::HvX64RegisterName::Eom`.
+pub const HV_REGISTER_EOM: u32 = 0x000A0014;
 
 /// Byte offset of slot `n` inside a 4 KiB SIMP page.
 #[cfg_attr(
@@ -160,6 +164,20 @@ pub fn drain_once<C: HypercallTrait, S: MessageSink + ?Sized>(
     let payload_len = view.payload_len as usize;
     payload_buf[..payload_len].copy_from_slice(view.payload);
 
+    // Log every message we see so we can trace routing decisions.
+    let vmbus_ty = if payload_len >= 4 {
+        u32::from_le_bytes(payload_buf[..4].try_into().unwrap())
+    } else {
+        u32::MAX
+    };
+    log::debug!(
+        "drain_once: hv_typ={:#x} pending={} payload_len={} vmbus_typ={:#x}",
+        view.message_type.0,
+        needs_eom,
+        payload_len,
+        vmbus_ty,
+    );
+
     route_message(&payload_buf[..payload_len], table, sink)?;
 
     clear_slot(slot);
@@ -198,8 +216,9 @@ pub struct SimpPump {
 
 impl SimpPump {
     /// Reasonable default retry count for polling. Corresponds to
-    /// roughly 1M spin-loop iterations before we give up.
-    pub const DEFAULT_MAX_RETRIES: usize = 1_000_000;
+    /// roughly 100M spin-loop iterations (~5–10 s of wallclock) before
+    /// we give up.
+    pub const DEFAULT_MAX_RETRIES: usize = 100_000_000;
 
     /// Construct a pump that reads from the SIMP page at `simp_gpa`.
     pub fn new(simp_gpa: u64) -> Self {
@@ -225,13 +244,12 @@ impl crate::connection::MessagePump for SimpPump {
         sink: &mut dyn MessageSink,
     ) -> Result<()> {
         let table = crate::message::completion_table();
-        for _ in 0..self.max_retries {
+        let mut peek_count: usize = 0;
+        for i in 0..self.max_retries {
             // SAFETY: `simp_gpa` is a live guest page programmed into
             // SIMP by `crate::synic::init_synic`; under UEFI the guest
             // memory is identity-mapped so we can address it as a raw
-            // slice. Slot bytes are guarded by the `HvMessageType`
-            // field which we treat as authoritative and always clear
-            // after read.
+            // slice.
             #[expect(unsafe_code, reason = "raw SIMP page access")]
             let slot = unsafe {
                 core::slice::from_raw_parts_mut(
@@ -239,14 +257,28 @@ impl crate::connection::MessagePump for SimpPump {
                     HV_MESSAGE_SIZE,
                 )
             };
+            // Cheap non-empty check before the more expensive read_slot.
+            let first_byte = slot[0];
+            if first_byte != 0 {
+                peek_count = peek_count.saturating_add(1);
+                if peek_count <= 4 {
+                    log::trace!(
+                        "poll_until: iter={i} non-empty first_byte={first_byte:#x}"
+                    );
+                }
+            }
             let drained = drain_once(ctx, slot, table, sink)?;
             if handle.completed() {
+                log::debug!(
+                    "poll_until: iter={i} handle completed (peek_count={peek_count})"
+                );
                 return Ok(());
             }
             if !drained {
                 core::hint::spin_loop();
             }
         }
+        log::warn!("poll_until: max_retries hit (peek_count={peek_count})");
         Err(Error::Timeout)
     }
 }

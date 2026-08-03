@@ -10365,6 +10365,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "hvdef",
+ "log",
  "open_enum",
  "opentmk",
  "spin",

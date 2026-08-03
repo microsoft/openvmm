@@ -56,12 +56,19 @@ pub fn post_message<C: HypercallTrait>(
     };
     msg.payload[..payload.len()].copy_from_slice(payload);
 
-    ctx.hypercall(
+    log::debug!(
+        "post_message: conn_id={} payload_len={}",
+        connection_id,
+        payload.len()
+    );
+    let r = ctx.hypercall(
         HypercallCode::HvCallPostMessage.0 as u64,
         msg.as_bytes(),
         &mut [],
         HypercallConfig::default(),
-    )?;
+    );
+    log::debug!("post_message: hypercall returned {r:?}");
+    r?;
     Ok(())
 }
 
@@ -148,4 +155,54 @@ pub fn set_vp_registers<C: HypercallTrait>(
         },
     )?;
     Ok(())
+}
+
+/// Read N VP registers on the current VP in a single hypercall.
+///
+/// Returns their values in the same order as the input `names`.
+/// Only the low 64 bits are returned per register — enough for the
+/// SynIC registers we use to confirm state.
+pub fn get_vp_registers<C: HypercallTrait>(
+    ctx: &mut C,
+    target_vtl: HvInputVtl,
+    names: &[HvRegisterName],
+) -> Result<alloc::vec::Vec<u64>> {
+    if names.is_empty() {
+        return Ok(alloc::vec::Vec::new());
+    }
+
+    let header = GetSetVpRegisters {
+        partition_id: HV_PARTITION_ID_SELF,
+        vp_index: HV_VP_INDEX_SELF,
+        target_vtl,
+        rsvd: [0; 3],
+    };
+
+    let mut input =
+        Vec::with_capacity(size_of::<GetSetVpRegisters>() + names.len() * size_of::<HvRegisterName>());
+    input.extend_from_slice(header.as_bytes());
+    for &n in names {
+        input.extend_from_slice(n.as_bytes());
+    }
+
+    // Output layout: one `HvRegisterValue` (16 bytes) per register.
+    let mut output = alloc::vec![0u8; names.len() * size_of::<hvdef::HvRegisterValue>()];
+
+    ctx.hypercall(
+        HypercallCode::HvCallGetVpRegisters.0 as u64,
+        &input,
+        &mut output,
+        HypercallConfig {
+            rep_count: Some(names.len()),
+            ..HypercallConfig::default()
+        },
+    )?;
+
+    let mut values = alloc::vec::Vec::with_capacity(names.len());
+    for i in 0..names.len() {
+        let base = i * size_of::<hvdef::HvRegisterValue>();
+        let low = u64::from_le_bytes(output[base..base + 8].try_into().unwrap());
+        values.push(low);
+    }
+    Ok(values)
 }

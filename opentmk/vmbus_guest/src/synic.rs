@@ -101,12 +101,24 @@ pub fn program_synic_registers<C: HypercallTrait>(
     let siefp = HvSynicSimpSiefp::new()
         .with_enabled(true)
         .with_base_gpn(siefp_gpa >> hvdef::HV_PAGE_SHIFT);
+    // Correct polling mode is `masked=false, polling=true`:
+    //   * `masked=false` — required. `HvCallPostMessage` from the
+    //     host returns `HV_STATUS_INVALID_SYNIC_STATE` (0xC0350018)
+    //     if the target SINT is masked (see
+    //     `hv1_emulator::synic::process_post_message`), so the vmbus
+    //     service's replies never reach us if we leave this at 1.
+    //   * `polling=true` — the hypervisor skips CPU interrupt
+    //     injection when a message arrives (see `sint_interrupt` in
+    //     the same file), so we can safely rely on the guest polling
+    //     the SIMP slot instead of installing a real ISR.
     let sint2 = HvSynicSint::new()
         .with_vector(vector)
         .with_masked(false)
-        .with_auto_eoi(true);
+        .with_auto_eoi(true)
+        .with_polling(true);
     let scontrol = hvdef::HvSynicScontrol::new().with_enabled(true);
 
+    log::debug!("program_synic_registers: writing 4 SynIC registers");
     set_vp_registers(
         ctx,
         HvInputVtl::CURRENT_VTL,
@@ -129,6 +141,28 @@ pub fn program_synic_registers<C: HypercallTrait>(
             ),
         ],
     )?;
+    log::debug!("program_synic_registers: set_vp_registers returned Ok");
+
+    // Read the four registers back to confirm the hypervisor
+    // actually accepted our values. Any mismatch means the
+    // hypervisor silently munged the write.
+    let readback = crate::hypercalls::get_vp_registers(
+        ctx,
+        HvInputVtl::CURRENT_VTL,
+        &[
+            HvRegisterName(HV_REGISTER_SIMP),
+            HvRegisterName(HV_REGISTER_SIEFP),
+            HvRegisterName(HV_REGISTER_SINT2),
+            HvRegisterName(HV_REGISTER_SCONTROL),
+        ],
+    )?;
+    log::info!(
+        "program_synic_registers: readback simp={:#x} siefp={:#x} sint2={:#x} scontrol={:#x}",
+        readback[0],
+        readback[1],
+        readback[2],
+        readback[3],
+    );
 
     Ok(())
 }
@@ -143,42 +177,77 @@ pub fn program_synic_registers<C: HypercallTrait>(
 ///   there's no way to obtain guest-physical memory. Host tests
 ///   exercise [`program_synic_registers`] instead.
 pub fn init_synic<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
+    log::debug!("init_synic: allocating pages");
     let pages = allocate_synic_pages()?;
+    init_synic_with_pages(ctx, pages)
+}
+
+/// Program the SynIC using pre-allocated pages. Useful when the
+/// caller wants to allocate before `exit_boot_services` and defer
+/// the hypercalls until after.
+pub fn init_synic_with_pages<C: HypercallTrait>(ctx: &mut C, pages: SynicPages) -> Result<()> {
+    log::info!(
+        "init_synic_with_pages: simp={:#x} siefp={:#x}",
+        pages.simp_gpa,
+        pages.siefp_gpa
+    );
+    log::debug!("init_synic_with_pages: programming registers");
     program_synic_registers(ctx, pages.simp_gpa, pages.siefp_gpa, VMBUS_INTERRUPT_VECTOR)?;
+    log::debug!("init_synic_with_pages: registers programmed, storing state");
     *SYNIC_STATE.lock() = Some(pages);
+    log::debug!("init_synic_with_pages: done");
     Ok(())
+}
+
+/// Allocate SIMP + SIEFP pages via `uefi::boot::allocate_pages`
+/// without programming the registers. Useful for callers that want
+/// to control when `exit_boot_services` happens relative to the
+/// hypercalls.
+#[cfg(target_os = "uefi")]
+pub fn preallocate_synic_pages() -> Result<SynicPages> {
+    allocate_synic_pages()
 }
 
 /// UEFI page allocation for the SIMP + SIEFP pages.
 ///
-/// Uses `AllocateType::AnyPages` in `LOADER_DATA` so the pages survive
-/// boot-services exit. Under UEFI, the identity-mapped VA is
+/// Uses `alloc::alloc::alloc_zeroed` with a 4 KiB-aligned Layout so
+/// the allocation works both **before** and **after**
+/// `exit_boot_services`. Under UEFI the identity-mapped VA is
 /// numerically equal to the GPA, so we cast pointer → u64.
+///
+/// Pre-EBS this goes through the UEFI boot-services allocator (which
+/// hands back BOOT_SERVICES_DATA that becomes stale at EBS); post-EBS
+/// this goes through opentmk's static heap (which persists). Either
+/// way, the returned pointer is 4 KiB-aligned and zeroed.
 #[cfg(target_os = "uefi")]
 fn allocate_synic_pages() -> Result<SynicPages> {
-    use uefi::boot::AllocateType;
-    use uefi::boot::MemoryType;
-    use uefi::boot::allocate_pages;
+    use core::alloc::Layout;
 
-    let simp = allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1)
-        .map_err(|_| Error::Hypercall(opentmk::tmkdefs::TmkError::AllocationFailed))?;
-    let siefp = allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1)
+    let layout = Layout::from_size_align(hvdef::HV_PAGE_SIZE_USIZE, hvdef::HV_PAGE_SIZE_USIZE)
         .map_err(|_| Error::Hypercall(opentmk::tmkdefs::TmkError::AllocationFailed))?;
 
-    // Zero the pages before handing them to the hypervisor so we don't
-    // leak old boot-services data into the SynIC state.
-    //
-    // SAFETY: `allocate_pages` returns a valid 4 KiB region we
-    // exclusively own; zeroing 4 KiB there is well-defined.
-    #[expect(unsafe_code, reason = "raw page zero before publishing to hypervisor")]
-    unsafe {
-        core::ptr::write_bytes(simp.as_ptr(), 0, hvdef::HV_PAGE_SIZE_USIZE);
-        core::ptr::write_bytes(siefp.as_ptr(), 0, hvdef::HV_PAGE_SIZE_USIZE);
+    // SAFETY: `layout` is non-zero-size and validly aligned; the
+    // returned pointers must be checked against null. We zero via
+    // `alloc_zeroed` so no uninitialised bytes are handed to the
+    // hypervisor.
+    #[expect(unsafe_code, reason = "raw page allocation for hypervisor pages")]
+    let simp_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if simp_ptr.is_null() {
+        return Err(Error::Hypercall(
+            opentmk::tmkdefs::TmkError::AllocationFailed,
+        ));
+    }
+    #[expect(unsafe_code, reason = "raw page allocation for hypervisor pages")]
+    let siefp_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if siefp_ptr.is_null() {
+        return Err(Error::Hypercall(
+            opentmk::tmkdefs::TmkError::AllocationFailed,
+        ));
     }
 
     Ok(SynicPages {
-        simp_gpa: simp.as_ptr() as u64,
-        siefp_gpa: siefp.as_ptr() as u64,
+        simp_gpa: simp_ptr as u64,
+        siefp_gpa: siefp_ptr as u64,
     })
 }
 

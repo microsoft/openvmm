@@ -95,10 +95,13 @@ pub fn initial_connection_id(version: Version) -> u32 {
 /// * `client_id` — advertised `CLIENT_ID` (Copper+ only). `None` means
 ///   post the legacy `InitiateContact` struct.
 /// * `feature_flags` — the feature bits we advertise to the host.
+/// * `monitor_pages` — `(parent_to_child, child_to_parent)` GPAs, or
+///   `(0, 0)` if the guest doesn't want to publish monitor pages.
 pub fn encode_initiate_contact(
     version: Version,
     client_id: Option<Guid>,
     feature_flags: FeatureFlags,
+    monitor_pages: (u64, u64),
 ) -> Vec<u8> {
     // `interrupt_page_or_target_info` is either a raw interrupt-page
     // GPA (< 5.0) or a `TargetInfo` bitfield (≥ 5.0). We never use
@@ -118,8 +121,8 @@ pub fn encode_initiate_contact(
         version_requested: version.raw(),
         target_message_vp: 0,
         interrupt_page_or_target_info,
-        parent_to_child_monitor_page_gpa: 0,
-        child_to_parent_monitor_page_gpa: 0,
+        parent_to_child_monitor_page_gpa: monitor_pages.0,
+        child_to_parent_monitor_page_gpa: monitor_pages.1,
     };
 
     let mut buf: Vec<u8>;
@@ -141,6 +144,11 @@ pub fn encode_initiate_contact(
     }
     buf
 }
+
+/// Process-wide monitor-page GPAs. Set by callers before
+/// [`negotiate_version`] / [`initiate`] if the guest wants to publish
+/// monitor pages to the host; left `(0, 0)` otherwise.
+pub static MONITOR_PAGES: Mutex<(u64, u64)> = Mutex::new((0, 0));
 
 /// Parsed `VersionResponse` broken down into its interesting fields.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -268,11 +276,29 @@ where
         } else {
             None
         };
-        let payload = encode_initiate_contact(version, client, advertised_flags);
+        let payload =
+            encode_initiate_contact(version, client, advertised_flags, *MONITOR_PAGES.lock());
         crate::hypercalls::post_message(ctx, initial_connection_id(version), &payload)?;
 
-        pump.poll_until(ctx, &handle, &mut discard)?;
-        let bytes = handle.take_response().ok_or(Error::Timeout)?;
+        // Timeout on this version doesn't fail the whole negotiation —
+        // fall through to the next entry in the ladder. Only an outright
+        // hypercall error propagates.
+        match pump.poll_until(ctx, &handle, &mut discard) {
+            Ok(()) => {}
+            Err(Error::Timeout) => {
+                log::warn!(
+                    "negotiate: timeout on version {version:?}, trying next in ladder"
+                );
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+        let Some(bytes) = handle.take_response() else {
+            log::warn!(
+                "negotiate: no response for version {version:?}, trying next in ladder"
+            );
+            continue;
+        };
         let parsed = parse_version_response(&bytes)?;
         if parsed.version_supported {
             return Ok(build_connection_state(version, parsed));
