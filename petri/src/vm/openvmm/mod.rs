@@ -32,12 +32,14 @@ use crate::OpenvmmLogConfig;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
+use crate::PetriVmRuntime;
 use crate::PetriVmRuntimeConfig;
 use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::VmmQuirks;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
+use crate::vm::PetriVmBuilder;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -148,6 +150,56 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         }
 
         config.run().await
+    }
+}
+
+impl PetriVmBuilder<OpenVmmPetriBackend> {
+    /// Exercise the cross-process snapshot restore path (like production
+    /// `openvmm --restore-snapshot`): boot worker #1, save, tear it down, then
+    /// restore its snapshot on a fresh worker #2 (`load_mode = None`). This is
+    /// the only path that reproduces the UEFI-resolver regression, which the
+    /// in-process pulse can't reach (it restores into the same worker).
+    pub async fn verify_openvmm_cross_process_restore(self) -> anyhow::Result<()> {
+        let builder = self.add_boot_disk().add_agent_disks();
+
+        let openvmm_path = builder.backend.openvmm_path.clone();
+        let resources = &builder.resources;
+
+        // Both workers build from an identical recipe so the snapshot restores.
+        let recipe = builder.config.clone();
+        let props1 = builder.properties();
+        let props2 = builder.properties();
+
+        // Shared backing file carries guest RAM across the process boundary.
+        let backing =
+            tempfile::NamedTempFile::new().context("failed to create guest memory backing file")?;
+        let backing_path = backing.into_temp_path();
+
+        // Worker #1: cold boot, reach steady state, save.
+        tracing::info!("cross-process restore: booting worker #1");
+        let cfg1 = PetriVmConfigOpenVmm::new(&openvmm_path, recipe.clone(), resources, props1)
+            .await?
+            .with_memory_backing_file(backing_path.to_path_buf());
+        let (mut vm1, _rc1) = cfg1.run_core().await?;
+
+        let _client = vm1.wait_for_agent(false).await?;
+        vm1.pause().await?;
+        let saved_state = vm1.save_state_protobuf().await?;
+        vm1.teardown().await?;
+
+        // Worker #2: fresh worker restoring the snapshot (the regression gate).
+        tracing::info!("cross-process restore: launching worker #2 from saved state");
+        let cfg2 = PetriVmConfigOpenVmm::new(&openvmm_path, recipe, resources, props2)
+            .await?
+            .with_memory_backing_file(backing_path.to_path_buf());
+        let (vm2, _rc2) = cfg2
+            .run_restore(saved_state)
+            .await
+            .context("restoring UEFI snapshot onto a fresh worker failed (Bug 2)")?;
+
+        vm2.teardown().await?;
+        drop(backing_path);
+        Ok(())
     }
 }
 

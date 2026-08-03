@@ -1472,8 +1472,16 @@ impl InitializedVm {
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
+        // Restore forces `load_mode = None`, so detect a restored UEFI VM from
+        // its saved state (which carries a "uefi" state unit) instead.
+        let restoring_uefi_state = saved_state
+            .as_ref()
+            .is_some_and(|s| s.units.iter().any(|u| u.name == "uefi"));
         match &cfg.load_mode {
-            LoadMode::Uefi { .. } => {
+            // Fresh UEFI boot, or a restored UEFI snapshot: both need the UEFI
+            // platform resolvers, else restore hits "no resolver for
+            // uefi_logger:platform".
+            _ if matches!(cfg.load_mode, LoadMode::Uefi { .. }) || restoring_uefi_state => {
                 use emuplat::uefi::*;
                 // Register the platform-specific resolvers used by the UEFI
                 // device.

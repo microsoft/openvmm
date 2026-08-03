@@ -40,6 +40,8 @@ mod numa;
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
+/// Cross-process snapshot save/restore tests.
+mod save_restore;
 /// Tests involving UEFI Secure Boot functionality.
 mod secureboot;
 /// Tests involving TPM functionality
