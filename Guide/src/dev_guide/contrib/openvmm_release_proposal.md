@@ -75,12 +75,20 @@ The release workflow would assemble the archive once and transfer it through
 validation and publication as an internal workflow artifact. The distribution
 gate would:
 
-1. verify `SHA256SUMS`;
-2. extract outside the repository checkout;
-3. confirm the archive has no `.git` directory;
-4. build OpenVMM with `--locked` and system dependencies;
-5. confirm the resulting binary reports the expected product version;
-6. confirm it dynamically links the system OpenSSL.
+1. consume the exact archive intended for publication;
+2. extract it outside the repository checkout;
+3. run `cargo build --release --locked -p openvmm` using system dependencies.
+
+The initial gate would answer one question: can a distribution build the source
+artifact without relying on the project checkout or project-provisioned native
+dependencies?
+
+Checksum verification, an explicit `.git` assertion, binary-version
+validation, and direct OpenSSL linkage inspection are possible follow-up
+checks. They should be added only when maintainers agree that each check
+enforces a release requirement worth owning. In particular, binary-version
+validation depends on the unresolved build-identity design and is not part of
+the initial gate.
 
 Normal pull-request CI would run the same assembly and distribution-build
 logic against the commit under test. It must independently assemble its own
