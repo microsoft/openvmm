@@ -896,6 +896,152 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
     assert_eq!(tcp.control, TcpControl::Syn);
 }
 
+/// Test that a stale ACK from a recently closed guest connection does not
+/// tear down a newly accepted port-forward connection using the same tuple.
+#[pal_async::async_test]
+async fn test_tcp_port_forward_recovers_from_stale_ack(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver.clone());
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let guest_port = 7777;
+    let received = client.received_packets.clone();
+
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+
+    consomme
+        .access(&mut client)
+        .bind_tcp_port(socket, guest_port)
+        .expect("bind should succeed");
+
+    let connector = std::net::TcpStream::connect(host_addr).unwrap();
+    connector.set_nonblocking(true).unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let syn_packet = loop {
+        std::future::poll_fn(|cx| {
+            consomme.access(&mut client).poll(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        if let Some(packet) = received.lock().iter().find_map(|packet| {
+            TcpTestHarness::is_tcp_packet(packet)
+                .is_some_and(|tcp| tcp.control == TcpControl::Syn && tcp.dst_port == guest_port)
+                .then(|| packet.clone())
+        }) {
+            break packet;
+        }
+
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for forwarded TCP SYN"
+        );
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(std::time::Duration::from_millis(10))
+            .await;
+    };
+
+    let (syn_src_ip, _, syn) = parse_tcp_packet(&syn_packet);
+    received.lock().clear();
+
+    let stale_ack = TcpRepr {
+        src_port: guest_port,
+        dst_port: syn.src_port,
+        control: TcpControl::None,
+        seq_number: TcpSeqNumber(9000),
+        ack_number: Some(syn.seq_number),
+        window_len: 64240,
+        window_scale: None,
+        max_seg_size: None,
+        sack_permitted: false,
+        sack_ranges: [None, None, None],
+        timestamp: None,
+        payload: &[],
+    };
+    let mut buf = vec![0u8; 1514];
+    let len = build_tcp_packet(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        syn_src_ip,
+        &stale_ack,
+    );
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .unwrap();
+
+    let retry_syn_packet = {
+        let packets = received.lock();
+        assert!(
+            packets.iter().any(|packet| {
+                TcpTestHarness::is_tcp_packet(packet)
+                    .is_some_and(|tcp| tcp.control == TcpControl::Rst)
+            }),
+            "stale connection should be reset"
+        );
+        packets
+            .iter()
+            .find(|packet| {
+                TcpTestHarness::is_tcp_packet(packet)
+                    .is_some_and(|tcp| tcp.control == TcpControl::Syn)
+            })
+            .cloned()
+            .expect("new connection SYN should be retried")
+    };
+
+    let (_, _, retry_syn) = parse_tcp_packet(&retry_syn_packet);
+    let syn_ack = TcpRepr {
+        src_port: guest_port,
+        dst_port: retry_syn.src_port,
+        control: TcpControl::Syn,
+        seq_number: TcpSeqNumber(10000),
+        ack_number: Some(retry_syn.seq_number + 1),
+        window_len: 64240,
+        window_scale: Some(7),
+        max_seg_size: Some(1460),
+        sack_permitted: false,
+        sack_ranges: [None, None, None],
+        timestamp: None,
+        payload: &[],
+    };
+    let len = build_tcp_packet(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        syn_src_ip,
+        &syn_ack,
+    );
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .unwrap();
+
+    let ft = FourTuple {
+        src: SocketAddr::V4(SocketAddrV4::new(guest_ip, guest_port)),
+        dst: SocketAddr::V4(SocketAddrV4::new(syn_src_ip, retry_syn.src_port)),
+    };
+    assert_eq!(
+        consomme
+            .tcp
+            .connections
+            .get(&ft)
+            .expect("connection should remain active")
+            .inner
+            .state,
+        TcpState::Established
+    );
+}
+
 /// Test that when a loopback connection is forwarded to the guest, the source
 /// IP is rewritten from loopback to a virtual address within the subnet (not
 /// the raw 127.0.0.1), ensuring the guest routes its reply through the virtual

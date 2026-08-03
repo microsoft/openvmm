@@ -1331,7 +1331,7 @@ impl TcpConnectionInner {
 
     fn send_next(&mut self, sender: &mut Sender<'_, impl Client>, ack_policy: AckPolicy) {
         match self.state {
-            TcpState::Connecting => {}
+            TcpState::Connecting | TcpState::SynSent => {}
             TcpState::SynReceived => self.send_syn(sender, Some(self.rx_seq)),
             _ => self.send_data(sender, ack_policy),
         }
@@ -1562,6 +1562,41 @@ impl TcpConnectionInner {
         tcp: &TcpRepr<'_>,
     ) -> Result<bool, DropReason> {
         if tcp.control != TcpControl::Syn || tcp.segment_len() != 1 {
+            let ack_acceptable = tcp
+                .ack_number
+                .is_some_and(|ack| ack > self.tx_acked && ack <= self.tx_send);
+
+            if tcp.control == TcpControl::Rst {
+                if ack_acceptable {
+                    tracing::error!("connection reset while waiting for syn");
+                    self.last_close_reason = ConnectionCloseReason::PeerRst;
+                    return Ok(false);
+                }
+
+                return Ok(true);
+            }
+
+            if let Some(ack_number) = tcp.ack_number
+                && !ack_acceptable
+            {
+                // A rapidly reused tuple can refer to a stale connection. Reset that stale connection and
+                // retry the SYN.
+                tracelimit::warn_ratelimited!(
+                    src = %sender.ft.src,
+                    dst = %sender.ft.dst,
+                    "stale ACK while waiting for SYN, retrying connection"
+                );
+
+                sender.rst(ack_number, None);
+                self.stats.rsts_tx.increment();
+                self.tx_send = self.tx_acked;
+
+                // Retry as a fresh active-open SYN. There is no valid peer SYN
+                // sequence to acknowledge, so this must not be a SYN-ACK.
+                self.send_syn(sender, None);
+                return Ok(true);
+            }
+
             tracing::error!(?tcp.control, "invalid packet waiting for syn, drop connection");
             return Ok(false);
         }
