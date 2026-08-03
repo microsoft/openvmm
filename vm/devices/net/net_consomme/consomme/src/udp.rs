@@ -623,10 +623,6 @@ impl<T: Client> Access<'_, T> {
             return Ok(true);
         }
 
-        if !self.inner.dns.is_available() {
-            return Ok(false);
-        }
-
         let request = DnsRequest {
             flow,
             dns_query: udp.payload(),
@@ -634,8 +630,8 @@ impl<T: Client> Access<'_, T> {
 
         // Submit the DNS query with addressing information.
         // The response will be queued and sent later in poll_udp, unless the
-        // resolver is rate-limited, in which case it returns a SERVFAIL to
-        // emit immediately.
+        // resolver cannot accept the query, in which case it returns a
+        // SERVFAIL to emit immediately.
         let immediate_response = self.inner.dns.submit_udp_query(&request).map_err(|e| {
             tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
             DropReason::Packet(smoltcp::wire::Error)

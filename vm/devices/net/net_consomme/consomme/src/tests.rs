@@ -658,3 +658,56 @@ async fn static_dns_a_record_answered(driver: DefaultDriver) {
         "RDLENGTH == 4"
     );
 }
+
+/// A gateway-destined DNS query is answered with SERVFAIL when there is no
+/// resolver backend and no matching static record.
+#[pal_async::async_test]
+async fn dns_static_miss_without_backend_returns_servfail(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme.dns =
+        dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let gateway_ip = consomme.params_mut().gateway_ip;
+
+    let query = build_dns_a_query(0x5678, "missing.example");
+    let query_src_port = 40001u16;
+    let mut buf = vec![0u8; 1514];
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        gateway_ip,
+        query_src_port,
+        &query,
+    );
+
+    let mut client = CapturingClient::new(driver);
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("DNS query should be handled locally");
+
+    assert_eq!(client.received.len(), 1, "expected one DNS response frame");
+
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    assert_eq!(eth.src_addr(), gateway_mac);
+    assert_eq!(eth.dst_addr(), guest_mac);
+
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    assert_eq!(ipv4.src_addr(), gateway_ip);
+    assert_eq!(ipv4.dst_addr(), guest_ip);
+
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    assert_eq!(udp.src_port(), DNS_PORT);
+    assert_eq!(udp.dst_port(), query_src_port);
+
+    let dns = udp.payload();
+    assert_eq!(&dns[0..2], &[0x56, 0x78], "transaction id echoed");
+    assert_eq!(dns[2] & 0x80, 0x80, "response bit set");
+    assert_eq!(dns[3] & 0x0f, 2, "SERVFAIL response code");
+    assert_eq!(u16::from_be_bytes([dns[6], dns[7]]), 0, "no answers");
+}

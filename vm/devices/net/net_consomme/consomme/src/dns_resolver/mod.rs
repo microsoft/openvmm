@@ -206,9 +206,9 @@ impl<B: DnsBackend> DnsResolver<B> {
     ///
     /// Returns `Ok(None)` when the query was accepted and the response will
     /// arrive via [`Self::poll_udp_response`].  Returns `Ok(Some(response))`
-    /// with a synthetic SERVFAIL when the pending-request limit has been
-    /// reached — the caller should emit this packet immediately rather than
-    /// queuing it, to avoid unbounded memory growth under sustained load.
+    /// with a synthetic SERVFAIL when no backend is available or the
+    /// pending-request limit has been reached — the caller should emit this
+    /// packet immediately rather than queuing it.
     pub fn submit_udp_query(
         &mut self,
         request: &DnsRequest<'_>,
@@ -219,8 +219,8 @@ impl<B: DnsBackend> DnsResolver<B> {
 
         let sender = self.udp_receiver.sender();
         if !self.submit_query(request, sender) {
-            // Rate-limited: return a SERVFAIL directly so the caller can
-            // emit it immediately without going through the async channel.
+            // Return a SERVFAIL directly so the caller can emit it immediately
+            // without going through the async channel.
             return Ok(Some(DnsResponse {
                 flow: request.flow.clone(),
                 response_data: build_servfail_response(request.dns_query),
