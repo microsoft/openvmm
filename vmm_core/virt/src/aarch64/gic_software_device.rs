@@ -20,6 +20,12 @@ impl GicSoftwareDevice {
     pub fn new(irqcon: Arc<dyn ControlGic>) -> Self {
         Self { irqcon }
     }
+
+    pub fn signal_msi_gicv3(&self, _devid: Option<u32>, _address: u64, data: u32) {
+        if SPI_RANGE.contains(&data) {
+            self.irqcon.pulse_spi_irq(data);
+        }
+    }
 }
 
 #[derive(Debug, Error)]
