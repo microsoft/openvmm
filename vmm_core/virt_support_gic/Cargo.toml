@@ -15,6 +15,7 @@ inspect.workspace = true
 tracelimit.workspace = true
 
 parking_lot.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [lints]
