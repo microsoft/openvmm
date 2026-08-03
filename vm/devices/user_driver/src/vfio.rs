@@ -22,6 +22,7 @@ use pal_async::task::Task;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use std::os::fd::AsFd;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -49,14 +50,53 @@ pub enum VfioDmaClients {
     },
 }
 
+impl VfioDmaClients {
+    /// The client used for the device's primary DMA (the persistent client
+    /// when both are present). Used to determine how the device is opened.
+    fn primary(&self) -> &Arc<dyn DmaClient> {
+        match self {
+            VfioDmaClients::PersistentOnly(client) => client,
+            VfioDmaClients::EphemeralOnly(client) => client,
+            VfioDmaClients::Split { persistent, .. } => persistent,
+        }
+    }
+}
+
+/// The transport used to access an underlying VFIO device, holding the
+/// interface-specific resources alive for the device's lifetime.
+enum VfioTransport {
+    /// Legacy VFIO group + container (noiommu mode). Held only to keep the
+    /// container and group fds alive.
+    Legacy {
+        _container: vfio_sys::Container,
+        _group: vfio_sys::Group,
+    },
+    /// Modern VFIO cdev bound to an iommufd context and attached to an IOAS
+    /// (noiommu mode). Holds the iommufd context alive so its fd stays valid
+    /// for as long as the device is bound to it.
+    Cdev {
+        _iommufd: Arc<vfio_sys::iommufd::IommufdCtx>,
+    },
+}
+
+/// Selects how [`VfioDevice`] opens the underlying device.
+enum VfioDeviceType {
+    /// Legacy VFIO group + container interface in noiommu mode.
+    Legacy,
+    /// Modern VFIO cdev interface bound to the given iommufd context and
+    /// attached to the pre-allocated `ioas_id`, in noiommu mode.
+    Cdev {
+        iommufd: Arc<vfio_sys::iommufd::IommufdCtx>,
+        ioas_id: u32,
+    },
+}
+
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
 pub struct VfioDevice {
     pci_id: Arc<str>,
     #[inspect(skip)]
-    _container: vfio_sys::Container,
-    #[inspect(skip)]
-    _group: vfio_sys::Group,
+    _transport: VfioTransport,
     #[inspect(skip)]
     device: Arc<vfio_sys::Device>,
     #[inspect(skip)]
@@ -89,6 +129,8 @@ impl Drop for VfioDevice {
 
 impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
+    ///
+    /// Uses the legacy VFIO group + container interface in noiommu mode.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: impl AsRef<str>,
@@ -97,14 +139,40 @@ impl VfioDevice {
         Self::restore(driver_source, pci_id, false, dma_clients).await
     }
 
-    /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
-    /// or creates a device from the saved state if provided.
+    /// Creates or restores a VFIO-backed device for the PCI device with
+    /// `pci_id`.
+    ///
+    /// The underlying access interface is selected automatically from the DMA
+    /// client: if the client maps its buffers into an iommufd noiommu IOAS (see
+    /// [`DmaClient::iommufd_ioas`]), the modern VFIO cdev interface is used and
+    /// the device is bound to that IOAS; otherwise the legacy VFIO group +
+    /// container interface is used. Both operate in noiommu mode.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         pci_id: impl AsRef<str>,
         keepalive: bool,
         dma_clients: VfioDmaClients,
     ) -> anyhow::Result<Self> {
+        Self::restore_inner(driver_source, pci_id, keepalive, dma_clients).await
+    }
+
+    async fn restore_inner(
+        driver_source: &VmTaskDriverSource,
+        pci_id: impl AsRef<str>,
+        keepalive: bool,
+        dma_clients: VfioDmaClients,
+    ) -> anyhow::Result<Self> {
+        // Select the access interface from the DMA client: a client that maps
+        // into an iommufd noiommu IOAS drives the cdev path (and the device is
+        // attached to that same IOAS); otherwise use the legacy group path.
+        let device_type = match dma_clients.primary().iommufd_ioas() {
+            Some(ioas) => VfioDeviceType::Cdev {
+                iommufd: ioas.ctx(),
+                ioas_id: ioas.ioas_id(),
+            },
+            None => VfioDeviceType::Legacy,
+        };
+
         let pci_id = pci_id.as_ref();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
@@ -142,40 +210,96 @@ impl VfioDevice {
             })
         };
 
-        let container = vfio_sys::Container::new()?;
-        let group_id = retry
-            .retry(
-                || vfio_sys::Group::find_group_for_device(&path),
-                &is_not_found,
-                "find_group_for_device",
-            )
-            .await?;
-        let group = retry
-            .retry(
-                || vfio_sys::Group::open_noiommu(group_id),
-                &is_not_found,
-                "open_noiommu",
-            )
-            .await?;
-        group.set_container(&container)?;
-        if !group.status()?.viable() {
-            anyhow::bail!("group is not viable");
-        }
+        let (device, transport) = match device_type {
+            VfioDeviceType::Legacy => {
+                let container = vfio_sys::Container::new()?;
+                let group_id = retry
+                    .retry(
+                        || vfio_sys::Group::find_group_for_device(&path),
+                        &is_not_found,
+                        "find_group_for_device",
+                    )
+                    .await?;
+                let group = retry
+                    .retry(
+                        || vfio_sys::Group::open_noiommu(group_id),
+                        &is_not_found,
+                        "open_noiommu",
+                    )
+                    .await?;
+                group.set_container(&container)?;
+                if !group.status()?.viable() {
+                    anyhow::bail!("group is not viable");
+                }
 
-        container.set_iommu(IommuType::NoIommu)?;
-        if keepalive {
-            retry
-                .retry(
-                    || group.set_keep_alive(pci_id),
-                    &is_enodev,
-                    "set_keep_alive",
+                container.set_iommu(IommuType::NoIommu)?;
+                if keepalive {
+                    // The legacy VFIO group keep-alive ioctl has been removed.
+                    // Device keep-alive across servicing is now provided
+                    // exclusively by the cdev + iommufd path (which is selected
+                    // automatically whenever keep-alive is requested).
+                    anyhow::bail!(
+                        "keep-alive is only supported on the VFIO cdev + iommufd path; \
+                         the legacy group keep-alive interface has been removed"
+                    );
+                }
+                tracing::debug!(pci_id, "about to open device");
+                let device = retry
+                    .retry(|| group.open_device(pci_id), &is_enodev, "open_device")
+                    .await?;
+                (
+                    device,
+                    VfioTransport::Legacy {
+                        _container: container,
+                        _group: group,
+                    },
                 )
-                .await?;
-        }
-        tracing::debug!(pci_id, "about to open device");
-        let device = retry
-            .retry(|| group.open_device(pci_id), &is_enodev, "open_device")
-            .await?;
+            }
+            VfioDeviceType::Cdev { iommufd, ioas_id } => {
+                let cdev_sysfs = path.join("vfio-dev");
+                let dev_path = retry
+                    .retry(
+                        || find_cdev_node(&cdev_sysfs),
+                        &is_not_found,
+                        "find_cdev_node",
+                    )
+                    .await?;
+                tracing::debug!(pci_id, ?dev_path, "about to open cdev device");
+                let file = retry
+                    .retry(
+                        || {
+                            std::fs::OpenOptions::new()
+                                .read(true)
+                                .write(true)
+                                .open(&dev_path)
+                                .with_context(|| format!("failed to open {}", dev_path.display()))
+                        },
+                        &is_not_found,
+                        "open_cdev",
+                    )
+                    .await?;
+                let cdev = vfio_sys::cdev::CdevDevice::from_file(file);
+                let devid = cdev
+                    .bind_iommufd(iommufd.as_raw_fd())
+                    .context("failed to bind VFIO cdev to iommufd")?;
+                cdev.attach_ioas(ioas_id)
+                    .context("failed to attach VFIO cdev to IOAS")?;
+                if keepalive {
+                    cdev.set_keep_alive()
+                        .context("failed to set keep-alive on VFIO cdev")?;
+                }
+                tracing::info!(
+                    pci_id,
+                    devid,
+                    ioas_id,
+                    "VFIO cdev bound to iommufd and attached to IOAS"
+                );
+                (
+                    cdev.into_device(),
+                    VfioTransport::Cdev { _iommufd: iommufd },
+                )
+            }
+        };
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
@@ -184,8 +308,7 @@ impl VfioDevice {
         let config_space = device.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
         let this = Self {
             pci_id: pci_id.into(),
-            _container: container,
-            _group: group,
+            _transport: transport,
             device: Arc::new(device),
             msix_info,
             config_space,
@@ -492,6 +615,21 @@ fn set_irq_affinity(irq: u32, cpu: u32) -> std::io::Result<()> {
         format!("/proc/irq/{}/smp_affinity_list", irq),
         cpu.to_string(),
     )
+}
+
+/// Find the VFIO cdev device node (`/dev/vfio/devices/vfioN`) for a device,
+/// given its sysfs `vfio-dev` directory (`<pci_sysfs>/vfio-dev`).
+///
+/// The kernel creates exactly one `vfioN` child under the device's `vfio-dev`
+/// sysfs directory whose name matches the character device node under
+/// `/dev/vfio/devices`.
+fn find_cdev_node(vfio_dev_sysfs: &Path) -> anyhow::Result<std::path::PathBuf> {
+    let entry = std::fs::read_dir(vfio_dev_sysfs)
+        .with_context(|| format!("failed to read {}", vfio_dev_sysfs.display()))?
+        .next()
+        .context("no vfio-dev entry present for device")?
+        .context("failed to read vfio-dev directory entry")?;
+    Ok(Path::new("/dev/vfio/devices").join(entry.file_name()))
 }
 
 impl DeviceRegisterIo for vfio_sys::MappedRegion {
