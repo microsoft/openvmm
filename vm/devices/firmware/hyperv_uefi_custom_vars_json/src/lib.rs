@@ -175,7 +175,7 @@ mod json {
         pub kek: Vec<Signature>,
         #[serde(rename = "db")]
         pub db: Vec<Signature>,
-        #[serde(rename = "dbx")]
+        #[serde(default, rename = "dbx")]
         pub dbx: Vec<Signature>,
         #[serde(rename = "MokList")]
         pub moklist: Option<Vec<Signature>>,
@@ -687,6 +687,64 @@ mod test {
     fn replace() {
         let data = serde_json::from_str::<json::JsonRoot>(REPLACE);
         let _ = data.unwrap();
+    }
+
+    #[test]
+    fn replace_without_dbx() {
+        let data = r#"
+        {
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Replace",
+                    "signatures": {
+                        "PK": {
+                            "type": "x509",
+                            "value": ["Jw=="]
+                        },
+                        "KEK": [],
+                        "db": []
+                    }
+                }
+            }
+        }
+        "#;
+
+        let delta = parse_delta_json(data.as_bytes()).unwrap();
+        let firmware_uefi_custom_vars::delta::SignaturesDelta::Replace(signatures) =
+            delta.signatures
+        else {
+            panic!("expected replace signatures");
+        };
+        assert!(matches!(
+            signatures.dbx,
+            firmware_uefi_custom_vars::delta::SignatureDeltaVec::Sigs(dbx) if dbx.is_empty()
+        ));
+    }
+
+    #[test]
+    fn replace_with_null_dbx_is_invalid() {
+        let data = r#"
+        {
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Replace",
+                    "signatures": {
+                        "PK": {
+                            "type": "x509",
+                            "value": ["Jw=="]
+                        },
+                        "KEK": [],
+                        "db": [],
+                        "dbx": null
+                    }
+                }
+            }
+        }
+        "#;
+
+        assert!(parse_delta_json(data.as_bytes()).is_err());
     }
 
     // BAD_DB is a semantic test that requires performing signature validation

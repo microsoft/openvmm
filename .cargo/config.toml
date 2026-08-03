@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [alias]
-xflowey = "run -p flowey_hvlite -- pipeline run"
+xflowey = "run -p flowey_hvlite --profile light -- pipeline run"
 xtask = "run -p xtask --profile light --"
 
 [env]
@@ -96,6 +96,8 @@ rustflags = [
 # At least some of our macos binaries need to have entitlements for running
 # hypervisor code, so they must be signed.
 runner = "build_support/macos/sign_and_run.sh"
+# The ARM64 HVF backend uses VM configuration APIs introduced in macOS 13.
+rustflags = ["-C", "link-arg=-mmacosx-version-min=13.0"]
 
 # Use the internal gcc to invoke link so that we can use our spec file that
 # points to our version of musl.

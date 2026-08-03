@@ -2332,6 +2332,7 @@ dependencies = [
  "flowey_lib_common",
  "igvmfilegen_config",
  "log",
+ "opentmk_disk",
  "paste",
  "powershell_builder",
  "serde",
@@ -5589,12 +5590,37 @@ dependencies = [
  "memory_range",
  "minimal_rt",
  "nostd_spin_channel",
+ "opentmk_protocol",
  "serde",
  "serde_json",
  "spin",
  "thiserror 2.0.16",
  "uefi",
  "x86_64",
+ "zerocopy",
+]
+
+[[package]]
+name = "opentmk_disk"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "disk_vhd1",
+ "fatfs",
+ "fscommon",
+ "gptman",
+ "guid",
+ "opentmk_protocol",
+ "tempfile",
+]
+
+[[package]]
+name = "opentmk_protocol"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.16",
  "zerocopy",
 ]
 

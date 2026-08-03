@@ -340,6 +340,99 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
     Ok(())
 }
 
+/// Boot OpenHCL with VTL2 RAM split across three NUMA nodes.
+///
+/// 512 MiB does not divide evenly across three nodes on a 32 KiB boundary.
+/// This verifies that the bootloader rounds each allocation to the lower-VTL
+/// permission bitmap granularity.
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
+async fn vtl2_ram_32k_aligned_across_three_numa_nodes<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    const ALIGNMENT_GRANULARITY: u64 = 32 * 1024;
+    const VTL2_RAM_SIZE: u64 = 512 * 1024 * 1024;
+
+    let mut vm = config
+        .with_expect_no_boot_event()
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 3,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        })
+        .with_memory(MemoryConfig {
+            numa_mem_sizes: Some(vec![
+                2 * 1024 * 1024 * 1024,
+                2 * 1024 * 1024 * 1024,
+                2 * 1024 * 1024 * 1024,
+            ]),
+            ..Default::default()
+        })
+        .with_vtl2_base_address_type(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(VTL2_RAM_SIZE),
+        })
+        .run_without_agent()
+        .await?;
+
+    vm.wait_for_vtl2_ready().await?;
+
+    let vtl2_ranges = vm
+        .inspect_openhcl(
+            "vm/runtime_params/parsed_openhcl_boot/vtl2_memory",
+            None,
+            None,
+        )
+        .await?;
+    let vtl2_ranges: serde_json::Value = serde_json::from_str(&format!("{}", vtl2_ranges.json()))?;
+    let vtl2_ranges = vtl2_ranges
+        .as_object()
+        .context("VTL2 memory ranges are not an object")?;
+    let expected_ram_per_node = (VTL2_RAM_SIZE / 3).next_multiple_of(ALIGNMENT_GRANULARITY);
+    let mut ram_per_node = [0; 3];
+
+    for entry in vtl2_ranges.values() {
+        let vnode = entry
+            .get("vnode")
+            .and_then(serde_json::Value::as_u64)
+            .context("VTL2 memory vnode is not an integer")?;
+        let vnode = usize::try_from(vnode).context("VTL2 memory vnode does not fit in usize")?;
+        let node_ram = ram_per_node
+            .get_mut(vnode)
+            .with_context(|| format!("unexpected VTL2 memory vnode {vnode}"))?;
+        let range = entry
+            .get("range")
+            .and_then(serde_json::Value::as_str)
+            .context("VTL2 memory range is not a string")?;
+        let (start, end) = range
+            .split_once('-')
+            .context("VTL2 memory range is not start-end")?;
+        let parse_address = |address: &str| -> Result<u64, anyhow::Error> {
+            let address = address
+                .strip_prefix("0x")
+                .context("VTL2 memory address does not start with 0x")?;
+            Ok(u64::from_str_radix(address, 16)?)
+        };
+        let start = parse_address(start)?;
+        let end = parse_address(end)?;
+
+        anyhow::ensure!(start < end, "VTL2 RAM range {range} is empty or reversed");
+        anyhow::ensure!(
+            start.is_multiple_of(ALIGNMENT_GRANULARITY)
+                && end.is_multiple_of(ALIGNMENT_GRANULARITY),
+            "VTL2 RAM range {range} is not aligned to {ALIGNMENT_GRANULARITY:#x}"
+        );
+        *node_ram += end - start;
+    }
+
+    for (vnode, node_ram) in ram_per_node.into_iter().enumerate() {
+        anyhow::ensure!(
+            node_ram >= expected_ram_per_node,
+            "VTL2 RAM on vnode {vnode} is {node_ram:#x}, expected at least {expected_ram_per_node:#x}"
+        );
+    }
+
+    Ok(())
+}
+
 /// Boot OpenHCL with a multi-NUMA topology and validate that the kernel
 /// correctly parses the device tree with memory on multiple NUMA nodes.
 /// Checks the absence of NUMA errors and confirms the kernel brought up
