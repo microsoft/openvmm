@@ -273,7 +273,7 @@ impl NvramServices {
         let Some(signatures) = base_template_vars.and_then(BaseTemplateVars::signatures) else {
             tracing::warn!(
                 CVM_ALLOWED,
-                "no baseline secure boot template available; skipping secureboot configuration report"
+                "no baseline secure boot signatures available; skipping configuration report"
             );
             return;
         };
