@@ -852,11 +852,11 @@ mod tests {
         let mut nvram = nvram_services(InMemoryNvram::new());
 
         nvram
-            .inject_vars_on_first_boot(None, Some(custom_vars.to_vec().into()))
+            .inject_initial_vars(None, Some(custom_vars.to_vec().into()))
             .await
             .unwrap();
 
-        let (pk_vendor, pk_name) = uefi_specs::uefi::nvram::vars::PK();
+        let (pk_vendor, pk_name) = vars::PK();
         assert!(
             nvram
                 .services
@@ -865,7 +865,7 @@ mod tests {
                 .is_ok()
         );
 
-        let (dbx_vendor, dbx_name) = uefi_specs::uefi::nvram::vars::DBX();
+        let (dbx_vendor, dbx_name) = vars::DBX();
         assert!(matches!(
             nvram.services.get_variable_ucs2(dbx_vendor, dbx_name).await,
             Err((EfiStatus::NOT_FOUND, _))
