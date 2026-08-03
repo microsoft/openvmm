@@ -320,6 +320,8 @@ def parse_github_owner_repo(remote_url: str) -> Optional[str]:
         path = url[len("git@github.com:") :]
     elif url.startswith("https://github.com/"):
         path = url[len("https://github.com/") :]
+    elif m := re.match(r"https://\w+@github.com/", url):
+        path = url[m.end() :]
     else:
         return None
     path = path.rstrip("/")
