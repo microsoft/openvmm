@@ -452,7 +452,7 @@ impl<T: Client> Access<'_, T> {
                             &mut self.inner.dns,
                         )
                     } else {
-                        tracing::warn!("DNS TCP connection without an answer source, dropping");
+                        tracelimit::warn_ratelimited!("DNS TCP connection without an answer source, dropping");
                         false
                     }
                 }
