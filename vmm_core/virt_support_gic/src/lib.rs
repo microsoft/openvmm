@@ -12,13 +12,29 @@ pub use gicr::Redistributor;
 #[cfg(test)]
 mod model_tests;
 
+fn read_priority_subword(address: u16, value: u32, data: &mut [u8]) {
+    let bytes = value.to_ne_bytes();
+    let offset = (address & 0x3) as usize;
+    data.copy_from_slice(&bytes[offset..offset + data.len()]);
+}
+
+fn write_priority_subword(address: u16, value: &mut u32, data: &[u8]) {
+    let mut bytes = value.to_ne_bytes();
+    let offset = (address & 0x3) as usize;
+    bytes[offset..offset + data.len()].copy_from_slice(data);
+    *value = u32::from_ne_bytes(bytes);
+}
+
 mod gicd {
     use super::Redistributor;
     use super::gicr::PRIORITY_WORD_MASK;
     use super::gicr::SharedState;
+    use aarch64defs::GIC_SPECIAL_INTID_START;
+    use aarch64defs::GIC_SPURIOUS_INTID;
     use aarch64defs::MpidrEl1;
     use aarch64defs::SystemReg;
     use aarch64defs::gic::GicdCtlr;
+    use aarch64defs::gic::GicdIrouter;
     use aarch64defs::gic::GicdRegister;
     use aarch64defs::gic::GicdTyper;
     use aarch64defs::gic::GicdTyper2;
@@ -135,24 +151,22 @@ mod gicd {
         /// `unmatched_spi_affinity_preserves_pending_without_forwarding`, and
         /// `one_of_n_spi_route_uses_a_deterministic_pe`.
         fn route_to_pe(&self, route: u64, group1: bool) -> Option<usize> {
-            const IRM: u64 = 1 << 31;
-
-            if route & IRM != 0 {
+            let route = GicdIrouter::from(route);
+            if route.irm() {
                 return self
                     .gicr
                     .iter()
                     .position(|gicr| gicr.eligible_for_one_of_n(group1));
             }
 
-            let aff0 = (route & 0xff) as u8;
-            let aff1 = ((route >> 8) & 0xff) as u8;
-            let aff2 = ((route >> 16) & 0xff) as u8;
-            let aff3 = ((route >> 32) & 0xff) as u8;
+            let target = MpidrEl1::new()
+                .with_aff0(route.aff0())
+                .with_aff1(route.aff1())
+                .with_aff2(route.aff2())
+                .with_aff3(route.aff3());
+            let affinity_mask = u64::from(MpidrEl1::AFFINITY_MASK);
             self.gicr.iter().position(|gicr| {
-                gicr.mpidr.aff0() == aff0
-                    && gicr.mpidr.aff1() == aff1
-                    && gicr.mpidr.aff2() == aff2
-                    && gicr.mpidr.aff3() == aff3
+                u64::from(gicr.mpidr) & affinity_mask == u64::from(target) & affinity_mask
             })
         }
 
@@ -180,6 +194,21 @@ mod gicd {
                 }
                 None
             }
+        }
+
+        /// Latches an edge-like SPI without changing its level-line state.
+        pub fn pulse_spi(&self, intid: u32) -> Option<u32> {
+            if !(32..=self.max_spi_intid).contains(&intid) {
+                return None;
+            }
+            let mut state = self.state.lock();
+            let word = intid as usize / 32;
+            let mask = 1 << (intid & 31);
+            state.pending[word] |= mask;
+            let route = state.route.get(intid as usize).copied().unwrap_or(0);
+            let group1 = state.group[word] & mask != 0;
+            drop(state);
+            self.route_to_pe(route, group1).map(|pe| pe as u32)
         }
 
         fn edge_triggered(state: &DistributorState, intid: u32) -> bool {
@@ -217,8 +246,8 @@ mod gicd {
         ///
         /// Checking only the single best candidate is sufficient: if the
         /// highest-priority pending interrupt cannot pass PMR/preemption, none of
-        /// lower priority can either. The redistributor and distributor locks are
-        /// taken in turn, never simultaneously (matching the existing pattern).
+        /// lower priority can either. Distributor-to-redistributor is the sole
+        /// nested lock order used by routing and admission.
         ///
         /// Arm IHI 0069H.b §1.2.4, "Sufficient priority", requires comparison
         /// with `ICC_PMR_EL1`, the BPRs, and `ICC_RPR_EL1`. §12.2.14
@@ -301,12 +330,12 @@ mod gicd {
         /// `edge_spi_latches_one_pending_assertion`.
         pub fn ack(&self, gicr: &mut Redistributor, group1: bool) -> u32 {
             let Some((intid, gp)) = self.select(gicr, group1) else {
-                return 1023;
+                return GIC_SPURIOUS_INTID;
             };
             if intid < 32 {
                 gicr.activate(intid);
             } else if !self.activate_spi(intid, gicr.index, group1) {
-                return 1023;
+                return GIC_SPURIOUS_INTID;
             }
             gicr.push_priority(group1, gp);
             tracing::trace!(intid, "gic ack");
@@ -350,7 +379,8 @@ mod gicd {
             match reg {
                 SystemReg::ICC_EOIR0_EL1 => {
                     let intid = value as u32;
-                    let deactivates_spi = (32..1020).contains(&intid) && !gicr.eoimode();
+                    let deactivates_spi =
+                        (32..GIC_SPECIAL_INTID_START).contains(&intid) && !gicr.eoimode();
                     self.eoi(gicr, false, intid);
                     if deactivates_spi {
                         for index in 0..self.gicr.len() {
@@ -360,7 +390,8 @@ mod gicd {
                 }
                 SystemReg::ICC_EOIR1_EL1 => {
                     let intid = value as u32;
-                    let deactivates_spi = (32..1020).contains(&intid) && !gicr.eoimode();
+                    let deactivates_spi =
+                        (32..GIC_SPECIAL_INTID_START).contains(&intid) && !gicr.eoimode();
                     self.eoi(gicr, true, intid);
                     if deactivates_spi {
                         for index in 0..self.gicr.len() {
@@ -370,7 +401,8 @@ mod gicd {
                 }
                 SystemReg::ICC_DIR_EL1 => {
                     let intid = value as u32;
-                    let deactivates_spi = (32..1020).contains(&intid) && gicr.eoimode();
+                    let deactivates_spi =
+                        (32..GIC_SPECIAL_INTID_START).contains(&intid) && gicr.eoimode();
                     self.dir(gicr, intid);
                     if deactivates_spi {
                         for index in 0..self.gicr.len() {
@@ -409,7 +441,9 @@ mod gicd {
                         && gicr.mpidr.aff3() == value.aff3()
                         && gicr.mpidr.aff2() == value.aff2()
                         && gicr.mpidr.aff1() == value.aff1()
-                        && (1 << gicr.mpidr.aff0()) & value.target_list() != 0)
+                        && 1u16
+                            .checked_shl(gicr.mpidr.aff0().into())
+                            .is_some_and(|target| target & value.target_list() != 0))
                 {
                     if gicr.is_group1(value.intid()) == group1 && gicr.raise(value.intid()) {
                         wake(index);
@@ -437,7 +471,7 @@ mod gicd {
         /// `eoimode_split_completion_for_{sgi,spi}`,
         /// `special_intids_do_not_drop_or_deactivate`, and AP nesting tests.
         fn eoi(&self, gicr: &mut Redistributor, group1: bool, intid: u32) {
-            if intid >= 1020 {
+            if intid >= GIC_SPECIAL_INTID_START {
                 return;
             }
             gicr.pop_priority(group1);
@@ -454,7 +488,7 @@ mod gicd {
         /// mandates ignoring DIR when EOImode=0. Enforced by
         /// `dir_is_ignored_when_eoimode_is_clear` and split-completion tests.
         fn dir(&self, gicr: &mut Redistributor, intid: u32) {
-            if intid >= 1020 || !gicr.eoimode() {
+            if intid >= GIC_SPECIAL_INTID_START || !gicr.eoimode() {
                 return;
             }
             tracing::trace!(intid, "gic dir");
@@ -676,13 +710,12 @@ mod gicd {
             if !GicdRegister::IPRIORITYR.contains(&address.0) {
                 return false;
             }
-            let word = GicdRegister(address.0 & !0x3);
-            let Some(value) = self.read32(word) else {
+            let n = (address.0 & 0x3ff) / 4;
+            let state = self.state.lock();
+            let Some(value) = state.priority.get(n as usize) else {
                 return false;
             };
-            let bytes = value.to_ne_bytes();
-            let offset = (address.0 & 0x3) as usize;
-            data.copy_from_slice(&bytes[offset..offset + data.len()]);
+            super::read_priority_subword(address.0, *value, data);
             true
         }
 
@@ -690,14 +723,17 @@ mod gicd {
             if !GicdRegister::IPRIORITYR.contains(&address.0) {
                 return false;
             }
-            let word = GicdRegister(address.0 & !0x3);
-            let Some(value) = self.read32(word) else {
+            let n = (address.0 & 0x3ff) / 4;
+            if n < 8 {
+                return false;
+            }
+            let mut state = self.state.lock();
+            let Some(value) = state.priority.get_mut(n as usize) else {
                 return false;
             };
-            let mut bytes = value.to_ne_bytes();
-            let offset = (address.0 & 0x3) as usize;
-            bytes[offset..offset + data.len()].copy_from_slice(data);
-            self.write32(word, u32::from_ne_bytes(bytes))
+            super::write_priority_subword(address.0, value, data);
+            *value &= PRIORITY_WORD_MASK;
+            true
         }
 
         pub fn read(&self, address: u64, data: &mut [u8]) -> bool {
@@ -796,6 +832,7 @@ mod gicd {
     mod tests {
         use super::Distributor;
         use super::Redistributor;
+        use aarch64defs::GIC_SPURIOUS_INTID;
         use aarch64defs::SystemReg;
         use aarch64defs::gic::GicdCtlr;
         use aarch64defs::gic::GicdRegister;
@@ -837,12 +874,14 @@ mod gicd {
 
         #[test]
         fn configured_intid_limit_bounds_spi_delivery() {
-            let d = Distributor::new(GICD_BASE, MemoryRange::new(0x0808_0000..0x0810_0000), 64);
+            let mut d = Distributor::new(GICD_BASE, MemoryRange::new(0x0808_0000..0x0810_0000), 64);
+            d.add_redistributor(0, true);
 
-            assert_eq!(d.set_pending(95, true), None);
+            assert_eq!(d.set_pending(95, true), Some(0));
             assert_eq!(d.state.lock().pending[2], 1 << 31);
             assert_eq!(d.set_pending(96, true), None);
             assert_eq!(d.set_pending(31, true), None);
+            assert_eq!(d.state.lock().pending[2], 1 << 31);
         }
 
         fn provision_spi(d: &Distributor, intid: u32, priority: u8) {
@@ -894,6 +933,19 @@ mod gicd {
 
             d.set_pending(40, true);
             d.set_pending(40, false);
+            assert_eq!(d.ack(redist, true), 40);
+            d.eoi(redist, true, 40);
+            assert!(!d.irq_pending(redist));
+        }
+
+        #[test]
+        fn spi_pulse_does_not_leave_a_level_line_asserted() {
+            let (d, mut redists) = dist_with_redists(1);
+            let redist = &mut redists[0];
+            provision_spi(&d, 40, 0x20);
+            route_spi(&d, 40, 0);
+
+            assert_eq!(d.pulse_spi(40), Some(0));
             assert_eq!(d.ack(redist, true), 40);
             d.eoi(redist, true, 40);
             assert!(!d.irq_pending(redist));
@@ -981,7 +1033,7 @@ mod gicd {
             gicr.write_cpuif(SystemReg::ICC_IGRPEN1_EL1, 1);
             gicr.raise(1);
 
-            assert_eq!(d.ack(&mut gicr, true), 1023);
+            assert_eq!(d.ack(&mut gicr, true), GIC_SPURIOUS_INTID);
 
             let ctlr: u32 = GicdCtlr::new().with_enable_grp1(true).into();
             d.write(GICD_BASE + GicdRegister::CTLR.0 as u64, &ctlr.to_ne_bytes());
@@ -997,7 +1049,7 @@ mod gicd {
             assert_eq!(d.set_pending(40, true), Some(1));
             assert!(!d.irq_pending(&redists[0]));
             assert!(d.irq_pending(&redists[1]));
-            assert_eq!(d.ack(&mut redists[0], true), 1023);
+            assert_eq!(d.ack(&mut redists[0], true), GIC_SPURIOUS_INTID);
             assert_eq!(d.ack(&mut redists[1], true), 40);
 
             d.write_sysreg(&mut redists[1], SystemReg::ICC_EOIR1_EL1, 40, |_| {});
@@ -1046,7 +1098,7 @@ mod gicd {
 
             assert_eq!(d.set_pending(40, true), Some(0));
             assert_eq!(d.ack(&mut redists[0], true), 40);
-            assert_eq!(d.ack(&mut redists[1], true), 1023);
+            assert_eq!(d.ack(&mut redists[1], true), GIC_SPURIOUS_INTID);
         }
 
         #[test]
@@ -1075,7 +1127,14 @@ mod gicd {
             route_spi(&d, 40, 1 << 31);
 
             assert_eq!(d.set_pending(40, true), Some(1));
+            assert!(!d.irq_pending_for_group(&redists[0], true));
             assert!(d.irq_pending_for_group(&redists[1], true));
+
+            redists[0].shared.write(
+                aarch64defs::gic::GicrRdRegister::WAKER.0 as u64,
+                &0u32.to_ne_bytes(),
+            );
+            assert!(d.irq_pending_for_group(&redists[0], true));
         }
 
         #[test]
@@ -1144,7 +1203,7 @@ mod gicd {
             );
 
             redist.raise(1);
-            assert_eq!(d.ack(redist, true), 1023);
+            assert_eq!(d.ack(redist, true), GIC_SPURIOUS_INTID);
             assert!(d.write_sysreg(redist, SystemReg::ICC_DIR_EL1, 1, |_| {}));
             assert_eq!(d.ack(redist, true), 1);
         }
@@ -1161,7 +1220,7 @@ mod gicd {
 
             assert!(d.write_sysreg(redist, SystemReg::ICC_EOIR1_EL1, 40, |_| {}));
             assert_eq!(d.set_pending(40, true), Some(0));
-            assert_eq!(d.ack(redist, true), 1023);
+            assert_eq!(d.ack(redist, true), GIC_SPURIOUS_INTID);
 
             assert!(d.write_sysreg(redist, SystemReg::ICC_DIR_EL1, 40, |_| {}));
             assert_eq!(d.ack(redist, true), 40);
@@ -1176,7 +1235,7 @@ mod gicd {
 
             assert!(d.write_sysreg(redist, SystemReg::ICC_DIR_EL1, 1, |_| {}));
             redist.raise(1);
-            assert_eq!(d.ack(redist, true), 1023);
+            assert_eq!(d.ack(redist, true), GIC_SPURIOUS_INTID);
 
             assert!(d.write_sysreg(redist, SystemReg::ICC_EOIR1_EL1, 1, |_| {}));
             assert_eq!(d.ack(redist, true), 1);
@@ -1190,12 +1249,22 @@ mod gicd {
             redist.raise(1);
             assert_eq!(d.ack(redist, true), 1);
 
-            assert!(d.write_sysreg(redist, SystemReg::ICC_EOIR1_EL1, 1023, |_| {}));
+            assert!(d.write_sysreg(
+                redist,
+                SystemReg::ICC_EOIR1_EL1,
+                GIC_SPURIOUS_INTID.into(),
+                |_| {}
+            ));
             assert_eq!(redist.read_cpuif(SystemReg::ICC_RPR_EL1), Some(0));
-            assert!(d.write_sysreg(redist, SystemReg::ICC_DIR_EL1, 1023, |_| {}));
+            assert!(d.write_sysreg(
+                redist,
+                SystemReg::ICC_DIR_EL1,
+                GIC_SPURIOUS_INTID.into(),
+                |_| {}
+            ));
 
             redist.raise(1);
-            assert_eq!(d.ack(redist, true), 1023);
+            assert_eq!(d.ack(redist, true), GIC_SPURIOUS_INTID);
         }
     }
 }
@@ -1379,6 +1448,9 @@ mod gicr {
 
     impl SharedState {
         pub fn raise(&self, intid: u32) -> bool {
+            if intid >= aarch64defs::GIC_PRIVATE_INTID_COUNT {
+                return false;
+            }
             let mask = 1 << intid;
             self.pending.fetch_or(mask, Ordering::Relaxed) & mask == 0
         }
@@ -1624,11 +1696,14 @@ mod gicr {
             if !GicrSgiRegister::IPRIORITYR.contains(&address.0) {
                 return false;
             }
-            let word = GicrSgiRegister(address.0 & !0x3);
-            let mut bytes = self.sgi_read32(word).unwrap_or(0).to_ne_bytes();
-            let offset = (address.0 & 0x3) as usize;
-            bytes[offset..offset + data.len()].copy_from_slice(data);
-            self.sgi_write32(word, u32::from_ne_bytes(bytes))
+            let n = (address.0 & 0x1f) / 4;
+            let mut state = self.mutable.lock();
+            let Some(value) = state.priority.get_mut(n as usize) else {
+                return false;
+            };
+            super::write_priority_subword(address.0, value, data);
+            *value &= PRIORITY_WORD_MASK;
+            true
         }
 
         /// Handles byte/halfword reads of the SGI-frame `IPRIORITYR` registers.
@@ -1637,13 +1712,12 @@ mod gicr {
             if !GicrSgiRegister::IPRIORITYR.contains(&address.0) {
                 return false;
             }
-            let word = GicrSgiRegister(address.0 & !0x3);
-            let Some(value) = self.sgi_read32(word) else {
+            let n = (address.0 & 0x1f) / 4;
+            let state = self.mutable.lock();
+            let Some(value) = state.priority.get(n as usize) else {
                 return false;
             };
-            let bytes = value.to_ne_bytes();
-            let offset = (address.0 & 0x3) as usize;
-            data.copy_from_slice(&bytes[offset..offset + data.len()]);
+            super::read_priority_subword(address.0, *value, data);
             true
         }
     }
@@ -1760,8 +1834,8 @@ mod gicr {
             Some(value)
         }
 
-        pub fn raise(&mut self, intid: u32) {
-            self.shared.pending.fetch_or(1 << intid, Ordering::Relaxed);
+        pub fn raise(&mut self, intid: u32) -> bool {
+            self.shared.raise(intid)
         }
 
         /// The best deliverable Group-`group1` SGI/PPI candidate on this
@@ -1893,6 +1967,9 @@ mod gicr {
             self.shared.mutable.lock().icc_eoimode
         }
 
+        /// Test-only single-redistributor harness. These helpers compose the
+        /// production candidate/admission/priority primitives; distributor tests
+        /// separately cover the production SPI/SGI merge and atomic activation.
         #[cfg(test)]
         pub(crate) fn irq_pending(&self) -> bool {
             match self.best_candidate(true) {
@@ -2032,8 +2109,6 @@ mod gicr {
             assert_eq!(ctlr.id_bits(), 0);
             assert!(ctlr.cbpr());
             assert!(ctlr.eoi_mode());
-            let feature_bits: u64 = IccCtlrEl1::new().with_rss(true).with_ext_range(true).into();
-            assert_eq!(feature_bits, 3 << 18);
 
             // A non-CPU-interface register is not claimed here.
             assert!(!redist.write_cpuif(SystemReg::ICC_IAR1_EL1, 0));
@@ -2137,6 +2212,15 @@ mod gicr {
             assert_eq!(redist.ack(true), Some(20)); // delivers + activates
             redist.raise(20); // re-raise while active: pending != 0, deliverable == 0
             assert_eq!(redist.ack(true), None); // must not panic
+        }
+
+        #[test]
+        fn invalid_private_intid_is_ignored() {
+            let (mut redist, shared) = Redistributor::new(0, 0, true);
+
+            assert!(!redist.raise(aarch64defs::GIC_PRIVATE_INTID_COUNT));
+            assert!(!redist.raise(u8::MAX.into()));
+            assert_eq!(shared.pending.load(std::sync::atomic::Ordering::Relaxed), 0);
         }
 
         // The normal path: an enabled Group-1 PPI is pending, acks, becomes

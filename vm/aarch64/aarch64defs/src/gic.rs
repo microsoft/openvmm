@@ -66,6 +66,20 @@ impl GicdRegister {
     pub const IROUTER: Range<u16> = Self::IROUTER0.0..Self::IROUTER0.0 + 0x2000;
 }
 
+/// `GICD_IROUTER<n>` — Interrupt Routing Register.
+#[bitfield(u64)]
+pub struct GicdIrouter {
+    pub aff0: u8,
+    pub aff1: u8,
+    pub aff2: u8,
+    #[bits(7)]
+    _res24_30: u8,
+    pub irm: bool,
+    pub aff3: u8,
+    #[bits(24)]
+    _res40_63: u32,
+}
+
 #[bitfield(u32)]
 pub struct GicdTyper {
     #[bits(5)]

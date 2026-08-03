@@ -33,6 +33,15 @@ pub trait IoApicRouting: Send + Sync {
 pub trait ControlGic: Send + Sync {
     /// Sets the assertion state of a GICv3 SPI.
     fn set_spi_irq(&self, irq_id: u32, high: bool);
+
+    /// Delivers an edge-like GICv3 SPI without leaving a line asserted.
+    ///
+    /// The default delegates to `set_spi_irq` for host-backed implementations.
+    /// Software models that retain line state should override this to latch
+    /// Pending without changing the line level.
+    fn pulse_spi_irq(&self, irq_id: u32) {
+        self.set_spi_irq(irq_id, true);
+    }
 }
 
 // The number of IRQ lines for the interrupt controller.

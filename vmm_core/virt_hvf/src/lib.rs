@@ -185,6 +185,8 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                         + aarch64defs::GIC_REDISTRIBUTOR_SIZE
                             * self.config.processor_topology.vp_count() as u64,
             ),
+            // ProcessorTopology validates 64..=992 total INTIDs; the
+            // distributor constructor takes only the SPI range above 31.
             self.config.processor_topology.gic_nr_irqs() - 32,
         );
         let gicrs = self
@@ -353,6 +355,14 @@ impl GetReferenceTime for HvfPartitionInner {
 impl virt::irqcon::ControlGic for HvfPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
         if let Some(vp) = self.gicd.set_pending(irq_id, high) {
+            if let Some(vp) = self.vps.get(vp as usize) {
+                vp.wake();
+            }
+        }
+    }
+
+    fn pulse_spi_irq(&self, irq_id: u32) {
+        if let Some(vp) = self.gicd.pulse_spi(irq_id) {
             if let Some(vp) = self.vps.get(vp as usize) {
                 vp.wake();
             }
@@ -910,6 +920,16 @@ fn trapped_wfx_is_wfi(iss: u32) -> bool {
     iss & 0b11 == 0
 }
 
+fn gic_interrupt_signals(
+    group0_pending: bool,
+    group1_pending: bool,
+) -> [(abi::HvInterruptType, bool); 2] {
+    [
+        (abi::HvInterruptType::FIQ, group0_pending),
+        (abi::HvInterruptType::IRQ, group1_pending),
+    ]
+}
+
 impl HvfProcessor<'_> {
     /// Reflects the physical and virtual Arm system-counter bases.
     ///
@@ -949,7 +969,7 @@ impl HvfProcessor<'_> {
             .post_pending_messages(sints, |sint, message| {
                 self.hv1
                     .post_message(sint, message, &mut |vector, _auto_eoi| {
-                        self.gicr.raise(vector)
+                        self.gicr.raise(vector);
                     })
             });
     }
@@ -1180,33 +1200,21 @@ impl<'p> Processor for HvfProcessor<'p> {
                         continue;
                     }
 
-                    let fiq_pending = self.partition.gicd.irq_pending_for_group(&self.gicr, false);
-                    let irq_pending = self.partition.gicd.irq_pending_for_group(&self.gicr, true);
                     // Arm IHI 0069H.b §4.6.2, Table 4-5 assigns independent
                     // CPU-interface outputs in the single-Security-state view:
                     // Group 0 uses FIQ and Group 1 uses IRQ. Drive both; exception
                     // routing, not a cross-group GIC selector, determines service order.
-                    // SAFETY: no requirements.
-                    unsafe {
-                        abi::hv_vcpu_set_pending_interrupt(
-                            self.vcpu.vcpu,
-                            abi::HvInterruptType::FIQ,
-                            fiq_pending,
-                        )
+                    let interrupt_signals = gic_interrupt_signals(
+                        self.partition.gicd.irq_pending_for_group(&self.gicr, false),
+                        self.partition.gicd.irq_pending_for_group(&self.gicr, true),
+                    );
+                    for (ty, pending) in interrupt_signals {
+                        // SAFETY: no requirements.
+                        unsafe { abi::hv_vcpu_set_pending_interrupt(self.vcpu.vcpu, ty, pending) }
+                            .chk()
+                            .map_err(|err| dev.fatal_error(err.into()))?;
                     }
-                    .chk()
-                    .map_err(|err| dev.fatal_error(err.into()))?;
-                    // SAFETY: no requirements.
-                    unsafe {
-                        abi::hv_vcpu_set_pending_interrupt(
-                            self.vcpu.vcpu,
-                            abi::HvInterruptType::IRQ,
-                            irq_pending,
-                        )
-                    }
-                    .chk()
-                    .map_err(|err| dev.fatal_error(err.into()))?;
-                    if fiq_pending || irq_pending {
+                    if interrupt_signals.iter().any(|(_, pending)| *pending) {
                         self.wfi = false;
                     }
 
@@ -1601,5 +1609,23 @@ mod tests {
         assert!(!trapped_wfx_is_wfi(0b01));
         assert!(!trapped_wfx_is_wfi(0b10));
         assert!(!trapped_wfx_is_wfi(0b11));
+    }
+
+    #[test]
+    fn gic_groups_drive_independent_hvf_interrupt_signals() {
+        assert_eq!(
+            gic_interrupt_signals(true, false),
+            [
+                (abi::HvInterruptType::FIQ, true),
+                (abi::HvInterruptType::IRQ, false),
+            ]
+        );
+        assert_eq!(
+            gic_interrupt_signals(false, true),
+            [
+                (abi::HvInterruptType::FIQ, false),
+                (abi::HvInterruptType::IRQ, true),
+            ]
+        );
     }
 }

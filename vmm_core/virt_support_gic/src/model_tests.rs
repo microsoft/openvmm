@@ -1,8 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Deterministic differential coverage for the single-PE CPU-interface state
+//! machine. The reference owns independent state and drives the implementation
+//! through guest-visible MMIO/system-register operations, but intentionally uses
+//! the same specification-derived priority formulas. Focused tests in `gicd`
+//! cover multi-PE routing, SPI atomicity, line state, and wake policy.
+
 use crate::Distributor;
 use crate::Redistributor;
+use aarch64defs::GIC_SPECIAL_INTID_START;
+use aarch64defs::GIC_SPURIOUS_INTID;
 use aarch64defs::MpidrEl1;
 use aarch64defs::SystemReg;
 use aarch64defs::gic::GicdCtlr;
@@ -74,6 +82,23 @@ fn targeted_sgi_reaches_only_the_selected_pe() {
     );
     assert!(dist.write_sysreg(&mut redists[1], SystemReg::ICC_EOIR1_EL1, 3, no_wake));
     assert!(!dist.irq_pending(&redists[1]));
+}
+
+#[test]
+fn targeted_sgi_does_not_alias_aff0_above_target_list() {
+    let (dist, mut redists) = new_system(17);
+    online(&dist, &mut redists);
+    let sgi: u64 = GicrSgi::new().with_intid(3).with_target_list(1).into();
+    let mut woken = Vec::new();
+
+    assert!(
+        dist.write_sysreg(&mut redists[1], SystemReg::ICC_SGI1R_EL1, sgi, |index| {
+            woken.push(index)
+        })
+    );
+    assert_eq!(woken, [0]);
+    assert!(dist.irq_pending(&redists[0]));
+    assert!(!dist.irq_pending(&redists[16]));
 }
 
 #[test]
@@ -301,7 +326,7 @@ impl Reference {
 
     fn ack(&mut self, group1: bool) -> u32 {
         let Some((intid, group_priority)) = self.select(group1) else {
-            return 1023;
+            return GIC_SPURIOUS_INTID;
         };
         self.pending &= !(1 << intid);
         self.active |= 1 << intid;
@@ -326,7 +351,7 @@ impl Reference {
     }
 
     fn eoi(&mut self, group1: bool, intid: u32) {
-        if intid >= 1020 {
+        if intid >= GIC_SPECIAL_INTID_START {
             return;
         }
         self.pop_priority(group1);
@@ -336,7 +361,7 @@ impl Reference {
     }
 
     fn dir(&mut self, intid: u32) {
-        if intid < 1020 && self.eoimode {
+        if intid < GIC_SPECIAL_INTID_START && self.eoimode {
             self.active &= !(1 << intid);
         }
     }
@@ -513,7 +538,7 @@ fn sequential_operations_match_an_independent_model() {
                 91..=94 => {
                     let group1 = rng.boolean();
                     let intid = if rng.below(8) == 0 {
-                        1023
+                        GIC_SPURIOUS_INTID
                     } else {
                         rng.below(TEST_INTIDS)
                     };
@@ -528,7 +553,7 @@ fn sequential_operations_match_an_independent_model() {
                 }
                 95..=97 => {
                     let intid = if rng.below(8) == 0 {
-                        1023
+                        GIC_SPURIOUS_INTID
                     } else {
                         rng.below(TEST_INTIDS)
                     };
