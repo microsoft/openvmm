@@ -16,7 +16,6 @@ use petri::pipette::cmd;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -76,21 +75,15 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
     vm: &PetriVm<T>,
     custom_uefi_config_present: bool,
 ) -> Result<(), anyhow::Error> {
-    const EXPECTED_VARIABLES: [&str; 4] = ["PK", "KEK", "db", "dbx"];
-
     let mut kmsg = vm.kmsg().await?;
-    let mut reported_variables = BTreeSet::new();
 
     while let Some(data) = kmsg.next().await {
         let data = data.context("reading kmsg")?;
         let message = kmsg::KmsgParsedEntry::new(&data).unwrap();
         let raw = message.message.as_raw();
-        let Some(variable_name) = EXPECTED_VARIABLES.into_iter().find(|name| {
-            raw.contains("SecureBootConfigReport")
-                && raw.contains(&format!("variable_name: {name:?}"))
-        }) else {
+        if !raw.contains("SecureBootConfigReport") {
             continue;
-        };
+        }
 
         assert!(
             raw.contains(&format!(
@@ -98,20 +91,20 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
             )),
             "unexpected custom UEFI presence in report: {raw}"
         );
+        for variable_name in ["pk", "kek", "db", "dbx"] {
+            assert!(
+                raw.contains(&format!("{variable_name}: Some(")),
+                "{variable_name} missing from report: {raw}"
+            );
+        }
         assert!(
-            raw.contains("missing_entries: 0"),
+            raw.matches("missing_entries: 0x0").count() == 4,
             "baseline entries missing from report: {raw}"
         );
-        reported_variables.insert(variable_name);
-
-        if reported_variables.len() == EXPECTED_VARIABLES.len() {
-            return Ok(());
-        }
+        return Ok(());
     }
 
-    let expected_variables = BTreeSet::from(EXPECTED_VARIABLES);
-    let missing_variables: Vec<_> = expected_variables.difference(&reported_variables).collect();
-    anyhow::bail!("missing Secure Boot reports for {missing_variables:?}")
+    anyhow::bail!("Secure Boot configuration report was not found")
 }
 
 async fn secure_boot_config_report_test<T: PetriVmmBackend>(

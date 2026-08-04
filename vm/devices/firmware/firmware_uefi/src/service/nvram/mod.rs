@@ -70,13 +70,45 @@ type SignatureSet = BTreeSet<SignatureValue>;
 #[derive(Debug)]
 #[expect(dead_code, reason = "fields are consumed by derived Debug telemetry")]
 struct SecureBootConfigReport<'a> {
-    variable_name: &'a str,
     baseline_revision: &'a str,
     custom_uefi_config_present: bool,
+    pk: Option<SecureBootVariableReport>,
+    kek: Option<SecureBootVariableReport>,
+    db: Option<SecureBootVariableReport>,
+    dbx: Option<SecureBootVariableReport>,
+}
+
+/// Secure Boot telemetry for one authenticated variable.
+#[derive(Clone, Copy)]
+struct SecureBootVariableReport {
     base_template_entries: usize,
     loaded_entries: usize,
     missing_entries: usize,
     loaded_variable_bytes: usize,
+}
+
+impl Debug for SecureBootVariableReport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SecureBootVariableReport")
+            .field(
+                "base_template_entries",
+                &format_args!("{:#x}", self.base_template_entries),
+            )
+            .field(
+                "loaded_entries",
+                &format_args!("{:#x}", self.loaded_entries),
+            )
+            .field(
+                "missing_entries",
+                &format_args!("{:#x}", self.missing_entries),
+            )
+            .field(
+                "loaded_variable_bytes",
+                &format_args!("{:#x}", self.loaded_variable_bytes),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -279,9 +311,12 @@ impl NvramServices {
             ("db", vars::DB(), signatures.db.as_slice()),
             ("dbx", vars::DBX(), signatures.dbx.as_slice()),
         ];
+        let mut variable_reports = [None; 4];
 
         // Iterate over each secure boot variable and compare it against the base template
-        for (variable_name, (vendor, name), template_signatures) in variables {
+        for (index, (variable_name, (vendor, name), template_signatures)) in
+            variables.into_iter().enumerate()
+        {
             let loaded_variable = match self.services.get_variable_ucs2(vendor, name).await {
                 Ok((_, data)) if !data.is_empty() => data,
                 Ok((_, data)) => {
@@ -289,7 +324,7 @@ impl NvramServices {
                         CVM_ALLOWED,
                         variable_name,
                         loaded_variable_bytes = data.len(),
-                        "secure boot configuration report skipped: variable is empty"
+                        "secure boot variable omitted from configuration report: variable is empty"
                     );
                     continue;
                 }
@@ -298,7 +333,7 @@ impl NvramServices {
                         CVM_ALLOWED,
                         variable_name,
                         loaded_variable_bytes = 0,
-                        "secure boot configuration report skipped: variable was not found in NVRAM"
+                        "secure boot variable omitted from configuration report: variable was not found in NVRAM"
                     );
                     continue;
                 }
@@ -308,7 +343,7 @@ impl NvramServices {
                         variable_name,
                         ?status,
                         ?error,
-                        "secure boot configuration report skipped: failed to read variable"
+                        "secure boot variable omitted from configuration report: failed to read variable"
                     );
                     continue;
                 }
@@ -322,7 +357,7 @@ impl NvramServices {
                         CVM_CONFIDENTIAL,
                         variable_name,
                         error = &error as &dyn std::error::Error,
-                        "secure boot configuration report skipped: failed to parse variable"
+                        "secure boot variable omitted from configuration report: failed to parse variable"
                     );
                     continue;
                 }
@@ -333,22 +368,29 @@ impl NvramServices {
                 tracing::warn!(
                     CVM_ALLOWED,
                     variable_name,
-                    "secure boot configuration report skipped: baseline contains no signatures"
+                    "secure boot variable omitted from configuration report: baseline contains no signatures"
                 );
                 continue;
             }
 
-            let report = SecureBootConfigReport {
-                variable_name,
-                baseline_revision,
-                custom_uefi_config_present,
+            variable_reports[index] = Some(SecureBootVariableReport {
                 base_template_entries: base_signatures.len(),
                 loaded_entries: loaded_signatures.len(),
                 missing_entries: base_signatures.difference(&loaded_signatures).count(),
                 loaded_variable_bytes,
-            };
-            tracing::info!(CVM_ALLOWED, ?report);
+            });
         }
+
+        let [pk, kek, db, dbx] = variable_reports;
+        let report = SecureBootConfigReport {
+            baseline_revision,
+            custom_uefi_config_present,
+            pk,
+            kek,
+            db,
+            dbx,
+        };
+        tracing::info!(CVM_ALLOWED, ?report);
     }
 
     async fn inject_hyperv_vars(&mut self) -> Result<(), NvramSetupError> {
