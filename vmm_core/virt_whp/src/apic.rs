@@ -476,11 +476,28 @@ impl WhpProcessor<'_> {
     }
 
     /// HACK: TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
-    /// Clears the hypervisor's halt state for `vtl` if its offloaded APIC has an
-    /// interrupt that should already have woken the VP.
+    ///
+    /// Workaround for a hypervisor bug: clears the halt state for `vtl` if its
+    /// offloaded APIC has an interrupt that should already have woken the VP.
+    ///
+    /// The hypervisor's wake-from-halt is driven by the SynIC work summary, not
+    /// by the APIC IRR: `SynicpEvaluateWakeFromHalt` only unhalts if processing
+    /// the pending work summary produces a deliverable interrupt, and
+    /// `StdApicHandleHalt` only re-evaluates on `HLT` if the work summary is
+    /// non-empty or the hardware reports a pending virtual interrupt. So a
+    /// request that lands in the IRR while it is blocked by TPR/ISR, and whose
+    /// scan-IRR work bit is consumed at that point, leaves nothing to re-scan
+    /// once the guest lowers TPR and halts. The VP then sleeps forever with a
+    /// deliverable IRR bit set. (`inject_extint` forces the VP out of halt for
+    /// the same reason.)
+    ///
+    /// Clearing the halt bits is enough to recover: once the VP runs, the
+    /// hardware APIC delivers the pending request.
+
     pub(crate) fn unhalt_for_pending_interrupt(&mut self, vtl: Vtl) {
         if self.state.vtls.lapic(vtl).is_some() {
-            // The VMM-emulated APIC injects pending interrupts itself.
+            // The VMM-emulated APIC injects pending interrupts itself, and the
+            // hypervisor rejects this register for min-APIC partitions.
             return;
         }
 
