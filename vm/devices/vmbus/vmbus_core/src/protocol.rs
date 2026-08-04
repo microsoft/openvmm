@@ -190,7 +190,11 @@ pub struct FeatureFlags {
     /// case the guest cannot cancel MNF interrupts from the host.
     pub server_specified_monitor_pages: bool, // 0x40
 
-    #[bits(25)]
+    /// The guest supports channels that require the use of pinned memory. This indicates that the
+    /// `require_pinned_external_memory` flag in the channel offer message is supported.
+    pub gpa_pinning: bool, // 0x80
+
+    #[bits(24)]
     _reserved: u32,
 }
 
@@ -553,9 +557,9 @@ pub struct OfferFlags {
     /// Indicates the channel must use encrypted additional GPADLs and GPA direct ranges on a
     /// hardware-isolated VM.
     pub confidential_external_memory: bool, // 0x4
-    #[bits(1)]
-    _reserved1: u16,
-    pub named_pipe_mode: bool, // 0x10
+    // Indicates that additional GPADLs and GPA direct packets must use pinned GPA ranges.
+    pub require_pinned_external_memory: bool, // 0x8
+    pub named_pipe_mode: bool,                // 0x10
     #[bits(8)]
     _reserved2: u16,
     pub tlnpi_provider: bool, // 0x2000

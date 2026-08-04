@@ -199,6 +199,10 @@ pub struct Options {
     /// N.B.: Not all vmbus devices support this feature, so enabling it may cause failures.
     pub vmbus_force_confidential_external_memory: bool,
 
+    /// (OPENHCL_VMBUS_FORCE_GPA_PINNING=1)
+    /// Force all vmbus channels to use pinned GPA ranges. Used for testing purposes only.
+    pub vmbus_force_gpa_pinning: bool,
+
     /// (OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS=\<number\>) (default: 100)
     /// Delay before unsticking a vmbus channel after it has been opened, in milliseconds. Set to
     /// zero to disable unsticking.
@@ -446,6 +450,7 @@ impl Options {
             read_legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
         let vmbus_force_confidential_external_memory =
             parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
+        let vmbus_force_gpa_pinning = parse_env_bool("OPENHCL_VMBUS_FORCE_GPA_PINNING");
         let vmbus_channel_unstick_delay_ms =
             parse_legacy_env_number("OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS")?;
         let cmdline_append = read_legacy_openhcl_env("OPENHCL_CMDLINE_APPEND")
@@ -584,6 +589,7 @@ impl Options {
             vmbus_max_version,
             vmbus_enable_mnf,
             vmbus_force_confidential_external_memory,
+            vmbus_force_gpa_pinning,
             vmbus_channel_unstick_delay_ms: vmbus_channel_unstick_delay_ms.unwrap_or(100),
             cmdline_append,
             vnc_port: vnc_port.unwrap_or(3),

@@ -3974,6 +3974,10 @@ impl<N: Notifier> MessageSender<'_, N> {
             flags.set_confidential_external_memory(false);
         }
 
+        if !connection_info.version.feature_flags.gpa_pinning() {
+            flags.set_require_pinned_external_memory(false);
+        }
+
         // Send the monitor ID only if the guest supports MNF. MNF may also be disabled if the guest
         // provided monitor pages but this server can only use server-allocated monitor pages
         // (typically the case for OpenHCL on a hardware-isolated VM), but the guest didn't support
