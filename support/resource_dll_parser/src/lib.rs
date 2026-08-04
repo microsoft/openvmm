@@ -25,6 +25,11 @@ use object::LittleEndian;
 use object::ReadCache;
 use object::read::pe::PeFile64;
 
+/// Consumers that read an IGVM resource out of a DLL (e.g. `vmgstool
+/// copy-igvmfile`) should reject resources whose size exceeds this
+/// limit of maximum file size.
+pub const MAX_IGVM_SIZE: usize = 256 * 1024 * 1024;
+
 /// Tries to read the given resource from a resource dll. If the given data
 /// buffer is not a valid PE file this function returns Ok(None). If it is a PE
 /// file, but the given resource can not be found or loaded this function

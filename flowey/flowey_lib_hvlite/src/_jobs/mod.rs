@@ -7,6 +7,7 @@
 pub mod all_good_job;
 pub mod build_and_publish_openhcl_igvm_from_recipe;
 pub mod build_and_publish_openvmm_hcl_baseline;
+pub mod build_and_publish_vmfirmwareigvm_test_dll;
 pub mod build_and_run_doc_tests;
 pub mod build_and_run_nextest_unit_tests;
 pub mod build_openhcl_igvm_from_recipe_nix;
