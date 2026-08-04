@@ -100,11 +100,17 @@ impl Channel {
     ///
     /// Only invokes `HvSignalEvent`; monitor-page-based signalling is
     /// out of scope for the initial port (§4 signal-path notes).
+    ///
+    /// The event flag is always `0` for guest→host signals — the
+    /// `event_flag` we carry on [`Channel`] is only used for the
+    /// **host→guest** direction (bit position in the SIEFP page).
+    /// This matches `vmbus_client::guest_to_host_interrupt` in
+    /// openvmm which calls `signal_event(connection_id, 0)`.
     pub fn signal<C: HypercallTrait>(&self, ctx: &mut C) -> Result<()> {
         if self.state != ChannelState::Open {
             return Err(Error::Rescinded);
         }
-        crate::hypercalls::signal_event(ctx, self.connection_id, self.event_flag)
+        crate::hypercalls::signal_event(ctx, self.connection_id, 0)
     }
 }
 
@@ -200,11 +206,15 @@ where
 
     let open_id = allocate_open_id();
     let downstream_page_offset = 1 + send_data_pages;
+    // target_vp = u32::MAX (VP_INDEX_DISABLE_INTERRUPT) — tell the host
+    // not to inject an interrupt on host→guest signals; we're polling
+    // the recv ring anyway. Matches `vmbus_client`'s
+    // `open_data.target_vp.unwrap_or(VP_INDEX_DISABLE_INTERRUPT)`.
     let payload = encode_open_channel(
         offer.channel_id,
         open_id,
         ring_gpadl.gpadl_id,
-        0,
+        u32::MAX,
         downstream_page_offset,
         connection_id,
         event_flag,

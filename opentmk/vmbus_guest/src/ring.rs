@@ -206,6 +206,99 @@ impl RingMem for OwnedRingMem {
     }
 }
 
+/// A [`RingMem`] backed by two raw pointers into identity-mapped
+/// guest-physical memory.
+///
+/// Unlike [`FlatRingMem`] / [`OwnedRingMem`] this does not own the
+/// pages — the caller must keep them alive (typically by allocating
+/// them from a leaky global allocator) and must ensure the layout
+/// matches the VMBus wire format: the `control` pointer references a
+/// 4 KiB control page whose first `CONTROL_WORD_COUNT` `u32` slots
+/// hold the ring indices, and `data` points at `data_len` bytes of
+/// contiguous data pages (power-of-two).
+///
+/// # Safety
+///
+/// The caller MUST guarantee that:
+/// * `control` and `data` are valid, well-aligned pointers to memory
+///   that lives at least as long as this `RawRingMem`.
+/// * The memory is not aliased by any Rust reference (only via
+///   `RawRingMem` for its lifetime).
+/// * `data_len` is a power of two and does not exceed the actual
+///   allocation.
+pub struct RawRingMem {
+    control: *const AtomicU32,
+    data: *const AtomicU8,
+    data_len: usize,
+}
+
+// SAFETY: All access goes through atomic operations on `*const AtomicU8`
+// / `*const AtomicU32`. There is no interior state that requires
+// synchronisation beyond what the caller has already committed to by
+// handing us the pointers.
+#[expect(unsafe_code, reason = "raw-pointer-backed ring memory for UEFI target")]
+unsafe impl Send for RawRingMem {}
+#[expect(unsafe_code, reason = "raw-pointer-backed ring memory for UEFI target")]
+unsafe impl Sync for RawRingMem {}
+
+impl RawRingMem {
+    /// Construct a new [`RawRingMem`] over identity-mapped pages.
+    ///
+    /// # Safety
+    ///
+    /// See the type-level docs — the caller vouches for pointer
+    /// validity, exclusive access, and the layout invariants.
+    #[expect(unsafe_code, reason = "raw-pointer constructor for UEFI target")]
+    pub unsafe fn new(control: *const AtomicU32, data: *const AtomicU8, data_len: usize) -> Self {
+        assert!(data_len.is_power_of_two() && data_len >= 8);
+        Self {
+            control,
+            data,
+            data_len,
+        }
+    }
+}
+
+impl RingMem for RawRingMem {
+    fn control(&self) -> &[AtomicU32] {
+        // SAFETY: caller of `new` guaranteed the control pointer is
+        // valid for `CONTROL_WORD_COUNT` `AtomicU32`s and outlives us.
+        #[expect(unsafe_code, reason = "materialise slice over control page")]
+        unsafe {
+            core::slice::from_raw_parts(self.control, CONTROL_WORD_COUNT)
+        }
+    }
+
+    fn data_len(&self) -> usize {
+        self.data_len
+    }
+
+    fn read_at(&self, off: usize, data: &mut [u8]) {
+        assert!(off < self.data_len);
+        let mask = self.data_len - 1;
+        for (i, byte) in data.iter_mut().enumerate() {
+            // SAFETY: caller of `new` guaranteed data is valid for
+            // `data_len` bytes; masking keeps the index in range.
+            #[expect(unsafe_code, reason = "raw ring data read")]
+            unsafe {
+                *byte = (*self.data.add((off + i) & mask)).load(Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn write_at(&self, off: usize, data: &[u8]) {
+        assert!(off < self.data_len);
+        let mask = self.data_len - 1;
+        for (i, byte) in data.iter().enumerate() {
+            // SAFETY: as above.
+            #[expect(unsafe_code, reason = "raw ring data write")]
+            unsafe {
+                (*self.data.add((off + i) & mask)).store(*byte, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
 /// Common accessor helpers shared by [`SendRing`] and [`RecvRing`].
 fn ctrl_in<M: RingMem>(m: &M) -> &AtomicU32 {
     &m.control()[IDX_IN]

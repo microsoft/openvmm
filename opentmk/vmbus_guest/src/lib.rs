@@ -64,6 +64,7 @@ extern crate alloc;
 
 pub mod channel;
 pub mod connection;
+pub mod devices;
 mod error;
 pub mod gpadl;
 pub mod hvsock;

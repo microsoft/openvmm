@@ -807,17 +807,22 @@ pub struct PacketFlags {
 /// Descriptor at the head of each ring-buffer packet.
 ///
 /// See `VmbusPacketDescriptor` in Windows minkernel headers.
+///
+/// **Field order matters** — must match `vmbus_ring::PacketDescriptor`
+/// exactly: `packet_type, data_offset8, length8, flags, transaction_id`.
+/// Getting `flags` in the wrong position renders every packet
+/// unreadable to the host with silent drop.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct PacketDescriptor {
     pub packet_type: PacketType,
-    pub flags: PacketFlags,
     /// Offset from the start of the descriptor to the payload, in units of
     /// 8 bytes.
     pub data_offset8: u16,
     /// Total length of the packet including the descriptor, in units of
     /// 8 bytes.
     pub length8: u16,
+    pub flags: PacketFlags,
     /// Correlator returned in the corresponding completion packet.
     pub transaction_id: u64,
 }
