@@ -180,6 +180,9 @@ fn decode_name(packet: &DnsPacket<&[u8]>, name: &[u8]) -> Option<String> {
     let mut qname = String::new();
     for label in packet.parse_name(name) {
         let label = label.ok()?;
+        if !label.is_ascii() || label.contains(&b'.') {
+            return None;
+        }
         if !qname.is_empty() {
             qname.push('.');
         }
@@ -464,6 +467,32 @@ mod tests {
                 .build_response(&ptr, MAX_DNS_UDP_RESPONSE_LEN)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn unrepresentable_wire_names_do_not_match() {
+        let mut records = StaticDnsRecords::default();
+        records
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "a.b")
+            .unwrap();
+
+        // A single wire-format label containing a dot must not be confused
+        // with two presentation-form labels.
+        let mut dotted_label = build_query(1, "axb", DnsQueryType::A);
+        dotted_label[14] = b'.';
+        assert!(
+            records
+                .build_response(&dotted_label, MAX_DNS_UDP_RESPONSE_LEN)
+                .is_none()
+        );
+
+        // Non-ASCII wire-format labels cannot represent names accepted by
+        // StaticDnsRecords::add.
+        let mut non_ascii_label = build_query(1, "a", DnsQueryType::A);
+        non_ascii_label[13] = 0xff;
+        let packet = DnsPacket::new_checked(non_ascii_label.as_slice()).unwrap();
+        let (_, question) = DnsQuestion::parse(packet.payload()).unwrap();
+        assert_eq!(decode_name(&packet, question.name), None);
     }
 
     #[test]
