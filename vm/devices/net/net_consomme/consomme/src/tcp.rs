@@ -1340,7 +1340,7 @@ impl TcpConnectionInner {
                 if new_ring_cap > self.rx_buffer.capacity() {
                     self.rx_buffer.resize(new_ring_cap);
                 }
-                self.rx_window_cap = framed_len.min(self.rx_buffer_max)
+                self.rx_window_cap = framed_len.min(self.rx_buffer_max);
                 self.needs_ack = true;
             }
 
