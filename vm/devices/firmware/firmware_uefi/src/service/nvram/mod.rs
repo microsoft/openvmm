@@ -19,14 +19,15 @@ pub use spec_services::NvramSpecServices;
 use crate::UefiDevice;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
-use firmware_uefi_custom_vars::BaseTemplateJson;
+use firmware_uefi_custom_vars::BaseTemplate;
+use firmware_uefi_custom_vars::BaseTemplateIdentity;
 use firmware_uefi_custom_vars::BaseTemplateVars;
 use firmware_uefi_custom_vars::FinalVars;
 use firmware_uefi_custom_vars::Signature;
 use firmware_uefi_custom_vars::UefiVarsDeltaJson;
-use firmware_uefi_resources::BASELINE_REVISION;
 use firmware_uefi_resources::platform::VsmConfig;
 use guestmem::GuestMemoryError;
+use guid::Guid;
 use inspect::Inspect;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -69,13 +70,19 @@ type SignatureSet = BTreeSet<SignatureValue>;
 /// Secure Boot telemetry schema mirrored by legacy HCL's `UefiNvramStore.cpp`.
 #[derive(Debug)]
 #[expect(dead_code, reason = "fields are consumed by derived Debug telemetry")]
-struct SecureBootConfigReport<'a> {
-    baseline_revision: &'a str,
+struct SecureBootConfigReport {
+    template_guid: Guid,
+    template_version: u16,
     custom_uefi_config_present: bool,
     pk: Option<SecureBootVariableReport>,
     kek: Option<SecureBootVariableReport>,
     db: Option<SecureBootVariableReport>,
     dbx: Option<SecureBootVariableReport>,
+}
+
+struct ParsedBaseTemplate {
+    vars: BaseTemplateVars,
+    identity: BaseTemplateIdentity,
 }
 
 /// Secure Boot telemetry for one authenticated variable.
@@ -156,7 +163,7 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        base_template_json: Option<BaseTemplateJson>,
+        base_template: Option<BaseTemplate>,
         custom_uefi_json: Option<UefiVarsDeltaJson>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
@@ -173,10 +180,15 @@ impl NvramServices {
                 .is_empty()
                 .await
                 .map_err(NvramSetupError::BadNvramStorage)?;
-            let base_template_vars = match base_template_json
+            let base_template = match base_template
                 .filter(|_| is_nvram_empty || secure_boot_enabled)
-                .map(|template_json| {
-                    hyperv_uefi_custom_vars_json::parse_template_json(template_json.as_bytes())
+                .map(|template| {
+                    hyperv_uefi_custom_vars_json::parse_template_json(template.json.as_bytes()).map(
+                        |vars| ParsedBaseTemplate {
+                            vars,
+                            identity: template.identity,
+                        },
+                    )
                 })
                 .transpose()
             {
@@ -201,7 +213,10 @@ impl NvramServices {
 
             if is_nvram_empty {
                 nvram
-                    .inject_initial_vars(base_template_vars.as_ref(), custom_uefi_json)
+                    .inject_initial_vars(
+                        base_template.as_ref().map(|template| &template.vars),
+                        custom_uefi_json,
+                    )
                     .await?;
             }
             nvram.inject_hyperv_vars().await?;
@@ -210,7 +225,7 @@ impl NvramServices {
             if secure_boot_enabled {
                 nvram
                     .report_secure_boot_configuration(
-                        base_template_vars.as_ref(),
+                        base_template.as_ref(),
                         custom_uefi_config_present,
                     )
                     .await;
@@ -291,18 +306,22 @@ impl NvramServices {
 
     async fn report_secure_boot_configuration(
         &mut self,
-        base_template_vars: Option<&BaseTemplateVars>,
+        base_template: Option<&ParsedBaseTemplate>,
         custom_uefi_config_present: bool,
     ) {
         // Get the signatures from the base template
-        let Some(signatures) = base_template_vars.and_then(BaseTemplateVars::signatures) else {
+        let Some((identity, signatures)) = base_template.and_then(|template| {
+            template
+                .vars
+                .signatures()
+                .map(|signatures| (template.identity, signatures))
+        }) else {
             tracing::warn!(
                 CVM_ALLOWED,
                 "secure boot configuration report skipped: baseline signatures are unavailable"
             );
             return;
         };
-        let baseline_revision = BASELINE_REVISION;
 
         // Defines all the secure boot variables to evaluate against the base template
         let variables = [
@@ -383,7 +402,8 @@ impl NvramServices {
 
         let [pk, kek, db, dbx] = variable_reports;
         let report = SecureBootConfigReport {
-            baseline_revision,
+            template_guid: identity.guid,
+            template_version: identity.version,
             custom_uefi_config_present,
             pk,
             kek,
@@ -721,7 +741,7 @@ mod tests {
     use uefi_nvram_storage::in_memory::InMemoryNvram;
     use wchar::wchz;
 
-    const TEST_SIGNATURE_OWNER: guid::Guid = guid::guid!("00000000-0000-0000-0000-000000000001");
+    const TEST_SIGNATURE_OWNER: Guid = guid::guid!("00000000-0000-0000-0000-000000000001");
 
     fn x509_variable(certs: &[&'static [u8]]) -> Vec<u8> {
         let mut data = Vec::new();
@@ -746,6 +766,16 @@ mod tests {
             }
         }"#
         .to_vec()
+    }
+
+    fn invalid_base_template() -> BaseTemplate {
+        BaseTemplate {
+            json: b"not json".to_vec().into(),
+            identity: BaseTemplateIdentity {
+                guid: Guid::default(),
+                version: 0,
+            },
+        }
     }
 
     fn nvram_services(storage: InMemoryNvram) -> NvramServices {
@@ -781,13 +811,13 @@ mod tests {
         let mut storage = InMemoryNvram::new();
         let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
         storage
-            .set_variable(name, guid::Guid::default(), 0, vec![1], EFI_TIME::default())
+            .set_variable(name, Guid::default(), 0, vec![1], EFI_TIME::default())
             .await
             .unwrap();
 
         NvramServices::new(
             Box::new(storage),
-            Some(b"not json".to_vec().into()),
+            Some(invalid_base_template()),
             Some(b"not json".to_vec().into()),
             false,
             None,
@@ -802,13 +832,13 @@ mod tests {
         let mut storage = InMemoryNvram::new();
         let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
         storage
-            .set_variable(name, guid::Guid::default(), 0, vec![1], EFI_TIME::default())
+            .set_variable(name, Guid::default(), 0, vec![1], EFI_TIME::default())
             .await
             .unwrap();
 
         NvramServices::new(
             Box::new(storage),
-            Some(b"not json".to_vec().into()),
+            Some(invalid_base_template()),
             None,
             true,
             None,
@@ -823,7 +853,7 @@ mod tests {
         assert!(matches!(
             NvramServices::new(
                 Box::new(InMemoryNvram::new()),
-                Some(b"not json".to_vec().into()),
+                Some(invalid_base_template()),
                 None,
                 false,
                 None,
@@ -865,7 +895,8 @@ mod tests {
         let mut nvram = nvram_services(InMemoryNvram::new());
         let base_template = firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows();
         let base_template_vars =
-            hyperv_uefi_custom_vars_json::parse_template_json(base_template.as_bytes()).unwrap();
+            hyperv_uefi_custom_vars_json::parse_template_json(base_template.json.as_bytes())
+                .unwrap();
 
         nvram
             .inject_initial_vars(Some(&base_template_vars), None)

@@ -86,6 +86,14 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
         }
 
         assert!(
+            raw.contains("template_guid: 272e7447-90a4-4563-a4b9-8e4ab00526ce"),
+            "unexpected Secure Boot template GUID in report: {raw}"
+        );
+        assert!(
+            raw.contains("template_version: 3"),
+            "unexpected Secure Boot template version in report: {raw}"
+        );
+        assert!(
             raw.contains(&format!(
                 "custom_uefi_config_present: {custom_uefi_config_present}"
             )),

@@ -173,7 +173,7 @@ impl UefiDevice {
             service: UefiDeviceServices {
                 nvram: service::nvram::NvramServices::new(
                     nvram_storage,
-                    cfg.base_template_json,
+                    cfg.base_template,
                     cfg.custom_uefi_json,
                     cfg.secure_boot,
                     vsm_config,

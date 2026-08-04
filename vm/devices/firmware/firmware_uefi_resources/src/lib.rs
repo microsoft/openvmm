@@ -12,10 +12,9 @@
 #![forbid(unsafe_code)]
 #![expect(missing_docs)]
 
-pub use firmware_uefi_custom_vars::BaseTemplateJson;
+pub use firmware_uefi_custom_vars::BaseTemplate;
 pub use firmware_uefi_custom_vars::UefiVarsDeltaJson;
 pub use hcl_compat_uefi_nvram_resources::HclCompatNvramQuirks;
-pub use hyperv_secure_boot_templates::BASELINE_REVISION;
 pub use hyperv_secure_boot_templates::aarch64 as aarch64_secure_boot_templates;
 pub use hyperv_secure_boot_templates::x64 as x64_secure_boot_templates;
 
@@ -157,7 +156,7 @@ pub fn debug_level_to_string(debug_level: u32) -> Cow<'static, str> {
 /// Static configuration for the UEFI device.
 #[derive(Clone, Protobuf)]
 pub struct UefiConfig {
-    pub base_template_json: Option<BaseTemplateJson>,
+    pub base_template: Option<BaseTemplate>,
     pub custom_uefi_json: Option<UefiVarsDeltaJson>,
     pub secure_boot: bool,
     pub initial_generation_id: [u8; 16],
