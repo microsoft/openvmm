@@ -52,7 +52,8 @@ GitHub creates openvmm-v<VERSION> at the pinned commit
 ```
 
 Publishing the draft is the irreversible step. A published tag and its assets
-would not be moved or replaced; a correction would use a new version.
+would not be moved or replaced. A correction would use a normal reviewed pull
+request to select a new patch version, followed by a new release.
 
 ## Proposed source artifact
 
@@ -83,6 +84,11 @@ The initial gate would answer one question: can a distribution build the source
 artifact without relying on the project checkout or project-provisioned native
 dependencies?
 
+The standalone GNU/Linux build does not use `openvmm-deps`. CI would install
+the distribution's C toolchain, Linux headers, OpenSSL development package,
+`pkg-config`, and Protocol Buffers compiler. OpenHCL, test, and firmware assets
+from `openvmm-deps` are outside this build.
+
 Checksum verification, an explicit `.git` assertion, binary-version
 validation, and direct OpenSSL linkage inspection are possible follow-up
 checks. They should be added only when maintainers agree that each check
@@ -96,10 +102,11 @@ snapshot because no release preparation job exists in ordinary CI.
 
 ## Decisions requiring consensus
 
-The statuses below record the proposal author's current direction. **Open
-question** means maintainers are specifically being asked to choose between the
-alternatives. **Proposed direction** means feedback is still welcome, but the
-RFC recommends that choice.
+The statuses below record the proposal author's current direction. **Chosen
+direction** records a decision supported by current maintainer feedback.
+**Open question** means maintainers are specifically being asked to choose
+between alternatives. **Proposed direction** means feedback is still welcome,
+but the RFC recommends that choice.
 
 ### 1. Canonical product version
 
@@ -114,37 +121,26 @@ requiring Git metadata.
 
 ### 2. Development-build identity
 
-**Status: Open question**
+**Status: Chosen direction**
 
 **Proposal:** A normal Git checkout reports
 `<VERSION>+g<9-character-commit>`, identified as a development build.
 
 This distinguishes commits made after the latest release even while the
-committed product version remains unchanged.
+committed product version remains unchanged and makes the source commit obvious
+in concise version output.
 
-**Simpler alternative:** Report plain `<VERSION>` for every build and expose
-the commit only through a separate detailed version field.
+### 3. Git checkout classification
 
-This is the largest open design question. The simpler alternative requires
-less build logic but makes concise version output ambiguous between an
-official release and an arbitrary checkout. Maintainer feedback should decide
-which behavior the initial implementation uses.
+**Status: Chosen direction**
 
-### 3. Exact release-tag checkout
+**Proposal:** Treat every Git checkout as development, including an exact
+checkout of an `openvmm-v<VERSION>` release tag.
 
-**Status: Open question**
-
-**Proposal:** A checkout reports an official release identity only when
-exactly one `openvmm-v<VERSION>` tag points at `HEAD`. Missing, mismatched, or
-ambiguous release tags fall back to development identity.
-
-**Alternative:** Treat every Git checkout as development, including an exact
-release-tag checkout.
-
-The alternative is simpler and leaves provenance as the only proof of an
-official build, but developers rebuilding a release tag would not get the same
-concise version as archive builders. Maintainer feedback should decide whether
-exact-tag detection is worth its additional build logic.
+Only a Git-free source tree reports plain `<VERSION>`. Release tags remain
+publication markers and are not build-identity inputs. This avoids special tag
+detection and ensures that locally rebuilt checkouts never claim official
+release identity.
 
 ### 4. Build from an extracted archive
 
@@ -229,8 +225,6 @@ Each phase would remain buildable and testable before the next phase begins.
 Reviewers should focus first on the seven decisions above rather than detailed
 implementation. In particular:
 
-- Is distinguishing development builds in concise version output valuable?
-- Should an exact release-tag checkout receive release identity?
 - Are there objections to Git-free archive builds using the committed version?
 - Is there a demonstrated need for a downstream package-version override?
 - Are CLI outputs sufficient for the initial identity implementation?
