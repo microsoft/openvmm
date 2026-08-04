@@ -1329,7 +1329,8 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_modify_connection(true)
     .with_client_id(true)
     .with_pause_resume(true)
-    .with_server_specified_monitor_pages(true);
+    .with_server_specified_monitor_pages(true)
+    .with_gpa_pinning(true);
 
 /// Trait for sending requests to devices and the guest.
 pub trait Notifier: Send {
@@ -2282,14 +2283,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return;
         };
 
-        tracelimit::info_ratelimited!(
-            vtl,
-            ?version,
-            client_id = ?request.client_id,
-            trusted = request.trusted,
-            "Guest negotiated version"
-        );
-
         // Make sure we can receive incoming interrupts on the monitor page. The parent to child
         // page is not used as this server doesn't send monitored interrupts.
         let monitor_page = match request.monitor_page {
@@ -2365,7 +2358,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         //      supported.
         const LOCAL_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
             .with_client_id(true)
-            .with_confidential_channels(true);
+            .with_confidential_channels(true)
+            .with_gpa_pinning(true);
 
         let (relay_feature_flags, server_specified_monitor_page) = match response {
             // There is no relay, or it successfully processed our request.
@@ -2433,6 +2427,14 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 .feature_flags
                 .set_server_specified_monitor_pages(false);
         }
+
+        tracelimit::info_ratelimited!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            version = ?info.version,
+            client_id = ?info.client_id,
+            trusted = info.trusted,
+            "guest negotiated version"
+        );
 
         let version = info.version;
         self.inner.state = ConnectionState::Connected(info);
