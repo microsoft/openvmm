@@ -272,21 +272,13 @@ impl FlowNodeWithConfig for Node {
 
         for (kind, arch) in download_reqs {
             let version = versions.get(&kind).expect("checked above");
-            let tag = format!(
-                "rolling-lts/hcl-{}/{}",
-                match kind {
-                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "main",
-                    OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => "dev",
-                },
-                version
-            );
+            // The custom 6.18.namjain.cdevtest kernel is published only under
+            // the hcl-main tag and ships only ".Dev"-flavored assets, so use
+            // the hcl-main tag and the ".Dev" asset name for every variant.
+            let tag = format!("rolling-lts/hcl-main/{}", version);
 
             let file_name = format!(
-                "Microsoft.OHCL.Kernel{}.{}{}-{}.tar.gz",
-                match kind {
-                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "",
-                    OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => ".Dev",
-                },
+                "Microsoft.OHCL.Kernel.Dev.{}{}-{}.tar.gz",
                 version,
                 match kind {
                     OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Dev => "",
