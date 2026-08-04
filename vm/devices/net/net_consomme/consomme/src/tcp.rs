@@ -1234,7 +1234,7 @@ impl TcpConnectionInner {
         // Handle the rx path.
         if let Some(socket) = opt_socket.as_mut() {
             let rx_high_water = self.rx_buffer.len();
-            'inspect: loop {
+            'outer: loop {
                 if !self.inspect_or_answer_static_dns(
                     inspect_static_dns,
                     static_dns_forward_remaining,
@@ -1258,7 +1258,7 @@ impl TcpConnectionInner {
                             if inspect_static_dns {
                                 *static_dns_forward_remaining -= n;
                                 if *static_dns_forward_remaining == 0 {
-                                    continue 'inspect;
+                                    continue 'outer;
                                 }
                             }
                         }
@@ -1278,7 +1278,7 @@ impl TcpConnectionInner {
                             self.stats.rsts_tx.increment();
                             return false;
                         }
-                        Poll::Pending => break 'inspect,
+                        Poll::Pending => break 'outer,
                     }
                 }
                 break;
