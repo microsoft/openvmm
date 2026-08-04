@@ -12,11 +12,11 @@ let
 
 in stdenv.mkDerivation {
   pname = "openvmm-deps-${arch}";
-  version = "0.3.0-110";
+  version = "0.3.0-116";
 
   src = fetchzip {
     url =
-      "https://github.com/microsoft/openvmm-deps/releases/download/0.3.0-110/openvmm-deps.${arch}.0.3.0-110.tar.gz";
+      "https://github.com/microsoft/openvmm-deps/releases/download/0.3.0-116/openvmm-deps.${arch}.0.3.0-116.tar.gz";
     stripRoot = false;
     inherit hash;
   };

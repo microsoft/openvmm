@@ -3078,7 +3078,7 @@ async fn new_underhill_vm(
             resource: RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
                     // TODO
-                    version: TpmVersion::V138,
+                    version: TpmVersion::V185,
                     ppi_store,
                     nvram_store,
                     refresh_tpm_seeds: platform_attestation_data
