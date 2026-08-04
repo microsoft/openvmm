@@ -30,23 +30,55 @@ pub(crate) enum KeyReleaseError {
     InvalidResponseVersion(u32),
 }
 
-/// Parse a `KEY_RELEASE_REQUEST` response and return a raw wrapped key blob.
+/// Parsed result of a `KEY_RELEASE_REQUEST` response.
+#[derive(Debug)]
+pub(crate) struct KeyReleaseResponse {
+    /// The raw RSA-AES-wrapped key blob.
+    pub wrapped_key: Vec<u8>,
+    /// Whether the IGVM Agent signaled that AKV used the SHA-384 variant of the
+    /// composite RSA+AES key-wrap scheme (`RSA_AES_KEY_WRAP_384`). When `false`,
+    /// the default scheme is used (inner RSA-OAEP using SHA-1).
+    pub rsa_aes_key_wrap_384_used: bool,
+}
+
+/// Parse a `KEY_RELEASE_REQUEST` response and return a raw wrapped key blob along
+/// with the IGVM Agent signal indicating which key-wrap scheme was used.
 ///
-/// Returns `Ok(Vec<u8>)` on successfully extracting a wrapped key blob from `response`,
-/// otherwise return an error.
+/// Returns `Ok(KeyReleaseResponse)` on successfully extracting a wrapped key blob
+/// from `response`, otherwise return an error.
 pub fn parse_response(
     response: &[u8],
     rsa_modulus_size: usize,
-) -> Result<Vec<u8>, KeyReleaseError> {
+) -> Result<KeyReleaseResponse, KeyReleaseError> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
+    use zerocopy::FromBytes;
 
     // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
     const AES_IC_SIZE: usize = 8;
     const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
 
     let header = parse_response_header(response).map_err(KeyReleaseError::ParseHeader)?;
+
+    // The `rsa_aes_key_wrap_384_used` signal is only present in the version 2+
+    // response header. When absent, fall back to the default (SHA-1) scheme.
+    let rsa_aes_key_wrap_384_used = match header.version {
+        IgvmAttestResponseVersion::VERSION_2 => {
+            let full_header = IgvmAttestKeyReleaseResponseHeader::read_from_prefix(response)
+                .map_err(|_| {
+                    KeyReleaseError::ParseHeader(CommonError::ResponseHeaderInvalidFormat {
+                        response_size: response.len(),
+                    })
+                })?
+                .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+            full_header
+                .error_info
+                .igvm_signal
+                .rsa_aes_key_wrap_384_used()
+        }
+        _ => false,
+    };
 
     // Extract payload as per header version
     let header_size = match header.version {
@@ -86,7 +118,10 @@ pub fn parse_response(
         }
     };
 
-    Ok(wrapped_key)
+    Ok(KeyReleaseResponse {
+        wrapped_key,
+        rsa_aes_key_wrap_384_used,
+    })
 }
 
 fn get_wrapped_key_blob(

@@ -2020,7 +2020,11 @@ pub async fn run_set_base_vtl2_settings(
 ) -> anyhow::Result<()> {
     // Pass the settings via a file to avoid challenges escaping the string across
     // the command line.
-    let mut tempfile = NamedTempFile::new().context("creating tempfile")?;
+    let temp_dir = ps_mod.parent().unwrap();
+    let mut tempfile = tempfile::Builder::new()
+        .prefix("base-vtl2-settings-")
+        .tempfile_in(temp_dir)
+        .context("creating base VTL2 settings tempfile")?;
     tempfile
         .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
         .context("writing settings to tempfile")?;
