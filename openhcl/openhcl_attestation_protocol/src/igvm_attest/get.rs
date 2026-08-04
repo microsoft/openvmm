@@ -177,6 +177,8 @@ impl IgvmAttestRequestHeader {
 ///     AES-256 KEK that performs AES Key Wrap on the released key. The default
 ///     is the same CKM_RSA_AES_KEY_WRAP scheme with the inner RSA-OAEP using
 ///     SHA-1 (MGF1-SHA-1).
+/// 4 - corim_endorsement: Request that the IGVM Agent fetch the CoRIM launch
+///     endorsement for the guest and include it in the attestation flow.
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
@@ -184,7 +186,8 @@ pub struct IgvmCapabilityBitMap {
     pub retry: bool,
     pub skip_hw_unsealing: bool,
     pub use_rsa_aes_key_wrap_384: bool,
-    #[bits(28)]
+    pub corim_endorsement: bool,
+    #[bits(27)]
     _reserved: u32,
 }
 
@@ -247,13 +250,16 @@ impl IgvmAttestRequestDataExt {
 ///     (RSA_AES_KEY_WRAP_384) and AKV used it to wrap the key in the payload.
 ///     If this bit is clear, AKV wrapped the key with the default
 ///     CKM_RSA_AES_KEY_WRAP scheme (inner RSA-OAEP using SHA-1).
+/// 3 - IGVM_SIGNAL_CORIM_ENDORSEMENT_REQUESTED_BIT: Set by the IGVM Agent to
+///     indicate that the agent requested the CoRIM endorsement.
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
     pub retry: bool,
     pub skip_hw_unsealing: bool,
     pub rsa_aes_key_wrap_384_used: bool,
-    #[bits(29)]
+    pub corim_endorsement_requested: bool,
+    #[bits(28)]
     _reserved: u32,
 }
 
