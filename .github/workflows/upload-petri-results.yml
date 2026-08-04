@@ -30,13 +30,13 @@ jobs:
 
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
           # Azure CLI is considered a large package
           large-packages: false
 
       - name: Authenticate to Azure
-        uses: azure/login@v1
+        uses: azure/login@cb79c773a3cfa27f31f25eb3f677781210c9ce3d # v1.6.1
         with:
           client-id: ${{ secrets.OPENVMM_TEST_RESULT_CLIENT_ID }}
           tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
