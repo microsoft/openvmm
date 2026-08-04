@@ -339,7 +339,8 @@ impl<'a> WhpProcessor<'a> {
                 // HACK: TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
                 // The hypervisor can leave a VP halted with an interrupt
                 // pending in its offloaded APIC, with nothing left to wake it,
-                // so periodically poke RFLAGS.IF to force a reevaluation.
+                // so periodically check for that state and force the VP out of
+                // it.
                 #[cfg(guest_arch = "x86_64")]
                 {
                     const UNHALT_CHECK_PERIOD: std::time::Duration =
@@ -350,10 +351,20 @@ impl<'a> WhpProcessor<'a> {
                         .unhalt_check_vmtime
                         .as_mut()
                         .is_some_and(|vmtime| {
-                            vmtime.set_timeout_if_before(
-                                vmtime.now().wrapping_add(UNHALT_CHECK_PERIOD),
-                            );
-                            vmtime.poll_timeout(cx).is_ready()
+                            // Rearm in a loop: polling clears the timeout when
+                            // it fires, and the VP may block in the hypervisor
+                            // indefinitely before this runs again, leaving
+                            // nothing to wake it.
+                            let mut expired = false;
+                            loop {
+                                vmtime.set_timeout_if_before(
+                                    vmtime.now().wrapping_add(UNHALT_CHECK_PERIOD),
+                                );
+                                if vmtime.poll_timeout(cx).is_pending() {
+                                    break expired;
+                                }
+                                expired = true;
+                            }
                         });
 
                     if expired {
@@ -362,7 +373,7 @@ impl<'a> WhpProcessor<'a> {
                             .runnable_vtls
                             .highest_set()
                             .expect("no runnable vtls");
-                        self.poke_interrupt_flag(vtl);
+                        self.unstick_halted_vp(vtl);
                     }
                 }
 
