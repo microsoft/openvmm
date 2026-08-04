@@ -161,7 +161,10 @@ enum LoopbackPortInfo {
 enum TcpBackend {
     /// A real host socket. The socket may be `None` while the connection is
     /// being constructed, or after both ends have closed.
-    Socket(Option<PolledSocket<Socket>>),
+    Socket {
+        socket: Option<PolledSocket<Socket>>,
+        inspect_static_dns: bool,
+    },
     /// A virtual DNS TCP handler (no real socket).
     Dns(DnsTcpHandler),
 }
@@ -228,7 +231,6 @@ struct TcpConnectionInner {
     tx_mss: usize,
     #[inspect(skip)]
     last_close_reason: ConnectionCloseReason,
-
     stats: TcpConnStats,
 }
 
@@ -458,9 +460,16 @@ impl<T: Client> Access<'_, T> {
                         false
                     }
                 }
-                TcpBackend::Socket(opt_socket) => {
-                    conn.inner.poll_socket_backend(cx, &mut sender, opt_socket)
-                }
+                TcpBackend::Socket {
+                    socket,
+                    inspect_static_dns,
+                } => conn.inner.poll_socket_backend(
+                    cx,
+                    &mut sender,
+                    socket,
+                    inspect_static_dns,
+                    &self.inner.dns,
+                ),
             };
             if !keep {
                 self.inner
@@ -474,7 +483,10 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.tcp.connections.retain(|ft, conn| {
-            let TcpBackend::Socket(opt_socket) = &mut conn.backend else {
+            let TcpBackend::Socket {
+                socket: opt_socket, ..
+            } = &mut conn.backend
+            else {
                 // DNS connections have no real socket to refresh.
                 return true;
             };
@@ -531,6 +543,8 @@ impl<T: Client> Access<'_, T> {
             &self.inner.state.params,
             self.inner.dns.can_answer_queries(),
         );
+        let inspect_static_dns =
+            ft.dst.port() == crate::DNS_PORT && self.inner.dns.should_intercept_static_queries();
 
         let mut sender = Sender {
             ft: &ft,
@@ -616,6 +630,7 @@ impl<T: Client> Access<'_, T> {
                             &tcp,
                             &self.inner.tcp.connection_params,
                             is_local_address,
+                            inspect_static_dns,
                         )?
                     };
                     e.insert(conn);
@@ -859,6 +874,7 @@ impl TcpConnection {
         tcp: &TcpRepr<'_>,
         params: &ConnectionParams,
         is_local_address: bool,
+        inspect_static_dns: bool,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
         inner.initialize_from_first_client_packet(tcp)?;
@@ -914,7 +930,10 @@ impl TcpConnection {
             }
         }
         Ok(Self {
-            backend: TcpBackend::Socket(Some(socket)),
+            backend: TcpBackend::Socket {
+                socket: Some(socket),
+                inspect_static_dns,
+            },
             inner,
         })
     }
@@ -934,9 +953,12 @@ impl TcpConnection {
         };
         inner.send_syn(sender, None);
         Ok(Self {
-            backend: TcpBackend::Socket(Some(
-                PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
-            )),
+            backend: TcpBackend::Socket {
+                socket: Some(
+                    PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
+                ),
+                inspect_static_dns: false,
+            },
             inner,
         })
     }
@@ -1033,7 +1055,7 @@ impl TcpConnectionInner {
             }
             Ok(_) => {}
             Err(_) => {
-                // Invalid DNS TCP framing; reset the connection.
+                // The DNS TCP query could not be processed; reset the connection.
                 sender.rst(self.tx_send, Some(self.rx_seq));
                 self.stats.rsts_tx.increment();
                 return false;
@@ -1092,6 +1114,8 @@ impl TcpConnectionInner {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         opt_socket: &mut Option<PolledSocket<Socket>>,
+        inspect_static_dns: &mut bool,
+        dns: &DnsResolver,
     ) -> bool {
         // Wait for the outbound connection to complete.
         if self.state == TcpState::Connecting {
@@ -1118,6 +1142,8 @@ impl TcpConnectionInner {
             // Need to establish connection with client before sending data.
             return true;
         }
+
+        let forward_rx = self.inspect_or_answer_static_dns(inspect_static_dns, dns);
 
         // Handle the tx path.
         if let Some(socket) = opt_socket.as_mut() {
@@ -1201,7 +1227,7 @@ impl TcpConnectionInner {
         }
 
         // Handle the rx path.
-        if let Some(socket) = opt_socket.as_mut() {
+        if forward_rx && let Some(socket) = opt_socket.as_mut() {
             let rx_high_water = self.rx_buffer.len();
             while !self.rx_buffer.is_empty() {
                 let view = self.rx_buffer.view(0..self.rx_buffer.len());
@@ -1276,6 +1302,90 @@ impl TcpConnectionInner {
         // read from the socket and no ACK is pending, send_data will find
         // nothing to do anyway.
         self.send_next(sender, AckPolicy::Flush);
+        true
+    }
+
+    /// Answers complete DNS-over-TCP messages from static records.
+    fn inspect_or_answer_static_dns(
+        &mut self,
+        inspect_static_dns: &mut bool,
+        dns: &DnsResolver,
+    ) -> bool {
+        while *inspect_static_dns {
+            if self.rx_buffer.is_empty() {
+                return self.state.rx_fin();
+            }
+
+            if self.rx_buffer.len() < 2 {
+                return false;
+            }
+
+            let prefix = self.rx_buffer.view(0..2);
+            let (a, b) = prefix.as_slices();
+            let msg_len = if a.len() == 2 {
+                u16::from_be_bytes([a[0], a[1]]) as usize
+            } else {
+                u16::from_be_bytes([a[0], b[0]]) as usize
+            };
+
+            let framed_len = 2 + msg_len;
+
+            if framed_len > self.rx_buffer_max {
+                *inspect_static_dns = false;
+                return true;
+            }
+
+            if framed_len > self.rx_window_cap && self.rx_assembler.is_empty() {
+                let new_cap = framed_len.next_power_of_two().min(self.rx_buffer_max);
+                self.rx_buffer.resize(new_cap);
+                self.rx_window_cap = framed_len;
+                self.needs_ack = true;
+            }
+
+            if self.rx_buffer.len() < framed_len {
+                return false;
+            }
+
+            let view = self.rx_buffer.view(0..framed_len);
+            let (a, b) = view.as_slices();
+            let mut framed_query = Vec::with_capacity(framed_len);
+            framed_query.extend_from_slice(a);
+            framed_query.extend_from_slice(b);
+
+            let max_response_len = self.tx_buffer_max.saturating_sub(2).min(u16::MAX as usize);
+            let Some(response) = dns.build_static_response(&framed_query[2..], max_response_len)
+            else {
+                *inspect_static_dns = false;
+                return true;
+            };
+
+            let response_len = response.len() + 2;
+            if self.tx_buffer.len() + response_len > self.tx_buffer_max {
+                return false;
+            }
+
+            let required_capacity = self.tx_buffer.len() + response_len;
+            if required_capacity > self.tx_buffer.capacity() {
+                self.tx_buffer.resize(
+                    required_capacity
+                        .next_power_of_two()
+                        .min(self.tx_buffer_max),
+                );
+                self.stats.tx_buffer_grows.increment();
+            }
+
+            let (a, b) = self.tx_buffer.unwritten_slices_mut();
+            let prefix = (response.len() as u16).to_be_bytes();
+            let mut framed_response = Vec::with_capacity(response_len);
+            framed_response.extend_from_slice(&prefix);
+            framed_response.extend_from_slice(&response);
+            let first = a.len().min(framed_response.len());
+            a[..first].copy_from_slice(&framed_response[..first]);
+            b[..framed_response.len() - first].copy_from_slice(&framed_response[first..]);
+            self.tx_buffer.extend_by(framed_response.len());
+            self.rx_buffer.consume(framed_len);
+        }
+
         true
     }
 

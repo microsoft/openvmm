@@ -659,6 +659,52 @@ async fn static_dns_a_record_answered(driver: DefaultDriver) {
     );
 }
 
+/// Static records are still inspected when the platform resolver backend is
+/// unavailable and the guest is using the advertised external DNS server.
+#[pal_async::async_test]
+async fn static_dns_fallback_intercepts_matches_only(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme.dns =
+        dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+    consomme
+        .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
+        .unwrap();
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let dns_ip = Ipv4Address::new(192, 0, 2, 53);
+    consomme.params_mut().nameservers = vec![dns_ip.into()];
+    let mut client = CapturingClient::new(driver);
+    consomme.access(&mut client).update_dns_nameservers();
+    assert_eq!(consomme.params_mut().nameservers, vec![dns_ip.into()]);
+
+    let mut buf = vec![0u8; 1514];
+
+    let query = build_dns_a_query(0x1234, "example.com");
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        dns_ip,
+        40000,
+        &query,
+    );
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("matching static DNS query should be handled locally");
+
+    assert_eq!(client.received.len(), 1);
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    assert_eq!(ipv4.src_addr(), dns_ip);
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    assert_eq!(udp.payload()[3] & 0x0f, 0);
+    assert_eq!(u16::from_be_bytes([udp.payload()[6], udp.payload()[7]]), 1);
+}
+
 /// A gateway-destined DNS query is answered with SERVFAIL when there is no
 /// resolver backend and no matching static record.
 #[pal_async::async_test]

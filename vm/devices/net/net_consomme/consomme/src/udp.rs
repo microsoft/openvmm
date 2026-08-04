@@ -385,6 +385,19 @@ impl<T: Client> Access<'_, T> {
                     &checksum.caps(),
                 )?;
 
+                if udp.dst_port == DNS_PORT
+                    && self.inner.dns.should_intercept_static_queries()
+                    && self.handle_dns(
+                        frame,
+                        addrs.src_addr.into(),
+                        addrs.dst_addr.into(),
+                        &udp_packet,
+                        true,
+                    )?
+                {
+                    return Ok(());
+                }
+
                 // Check for gateway-destined packets
                 if addrs.dst_addr == self.inner.state.params.gateway_ip
                     || addrs.dst_addr.is_broadcast()
@@ -407,6 +420,19 @@ impl<T: Client> Access<'_, T> {
                     &addrs.dst_addr.into(),
                     &checksum.caps(),
                 )?;
+
+                if udp.dst_port == DNS_PORT
+                    && self.inner.dns.should_intercept_static_queries()
+                    && self.handle_dns(
+                        frame,
+                        addrs.src_addr.into(),
+                        addrs.dst_addr.into(),
+                        &udp_packet,
+                        true,
+                    )?
+                {
+                    return Ok(());
+                }
 
                 // Check for gateway-destined packets (IPv6 uses multicast instead of broadcast)
                 if addrs.dst_addr == self.inner.state.params.gateway_link_local_ipv6
@@ -515,6 +541,7 @@ impl<T: Client> Access<'_, T> {
                 addresses.src_addr.into(),
                 addresses.dst_addr.into(),
                 udp,
+                false,
             ),
             _ => Ok(false),
         }
@@ -537,6 +564,7 @@ impl<T: Client> Access<'_, T> {
                 addresses.src_addr.into(),
                 addresses.dst_addr.into(),
                 udp,
+                false,
             ),
             _ => Ok(false),
         }
@@ -585,6 +613,7 @@ impl<T: Client> Access<'_, T> {
         src_addr: IpAddress,
         dst_addr: IpAddress,
         udp: &UdpPacket<&[u8]>,
+        forward_static_misses: bool,
     ) -> Result<bool, DropReason> {
         let flow = DnsFlow {
             src: SocketAddr::new(src_addr.into(), udp.src_port()),
@@ -621,6 +650,10 @@ impl<T: Client> Access<'_, T> {
                 tracelimit::error_ratelimited!(error = ?e, "Failed to send static DNS response");
             }
             return Ok(true);
+        }
+
+        if forward_static_misses {
+            return Ok(false);
         }
 
         let request = DnsRequest {

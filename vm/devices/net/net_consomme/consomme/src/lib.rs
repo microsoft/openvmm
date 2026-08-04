@@ -1143,7 +1143,7 @@ impl<T: Client> Access<'_, T> {
 
     /// Updates the DNS nameservers based on the current consomme parameters.
     pub fn update_dns_nameservers(&mut self) {
-        if self.inner.dns.can_answer_queries() {
+        if self.inner.dns.is_available() {
             self.inner.state.params.nameservers = self
                 .inner
                 .state

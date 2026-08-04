@@ -163,6 +163,10 @@ impl<B: DnsBackend> DnsResolver<B> {
         self.is_available() || !self.static_records.is_empty()
     }
 
+    pub(crate) fn should_intercept_static_queries(&self) -> bool {
+        !self.is_available() && !self.static_records.is_empty()
+    }
+
     pub fn add_static_record(
         &mut self,
         record: StaticDnsRecord,

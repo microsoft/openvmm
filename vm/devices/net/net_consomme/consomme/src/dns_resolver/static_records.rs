@@ -89,32 +89,36 @@ impl StaticDnsRecords {
             return None;
         }
 
-        if packet.question_count() != 1 {
-            // Multiple or no question; let the query go through.
-            return None;
+        let mut rest = packet.payload();
+        let mut answers = Vec::new();
+        for _ in 0..packet.question_count() {
+            let question_offset = query.len() - rest.len();
+            // `Question::parse` also validates that the class is `IN`.
+            let (next, question) = DnsQuestion::parse(rest).ok()?;
+            let qname = decode_name(&packet, question.name)?;
+            if question.type_ == DnsQueryType::A {
+                answers.extend(self.records.iter().filter_map(|rec| match &rec.record {
+                    StaticDnsRecord::A(address) if rec.name == qname => Some(StaticAnswer {
+                        name: if question_offset <= 0x3fff {
+                            AnswerName::Pointer(question_offset as u16)
+                        } else {
+                            AnswerName::Wire(question.name)
+                        },
+                        rdata: address.as_slice(),
+                    }),
+                    StaticDnsRecord::A(_) => None,
+                }));
+            }
+            rest = next;
         }
-
-        // `Question::parse` also validates that the class is `IN`.
-        let (_, question) = DnsQuestion::parse(packet.payload()).ok()?;
-        let qname = decode_name(&packet, question.name)?;
-        let answers: Vec<&[u8]> = self
-            .records
-            .iter()
-            .filter_map(|rec| match &rec.record {
-                StaticDnsRecord::A(address)
-                    if question.type_ == DnsQueryType::A && rec.name == qname =>
-                {
-                    Some(address.as_slice())
-                }
-                StaticDnsRecord::A(_) => None,
-            })
-            .collect();
 
         if answers.is_empty() {
             return None;
         }
 
-        let mut total = DNS_HEADER_LEN + question.buffer_len();
+        let question_section_len = packet.payload().len() - rest.len();
+        let question_section = &packet.payload()[..question_section_len];
+        let mut total = DNS_HEADER_LEN + question_section.len();
 
         if total > max_len {
             tracelimit::warn_ratelimited!(
@@ -126,8 +130,8 @@ impl StaticDnsRecords {
         }
 
         let mut fit = 0;
-        for rdata in &answers {
-            let answer_len = ANSWER_FIXED_LEN + rdata.len();
+        for answer in &answers {
+            let answer_len = answer.buffer_len();
             if fit == u16::MAX as usize || total + answer_len > max_len {
                 break;
             }
@@ -139,7 +143,7 @@ impl StaticDnsRecords {
         let truncated = fit < answers.len();
         Some(build_a_response(
             &packet,
-            &question,
+            question_section,
             &answers[..fit],
             truncated,
         ))
@@ -189,17 +193,34 @@ fn decode_name(packet: &DnsPacket<&[u8]>, name: &[u8]) -> Option<String> {
     Some(qname)
 }
 
+enum AnswerName<'a> {
+    Pointer(u16),
+    Wire(&'a [u8]),
+}
+
+struct StaticAnswer<'a> {
+    name: AnswerName<'a>,
+    rdata: &'a [u8],
+}
+
+impl StaticAnswer<'_> {
+    fn buffer_len(&self) -> usize {
+        let name_len = match self.name {
+            AnswerName::Pointer(_) => 2,
+            AnswerName::Wire(name) => name.len(),
+        };
+        name_len + ANSWER_FIXED_LEN - 2 + self.rdata.len()
+    }
+}
+
 /// Builds a DNS response message containing one `A` answer per entry in
 /// `answers`, echoing the query's `question` section after the header.
 fn build_a_response(
     query: &DnsPacket<&[u8]>,
-    question: &DnsQuestion<'_>,
-    answers: &[&[u8]],
+    question_section: &[u8],
+    answers: &[StaticAnswer<'_>],
     truncated: bool,
 ) -> Vec<u8> {
-    // Compression pointer (top two bits set) to the echoed question name.
-    const QNAME_POINTER: u16 = 0xc000 | DNS_HEADER_LEN as u16;
-
     let ancount = answers.len().min(u16::MAX as usize) as u16;
 
     // Response flags: QR=1, AA=1, RA=1, RD echoed from the query. TC is set
@@ -211,7 +232,7 @@ fn build_a_response(
     }
 
     // Header + echoed question section, written via smoltcp.
-    let mut response = vec![0u8; DNS_HEADER_LEN + question.buffer_len()];
+    let mut response = vec![0u8; DNS_HEADER_LEN + question_section.len()];
     {
         let mut packet = DnsPacket::new_unchecked(&mut response[..]);
         packet.set_transaction_id(query.transaction_id());
@@ -221,17 +242,21 @@ fn build_a_response(
         packet.set_answer_record_count(ancount);
         packet.set_authority_record_count(0);
         packet.set_additional_record_count(0);
-        question.emit(packet.payload_mut());
+        packet.payload_mut().copy_from_slice(question_section);
     }
 
-    // One answer per record, using a compression pointer to the question name.
-    for rdata in answers.iter().take(ancount as usize) {
-        response.extend_from_slice(&QNAME_POINTER.to_be_bytes());
+    for answer in answers.iter().take(ancount as usize) {
+        match answer.name {
+            AnswerName::Pointer(offset) => {
+                response.extend_from_slice(&(0xc000 | offset).to_be_bytes());
+            }
+            AnswerName::Wire(name) => response.extend_from_slice(name),
+        }
         response.extend_from_slice(&u16::from(DnsQueryType::A).to_be_bytes());
         response.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
         response.extend_from_slice(&DEFAULT_TTL.to_be_bytes());
-        response.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
-        response.extend_from_slice(rdata);
+        response.extend_from_slice(&(answer.rdata.len() as u16).to_be_bytes());
+        response.extend_from_slice(answer.rdata);
     }
 
     response
@@ -333,6 +358,27 @@ mod tests {
             .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
             .unwrap();
         assert_eq!(u16::from_be_bytes([response[6], response[7]]), 2);
+    }
+
+    #[test]
+    fn any_matching_question_is_answered() {
+        let mut records = StaticDnsRecords::default();
+        records
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
+            .unwrap();
+
+        let mut query = build_query(1, "unknown.test", DnsQueryType::A);
+        let matching_query = build_query(1, "known.test", DnsQueryType::A);
+        query[4..6].copy_from_slice(&2u16.to_be_bytes());
+        query.extend_from_slice(&matching_query[DNS_HEADER_LEN..]);
+
+        let response = records
+            .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+            .expect("one matching question should produce a response");
+
+        assert_eq!(u16::from_be_bytes([response[4], response[5]]), 2);
+        assert_eq!(u16::from_be_bytes([response[6], response[7]]), 1);
+        assert_eq!(&response[response.len() - 4..], &[1, 2, 3, 4]);
     }
 
     #[test]

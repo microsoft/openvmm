@@ -12,6 +12,7 @@ use super::DnsFlow;
 use super::DnsRequest;
 use super::DnsResolver;
 use super::DnsResponse;
+use super::build_servfail_response;
 use mesh_channel_core::Receiver;
 use std::io::IoSliceMut;
 use std::task::Context;
@@ -35,9 +36,6 @@ pub enum DnsTcpError {
     /// The query was rate-limited by the resolver backend.
     #[error("DNS TCP query rate-limited")]
     RateLimited,
-    /// No resolver backend is available for a query not answered by static records.
-    #[error("DNS resolver backend unavailable")]
-    BackendUnavailable,
     /// The DNS response exceeded the maximum allowed TCP message size.
     #[error("DNS TCP response too large")]
     ResponseTooLarge,
@@ -182,9 +180,10 @@ impl DnsTcpHandler {
                 msg_len,
                 src = %self.flow.src,
                 dst = %self.flow.dst,
-                "dns_tcp: no resolver backend available for static-record miss",
+                "dns_tcp: no resolver backend available, returning SERVFAIL",
             );
-            return Err(DnsTcpError::BackendUnavailable);
+            self.frame_response(build_servfail_response(&self.buf[2..2 + msg_len]));
+            return Ok(true);
         }
 
         // Submit the raw DNS query (without the TCP length prefix).
@@ -584,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn static_miss_without_backend_is_not_rate_limited() {
+    fn static_miss_without_backend_returns_servfail() {
         let mut dns = DnsResolver::without_backend(DEFAULT_MAX_PENDING_DNS_REQUESTS);
         let mut handler = DnsTcpHandler::new(test_flow());
 
@@ -594,9 +593,22 @@ mod tests {
         let query = build_query(0x0001, "other.example", DnsQueryType::A);
         let msg = make_tcp_dns_message(&query);
 
-        assert!(matches!(
-            handler.ingest(&[&msg], &mut dns),
-            Err(DnsTcpError::BackendUnavailable)
-        ));
+        let consumed = handler.ingest(&[&msg], &mut dns).unwrap();
+        assert_eq!(consumed, msg.len());
+
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut buf = vec![0u8; 256];
+        match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
+            Poll::Ready(Ok(n)) => {
+                let response = build_servfail_response(&query);
+                assert_eq!(n, response.len() + 2);
+                assert_eq!(
+                    u16::from_be_bytes([buf[0], buf[1]]) as usize,
+                    response.len()
+                );
+                assert_eq!(&buf[2..n], &response);
+            }
+            other => panic!("expected SERVFAIL response, got {other:?}"),
+        }
     }
 }
