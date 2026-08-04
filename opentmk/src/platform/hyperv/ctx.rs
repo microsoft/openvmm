@@ -15,8 +15,7 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvInputVtl;
 use spin::Mutex;
 
-use crate::context::HypercallConfig;
-use crate::context::HypercallTrait;
+use crate::context::HypercallPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VtlPlatformTrait;
 use crate::platform::hyperv::arch::hypercall::HvCall;
@@ -156,13 +155,15 @@ impl HvTestCtx {
     }
 }
 
-impl HypercallTrait for HvTestCtx {
+impl HypercallPlatformTrait for HvTestCtx {
+    type Config = HyperVHypercallConfig;
+
     fn hypercall(
         &mut self,
         code: u64,
         input: &[u8],
         output: &mut [u8],
-        cfg: HypercallConfig,
+        cfg: Self::Config,
     ) -> TmkResult<()> {
         let code =
             hvdef::HypercallCode(code.try_into().ok().ok_or(TmkError::InvalidHypercallCode)?);
@@ -173,7 +174,7 @@ impl HypercallTrait for HvTestCtx {
         // Write to input page
         self.hvcall.input_page.buffer[0..inp_len].copy_from_slice(&input[0..inp_len]);
 
-        let result = if out_len == 0 && inp_len <= 16 && cfg.pass_by_register_hint {
+        let result = if out_len == 0 && inp_len <= 16 && cfg.fast_call {
             // Clear rest of input page if inp_len < 16
             self.hvcall.input_page.buffer[inp_len..16].fill(0);
 
@@ -192,6 +193,20 @@ impl HypercallTrait for HvTestCtx {
 
         Ok(result.result()?)
     }
+}
+
+/// Collection of parameters for Hyper-V hypercalls.
+#[derive(Default)]
+pub struct HyperVHypercallConfig {
+    /// A repetition start index used for some hypercalls.
+    pub rep_start: Option<usize>,
+    /// A repetition count used for some hypercalls.
+    pub rep_count: Option<usize>,
+    /// A size value used for some hypercalls.
+    pub size: Option<usize>,
+    /// Whether to hint that we want to attempt to pass the arguments by
+    /// register as a fast call (two input fields, zero output fields)
+    pub fast_call: bool,
 }
 
 impl From<hvdef::HvError> for TmkError {
