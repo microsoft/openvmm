@@ -365,20 +365,21 @@ impl PetriVmmBackend for HyperVPetriBackend {
             // Hypervisor support is needed for this to work.
             let is_not_vbs = !matches!(config.firmware.isolation(), Some(IsolationType::Vbs));
 
-            // The Hyper-V serial device for ARM doesn't support additional
-            // serial ports yet.
-            let is_x86 = matches!(config.arch, MachineArch::X86_64);
+            let current_winver = windows_version::OsVersion::current();
+            tracing::debug!(?current_winver, "host windows version");
 
             // The registry key to enable additional COM ports is only
             // available in newer builds of Windows.
-            let current_winver = windows_version::OsVersion::current();
-            tracing::debug!(?current_winver, "host windows version");
-            // This is the oldest working build used in CI
-            // TODO: determine the actual minimum version
-            const COM3_MIN_WINVER: u32 = 27813;
-            let is_supported_winver = current_winver.build >= COM3_MIN_WINVER;
+            const COM3_MIN_WINVER_X64: u32 = 27653;
+            const COM3_MIN_WINVER_AARCH64: u32 = 29627;
 
-            properties.is_openhcl && is_not_vbs && is_x86 && is_supported_winver
+            let is_supported_winver = current_winver.build
+                >= match config.arch {
+                    MachineArch::X86_64 => COM3_MIN_WINVER_X64,
+                    MachineArch::Aarch64 => COM3_MIN_WINVER_AARCH64,
+                };
+
+            properties.is_openhcl && is_not_vbs && is_supported_winver
         };
 
         // devnote: The imc_hiv and management_vtl_settings temp files are

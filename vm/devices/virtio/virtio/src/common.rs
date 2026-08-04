@@ -318,7 +318,14 @@ impl VirtioQueue {
     /// new data arrived during arming, it returns immediately without sleeping.
     /// On wakeup, kicks are suppressed to avoid unnecessary doorbells while
     /// the caller drains the queue.
+    ///
+    /// Returns `Poll::Pending` forever once the queue has failed, since no
+    /// further work can ever be fetched. This keeps callers that loop on
+    /// "kick, then retry" from spinning.
     pub fn poll_kick(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.core.failed() {
+            return Poll::Pending;
+        }
         if self.core.arm_for_kick() {
             ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
         }
@@ -424,6 +431,13 @@ impl VirtioQueue {
     }
 }
 
+/// Yields each descriptor chain the guest makes available.
+///
+/// After yielding a [`QueueError`] the queue is retired, and the stream parks
+/// forever rather than ending: returning `None` would be ready synchronously on
+/// every poll, so a caller looping over the stream would spin on it. Parking
+/// makes it impossible for any caller to busy-loop, and the worker stays
+/// cancellable.
 impl Stream for VirtioQueue {
     type Item = Result<VirtioQueueCallbackWork, Error>;
 

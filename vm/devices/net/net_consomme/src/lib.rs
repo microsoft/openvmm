@@ -194,6 +194,10 @@ pub enum ConsommeMessageError {
     /// Error executing request on current network instance.
     #[error("bind error")]
     Bind(consomme::BindError),
+    /// The subnet's virtual address pool is exhausted, so no virtual address
+    /// could be allocated.
+    #[error("virtual address pool exhausted")]
+    VirtualAddressPoolExhausted,
 }
 
 /// Callback to modify network state dynamically.
@@ -228,6 +232,7 @@ enum ConsommeMessage {
     BindPort(Rpc<PortForwardConfig, Result<(), consomme::BindError>>),
     UnbindPort(Rpc<PortUnbindConfig, Result<(), consomme::BindError>>),
     UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
+    CreateVirtualAddress(Rpc<IpAddr, Option<IpAddr>>),
 }
 
 impl ConsommeControl {
@@ -298,6 +303,22 @@ impl ConsommeControl {
             .call(ConsommeMessage::UpdateState, f)
             .await
             .map_err(ConsommeMessageError::Mesh)
+    }
+
+    /// Allocates a virtual IP address within the endpoint's subnet and routes
+    /// guest traffic sent to it to `destination` on the host.
+    ///
+    /// Returns [`ConsommeMessageError::VirtualAddressPoolExhausted`] if the
+    /// subnet's virtual address pool is exhausted.
+    pub async fn create_virtual_address(
+        &self,
+        destination: IpAddr,
+    ) -> Result<IpAddr, ConsommeMessageError> {
+        self.send
+            .call(ConsommeMessage::CreateVirtualAddress, destination)
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .ok_or(ConsommeMessageError::VirtualAddressPoolExhausted)
     }
 }
 
@@ -618,6 +639,9 @@ fn process_message(
                 consomme.get_mut().clear_local_addr_map();
                 consomme.update_dns_nameservers()
             });
+        }
+        ConsommeMessage::CreateVirtualAddress(rpc) => {
+            rpc.handle_sync(|destination| consomme.get_mut().create_virtual_address(destination));
         }
     }
 }

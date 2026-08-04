@@ -3,7 +3,8 @@
 
 //! Virtio vsock device implementation, per section 5.10 of the virtio specification.
 
-// UNSAFETY: Pointer casts between AtomicU8 and u8 to allow direct read/write into guest memory.
+// UNSAFETY: Pointer casts between AtomicU8 and u8 to allow direct read/write
+// into guest memory and Linux vhost ioctls.
 #![expect(unsafe_code)]
 
 mod connections;
@@ -11,6 +12,8 @@ pub mod resolver;
 mod ring;
 mod spec;
 mod unix_relay;
+#[cfg(target_os = "linux")]
+mod vhost;
 
 #[cfg(test)]
 mod integration_tests;
@@ -479,7 +482,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             error = &err as &dyn std::error::Error,
                             "error peeking virtio rx queue"
                         );
-                        return false;
+                        return;
                     }
                 };
 
@@ -502,10 +505,16 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     r = state.tx_queue.select_next_some() => {
                         match r {
                             Ok(work) => self.handle_guest_tx(state, work),
-                            Err(err) => tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "error reading from virtio tx queue"
-                            ),
+                            Err(err) => {
+                                // The queue is retired: the rejected chain is
+                                // never consumed, so retrying would fail
+                                // identically forever.
+                                tracing::error!(
+                                    error = &err as &dyn std::error::Error,
+                                    "error reading from virtio tx queue, stopping worker"
+                                );
+                                return;
+                            }
                         }
                     }
                     r = rx_ready => {
@@ -541,8 +550,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                 };
             }
         })
-        .await?;
-        Ok(())
+        .await
     }
 }
 

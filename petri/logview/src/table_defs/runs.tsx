@@ -3,13 +3,14 @@
 
 import { ColumnDef } from "@tanstack/react-table";
 import { Link } from "react-router-dom";
-import { RunData } from "../data_defs";
+import { RunData, parseRunKey } from "../data_defs";
 import "../styles/runs.css";
 
 export const defaultSorting = [{ id: "creationTime", desc: true }];
 
 export const columnWidthMap = {
   name: 115,
+  attempt: 75,
   creationTime: 210,
   status: 60,
   failed: 50,
@@ -64,10 +65,11 @@ export const createColumns = (): ColumnDef<RunData>[] => {
       header: "Run",
       enableSorting: true,
       cell: (info) => {
-        const runId = info.getValue<string>().replace("runs/", "");
+        const runKey = info.getValue<string>().replace("attempts/", "");
+        const { runId } = parseRunKey(runKey);
         return (
           <Link
-            to={`/runs/${runId}`}
+            to={`/runs/${runKey}`}
             className="common-table-link"
             title={runId}
           >
@@ -79,6 +81,23 @@ export const createColumns = (): ColumnDef<RunData>[] => {
         const a = rowA.getValue(columnId) as string;
         const b = rowB.getValue(columnId) as string;
         return a.localeCompare(b);
+      },
+    },
+    {
+      id: "attempt",
+      header: "Attempt",
+      enableSorting: true,
+      accessorFn: (row) =>
+        parseRunKey(row.name.replace("attempts/", "")).attempt,
+      cell: (info) => (
+        <div className="common-total-count">
+          {info.getValue<string>() || "-"}
+        </div>
+      ),
+      sortingFn: (rowA, rowB, columnId) => {
+        const a = parseInt(rowA.getValue(columnId) as string) || 0;
+        const b = parseInt(rowB.getValue(columnId) as string) || 0;
+        return a - b;
       },
     },
     {
@@ -164,10 +183,14 @@ export const createColumns = (): ColumnDef<RunData>[] => {
       header: "GH Run",
       enableSorting: true,
       cell: (info) => {
-        const runId = info.getValue<string>().replace("runs/", "");
+        const runKey = info.getValue<string>().replace("attempts/", "");
+        const { runId, attempt } = parseRunKey(runKey);
+        const href = attempt
+          ? `https://github.com/microsoft/openvmm/actions/runs/${runId}/attempts/${attempt}`
+          : `https://github.com/microsoft/openvmm/actions/runs/${runId}`;
         return (
           <a
-            href={`https://github.com/microsoft/openvmm/actions/runs/${runId}`}
+            href={href}
             target="_blank"
             rel="noopener noreferrer"
             className="common-table-link"

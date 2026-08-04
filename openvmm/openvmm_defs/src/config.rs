@@ -60,8 +60,6 @@ pub struct Config {
     pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
-    /// allow the guest to reset without notifying the client
-    pub automatic_guest_reset: bool,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;

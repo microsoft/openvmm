@@ -19,6 +19,7 @@ use fd_passing::FdRegistry;
 #[derive(Clone, Default)]
 struct FdRegistry {}
 
+use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -62,11 +63,13 @@ use openvmm_defs::config::NumaDistance;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieGenericInitiatorConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::UefiConsoleMode;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -100,6 +103,7 @@ use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 
 #[derive(mesh::MeshPayload)]
 pub struct Parameters {
@@ -570,13 +574,14 @@ impl VmService {
             }
             vmservice::Vm::Quit((), response) => {
                 // Shut down the controller (which stops and joins the worker).
+                // Drop the VM's device RPC channels first; see `teardown_vm`.
+                self.vm.take();
                 if let Some(controller) = self.vm_controller.take() {
                     controller.send(VmControllerRpc::Quit);
                 }
                 if let Some(task) = self.controller_task.take() {
                     task.await;
                 }
-                self.vm.take();
                 self.vm_controller_events.take();
                 if let Some((_, wait_response)) = self.wait_vm_response.take() {
                     wait_response.send(Err(grpc_error(anyhow!("VM quit"))));
@@ -692,30 +697,9 @@ impl VmService {
         // passed in over the fd-passing protocol.
         let registry = self.registry.clone();
 
-        let load_mode = match req_config
-            .boot_config
-            .context("missing boot configuration")?
-        {
-            vmservice::vm_config::BootConfig::DirectBoot(boot) => {
-                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
-                let initrd = if boot.initrd_path.is_empty() {
-                    None
-                } else {
-                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
-                };
-                LoadMode::Linux {
-                    kernel,
-                    initrd,
-                    cmdline: boot.kernel_cmdline,
-                    enable_serial: true,
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
-                }
-            }
-            vmservice::vm_config::BootConfig::Uefi(_) => {
-                anyhow::bail!("uefi not yet supported")
-            }
-        };
-
+        // Serial ports are set up before the boot configuration because UEFI
+        // needs to know whether any are present to decide whether to enable its
+        // serial console.
         let mut ports = [(); 4].map(|_| None);
         for port in req_config.serial_config.iter().flat_map(|c| &c.ports) {
             let pc = ports
@@ -726,17 +710,126 @@ impl VmService {
                 format!("failed to {} serial socket: {}", action, port.socket_path)
             })?);
         }
+        let any_serial_configured = ports.iter().any(|port| port.is_some());
+        let com1_configured = ports[0].is_some();
 
         #[cfg(guest_arch = "aarch64")]
         let arch = vm_manifest_builder::MachineArch::Aarch64;
         #[cfg(guest_arch = "x86_64")]
         let arch = vm_manifest_builder::MachineArch::X86_64;
 
-        let chipset_builder = VmManifestBuilder::new(
-            vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
-            arch,
-        )
-        .with_serial(ports);
+        // The boot configuration also determines the base chipset, since the
+        // firmware and the device model have to agree on the platform.
+        let (load_mode, base_chipset_type, uefi_config) = match req_config
+            .boot_config
+            .take()
+            .context("missing boot configuration")?
+        {
+            vmservice::vm_config::BootConfig::DirectBoot(boot) => {
+                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
+                let initrd = if boot.initrd_path.is_empty() {
+                    None
+                } else {
+                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
+                };
+                (
+                    LoadMode::Linux {
+                        kernel,
+                        initrd,
+                        cmdline: boot.kernel_cmdline,
+                        enable_serial: true,
+                        boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    },
+                    vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
+                    None,
+                )
+            }
+            vmservice::vm_config::BootConfig::Uefi(uefi) => {
+                let firmware = File::open(&uefi.firmware_path).with_context(|| {
+                    format!("failed to open uefi firmware {}", uefi.firmware_path)
+                })?;
+                let initial_variables = uefi.initial_variables.unwrap_or_default();
+                let base_template_json = match (arch, initial_variables.secure_boot_template()) {
+                    (_, vmservice::uefi::initial_variables::SecureBootTemplate::None) => {
+                        None
+                    }
+                    (
+                        vm_manifest_builder::MachineArch::X86_64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                    ) => Some(
+                        firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows(),
+                    ),
+                    (
+                        vm_manifest_builder::MachineArch::Aarch64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                    ) => Some(
+                        firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_windows(),
+                    ),
+                    (
+                        vm_manifest_builder::MachineArch::X86_64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                    ) => Some(
+                        firmware_uefi_resources::x64_secure_boot_templates::microsoft_uefi_ca(),
+                    ),
+                    (
+                        vm_manifest_builder::MachineArch::Aarch64,
+                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                    ) => Some(
+                        firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_uefi_ca(),
+                    ),
+                };
+                (
+                    LoadMode::Uefi {
+                        firmware,
+                        enable_serial: any_serial_configured,
+                        // Route the firmware console to COM1 when it is
+                        // available. The firmware's default console is the
+                        // video device, so without this the firmware and
+                        // anything it launches would have nowhere to write on a
+                        // VM with no graphics adapter.
+                        uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
+                        bios_guid: Guid::new_random(),
+                        enable_vmbus: true,
+                        // Everything below is fixed for now. The proto has no
+                        // way to express these yet; fields will be added as
+                        // callers need them.
+                        //
+                        // Note that memory protections match the CLI in
+                        // defaulting to off, since Linux currently fails to
+                        // boot with them enabled.
+                        enable_memory_protections: false,
+                        enable_debugging: false,
+                        disable_frontpage: false,
+                        enable_tpm: false,
+                        enable_battery: false,
+                        enable_vpci_boot: false,
+                        default_boot_always_attempt: false,
+                        force_dma_bounce: false,
+                    },
+                    vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
+                    Some((base_template_json, uefi.secure_boot_enabled)),
+                )
+            }
+        };
+
+        let mut chipset_builder =
+            VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if let Some((base_template_json, secure_boot_enabled)) = uefi_config {
+            // The UEFI helper device backs the firmware's variable store and
+            // runtime services, so it is required for a UEFI boot. The store is
+            // ephemeral: with no VMGS file configured there is nowhere to
+            // persist boot entries or secure boot state across reboots.
+            chipset_builder = chipset_builder.with_uefi(vm_manifest_builder::UefiManifest::new(
+                arch,
+                base_template_json,
+                None,
+                secure_boot_enabled,
+                firmware_uefi_resources::LogLevel::make_default(),
+                None,
+                EphemeralNonVolatileStoreHandle.into_resource(),
+                None,
+            ));
+        }
         let layout_config = chipset_builder.layout_config();
         let chipset = chipset_builder
             .build()
@@ -785,22 +878,21 @@ impl VmService {
 
         // Build the PCIe topology (root complexes, switches, and the devices
         // attached behind their ports).
-        let (pcie_root_complexes, pcie_switches, pcie_devices) =
-            if let Some(pcie) = req_config.pcie.take() {
-                build_pcie_topology(pcie, &registry).await?
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
-            };
+        let pcie = if let Some(pcie) = req_config.pcie.take() {
+            build_pcie_topology(pcie, &registry).await?
+        } else {
+            BuiltPcieTopology::default()
+        };
 
         let mut config = Config {
             // TODO: devices, other stuff
             load_mode,
             ide_disks: vec![],
             floppy_disks: vec![],
-            pcie_root_complexes,
-            pcie_devices,
-            pcie_switches,
-            pcie_generic_initiators: vec![],
+            pcie_root_complexes: pcie.root_complexes,
+            pcie_devices: pcie.devices,
+            pcie_switches: pcie.switches,
+            pcie_generic_initiators: pcie.generic_initiators,
             vpci_devices: vec![],
             numa,
             chipset: chipset.chipset,
@@ -835,7 +927,27 @@ impl VmService {
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
             rtc_delta_milliseconds: 0,
-            automatic_guest_reset: true,
+        };
+
+        let guest_power_actions = {
+            use vmservice::vm_config::GuestPowerAction as ProtoAction;
+
+            let requested = req_config.guest_power_actions.unwrap_or_default();
+            let defaults = GuestPowerActions::default();
+            let action = |value: i32, default| -> anyhow::Result<GuestPowerAction> {
+                Ok(match ProtoAction::from_i32(value) {
+                    Some(ProtoAction::Default) => default,
+                    Some(ProtoAction::Restart) => GuestPowerAction::Reset,
+                    Some(ProtoAction::Halt) => GuestPowerAction::Halt,
+                    None => bail!("unknown guest power action {value}"),
+                })
+            };
+            GuestPowerActions {
+                shutdown: action(requested.shutdown, defaults.shutdown)?,
+                reset: action(requested.reset, defaults.reset)?,
+                crash: action(requested.crash, defaults.crash)?,
+                watchdog: action(requested.watchdog, defaults.watchdog)?,
+            }
         };
 
         let mut scsi_rpc = None;
@@ -987,10 +1099,7 @@ impl VmService {
             processors,
             log_file: None,
             crash_dump_path: None,
-            // The ttrpc/grpc server never exits on a guest power event; it uses
-            // the historical defaults (none of which is Exit), so the
-            // ExitRequested event handled below is unreachable here.
-            guest_power_actions: GuestPowerActions::default(),
+            guest_power_actions,
         };
 
         // Spawn the controller task.
@@ -1013,12 +1122,17 @@ impl VmService {
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
         let controller = self.vm_controller.take().context("vm not created")?;
+        // Drop the VM's device RPC channels before waiting on the controller.
+        // A live `ScsiControllerRequest` sender keeps the detached storvsp task
+        // running, which in turn stops the VM worker from ever finishing its
+        // stop, so waiting for the controller first would hang forever. The
+        // REPL's quit path works around the same bug.
+        self.vm.take();
         controller.send(VmControllerRpc::Quit);
         drop(controller);
         if let Some(task) = self.controller_task.take() {
             task.await;
         }
-        self.vm.take();
         self.vm_controller_events.take();
         self.lifecycle = VmLifecycle::Uninitialized;
         if let Some((_, response)) = self.wait_vm_response.take() {
@@ -1106,9 +1220,9 @@ impl VmService {
                 }
             }
             VmControllerEvent::ExitRequested { code } => {
-                // The server leaves the guest power actions at their defaults
-                // (none is `exit`), so this should not occur in ttrpc/grpc mode;
-                // log rather than exiting the server out from under its clients.
+                // The protocol has no `exit` power action, so this should not
+                // occur in ttrpc/grpc mode; log rather than exiting the server
+                // out from under its clients.
                 tracing::warn!(code, "unexpected exit request in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {
@@ -1482,16 +1596,21 @@ fn pcie_mmio_range_config(size: u64, base: Option<u64>) -> anyhow::Result<PcieMm
 /// a list of root complexes (each carrying its root ports), a list of switches
 /// (each referencing its parent port), and a list of devices (each referencing
 /// the port it sits behind).
+#[derive(Default)]
+struct BuiltPcieTopology {
+    root_complexes: Vec<PcieRootComplexConfig>,
+    switches: Vec<PcieSwitchConfig>,
+    devices: Vec<PcieDeviceConfig>,
+    generic_initiators: Vec<PcieGenericInitiatorConfig>,
+}
+
 async fn build_pcie_topology(
     topology: vmservice::PcieTopologyConfig,
     registry: &FdRegistry,
-) -> anyhow::Result<(
-    Vec<PcieRootComplexConfig>,
-    Vec<PcieSwitchConfig>,
-    Vec<PcieDeviceConfig>,
-)> {
+) -> anyhow::Result<BuiltPcieTopology> {
     let vmservice::PcieTopologyConfig {
         root_complexes: proto_root_complexes,
+        generic_initiators,
     } = topology;
     let mut root_complexes = Vec::new();
     let mut switches = Vec::new();
@@ -1520,6 +1639,7 @@ async fn build_pcie_topology(
                 hotplug,
                 attached,
                 devfn,
+                acs_capabilities_supported,
             } = root_port;
             ports.push(PciePortConfig {
                 name: port_name.clone(),
@@ -1527,7 +1647,9 @@ async fn build_pcie_topology(
                     .map(|d| d.try_into().context("devfn out of range"))
                     .transpose()?,
                 hotplug,
-                acs_capabilities_supported: None,
+                acs_capabilities_supported: acs_capabilities_supported
+                    .map(|acs| acs.try_into().context("ACS capability mask out of range"))
+                    .transpose()?,
                 cxl: false,
                 pasid: false,
             });
@@ -1561,7 +1683,20 @@ async fn build_pcie_topology(
         });
     }
 
-    Ok((root_complexes, switches, devices))
+    let generic_initiators = generic_initiators
+        .into_iter()
+        .map(|initiator| PcieGenericInitiatorConfig {
+            port_name: initiator.port_name,
+            node: initiator.node,
+        })
+        .collect();
+
+    Ok(BuiltPcieTopology {
+        root_complexes,
+        switches,
+        devices,
+        generic_initiators,
+    })
 }
 
 /// Walks a single proto `PcieAttachment` (the thing behind one port): either an
@@ -1590,6 +1725,7 @@ fn walk_pcie_attachment(
                     hotplug,
                     attached,
                     devfn,
+                    acs_capabilities_supported,
                 } = downstream;
                 ports.push(PciePortConfig {
                     name: downstream_name.clone(),
@@ -1597,7 +1733,9 @@ fn walk_pcie_attachment(
                         .map(|d| d.try_into().context("devfn out of range"))
                         .transpose()?,
                     hotplug,
-                    acs_capabilities_supported: None,
+                    acs_capabilities_supported: acs_capabilities_supported
+                        .map(|acs| acs.try_into().context("ACS capability mask out of range"))
+                        .transpose()?,
                     cxl: false,
                     pasid: false,
                 });
@@ -1643,7 +1781,11 @@ async fn build_pcie_device(
 /// opened. The device must already be bound to `vfio-pci` on the host.
 #[cfg(target_os = "linux")]
 fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
-    let vmservice::VfioDevice { host_pci_address } = vfio;
+    let vmservice::VfioDevice {
+        host_pci_address,
+        bar_addresses,
+    } = vfio;
+    let bar_addresses = parse_vfio_bar_addresses(bar_addresses)?;
     // The address is joined into a sysfs path below; reject path separators so
     // it cannot escape `/sys/bus/pci/devices` (an absolute path or `..` would
     // otherwise redirect the join).
@@ -1669,9 +1811,39 @@ fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<Pci
     Ok(vfio_assigned_device_resources::VfioDeviceHandle {
         pci_id: host_pci_address,
         group,
-        bar_pt: [false; 6],
+        bar_addresses,
     }
     .into_resource())
+}
+
+#[cfg(target_os = "linux")]
+fn parse_vfio_bar_addresses(
+    entries: Vec<vmservice::VfioBarAddress>,
+) -> anyhow::Result<[vfio_assigned_device_resources::BarAddressConfig; 6]> {
+    use vfio_assigned_device_resources::BarAddressConfig;
+    use vmservice::vfio_bar_address::Source;
+
+    let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+    for entry in entries {
+        let index =
+            usize::try_from(entry.bar_index).context("VFIO BAR index does not fit usize")?;
+        let config = bar_addresses
+            .get_mut(index)
+            .with_context(|| format!("VFIO BAR index {} is out of range", entry.bar_index))?;
+        anyhow::ensure!(
+            *config == BarAddressConfig::GuestAssigned,
+            "duplicate VFIO BAR index {}",
+            entry.bar_index
+        );
+        *config = match entry.source.context("missing VFIO BAR address source")? {
+            Source::Host(()) => BarAddressConfig::HostAssigned,
+            Source::Fixed(address) => {
+                anyhow::ensure!(address != 0, "VFIO BAR fixed address must be nonzero");
+                BarAddressConfig::Fixed(address)
+            }
+        };
+    }
+    Ok(bar_addresses)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1914,4 +2086,46 @@ fn build_vhost_user_device(
     _vhost_user: vmservice::VhostUser,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     anyhow::bail!("vhost-user is only supported on unix hosts")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use vfio_assigned_device_resources::BarAddressConfig;
+    use vmservice::vfio_bar_address::Source;
+
+    fn vfio_bar_address(bar_index: u32, source: Option<Source>) -> vmservice::VfioBarAddress {
+        vmservice::VfioBarAddress { bar_index, source }
+    }
+
+    #[test]
+    fn parse_vfio_bar_address_config() {
+        let bars = parse_vfio_bar_addresses(vec![
+            vfio_bar_address(0, Some(Source::Host(()))),
+            vfio_bar_address(4, Some(Source::Fixed(0x11_0000_0000))),
+        ])
+        .unwrap();
+
+        assert_eq!(bars[0], BarAddressConfig::HostAssigned);
+        assert_eq!(bars[1], BarAddressConfig::GuestAssigned);
+        assert_eq!(bars[4], BarAddressConfig::Fixed(0x11_0000_0000));
+    }
+
+    #[test]
+    fn reject_invalid_vfio_bar_address_config() {
+        assert!(
+            parse_vfio_bar_addresses(vec![vfio_bar_address(6, Some(Source::Host(())))]).is_err()
+        );
+        assert!(parse_vfio_bar_addresses(vec![vfio_bar_address(0, None)]).is_err());
+        assert!(
+            parse_vfio_bar_addresses(vec![vfio_bar_address(0, Some(Source::Fixed(0)))]).is_err()
+        );
+        assert!(
+            parse_vfio_bar_addresses(vec![
+                vfio_bar_address(0, Some(Source::Host(()))),
+                vfio_bar_address(0, Some(Source::Fixed(0x1000))),
+            ])
+            .is_err()
+        );
+    }
 }

@@ -318,7 +318,16 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn set_activity(&mut self, value: &vp::Activity) -> Result<(), Self::Error> {
-        let state = match value.mp_state {
+        let vp::Activity {
+            mp_state,
+            nmi_pending,
+            nmi_masked,
+            interrupt_shadow,
+            pending_event,
+            pending_interruption,
+        } = *value;
+
+        let state = match mp_state {
             vp::MpState::Running => kvm::KVM_MP_STATE_RUNNABLE,
             vp::MpState::WaitForSipi => kvm::KVM_MP_STATE_INIT_RECEIVED,
             vp::MpState::Halted => kvm::KVM_MP_STATE_HALTED,
@@ -327,6 +336,14 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             }
         };
         self.kvm().set_mp_state(state)?;
+
+        let mut event_flags = 0;
+        if nmi_pending {
+            event_flags |= kvm::KVM_VCPUEVENT_VALID_NMI_PENDING;
+        }
+        if interrupt_shadow {
+            event_flags |= kvm::KVM_VCPUEVENT_VALID_SHADOW;
+        }
 
         let mut events = kvm::kvm_vcpu_events {
             exception: kvm::kvm_vcpu_events__bindgen_ty_1 {
@@ -340,22 +357,22 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
                 injected: 0,
                 nr: 0,
                 soft: 0,
-                shadow: value.interrupt_shadow.into(),
+                shadow: interrupt_shadow.into(),
             },
             nmi: kvm::kvm_vcpu_events__bindgen_ty_3 {
                 injected: 0,
-                pending: value.nmi_pending.into(),
-                masked: value.nmi_masked.into(),
+                pending: nmi_pending.into(),
+                masked: nmi_masked.into(),
                 pad: 0,
             },
             sipi_vector: 0,
-            flags: 0,
+            flags: event_flags,
             exception_has_payload: 0,
             exception_payload: 0,
             ..Default::default()
         };
 
-        match value.pending_event {
+        match pending_event {
             Some(vp::PendingEvent::Exception {
                 vector,
                 error_code,
@@ -376,7 +393,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             None => {}
         }
 
-        match value.pending_interruption {
+        match pending_interruption {
             Some(vp::PendingInterruption::Exception { vector, error_code }) => {
                 events.exception.injected = true.into();
                 events.exception.nr = vector;

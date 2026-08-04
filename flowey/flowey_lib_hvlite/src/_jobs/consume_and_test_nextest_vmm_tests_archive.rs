@@ -161,10 +161,15 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
-        // use an ad-hoc, step-local dir as a staging ground for test content
-        let test_content_dir = ctx.emit_rust_stepv("creating new test content dir", |_| {
-            |_| Ok(std::env::current_dir()?.absolute()?)
-        });
+        // use a test content dir with
+        // - short path name to avoid issues with long paths
+        // - relative to github.workspace so that the correct disk is used on CI machines.
+        let test_content_dir = match ctx.backend() {
+            FlowBackend::Local => panic!("local backend not supported"),
+            FlowBackend::Ado => ctx.get_ado_variable(AdoRuntimeVar::PIPELINE_WORKSPACE),
+            FlowBackend::Github => ctx.get_gh_context_var().global().runner_temp(),
+        }
+        .map(ctx, |w| PathBuf::from(w).join("test"));
 
         let VmmTestsDepArtifacts {
             incubator: register_incubator,
@@ -288,6 +293,12 @@ impl SimpleFlowNode for Node {
             register_prep_steps.claim_unused(ctx);
         }
 
+        let prepare_vhost_vsock = incubator_profile.is_none()
+            && matches!(
+                target.operating_system,
+                target_lexicon::OperatingSystem::Linux
+            )
+            && matches!(target.architecture, target_lexicon::Architecture::X86_64);
         let (extra_env, nextest_working_dir, nextest_config_file) = if let Some(profile_name) =
             incubator_profile
         {
@@ -368,6 +379,7 @@ impl SimpleFlowNode for Node {
             extra_env,
             pre_run_deps,
             hugetlb_2mb_overcommit_pages,
+            prepare_vhost_vsock,
             results: v,
         });
 
