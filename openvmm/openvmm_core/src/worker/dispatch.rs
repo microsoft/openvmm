@@ -1381,12 +1381,6 @@ impl InitializedVm {
 
         let mut resolver = ResourceResolver::new();
 
-        resolver.add_async_resolver(
-            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
-                OpenVmmRemoteDynamicResolvers {},
-            ),
-        );
-
         // Expose the partition reference time source, if available.
         if cfg.hypervisor.with_hv {
             if let Some(ref_time) = partition.reference_time_source() {
@@ -1444,6 +1438,14 @@ impl InitializedVm {
         } else {
             (None, None)
         };
+
+        resolver.add_async_resolver(
+            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
+                OpenVmmRemoteDynamicResolvers {
+                    vmgs: vmgs_client.clone(),
+                },
+            ),
+        );
 
         // For sanity: we immediately restrict `vmgs_client` to the
         // `HvLiteVmgsNonVolatileStore` API, since we don't want code past this
@@ -4107,15 +4109,20 @@ impl WatchdogCallback for WatchdogTimeout {
 }
 
 #[derive(MeshPayload, Clone)]
-struct OpenVmmRemoteDynamicResolvers {}
+struct OpenVmmRemoteDynamicResolvers {
+    vmgs: Option<vmgs_broker::VmgsClient>,
+}
 
 impl chipset_device_worker::RemoteDynamicResolvers for OpenVmmRemoteDynamicResolvers {
     const WORKER_ID_STR: &str = "openvmm_remote_chipset_worker";
 
     async fn register_remote_dynamic_resolvers(
         self,
-        _resolver: &mut ResourceResolver,
+        resolver: &mut ResourceResolver,
     ) -> anyhow::Result<()> {
+        if let Some(vmgs) = self.vmgs {
+            resolver.add_resolver(vmgs);
+        }
         Ok(())
     }
 }
