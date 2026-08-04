@@ -300,6 +300,7 @@ impl LayerIo for VhdxLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use disk_backend::Disk;
     use disk_backend::DiskIo;
     use disk_layered::DiskLayer;
     use disk_layered::LayerConfiguration;
@@ -339,6 +340,25 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[async_test]
+    async fn sector_range_conformance(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.vhdx");
+        let layer = create_and_open_layer(&path, &driver).await;
+        let disk = Disk::new(wrap_in_layered_disk(layer).await).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    /// `LayeredDisk` does not reach `write_no_overwrite` or both values of
+    /// `unmap`'s `next_is_zero`, so the layer is also tested directly.
+    #[async_test]
+    async fn layer_sector_range_conformance(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.vhdx");
+        let layer = create_and_open_layer(&path, &driver).await;
+        storage_tests::sector_range::test_layer_sector_range(&layer).await;
     }
 
     #[async_test]

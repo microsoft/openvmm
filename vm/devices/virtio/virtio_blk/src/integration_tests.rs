@@ -11,15 +11,22 @@ use crate::VirtioBlkDevice;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
+use futures::future::Either;
+use futures::future::select;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
 use pal_async::async_test;
+use pal_async::timer::PolledTimer;
 use pal_event::Event;
 use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
+use std::future::Future;
+use std::pin::pin;
+use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
@@ -70,12 +77,26 @@ struct TestHarness {
 impl TestHarness {
     /// Create a harness with a RAM disk of the given size.
     fn new(driver: &DefaultDriver, disk: Disk, read_only: bool) -> Self {
+        Self::with_device_driver(driver, driver, disk, read_only)
+    }
+
+    /// Like [`TestHarness::new`], but runs the device's worker task on
+    /// `device_driver` rather than on the test's own executor. A test that
+    /// must stay responsive while the worker misbehaves puts the device on a
+    /// separate thread's executor.
+    fn with_device_driver(
+        driver: &DefaultDriver,
+        device_driver: &DefaultDriver,
+        disk: Disk,
+        read_only: bool,
+    ) -> Self {
         let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
 
         init_avail_ring(&mem, AVAIL_ADDR);
         init_used_ring(&mem, USED_ADDR);
 
-        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let driver_source =
+            VmTaskDriverSource::new(SingleDriverBackend::new(device_driver.clone()));
         let device = VirtioBlkDevice::new(&driver_source, disk, read_only);
 
         let queue_event = Event::new();
@@ -508,6 +529,20 @@ impl TestHarness {
 
 fn ram_disk(size: u64, read_only: bool) -> Disk {
     disklayer_ram::ram_disk(size, read_only).unwrap()
+}
+
+/// Awaits `fut`, panicking with `msg` if it does not complete within `timeout`.
+async fn with_timeout<F: Future>(
+    driver: &DefaultDriver,
+    timeout: Duration,
+    msg: &str,
+    fut: F,
+) -> F::Output {
+    let mut timer = PolledTimer::new(driver);
+    match select(pin!(fut), pin!(timer.sleep(timeout))).await {
+        Either::Left((output, _)) => output,
+        Either::Right(_) => panic!("{msg}"),
+    }
 }
 
 /// Write 1 sector then read it back. Verifies basic write and read roundtrip.
@@ -1283,4 +1318,63 @@ async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
         .read_at(read_status_gpa, &mut read_status)
         .unwrap();
     assert_eq!(read_status[0], VIRTIO_BLK_S_OK, "read should succeed");
+}
+
+/// A descriptor whose `next` link points back at itself forms a chain that
+/// never terminates, and the queue rejects it without consuming it — the
+/// available index does not move, so the same chain is still there on the next
+/// poll. A worker that logs the error and keeps polling therefore spins inside
+/// a single `poll` call, never returning `Pending`. That burns a CPU forever
+/// and, because the cancel future is only polled once the work future returns
+/// `Pending`, leaves the worker task impossible to stop — wedging device
+/// teardown, reset, save/restore, and inspect.
+///
+/// The device runs on its own executor thread so that a spinning worker wedges
+/// only that thread, letting this test fail on a timeout instead of hanging.
+#[async_test]
+async fn cyclic_descriptor_chain_does_not_wedge_worker(driver: DefaultDriver) {
+    let (_device_thread, device_driver) = DefaultPool::spawn_on_thread("virtio-blk-device");
+    let disk = ram_disk(64 * 1024, false);
+    let mut harness = TestHarness::with_device_driver(&driver, &device_driver, disk, false);
+    harness.enable().await;
+
+    // Run one valid request first, so the worker is known to be up and parked
+    // waiting for a kick by the time the bad chain arrives.
+    harness.post_flush_request(0);
+    let (used_id, _) = harness.wait_for_used().await;
+    assert_eq!(used_id, 0);
+
+    // Descriptor 4 chains to itself.
+    let gpa = harness.alloc_data(REQ_HEADER_SIZE);
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        4,
+        gpa,
+        REQ_HEADER_SIZE,
+        DescriptorFlags::new().with_next(true),
+        4,
+    );
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        4,
+        &mut harness.avail_idx,
+    );
+    harness.queue_event.signal();
+
+    // Give the worker time to wake on the kick and reject the chain.
+    PolledTimer::new(&driver)
+        .sleep(Duration::from_millis(250))
+        .await;
+
+    // A worker spinning on the bad chain never observes the stop request.
+    with_timeout(
+        &driver,
+        Duration::from_secs(5),
+        "virtio-blk worker could not be stopped after an invalid descriptor chain",
+        harness.device.stop_queue(0),
+    )
+    .await;
 }

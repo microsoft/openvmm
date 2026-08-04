@@ -308,10 +308,7 @@ impl VmController {
                             return;
                         }
                         GuestPowerAction::Reset => {
-                            // Reboot the VM in place. A guest reset with the default
-                            // action is handled by `automatic_guest_reset` and never
-                            // reaches here; this path covers a reset chosen for a
-                            // power-off or crash.
+                            // Reboot the VM in place.
                             tracing::info!("resetting VM on guest power event");
                             if let Err(err) = self.vm_rpc.call_failable(VmRpc::Reset, ()).await {
                                 tracing::error!(

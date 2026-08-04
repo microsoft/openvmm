@@ -218,7 +218,6 @@ impl Manifest {
             chipset_capabilities: config.chipset_capabilities,
             layout: config.layout,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
-            automatic_guest_reset: config.automatic_guest_reset,
         }
     }
 }
@@ -262,7 +261,6 @@ pub struct Manifest {
     chipset_capabilities: VmChipsetCapabilities,
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
-    automatic_guest_reset: bool,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -773,11 +771,9 @@ struct LoadedVmInner {
     #[cfg(target_os = "linux")]
     vfio_cdev_inspect: Option<vfio_assigned_device::manager::VfioCdevManagerClient>,
 
-    // relay halt messages, intercepting reset if configured.
+    // relay halt messages to the client, which decides what to do about them.
     halt_recv: mesh::Receiver<HaltReason>,
     client_notify_send: mesh::Sender<HaltReason>,
-    /// allow the guest to reset without notifying the client
-    automatic_guest_reset: bool,
     chipset: Arc<vmotherboard::Chipset>,
     /// Instantiated IOMMU devices (ACPI configs + per-RC shared state),
     /// keyed by IOMMU type. `IommuDevices::None` when no IOMMU is configured.
@@ -1379,12 +1375,6 @@ impl InitializedVm {
 
         let mut resolver = ResourceResolver::new();
 
-        resolver.add_async_resolver(
-            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
-                OpenVmmRemoteDynamicResolvers {},
-            ),
-        );
-
         // Expose the partition reference time source, if available.
         if cfg.hypervisor.with_hv {
             if let Some(ref_time) = partition.reference_time_source() {
@@ -1442,6 +1432,14 @@ impl InitializedVm {
         } else {
             (None, None)
         };
+
+        resolver.add_async_resolver(
+            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
+                OpenVmmRemoteDynamicResolvers {
+                    vmgs: vmgs_client.clone(),
+                },
+            ),
+        );
 
         // For sanity: we immediately restrict `vmgs_client` to the
         // `HvLiteVmgsNonVolatileStore` API, since we don't want code past this
@@ -2972,7 +2970,6 @@ impl InitializedVm {
                 vfio_cdev_inspect,
                 halt_recv,
                 client_notify_send,
-                automatic_guest_reset: cfg.automatic_guest_reset,
                 chipset: chipset.chipset.clone(),
                 iommu_devices,
                 #[cfg(guest_arch = "x86_64")]
@@ -3774,15 +3771,7 @@ impl LoadedVm {
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
-                    if matches!(reason, HaltReason::Reset) && self.inner.automatic_guest_reset {
-                        tracing::info!("guest-initiated reset");
-                        if let Err(err) = self.reset(true).await {
-                            tracing::error!(?err, "failed to reset VM");
-                            break;
-                        }
-                    } else {
-                        self.inner.client_notify_send.send(reason);
-                    }
+                    self.inner.client_notify_send.send(reason);
                 }
             }
         }
@@ -3943,7 +3932,6 @@ impl LoadedVm {
                 vtl2_chipset_mmio_size: 0,
             }, // TODO
             rtc_delta_milliseconds: 0, // TODO
-            automatic_guest_reset: self.inner.automatic_guest_reset,
         };
         #[expect(unreachable_code, reason = "TODO")]
         RestartState {
@@ -4109,15 +4097,20 @@ impl WatchdogCallback for WatchdogTimeout {
 }
 
 #[derive(MeshPayload, Clone)]
-struct OpenVmmRemoteDynamicResolvers {}
+struct OpenVmmRemoteDynamicResolvers {
+    vmgs: Option<vmgs_broker::VmgsClient>,
+}
 
 impl chipset_device_worker::RemoteDynamicResolvers for OpenVmmRemoteDynamicResolvers {
     const WORKER_ID_STR: &str = "openvmm_remote_chipset_worker";
 
     async fn register_remote_dynamic_resolvers(
         self,
-        _resolver: &mut ResourceResolver,
+        resolver: &mut ResourceResolver,
     ) -> anyhow::Result<()> {
+        if let Some(vmgs) = self.vmgs {
+            resolver.add_resolver(vmgs);
+        }
         Ok(())
     }
 }

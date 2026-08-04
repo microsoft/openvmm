@@ -40,6 +40,8 @@ mod numa;
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
+/// Tests involving UEFI Secure Boot functionality.
+mod secureboot;
 /// Tests involving TPM functionality
 mod tpm;
 /// Tests for VLAN (802.1Q) support on virtual NICs.

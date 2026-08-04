@@ -26,6 +26,7 @@ tracing.workspace = true
 [dev-dependencies]
 inspect = { workspace = true, features = ["initiate"] }
 pal_async.workspace = true
+storage_tests.workspace = true
 test_with_tracing.workspace = true
 zerocopy.workspace = true
 

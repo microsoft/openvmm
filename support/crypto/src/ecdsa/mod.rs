@@ -57,7 +57,7 @@ impl EcdsaKeyPair {
     /// Hash `data` with `hash_algorithm` and sign the resulting digest.
     /// Returns the signature as `r || s` in big-endian, each component
     /// `curve.key_size()` bytes.
-    pub fn sign(&self, hash_algorithm: HashAlgorithm, data: &[u8]) -> Result<Vec<u8>, EcdsaError> {
+    pub fn sign(&self, data: &[u8], hash_algorithm: HashAlgorithm) -> Result<Vec<u8>, EcdsaError> {
         let hash = hash_algorithm.hash(data);
         self.0.sign_prehash(&hash)
     }
@@ -73,8 +73,8 @@ impl EcdsaPublicKey {
     /// by [`EcdsaPublicKey::public_key_bytes`]). This is for verifying against
     /// an externally-supplied public key (e.g. one extracted from an X.509
     /// certificate) where no private key is held.
-    pub fn new(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
-        sys::EcdsaPublicKeyInner::new(curve, public_key).map(Self)
+    pub fn from_public_key_bytes(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+        sys::EcdsaPublicKeyInner::from_public_key_bytes(curve, public_key).map(Self)
     }
 
     /// Construct an ECDSA public key from a DER-encoded `SubjectPublicKeyInfo`
@@ -84,18 +84,18 @@ impl EcdsaPublicKey {
         sys::EcdsaPublicKeyInner::from_public_key_der(spki_der).map(Self)
     }
 
-    /// Hash `data` with `hash_algorithm` and verify `signature` against this
+    /// Hash `message` with `hash_algorithm` and verify `signature` against this
     /// public key. The signature must be `r || s` in big-endian,
     /// each component `curve.key_size()` bytes (i.e. the format produced by
     /// [`EcdsaKeyPair::sign`]). Returns `Ok(true)` if the signature is valid,
     /// `Ok(false)` if it is invalid, or an error for other failures.
     pub fn verify(
         &self,
-        hash_algorithm: HashAlgorithm,
-        data: &[u8],
+        message: &[u8],
         signature: &[u8],
+        hash_algorithm: HashAlgorithm,
     ) -> Result<bool, EcdsaError> {
-        let hash = hash_algorithm.hash(data);
+        let hash = hash_algorithm.hash(message);
         self.0.verify_prehash(&hash, signature)
     }
 
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn sign_p384_produces_correct_size() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
-        let sig = key.sign(HashAlgorithm::Sha384, b"message to sign").unwrap();
+        let sig = key.sign(b"message to sign", HashAlgorithm::Sha384).unwrap();
         // P-384 signature is r || s, each 48 bytes.
         assert_eq!(sig.len(), 96);
     }
@@ -140,8 +140,8 @@ mod tests {
     #[test]
     fn sign_p384_is_non_deterministic() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
-        let sig1 = key.sign(HashAlgorithm::Sha384, b"message to sign").unwrap();
-        let sig2 = key.sign(HashAlgorithm::Sha384, b"message to sign").unwrap();
+        let sig1 = key.sign(b"message to sign", HashAlgorithm::Sha384).unwrap();
+        let sig2 = key.sign(b"message to sign", HashAlgorithm::Sha384).unwrap();
         // ECDSA uses a random nonce, so two signatures of the same message
         // should differ (with overwhelming probability).
         assert_ne!(sig1, sig2);
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn signature_components_are_valid() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
-        let sig = key.sign(HashAlgorithm::Sha384, b"data to sign").unwrap();
+        let sig = key.sign(b"data to sign", HashAlgorithm::Sha384).unwrap();
 
         let r = &sig[..48];
         let s = &sig[48..];
@@ -203,19 +203,19 @@ mod tests {
         let public_key: &EcdsaPublicKey = &key;
         let message = b"roundtrip test message";
 
-        let signature = key.sign(HashAlgorithm::Sha384, message).unwrap();
+        let signature = key.sign(message, HashAlgorithm::Sha384).unwrap();
 
         // A valid signature over the original message verifies.
         assert!(
             public_key
-                .verify(HashAlgorithm::Sha384, message, &signature)
+                .verify(message, &signature, HashAlgorithm::Sha384)
                 .unwrap()
         );
 
         // A signature checked against a different message does not verify.
         assert!(
             !public_key
-                .verify(HashAlgorithm::Sha384, b"tampered message", &signature)
+                .verify(b"tampered message", &signature, HashAlgorithm::Sha384)
                 .unwrap()
         );
 
@@ -224,51 +224,53 @@ mod tests {
         *bad_signature.last_mut().unwrap() ^= 0x01;
         assert!(
             !public_key
-                .verify(HashAlgorithm::Sha384, message, &bad_signature)
+                .verify(message, &bad_signature, HashAlgorithm::Sha384)
                 .unwrap()
         );
     }
 
     /// Round-trip through a public key reconstructed from raw `Qx || Qy` bytes
-    /// via [`EcdsaPublicKey::new`]: a signature made with a key pair verifies
-    /// under its exported-and-reimported public key, and is rejected under a
-    /// different key or a tampered message.
+    /// via [`EcdsaPublicKey::from_public_key_bytes`]: a signature made with a
+    /// key pair verifies under its exported-and-reimported public key, and is
+    /// rejected under a different key or a tampered message.
     #[test]
     fn roundtrip_public_key_from_bytes() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let message = b"reimport test message";
-        let signature = key.sign(HashAlgorithm::Sha384, message).unwrap();
+        let signature = key.sign(message, HashAlgorithm::Sha384).unwrap();
 
         let pk_bytes = key.public_key_bytes().unwrap();
-        let public_key = EcdsaPublicKey::new(EcdsaCurve::P384, &pk_bytes).unwrap();
+        let public_key =
+            EcdsaPublicKey::from_public_key_bytes(EcdsaCurve::P384, &pk_bytes).unwrap();
 
         // The reimported public key verifies the signature.
         assert!(
             public_key
-                .verify(HashAlgorithm::Sha384, message, &signature)
+                .verify(message, &signature, HashAlgorithm::Sha384)
                 .unwrap()
         );
 
         // A tampered message does not verify.
         assert!(
             !public_key
-                .verify(HashAlgorithm::Sha384, b"other message", &signature)
+                .verify(b"other message", &signature, HashAlgorithm::Sha384)
                 .unwrap()
         );
 
         // A signature made by a different key does not verify.
         let other = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
-        let other_sig = other.sign(HashAlgorithm::Sha384, message).unwrap();
+        let other_sig = other.sign(message, HashAlgorithm::Sha384).unwrap();
         assert!(
             !public_key
-                .verify(HashAlgorithm::Sha384, message, &other_sig)
+                .verify(message, &other_sig, HashAlgorithm::Sha384)
                 .unwrap()
         );
     }
 
     /// A public key whose raw encoding is not exactly `Qx || Qy`
-    /// (`2 * key_size` bytes) is rejected by [`EcdsaPublicKey::new`], rather
-    /// than being silently accepted as a non-canonical encoding.
+    /// (`2 * key_size` bytes) is rejected by
+    /// [`EcdsaPublicKey::from_public_key_bytes`], rather than being silently
+    /// accepted as a non-canonical encoding.
     #[test]
     fn public_key_from_bytes_rejects_wrong_length() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
@@ -276,10 +278,10 @@ mod tests {
         assert_eq!(pk_bytes.len(), 96);
 
         // Too short (a truncated coordinate) and too long must both fail.
-        assert!(EcdsaPublicKey::new(EcdsaCurve::P384, &pk_bytes[..90]).is_err());
+        assert!(EcdsaPublicKey::from_public_key_bytes(EcdsaCurve::P384, &pk_bytes[..90]).is_err());
         let mut too_long = pk_bytes.clone();
         too_long.push(0);
-        assert!(EcdsaPublicKey::new(EcdsaCurve::P384, &too_long).is_err());
+        assert!(EcdsaPublicKey::from_public_key_bytes(EcdsaCurve::P384, &too_long).is_err());
     }
 
     /// A key exported as `Qx || Qy`, wrapped into a DER `SubjectPublicKeyInfo`,
@@ -291,7 +293,7 @@ mod tests {
 
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let message = b"spki round-trip message";
-        let signature = key.sign(HashAlgorithm::Sha384, message).unwrap();
+        let signature = key.sign(message, HashAlgorithm::Sha384).unwrap();
         let pk = key.public_key_bytes().unwrap();
 
         // Wrap `Qx || Qy` into an uncompressed point and a P-384 SPKI.
@@ -310,13 +312,13 @@ mod tests {
         let public_key = EcdsaPublicKey::from_public_key_der(&spki_der).unwrap();
         assert!(
             public_key
-                .verify(HashAlgorithm::Sha384, message, &signature)
+                .verify(message, &signature, HashAlgorithm::Sha384)
                 .unwrap()
         );
         // A tampered message must not verify.
         assert!(
             !public_key
-                .verify(HashAlgorithm::Sha384, b"tampered", &signature)
+                .verify(b"tampered", &signature, HashAlgorithm::Sha384)
                 .unwrap()
         );
     }
