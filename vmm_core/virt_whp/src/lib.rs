@@ -1037,12 +1037,13 @@ impl ProtoPartition for WhpProtoPartition<'_> {
                         .vmtime
                         .access(format!("vtl2-wakeup-{}", vp.index.index()))
                 });
-                let unhalt_check_vmtime =
-                    matches!(partition.inner.vtl0.lapic, LocalApicKind::Offloaded).then(|| {
-                        self.config
-                            .vmtime
-                            .access(format!("apic-unhalt-{}", vp.index.index()))
-                    });
+                let unhalt_check_vmtime = (cfg!(guest_arch = "x86_64")
+                    && matches!(partition.inner.vtl0.lapic, LocalApicKind::Offloaded))
+                .then(|| {
+                    self.config
+                        .vmtime
+                        .access(format!("apic-unhalt-{}", vp.index.index()))
+                });
                 WhpProcessorBinder {
                     partition: partition.inner.clone(),
                     index: vp.index,

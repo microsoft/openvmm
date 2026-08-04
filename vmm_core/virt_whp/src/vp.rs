@@ -339,7 +339,8 @@ impl<'a> WhpProcessor<'a> {
                 // HACK: TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
                 // The hypervisor can leave a VP halted with an interrupt
                 // pending in its offloaded APIC, with nothing left to wake it,
-                // so poll for that case periodically.
+                // so periodically poke RFLAGS.IF to force a reevaluation.
+                #[cfg(guest_arch = "x86_64")]
                 {
                     const UNHALT_CHECK_PERIOD: std::time::Duration =
                         std::time::Duration::from_secs(1);
@@ -356,9 +357,12 @@ impl<'a> WhpProcessor<'a> {
                         });
 
                     if expired {
-                        let _vtl = self.state.runnable_vtls.highest_set().unwrap();
-                        #[cfg(guest_arch = "x86_64")]
-                        self.unhalt_for_pending_interrupt(_vtl);
+                        let vtl = self
+                            .state
+                            .runnable_vtls
+                            .highest_set()
+                            .expect("no runnable vtls");
+                        self.poke_interrupt_flag(vtl);
                     }
                 }
 

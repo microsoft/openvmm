@@ -14,7 +14,6 @@ use crate::WhpPartitionInner;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
 use crate::WhpVpRef;
-use hvdef::HvInternalActivityRegister;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64PendingEventReg0;
 use hvdef::HvX64PendingInterruptionRegister;
@@ -35,31 +34,6 @@ use vmcore::vmtime::VmTimeAccess;
 use whp::get_registers;
 use whp::set_registers;
 use x86defs::RFlags;
-use x86defs::apic::Svr;
-
-/// Returns the highest set vector in an APIC bitmap register.
-fn top_vector(bits: &[u32; 8]) -> Option<u8> {
-    bits.iter()
-        .enumerate()
-        .rev()
-        .find_map(|(i, &v)| (v != 0).then(|| i as u8 * 32 + (31 - v.leading_zeros() as u8)))
-}
-
-/// Returns whether the APIC page has a request pending that outranks both the
-/// in-service and task priorities, i.e. one the hypervisor should inject as
-/// soon as the VP runs.
-fn apic_interrupt_ready(apic: &vp::ApicRegisters) -> bool {
-    if !Svr::from(apic.svr).enable() {
-        return false;
-    }
-    // Vectors below 16 are invalid, which also skips IRR bit 2, the
-    // hypervisor's non-architectural NMI-pending bit.
-    let Some(irr) = top_vector(&apic.irr).filter(|&v| v >= 16) else {
-        return false;
-    };
-    let isr = top_vector(&apic.isr).unwrap_or(0);
-    irr >> 4 > (isr >> 4).max((apic.tpr >> 4) as u8)
-}
 
 impl WhpPartitionInner {
     pub fn lint(&self, vp_index: VpIndex, vtl: Vtl, index: usize) {
@@ -477,62 +451,23 @@ impl WhpProcessor<'_> {
 
     /// HACK: TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
     ///
-    /// Workaround for a hypervisor bug: clears the halt state for `vtl` if its
-    /// offloaded APIC has an interrupt that should already have woken the VP.
-    ///
-    /// The hypervisor's wake-from-halt is driven by the SynIC work summary, not
-    /// by the APIC IRR: `SynicpEvaluateWakeFromHalt` only unhalts if processing
-    /// the pending work summary produces a deliverable interrupt, and
-    /// `StdApicHandleHalt` only re-evaluates on `HLT` if the work summary is
-    /// non-empty or the hardware reports a pending virtual interrupt. So a
-    /// request that lands in the IRR while it is blocked by TPR/ISR, and whose
-    /// scan-IRR work bit is consumed at that point, leaves nothing to re-scan
-    /// once the guest lowers TPR and halts. The VP then sleeps forever with a
-    /// deliverable IRR bit set. (`inject_extint` forces the VP out of halt for
-    /// the same reason.)
-    ///
-    /// Clearing the halt bits is enough to recover: once the VP runs, the
-    /// hardware APIC delivers the pending request.
-
-    pub(crate) fn unhalt_for_pending_interrupt(&mut self, vtl: Vtl) {
-        if self.state.vtls.lapic(vtl).is_some() {
-            // The VMM-emulated APIC injects pending interrupts itself, and the
-            // hypervisor rejects this register for min-APIC partitions.
-            return;
-        }
-
+    /// The hypervisor can leave a VP halted with an interrupt pending in its
+    /// offloaded APIC and nothing left to wake it. Clearing and then setting
+    /// RFLAGS.IF forces the hypervisor to reevaluate interrupt delivery, which
+    /// unhalts the VP if an interrupt really is pending.
+    pub(crate) fn poke_interrupt_flag(&mut self, vtl: Vtl) {
         let whp = self.vp.whp(vtl);
-        let (activity, rflags) = get_registers!(
-            whp,
-            [
-                whp::Register64::InternalActivityState,
-                whp::Register64::Rflags
-            ]
-        )
-        .unwrap();
-
-        let activity = HvInternalActivityRegister::from(activity);
-        if activity.startup_suspend()
-            || !(activity.halt_suspend() || activity.idle_suspend())
-            || !RFlags::from(rflags).interrupt_enable()
-        {
+        let rflags = RFlags::from(whp.get_register(whp::Register64::Rflags).unwrap());
+        if !rflags.interrupt_enable() {
             return;
         }
-
-        let apic = vp::ApicRegisters::from_page(&whp.get_apic().unwrap());
-        if !apic_interrupt_ready(&apic) {
-            return;
-        }
-
-        tracing::warn!(?vtl, "unhalting vp for pending apic interrupt");
         whp.set_register(
-            whp::Register64::InternalActivityState,
-            activity
-                .with_halt_suspend(false)
-                .with_idle_suspend(false)
-                .into(),
+            whp::Register64::Rflags,
+            rflags.with_interrupt_enable(false).into(),
         )
         .unwrap();
+        whp.set_register(whp::Register64::Rflags, rflags.into())
+            .unwrap();
     }
 
     #[must_use]
