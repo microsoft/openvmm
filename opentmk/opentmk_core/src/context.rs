@@ -61,7 +61,10 @@ pub trait MsrPlatformTrait {
 }
 
 /// Trait for platforms that supports invoking a hypercall like interface.
-pub trait HypercallTrait {
+pub trait HypercallPlatformTrait {
+    /// Platform-specific configurations per-hypercall
+    type Config;
+
     /// Performs a hypercall. When the input buffer exceeds what can be passed
     /// the excess data is silently truncated. Likewise if the actual output
     /// data exceeds what can be written into the output buffer, that output
@@ -81,26 +84,8 @@ pub trait HypercallTrait {
         code: u64,
         input: &[u8],
         output: &mut [u8],
-        cfg: HypercallConfig,
+        cfg: Self::Config,
     ) -> TmkResult<()>;
-}
-
-/// Collection of parameters for hypercalls that are platform-dependent.
-#[derive(Default)]
-pub struct HypercallConfig {
-    /// A repetition start index used for some Hyper-V hypercalls.
-    pub rep_start: Option<usize>,
-    /// A repetition count used for some Hyper-V hypercalls.
-    pub rep_count: Option<usize>,
-    /// A size value used for some Hyper-V hypercalls.
-    pub size: Option<usize>,
-    /// Whether to hint that we want to pass the arguments by register. This
-    /// may be ignored by the underlying platform depending on the specific
-    /// hypercall.
-    ///
-    /// Additionally, certain platforms may only support passing by register
-    /// so this hint would just be moot anyways.
-    pub pass_by_register_hint: bool,
 }
 
 /// Trait for platforms that support Virtual Processors (VPs) and VTL management.
