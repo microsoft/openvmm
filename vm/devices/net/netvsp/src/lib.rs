@@ -2055,8 +2055,8 @@ enum WorkerError {
     NonRndisPacketAfterPacket(u32),
     #[error("memory access error")]
     Access(#[from] AccessError),
-    #[error("rndis message too small")]
-    RndisMessageTooSmall(#[from] MessageComponentError),
+    #[error("rndis message too small: {0}")]
+    RndisMessageTooSmall(#[source] MessageComponentError),
     // See https://lkml.org/lkml/2025/5/12/1565 for more information.
     #[error("rndis headers missing or split across a page")]
     RndisBadHeaders,
@@ -2509,7 +2509,9 @@ impl<T: RingMem> NetChannel<T> {
         // process the queue as suballocations become available.
         const CONTROL_MESSAGE_MAX_QUEUED_BYTES: usize = 100 * 1024;
         if reader.len() == 0 {
-            return Err(WorkerError::RndisMessageTooSmall(MessageComponentError::Control));
+            return Err(WorkerError::RndisMessageTooSmall(
+                MessageComponentError::Control,
+            ));
         }
         // Do not let the queue get too large--the guest should not be
         // sending very many control messages at a time.
@@ -2549,7 +2551,9 @@ impl<T: RingMem> NetChannel<T> {
         loop {
             let next_message_offset = message_len
                 .checked_sub(size_of::<rndisprot::MessageHeader>())
-                .ok_or(MessageComponentError::Header)?;
+                .ok_or(WorkerError::RndisMessageTooSmall(
+                    MessageComponentError::Header,
+                ))?;
 
             self.handle_rndis_packet_message(
                 id,
@@ -2603,7 +2607,9 @@ impl<T: RingMem> NetChannel<T> {
             || (data.len() - request.data_offset as usize) < request.data_length as usize
             || request.data_length == 0
         {
-            return Err(WorkerError::RndisMessageTooSmall(MessageComponentError::Data));
+            return Err(WorkerError::RndisMessageTooSmall(
+                MessageComponentError::Data,
+            ));
         }
 
         data.skip(request.data_offset as usize);
@@ -2621,18 +2627,26 @@ impl<T: RingMem> NetChannel<T> {
                     request.per_packet_info_offset as usize,
                     request.per_packet_info_length as usize,
                 )
-                .ok_or(MessageComponentError::PerPacketInfo)?;
+                .ok_or(WorkerError::RndisMessageTooSmall(
+                    MessageComponentError::PerPacketInfo,
+                ))?;
             while !ppi.is_empty() {
                 let h: rndisprot::PerPacketInfo = ppi.reader(mem).read_plain()?;
                 if h.size == 0 {
-                    return Err(WorkerError::RndisMessageTooSmall(MessageComponentError::PerPacketInfo));
+                    return Err(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::PerPacketInfo,
+                    ));
                 }
-                let (this, rest) = ppi
-                    .try_split(h.size as usize)
-                    .ok_or(MessageComponentError::PerPacketInfo)?;
+                let (this, rest) =
+                    ppi.try_split(h.size as usize)
+                        .ok_or(WorkerError::RndisMessageTooSmall(
+                            MessageComponentError::PerPacketInfo,
+                        ))?;
                 let (_, d) = this
                     .try_split(h.per_packet_information_offset as usize)
-                    .ok_or(MessageComponentError::PerPacketInfo)?;
+                    .ok_or(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::PerPacketInfo,
+                    ))?;
                 match h.typ {
                     rndisprot::PPI_TCP_IP_CHECKSUM => {
                         let n: rndisprot::TxTcpIpChecksumInfo = d.reader(mem).read_plain()?;
@@ -3117,7 +3131,9 @@ impl<T: RingMem> NetChannel<T> {
                         size_of::<rndisprot::MessageHeader>()
                             + size_of::<rndisprot::QueryComplete>(),
                     )
-                    .ok_or(MessageComponentError::Header)?;
+                    .ok_or(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::Header,
+                    ))?;
                 let (status, tx) = match self.adapter.handle_oid_query(
                     buffers,
                     primary,
