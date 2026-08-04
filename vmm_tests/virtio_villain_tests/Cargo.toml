@@ -1,0 +1,43 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "virtio_villain_tests"
+edition.workspace = true
+rust-version.workspace = true
+
+[[test]]
+name = "villain"
+# Custom libtest-mimic harness: one trial is generated per villain test, so
+# `cargo nextest run -p virtio_villain_tests` discovers and runs each villain
+# test in its own process. Requires the villain image/TSV (see tests/villain.rs).
+harness = false
+
+[dependencies]
+petri.workspace = true
+petri_artifacts_common.workspace = true
+petri_artifacts_vmm_test.workspace = true
+petri_artifact_resolver_openvmm_known_paths.workspace = true
+openvmm_defs.workspace = true
+virtio_resources.workspace = true
+disk_backend_resources.workspace = true
+net_backend_resources.workspace = true
+serial_core.workspace = true
+vm_resource.workspace = true
+pal_async.workspace = true
+virtio_spec.workspace = true
+
+anyhow.workspace = true
+fs-err.workspace = true
+libtest-mimic.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+# `unix_socket` is cross-platform (provides `UnixListener` on Windows too), so
+# it is an unconditional dependency: the vsock device is attached on every host.
+unix_socket.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

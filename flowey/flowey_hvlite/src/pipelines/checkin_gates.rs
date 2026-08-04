@@ -203,6 +203,14 @@ impl IntoPipeline for CheckinGatesCli {
         let (pub_vmm_tests_archive_linux_aarch64, use_vmm_tests_archive_linux_aarch64) =
             pipeline.new_typed_artifact("aarch64-linux-vmm-tests-archive");
 
+        // virtio-villain nextest archive (built on the linux build machine,
+        // consumed by the villain test job) + the OpenVMM binary it drives,
+        // reused from the linux build job below.
+        let (pub_villain_archive_linux_x86, use_villain_archive_linux_x86) =
+            pipeline.new_typed_artifact("x64-linux-virtio-villain-tests-archive");
+        let mut pub_villain_archive_linux_x86 = Some(pub_villain_archive_linux_x86);
+        let mut use_openvmm_linux_x86 = None;
+
         // wrap each publish handle in an option, so downstream code can
         // `.take()` the handle when emitting the corresponding job
         let mut pub_vmm_tests_archive_linux_x86 = Some(pub_vmm_tests_archive_linux_x86);
@@ -803,6 +811,7 @@ impl IntoPipeline for CheckinGatesCli {
             match arch {
                 CommonArch::X86_64 => {
                     vmm_tests_artifacts_linux_x86.use_openvmm = Some(use_openvmm.clone());
+                    use_openvmm_linux_x86 = Some(use_openvmm.clone());
                     vmm_tests_artifacts_linux_x86.use_openvmm_vhost =
                         Some(use_openvmm_vhost.clone());
                     vmm_tests_artifacts_linux_x86.use_prep_steps = Some(use_prep_steps.clone());
@@ -984,6 +993,23 @@ impl IntoPipeline for CheckinGatesCli {
                             build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
                                 archive,
                             ),
+                        }
+                    });
+
+                    // Also build the virtio-villain nextest archive on this
+                    // build machine so the villain test job can consume it
+                    // without a Rust toolchain.
+                    let pub_villain_archive_linux_x86 =
+                        pub_villain_archive_linux_x86.take().unwrap();
+                    job = job.publish(pub_villain_archive_linux_x86, |archive| {
+                        flowey_lib_hvlite::build_nextest_virtio_villain_tests::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            }
+                            .as_triple(),
+                            profile: CommonProfile::from_release(release),
+                            archive,
                         }
                     });
                 }
@@ -1758,6 +1784,61 @@ impl IntoPipeline for CheckinGatesCli {
             if !label.contains("snp") {
                 all_jobs.push(vmm_tests_run_job);
             }
+        }
+
+        // virtio-villain conformance suite: a separate, parallel per-PR job that
+        // drives OpenVMM against the guest-side villain test matrix.
+        //
+        // It consumes the villain nextest archive + the OpenVMM binary built by
+        // the linux build job above, so this test job needs no Rust toolchain
+        // (matching the vmm_tests build/consume split). It runs alongside the
+        // vmm_tests jobs for parallelism. The `-vmm-tests` suffix on the label
+        // makes the published logs artifact
+        // (`x64-linux-kvm-virtio-villain-vmm-tests-logs`) match the
+        // `upload-petri-results` workflow glob, so villain results land on the
+        // logview website alongside the regular VMM test results.
+        //
+        // This job consumes the virtio-villain artifact shipped by openvmm-deps
+        // (bumped to a release that includes it via `OPENVMM_DEPS` in
+        // `cfg_versions.rs`), so it resolves and runs in PR CI now. Its results
+        // seed and maintain the known-failure list (see the
+        // `virtio_villain_tests` crate's `known_failures` module).
+        {
+            let label = "x64-linux-kvm-virtio-villain";
+            let test_label = format!("{label}-vmm-tests");
+
+            let pub_villain_results = if matches!(backend_hint, PipelineBackendHint::Local) {
+                Some(pipeline.new_artifact(&test_label).0)
+            } else {
+                None
+            };
+
+            let use_openvmm = use_openvmm_linux_x86
+                .clone()
+                .expect("linux x86 openvmm artifact built above");
+
+            let villain_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    format!("run vmm-tests [{label}]"),
+                )
+                .gh_set_pool(gh_pools::linux_amd_v7_1es())
+                .ado_set_pool(ado_pools::linux_amd_v6_1es())
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::consume_and_test_nextest_virtio_villain_archive::Params {
+                        junit_test_label: test_label,
+                        nextest_villain_archive: ctx
+                            .use_typed_artifact(&use_villain_archive_linux_x86),
+                        openvmm: ctx.use_typed_artifact(&use_openvmm),
+                        target: CommonTriple::X86_64_LINUX_GNU.as_triple(),
+                        run_ignored: false,
+                        artifact_dir: pub_villain_results.map(|x| ctx.publish_artifact(x)),
+                        done: ctx.new_done_handle(),
+                    }
+                })
+                .finish();
+            all_jobs.push(villain_job);
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64

@@ -24,6 +24,7 @@ members = [
   # VMM tests
   "vmm_tests/prep_steps",
   "vmm_tests/vmm_tests",
+  "vmm_tests/virtio_villain_tests",
   # Performance tests
   "petri/burette",
   # hyper-v tooling

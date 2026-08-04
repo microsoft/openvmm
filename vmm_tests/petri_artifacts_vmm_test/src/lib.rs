@@ -201,6 +201,29 @@ pub mod artifacts {
         }
     }
 
+    /// virtio-villain guest test artifacts (from OpenVMM deps).
+    ///
+    /// virtio-villain ships as its own versioned `openvmm-deps` release
+    /// artifact containing a guest `initramfs.cpio.gz` (a static PID-1 `init`
+    /// that drives the virtio fault injection) and a `tests.tsv` metadata file
+    /// enumerating the test list. Both are staged into the test content
+    /// directory and resolved via the known-paths resolver like any other
+    /// test artifact.
+    pub mod virtio_villain {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// virtio-villain guest initramfs (x64)
+            VIRTIO_VILLAIN_INITRD_X64,
+            /// virtio-villain guest initramfs (aarch64)
+            VIRTIO_VILLAIN_INITRD_AARCH64,
+            /// virtio-villain `tests.tsv` metadata (x64)
+            VIRTIO_VILLAIN_TSV_X64,
+            /// virtio-villain `tests.tsv` metadata (aarch64)
+            VIRTIO_VILLAIN_TSV_AARCH64,
+        }
+    }
+
     /// OpenHCL IGVM artifacts
     pub mod openhcl_igvm {
         use petri_artifacts_common::tags::IsLoadable;

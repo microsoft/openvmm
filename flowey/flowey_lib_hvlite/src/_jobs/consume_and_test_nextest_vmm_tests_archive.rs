@@ -127,6 +127,7 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
+        crate::configure_nextest_incubator::imports(ctx);
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
@@ -247,7 +248,11 @@ impl SimpleFlowNode for Node {
             register_openvmm,
             register_openvmm_vhost,
             register_pipette_windows,
-            register_pipette_linux_musl,
+            register_pipette_linux_musl: if incubator_profile.is_some() {
+                None
+            } else {
+                register_pipette_linux_musl.clone()
+            },
             register_guest_test_uefi,
             register_tmks,
             register_tmk_vmm,
@@ -265,6 +270,7 @@ impl SimpleFlowNode for Node {
             use_relative_paths: false,
             disable_remote_artifacts: true,
             reuse_prepped_vhds: false,
+            test_suite: crate::init_vmm_tests_env::TestSuite::VmmTests,
         });
 
         // Start the test_igvm_agent_rpc_server before running tests (Windows only).
@@ -306,27 +312,6 @@ impl SimpleFlowNode for Node {
                 anyhow::anyhow!("incubator profile was set but no incubator artifact was provided")
             })?;
 
-            let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
-
-            let kernel = ctx.reqv(|v| {
-                crate::resolve_openvmm_test_linux_kernel::Request::Get(
-                    crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
-                    arch,
-                    crate::resolve_openvmm_test_linux_kernel::INCUBATOR_LINUX_TEST_KERNEL_VERSION,
-                    v,
-                )
-            });
-            let initrd = ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
-
-            let host_arch: crate::common::CommonArch = ctx.arch().try_into()?;
-            let qemu_binary = ctx.reqv(|v| {
-                crate::resolve_openvmm_qemu::Request::Get(
-                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
-                    host_arch,
-                    v,
-                )
-            });
-
             // Resolve the incubator binary and the selected profile from the
             // incubator artifact (which bundles the profiles directory).
             let incubator_bin = incubator.clone().map(ctx, |o| o.bin);
@@ -342,19 +327,26 @@ impl SimpleFlowNode for Node {
                 .clone()
                 .map(ctx, |x| x.archive_file);
 
-            let extra_env = ctx.reqv(|v| crate::write_incubator_target_runner::Request {
-                incubator_bin,
-                profile_path,
-                kernel: Some(kernel),
-                initrd: Some(initrd),
-                repo_root: openvmm_repo_path.clone(),
-                test_content_dir: test_content_dir.clone(),
-                extra_share_paths: vec![nextest_archive, nextest_config_file.clone()],
-                extra_env: Some(extra_env),
-                qemu_binary: Some(qemu_binary),
-                target: target.clone(),
-                nextest_env: v,
-            });
+            let pipette = register_pipette_linux_musl.ok_or_else(|| {
+                anyhow::anyhow!("incubator profile was set but no Linux pipette was provided")
+            })?;
+            let extra_env = crate::configure_nextest_incubator::configure(
+                ctx,
+                crate::configure_nextest_incubator::Params {
+                    target: crate::common::CommonTriple::Custom(target.clone()),
+                    profile: crate::common::CommonProfile::Release,
+                    incubator: crate::configure_nextest_incubator::IncubatorSource::Prebuilt {
+                        bin: incubator_bin,
+                        profile_path,
+                    },
+                    pipette: crate::configure_nextest_incubator::PipetteSource::Prebuilt(pipette),
+                    repo_root: openvmm_repo_path.clone(),
+                    test_content_dir: test_content_dir.clone(),
+                    nextest_archive_file: nextest_archive,
+                    nextest_config_file: nextest_config_file.clone(),
+                    extra_env,
+                },
+            )?;
 
             (
                 extra_env,

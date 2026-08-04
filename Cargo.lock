@@ -9897,6 +9897,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio_villain_tests"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "disk_backend_resources",
+ "fs-err",
+ "libtest-mimic",
+ "net_backend_resources",
+ "openvmm_defs",
+ "pal_async",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
+ "petri_artifacts_vmm_test",
+ "serial_core",
+ "tempfile",
+ "test_with_tracing",
+ "tracing",
+ "unix_socket",
+ "virtio_resources",
+ "virtio_spec",
+ "vm_resource",
+]
+
+[[package]]
 name = "virtio_vsock"
 version = "0.0.0"
 dependencies = [

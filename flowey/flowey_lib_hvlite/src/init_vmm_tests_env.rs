@@ -13,6 +13,12 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+pub enum TestSuite {
+    VmmTests,
+    VirtioVillain,
+}
+
 flowey_request! {
     pub struct Request {
         /// Directory to symlink / copy test contents into. Does not need to be
@@ -68,6 +74,8 @@ flowey_request! {
         pub disable_remote_artifacts: bool,
         /// Whether to reuse VHDs created with prep_steps
         pub reuse_prepped_vhds: bool,
+        /// Test suite whose artifacts should be staged into the content dir.
+        pub test_suite: TestSuite,
     }
 }
 
@@ -79,6 +87,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
+        ctx.import::<crate::resolve_virtio_villain::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
@@ -110,6 +119,7 @@ impl SimpleFlowNode for Node {
             use_relative_paths,
             disable_remote_artifacts,
             reuse_prepped_vhds,
+            test_suite,
         } = request;
 
         let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
@@ -138,10 +148,18 @@ impl SimpleFlowNode for Node {
                     })
                 });
 
-        let uefi =
-            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
+        let stage_vmm_tests = matches!(test_suite, TestSuite::VmmTests);
+        let stage_virtio_villain = matches!(test_suite, TestSuite::VirtioVillain);
 
-        let virtio_win_dir = ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get);
+        let uefi = stage_vmm_tests.then(|| {
+            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v })
+        });
+
+        let virtio_win_dir =
+            stage_vmm_tests.then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
+
+        let virtio_villain = stage_virtio_villain
+            .then(|| ctx.reqv(|v| crate::resolve_virtio_villain::Request::Get(arch, v)));
 
         // In CI, unstable test failures are non-gating and should be reported as
         // passing (with a warning). Outside of CI, unstable test failures are
@@ -170,14 +188,15 @@ impl SimpleFlowNode for Node {
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
             let test_linux_bzimage = test_linux_bzimage.claim(ctx);
-            let uefi = uefi.claim(ctx);
-            let virtio_win_dir = virtio_win_dir.claim(ctx);
+            let uefi = uefi.map(|v| v.claim(ctx));
+            let virtio_win_dir = virtio_win_dir.map(|v| v.claim(ctx));
+            let virtio_villain = virtio_villain.map(|v| v.claim(ctx));
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
                 let test_linux_bzimage = test_linux_bzimage.map(|v| rt.read(v));
-                let uefi = rt.read(uefi);
+                let uefi = uefi.map(|v| rt.read(v));
                 let release_igvm_files_dir = rt.read(release_igvm_files_dir);
                 let test_content_dir = rt.read(test_content_dir);
 
@@ -488,18 +507,32 @@ impl SimpleFlowNode for Node {
                     )?;
                 }
 
-                let uefi_dir = test_content_dir.join(match arch {
-                    CommonArch::Aarch64 => {
-                        "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
-                    }
-                    CommonArch::X86_64 => {
-                        "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
-                    }
-                });
-                fs_err::create_dir_all(&uefi_dir)?;
-                fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
+                if let Some(virtio_villain) = virtio_villain {
+                    let artifact = rt.read(virtio_villain);
+                    fs_err::copy(
+                        artifact.initramfs,
+                        test_content_dir.join(arch_dir).join("villain-initrd"),
+                    )?;
+                    fs_err::copy(
+                        artifact.tsv,
+                        test_content_dir.join(arch_dir).join("villain-tests.tsv"),
+                    )?;
+                }
 
-                {
+                if let Some(uefi) = uefi {
+                    let uefi_dir = test_content_dir.join(match arch {
+                        CommonArch::Aarch64 => {
+                            "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
+                        }
+                        CommonArch::X86_64 => {
+                            "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
+                        }
+                    });
+                    fs_err::create_dir_all(&uefi_dir)?;
+                    fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
+                }
+
+                if let Some(virtio_win_dir) = virtio_win_dir {
                     let src = rt.read(virtio_win_dir);
                     let dst = test_content_dir.join("virtio-win");
                     let _ = fs_err::remove_dir_all(&dst);

@@ -38,8 +38,10 @@ pub fn build_qemu_command(
     cmd.arg("-nographic");
     cmd.arg("-kernel").arg(kernel);
     cmd.arg("-initrd").arg(initrd);
-    cmd.arg("-append")
-        .arg(format!("{} rdinit=/{INIT_SCRIPT_NAME}", config.cmdline));
+    cmd.arg("-append").arg(format!(
+        "{} panic=-1 rdinit=/{INIT_SCRIPT_NAME}",
+        config.cmdline
+    ));
     cmd.arg("-no-reboot");
 
     // 9p: share the host directory into the guest

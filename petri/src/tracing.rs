@@ -298,14 +298,11 @@ macro_rules! log {
     };
 }
 
-/// Initialize Petri tracing with the given output path for log files.
+/// Initializes the global tracing subscriber and returns a [`PetriLogSource`]
+/// rooted at `root_path`.
 ///
-/// Events go to three places:
-/// - `petri.jsonl`, in newline-separated JSON format.
-/// - standard output, in human readable format.
-/// - a log file, in human readable format. This file is `petri.log`, except
-///   for events whose target ends in `.log`, which go to separate files named by
-///   the target.
+/// This installs the process-wide tracing subscriber and may only be called
+/// once per process.
 pub fn try_init_tracing(
     root_path: &Path,
     default_level: LevelFilter,

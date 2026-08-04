@@ -179,20 +179,27 @@ impl PetriVmConfigOpenVmm {
 
         let mut load_mode = setup.load_firmware()?;
 
-        // If using pipette-as-init, replace the initrd with the pre-built
-        // one that has pipette injected. run_core() guarantees that
-        // prebuilt_initrd is set when uses_pipette_as_init is true.
-        if properties.uses_pipette_as_init {
-            if let LoadMode::Linux { initrd, .. } = &mut load_mode {
-                let prebuilt = properties
-                    .prebuilt_initrd
-                    .as_ref()
-                    .expect("uses_pipette_as_init requires prebuilt_initrd");
-                let file = std::fs::File::open(prebuilt).with_context(|| {
-                    format!("failed to open prebuilt initrd at {}", prebuilt.display())
-                })?;
-                *initrd = Some(file);
-            }
+        // If a prebuilt initrd was provided, use it in place of the initrd
+        // produced by `load_firmware()`. This covers both the pipette-as-init
+        // path (run_core() injects pipette into a prebuilt initrd) and callers
+        // that supply their own fully-formed initrd (e.g. the virtio-villain
+        // runner, whose initramfs is its own PID-1 `init`).
+        //
+        // Preserve the pipette-as-init invariant: run_core() guarantees a
+        // prebuilt initrd is set in that case, and without it pipette-as-init
+        // would silently fall back to the firmware initrd and hang confusingly.
+        anyhow::ensure!(
+            !properties.uses_pipette_as_init || properties.prebuilt_initrd.is_some(),
+            "uses_pipette_as_init requires a prebuilt initrd, but none was set"
+        );
+        if let Some(prebuilt) = properties.prebuilt_initrd.as_ref() {
+            let LoadMode::Linux { initrd, .. } = &mut load_mode else {
+                unreachable!("prebuilt_initrd is only meaningful for Linux direct boot")
+            };
+            let file = std::fs::File::open(prebuilt).with_context(|| {
+                format!("failed to open prebuilt initrd at {}", prebuilt.display())
+            })?;
+            *initrd = Some(file);
         }
 
         let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
@@ -348,7 +355,9 @@ impl PetriVmConfigOpenVmm {
             // Set so that we don't pull serial data until the guest is
             // ready. Otherwise, Linux will drop the input serial data
             // on the floor during boot.
-            if matches!(firmware, Firmware::LinuxDirect { .. }) && !properties.uses_pipette_as_init
+            if arch == MachineArch::X86_64
+                && matches!(firmware, Firmware::LinuxDirect { .. })
+                && !properties.uses_pipette_as_init
             {
                 chipset = chipset.with_serial_wait_for_rts();
             }

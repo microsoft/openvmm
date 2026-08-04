@@ -30,7 +30,7 @@ pub const NODEJS: &str = "24.x";
 // None disables hcl-dev builds and tests; Some(version) enables them.
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.2";
-pub const OPENVMM_DEPS: &str = "0.3.0-110";
+pub const OPENVMM_DEPS: &str = "0.3.0-112";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -64,6 +64,7 @@ impl FlowNode for Node {
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
+        ctx.import::<crate::resolve_virtio_villain::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::cfg_rustup_version::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
@@ -220,6 +221,13 @@ impl FlowNode for Node {
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_virtio_win::Config {
+            version: Some(OPENVMM_DEPS.into()),
+            ..Default::default()
+        });
+        // Resolves the virtio-villain artifact from the pinned openvmm-deps
+        // release (see `OPENVMM_DEPS` above); the resolve node only downloads on
+        // demand, so this costs nothing for jobs that don't consume it.
+        ctx.config(crate::resolve_virtio_villain::Config {
             version: Some(OPENVMM_DEPS.into()),
             ..Default::default()
         });

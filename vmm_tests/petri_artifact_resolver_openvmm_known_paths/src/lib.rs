@@ -76,6 +76,11 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == petritools::PETRITOOLS_EROFS_X64 => petritools_erofs_path(MachineArch::X86_64),
             _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => petritools_erofs_path(MachineArch::Aarch64),
 
+            _ if id == virtio_villain::VIRTIO_VILLAIN_INITRD_X64 => virtio_villain_path(MachineArch::X86_64, VirtioVillainFile::Initrd),
+            _ if id == virtio_villain::VIRTIO_VILLAIN_INITRD_AARCH64 => virtio_villain_path(MachineArch::Aarch64, VirtioVillainFile::Initrd),
+            _ if id == virtio_villain::VIRTIO_VILLAIN_TSV_X64 => virtio_villain_path(MachineArch::X86_64, VirtioVillainFile::Tsv),
+            _ if id == virtio_villain::VIRTIO_VILLAIN_TSV_AARCH64 => virtio_villain_path(MachineArch::Aarch64, VirtioVillainFile::Tsv),
+
             _ if id == loadable::PCAT_FIRMWARE_X64 => pcat_firmware_path(),
             _ if id == loadable::SVGA_FIRMWARE_X64 => svga_firmware_path(),
             _ if id == loadable::UEFI_FIRMWARE_X64 => uefi_firmware_path(MachineArch::X86_64),
@@ -234,6 +239,10 @@ pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => Some("aarch64/initrd"),
         _ if id == petritools::PETRITOOLS_EROFS_X64 => Some("x64/petritools.erofs"),
         _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => Some("aarch64/petritools.erofs"),
+        _ if id == virtio_villain::VIRTIO_VILLAIN_INITRD_X64 => Some("x64/villain-initrd"),
+        _ if id == virtio_villain::VIRTIO_VILLAIN_INITRD_AARCH64 => Some("aarch64/villain-initrd"),
+        _ if id == virtio_villain::VIRTIO_VILLAIN_TSV_X64 => Some("x64/villain-tests.tsv"),
+        _ if id == virtio_villain::VIRTIO_VILLAIN_TSV_AARCH64 => Some("aarch64/villain-tests.tsv"),
         _ if id == loadable::UEFI_FIRMWARE_X64 => {
             Some("hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd")
         }
@@ -273,6 +282,15 @@ enum OpenhclFlavor {
 enum OpenhclExtras {
     UmBin,
     UmDbg,
+}
+
+/// Which file of the virtio-villain guest artifact to resolve.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+enum VirtioVillainFile {
+    /// The guest `initramfs.cpio.gz`.
+    Initrd,
+    /// The `tests.tsv` metadata file.
+    Tsv,
 }
 
 /// The architecture specific fragment of the name of the directory used by rust when referring to specific targets.
@@ -658,6 +676,32 @@ fn petritools_erofs_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
         resolve_bundle_name(id).unwrap(),
         MissingCommand::Restore {
             description: "petritools erofs image",
+        },
+    )
+}
+
+/// Path to our packaged virtio-villain guest artifact file (initramfs or tsv).
+fn virtio_villain_path(arch: MachineArch, file: VirtioVillainFile) -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::virtio_villain;
+    let id = match (arch, file) {
+        (MachineArch::X86_64, VirtioVillainFile::Initrd) => {
+            virtio_villain::VIRTIO_VILLAIN_INITRD_X64.erase()
+        }
+        (MachineArch::Aarch64, VirtioVillainFile::Initrd) => {
+            virtio_villain::VIRTIO_VILLAIN_INITRD_AARCH64.erase()
+        }
+        (MachineArch::X86_64, VirtioVillainFile::Tsv) => {
+            virtio_villain::VIRTIO_VILLAIN_TSV_X64.erase()
+        }
+        (MachineArch::Aarch64, VirtioVillainFile::Tsv) => {
+            virtio_villain::VIRTIO_VILLAIN_TSV_AARCH64.erase()
+        }
+    };
+    get_path(
+        ".packages/underhill-deps-private",
+        resolve_bundle_name(id).unwrap(),
+        MissingCommand::Restore {
+            description: "virtio-villain guest artifact",
         },
     )
 }

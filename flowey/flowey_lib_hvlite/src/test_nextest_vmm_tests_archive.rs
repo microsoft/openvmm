@@ -50,7 +50,7 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::run_cargo_nextest_run::Node>();
+        ctx.import::<crate::test_nextest_archive::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -62,124 +62,29 @@ impl SimpleFlowNode for Node {
             nextest_config_file,
             nextest_bin,
             target,
-            mut extra_env,
-            mut pre_run_deps,
+            extra_env,
+            pre_run_deps,
             hugetlb_2mb_overcommit_pages,
             prepare_vhost_vsock,
             results,
         } = request;
 
-        if hugetlb_2mb_overcommit_pages.is_some() {
-            extra_env = extra_env.map(ctx, |mut env| {
-                env.insert("OPENVMM_REQUIRE_2MB_HUGETLB".into(), "1".into());
-                env
-            });
-        }
-
-        if !matches!(ctx.backend(), FlowBackend::Local)
-            && matches!(ctx.platform(), FlowPlatform::Linux(_))
-        {
-            pre_run_deps.push({
-                ctx.emit_rust_step("ensure hypervisor device is accessible", |_| {
-                    |rt| {
-                        // Make whichever hypervisor device exists accessible.
-                        // KVM machines have /dev/kvm, MSHV machines have /dev/mshv.
-                        if Path::new("/dev/kvm").exists() {
-                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/kvm").run()?;
-                        }
-                        if Path::new("/dev/mshv").exists() {
-                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/mshv").run()?;
-                        }
-                        Ok(())
-                    }
-                })
-            });
-
-            if let Some(overcommit_pages) = hugetlb_2mb_overcommit_pages {
-                pre_run_deps.push({
-                    ctx.emit_rust_step("ensure 2 MiB hugetlb pages are available", move |_| {
-                        move |rt| {
-                            let hugepages_dir =
-                                Path::new("/sys/kernel/mm/hugepages/hugepages-2048kB");
-
-                            let read_counter = |name: &str| -> anyhow::Result<u64> {
-                                let path = hugepages_dir.join(name);
-                                let value = fs_err::read_to_string(&path)?;
-                                Ok(value.trim().parse()?)
-                            };
-
-                            let write_overcommit_script = format!(
-                                "echo {overcommit_pages} | sudo tee {path}",
-                                path = hugepages_dir.join("nr_overcommit_hugepages").display(),
-                            );
-                            flowey::shell_cmd!(rt, "sh -c {write_overcommit_script}").run()?;
-
-                            let nr_hugepages = read_counter("nr_hugepages")?;
-                            let free_hugepages = read_counter("free_hugepages")?;
-                            let nr_overcommit_hugepages = read_counter("nr_overcommit_hugepages")?;
-                            let surplus_hugepages = read_counter("surplus_hugepages")?;
-
-                            log::info!("2 MiB hugetlb nr_hugepages={nr_hugepages}");
-                            log::info!("2 MiB hugetlb free_hugepages={free_hugepages}");
-                            log::info!(
-                                "2 MiB hugetlb nr_overcommit_hugepages={nr_overcommit_hugepages}"
-                            );
-                            log::info!("2 MiB hugetlb surplus_hugepages={surplus_hugepages}");
-
-                            if nr_overcommit_hugepages < overcommit_pages {
-                                anyhow::bail!(
-                                    "2 MiB hugetlb overcommit remains {}, below requested {}",
-                                    nr_overcommit_hugepages,
-                                    overcommit_pages
-                                );
-                            }
-
-                            Ok(())
-                        }
-                    })
-                });
-            }
-
-            if prepare_vhost_vsock {
-                pre_run_deps.push({
-                    ctx.emit_rust_step("prepare vhost-vsock", |_| {
-                        |rt| {
-                            flowey::shell_cmd!(rt, "sudo modprobe vhost_vsock").run()?;
-                            for _ in 0..50 {
-                                if Path::new("/dev/vhost-vsock").exists() {
-                                    break;
-                                }
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                            }
-                            if !Path::new("/dev/vhost-vsock").exists() {
-                                anyhow::bail!(
-                                    "/dev/vhost-vsock did not appear after loading vhost_vsock"
-                                );
-                            }
-                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/vhost-vsock").run()?;
-                            Ok(())
-                        }
-                    })
-                });
-            }
-        }
-
         let nextest_archive = nextest_archive_file.map(ctx, |x| x.archive_file);
 
-        ctx.req(crate::run_cargo_nextest_run::Request {
+        ctx.req(crate::test_nextest_archive::Request {
             friendly_name: "vmm_tests".into(),
-            run_kind: flowey_lib_common::run_cargo_nextest_run::NextestRunKind::RunFromArchive {
-                archive_file: nextest_archive,
-                target,
-                nextest_bin,
-            },
+            nextest_archive_file: nextest_archive,
             nextest_profile,
             nextest_filter_expr,
             nextest_working_dir,
             nextest_config_file,
             run_ignored: false,
-            extra_env: Some(extra_env),
+            nextest_bin,
+            target,
+            extra_env,
             pre_run_deps,
+            hugetlb_2mb_overcommit_pages,
+            prepare_vhost_vsock,
             results,
         });
 
