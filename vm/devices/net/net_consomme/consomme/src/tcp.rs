@@ -1336,9 +1336,11 @@ impl TcpConnectionInner {
             }
 
             if framed_len > self.rx_window_cap && self.rx_assembler.is_empty() {
-                let new_cap = framed_len.next_power_of_two().min(self.rx_buffer_max);
-                self.rx_buffer.resize(new_cap);
-                self.rx_window_cap = framed_len;
+                let new_ring_cap = framed_len.next_power_of_two();
+                if new_ring_cap > self.rx_buffer.capacity() {
+                    self.rx_buffer.resize(new_ring_cap);
+                }
+                self.rx_window_cap = framed_len.min(self.rx_buffer_max)
                 self.needs_ack = true;
             }
 
