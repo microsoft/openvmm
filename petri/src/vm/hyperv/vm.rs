@@ -28,7 +28,6 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
 use tempfile::TempDir;
-use tracing::Level;
 
 /// A Hyper-V VM
 pub struct HyperVVM {
@@ -149,24 +148,7 @@ impl HyperVVM {
     }
 
     fn log_winevent(&self, event: &powershell::WinEvent) {
-        self.log_file.write_entry_fmt(
-            Some(event.time_created),
-            match event.level {
-                1 | 2 => Level::ERROR,
-                3 => Level::WARN,
-                5 => Level::TRACE,
-                _ => Level::INFO,
-            },
-            format_args!(
-                "[{}] {}: ({}, {}) {} ({})",
-                event.time_created,
-                event.provider_name,
-                event.level,
-                event.id,
-                event.message,
-                event.properties.join(",")
-            ),
-        );
+        event.write_to(&self.log_file);
 
         const HYPERV_CRASHDUMP_PROVIDER: &str = "Microsoft-Windows-Hyper-V-CrashDump";
         const CRASH_DUMP_WRITTEN_EVENT_ID: u32 = 40001;

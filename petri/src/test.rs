@@ -151,6 +151,13 @@ impl Test {
             .context("failed to initialize tracing")?;
         let mut post_test_hooks = Vec::new();
 
+        // A process that is faulted or killed writes nothing to its own logs,
+        // so the host's error reporting events are the only record that it
+        // crashed and the only source of the Watson report ID needed to find
+        // the dump.
+        #[cfg(windows)]
+        post_test_hooks.push(collect_watson_events_hook(logger.clone()));
+
         // Catch test panics in order to cleanly log the panic result. Without
         // this, `libtest_mimic` will report the panic to stdout and fail the
         // test, but the details won't end up in our per-test JSON log.
@@ -313,6 +320,29 @@ impl PetriPostTestHook {
     pub fn run(self, test_passed: bool) -> anyhow::Result<()> {
         (self.hook)(test_passed)
     }
+}
+
+/// Returns a hook that, if the test failed, writes the Windows Error Reporting
+/// and Azure Watson events from the test's execution window to
+/// `watson_events.log`.
+#[cfg(windows)]
+fn collect_watson_events_hook(logger: PetriLogSource) -> PetriPostTestHook {
+    let start_time = jiff::Timestamp::now();
+    PetriPostTestHook::new("collect watson events".into(), move |test_passed| {
+        if test_passed {
+            return Ok(());
+        }
+        let events =
+            futures::executor::block_on(crate::vm::hyperv::powershell::watson_events(&start_time));
+        if events.is_empty() {
+            return Ok(());
+        }
+        let log_file = logger.log_file("watson_events")?;
+        for event in events {
+            event.write_to(&log_file);
+        }
+        Ok(())
+    })
 }
 
 /// A test defined by an artifact resolver function and a run function.

@@ -5,6 +5,7 @@
 
 use crate::CommandError;
 use crate::OpenHclServicingFlags;
+use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmProperties;
 use crate::VmScreenshotMeta;
@@ -25,6 +26,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tempfile::NamedTempFile;
+use tracing::Level;
 
 /// Hyper-V VM Generation
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1466,6 +1468,30 @@ pub struct WinEvent {
     pub properties: Vec<String>,
 }
 
+impl WinEvent {
+    /// Writes the event to `log_file`.
+    pub fn write_to(&self, log_file: &PetriLogFile) {
+        log_file.write_entry_fmt(
+            Some(self.time_created),
+            match self.level {
+                1 | 2 => Level::ERROR,
+                3 => Level::WARN,
+                5 => Level::TRACE,
+                _ => Level::INFO,
+            },
+            format_args!(
+                "[{}] {}: ({}, {}) {} ({})",
+                self.time_created,
+                self.provider_name,
+                self.level,
+                self.id,
+                self.message,
+                self.properties.join(",")
+            ),
+        );
+    }
+}
+
 /// Deserialize the `Properties` projection of a Windows event into a flat list
 /// of stringified values.
 fn deserialize_event_properties<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -1505,6 +1531,7 @@ where
 /// Get event logs
 pub async fn run_get_winevent(
     log_name: &[&str],
+    provider_name: &[&str],
     start_time: Option<&Timestamp>,
     find: Option<&str>,
     ids: &[u32],
@@ -1512,6 +1539,12 @@ pub async fn run_get_winevent(
     let mut filter = Vec::new();
     if !log_name.is_empty() {
         filter.push(("LogName", ps::Value::new(ps::Array::new(log_name))));
+    }
+    if !provider_name.is_empty() {
+        filter.push((
+            "ProviderName",
+            ps::Value::new(ps::Array::new(provider_name)),
+        ));
     }
     if let Some(start_time) = start_time {
         filter.push(("StartTime", ps::Value::new(start_time)));
@@ -1573,7 +1606,16 @@ pub async fn run_get_winevent(
     .await;
 
     match output {
-        Ok(logs) => serde_json::from_str(&logs).context("parsing winevents"),
+        Ok(logs) => {
+            // `Get-WinEvent` writes its failures to stderr and still exits
+            // zero, leaving the output variable unset and the JSON array
+            // holding a single `null`. `run_host_cmd` has already logged the
+            // reason, which is usually that the requested log or provider is
+            // not registered on this machine.
+            let events: Vec<Option<WinEvent>> =
+                serde_json::from_str(&logs).context("parsing winevents")?;
+            Ok(events.into_iter().flatten().collect())
+        }
         Err(e) => match e {
             CommandError::Command(_, err_output)
                 if err_output.contains(
@@ -1589,6 +1631,21 @@ pub async fn run_get_winevent(
 
 const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
 const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
+
+/// Providers that report a process fault to Windows Error Reporting and the
+/// Azure Watson agent.
+///
+/// The `Application Error` and `Windows Error Reporting` events carry the
+/// Watson report ID, which is what the crash analysis at
+/// <https://azurewatson.microsoft.com> is looked up by. On CI machines the
+/// faulting details themselves are redacted from the event in favor of that
+/// report ID, so capturing these events is the only way to get from a failed
+/// test back to the crash dump.
+const WATSON_PROVIDERS: &[&str] = &[
+    "Application Error",
+    "Windows Error Reporting",
+    "Microsoft-Windows Azure-AzureWatsonAgent",
+];
 
 macro_rules! define_winevents {
     (
@@ -1684,11 +1741,36 @@ pub async fn hyperv_event_logs(
     let vmid = vmid.map(|id| id.to_string());
     run_get_winevent(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
+        &[],
         Some(start_time),
         vmid.as_deref(),
         &[],
     )
     .await
+}
+
+/// Get the Windows Error Reporting / Azure Watson events logged since
+/// `start_time`.
+///
+/// A process that is faulted or killed writes nothing to its own logs, so
+/// these events are the only record that it crashed, and the report ID they
+/// contain is the only handle on the dump Watson collected.
+pub async fn watson_events(start_time: &Timestamp) -> Vec<WinEvent> {
+    let mut events = Vec::new();
+    // Query each provider separately, since `Get-WinEvent` fails the whole
+    // query if any one provider is unregistered on this machine.
+    for provider in WATSON_PROVIDERS {
+        match run_get_winevent(&[], &[provider], Some(start_time), None, &[]).await {
+            Ok(e) => events.extend(e),
+            Err(err) => tracing::warn!(
+                provider,
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to read error reporting events"
+            ),
+        }
+    }
+    events.sort_by_key(|e| e.time_created);
+    events
 }
 
 /// Get Hyper-V boot event logs for a VM
@@ -1699,6 +1781,7 @@ pub async fn hyperv_boot_events(
     let vmid = vmid.to_string();
     run_get_winevent(
         &[HYPERV_WORKER_TABLE],
+        &[],
         Some(start_time),
         Some(&vmid),
         BOOT_EVENT_IDS,
@@ -1714,6 +1797,7 @@ pub async fn hyperv_halt_events(
     let vmid = vmid.to_string();
     run_get_winevent(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
+        &[],
         Some(start_time),
         Some(&vmid),
         HALT_EVENT_IDS,
