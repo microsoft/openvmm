@@ -85,8 +85,11 @@ impl X509CertificateInner {
             let qxqy = point.strip_prefix(&[0x04u8]).ok_or_else(|| {
                 der_err(der::ErrorKind::Failed.into(), "parsing EC public key point")
             })?;
-            let key = crate::ecdsa::EcdsaPublicKey::new(crate::ecdsa::EcdsaCurve::P384, qxqy)
-                .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
+            let key = crate::ecdsa::EcdsaPublicKey::from_public_key_bytes(
+                crate::ecdsa::EcdsaCurve::P384,
+                qxqy,
+            )
+            .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
             return Ok(X509PublicKey::Ecdsa(key));
         }
 

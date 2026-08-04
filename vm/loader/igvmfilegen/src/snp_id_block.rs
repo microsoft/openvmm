@@ -363,7 +363,7 @@ fn signature_and_verify(
 
     // Verify (public key, r||s) over the SHA-384 of the signed content.
     let valid = public_key
-        .verify(crypto::HashAlgorithm::Sha384, signed_bytes, &sig)
+        .verify(signed_bytes, &sig, crypto::HashAlgorithm::Sha384)
         .context("verifying SNP ID block signature")?;
     anyhow::ensure!(
         valid,
@@ -471,7 +471,7 @@ fn sign_id_block_with_temp_key(
     // Sign the ID block bytes; `EcdsaKeyPair::sign` hashes them with SHA-384
     // internally. Returns r || s in big-endian, each 48 bytes for P-384.
     let signature = key
-        .sign(crypto::HashAlgorithm::Sha384, id_block.as_bytes())
+        .sign(id_block.as_bytes(), crypto::HashAlgorithm::Sha384)
         .context("signing SNP ID block")?;
 
     anyhow::ensure!(
@@ -572,7 +572,7 @@ mod tests {
 
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let raw_sig = key
-            .sign(crypto::HashAlgorithm::Sha384, signing_payload)
+            .sign(signing_payload, crypto::HashAlgorithm::Sha384)
             .unwrap();
         (ecdsa_raw_to_der(&raw_sig), spki_der(&key))
     }
@@ -692,7 +692,7 @@ mod tests {
         fn try_sign(&self, msg: &[u8]) -> Result<EcdsaDerSignature, signature::Error> {
             let raw = self
                 .key
-                .sign(crypto::HashAlgorithm::Sha384, msg)
+                .sign(msg, crypto::HashAlgorithm::Sha384)
                 .map_err(|_| signature::Error::new())?;
             Ok(EcdsaDerSignature(ecdsa_raw_to_der(&raw)))
         }
@@ -1024,7 +1024,7 @@ mod tests {
         // P-384 certificate, using the same key for both.
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let sig_der = ecdsa_raw_to_der(
-            &key.sign(crypto::HashAlgorithm::Sha384, &signing_payload)
+            &key.sign(&signing_payload, crypto::HashAlgorithm::Sha384)
                 .unwrap(),
         );
         let cert_der = self_signed_p384_cert_der(&key);
