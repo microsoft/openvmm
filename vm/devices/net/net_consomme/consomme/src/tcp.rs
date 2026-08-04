@@ -164,6 +164,8 @@ enum TcpBackend {
     Socket {
         socket: Option<PolledSocket<Socket>>,
         inspect_static_dns: bool,
+        /// Bytes left in the current DNS frame that must be forwarded.
+        static_dns_forward_remaining: usize,
     },
     /// A virtual DNS TCP handler (no real socket).
     Dns(DnsTcpHandler),
@@ -463,11 +465,13 @@ impl<T: Client> Access<'_, T> {
                 TcpBackend::Socket {
                     socket,
                     inspect_static_dns,
+                    static_dns_forward_remaining,
                 } => conn.inner.poll_socket_backend(
                     cx,
                     &mut sender,
                     socket,
-                    inspect_static_dns,
+                    *inspect_static_dns,
+                    static_dns_forward_remaining,
                     &self.inner.dns,
                 ),
             };
@@ -933,6 +937,7 @@ impl TcpConnection {
             backend: TcpBackend::Socket {
                 socket: Some(socket),
                 inspect_static_dns,
+                static_dns_forward_remaining: 0,
             },
             inner,
         })
@@ -958,6 +963,7 @@ impl TcpConnection {
                     PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
                 ),
                 inspect_static_dns: false,
+                static_dns_forward_remaining: 0,
             },
             inner,
         })
@@ -1114,7 +1120,8 @@ impl TcpConnectionInner {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         opt_socket: &mut Option<PolledSocket<Socket>>,
-        inspect_static_dns: &mut bool,
+        inspect_static_dns: bool,
+        static_dns_forward_remaining: &mut usize,
         dns: &DnsResolver,
     ) -> bool {
         // Wait for the outbound connection to complete.
@@ -1142,8 +1149,6 @@ impl TcpConnectionInner {
             // Need to establish connection with client before sending data.
             return true;
         }
-
-        let forward_rx = self.inspect_or_answer_static_dns(inspect_static_dns, dns);
 
         // Handle the tx path.
         if let Some(socket) = opt_socket.as_mut() {
@@ -1227,34 +1232,56 @@ impl TcpConnectionInner {
         }
 
         // Handle the rx path.
-        if forward_rx && let Some(socket) = opt_socket.as_mut() {
+        if let Some(socket) = opt_socket.as_mut() {
             let rx_high_water = self.rx_buffer.len();
-            while !self.rx_buffer.is_empty() {
-                let view = self.rx_buffer.view(0..self.rx_buffer.len());
-                let (a, b) = view.as_slices();
-                let bufs = [IoSlice::new(a), IoSlice::new(b)];
-                match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
-                    Poll::Ready(Ok(n)) => {
-                        self.rx_buffer.consume(n);
-                    }
-                    Poll::Ready(Err(err)) => {
-                        match err.kind() {
-                            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
-                            _ => {
-                                tracelimit::warn_ratelimited!(
-                                    error = &err as &dyn std::error::Error,
-                                    src = %sender.ft.src,
-                                    dst = %sender.ft.dst,
-                                    "socket write error"
-                                );
+            'inspect: loop {
+                if !self.inspect_or_answer_static_dns(
+                    inspect_static_dns,
+                    static_dns_forward_remaining,
+                    dns,
+                ) {
+                    break;
+                }
+
+                while !self.rx_buffer.is_empty() {
+                    let forward_len = if inspect_static_dns {
+                        self.rx_buffer.len().min(*static_dns_forward_remaining)
+                    } else {
+                        self.rx_buffer.len()
+                    };
+                    let view = self.rx_buffer.view(0..forward_len);
+                    let (a, b) = view.as_slices();
+                    let bufs = [IoSlice::new(a), IoSlice::new(b)];
+                    match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
+                        Poll::Ready(Ok(n)) => {
+                            self.rx_buffer.consume(n);
+                            if inspect_static_dns {
+                                *static_dns_forward_remaining -= n;
+                                if *static_dns_forward_remaining == 0 {
+                                    continue 'inspect;
+                                }
                             }
                         }
-                        sender.rst(self.tx_send, Some(self.rx_seq));
-                        self.stats.rsts_tx.increment();
-                        return false;
+                        Poll::Ready(Err(err)) => {
+                            match err.kind() {
+                                ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
+                                _ => {
+                                    tracelimit::warn_ratelimited!(
+                                        error = &err as &dyn std::error::Error,
+                                        src = %sender.ft.src,
+                                        dst = %sender.ft.dst,
+                                        "socket write error"
+                                    );
+                                }
+                            }
+                            sender.rst(self.tx_send, Some(self.rx_seq));
+                            self.stats.rsts_tx.increment();
+                            return false;
+                        }
+                        Poll::Pending => break 'inspect,
                     }
-                    Poll::Pending => break,
                 }
+                break;
             }
             // Draining to the host may have reopened the window; re-advertise it
             // so the guest resumes without waiting on its persist timer.
@@ -1308,10 +1335,19 @@ impl TcpConnectionInner {
     /// Answers complete DNS-over-TCP messages from static records.
     fn inspect_or_answer_static_dns(
         &mut self,
-        inspect_static_dns: &mut bool,
+        inspect_static_dns: bool,
+        static_dns_forward_remaining: &mut usize,
         dns: &DnsResolver,
     ) -> bool {
-        while *inspect_static_dns {
+        if !inspect_static_dns {
+            return true;
+        }
+
+        if *static_dns_forward_remaining != 0 {
+            return true;
+        }
+
+        loop {
             if self.rx_buffer.is_empty() {
                 return self.state.rx_fin();
             }
@@ -1331,7 +1367,7 @@ impl TcpConnectionInner {
             let framed_len = 2 + msg_len;
 
             if framed_len > self.rx_buffer_max {
-                *inspect_static_dns = false;
+                *static_dns_forward_remaining = framed_len;
                 return true;
             }
 
@@ -1357,7 +1393,7 @@ impl TcpConnectionInner {
             let max_response_len = self.tx_buffer_max.saturating_sub(2).min(u16::MAX as usize);
             let Some(response) = dns.build_static_response(&framed_query[2..], max_response_len)
             else {
-                *inspect_static_dns = false;
+                *static_dns_forward_remaining = framed_len;
                 return true;
             };
 
@@ -1387,8 +1423,6 @@ impl TcpConnectionInner {
             self.tx_buffer.extend_by(framed_response.len());
             self.rx_buffer.consume(framed_len);
         }
-
-        true
     }
 
     fn handle_connect_error(
