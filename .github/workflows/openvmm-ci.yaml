@@ -56,7 +56,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -103,7 +103,7 @@ jobs:
         flowey.exe v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -146,7 +146,7 @@ jobs:
         flowey.exe v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -216,7 +216,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -263,7 +263,7 @@ jobs:
         flowey v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -306,7 +306,7 @@ jobs:
         flowey v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -391,7 +391,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -455,7 +455,7 @@ jobs:
         flowey v 10 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -485,7 +485,7 @@ jobs:
         flowey v 10 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar2
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
@@ -608,19 +608,19 @@ jobs:
       run: flowey e 10 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-openhcl-baseline
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-openhcl-baseline
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-baseline/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-igvm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-igvm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-igvm-extras
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-igvm-extras/
@@ -664,7 +664,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -736,7 +736,7 @@ jobs:
         flowey v 11 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -766,7 +766,7 @@ jobs:
         flowey v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar2
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
@@ -968,43 +968,43 @@ jobs:
       run: flowey e 11 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-openhcl-baseline
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-openhcl-baseline
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-baseline/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-cvm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-openhcl-igvm-cvm
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-cvm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-cvm-extras
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-openhcl-igvm-cvm-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-cvm-extras/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-extras
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-extras/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-test-linux-direct
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-openhcl-igvm-test-linux-direct
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-test-linux-direct/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-test-linux-direct-extras
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-openhcl-igvm-test-linux-direct-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-test-linux-direct-extras/
@@ -1048,7 +1048,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -1107,7 +1107,7 @@ jobs:
         flowey v 12 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -1149,7 +1149,7 @@ jobs:
         flowey v 12 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar2
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
@@ -1334,37 +1334,37 @@ jobs:
       run: flowey e 12 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-mi-secure-openhcl-igvm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-mi-secure-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/x64-mi-secure-openhcl-igvm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-mi-secure-openhcl-igvm-cvm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-mi-secure-openhcl-igvm-cvm
         path: ${{ runner.temp }}/publish_artifacts/x64-mi-secure-openhcl-igvm-cvm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-mi-secure-openhcl-igvm-cvm-extras
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-mi-secure-openhcl-igvm-cvm-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-mi-secure-openhcl-igvm-cvm-extras/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-mi-secure-openhcl-igvm-extras
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-mi-secure-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-mi-secure-openhcl-igvm-extras/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-mi-secure-openhcl-igvm-test-linux-direct
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-mi-secure-openhcl-igvm-test-linux-direct
         path: ${{ runner.temp }}/publish_artifacts/x64-mi-secure-openhcl-igvm-test-linux-direct/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-mi-secure-openhcl-igvm-test-linux-direct-extras
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-mi-secure-openhcl-igvm-test-linux-direct-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-mi-secure-openhcl-igvm-test-linux-direct-extras/
@@ -1408,7 +1408,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -1466,7 +1466,7 @@ jobs:
         flowey.exe v 13 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -1498,7 +1498,7 @@ jobs:
         flowey.exe v 13 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -1554,7 +1554,7 @@ jobs:
         flowey.exe v 13 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -1601,7 +1601,7 @@ jobs:
         flowey.exe v 13 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__8
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-unit-tests-base-junit-xml
         path: ${{ env.floweyvar3 }}
@@ -1621,7 +1621,7 @@ jobs:
         flowey.exe v 13 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-unit-tests-crypto-native-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -1641,7 +1641,7 @@ jobs:
         flowey.exe v 13 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-unit-tests-crypto-rust-junit-xml
         path: ${{ env.floweyvar2 }}
@@ -1700,7 +1700,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -1759,7 +1759,7 @@ jobs:
         flowey v 14 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -1791,7 +1791,7 @@ jobs:
         flowey v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -1888,7 +1888,7 @@ jobs:
         flowey v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -1924,7 +1924,7 @@ jobs:
         flowey v 14 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__8
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-unit-tests-crypto-rust-junit-xml
         path: ${{ env.floweyvar3 }}
@@ -1944,7 +1944,7 @@ jobs:
         flowey v 14 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__11
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-unit-tests-crypto-openssl-junit-xml
         path: ${{ env.floweyvar4 }}
@@ -1964,7 +1964,7 @@ jobs:
         flowey v 14 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__14
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-unit-tests-crypto-all-junit-xml
         path: ${{ env.floweyvar5 }}
@@ -1999,7 +1999,7 @@ jobs:
         flowey v 14 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-unit-tests-base-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -2019,7 +2019,7 @@ jobs:
         flowey v 14 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-unit-tests-crypto-native-junit-xml
         path: ${{ env.floweyvar2 }}
@@ -2078,7 +2078,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -2136,7 +2136,7 @@ jobs:
         flowey v 15 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -2166,7 +2166,7 @@ jobs:
         flowey v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar10
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar9 }}
         path: ${{ env.floweyvar10 }}
@@ -2256,7 +2256,7 @@ jobs:
         flowey v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar8
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar7 }}
         path: ${{ env.floweyvar8 }}
@@ -2292,7 +2292,7 @@ jobs:
         flowey v 15 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__8
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-unit-tests-crypto-rust-junit-xml
         path: ${{ env.floweyvar3 }}
@@ -2312,7 +2312,7 @@ jobs:
         flowey v 15 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__11
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-unit-tests-crypto-openssl-junit-xml
         path: ${{ env.floweyvar4 }}
@@ -2332,7 +2332,7 @@ jobs:
         flowey v 15 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__14
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-unit-tests-crypto-symcrypt-junit-xml
         path: ${{ env.floweyvar5 }}
@@ -2352,7 +2352,7 @@ jobs:
         flowey v 15 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__17
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-unit-tests-crypto-all-junit-xml
         path: ${{ env.floweyvar6 }}
@@ -2387,7 +2387,7 @@ jobs:
         flowey v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-unit-tests-base-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -2407,7 +2407,7 @@ jobs:
         flowey v 15 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-unit-tests-crypto-native-junit-xml
         path: ${{ env.floweyvar2 }}
@@ -2466,7 +2466,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -2524,7 +2524,7 @@ jobs:
         flowey.exe v 16 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -2556,7 +2556,7 @@ jobs:
         flowey.exe v 16 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -2612,7 +2612,7 @@ jobs:
         flowey.exe v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -2659,7 +2659,7 @@ jobs:
         flowey.exe v 16 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__8
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-unit-tests-base-junit-xml
         path: ${{ env.floweyvar3 }}
@@ -2679,7 +2679,7 @@ jobs:
         flowey.exe v 16 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-unit-tests-crypto-native-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -2699,7 +2699,7 @@ jobs:
         flowey.exe v 16 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-unit-tests-crypto-rust-junit-xml
         path: ${{ env.floweyvar2 }}
@@ -2758,7 +2758,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -2822,7 +2822,7 @@ jobs:
         flowey v 17 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -2854,7 +2854,7 @@ jobs:
         flowey v 17 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -2922,7 +2922,7 @@ jobs:
         flowey v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -2958,7 +2958,7 @@ jobs:
         flowey v 17 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__8
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-unit-tests-crypto-rust-junit-xml
         path: ${{ env.floweyvar3 }}
@@ -2978,7 +2978,7 @@ jobs:
         flowey v 17 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__11
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-unit-tests-crypto-openssl-junit-xml
         path: ${{ env.floweyvar4 }}
@@ -2998,7 +2998,7 @@ jobs:
         flowey v 17 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__14
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-unit-tests-crypto-all-junit-xml
         path: ${{ env.floweyvar5 }}
@@ -3033,7 +3033,7 @@ jobs:
         flowey v 17 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-unit-tests-base-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -3053,7 +3053,7 @@ jobs:
         flowey v 17 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-unit-tests-crypto-native-junit-xml
         path: ${{ env.floweyvar2 }}
@@ -3112,7 +3112,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -3170,7 +3170,7 @@ jobs:
         flowey v 18 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -3200,7 +3200,7 @@ jobs:
         flowey v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar10
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar9 }}
         path: ${{ env.floweyvar10 }}
@@ -3290,7 +3290,7 @@ jobs:
         flowey v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar8
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar7 }}
         path: ${{ env.floweyvar8 }}
@@ -3326,7 +3326,7 @@ jobs:
         flowey v 18 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__8
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-unit-tests-crypto-rust-junit-xml
         path: ${{ env.floweyvar3 }}
@@ -3346,7 +3346,7 @@ jobs:
         flowey v 18 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__11
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-unit-tests-crypto-openssl-junit-xml
         path: ${{ env.floweyvar4 }}
@@ -3366,7 +3366,7 @@ jobs:
         flowey v 18 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__14
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-unit-tests-crypto-symcrypt-junit-xml
         path: ${{ env.floweyvar5 }}
@@ -3386,7 +3386,7 @@ jobs:
         flowey v 18 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__17
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-unit-tests-crypto-all-junit-xml
         path: ${{ env.floweyvar6 }}
@@ -3421,7 +3421,7 @@ jobs:
         flowey v 18 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-unit-tests-base-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -3441,7 +3441,7 @@ jobs:
         flowey v 18 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-unit-tests-crypto-native-junit-xml
         path: ${{ env.floweyvar2 }}
@@ -3479,7 +3479,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-13,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -3532,7 +3532,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -3552,7 +3552,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -3601,7 +3601,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -3635,7 +3635,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -3716,7 +3716,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-intel-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -3730,7 +3730,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-intel-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -3787,7 +3787,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -3849,7 +3849,7 @@ jobs:
         flowey.exe v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -3881,7 +3881,7 @@ jobs:
         flowey.exe v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -3923,13 +3923,13 @@ jobs:
       run: flowey.exe e 2 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-pipette
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-pipette
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-pipette/
@@ -3952,7 +3952,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-13,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-mi-secure-openhcl-igvm,x64-mi-secure-openhcl-igvm-cvm,x64-mi-secure-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -4021,7 +4021,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -4055,7 +4055,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -4111,7 +4111,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -4131,7 +4131,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -4184,7 +4184,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-intel-mi-secure-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -4198,7 +4198,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-intel-mi-secure-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -4235,7 +4235,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-13,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -4288,7 +4288,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -4308,7 +4308,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -4357,7 +4357,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -4391,7 +4391,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -4472,7 +4472,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-intel-tdx-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -4486,7 +4486,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-intel-tdx-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -4522,7 +4522,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-13,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -4575,7 +4575,7 @@ jobs:
         flowey.exe v 22 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -4595,7 +4595,7 @@ jobs:
         flowey.exe v 22 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -4644,7 +4644,7 @@ jobs:
         flowey.exe v 22 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -4678,7 +4678,7 @@ jobs:
         flowey.exe v 22 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -4759,7 +4759,7 @@ jobs:
         flowey.exe v 22 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-amd-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -4773,7 +4773,7 @@ jobs:
         flowey.exe v 22 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-amd-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -4810,7 +4810,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-13,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -4863,7 +4863,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -4883,7 +4883,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -4932,7 +4932,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -4966,7 +4966,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -5047,7 +5047,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-amd-snp-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -5061,7 +5061,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-amd-snp-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -5096,7 +5096,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-11,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-openvmm,x64-linux-openvmm_vhost,x64-linux-prep_steps,x64-linux-vmm-tests-archive,x64-tmks,x64-windows-pipette}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -5155,7 +5155,7 @@ jobs:
         flowey v 24 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -5189,7 +5189,7 @@ jobs:
         flowey v 24 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -5254,7 +5254,7 @@ jobs:
         flowey v 24 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -5274,7 +5274,7 @@ jobs:
         flowey v 24 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -5325,7 +5325,7 @@ jobs:
         flowey v 24 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-amd-kvm-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -5339,7 +5339,7 @@ jobs:
         flowey v 24 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-amd-kvm-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -5399,7 +5399,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -5413,7 +5413,7 @@ jobs:
       working-directory: flowey_bootstrap
       shell: bash
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{x64-guest_test_uefi,x64-linux-musl-openvmm,x64-linux-musl-openvmm_vhost,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-musl-vmm-tests-archive,x64-linux-prep_steps,x64-tmks,x64-windows-pipette}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -5481,7 +5481,7 @@ jobs:
         flowey v 25 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -5515,7 +5515,7 @@ jobs:
         flowey v 25 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -5577,7 +5577,7 @@ jobs:
         flowey v 25 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -5597,7 +5597,7 @@ jobs:
         flowey v 25 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -5647,7 +5647,7 @@ jobs:
         flowey v 25 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-intel-mshv-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -5661,7 +5661,7 @@ jobs:
         flowey v 25 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-intel-mshv-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -5723,7 +5723,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -5737,7 +5737,7 @@ jobs:
       working-directory: flowey_bootstrap
       shell: bash
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{aarch64-guest_test_uefi,aarch64-linux-musl-pipette,aarch64-linux-musl-tmk_vmm,aarch64-openhcl-igvm,aarch64-tmks,aarch64-windows-openvmm,aarch64-windows-pipette,aarch64-windows-tmk_vmm,aarch64-windows-vmgstool,aarch64-windows-vmgstool-dev,aarch64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -5804,7 +5804,7 @@ jobs:
         flowey.exe v 26 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -5838,7 +5838,7 @@ jobs:
         flowey.exe v 26 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -5894,7 +5894,7 @@ jobs:
         flowey.exe v 26 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -5914,7 +5914,7 @@ jobs:
         flowey.exe v 26 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -5967,7 +5967,7 @@ jobs:
         flowey.exe v 26 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -5981,7 +5981,7 @@ jobs:
         flowey.exe v 26 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -6015,7 +6015,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-12,aarch64-guest_test_uefi,aarch64-linux-musl-openvmm,aarch64-linux-musl-pipette,aarch64-linux-musl-tmk_vmm,aarch64-linux-vmm-tests-archive,aarch64-tmks,x64-linux-incubator}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -6061,7 +6061,7 @@ jobs:
         flowey v 27 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -6081,7 +6081,7 @@ jobs:
         flowey v 27 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -6111,7 +6111,7 @@ jobs:
         flowey v 27 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -6169,7 +6169,7 @@ jobs:
         flowey v 27 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -6241,7 +6241,7 @@ jobs:
         flowey v 27 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__2
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-tcg-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -6255,7 +6255,7 @@ jobs:
         flowey v 27 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__5
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-tcg-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -6308,7 +6308,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -6355,7 +6355,7 @@ jobs:
         flowey v 28 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -6428,7 +6428,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-12,aarch64-linux-vmgstool,aarch64-windows-vmgstool,x64-linux-vmgstool,x64-windows-vmgstool}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -6464,7 +6464,7 @@ jobs:
         flowey v 29 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -6498,7 +6498,7 @@ jobs:
         flowey v 29 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -6574,7 +6574,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -6654,7 +6654,7 @@ jobs:
         flowey v 3 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -6686,7 +6686,7 @@ jobs:
         flowey v 3 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -6872,67 +6872,67 @@ jobs:
       run: flowey e 3 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-guest_test_uefi
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-guest_test_uefi
         path: ${{ runner.temp }}/publish_artifacts/aarch64-guest_test_uefi/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-pipette
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-tmk_vmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-tpm_guest_tests
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-tpm_guest_tests
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-tpm_guest_tests/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-tmks
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-tmks
         path: ${{ runner.temp }}/publish_artifacts/aarch64-tmks/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-guest_test_uefi
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-guest_test_uefi
         path: ${{ runner.temp }}/publish_artifacts/x64-guest_test_uefi/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-incubator
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-incubator
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-incubator/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-pipette
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-tmk_vmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-tpm_guest_tests
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-tpm_guest_tests
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-tpm_guest_tests/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-tmks
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-tmks
         path: ${{ runner.temp }}/publish_artifacts/x64-tmks/
@@ -6976,7 +6976,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -7042,7 +7042,7 @@ jobs:
         flowey.exe v 4 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -7074,7 +7074,7 @@ jobs:
         flowey.exe v 4 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -7133,25 +7133,25 @@ jobs:
       run: flowey.exe e 4 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-hypestv
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-hypestv
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-hypestv/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-igvmfilegen
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-ohcldiag-dev
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgs_lib
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgs_lib/
@@ -7195,7 +7195,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -7269,7 +7269,7 @@ jobs:
         flowey.exe v 5 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -7301,7 +7301,7 @@ jobs:
         flowey.exe v 5 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -7397,7 +7397,7 @@ jobs:
         flowey.exe v 5 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -7431,49 +7431,49 @@ jobs:
       run: flowey.exe e 5 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-openvmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-prep_steps
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-prep_steps
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-prep_steps/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-test_igvm_agent_rpc_server
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-test_igvm_agent_rpc_server
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-test_igvm_agent_rpc_server/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-tmk_vmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-tpm_guest_tests
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-tpm_guest_tests
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-tpm_guest_tests/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgstool
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgstool-dev
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-vmgstool-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgstool-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmm-tests-archive
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-archive/
@@ -7517,7 +7517,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -7583,7 +7583,7 @@ jobs:
         flowey.exe v 6 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -7615,7 +7615,7 @@ jobs:
         flowey.exe v 6 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -7678,25 +7678,25 @@ jobs:
       run: flowey.exe e 6 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-windows-hypestv
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-hypestv
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-hypestv/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-igvmfilegen
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-ohcldiag-dev
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgs_lib
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgs_lib/
@@ -7740,7 +7740,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -7814,7 +7814,7 @@ jobs:
         flowey.exe v 7 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -7846,7 +7846,7 @@ jobs:
         flowey.exe v 7 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -7942,7 +7942,7 @@ jobs:
         flowey.exe v 7 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -7976,49 +7976,49 @@ jobs:
       run: flowey.exe e 7 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish x64-windows-openvmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-prep_steps
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-prep_steps
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-prep_steps/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-test_igvm_agent_rpc_server
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-test_igvm_agent_rpc_server
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-test_igvm_agent_rpc_server/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-tmk_vmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-tpm_guest_tests
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-tpm_guest_tests
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-tpm_guest_tests/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgstool
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgstool-dev
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-vmgstool-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgstool-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmm-tests-archive
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmm-tests-archive/
@@ -8027,7 +8027,7 @@ jobs:
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job7.json
       shell: bash
     - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: _internal-flowey-bootstrap-x86_64-windows-uid-13
         path: ${{ runner.temp }}/bootstrapped-flowey
@@ -8070,7 +8070,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -8156,7 +8156,7 @@ jobs:
         flowey v 8 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -8188,7 +8188,7 @@ jobs:
         flowey v 8 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -8357,7 +8357,7 @@ jobs:
         flowey v 8 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -8391,67 +8391,67 @@ jobs:
       run: flowey e 8 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish aarch64-linux-igvmfilegen
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-openvmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-openvmm_vhost
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-musl-openvmm_vhost
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-openvmm_vhost/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-ohcldiag-dev
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-openvmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-openvmm_vhost
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-openvmm_vhost
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-openvmm_vhost/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-prep_steps
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-prep_steps
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-prep_steps/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgs_lib
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgs_lib/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgstool
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgstool-dev
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-vmgstool-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgstool-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmm-tests-archive
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: aarch64-linux-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmm-tests-archive/
@@ -8460,7 +8460,7 @@ jobs:
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job8.json
       shell: bash
     - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: _internal-flowey-bootstrap-x86_64-linux-uid-12
         path: ${{ runner.temp }}/bootstrapped-flowey
@@ -8503,7 +8503,7 @@ jobs:
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -8591,7 +8591,7 @@ jobs:
         flowey v 9 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
@@ -8623,7 +8623,7 @@ jobs:
         flowey v 9 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -8796,7 +8796,7 @@ jobs:
         flowey v 9 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -8837,73 +8837,73 @@ jobs:
       run: flowey e 9 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish x64-linux-igvmfilegen
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-openvmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-openvmm_vhost
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-openvmm_vhost
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-openvmm_vhost/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-vmm-tests-archive
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-musl-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-vmm-tests-archive/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-ohcldiag-dev
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-openvmm
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-openvmm_vhost
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-openvmm_vhost
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-openvmm_vhost/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-prep_steps
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-prep_steps
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-prep_steps/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgs_lib
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgs_lib/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgstool
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgstool-dev
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-vmgstool-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgstool-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmm-tests-archive
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-linux-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-archive/
@@ -8912,7 +8912,7 @@ jobs:
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job9.json
       shell: bash
     - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: _internal-flowey-bootstrap-x86_64-linux-uid-11
         path: ${{ runner.temp }}/bootstrapped-flowey
