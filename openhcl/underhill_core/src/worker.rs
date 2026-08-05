@@ -291,6 +291,9 @@ pub struct UnderhillEnvCfg {
     pub mana_keep_alive: KeepAliveConfig,
     /// Don't skip FLR for NVMe devices.
     pub nvme_always_flr: bool,
+    /// Use the modern VFIO cdev + iommufd noiommu interface for assigned
+    /// devices (NVMe and MANA) instead of the legacy group + container path.
+    pub vfio_iommufd_cdev: bool,
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
     /// Disable the UEFI front page.
@@ -684,6 +687,9 @@ struct UhVmNetworkSettings {
     dma_mode: net_mana::GuestDmaMode,
     #[inspect(skip)]
     network_adapter_index: NetworkAdapterIndex,
+    /// Use the VFIO cdev + iommufd noiommu interface for MANA VF devices.
+    #[inspect(skip)]
+    vfio_iommufd_cdev: bool,
 }
 
 impl UhVmNetworkSettings {
@@ -826,7 +832,26 @@ impl UhVmNetworkSettings {
             AllocationVisibility::Private
         };
 
-        let ephemeral_dma_client = dma_client_spawner.new_client(DmaClientParameters {
+        // When the VFIO cdev + iommufd interface is selected, both DMA clients
+        // for this device must share a single noiommu IOAS, since the device is
+        // bound to exactly one IOAS. The presence of the IOAS on the client is
+        // what drives `VfioDevice` onto the cdev path (auto-detection).
+        //
+        // Keep-alive across servicing is only provided by the cdev + iommufd
+        // path (the legacy group keep-alive interface has been removed), so
+        // keep-alive-enabled devices are forced onto cdev regardless of the
+        // global flag.
+        let iommufd_ioas = if self.vfio_iommufd_cdev || keepalive_mode.is_enabled() {
+            Some(dma_client_spawner.new_iommufd_ioas()?)
+        } else {
+            None
+        };
+        let new_dma_client = |params: DmaClientParameters| match &iommufd_ioas {
+            Some(ioas) => dma_client_spawner.new_client_with_iommufd_ioas(params, ioas.clone()),
+            None => dma_client_spawner.new_client(params),
+        };
+
+        let ephemeral_dma_client = new_dma_client(DmaClientParameters {
             device_name: format!("nic_{}_ephemeral", nic_config.pci_id),
             lower_vtl_policy: LowerVtlPermissionPolicy::Any,
             allocation_visibility,
@@ -837,7 +862,7 @@ impl UhVmNetworkSettings {
         // private pool present without keepalive that needs to free previously
         // persisted memory ranges
         let persistent_dma_client = if keepalive_mode.is_enabled() || saved_mana_state.is_some() {
-            Some(dma_client_spawner.new_client(DmaClientParameters {
+            Some(new_dma_client(DmaClientParameters {
                 device_name: format!("nic_{}", nic_config.pci_id),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 persistent_allocations: true,
@@ -2413,6 +2438,7 @@ async fn new_underhill_vm(
             Arc::new(VfioNvmeDriverSpawner {
                 nvme_always_flr: env_cfg.nvme_always_flr,
                 is_isolated: isolation.is_isolated(),
+                use_iommufd_cdev: env_cfg.vfio_iommufd_cdev,
                 dma_client_spawner: dma_manager.client_spawner(),
             }),
         );
@@ -3501,6 +3527,7 @@ async fn new_underhill_vm(
             net_mana::GuestDmaMode::DirectDma
         },
         network_adapter_index: network_adapter_index.clone(),
+        vfio_iommufd_cdev: env_cfg.vfio_iommufd_cdev,
     };
 
     let mut netvsp_state = Vec::with_capacity(controllers.mana.len());

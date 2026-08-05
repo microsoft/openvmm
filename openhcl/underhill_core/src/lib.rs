@@ -345,6 +345,7 @@ async fn launch_workers(
         nvme_keep_alive: opt.nvme_keep_alive,
         mana_keep_alive: opt.mana_keep_alive,
         nvme_always_flr: opt.nvme_always_flr,
+        vfio_iommufd_cdev: opt.vfio_iommufd_cdev,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
         default_boot_always_attempt: opt.default_boot_always_attempt,

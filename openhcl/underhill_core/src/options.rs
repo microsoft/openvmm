@@ -284,6 +284,12 @@ pub struct Options {
     /// even if we would otherwise attempt to use VFIO's NoReset support.
     pub nvme_always_flr: bool,
 
+    /// (OPENHCL_VFIO_IOMMUFD_CDEV=1)
+    /// Use the modern VFIO cdev + iommufd noiommu interface for assigned
+    /// devices (NVMe and MANA) instead of the legacy VFIO group + container
+    /// interface. Defaults to on; set OPENHCL_VFIO_IOMMUFD_CDEV=0 for legacy.
+    pub vfio_iommufd_cdev: bool,
+
     /// (OPENHCL_TEST_CONFIG=\<TestScenarioConfig\>)
     /// Test configurations are designed to replicate specific behaviors and
     /// conditions in order to simulate various test scenarios.
@@ -491,6 +497,10 @@ impl Options {
                     })
                     .unwrap_or(KeepAliveConfig::Disabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
+        // Default to the VFIO cdev + iommufd interface. The flag is retained as
+        // an escape hatch: set OPENHCL_VFIO_IOMMUFD_CDEV=0 to fall back to the
+        // legacy VFIO group + container interface.
+        let vfio_iommufd_cdev = parse_env_bool_opt("OPENHCL_VFIO_IOMMUFD_CDEV").unwrap_or(true);
         let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
@@ -600,6 +610,7 @@ impl Options {
             nvme_keep_alive,
             mana_keep_alive,
             nvme_always_flr,
+            vfio_iommufd_cdev,
             test_configuration,
             disable_uefi_frontpage,
             default_boot_always_attempt,
