@@ -14,6 +14,7 @@ pub mod ado_task_azure_key_vault;
 pub mod ado_task_npm_authenticate;
 pub mod ado_task_nuget_authenticate;
 pub mod ado_task_publish_test_results;
+pub mod attest_build_provenance;
 pub mod cache;
 pub mod cfg_cargo_common_flags;
 pub mod cfg_persistent_dir_cargo_install;
