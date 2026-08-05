@@ -18,12 +18,12 @@ use firmware_uefi_custom_vars::BaseTemplateIdentity;
 // declarations when template data is regenerated.
 pub const MICROSOFT_WINDOWS_IDENTITY: BaseTemplateIdentity = BaseTemplateIdentity {
     guid: guid::guid!("1734c6e8-3154-4dda-ba5f-a874cc483422"),
-    version: 3,
+    version: 4,
 };
 
 pub const MICROSOFT_UEFI_CA_IDENTITY: BaseTemplateIdentity = BaseTemplateIdentity {
     guid: guid::guid!("272e7447-90a4-4563-a4b9-8e4ab00526ce"),
-    version: 3,
+    version: 4,
 };
 
 macro_rules! include_templates {

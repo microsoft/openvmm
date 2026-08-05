@@ -90,7 +90,7 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
             "unexpected Secure Boot template GUID in report: {raw}"
         );
         assert!(
-            raw.contains("template_version: 3"),
+            raw.contains("template_version: 4"),
             "unexpected Secure Boot template version in report: {raw}"
         );
         assert!(
