@@ -36,6 +36,22 @@ struct TestClient {
 }
 
 #[test]
+fn dns_tcp_frame_boundary_tracker_handles_fragmented_frames() {
+    let mut tracker = DnsTcpFrameBoundaryTracker::default();
+    assert!(tracker.at_frame_boundary());
+
+    tracker.ingest(&[0]);
+    assert!(!tracker.at_frame_boundary());
+    tracker.ingest(&[4, 1, 2]);
+    assert!(!tracker.at_frame_boundary());
+    tracker.ingest(&[3, 4]);
+    assert!(tracker.at_frame_boundary());
+
+    tracker.ingest(&[0, 0, 0, 1, 5]);
+    assert!(tracker.at_frame_boundary());
+}
+
+#[test]
 fn static_dns_tcp_fallback_continues_inspecting_after_miss() {
     let params = ConnectionParams {
         rx_buffer: NormalizedBufferBounds {
@@ -60,13 +76,12 @@ fn static_dns_tcp_fallback_continues_inspecting_after_miss() {
     connection.rx_buffer.write_at(0, &framed_query);
     connection.rx_buffer.extend_by(framed_query.len());
 
-    let mut static_dns_forward_remaining = 0;
-    assert!(!connection.inspect_or_answer_static_dns(
-        true,
-        &mut static_dns_forward_remaining,
-        &dns
+    let mut static_dns = StaticDnsTcpInspection::default();
+    assert!(matches!(
+        connection.poll_static_dns(&mut static_dns, &dns),
+        StaticDnsTcpDisposition::Hold
     ));
-    assert_eq!(static_dns_forward_remaining, 0);
+    assert!(static_dns.is_empty());
     assert!(connection.rx_buffer.is_empty());
 
     let response = dns
@@ -89,29 +104,73 @@ fn static_dns_tcp_fallback_continues_inspecting_after_miss() {
     connection.rx_buffer.write_at(0, &framed_query);
     connection.rx_buffer.extend_by(framed_query.len());
 
-    assert!(connection.inspect_or_answer_static_dns(true, &mut static_dns_forward_remaining, &dns));
-    assert_eq!(static_dns_forward_remaining, framed_query.len());
-    assert_eq!(connection.rx_buffer.len(), framed_query.len());
+    assert!(matches!(
+        connection.poll_static_dns(&mut static_dns, &dns),
+        StaticDnsTcpDisposition::Forward
+    ));
+    assert_eq!(static_dns.forwarding.as_ref().unwrap().frame, framed_query);
+    assert!(connection.rx_buffer.is_empty());
 
-    connection.rx_buffer.consume(framed_query.len());
-    static_dns_forward_remaining = 0;
+    static_dns.forwarding = None;
     let query = dns_resolver::build_query(0x9abc, "example.com", DnsQueryType::A);
     let mut framed_query = (query.len() as u16).to_be_bytes().to_vec();
     framed_query.extend_from_slice(&query);
     connection.rx_buffer.write_at(0, &framed_query);
     connection.rx_buffer.extend_by(framed_query.len());
 
-    assert!(!connection.inspect_or_answer_static_dns(
-        true,
-        &mut static_dns_forward_remaining,
-        &dns
+    assert!(matches!(
+        connection.poll_static_dns(&mut static_dns, &dns),
+        StaticDnsTcpDisposition::Hold
     ));
-    assert_eq!(static_dns_forward_remaining, 0);
+    assert!(static_dns.is_empty());
     assert!(connection.rx_buffer.is_empty());
 }
 
 #[test]
-fn static_dns_tcp_fallback_continues_inspecting_after_oversized_frame() {
+fn static_dns_tcp_fallback_waits_for_host_frame_boundary() {
+    let params = ConnectionParams {
+        rx_buffer: NormalizedBufferBounds {
+            initial: 16 * 1024,
+            max: 4 * 1024 * 1024,
+        },
+        tx_buffer: NormalizedBufferBounds {
+            initial: 16 * 1024,
+            max: 4 * 1024 * 1024,
+        },
+    };
+    let mut connection = TcpConnection::new_base(&params);
+    connection.rx_buffer = ring::Ring::new(params.rx_buffer.initial);
+
+    let mut dns = DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+    dns.add_static_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
+        .unwrap();
+
+    let query = dns_resolver::build_query(0x1234, "example.com", DnsQueryType::A);
+    let mut framed_query = (query.len() as u16).to_be_bytes().to_vec();
+    framed_query.extend_from_slice(&query);
+    connection.rx_buffer.write_at(0, &framed_query);
+    connection.rx_buffer.extend_by(framed_query.len());
+
+    let mut static_dns = StaticDnsTcpInspection::default();
+    static_dns.host_response_frames.ingest(&[0, 4, 1, 2]);
+    assert!(matches!(
+        connection.poll_static_dns(&mut static_dns, &dns),
+        StaticDnsTcpDisposition::Hold
+    ));
+    assert!(connection.tx_buffer.is_empty());
+    assert!(static_dns.frame_assembler.frame().is_some());
+
+    static_dns.host_response_frames.ingest(&[3, 4]);
+    assert!(matches!(
+        connection.poll_static_dns(&mut static_dns, &dns),
+        StaticDnsTcpDisposition::Hold
+    ));
+    assert!(!connection.tx_buffer.is_empty());
+    assert!(static_dns.frame_assembler.is_empty());
+}
+
+#[test]
+fn static_dns_tcp_fallback_streams_frames_larger_than_rx_buffer() {
     let params = ConnectionParams {
         rx_buffer: NormalizedBufferBounds {
             initial: 16 * 1024,
@@ -129,30 +188,65 @@ fn static_dns_tcp_fallback_continues_inspecting_after_oversized_frame() {
     dns.add_static_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
         .unwrap();
 
-    let oversized_len = params.rx_buffer.max;
-    connection
-        .rx_buffer
-        .write_at(0, &(oversized_len as u16).to_be_bytes());
-    connection.rx_buffer.extend_by(2);
+    let payload = vec![0u8; params.rx_buffer.max + 1];
+    let mut framed_query = (payload.len() as u16).to_be_bytes().to_vec();
+    framed_query.extend_from_slice(&payload);
 
-    let mut static_dns_forward_remaining = 0;
-    assert!(connection.inspect_or_answer_static_dns(true, &mut static_dns_forward_remaining, &dns));
-    assert_eq!(static_dns_forward_remaining, oversized_len + 2);
+    let mut static_dns = StaticDnsTcpInspection::default();
+    for (index, chunk) in framed_query.chunks(8 * 1024).enumerate() {
+        connection.rx_buffer.write_at(0, chunk);
+        connection.rx_buffer.extend_by(chunk.len());
+        let disposition = connection.poll_static_dns(&mut static_dns, &dns);
+        assert_eq!(
+            matches!(disposition, StaticDnsTcpDisposition::Forward),
+            index == framed_query.chunks(8 * 1024).count() - 1
+        );
+        assert!(connection.rx_buffer.is_empty());
+    }
+    assert_eq!(static_dns.forwarding.as_ref().unwrap().frame, framed_query);
 
-    connection.rx_buffer.consume(2);
-    static_dns_forward_remaining = 0;
+    static_dns.forwarding = None;
     let query = dns_resolver::build_query(0x1234, "example.com", DnsQueryType::A);
     let mut framed_query = (query.len() as u16).to_be_bytes().to_vec();
     framed_query.extend_from_slice(&query);
     connection.rx_buffer.write_at(0, &framed_query);
     connection.rx_buffer.extend_by(framed_query.len());
 
-    assert!(!connection.inspect_or_answer_static_dns(
-        true,
-        &mut static_dns_forward_remaining,
-        &dns
+    assert!(matches!(
+        connection.poll_static_dns(&mut static_dns, &dns),
+        StaticDnsTcpDisposition::Hold
     ));
-    assert_eq!(static_dns_forward_remaining, 0);
+    assert!(static_dns.is_empty());
+    assert!(connection.rx_buffer.is_empty());
+}
+
+#[test]
+fn static_dns_tcp_fallback_forwards_partial_frame_at_eof() {
+    let params = ConnectionParams {
+        rx_buffer: NormalizedBufferBounds {
+            initial: 16 * 1024,
+            max: 4 * 1024 * 1024,
+        },
+        tx_buffer: NormalizedBufferBounds {
+            initial: 16 * 1024,
+            max: 4 * 1024 * 1024,
+        },
+    };
+    let mut connection = TcpConnection::new_base(&params);
+    connection.rx_buffer = ring::Ring::new(params.rx_buffer.initial);
+    connection.state = TcpState::CloseWait;
+
+    let partial_frame = [0, 16, 1, 2, 3, 4];
+    connection.rx_buffer.write_at(0, &partial_frame);
+    connection.rx_buffer.extend_by(partial_frame.len());
+
+    let dns = DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+    let mut static_dns = StaticDnsTcpInspection::default();
+    assert!(matches!(
+        connection.poll_static_dns(&mut static_dns, &dns),
+        StaticDnsTcpDisposition::Forward
+    ));
+    assert_eq!(static_dns.forwarding.as_ref().unwrap().frame, partial_frame);
     assert!(connection.rx_buffer.is_empty());
 }
 

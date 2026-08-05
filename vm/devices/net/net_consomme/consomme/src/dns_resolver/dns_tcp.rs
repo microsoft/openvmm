@@ -25,6 +25,78 @@ use thiserror::Error;
 // bytes without truncating the prefix. This is also a sanity check to prevent
 // unbounded memory growth.
 const MAX_DNS_TCP_PAYLOAD_SIZE: usize = u16::MAX as usize;
+const DNS_TCP_LENGTH_PREFIX_SIZE: usize = 2;
+
+/// Incrementally assembles one length-prefixed DNS-over-TCP frame.
+#[derive(Default)]
+pub(crate) struct DnsTcpFrameAssembler {
+    buf: Vec<u8>,
+}
+
+impl DnsTcpFrameAssembler {
+    /// Consumes bytes until one complete frame is assembled.
+    pub(crate) fn ingest(&mut self, data: &[&[u8]]) -> usize {
+        if self.frame().is_some() {
+            return 0;
+        }
+
+        let mut consumed = 0;
+        for chunk in data {
+            let mut pos = 0;
+            while pos < chunk.len() {
+                let needed = self.bytes_needed();
+                let accepted = (chunk.len() - pos).min(needed);
+                self.buf.extend_from_slice(&chunk[pos..pos + accepted]);
+                pos += accepted;
+                consumed += accepted;
+
+                if self.frame().is_some() {
+                    return consumed;
+                }
+            }
+        }
+        consumed
+    }
+
+    pub(crate) fn frame(&self) -> Option<&[u8]> {
+        let frame_len = self.frame_len()?;
+        (self.buf.len() == frame_len).then_some(&self.buf)
+    }
+
+    pub(crate) fn take_frame(&mut self) -> Option<Vec<u8>> {
+        self.frame()
+            .is_some()
+            .then(|| std::mem::take(&mut self.buf))
+    }
+
+    pub(crate) fn take_buffered(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buf)
+    }
+
+    pub(crate) fn recycle_buffer(&mut self, mut buf: Vec<u8>) {
+        buf.clear();
+        self.buf = buf;
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    fn frame_len(&self) -> Option<usize> {
+        let prefix: [u8; DNS_TCP_LENGTH_PREFIX_SIZE] = self
+            .buf
+            .get(..DNS_TCP_LENGTH_PREFIX_SIZE)?
+            .try_into()
+            .ok()?;
+        Some(DNS_TCP_LENGTH_PREFIX_SIZE + u16::from_be_bytes(prefix) as usize)
+    }
+
+    fn bytes_needed(&self) -> usize {
+        self.frame_len()
+            .unwrap_or(DNS_TCP_LENGTH_PREFIX_SIZE)
+            .saturating_sub(self.buf.len())
+    }
+}
 
 /// Errors returned by [`DnsTcpHandler::ingest`] and [`DnsTcpHandler::poll_read`]
 /// when the DNS TCP framing is invalid or the query cannot be processed.
@@ -57,12 +129,10 @@ enum Phase {
 pub struct DnsTcpHandler {
     receiver: Receiver<DnsResponse>,
     flow: DnsFlow,
-    /// Shared buffer used for both the incoming request and the outgoing
-    /// response.  During [`Phase::Receiving`] it accumulates one TCP-framed
-    /// DNS message from the guest.  During [`Phase::Responding`] it holds
-    /// the TCP-framed response being drained to the caller.
-    buf: Vec<u8>,
-    /// Write offset into `buf` while draining a response to the caller.
+    frame_assembler: DnsTcpFrameAssembler,
+    /// TCP-framed response being drained to the caller.
+    response_buf: Vec<u8>,
+    /// Write offset into `response_buf` while draining a response to the caller.
     /// Only meaningful during [`Phase::Responding`].
     tx_offset: usize,
     phase: Phase,
@@ -76,7 +146,8 @@ impl DnsTcpHandler {
         Self {
             receiver,
             flow,
-            buf: Vec::new(),
+            frame_assembler: DnsTcpFrameAssembler::default(),
+            response_buf: Vec::new(),
             tx_offset: 0,
             phase: Phase::Receiving,
             guest_fin: false,
@@ -106,65 +177,34 @@ impl DnsTcpHandler {
             return Ok(0);
         }
 
-        let mut total_consumed = 0;
-        for chunk in data {
-            let mut pos = 0;
-            while pos < chunk.len() {
-                let need = self.bytes_needed();
-                if need == 0 {
-                    // Complete message already in rx_buf but not yet submitted
-                    // (should not happen in practice).
-                    break;
-                }
-                let accept = (chunk.len() - pos).min(need);
-                self.buf.extend_from_slice(&chunk[pos..pos + accept]);
-                pos += accept;
-                total_consumed += accept;
-
-                match self.try_submit(dns) {
-                    Ok(true) => return Ok(total_consumed),
-                    Ok(false) => {}
-                    Err(e) => return Err(e),
-                }
-            }
+        let consumed = self.frame_assembler.ingest(data);
+        if let Some(frame) = self.frame_assembler.take_frame() {
+            let result = self.try_submit(&frame, dns);
+            self.frame_assembler.recycle_buffer(frame);
+            result?;
         }
-
-        Ok(total_consumed)
+        Ok(consumed)
     }
 
-    /// How many more bytes are needed to complete the current message.
-    fn bytes_needed(&self) -> usize {
-        if self.buf.len() < 2 {
-            return 2 - self.buf.len();
-        }
-        let msg_len = u16::from_be_bytes([self.buf[0], self.buf[1]]) as usize;
-        (2 + msg_len).saturating_sub(self.buf.len())
-    }
-
-    /// If a complete TCP-framed DNS message is in `buf`, answer it.
+    /// Answers one complete TCP-framed DNS message.
     ///
     /// A query matching a static record is answered locally; otherwise it is
     /// submitted to the resolver via [`DnsResolver::submit_tcp_query`].
     ///
-    /// Returns `Ok(true)` if the query was answered or submitted, `Ok(false)`
-    /// if the message is still incomplete, or `Err` if the framing is invalid
-    /// or the query was rejected.
-    fn try_submit<B: DnsBackend>(&mut self, dns: &mut DnsResolver<B>) -> Result<bool, DnsTcpError> {
-        if self.buf.len() < 2 {
-            return Ok(false);
-        }
-        let msg_len = u16::from_be_bytes([self.buf[0], self.buf[1]]) as usize;
+    /// Returns an error if the framing is invalid or the query was rejected.
+    fn try_submit<B: DnsBackend>(
+        &mut self,
+        frame: &[u8],
+        dns: &mut DnsResolver<B>,
+    ) -> Result<(), DnsTcpError> {
+        let msg_len = frame.len() - DNS_TCP_LENGTH_PREFIX_SIZE;
         if msg_len <= super::DNS_HEADER_SIZE {
             return Err(DnsTcpError::InvalidMessageLength);
         }
-        if self.buf.len() < 2 + msg_len {
-            return Ok(false);
-        }
+        let query = &frame[DNS_TCP_LENGTH_PREFIX_SIZE..];
 
         // If the query matches a static record, reply with the associated response.
-        if let Some(response) =
-            dns.build_static_response(&self.buf[2..2 + msg_len], u16::MAX as usize)
-        {
+        if let Some(response) = dns.build_static_response(query, u16::MAX as usize) {
             tracing::trace!(
                 msg_len,
                 src = %self.flow.src,
@@ -172,7 +212,7 @@ impl DnsTcpHandler {
                 "dns_tcp: query answered from static records",
             );
             self.frame_response(response);
-            return Ok(true);
+            return Ok(());
         }
 
         if !dns.is_available() {
@@ -182,14 +222,14 @@ impl DnsTcpHandler {
                 dst = %self.flow.dst,
                 "dns_tcp: no resolver backend available, returning SERVFAIL",
             );
-            self.frame_response(build_servfail_response(&self.buf[2..2 + msg_len]));
-            return Ok(true);
+            self.frame_response(build_servfail_response(query));
+            return Ok(());
         }
 
         // Submit the raw DNS query (without the TCP length prefix).
         let request = DnsRequest {
             flow: self.flow.clone(),
-            dns_query: &self.buf[2..2 + msg_len],
+            dns_query: query,
         };
         if !dns.submit_tcp_query(&request, self.receiver.sender()) {
             tracelimit::warn_ratelimited!(
@@ -205,21 +245,21 @@ impl DnsTcpHandler {
             dst = %self.flow.dst,
             "dns_tcp: query submitted, entering in-flight",
         );
-        self.buf.clear();
         self.phase = Phase::InFlight;
-        Ok(true)
+        Ok(())
     }
 
     /// Frame `payload` as a TCP DNS response (a 2-byte big-endian length prefix
-    /// followed by the payload) into `buf` and enter the responding phase.
+    /// followed by the payload) and enter the responding phase.
     fn frame_response(&mut self, payload: Vec<u8>) {
         let payload_len = payload.len();
-        self.buf.clear();
-        self.buf
-            .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
-        self.buf
+        self.response_buf.clear();
+        self.response_buf.reserve(
+            (DNS_TCP_LENGTH_PREFIX_SIZE + payload_len).saturating_sub(self.response_buf.capacity()),
+        );
+        self.response_buf
             .extend_from_slice(&(payload_len as u16).to_be_bytes());
-        self.buf.extend(payload);
+        self.response_buf.extend(payload);
         self.tx_offset = 0;
         self.phase = Phase::Responding;
     }
@@ -287,11 +327,11 @@ impl DnsTcpHandler {
         }
     }
 
-    /// Write as much of `buf[tx_offset..]` into `bufs` as possible.
-    /// Clears `buf` when fully drained so it can be reused for the next
+    /// Write as much of `response_buf[tx_offset..]` into `bufs` as possible.
+    /// Clears `response_buf` when fully drained so it can be reused for the next
     /// incoming request.
     fn drain_tx(&mut self, bufs: &mut [IoSliceMut<'_>]) -> usize {
-        let remaining = &self.buf[self.tx_offset..];
+        let remaining = &self.response_buf[self.tx_offset..];
         let mut written = 0;
         for buf in bufs.iter_mut() {
             let left = remaining.len() - written;
@@ -303,8 +343,8 @@ impl DnsTcpHandler {
             written += n;
         }
         self.tx_offset += written;
-        if self.tx_offset >= self.buf.len() {
-            self.buf.clear();
+        if self.tx_offset >= self.response_buf.len() {
+            self.response_buf.clear();
             self.tx_offset = 0;
             self.phase = Phase::Receiving;
         }
@@ -378,6 +418,38 @@ mod tests {
             0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x66,
             0x6F, 0x6F,
         ]
+    }
+
+    #[test]
+    fn frame_assembler_handles_fragmented_and_coalesced_frames() {
+        let first = make_tcp_dns_message(&sample_query());
+        let second = make_tcp_dns_message(&[0x55; 32]);
+        let mut remaining = first[1..].to_vec();
+        remaining.extend_from_slice(&second);
+
+        let mut assembler = DnsTcpFrameAssembler::default();
+        assert_eq!(assembler.ingest(&[&first[..1]]), 1);
+        assert!(assembler.frame().is_none());
+
+        assert_eq!(assembler.ingest(&[&remaining]), first.len() - 1);
+        assert_eq!(assembler.take_frame().as_deref(), Some(first.as_slice()));
+
+        assert_eq!(
+            assembler.ingest(&[&remaining[first.len() - 1..]]),
+            second.len()
+        );
+        assert_eq!(assembler.take_frame().as_deref(), Some(second.as_slice()));
+        assert!(assembler.is_empty());
+    }
+
+    #[test]
+    fn frame_assembler_accepts_maximum_length_frame() {
+        let payload = vec![0xAA; u16::MAX as usize];
+        let frame = make_tcp_dns_message(&payload);
+        let mut assembler = DnsTcpFrameAssembler::default();
+
+        assert_eq!(assembler.ingest(&[&frame]), frame.len());
+        assert_eq!(assembler.take_frame().as_deref(), Some(frame.as_slice()));
     }
 
     #[test]
