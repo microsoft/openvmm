@@ -304,12 +304,73 @@ impl NvramServices {
         Ok(())
     }
 
+    /// Compare one loaded Secure Boot variable with its base-template signatures.
+    async fn get_secure_boot_variable_report(
+        &mut self,
+        variable_name: &str,
+        (vendor, name): (Guid, &ucs2::Ucs2LeSlice),
+        template_signatures: &[Signature],
+    ) -> Option<SecureBootVariableReport> {
+        let base_signatures = base_signature_set(template_signatures);
+        if base_signatures.is_empty() {
+            tracing::warn!(
+                CVM_ALLOWED,
+                variable_name,
+                "secure boot variable omitted from configuration report: baseline contains no signatures"
+            );
+            return None;
+        }
+
+        match self.services.get_variable_ucs2(vendor, name).await {
+            // The variable exists in NVRAM but is empty
+            Ok((_, data)) if data.is_empty() => Some(SecureBootVariableReport {
+                base_template_entries: base_signatures.len(),
+                loaded_entries: 0,
+                missing_entries: base_signatures.len(),
+                loaded_variable_bytes: 0,
+            }),
+            // The variable exists in NVRAM and has data
+            Ok((_, data)) => match collect_signature_set(&data) {
+                // The data is valid
+                Ok(loaded_signatures) => Some(SecureBootVariableReport {
+                    base_template_entries: base_signatures.len(),
+                    loaded_entries: loaded_signatures.len(),
+                    missing_entries: base_signatures.difference(&loaded_signatures).count(),
+                    loaded_variable_bytes: data.len(),
+                }),
+                // The data cannot be parsed
+                Err(error) => {
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        variable_name,
+                        error = &error as &dyn std::error::Error,
+                        "secure boot variable omitted from configuration report: failed to parse variable"
+                    );
+                    None
+                }
+            },
+            // The variable does not exist in NVRAM
+            Err((EfiStatus::NOT_FOUND, _)) => None,
+            // The variable exists in NVRAM but cannot be read for some other reason
+            Err((status, error)) => {
+                tracing::warn!(
+                    CVM_CONFIDENTIAL,
+                    variable_name,
+                    ?status,
+                    ?error,
+                    "secure boot variable omitted from configuration report: failed to read variable"
+                );
+                None
+            }
+        }
+    }
+
+    /// Report the loaded Secure Boot configuration against the selected base template.
     async fn report_secure_boot_configuration(
         &mut self,
         base_template: Option<&ParsedBaseTemplate>,
         custom_uefi_config_present: bool,
     ) {
-        // Get the signatures from the base template
         let Some((identity, signatures)) = base_template.and_then(|template| {
             template
                 .vars
@@ -323,94 +384,31 @@ impl NvramServices {
             return;
         };
 
-        // Defines all the secure boot variables to evaluate against the base template
-        let variables = [
-            ("PK", vars::PK(), std::slice::from_ref(&signatures.pk)),
-            ("KEK", vars::KEK(), signatures.kek.as_slice()),
-            ("db", vars::DB(), signatures.db.as_slice()),
-            ("dbx", vars::DBX(), signatures.dbx.as_slice()),
-        ];
-        let mut variable_reports = [None; 4];
+        let pk = self
+            .get_secure_boot_variable_report("PK", vars::PK(), std::slice::from_ref(&signatures.pk))
+            .await;
+        let kek = self
+            .get_secure_boot_variable_report("KEK", vars::KEK(), &signatures.kek)
+            .await;
+        let db = self
+            .get_secure_boot_variable_report("db", vars::DB(), &signatures.db)
+            .await;
+        let dbx = self
+            .get_secure_boot_variable_report("dbx", vars::DBX(), &signatures.dbx)
+            .await;
 
-        // Iterate over each secure boot variable and compare it against the base template
-        for (index, (variable_name, (vendor, name), template_signatures)) in
-            variables.into_iter().enumerate()
-        {
-            let loaded_variable = match self.services.get_variable_ucs2(vendor, name).await {
-                Ok((_, data)) if !data.is_empty() => data,
-                Ok((_, data)) => {
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        variable_name,
-                        loaded_variable_bytes = data.len(),
-                        "secure boot variable omitted from configuration report: variable is empty"
-                    );
-                    continue;
-                }
-                Err((EfiStatus::NOT_FOUND, _)) => {
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        variable_name,
-                        loaded_variable_bytes = 0,
-                        "secure boot variable omitted from configuration report: variable was not found in NVRAM"
-                    );
-                    continue;
-                }
-                Err((status, error)) => {
-                    tracing::warn!(
-                        CVM_CONFIDENTIAL,
-                        variable_name,
-                        ?status,
-                        ?error,
-                        "secure boot variable omitted from configuration report: failed to read variable"
-                    );
-                    continue;
-                }
-            };
-
-            let loaded_variable_bytes = loaded_variable.len();
-            let loaded_signatures = match collect_signature_set(&loaded_variable) {
-                Ok(signatures) => signatures,
-                Err(error) => {
-                    tracing::warn!(
-                        CVM_CONFIDENTIAL,
-                        variable_name,
-                        error = &error as &dyn std::error::Error,
-                        "secure boot variable omitted from configuration report: failed to parse variable"
-                    );
-                    continue;
-                }
-            };
-
-            let base_signatures = base_signature_set(template_signatures);
-            if base_signatures.is_empty() {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    variable_name,
-                    "secure boot variable omitted from configuration report: baseline contains no signatures"
-                );
-                continue;
-            }
-
-            variable_reports[index] = Some(SecureBootVariableReport {
-                base_template_entries: base_signatures.len(),
-                loaded_entries: loaded_signatures.len(),
-                missing_entries: base_signatures.difference(&loaded_signatures).count(),
-                loaded_variable_bytes,
-            });
-        }
-
-        let [pk, kek, db, dbx] = variable_reports;
-        let report = SecureBootConfigReport {
-            template_guid: identity.guid,
-            template_version: identity.version,
-            custom_uefi_config_present,
-            pk,
-            kek,
-            db,
-            dbx,
-        };
-        tracing::info!(CVM_ALLOWED, ?report);
+        tracing::info!(
+            CVM_ALLOWED,
+            report = ?(SecureBootConfigReport {
+                template_guid: identity.guid,
+                template_version: identity.version,
+                custom_uefi_config_present,
+                pk,
+                kek,
+                db,
+                dbx,
+            })
+        );
     }
 
     async fn inject_hyperv_vars(&mut self) -> Result<(), NvramSetupError> {
