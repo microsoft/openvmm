@@ -805,6 +805,82 @@ mod tests {
     }
 
     #[async_test]
+    async fn missing_secure_boot_variable_has_no_report() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+        let template_signatures = [Signature::X509(vec![firmware_uefi_custom_vars::X509Cert(
+            b"cert1".to_vec(),
+        )])];
+
+        assert!(
+            nvram
+                .get_secure_boot_variable_report("db", vars::DB(), &template_signatures)
+                .await
+                .is_none()
+        );
+    }
+
+    #[async_test]
+    async fn empty_secure_boot_variable_reports_all_entries_missing() {
+        let (vendor, name) = vars::DB();
+        let mut storage = InMemoryNvram::new();
+        storage
+            .set_variable(name, vendor, 0, Vec::new(), EFI_TIME::default())
+            .await
+            .unwrap();
+        let mut nvram = nvram_services(storage);
+        let template_signatures = [Signature::X509(vec![
+            firmware_uefi_custom_vars::X509Cert(b"cert1".to_vec()),
+            firmware_uefi_custom_vars::X509Cert(b"cert2".to_vec()),
+        ])];
+
+        let report = nvram
+            .get_secure_boot_variable_report("db", (vendor, name), &template_signatures)
+            .await
+            .unwrap();
+
+        assert_eq!(report.base_template_entries, 2);
+        assert_eq!(report.loaded_entries, 0);
+        assert_eq!(report.missing_entries, 2);
+        assert_eq!(report.loaded_variable_bytes, 0);
+    }
+
+    #[async_test]
+    async fn populated_secure_boot_variable_reports_signature_counts() {
+        use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
+
+        let (vendor, name) = vars::DB();
+        let mut data = Vec::new();
+        for cert in [b"cert1".as_slice(), b"cert3".as_slice()] {
+            SignatureList::X509(SignatureData::new_x509(
+                MSFT_SECURE_BOOT_PRODUCTION_GUID,
+                Cow::Borrowed(cert),
+            ))
+            .extend_as_spec_signature_list(&mut data);
+        }
+        let loaded_variable_bytes = data.len();
+        let mut storage = InMemoryNvram::new();
+        storage
+            .set_variable(name, vendor, 0, data, EFI_TIME::default())
+            .await
+            .unwrap();
+        let mut nvram = nvram_services(storage);
+        let template_signatures = [Signature::X509(vec![
+            firmware_uefi_custom_vars::X509Cert(b"cert1".to_vec()),
+            firmware_uefi_custom_vars::X509Cert(b"cert2".to_vec()),
+        ])];
+
+        let report = nvram
+            .get_secure_boot_variable_report("db", (vendor, name), &template_signatures)
+            .await
+            .unwrap();
+
+        assert_eq!(report.base_template_entries, 2);
+        assert_eq!(report.loaded_entries, 2);
+        assert_eq!(report.missing_entries, 1);
+        assert_eq!(report.loaded_variable_bytes, loaded_variable_bytes);
+    }
+
+    #[async_test]
     async fn invalid_templates_are_ignored_after_first_boot_without_secure_boot() {
         let mut storage = InMemoryNvram::new();
         let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
