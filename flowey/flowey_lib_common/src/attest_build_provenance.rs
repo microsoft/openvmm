@@ -35,6 +35,7 @@ impl SimpleFlowNode for Node {
                 .requires_permission(GhPermission::Contents, GhPermissionValue::Read)
                 .requires_permission(GhPermission::IdToken, GhPermissionValue::Write)
                 .requires_permission(GhPermission::Attestations, GhPermissionValue::Write)
+                .requires_permission(GhPermission::ArtifactMetadata, GhPermissionValue::Write)
                 .finish(ctx)
         } else {
             ctx.emit_rust_step("(stub) attest release artifacts", |ctx| {
