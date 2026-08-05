@@ -68,8 +68,6 @@ enum SignatureValue {
 type SignatureSet = BTreeSet<SignatureValue>;
 
 /// Secure Boot telemetry schema mirrored by legacy HCL's `UefiNvramStore.cpp`.
-#[derive(Debug)]
-#[expect(dead_code, reason = "fields are consumed by derived Debug telemetry")]
 struct SecureBootConfigReport {
     template_guid: Guid,
     template_version: u16,
@@ -78,6 +76,27 @@ struct SecureBootConfigReport {
     kek: Option<SecureBootVariableReport>,
     db: Option<SecureBootVariableReport>,
     dbx: Option<SecureBootVariableReport>,
+}
+
+impl Debug for SecureBootConfigReport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SecureBootConfigReport")
+            .field("template_guid", &self.template_guid)
+            .field(
+                "template_version",
+                &format_args!("{}", self.template_version),
+            )
+            .field(
+                "custom_uefi_config_present",
+                &self.custom_uefi_config_present,
+            )
+            .field("pk", &self.pk)
+            .field("kek", &self.kek)
+            .field("db", &self.db)
+            .field("dbx", &self.dbx)
+            .finish()
+    }
 }
 
 struct ParsedBaseTemplate {
