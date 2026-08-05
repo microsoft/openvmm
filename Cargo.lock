@@ -10629,6 +10629,7 @@ dependencies = [
  "guid",
  "hvs_file",
  "hyperv_ic_resources",
+ "hyperv_secure_boot_templates",
  "initrd_cpio",
  "inspect",
  "jiff",

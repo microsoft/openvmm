@@ -75,6 +75,7 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
     vm: &PetriVm<T>,
     custom_uefi_config_present: bool,
 ) -> Result<(), anyhow::Error> {
+    let template_identity = hyperv_secure_boot_templates::MICROSOFT_UEFI_CA_IDENTITY;
     let mut kmsg = vm.kmsg().await?;
 
     while let Some(data) = kmsg.next().await {
@@ -86,11 +87,14 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
         }
 
         assert!(
-            raw.contains("template_guid: 272e7447-90a4-4563-a4b9-8e4ab00526ce"),
+            raw.contains(&format!("template_guid: {}", template_identity.guid)),
             "unexpected Secure Boot template GUID in report: {raw}"
         );
         assert!(
-            raw.contains("template_version: 4"),
+            raw.contains(&format!(
+                "template_version: {:x},",
+                template_identity.version
+            )),
             "unexpected Secure Boot template version in report: {raw}"
         );
         assert!(
