@@ -90,6 +90,15 @@ pub mod consomme {
         pub guest_port: u16,
     }
 
+    /// Configuration for adding a static DNS record to the endpoint.
+    #[derive(Debug, MeshPayload)]
+    pub struct DnsRecordConfig {
+        /// The type and data of the record (currently only `A` is supported).
+        pub record: [u8; 4],
+        /// The query name in presentation form (e.g. `"example.com"`).
+        pub name: String,
+    }
+
     /// A runtime request that can cross a process boundary to a Consomme endpoint.
     #[derive(MeshPayload)]
     pub enum ConsommeRequest {
@@ -99,6 +108,8 @@ pub mod consomme {
         Unbind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
         /// Allocate a virtual address mapped to a host destination.
         CreateVirtualAddress(mesh::rpc::Rpc<HostIpAddress, Option<HostIpAddress>>),
+        /// Add a static DNS record to the endpoint.
+        AddDnsRecord(mesh::rpc::FailableRpc<DnsRecordConfig, ()>),
     }
 
     /// Handle to a Consomme network endpoint.
