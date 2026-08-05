@@ -2297,6 +2297,7 @@ mod tests {
                 config_space: ConfigSpaceType0Emulator::new(
                     pci_config,
                     Vec::new(),
+                    Vec::new(),
                     DeviceBars::new(),
                 ),
             }));
@@ -2322,6 +2323,7 @@ mod tests {
                 config_space: ConfigSpaceType0Emulator::new(
                     pci_config,
                     Vec::new(),
+                    Vec::new(),
                     DeviceBars::new(),
                 ),
             }));
@@ -2337,6 +2339,7 @@ mod tests {
             let pci = Arc::new(CloseableMutex::new(NullDevice {
                 config_space: ConfigSpaceType0Emulator::new(
                     pci_config,
+                    Vec::new(),
                     Vec::new(),
                     DeviceBars::new(),
                 ),
