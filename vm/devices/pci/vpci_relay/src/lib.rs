@@ -416,7 +416,6 @@ impl VpciRelay {
                     pending: None,
                     waker: Waker::noop().clone(),
                     tdisp_capable,
-                    tdisp_config_space_locked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })
             })
             .await?;
@@ -550,30 +549,22 @@ impl VpciRelay {
 struct RelayedVpciDevice {
     #[inspect(flatten)]
     device: Arc<VpciDevice>,
-    /// In-flight deferred STATUS_COMMAND write. Driven by [`PollDevice`].
+
+    /// In-flight deferred config space write. Driven by [`PollDevice`].
     #[inspect(skip)]
     pending: Option<(
         DeferredWrite,
         Pin<Box<dyn Future<Output = ()> + Send + Sync>>,
     )>,
+
     /// Waker captured from the most recent `PollDevice::poll_device` call.
     /// We wake it from `pci_cfg_write` when we install a new pending future
     /// so the chipset device unit re-polls us.
     #[inspect(skip)]
     waker: Waker,
+
     /// Is the device TDISP capable?
     tdisp_capable: bool,
-    /// Whether config space writes are currently locked for this device.
-    ///
-    /// Starts `false`. Set to `true` on the MMIO-enable edge (once the device
-    /// has been bound/attested) and cleared back to `false` after unbind
-    /// completes. While `true`, incoming config space writes are dropped and
-    /// logged.
-    ///
-    /// This is shared with the deferred unbind future so it can clear the flag
-    /// once the unbind has actually finished.
-    #[inspect(skip)]
-    tdisp_config_space_locked: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ChipsetDevice for RelayedVpciDevice {
@@ -679,125 +670,76 @@ impl PciConfigSpace for RelayedVpciDevice {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
-        // For non-TDISP-capable devices, just pass through the config write.
-        // We check the cached `tdisp_capable` flag directly rather than going
-        // through `tdisp_isolation_report`, which is now async and used only
-        // by the guest-facing `VPCI_QUERY_ISOLATED_RESOURCES` async path.
-        if !self.tdisp_capable {
+        // Only a command register write that flips the MMIO-enable bit needs
+        // async TDISP work. Everything else is a synchronous pass-through.
+        //
+        // This matters beyond efficiency: `probe_bar_masks` sizes the BARs from
+        // a synchronous context with no executor available, so it cannot honor
+        // a deferred write.
+        if !self.tdisp_capable || HeaderType00(offset) != HeaderType00::STATUS_COMMAND {
             self.device.write_cfg(offset, value);
             return IoResult::Ok;
         }
 
-
-        // For STATUS_COMMAND writes, detect the MMIO-enable edge BEFORE
-        // issuing the write so we can dispatch the correct TDISP notification.
-        // The bus serializes cfg writes to this device, so at most one
-        // deferred write is in flight at a time.
-        let mmio_edge = if HeaderType00(offset) == HeaderType00::STATUS_COMMAND {
-            use pci_core::spec::cfg_space::Command;
-            let mut current = 0;
-            self.device.read_cfg(
-                offset,
-                ByteEnabledDwordRead::with_all_bytes_enabled(&mut current),
-            );
-            // The STATUS_COMMAND dword packs the 16-bit Command register in the
-            // low two bytes and the 16-bit Status register in the high two
-            // bytes. Only the Command register is relevant here, so mask off
-            // the Status half before truncating to `u16`.
-            let prev = Command::from((current & 0xffff) as u16).mmio_enabled();
-            // `merge` honors the byte enables, so a partial write that leaves
-            // the command register untouched yields `next` equal to `prev`.
-            let next = Command::from((value.merge(current) & 0xffff) as u16).mmio_enabled();
-            match (prev, next) {
-                (false, true) => Some(true),
-                (true, false) => Some(false),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        // Determine if we are going from mmio off -> on or on -> off and bind/unbind appropriately.
-        match mmio_edge {
-            Some(true) => {
-                // MMIO-enable edge: lock config space so that subsequent writes
-                // are dropped while the device is bound/running.
-                self.tdisp_config_space_locked
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-
-                let (write, token) = chipset_device::io::deferred::defer_write();
-                let device = self.device.clone();
-                let fut = Box::pin(async move {
-
-                    // Bind and attest device
-                    device.tdisp_on_device_activate().await
-                    
-                    // MMIO-enable edge: issue the cfg write to start the device
-                    // before binding it
-                    device.write_cfg(offset, value);
-                });
-
-                tracing::info!(
-                    offset,
-                    ?value,
-                    mmio_enabled = true,
-                    "dispatching deferred STATUS_COMMAND write for TDISP notification"
-                );
-
-                self.pending = Some((write, fut));
-                self.waker.wake_by_ref();
-                IoResult::Defer(token)
-            }
-            Some(false) => {
-                // MMIO-disable edge: defer the cfg write until after the TDISP unbind.
-                let (write, token) = chipset_device::io::deferred::defer_write();
-                let device = self.device.clone();
-                let config_space_locked = self.tdisp_config_space_locked.clone();
-                let fut = Box::pin(async move {
-                    let state = device.tdisp_tdi_state().await;
-                    if state == TdispTdiState::Uninitialized || state == TdispTdiState::Unlocked {
-                        device.write_cfg(offset, value);
-                    } else {
-                        // Unbind first; the cfg write must not happen
-                        // while the device is still bound/running.
-                        device.tdisp_on_device_deactivate().await;
-
-                        // Write to the command register after the
-                        // unbind regardless of its outcome.
-                        device.write_cfg(offset, value);
-                    }
-
-                    // Unlock config space now that the unbind has completed.
-                    config_space_locked.store(false, std::sync::atomic::Ordering::SeqCst);
-                });
-
-                tracing::info!(
-                    offset,
-                    ?value,
-                    mmio_enabled = false,
-                    "dispatching deferred STATUS_COMMAND write for TDISP notification"
-                );
-
-                self.pending = Some((write, fut));
-                self.waker.wake_by_ref();
-                IoResult::Defer(token)
-            }
-            None => {
-                // Drop (and log) any config space write while locked. The
-                // STATUS_COMMAND MMIO enable/disable edges are handled in the
-                // arms above so unbind can still unlock config space.
-                if self.tdisp_config_space_locked.load(std::sync::atomic::Ordering::SeqCst) {
-                    tracing::info!(
-                        offset,
-                        value,
-                        "dropping config space write while TDISP config space is locked"
-                    );
-                    return IoResult::Ok;
-                }
-
+        // Detect the MMIO-enable edge BEFORE issuing the write so we can
+        // dispatch the correct TDISP notification.
+        //
+        // The STATUS_COMMAND dword packs the 16-bit Command register in the low
+        // two bytes and the 16-bit Status register in the high two bytes. Only
+        // the Command register is relevant here, so mask off the Status half
+        // before truncating to `u16`.
+        use pci_core::spec::cfg_space::Command;
+        let mut current = 0;
+        self.device.read_cfg(
+            offset,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut current),
+        );
+        let prev = Command::from((current & 0xffff) as u16).mmio_enabled();
+        // `merge` honors the byte enables, so a partial write that leaves the
+        // command register untouched yields `next` equal to `prev`.
+        let next = Command::from((value.merge(current) & 0xffff) as u16).mmio_enabled();
+        let activate = match (prev, next) {
+            (false, true) => true,
+            (true, false) => false,
+            // No MMIO edge, so there is no TDISP notification to dispatch.
+            _ => {
                 self.device.write_cfg(offset, value);
-                IoResult::Ok
+                return IoResult::Ok;
             }
-        }
+        };
+
+        let device = self.device.clone();
+        let fut = Box::pin(async move {
+            if activate {
+                // Attest while the command register is still off. Only enable
+                // the command register if attestation succeeds completely.
+                if device.tdisp_on_device_activate().await {
+                    // Attestation succeeded: enable the command register.
+                    // This is not re-entrant.
+                    device.write_cfg(offset, value);
+                } else {
+                    // Do not enable the command register if attestation failed.
+                    tracing::warn!("TDISP attestation failed. Not enabling STATUS_COMMAND.");
+                }
+            } else {
+                // Unbind on any MMIO disable edge. This explicitly disables the
+                // command register.
+                device.tdisp_on_device_deactivate().await;
+            }
+        });
+
+        // Overwriting an in-flight deferral would drop its `DeferredWrite`,
+        // which the caller sees as `IoError::NoResponse`. Every caller waits for
+        // its own deferred write to complete, so this should not happen.
+        debug_assert!(
+            self.pending.is_none(),
+            "config space write deferred while another deferred write is in flight"
+        );
+
+        let (write, token) = chipset_device::io::deferred::defer_write();
+        self.pending = Some((write, fut));
+        self.waker.wake_by_ref();
+        IoResult::Defer(token)
     }
 }
 

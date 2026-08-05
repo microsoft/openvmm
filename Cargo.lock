@@ -11078,6 +11078,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "openhcl_tdisp",
+ "parking_lot",
  "pci_core",
  "slab",
  "sparse_mmap",

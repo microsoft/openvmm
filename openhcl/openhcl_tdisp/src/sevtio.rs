@@ -14,7 +14,25 @@ use hvdef::Vtl;
 use hvdef::hypercall::HostVisibilityType;
 use memory_range::MemoryRange;
 use sev_guest_device::SevGuestDevice;
+use std::time::Duration;
 use x86defs::snp::SevRmpAdjust;
+
+/// How long to pause before each MMIO-related hypercall, to make the state
+/// transitions observable in the log as they happen.
+const MMIO_HYPERCALL_PAUSE: Duration = Duration::from_secs(5);
+
+/// Logs exactly which MMIO hypercall is about to be issued, then sleeps for
+/// [`MMIO_HYPERCALL_PAUSE`] before the caller performs it.
+macro_rules! pause_before_mmio_hypercall {
+    ($($arg:tt)*) => {{
+        tracing::info!(
+            pause_secs = MMIO_HYPERCALL_PAUSE.as_secs(),
+            "pausing before MMIO hypercall: {}",
+            format_args!($($arg)*)
+        );
+        std::thread::sleep(MMIO_HYPERCALL_PAUSE);
+    }};
+}
 
 /// Records the PFNs marked immutable by a
 /// `modify_gpa_visibility_and_immutability(.., true, ..)` call, so the
@@ -54,6 +72,12 @@ impl Drop for ImmutablePfnGuard<'_> {
         tracing::warn!(
             page_count = self.pfns.len(),
             "rolling back immutable bit on PFNs after failed MMIO block/unblock"
+        );
+
+        pause_before_mmio_hypercall!(
+            "modify_gpa_visibility_and_immutability(PRIVATE, immutable=false) on {} pfn(s) starting at {:#x} to roll back the immutable bit after a failed MMIO block/unblock",
+            self.pfns.len(),
+            self.pfns.first().copied().unwrap_or(0)
         );
 
         if let Err((e, processed)) = self.mshv.modify_gpa_visibility_and_immutability(
@@ -192,6 +216,14 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
         // Modify the pages to private before validation
         // New SEV-TIO requirement: pages must be marked immutable in addition to private
+        pause_before_mmio_hypercall!(
+            "modify_gpa_visibility_and_immutability(PRIVATE, immutable=true) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) for MMIO unblock",
+            pfns.len(),
+            base_pfn,
+            base_pfn + length_in_pages as u64 - 1,
+            base_gpa,
+            length_in_bytes
+        );
         match mshv.modify_gpa_visibility_and_immutability(HostVisibilityType::PRIVATE, true, &pfns)
         {
             Ok(_) => tracing::info!(
@@ -238,6 +270,14 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         }
 
         // Turn off immutability now that the firmware has validated the pages
+        pause_before_mmio_hypercall!(
+            "modify_gpa_visibility_and_immutability(PRIVATE, immutable=false) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) after the PSP validate call for MMIO unblock",
+            pfns.len(),
+            base_pfn,
+            base_pfn + length_in_pages as u64 - 1,
+            base_gpa,
+            length_in_bytes
+        );
         match mshv.modify_gpa_visibility_and_immutability(HostVisibilityType::PRIVATE, false, &pfns)
         {
             Ok(_) => tracing::info!(
@@ -344,6 +384,14 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
         // Modify the pages to private and immutable before un-validation
         // New SEV-TIO requirement: pages must be marked immutable in addition to private
+        pause_before_mmio_hypercall!(
+            "modify_gpa_visibility_and_immutability(PRIVATE, immutable=true) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) for MMIO block",
+            pfns.len(),
+            base_pfn,
+            base_pfn + length_in_pages as u64 - 1,
+            base_gpa,
+            length_in_bytes
+        );
         match mshv.modify_gpa_visibility_and_immutability(HostVisibilityType::PRIVATE, true, &pfns)
         {
             Ok(_) => tracing::info!(
@@ -399,6 +447,14 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         );
 
         // Remove immutability from the pages before flipping them back to shared
+        pause_before_mmio_hypercall!(
+            "modify_gpa_visibility_and_immutability(PRIVATE, immutable=false) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) for MMIO block",
+            pfns.len(),
+            base_pfn,
+            base_pfn + length_in_pages as u64 - 1,
+            base_gpa,
+            length_in_bytes
+        );
         match mshv.modify_gpa_visibility_and_immutability(HostVisibilityType::PRIVATE, false, &pfns)
         {
             Ok(_) => tracing::info!(
@@ -422,6 +478,14 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             "about to call modify_gpa_visibility(SHARED)"
         );
 
+        pause_before_mmio_hypercall!(
+            "modify_gpa_visibility(SHARED) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) for MMIO block",
+            pfns.len(),
+            base_pfn,
+            base_pfn + length_in_pages as u64 - 1,
+            base_gpa,
+            length_in_bytes
+        );
         match mshv.modify_gpa_visibility(HostVisibilityType::SHARED, &pfns) {
             Ok(_) => tracing::info!(
                 page_count = pfns.len(),

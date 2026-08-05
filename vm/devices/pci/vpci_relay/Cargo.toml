@@ -12,6 +12,7 @@ dev_snp_ohcl_tio_support = ["vpci_client/dev_snp_ohcl_tio_support"]
 [dependencies]
 chipset_device.workspace = true
 memory_range.workspace = true
+parking_lot.workspace = true
 pci_core.workspace = true
 state_unit.workspace = true
 tdisp.workspace = true
