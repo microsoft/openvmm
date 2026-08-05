@@ -9,6 +9,7 @@ use cvm_tracing::CVM_ALLOWED;
 use openhcl_attestation_protocol::igvm_attest;
 use openhcl_attestation_protocol::vmgs;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
+use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorV3;
 use thiserror::Error;
 use zerocopy::IntoBytes;
 
@@ -102,6 +103,13 @@ impl HardwareDerivedKeys {
         aes_key.copy_from_slice(&output[..vmgs::AES_CBC_KEY_LENGTH]);
         hmac_key.copy_from_slice(&output[vmgs::AES_CBC_KEY_LENGTH..]);
 
+        tracing::info!(
+            CVM_ALLOWED,
+            svn = ?policy.svn,
+            mix_measurement = policy.mix_measurement,
+            "derived hardware AES and HMAC keys for VMGS key sealing"
+        );
+
         Ok(Self {
             policy,
             aes_key,
@@ -110,14 +118,204 @@ impl HardwareDerivedKeys {
     }
 }
 
-/// Extension trait of [`HardwareKeyProtector`].
-pub trait HardwareKeyProtectorExt: Sized {
-    /// Seal the `egress_key` with encrypt-then-mac.
-    fn seal_key(
-        hardware_derived_keys: &HardwareDerivedKeys,
-        egress_key: &[u8],
-    ) -> Result<Self, HardwareKeySealingError>;
+/// Serialize a [`KeyDerivationSvn`] into the on-disk `(tee_type, svn)` v3 header
+/// representation.
+fn key_derivation_svn_to_header(
+    svn: tee_call::KeyDerivationSvn,
+) -> (u32, [u8; vmgs::HW_KEY_PROTECTOR_SVN_SIZE]) {
+    let mut bytes = [0u8; vmgs::HW_KEY_PROTECTOR_SVN_SIZE];
+    match svn {
+        tee_call::KeyDerivationSvn::Snp { tcb_version } => {
+            bytes[..8].copy_from_slice(&tcb_version.to_le_bytes());
+            (vmgs::HW_KEY_PROTECTOR_TEE_TYPE_SNP, bytes)
+        }
+        tee_call::KeyDerivationSvn::Tdx {
+            tee_tcb_svn,
+            cpu_svn,
+        } => {
+            bytes[..16].copy_from_slice(&tee_tcb_svn);
+            bytes[16..].copy_from_slice(&cpu_svn);
+            (vmgs::HW_KEY_PROTECTOR_TEE_TYPE_TDX, bytes)
+        }
+    }
+}
 
+/// Inverse of [`key_derivation_svn_to_header`].
+fn key_derivation_svn_from_header(
+    tee_type: u32,
+    svn: [u8; vmgs::HW_KEY_PROTECTOR_SVN_SIZE],
+) -> Option<tee_call::KeyDerivationSvn> {
+    match tee_type {
+        vmgs::HW_KEY_PROTECTOR_TEE_TYPE_SNP => {
+            let mut tcb = [0u8; 8];
+            tcb.copy_from_slice(&svn[..8]);
+            Some(tee_call::KeyDerivationSvn::Snp {
+                tcb_version: u64::from_le_bytes(tcb),
+            })
+        }
+        vmgs::HW_KEY_PROTECTOR_TEE_TYPE_TDX => {
+            let mut tee_tcb_svn = [0u8; 16];
+            let mut cpu_svn = [0u8; 16];
+            tee_tcb_svn.copy_from_slice(&svn[..16]);
+            cpu_svn.copy_from_slice(&svn[16..]);
+            Some(tee_call::KeyDerivationSvn::Tdx {
+                tee_tcb_svn,
+                cpu_svn,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Verify the HMAC over `signed_bytes` and decrypt `iv`/`ciphertext` into the
+/// ingress key. Shared by the v2 (legacy) and v3 protector layouts.
+fn unseal_key_bytes(
+    hardware_derived_keys: &HardwareDerivedKeys,
+    signed_bytes: &[u8],
+    stored_hmac: &[u8; vmgs::HMAC_SHA_256_KEY_LENGTH],
+    iv: &[u8; vmgs::AES_CBC_IV_LENGTH],
+    ciphertext: &[u8; vmgs::AES_GCM_KEY_LENGTH],
+) -> Result<[u8; vmgs::AES_GCM_KEY_LENGTH], HardwareKeySealingError> {
+    let hmac = crypto::hmac_sha_256::hmac_sha_256(&hardware_derived_keys.hmac_key, signed_bytes)
+        .map_err(HardwareKeySealingError::HmacBeforeDecrypt)?;
+
+    if !constant_time_eq::constant_time_eq_32(&hmac, stored_hmac) {
+        Err(HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed)?
+    }
+
+    let mut decrypted_ingress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
+    let output = crypto::aes_256_cbc::Aes256Cbc::new(&hardware_derived_keys.aes_key)
+        .and_then(|aes| aes.decrypt()?.cipher(iv, ciphertext))
+        .map_err(HardwareKeySealingError::DecryptIngressKey)?;
+    if output.len() != vmgs::AES_GCM_KEY_LENGTH {
+        Err(HardwareKeySealingError::InvalidIngressKeyDecryptionSize(
+            output.len(),
+            vmgs::AES_GCM_KEY_LENGTH,
+        ))?
+    }
+    decrypted_ingress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
+
+    tracing::info!(
+        CVM_ALLOWED,
+        "decrypt ingress_key using hardware derived key"
+    );
+
+    Ok(decrypted_ingress_key)
+}
+
+/// A hardware key protector read from the VMGS, either the legacy v1/v2 layout
+/// (SNP) or the current v3 layout.
+#[derive(Debug)]
+pub enum HwKeyProtector {
+    /// v1/v2 layout ([`HardwareKeyProtector`]); the `version` field distinguishes.
+    Legacy(HardwareKeyProtector),
+    /// v3 layout ([`HardwareKeyProtectorV3`]).
+    V3(HardwareKeyProtectorV3),
+}
+
+impl HwKeyProtector {
+    /// The key derivation policy recorded in the protector, or `None` if the
+    /// format is not compatible with this OpenHCL (e.g. v1, which always mixes
+    /// the measurement, or an unknown version/tee-type).
+    pub fn key_derivation_policy(&self) -> Option<tee_call::KeyDerivationPolicy> {
+        match self {
+            HwKeyProtector::Legacy(p) => match p.header.version {
+                vmgs::HW_KEY_PROTECTOR_VERSION_2 => Some(tee_call::KeyDerivationPolicy {
+                    svn: tee_call::KeyDerivationSvn::Snp {
+                        tcb_version: p.header.tcb_version,
+                    },
+                    mix_measurement: p.header.mix_measurement != 0,
+                }),
+                _ => None,
+            },
+            HwKeyProtector::V3(p) => {
+                key_derivation_svn_from_header(p.header.tee_type, p.header.svn).map(|svn| {
+                    tee_call::KeyDerivationPolicy {
+                        svn,
+                        mix_measurement: p.header.mix_measurement != 0,
+                    }
+                })
+            }
+        }
+    }
+
+    /// Format version of the protector.
+    pub fn version(&self) -> u32 {
+        match self {
+            HwKeyProtector::Legacy(p) => p.header.version,
+            HwKeyProtector::V3(p) => p.header.version,
+        }
+    }
+
+    /// Unseal the `ingress_key` with verify-mac-then-decrypt.
+    pub fn unseal_key(
+        &self,
+        hardware_derived_keys: &HardwareDerivedKeys,
+    ) -> Result<[u8; vmgs::AES_GCM_KEY_LENGTH], HardwareKeySealingError> {
+        match self {
+            HwKeyProtector::Legacy(p) => {
+                let offset = std::mem::offset_of!(HardwareKeyProtector, hmac);
+                unseal_key_bytes(
+                    hardware_derived_keys,
+                    &p.as_bytes()[..offset],
+                    &p.hmac,
+                    &p.iv,
+                    &p.ciphertext,
+                )
+            }
+            HwKeyProtector::V3(p) => p.unseal_key(hardware_derived_keys),
+        }
+    }
+}
+
+/// Seal the `egress_key` into a v3 [`HardwareKeyProtector`] with encrypt-then-mac.
+pub fn seal_key(
+    hardware_derived_keys: &HardwareDerivedKeys,
+    egress_key: &[u8],
+) -> Result<HardwareKeyProtectorV3, HardwareKeySealingError> {
+    let (tee_type, svn) = key_derivation_svn_to_header(hardware_derived_keys.policy.svn);
+    let header = vmgs::HardwareKeyProtectorHeaderV3::new(
+        vmgs::HW_KEY_PROTECTOR_V3_SIZE as u32,
+        tee_type,
+        svn,
+        hardware_derived_keys.policy.mix_measurement as u8,
+    );
+
+    let mut iv = [0u8; vmgs::AES_CBC_IV_LENGTH];
+    getrandom::fill(&mut iv).expect("rng failure");
+
+    let mut encrypted_egress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
+    let output = crypto::aes_256_cbc::Aes256Cbc::new(&hardware_derived_keys.aes_key)
+        .and_then(|aes| aes.encrypt()?.cipher(&iv, egress_key))
+        .map_err(HardwareKeySealingError::EncryptEgressKey)?;
+    if output.len() != vmgs::AES_GCM_KEY_LENGTH {
+        Err(HardwareKeySealingError::InvalidEgressKeyEncryptionSize(
+            output.len(),
+            vmgs::AES_GCM_KEY_LENGTH,
+        ))?
+    }
+    encrypted_egress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
+
+    let mut hardware_key_protector = HardwareKeyProtectorV3 {
+        header,
+        iv,
+        ciphertext: encrypted_egress_key,
+        hmac: [0u8; vmgs::HMAC_SHA_256_KEY_LENGTH],
+    };
+    let offset = std::mem::offset_of!(HardwareKeyProtectorV3, hmac);
+    hardware_key_protector.hmac = crypto::hmac_sha_256::hmac_sha_256(
+        &hardware_derived_keys.hmac_key,
+        &hardware_key_protector.as_bytes()[..offset],
+    )
+    .map_err(HardwareKeySealingError::HmacAfterEncrypt)?;
+
+    tracing::info!(CVM_ALLOWED, "encrypt egress_key using hardware derived key");
+
+    Ok(hardware_key_protector)
+}
+
+/// Extension trait to unseal a v3 protector directly.
+pub trait HardwareKeyProtectorV3Ext {
     /// Unseal the `ingress_key` with verify-mac-then-decrypt.
     fn unseal_key(
         &self,
@@ -125,84 +323,19 @@ pub trait HardwareKeyProtectorExt: Sized {
     ) -> Result<[u8; vmgs::AES_GCM_KEY_LENGTH], HardwareKeySealingError>;
 }
 
-impl HardwareKeyProtectorExt for HardwareKeyProtector {
-    fn seal_key(
-        hardware_derived_keys: &HardwareDerivedKeys,
-        egress_key: &[u8],
-    ) -> Result<Self, HardwareKeySealingError> {
-        let header = vmgs::HardwareKeyProtectorHeader::new(
-            vmgs::HW_KEY_PROTECTOR_CURRENT_VERSION,
-            vmgs::HW_KEY_PROTECTOR_SIZE as u32,
-            hardware_derived_keys.policy.tcb_version,
-            hardware_derived_keys.policy.mix_measurement as u8,
-        );
-
-        let mut iv = [0u8; vmgs::AES_CBC_IV_LENGTH];
-        getrandom::fill(&mut iv).expect("rng failure");
-
-        let mut encrypted_egress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
-        let output = crypto::aes_256_cbc::Aes256Cbc::new(&hardware_derived_keys.aes_key)
-            .and_then(|aes| aes.encrypt()?.cipher(&iv, egress_key))
-            .map_err(HardwareKeySealingError::EncryptEgressKey)?;
-        if output.len() != vmgs::AES_GCM_KEY_LENGTH {
-            Err(HardwareKeySealingError::InvalidEgressKeyEncryptionSize(
-                output.len(),
-                vmgs::AES_GCM_KEY_LENGTH,
-            ))?
-        }
-        encrypted_egress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
-
-        let mut hardware_key_protector = Self {
-            header,
-            iv,
-            ciphertext: encrypted_egress_key,
-            hmac: [0u8; vmgs::HMAC_SHA_256_KEY_LENGTH],
-        };
-        let offset = std::mem::offset_of!(Self, hmac);
-        hardware_key_protector.hmac = crypto::hmac_sha_256::hmac_sha_256(
-            &hardware_derived_keys.hmac_key,
-            &hardware_key_protector.as_bytes()[..offset],
-        )
-        .map_err(HardwareKeySealingError::HmacAfterEncrypt)?;
-
-        tracing::info!(CVM_ALLOWED, "encrypt egress_key using hardware derived key");
-
-        Ok(hardware_key_protector)
-    }
-
+impl HardwareKeyProtectorV3Ext for HardwareKeyProtectorV3 {
     fn unseal_key(
         &self,
         hardware_derived_keys: &HardwareDerivedKeys,
     ) -> Result<[u8; vmgs::AES_GCM_KEY_LENGTH], HardwareKeySealingError> {
-        let offset = std::mem::offset_of!(HardwareKeyProtector, hmac);
-        let hmac = crypto::hmac_sha_256::hmac_sha_256(
-            &hardware_derived_keys.hmac_key,
+        let offset = std::mem::offset_of!(HardwareKeyProtectorV3, hmac);
+        unseal_key_bytes(
+            hardware_derived_keys,
             &self.as_bytes()[..offset],
+            &self.hmac,
+            &self.iv,
+            &self.ciphertext,
         )
-        .map_err(HardwareKeySealingError::HmacBeforeDecrypt)?;
-
-        if !constant_time_eq::constant_time_eq_32(&hmac, &self.hmac) {
-            Err(HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed)?
-        }
-
-        let mut decrypted_ingress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
-        let output = crypto::aes_256_cbc::Aes256Cbc::new(&hardware_derived_keys.aes_key)
-            .and_then(|aes| aes.decrypt()?.cipher(&self.iv, &self.ciphertext))
-            .map_err(HardwareKeySealingError::DecryptIngressKey)?;
-        if output.len() != vmgs::AES_GCM_KEY_LENGTH {
-            Err(HardwareKeySealingError::InvalidIngressKeyDecryptionSize(
-                output.len(),
-                vmgs::AES_GCM_KEY_LENGTH,
-            ))?
-        }
-        decrypted_ingress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
-
-        tracing::info!(
-            CVM_ALLOWED,
-            "decrypt ingress_key using hardware derived key"
-        );
-
-        Ok(decrypted_ingress_key)
     }
 }
 
@@ -243,14 +376,16 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0x7308000000000003,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0x7308000000000003,
+                },
                 mix_measurement: true,
             },
         )
         .unwrap();
 
-        let output = HardwareKeyProtector::seal_key(&hardware_derived_keys, &PLAINTEXT).unwrap();
-        let hardware_key_protector = HardwareKeyProtector::read_from_prefix(output.as_bytes())
+        let output = seal_key(&hardware_derived_keys, &PLAINTEXT).unwrap();
+        let hardware_key_protector = HardwareKeyProtectorV3::read_from_prefix(output.as_bytes())
             .unwrap()
             .0;
         let plaintext = hardware_key_protector
@@ -268,13 +403,15 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0x7308000000000003,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0x7308000000000003,
+                },
                 mix_measurement: false,
             },
         )
         .unwrap();
-        let output = HardwareKeyProtector::seal_key(&k1, &PLAINTEXT).unwrap();
-        let hardware_key_protector = HardwareKeyProtector::read_from_prefix(output.as_bytes())
+        let output = seal_key(&k1, &PLAINTEXT).unwrap();
+        let hardware_key_protector = HardwareKeyProtectorV3::read_from_prefix(output.as_bytes())
             .unwrap()
             .0;
 
@@ -285,7 +422,9 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0x7308000000000003,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0x7308000000000003,
+                },
                 mix_measurement: false,
             },
         )
@@ -306,7 +445,9 @@ mod tests {
                 mock_get_derived_key_call,
                 &vm_config,
                 tee_call::KeyDerivationPolicy {
-                    tcb_version: 0x7308000000000003,
+                    svn: tee_call::KeyDerivationSvn::Snp {
+                        tcb_version: 0x7308000000000003,
+                    },
                     mix_measurement: false,
                 },
             );
@@ -328,7 +469,9 @@ mod tests {
                 mock_get_derived_key_call,
                 &vm_config,
                 tee_call::KeyDerivationPolicy {
-                    tcb_version: 0x7308000000000003,
+                    svn: tee_call::KeyDerivationSvn::Snp {
+                        tcb_version: 0x7308000000000003,
+                    },
                     mix_measurement: true,
                 },
             );
@@ -347,16 +490,20 @@ mod tests {
         let mock_tee_call = Box::new(MockTeeCall::new([0x7au8; 32])) as Box<dyn tee_call::TeeCall>;
         let mock_get_derived_key_call = mock_tee_call.supports_get_derived_key().unwrap();
         let policy = tee_call::KeyDerivationPolicy {
-            tcb_version: 0xDEAD_BEEF,
+            svn: tee_call::KeyDerivationSvn::Snp {
+                tcb_version: 0xDEAD_BEEF,
+            },
             mix_measurement: false,
         };
         let k =
             HardwareDerivedKeys::derive_key(mock_get_derived_key_call, &vm_config, policy).unwrap();
-        let hwkp = HardwareKeyProtector::seal_key(&k, &PLAINTEXT).unwrap();
+        let hwkp = seal_key(&k, &PLAINTEXT).unwrap();
 
-        assert_eq!(hwkp.header.tcb_version, policy.tcb_version);
+        let (tee_type, svn) = key_derivation_svn_to_header(policy.svn);
+        assert_eq!(hwkp.header.tee_type, tee_type);
+        assert_eq!(hwkp.header.svn, svn);
         assert_eq!(hwkp.header.mix_measurement, policy.mix_measurement as u8);
-        assert_eq!(hwkp.header.length as usize, vmgs::HW_KEY_PROTECTOR_SIZE);
+        assert_eq!(hwkp.header.length as usize, vmgs::HW_KEY_PROTECTOR_V3_SIZE);
         assert_eq!(hwkp.header.version, vmgs::HW_KEY_PROTECTOR_CURRENT_VERSION);
     }
 
@@ -370,14 +517,14 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 2,
+                svn: tee_call::KeyDerivationSvn::Snp { tcb_version: 2 },
                 mix_measurement: true,
             },
         )
         .unwrap();
 
         let plaintext = [0x7Au8; 20];
-        let err = HardwareKeyProtector::seal_key(&k, &plaintext)
+        let err = seal_key(&k, &plaintext)
             .expect_err("expected seal to fail for non-block-multiple length");
         assert!(matches!(err, HardwareKeySealingError::EncryptEgressKey(_)));
     }
@@ -391,13 +538,15 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0x7308000000000003,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0x7308000000000003,
+                },
                 mix_measurement: true,
             },
         )
         .unwrap();
 
-        let mut hwkp = HardwareKeyProtector::seal_key(&hardware_derived_keys, &PLAINTEXT).unwrap();
+        let mut hwkp = seal_key(&hardware_derived_keys, &PLAINTEXT).unwrap();
 
         // Corrupt the HMAC to force verification failure
         hwkp.hmac[0] ^= 0xFF;
@@ -422,19 +571,19 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0x1,
+                svn: tee_call::KeyDerivationSvn::Snp { tcb_version: 0x1 },
                 mix_measurement: true,
             },
         )
         .unwrap();
-        let hwkp = HardwareKeyProtector::seal_key(&k1, &PLAINTEXT).unwrap();
+        let hwkp = seal_key(&k1, &PLAINTEXT).unwrap();
 
         let vm_config = create_test_vm_config(HardwareSealingPolicy::Signer);
         let k2 = HardwareDerivedKeys::derive_key(
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0x1,
+                svn: tee_call::KeyDerivationSvn::Snp { tcb_version: 0x1 },
                 mix_measurement: false,
             },
         )
@@ -459,18 +608,22 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0xAAAAAAAAAAAAAAAA,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0xAAAAAAAAAAAAAAAA,
+                },
                 mix_measurement: true,
             },
         )
         .unwrap();
-        let hwkp = HardwareKeyProtector::seal_key(&k1, &PLAINTEXT).unwrap();
+        let hwkp = seal_key(&k1, &PLAINTEXT).unwrap();
 
         let k2 = HardwareDerivedKeys::derive_key(
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0xBBBBBBBBBBBBBBBB,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0xBBBBBBBBBBBBBBBB,
+                },
                 mix_measurement: true,
             },
         )
@@ -495,12 +648,14 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0xAAAAAAAAAAAAAAAA,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0xAAAAAAAAAAAAAAAA,
+                },
                 mix_measurement: true,
             },
         )
         .unwrap();
-        let hwkp = HardwareKeyProtector::seal_key(&k1, &PLAINTEXT).unwrap();
+        let hwkp = seal_key(&k1, &PLAINTEXT).unwrap();
 
         let mock_tee_call = Box::new(MockTeeCall::new([0x8bu8; 32])) as Box<dyn tee_call::TeeCall>;
         let mock_get_derived_key_call = mock_tee_call.supports_get_derived_key().unwrap();
@@ -508,7 +663,9 @@ mod tests {
             mock_get_derived_key_call,
             &vm_config,
             tee_call::KeyDerivationPolicy {
-                tcb_version: 0xAAAAAAAAAAAAAAAA,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0xAAAAAAAAAAAAAAAA,
+                },
                 mix_measurement: true,
             },
         )

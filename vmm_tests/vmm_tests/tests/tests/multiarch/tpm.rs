@@ -983,7 +983,9 @@ async fn ak_pub_refresh<T, S, U: PetriVmmBackend>(
 /// test function (`skip_hw_unseal`), they all map to
 /// `KeyReleaseFailureSkipHwUnsealing`.
 #[cfg(windows)]
-#[vmm_test_with(unstable(reason = "SNP hardware-unseal key-release test is unreliable in CI; awaiting a fix"), configs(
+#[vmm_test_with(unstable(reason = "hardware-unseal key-release test is unreliable in CI; awaiting a fix"), configs(
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 ))]
@@ -1067,6 +1069,8 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
 /// `KeyReleaseFailure`.
 #[cfg(windows)]
 #[vmm_test_with(unstable(reason = "SNP hardware-unseal key-release test is unreliable in CI; awaiting a fix"), configs(
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 ))]
@@ -1200,6 +1204,8 @@ const TEST_NV_DATA_HEX: &str = "0xdeadbeefcafebabe0102030405060708090a0b0c0d0e0f
 /// Second boot: read the same NV index and verify data persisted.
 #[cfg(windows)]
 #[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
@@ -1285,6 +1291,11 @@ async fn hw_seal_hash<T, S, U: PetriVmmBackend>(
 ///
 /// Same as `hw_seal_hash` but uses `HardwareSealedSecretsSignerPolicy`
 /// instead.
+///
+/// SNP-only: TDX has no signer/identity key-policy register to bind a
+/// measurement-independent key to, so OpenHCL refuses signer-based hardware
+/// sealing on TDX (see `TdxCall::get_derived_key`). Do not add TDX configs
+/// here.
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
@@ -1386,6 +1397,8 @@ async fn hw_seal_signer<T, S, U: PetriVmmBackend>(
 /// stateless + hardware sealing CVM keeps it stable.
 #[cfg(windows)]
 #[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
