@@ -3971,6 +3971,8 @@ impl<N: Notifier> MessageSender<'_, N> {
     fn send_offer(&mut self, channel: &mut Channel, connection_info: &ConnectionInfo) {
         let info = channel.info.as_ref().expect("assigned");
         let mut flags = channel.offer.flags;
+
+        // Disable offer flags that are supported by the current set of feature flags.
         if !connection_info
             .version
             .feature_flags

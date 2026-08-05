@@ -313,11 +313,11 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             max_restore_version: None,
             enable_mnf: false,
             force_confidential_external_memory: false,
+            support_gpa_pinning: false,
             force_gpa_pinning: false,
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
             use_absolute_channel_order: false,
-            support_gpa_pinning: false,
         }
     }
 
@@ -433,7 +433,8 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         self
     }
 
-    /// Indicates the current VM environment supports GPA pinning.
+    /// Indicates the current VM environment supports GPA pinning so the relevant feature flag can
+    /// be used.
     pub fn support_gpa_pinning(mut self, support: bool) -> Self {
         self.support_gpa_pinning = support;
         self

@@ -3211,9 +3211,9 @@ async fn new_underhill_vm(
 
         // Enable the GPA pinning feature only if the hypercalls are available.
         #[cfg(not(guest_arch = "x86_64"))]
-        let use_gpa_pinning = false;
+        let support_gpa_pinning = false;
         #[cfg(guest_arch = "x86_64")]
-        let use_gpa_pinning = {
+        let support_gpa_pinning = {
             let result =
                 safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
             hvdef::HvEnlightenmentInformation::from(
@@ -3266,8 +3266,8 @@ async fn new_underhill_vm(
                 .force_confidential_external_memory(
                     env_cfg.vmbus_force_confidential_external_memory,
                 )
-                .support_gpa_pinning(use_gpa_pinning)
-                .force_gpa_pinning(use_gpa_pinning && env_cfg.vmbus_force_gpa_pinning)
+                .support_gpa_pinning(support_gpa_pinning)
+                .force_gpa_pinning(support_gpa_pinning && env_cfg.vmbus_force_gpa_pinning)
                 .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
                 // For saved-state compat with release/2411.
                 .send_messages_while_stopped(true)

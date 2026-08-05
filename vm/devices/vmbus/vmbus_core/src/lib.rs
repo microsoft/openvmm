@@ -81,13 +81,6 @@ impl MaxVersionInfo {
             feature_flags: protocol::FeatureFlags::new(),
         }
     }
-
-    pub fn unlimited() -> Self {
-        Self {
-            version: u32::MAX,
-            feature_flags: protocol::FeatureFlags::from_bits(u32::MAX),
-        }
-    }
 }
 
 impl From<VersionInfo> for MaxVersionInfo {
