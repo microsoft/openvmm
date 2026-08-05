@@ -147,9 +147,6 @@ impl FlowNode for Node {
 
                     // Check if the release already exists.
                     //
-                    // xshell doesn't give us the exit code, so we have to
-                    // use the raw process API instead.
-                    //
                     // Capture the output rather than letting it inherit. On the
                     // ordinary path there is no release yet, so `gh` writes
                     // "release not found", which is a confusing thing to find in
@@ -157,14 +154,11 @@ impl FlowNode for Node {
                     // is still logged when the command fails for some other
                     // reason -- an auth failure or a 5xx also exit non-zero, and
                     // are indistinguishable from "not found" without it.
-                    let output = std::process::Command::new(&gh_cli)
-                        .arg("release")
-                        .arg("view")
-                        .arg(&tag)
-                        .arg("--repo")
-                        .arg(&repo)
+                    let output =
+                        flowey::shell_cmd!(rt, "{gh_cli} release view {tag} --repo {repo}")
+                        .ignore_status()
                         .output()
-                        .context("failed to spawn gh cli")?;
+                        .context("failed to run gh cli")?;
 
                     // Success means the release already exists.
                     if output.status.success() {
