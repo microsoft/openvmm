@@ -80,21 +80,25 @@ struct SecureBootConfigReport {
 
 impl Debug for SecureBootConfigReport {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            template_guid,
+            template_version,
+            custom_uefi_config_present,
+            pk,
+            kek,
+            db,
+            dbx,
+        } = self;
+
         formatter
             .debug_struct("SecureBootConfigReport")
-            .field("template_guid", &self.template_guid)
-            .field(
-                "template_version",
-                &format_args!("{}", self.template_version),
-            )
-            .field(
-                "custom_uefi_config_present",
-                &self.custom_uefi_config_present,
-            )
-            .field("pk", &self.pk)
-            .field("kek", &self.kek)
-            .field("db", &self.db)
-            .field("dbx", &self.dbx)
+            .field("template_guid", template_guid)
+            .field("template_version", &format_args!("{template_version}"))
+            .field("custom_uefi_config_present", custom_uefi_config_present)
+            .field("pk", pk)
+            .field("kek", kek)
+            .field("db", db)
+            .field("dbx", dbx)
             .finish()
     }
 }
@@ -115,23 +119,24 @@ struct SecureBootVariableReport {
 
 impl Debug for SecureBootVariableReport {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            base_template_entries,
+            loaded_entries,
+            missing_entries,
+            loaded_variable_bytes,
+        } = self;
+
         formatter
             .debug_struct("SecureBootVariableReport")
             .field(
                 "base_template_entries",
-                &format_args!("{:#x}", self.base_template_entries),
+                &format_args!("{base_template_entries:#x}"),
             )
-            .field(
-                "loaded_entries",
-                &format_args!("{:#x}", self.loaded_entries),
-            )
-            .field(
-                "missing_entries",
-                &format_args!("{:#x}", self.missing_entries),
-            )
+            .field("loaded_entries", &format_args!("{loaded_entries:#x}"))
+            .field("missing_entries", &format_args!("{missing_entries:#x}"))
             .field(
                 "loaded_variable_bytes",
-                &format_args!("{:#x}", self.loaded_variable_bytes),
+                &format_args!("{loaded_variable_bytes:#x}"),
             )
             .finish()
     }
