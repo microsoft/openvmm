@@ -593,14 +593,16 @@ impl VpciDevice {
     /// first. If the TDI is already in `Run`, this will unbind and rebind the
     /// TDI to attest the device again.
     ///
-    /// Then notifies TDISP about each currently active MMIO BAR via
-    /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`].
+    /// Then writes `command_value` to the command register, which flushes the
+    /// shadowed BARs to the host device, and only after that notifies TDISP
+    /// about each currently active MMIO BAR via
+    /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`]. The BARs
+    /// must be mapped for the guest before the unblock operations run.
     ///
     /// Returns `true` only if attestation and every BAR notification succeeded
-    /// completely. The caller is responsible for enabling the command register
-    /// if and only if this returns `true`; on `false` the command register is
-    /// left off.
-    pub async fn tdisp_on_device_activate(&self) -> bool {
+    /// completely. On `false` the command register is left off: either it was
+    /// never written, or [`Self::tdisp_fail_attestation`] cleared it.
+    pub async fn tdisp_on_device_activate(&self, command_value: u32) -> bool {
         use tdisp::TdispVpciAttestationInterface;
 
         tracing::info!(
@@ -624,6 +626,21 @@ impl VpciDevice {
             self.tdisp_fail_attestation().await;
             return false;
         }
+
+        // Attestation succeeded, so enable the command register now. This
+        // flushes the shadowed BARs to the host device, mapping the MMIO
+        // ranges for the guest before the unblock operations below run.
+        //
+        // On any failure past this point `tdisp_fail_attestation` clears the
+        // command register again.
+        self.write_cfg(HeaderType00::STATUS_COMMAND.0, command_value);
+
+        tracing::info!(
+            command_value,
+            "tdisp_on_device_activate: command register written at {:#x} = {:#x}, MMIO BARs are now mapped",
+            HeaderType00::STATUS_COMMAND.0,
+            command_value
+        );
 
         let bars = self.shadows.lock().bars;
 

@@ -711,14 +711,12 @@ impl PciConfigSpace for RelayedVpciDevice {
         let device = self.device.clone();
         let fut = Box::pin(async move {
             if activate {
-                // Attest while the command register is still off. Only enable
-                // the command register if attestation succeeds completely.
-                if device.tdisp_on_device_activate().await {
-                    // Attestation succeeded: enable the command register.
-                    // This is not re-entrant.
-                    device.write_cfg(offset, value);
-                } else {
-                    // Do not enable the command register if attestation failed.
+                // Attest while the command register is still off.
+                // `tdisp_on_device_activate` enables the command register
+                // itself once attestation succeeds, so the BARs are mapped
+                // before it notifies TDISP of the MMIO ranges.
+                if !device.tdisp_on_device_activate(value).await {
+                    // The command register is left off if attestation failed.
                     tracing::warn!("TDISP attestation failed. Not enabling STATUS_COMMAND.");
                 }
             } else {
