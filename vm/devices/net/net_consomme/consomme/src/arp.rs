@@ -33,21 +33,21 @@ impl<T: Client> Access<'_, T> {
         };
 
         // Don't respond for the client IP or remote addresses.
-        if self.inner.state.params.client_ip == target_protocol_addr
+        if self.inner.primary.config.immutable.client_ip == target_protocol_addr
             || !is_same_ipv4_subnet(
-                self.inner.state.params.gateway_ip,
+                self.inner.primary.config.immutable.gateway_ip,
                 target_protocol_addr,
-                self.inner.state.params.net_mask,
+                self.inner.primary.config.immutable.net_mask,
             )
         {
-            tracing::debug!(?target_protocol_addr, gateway = %self.inner.state.params.gateway_ip, subnet_mask = %self.inner.state.params.net_mask, "Ignoring ARP request");
+            tracing::debug!(?target_protocol_addr, gateway = %self.inner.primary.config.immutable.gateway_ip, subnet_mask = %self.inner.primary.config.immutable.net_mask, "Ignoring ARP request");
             return Ok(());
         }
 
         // For any addresses in the guest subnet, provide the gateway MAC address. This is the
         // standard mechanism to indicate all traffic flows through the gateway, even local subnet
         // traffic.
-        let mac_address = self.inner.state.params.gateway_mac;
+        let mac_address = self.inner.primary.config.immutable.gateway_mac;
         let e_repr = EthernetRepr {
             src_addr: mac_address,
             dst_addr: frame.src_addr,

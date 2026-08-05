@@ -9,7 +9,8 @@ use super::dhcp::DHCP_SERVER;
 use super::dhcpv6::DHCPV6_ALL_AGENTS_MULTICAST;
 use super::dhcpv6::DHCPV6_SERVER;
 use crate::ChecksumState;
-use crate::ConsommeState;
+use crate::ConsommeConfig;
+use crate::ConsommePrimaryRuntime;
 use crate::FourTuple;
 use crate::IpAddresses;
 use crate::IpVersion;
@@ -79,6 +80,10 @@ impl Udp {
             timeout,
         }
     }
+
+    pub fn update_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
 }
 
 impl InspectMut for Udp {
@@ -134,14 +139,16 @@ impl UdpConnection {
         &mut self,
         cx: &mut Context<'_>,
         dst_addr: &SocketAddr,
-        state: &mut ConsommeState,
+        config: &ConsommeConfig,
+        runtime: &mut ConsommePrimaryRuntime,
+        buffer: &mut [u8],
         client: &mut impl Client,
     ) -> bool {
         if self.recycle {
             return false;
         }
 
-        let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
+        let mut eth = EthernetFrame::new_unchecked(buffer);
         loop {
             // Receive UDP packets while there are receive buffers available. This
             // means we won't drop UDP packets at this level--instead, we only drop
@@ -168,9 +175,8 @@ impl UdpConnection {
                 },
             ) {
                 Poll::Ready(Ok((n, src_addr))) => {
-                    let ft = match ConsommeState::translate_remote_address(
-                        &state.params,
-                        &mut state.local_addr_map,
+                    let ft = match runtime.translate_remote_address(
+                        config,
                         &src_addr,
                         dst_addr.port(),
                     ) {
@@ -187,7 +193,7 @@ impl UdpConnection {
                         ft.src.port(),
                         ft.dst.port(),
                         n,
-                        state.params.gateway_mac,
+                        config.gateway_mac,
                         self.guest_mac,
                     );
                     let checksum_state = match dst_addr {
@@ -216,14 +222,16 @@ impl UdpListener {
     fn poll_listener(
         &mut self,
         cx: &mut Context<'_>,
-        state: &mut ConsommeState,
+        config: &ConsommeConfig,
+        runtime: &mut ConsommePrimaryRuntime,
+        buffer: &mut [u8],
         client: &mut impl Client,
         connections: &HashMap<SocketAddr, UdpConnection>,
     ) {
         let Some(socket) = self.socket.as_mut() else {
             return;
         };
-        let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
+        let mut eth = EthernetFrame::new_unchecked(buffer);
         loop {
             if client.rx_mtu() == 0 {
                 break;
@@ -241,7 +249,7 @@ impl UdpListener {
                 Poll::Ready(Ok((n, mut other_addr))) => {
                     // Check if this connection originated from the same guest in order to adjust
                     // the port in the crafted packet to match the guest value.
-                    if state.params.is_local_address(&other_addr) {
+                    if runtime.is_local_address(config, &other_addr) {
                         for (guest_addr, connection) in connections.iter() {
                             if other_addr.port() == connection.host_port {
                                 other_addr.set_port(guest_addr.port());
@@ -249,12 +257,9 @@ impl UdpListener {
                             }
                         }
                     }
-                    let Some(ft) = ConsommeState::translate_remote_address(
-                        &state.params,
-                        &mut state.local_addr_map,
-                        &other_addr,
-                        self.guest_port,
-                    ) else {
+                    let Some(ft) =
+                        runtime.translate_remote_address(config, &other_addr, self.guest_port)
+                    else {
                         continue;
                     };
                     tracing::trace!(
@@ -269,8 +274,8 @@ impl UdpListener {
                         ft.src.port(),
                         ft.dst.port(),
                         n,
-                        state.params.gateway_mac,
-                        state.params.client_mac,
+                        config.gateway_mac,
+                        config.client_mac,
                     );
                     let checksum_state = match other_addr {
                         SocketAddr::V4(_) => ChecksumState::UDP4,
@@ -296,10 +301,11 @@ impl UdpListener {
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_udp(&mut self, cx: &mut Context<'_>) {
-        let timeout = self.inner.udp.timeout;
+        let timeout = self.inner.shard.udp.timeout;
         let now = Instant::now();
+        let buffer = &mut self.inner.shard.buffer;
 
-        self.inner.udp.connections.retain(|dst_addr, conn| {
+        self.inner.shard.udp.connections.retain(|dst_addr, conn| {
             // Check if connection has timed out
             if now.duration_since(conn.last_activity) > timeout {
                 tracing::debug!(
@@ -309,20 +315,30 @@ impl<T: Client> Access<'_, T> {
                 return false;
             }
 
-            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
+            conn.poll_conn(
+                cx,
+                dst_addr,
+                &self.inner.primary.config.immutable,
+                &mut self.inner.primary.runtime,
+                buffer,
+                self.client,
+            )
         });
 
-        for listener in self.inner.udp.listeners.values_mut() {
+        for listener in self.inner.shard.udp.listeners.values_mut() {
             listener.poll_listener(
                 cx,
-                &mut self.inner.state,
+                &self.inner.primary.config.immutable,
+                &mut self.inner.primary.runtime,
+                buffer,
                 self.client,
-                &self.inner.udp.connections,
+                &self.inner.shard.udp.connections,
             );
         }
 
         while let Some(response) =
             self.inner
+                .primary
                 .dns
                 .as_mut()
                 .and_then(|dns| match dns.poll_udp_response(cx) {
@@ -337,7 +353,7 @@ impl<T: Client> Access<'_, T> {
     }
 
     pub(crate) fn refresh_udp_driver(&mut self) {
-        self.inner.udp.connections.retain(|dst_addr, conn| {
+        self.inner.shard.udp.connections.retain(|dst_addr, conn| {
             let socket = conn.socket.take().unwrap().into_inner();
             match PolledSocket::new(self.client.driver(), socket) {
                 Ok(socket) => {
@@ -354,7 +370,7 @@ impl<T: Client> Access<'_, T> {
                 }
             }
         });
-        self.inner.udp.listeners.retain(|key, listener| {
+        self.inner.shard.udp.listeners.retain(|key, listener| {
             let socket = listener.socket.take().unwrap().into_inner();
             match PolledSocket::new(self.client.driver(), socket) {
                 Ok(socket) => {
@@ -394,7 +410,7 @@ impl<T: Client> Access<'_, T> {
                 )?;
 
                 // Check for gateway-destined packets
-                if addrs.dst_addr == self.inner.state.params.gateway_ip
+                if addrs.dst_addr == self.inner.primary.config.immutable.gateway_ip
                     || addrs.dst_addr.is_broadcast()
                 {
                     if self.handle_gateway_udp(frame, addrs, &udp_packet)? {
@@ -417,7 +433,7 @@ impl<T: Client> Access<'_, T> {
                 )?;
 
                 // Check for gateway-destined packets (IPv6 uses multicast instead of broadcast)
-                if addrs.dst_addr == self.inner.state.params.gateway_link_local_ipv6
+                if addrs.dst_addr == self.inner.primary.config.immutable.gateway_link_local_ipv6
                     || addrs.dst_addr == DHCPV6_ALL_AGENTS_MULTICAST
                 {
                     if self.handle_gateway_udp_v6(frame, addrs, &udp_packet)? {
@@ -436,12 +452,21 @@ impl<T: Client> Access<'_, T> {
         };
 
         // Resolve virtual mapped addresses back to the real host address.
-        let mut dst_sock_addr = self.inner.state.resolve_destination(&dst_sock_addr);
-        if self.inner.state.params.is_local_address(&dst_sock_addr) {
+        let mut dst_sock_addr = self
+            .inner
+            .primary
+            .runtime
+            .resolve_destination(&dst_sock_addr);
+        if self
+            .inner
+            .primary
+            .runtime
+            .is_local_address(&self.inner.primary.config.immutable, &dst_sock_addr)
+        {
             // This packet is destined for a local address. If the port matches a listener,
             // translate it so that the connection loops back to the expected destination.
             let key = PortForwardKey::from_socket_addr(dst_sock_addr, dst_sock_addr.port());
-            if let Some(listener) = self.inner.udp.listeners.get(&key) {
+            if let Some(listener) = self.inner.shard.udp.listeners.get(&key) {
                 dst_sock_addr.set_port(listener.host_addr.port());
             }
         }
@@ -476,7 +501,7 @@ impl<T: Client> Access<'_, T> {
         guest_addr: SocketAddr,
         guest_mac: Option<EthernetAddress>,
     ) -> Result<&mut UdpConnection, DropReason> {
-        let entry = self.inner.udp.connections.entry(guest_addr);
+        let entry = self.inner.shard.udp.connections.entry(guest_addr);
         match entry {
             hash_map::Entry::Occupied(conn) => Ok(conn.into_mut()),
             hash_map::Entry::Vacant(e) => {
@@ -496,7 +521,7 @@ impl<T: Client> Access<'_, T> {
                 let conn = UdpConnection {
                     socket: Some(socket),
                     host_port,
-                    guest_mac: guest_mac.unwrap_or(self.inner.state.params.client_mac),
+                    guest_mac: guest_mac.unwrap_or(self.inner.primary.config.immutable.client_mac),
                     stats: Default::default(),
                     recycle: false,
                     last_activity: Instant::now(),
@@ -557,10 +582,10 @@ impl<T: Client> Access<'_, T> {
         let socket = PolledSocket::new(self.client.driver(), socket).map_err(BindError::Io)?;
         let host_addr = socket.get().local_addr().map_err(BindError::Io)?;
         let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
-        if self.inner.udp.listeners.contains_key(&key) {
+        if self.inner.shard.udp.listeners.contains_key(&key) {
             return Err(BindError::PortAlreadyBound(guest_port));
         }
-        self.inner.udp.listeners.insert(
+        self.inner.shard.udp.listeners.insert(
             key,
             UdpListener {
                 socket: Some(socket),
@@ -576,6 +601,7 @@ impl<T: Client> Access<'_, T> {
     pub fn unbind_udp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
         if self
             .inner
+            .shard
             .udp
             .listeners
             .remove(&PortForwardKey::new(family, port))
@@ -594,7 +620,7 @@ impl<T: Client> Access<'_, T> {
         dst_addr: IpAddress,
         udp: &UdpPacket<&[u8]>,
     ) -> Result<bool, DropReason> {
-        let Some(dns) = self.inner.dns.as_mut() else {
+        let Some(dns) = self.inner.primary.dns.as_mut() else {
             return Ok(false);
         };
 
@@ -602,7 +628,7 @@ impl<T: Client> Access<'_, T> {
             flow: DnsFlow {
                 src: SocketAddr::new(src_addr.into(), udp.src_port()),
                 dst: SocketAddr::new(dst_addr.into(), udp.dst_port()),
-                gateway_mac: self.inner.state.params.gateway_mac,
+                gateway_mac: self.inner.primary.config.immutable.gateway_mac,
                 client_mac: frame.src_addr,
                 transport: crate::dns_resolver::DnsTransport::Udp,
             },
@@ -635,7 +661,7 @@ impl<T: Client> Access<'_, T> {
             "Sending UDP DNS response"
         );
 
-        let buffer = &mut self.inner.state.buffer;
+        let buffer = &mut self.inner.shard.buffer;
 
         // Determine header length based on IP version
         let (ip_header_len, checksum_state) = match response.flow.src.ip() {
@@ -672,7 +698,7 @@ impl<T: Client> Access<'_, T> {
     #[cfg(test)]
     /// Returns the current number of active UDP connections.
     pub fn udp_connection_count(&self) -> usize {
-        self.inner.udp.connections.len()
+        self.inner.shard.udp.connections.len()
     }
 }
 
@@ -799,7 +825,7 @@ mod tests {
         let mut params = ConsommeParams::new().expect("Failed to create params");
         params.udp_timeout = timeout;
         params.allow_host_local_access = true;
-        Consomme::new(params)
+        Consomme::new(ConsommeConfig::new(), params)
     }
 
     #[pal_async::async_test]
@@ -808,9 +834,9 @@ mod tests {
         let mut consomme = create_consomme_with_timeout(Duration::from_millis(100));
         let mut client = TestClient::new(driver);
 
-        let guest_mac = consomme.params_mut().client_mac;
-        let gateway_mac = consomme.params_mut().gateway_mac;
-        let guest_ip: Ipv4Address = consomme.params_mut().client_ip;
+        let guest_mac = consomme.config().client_mac;
+        let gateway_mac = consomme.config().gateway_mac;
+        let guest_ip: Ipv4Address = consomme.config().client_ip;
         let target_ip: Ipv4Address = Ipv4Addr::LOCALHOST;
 
         // Create a buffer and place the payload at the correct offset
@@ -844,7 +870,7 @@ mod tests {
         );
 
         // Manually update the last_activity to simulate timeout
-        for conn in access.inner.udp.connections.values_mut() {
+        for conn in access.inner.shard.udp.connections.values_mut() {
             conn.last_activity = Instant::now() - Duration::from_millis(150);
         }
 
@@ -881,6 +907,7 @@ mod tests {
         assert!(
             access
                 .inner
+                .shard
                 .udp
                 .listeners
                 .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
@@ -1000,6 +1027,7 @@ mod tests {
         assert!(
             access
                 .inner
+                .shard
                 .udp
                 .listeners
                 .contains_key(&PortForwardKey::new(IpVersion::Ipv6, guest_port)),
@@ -1016,7 +1044,7 @@ mod tests {
         let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
         let mut client = TestClient::new(driver.clone());
 
-        let client_ip: Ipv4Address = consomme.params_mut().client_ip;
+        let client_ip: Ipv4Address = consomme.config().client_ip;
 
         // Bind a UDP listener socket on an ephemeral port.
         let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
@@ -1090,9 +1118,9 @@ mod tests {
         let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
         let mut client = TestClient::new(driver.clone());
 
-        let guest_mac = consomme.params_mut().client_mac;
-        let gateway_mac = consomme.params_mut().gateway_mac;
-        let guest_ip: Ipv4Address = consomme.params_mut().client_ip;
+        let guest_mac = consomme.config().client_mac;
+        let gateway_mac = consomme.config().gateway_mac;
+        let guest_ip: Ipv4Address = consomme.config().client_ip;
         let dst_ip: IpAddress = IpAddress::Ipv4(Ipv4Addr::LOCALHOST);
         let listener_guest_port = 7070u16;
         let guest_src_port = 44444u16;
