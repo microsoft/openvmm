@@ -3068,11 +3068,16 @@ impl UhProcessor<'_, SnpBacked> {
         value: u64,
         vtl: GuestVtl,
     ) -> Result<(), MsrError> {
-        // TODO SNP: validation on the values being set, e.g. checking addresses
-        // are canonical, etc.
+        hardware_cvm::validate_cvm_msr_write(msr, value, &self.partition.caps.xsave)?;
+
         let mut vmsa = self.runner.vmsa_mut(vtl);
         match msr {
             x86defs::X64_MSR_FS_BASE => {
+                // The FS base is loaded on the very next VMRUN, so it must
+                // be canonical in the guest's current paging mode.
+                if !hardware_cvm::validate_canonical_address(value, vmsa.efer(), vmsa.cr4()) {
+                    return Err(MsrError::InvalidAccess);
+                }
                 let fs = vmsa.fs();
                 vmsa.set_fs(SevSelector {
                     attrib: fs.attrib,
@@ -3082,6 +3087,11 @@ impl UhProcessor<'_, SnpBacked> {
                 });
             }
             x86defs::X64_MSR_GS_BASE => {
+                // The GS base is loaded on the very next VMRUN, so it must
+                // be canonical in the guest's current paging mode.
+                if !hardware_cvm::validate_canonical_address(value, vmsa.efer(), vmsa.cr4()) {
+                    return Err(MsrError::InvalidAccess);
+                }
                 let gs = vmsa.gs();
                 vmsa.set_gs(SevSelector {
                     attrib: gs.attrib,
