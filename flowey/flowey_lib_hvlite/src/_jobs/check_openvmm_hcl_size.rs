@@ -125,9 +125,10 @@ impl SimpleFlowNode for Node {
                 }
             });
             Some(
+                // actions/upload-artifact v7.0.1
                 ctx.emit_gh_step(
                     "publish openvmm_hcl for analysis",
-                    "actions/upload-artifact@v7",
+                    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
                 )
                 .with("name", file_name)
                 .with("path", dir)

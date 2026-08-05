@@ -23,6 +23,7 @@ const APPEND_NON_SIGNATURE_VAR_JSON: &[u8] =
     include_bytes!("custom_uefi_json/append_non_signature_var.json");
 const REPLACE_DEFAULTS_WITH_NON_SIGNATURE_VAR_JSON: &[u8] =
     include_bytes!("custom_uefi_json/replace_defaults_with_non_signature_var.json");
+const REPLACE_WITHOUT_DBX_JSON: &[u8] = include_bytes!("custom_uefi_json/replace_without_dbx.json");
 const APPEND_SHA256_DBX_JSON: &[u8] = include_bytes!("custom_uefi_json/append_sha256_dbx.json");
 
 // Custom UEFI variable names and values
@@ -164,6 +165,43 @@ async fn custom_uefi_replace_defaults<T: PetriVmmBackend>(
         .output()
         .await?;
     assert!(pk_exists.status.success(), "default PK should be retained");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Verify that replacing PK, KEK, and db while omitting dbx is accepted.
+#[vmm_test(
+    // TODO: Re-enable once direct OpenVMM x64 CI jobs provide vmgstool.
+    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
+    openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE]
+)]
+async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
+) -> Result<(), anyhow::Error> {
+    let (_temp_dir, vmgs_path) =
+        create_custom_uefi_vmgs(vmgstool.get(), REPLACE_WITHOUT_DBX_JSON).await?;
+
+    let (vm, agent) = config
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_persistent_vmgs(&vmgs_path)
+        .with_custom_uefi_json(REPLACE_WITHOUT_DBX_JSON)
+        .run()
+        .await?;
+
+    let shell = agent.unix_shell();
+    let pk_path = format!("/sys/firmware/efi/efivars/PK-{EFI_GLOBAL_VARIABLE_GUID}");
+    let pk_exists = cmd!(shell, "sudo")
+        .args(["test", "-f", &pk_path])
+        .output()
+        .await?;
+    assert!(pk_exists.status.success(), "replacement PK should exist");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

@@ -449,6 +449,87 @@ impl WhpProcessor<'_> {
         !halted
     }
 
+    /// HACK: TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
+    ///
+    /// The hypervisor can leave a VP halted with an interrupt pending in its
+    /// offloaded APIC and nothing left to wake it: every path that reevaluates
+    /// the halt is gated on bookkeeping that is stale in this state, so the
+    /// vector sitting in the IRR is never noticed. Poking guest registers (e.g.
+    /// RFLAGS) does not help, since the rescan they trigger is gated on that
+    /// same stale bookkeeping.
+    ///
+    /// If the VP is halted with an interrupt that really should have been
+    /// delivered, reassert that vector. Asserting an interrupt unconditionally
+    /// generates work for the VP, and runs the same path a fresh interrupt
+    /// would, which reevaluates the halt. The IRR bit is already set, so this
+    /// does not deliver an extra interrupt to the guest.
+    pub(crate) fn unstick_halted_vp(&mut self, vtl: Vtl) {
+        let whp = self.vp.whp(vtl);
+        let (activity, rflags) = get_registers!(
+            whp,
+            [
+                whp::Register64::InternalActivityState,
+                whp::Register64::Rflags,
+            ]
+        )
+        .unwrap();
+
+        // Only a halted VP can be stuck this way.
+        if !hvdef::HvInternalActivityRegister::from(activity).halt_suspend() {
+            return;
+        }
+
+        // A VP halted with interrupts disabled is meant to stay that way (e.g.
+        // an offlined CPU), so leave it alone.
+        if !RFlags::from(rflags).interrupt_enable() {
+            return;
+        }
+
+        // Find the highest priority pending interrupt. It is only deliverable
+        // if its priority class is above the processor priority, which also
+        // filters out the non-architectural NMI pending bit that the hypervisor
+        // keeps in IRR vector 2.
+        let apic = vp::ApicRegisters::from_page(&whp.get_apic().unwrap());
+        let Some(vector) =
+            apic.irr.iter().enumerate().rev().find_map(|(i, &word)| {
+                (word != 0).then(|| i as u32 * 32 + 31 - word.leading_zeros())
+            })
+        else {
+            return;
+        };
+        if vector >> 4 <= apic.ppr >> 4 {
+            return;
+        }
+
+        tracelimit::warn_ratelimited!(
+            vp = self.vp.index.index(),
+            ?vtl,
+            vector,
+            "hypervisor left vp halted with a deliverable interrupt, reasserting it"
+        );
+
+        // Match the trigger mode to the TMR bit so that reasserting does not
+        // change it.
+        let trigger = if apic.tmr[(vector / 32) as usize] & (1 << (vector % 32)) != 0 {
+            whp::abi::WHvX64InterruptTriggerModeLevel
+        } else {
+            whp::abi::WHvX64InterruptTriggerModeEdge
+        };
+        if let Err(err) = self.vp.partition.vtlp(vtl).whp.interrupt(
+            whp::abi::WHvX64InterruptTypeFixed,
+            whp::abi::WHvX64InterruptDestinationModePhysical,
+            trigger,
+            self.inner.vp_info.apic_id,
+            vector,
+        ) {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                vector,
+                "failed to reassert interrupt"
+            );
+        }
+    }
+
     #[must_use]
     pub(crate) fn sync_lazy_eoi(&mut self) -> bool {
         let vtl_state = &mut self.state.vtls[self.state.active_vtl];

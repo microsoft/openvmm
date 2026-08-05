@@ -8,8 +8,34 @@ use super::EcdsaError;
 use crate::win::AlgHandle;
 use crate::win::KeyHandle;
 use std::sync::LazyLock;
+use windows::Win32::Foundation::E_INVALIDARG;
+use windows::Win32::Foundation::E_UNEXPECTED;
 use windows::Win32::Foundation::STATUS_INVALID_SIGNATURE;
-use windows::Win32::Security::Cryptography::*;
+use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
+use windows::Win32::Security::Cryptography::BCRYPT_ECCKEY_BLOB;
+use windows::Win32::Security::Cryptography::BCRYPT_ECCPUBLIC_BLOB;
+use windows::Win32::Security::Cryptography::BCRYPT_ECDSA_P384_ALGORITHM;
+use windows::Win32::Security::Cryptography::BCRYPT_ECDSA_PUBLIC_P384_MAGIC;
+use windows::Win32::Security::Cryptography::BCRYPT_FLAGS;
+use windows::Win32::Security::Cryptography::BCRYPT_HANDLE;
+use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
+use windows::Win32::Security::Cryptography::BCRYPT_KEY_LENGTH;
+use windows::Win32::Security::Cryptography::BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS;
+use windows::Win32::Security::Cryptography::BCryptExportKey;
+use windows::Win32::Security::Cryptography::BCryptFinalizeKeyPair;
+use windows::Win32::Security::Cryptography::BCryptGenerateKeyPair;
+use windows::Win32::Security::Cryptography::BCryptGetProperty;
+use windows::Win32::Security::Cryptography::BCryptImportKeyPair;
+use windows::Win32::Security::Cryptography::BCryptOpenAlgorithmProvider;
+use windows::Win32::Security::Cryptography::BCryptSignHash;
+use windows::Win32::Security::Cryptography::BCryptVerifySignature;
+use windows::Win32::Security::Cryptography::CERT_PUBLIC_KEY_INFO;
+use windows::Win32::Security::Cryptography::CRYPT_IMPORT_PUBLIC_KEY_FLAGS;
+use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
+use windows::Win32::Security::Cryptography::CryptImportPublicKeyInfoEx2;
+use windows::Win32::Security::Cryptography::X509_ASN_ENCODING;
+use windows::Win32::Security::Cryptography::X509_PUBLIC_KEY_INFO;
+use windows::Win32::Security::Cryptography::szOID_ECC_PUBLIC_KEY;
 
 static ECDSA_P384: LazyLock<Result<AlgHandle, EcdsaError>> = LazyLock::new(|| {
     let mut handle = BCRYPT_ALG_HANDLE::default();
@@ -28,8 +54,8 @@ static ECDSA_P384: LazyLock<Result<AlgHandle, EcdsaError>> = LazyLock::new(|| {
     .map_err(|e| err(e, "BCryptOpenAlgorithmProvider"))
 });
 
-fn err(e: windows_result::Error, op: &'static str) -> EcdsaError {
-    EcdsaError(crate::BackendError(e, op))
+fn err(err: windows_result::Error, op: &'static str) -> EcdsaError {
+    EcdsaError(crate::BackendError(err, op))
 }
 
 fn alg_handle(curve: EcdsaCurve) -> Result<&'static AlgHandle, EcdsaError> {
@@ -118,8 +144,6 @@ impl EcdsaKeyPairInner {
     }
 }
 
-/// In-memory `BCRYPT_ECCKEY_BLOB` for an ECDSA P-384 public key: the
-/// `{ dwMagic, cbKey }` header followed by the `Qx || Qy` affine coordinates.
 #[repr(C)] // Needed for the transmute in as_pub.
 pub struct EcdsaPublicKeyInner {
     handle: KeyHandle,
@@ -127,7 +151,7 @@ pub struct EcdsaPublicKeyInner {
 }
 
 impl EcdsaPublicKeyInner {
-    pub fn new(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+    pub fn from_public_key_bytes(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
         let alg = alg_handle(curve)?;
         let key_size = curve.key_size();
 
@@ -139,8 +163,8 @@ impl EcdsaPublicKeyInner {
         // encodings identically.
         if public_key.len() != key_size * 2 {
             return Err(err(
-                windows::core::Error::new(
-                    windows::Win32::Foundation::E_INVALIDARG,
+                windows_result::Error::new(
+                    E_INVALIDARG,
                     "ECDSA public key is not the expected length (Qx || Qy)",
                 ),
                 "validating ECDSA public key length",
@@ -202,10 +226,7 @@ impl EcdsaPublicKeyInner {
         let is_ec = !oid.is_null() && unsafe { oid.as_bytes() == szOID_ECC_PUBLIC_KEY.as_bytes() };
         if !is_ec {
             return Err(err(
-                windows::core::Error::new(
-                    windows::Win32::Foundation::E_INVALIDARG,
-                    "public key is not an ECDSA key",
-                ),
+                windows_result::Error::new(E_INVALIDARG, "public key is not an ECDSA key"),
                 "validating public key algorithm",
             ));
         }
@@ -232,8 +253,8 @@ impl EcdsaPublicKeyInner {
             384 => EcdsaCurve::P384,
             _ => {
                 return Err(err(
-                    windows::core::Error::new(
-                        windows::Win32::Foundation::E_INVALIDARG,
+                    windows_result::Error::new(
+                        E_INVALIDARG,
                         "unsupported or unrecognized EC curve",
                     ),
                     "determining public key curve",
@@ -300,10 +321,7 @@ impl EcdsaPublicKeyInner {
 
         if (blob_len as usize) < header_size + key_size * 2 {
             return Err(err(
-                windows::core::Error::new(
-                    windows::Win32::Foundation::E_UNEXPECTED,
-                    "public key blob too small",
-                ),
+                windows_result::Error::new(E_UNEXPECTED, "public key blob too small"),
                 "validating public key blob size",
             ));
         }

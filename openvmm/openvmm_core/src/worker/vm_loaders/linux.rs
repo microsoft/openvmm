@@ -818,6 +818,7 @@ fn build_stub_dt(
     let p_uefi_mmap_size = builder.add_string("linux,uefi-mmap-size")?;
     let p_uefi_mmap_desc_size = builder.add_string("linux,uefi-mmap-desc-size")?;
     let p_uefi_mmap_desc_ver = builder.add_string("linux,uefi-mmap-desc-ver")?;
+    let p_uefi_secure_boot = builder.add_string("linux,uefi-secure-boot")?;
 
     let root_builder = builder
         .start_node("")?
@@ -833,7 +834,16 @@ fn build_stub_dt(
         .add_u64(p_uefi_mmap_start, efi_info.mmap_addr)?
         .add_u32(p_uefi_mmap_size, efi_info.mmap_size)?
         .add_u32(p_uefi_mmap_desc_size, efi_info.mmap_desc_size)?
-        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?;
+        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?
+        // The Ubuntu kernel's EFI stub sets `linux,uefi-secure-boot` in the
+        // handoff FDT, and `efi_get_fdt_params()` then treats it as a required
+        // property. If it is absent, the kernel aborts the entire EFI handoff
+        // and never installs the memory map; because this stub DT has no
+        // `/memory` node, memblock ends up empty and the kernel panics with
+        // "Failed to allocate page table page" during paging_init. Emit it
+        // (0 = secure boot disabled) so those kernels boot. Mainline kernels
+        // ignore this property.
+        .add_u32(p_uefi_secure_boot, 0)?;
 
     let root_builder = chosen.end_node()?;
 

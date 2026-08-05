@@ -81,8 +81,12 @@ impl FlowNodeWithConfig for Node {
             }
         });
 
+        // Azure/login v2.3.1
         let logged_in = ctx
-            .emit_gh_step("Azure Login", "Azure/login@v2")
+            .emit_gh_step(
+                "Azure Login",
+                "Azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6",
+            )
             .with("client-id", client_id)
             .with("tenant-id", tenant_id)
             .with("subscription-id", subscription_id)

@@ -504,6 +504,20 @@ impl<T: LayerIo> LayerAttach for T {
 }
 
 /// Metadata and IO for disk layers.
+///
+/// # Sector range validation
+///
+/// Layers are subject to the same requirements as [`DiskIo`]: an
+/// implementation must not panic for any sector value, and must return
+/// [`DiskError::IllegalBlock`] for requests outside the layer. Callers do not
+/// pre-validate the range.
+///
+/// Layers also inherit the representability guarantee that [`Disk`] provides to
+/// [`DiskIo`] implementations: the end byte offset of any request is at most
+/// [`i64::MAX`]. This holds because [`LayeredDisk`] never increases the sector
+/// number of a request (it only clamps the end down to the layer's visible
+/// sector count) and never changes the sector size, and because a [`Disk`] used
+/// as a layer re-enters through [`Disk`]'s own entry points.
 pub trait LayerIo: 'static + Send + Sync + Inspect {
     /// Returns the layer type name as a string.
     ///

@@ -336,6 +336,47 @@ impl<'a> WhpProcessor<'a> {
                 // Process the user-mode APIC, waiting for interrupts if halted.
                 let ready = self.process_apic(dev);
 
+                // HACK: TEMPORARY HACK WORKAROUND FOR HYPERVISOR BUG
+                // The hypervisor can leave a VP halted with an interrupt
+                // pending in its offloaded APIC, with nothing left to wake it,
+                // so periodically check for that state and force the VP out of
+                // it.
+                #[cfg(guest_arch = "x86_64")]
+                {
+                    const UNHALT_CHECK_PERIOD: std::time::Duration =
+                        std::time::Duration::from_secs(1);
+
+                    let expired = self
+                        .state
+                        .unhalt_check_vmtime
+                        .as_mut()
+                        .is_some_and(|vmtime| {
+                            // Rearm in a loop: polling clears the timeout when
+                            // it fires, and the VP may block in the hypervisor
+                            // indefinitely before this runs again, leaving
+                            // nothing to wake it.
+                            let mut expired = false;
+                            loop {
+                                vmtime.set_timeout_if_before(
+                                    vmtime.now().wrapping_add(UNHALT_CHECK_PERIOD),
+                                );
+                                if vmtime.poll_timeout(cx).is_pending() {
+                                    break expired;
+                                }
+                                expired = true;
+                            }
+                        });
+
+                    if expired {
+                        let vtl = self
+                            .state
+                            .runnable_vtls
+                            .highest_set()
+                            .expect("no runnable vtls");
+                        self.unstick_halted_vp(vtl);
+                    }
+                }
+
                 // Arm the timer.
                 if self.state.vmtime.poll_timeout(cx).is_ready() {
                     // The timer has already expired. Yield once to allow other

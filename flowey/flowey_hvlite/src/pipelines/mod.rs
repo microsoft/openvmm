@@ -57,7 +57,15 @@ impl IntoPipeline for OpenvmmPipelines {
         match self {
             OpenvmmPipelines::Regen { args } => {
                 let status = std::process::Command::new("cargo")
-                    .args(["run", "-p", "flowey_hvlite", "--", "regen"])
+                    .args([
+                        "run",
+                        "-p",
+                        "flowey_hvlite",
+                        "--profile",
+                        "light",
+                        "--",
+                        "regen",
+                    ])
                     .args(args)
                     .spawn()?
                     .wait()?;
