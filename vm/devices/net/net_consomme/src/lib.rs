@@ -12,6 +12,8 @@ use consomme::ChecksumState;
 use consomme::Consomme;
 use consomme::ConsommeParams;
 pub use consomme::IpVersion;
+pub use consomme::StaticDnsRecord;
+pub use consomme::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -32,6 +34,7 @@ use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::DnsRecordConfig;
 use net_backend_resources::consomme::HostIpAddress;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
@@ -254,6 +257,9 @@ pub enum ConsommeMessageError {
     /// Error from a remote operation on the endpoint.
     #[error(transparent)]
     Remote(mesh::error::RemoteError),
+    /// Error adding a static DNS record.
+    #[error("dns record error: {0}")]
+    DnsRecord(#[source] StaticDnsRecordError),
     /// The subnet's virtual address pool is exhausted, so no virtual address
     /// could be allocated.
     #[error("virtual address pool exhausted")]
@@ -370,6 +376,26 @@ impl ConsommeControl {
             .call(|rpc| rpc, f)
             .await
             .map_err(ConsommeMessageError::Mesh)
+    }
+
+    /// Adds a static DNS record that will be returned directly
+    /// if the guest sends a matching query.
+    pub async fn add_dns_record(
+        &self,
+        record: StaticDnsRecord,
+        name: String,
+    ) -> Result<(), ConsommeMessageError> {
+        let addr = match record {
+            StaticDnsRecord::A(addr) => addr,
+        };
+        self.request_send
+            .call(
+                ConsommeRequest::AddDnsRecord,
+                DnsRecordConfig { record: addr, name },
+            )
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .map_err(ConsommeMessageError::Remote)
     }
 
     /// Allocates a virtual IP address within the endpoint's subnet and routes
@@ -663,6 +689,13 @@ fn process_request(
                     .get_mut()
                     .create_virtual_address(destination.into())
                     .map(HostIpAddress::from)
+            });
+        }
+        ConsommeRequest::AddDnsRecord(rpc) => {
+            rpc.handle_failable_sync(|cfg: DnsRecordConfig| {
+                consomme
+                    .get_mut()
+                    .add_dns_record(StaticDnsRecord::A(cfg.record), &cfg.name)
             });
         }
     }

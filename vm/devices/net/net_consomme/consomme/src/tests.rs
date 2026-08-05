@@ -4,6 +4,7 @@
 use super::*;
 use pal_async::DefaultDriver;
 use smoltcp::phy::ChecksumCapabilities;
+use smoltcp::wire::DnsQueryType;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::IpProtocol;
@@ -13,6 +14,8 @@ use smoltcp::wire::Ipv6Packet;
 use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
+use smoltcp::wire::UDP_HEADER_LEN;
+use smoltcp::wire::UdpPacket;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 
@@ -512,4 +515,245 @@ fn create_virtual_address_allocates_ipv6_link_local() {
             0xfe80, 0, 0, 0, 0x00ff, 0xfe00, 0x0001, 0x0001
         ))
     );
+}
+
+/// Build a DNS `A`-record query for `name` (transaction id `id`, RD=1).
+fn build_dns_a_query(id: u16, name: &str) -> Vec<u8> {
+    dns_resolver::build_query(id, name, DnsQueryType::A)
+}
+
+/// Build an Ethernet/IPv4/UDP frame carrying `dns_payload` from the guest to
+/// the gateway's DNS port (53). Returns the total frame length.
+fn build_ipv4_dns_query(
+    buf: &mut [u8],
+    src_mac: EthernetAddress,
+    dst_mac: EthernetAddress,
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    src_port: u16,
+    dns_payload: &[u8],
+) -> usize {
+    let mut eth = EthernetFrame::new_unchecked(buf);
+    eth.set_src_addr(src_mac);
+    eth.set_dst_addr(dst_mac);
+    eth.set_ethertype(EthernetProtocol::Ipv4);
+
+    let ip_repr = Ipv4Repr {
+        src_addr: src_ip,
+        dst_addr: dst_ip,
+        next_header: IpProtocol::Udp,
+        payload_len: UDP_HEADER_LEN + dns_payload.len(),
+        hop_limit: 64,
+    };
+    let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
+    ip_repr.emit(&mut ipv4, &ChecksumCapabilities::default());
+
+    let mut udp = UdpPacket::new_unchecked(ipv4.payload_mut());
+    udp.set_src_port(src_port);
+    udp.set_dst_port(DNS_PORT);
+    udp.set_len((UDP_HEADER_LEN + dns_payload.len()) as u16);
+    udp.payload_mut().copy_from_slice(dns_payload);
+    udp.fill_checksum(&src_ip.into(), &dst_ip.into());
+
+    ETHERNET_HEADER_LEN + ipv4.total_len() as usize
+}
+
+/// A [`Client`] that records every frame consomme delivers to the guest.
+struct CapturingClient {
+    driver: DefaultDriver,
+    received: Vec<Vec<u8>>,
+}
+
+impl CapturingClient {
+    fn new(driver: DefaultDriver) -> Self {
+        Self {
+            driver,
+            received: Vec::new(),
+        }
+    }
+}
+
+impl Client for CapturingClient {
+    fn driver(&self) -> &dyn Driver {
+        &self.driver
+    }
+
+    fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
+        self.received.push(data.to_vec());
+    }
+
+    fn rx_mtu(&mut self) -> usize {
+        1514
+    }
+}
+
+/// End to end validation for a static DNS A record.
+#[pal_async::async_test]
+async fn static_dns_a_record_answered(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme
+        .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
+        .unwrap();
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let gateway_ip = consomme.params_mut().gateway_ip;
+
+    let query = build_dns_a_query(0x1234, "example.com");
+    let query_src_port = 40000u16;
+    let mut buf = vec![0u8; 1514];
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        gateway_ip,
+        query_src_port,
+        &query,
+    );
+
+    let mut client = CapturingClient::new(driver);
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("static DNS query should be handled");
+
+    // Exactly one response frame should have been delivered to the guest.
+    assert_eq!(client.received.len(), 1, "expected one DNS response frame");
+
+    // Parse the Ethernet/IPv4/UDP framing back off the wire.
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    assert_eq!(eth.ethertype(), EthernetProtocol::Ipv4);
+    assert_eq!(eth.src_addr(), gateway_mac);
+    assert_eq!(eth.dst_addr(), guest_mac);
+
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    assert_eq!(ipv4.next_header(), IpProtocol::Udp);
+    assert_eq!(ipv4.src_addr(), gateway_ip);
+    assert_eq!(ipv4.dst_addr(), guest_ip);
+
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    assert_eq!(udp.src_port(), DNS_PORT, "answered from the DNS port");
+    assert_eq!(
+        udp.dst_port(),
+        query_src_port,
+        "back to the query source port"
+    );
+
+    // Validate the DNS answer itself.
+    let dns = udp.payload();
+    assert_eq!(&dns[0..2], &[0x12, 0x34], "transaction id echoed");
+    assert_eq!(dns[2], 0x85, "QR + AA + RD set");
+    assert_eq!(dns[3], 0x80, "RA set, RCODE 0");
+    assert_eq!(
+        u16::from_be_bytes([dns[6], dns[7]]),
+        1,
+        "exactly one answer"
+    );
+    assert_eq!(&dns[dns.len() - 4..], &[10, 0, 0, 5], "answer address");
+    assert_eq!(
+        u16::from_be_bytes([dns[dns.len() - 6], dns[dns.len() - 5]]),
+        4,
+        "RDLENGTH == 4"
+    );
+}
+
+/// Static records are still inspected when the platform resolver backend is
+/// unavailable and the guest is using the advertised external DNS server.
+#[pal_async::async_test]
+async fn static_dns_fallback_intercepts_matches_only(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme.dns =
+        dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+    consomme
+        .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
+        .unwrap();
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let dns_ip = Ipv4Address::new(192, 0, 2, 53);
+    consomme.params_mut().nameservers = vec![dns_ip.into()];
+    let mut client = CapturingClient::new(driver);
+    consomme.access(&mut client).update_dns_nameservers();
+    assert_eq!(consomme.params_mut().nameservers, vec![dns_ip.into()]);
+
+    let mut buf = vec![0u8; 1514];
+
+    let query = build_dns_a_query(0x1234, "example.com");
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        dns_ip,
+        40000,
+        &query,
+    );
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("matching static DNS query should be handled locally");
+
+    assert_eq!(client.received.len(), 1);
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    assert_eq!(ipv4.src_addr(), dns_ip);
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    assert_eq!(udp.payload()[3] & 0x0f, 0);
+    assert_eq!(u16::from_be_bytes([udp.payload()[6], udp.payload()[7]]), 1);
+}
+
+/// A gateway-destined DNS query is answered with SERVFAIL when there is no
+/// resolver backend and no matching static record.
+#[pal_async::async_test]
+async fn dns_static_miss_without_backend_returns_servfail(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme.dns =
+        dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let gateway_ip = consomme.params_mut().gateway_ip;
+
+    let query = build_dns_a_query(0x5678, "missing.example");
+    let query_src_port = 40001u16;
+    let mut buf = vec![0u8; 1514];
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        gateway_ip,
+        query_src_port,
+        &query,
+    );
+
+    let mut client = CapturingClient::new(driver);
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("DNS query should be handled locally");
+
+    assert_eq!(client.received.len(), 1, "expected one DNS response frame");
+
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    assert_eq!(eth.src_addr(), gateway_mac);
+    assert_eq!(eth.dst_addr(), guest_mac);
+
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    assert_eq!(ipv4.src_addr(), gateway_ip);
+    assert_eq!(ipv4.dst_addr(), guest_ip);
+
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    assert_eq!(udp.src_port(), DNS_PORT);
+    assert_eq!(udp.dst_port(), query_src_port);
+
+    let dns = udp.payload();
+    assert_eq!(&dns[0..2], &[0x56, 0x78], "transaction id echoed");
+    assert_eq!(dns[2] & 0x80, 0x80, "response bit set");
+    assert_eq!(dns[3] & 0x0f, 2, "SERVFAIL response code");
+    assert_eq!(u16::from_be_bytes([dns[6], dns[7]]), 0, "no answers");
 }
