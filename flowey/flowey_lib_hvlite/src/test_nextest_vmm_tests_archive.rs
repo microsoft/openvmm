@@ -145,18 +145,28 @@ impl SimpleFlowNode for Node {
                     ctx.emit_rust_step("prepare vhost-vsock", |_| {
                         |rt| {
                             flowey::shell_cmd!(rt, "sudo modprobe vhost_vsock").run()?;
-                            for _ in 0..50 {
-                                if Path::new("/dev/vhost-vsock").exists() {
-                                    break;
-                                }
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                            }
+                            // The kernel creates /dev/vhost-vsock as part of
+                            // loading the module, but udev then processes the
+                            // corresponding uevent asynchronously and applies
+                            // its own (root-only) permissions to the node.
+                            // Without settling first, that races with - and
+                            // frequently wins against - the chmod below,
+                            // leaving the device inaccessible to the tests.
+                            flowey::shell_cmd!(rt, "sudo udevadm settle").run()?;
                             if !Path::new("/dev/vhost-vsock").exists() {
                                 anyhow::bail!(
                                     "/dev/vhost-vsock did not appear after loading vhost_vsock"
                                 );
                             }
                             flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/vhost-vsock").run()?;
+                            // Confirm the permissions actually stuck, so that a
+                            // failure here is reported by this step instead of
+                            // as an opaque test failure minutes later.
+                            fs_err::OpenOptions::new()
+                                .read(true)
+                                .write(true)
+                                .open("/dev/vhost-vsock")
+                                .context("/dev/vhost-vsock is not accessible to the test user")?;
                             Ok(())
                         }
                     })

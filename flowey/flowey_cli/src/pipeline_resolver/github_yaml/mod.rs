@@ -244,7 +244,7 @@ pub fn github_yaml(
                     serde_yaml::from_str(&format!(
                         r#"
                             name: '🌼📦 Download artifacts'
-                            uses: actions/download-artifact@v8
+                            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
                             with:
                               name: '{name}'
                               path: {RUNNER_TEMP}/used_artifacts/{name}/
@@ -256,7 +256,7 @@ pub fn github_yaml(
                     serde_yaml::from_str(&format!(
                         r#"
                             name: '🌼📦 Download artifacts'
-                            uses: actions/download-artifact@v8
+                            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
                             with:
                               pattern: '{pattern}'
                               path: {RUNNER_TEMP}/used_artifacts/
@@ -503,7 +503,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         name: 🌼📦 Publish {name}
-                        uses: actions/upload-artifact@v7
+                        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
@@ -537,7 +537,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                     name: 🌼🥾 Publish bootstrapped flowey
-                    uses: actions/upload-artifact@v7
+                    uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
                     with:
                         name: {artifact}
                         path: {RUNNER_TEMP}/{flowey_path}

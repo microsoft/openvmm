@@ -29,6 +29,7 @@ fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
 igvm = { workspace = true, features = ["corim"] }
 igvm_defs.workspace = true
+object = { workspace = true, features = ["read", "std"] }
 range_map_vec.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
