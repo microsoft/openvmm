@@ -1364,6 +1364,7 @@ dependencies = [
  "inspect_proto",
  "mesh_rpc",
  "pal_async",
+ "powershell_builder",
  "socket2",
  "thiserror 2.0.16",
  "unix_socket",
@@ -2273,6 +2274,7 @@ version = "0.0.0"
 dependencies = [
  "flowey",
  "home",
+ "powershell_builder",
  "rlimit",
  "roxmltree",
  "rustc-hash 2.1.1",
@@ -3547,12 +3549,14 @@ dependencies = [
  "mesh",
  "pal_async",
  "task_control",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "vm_resource",
  "vmbus_async",
  "vmbus_channel",
+ "vmbus_ring",
  "vmcore",
  "zerocopy",
 ]
@@ -3649,6 +3653,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "parking_lot",
+ "powershell_builder",
  "rustyline",
  "shell-words",
 ]
@@ -7524,6 +7529,7 @@ dependencies = [
  "minimal_rt",
  "minimal_rt_build",
  "sidecar_defs",
+ "spin",
  "x86defs",
  "zerocopy",
 ]

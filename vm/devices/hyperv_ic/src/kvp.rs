@@ -132,7 +132,7 @@ impl SimpleVmbusDevice for KvpIc {
     ) -> Option<
         &mut dyn SaveRestoreSimpleVmbusDevice<SavedState = Self::SavedState, Runner = Self::Runner>,
     > {
-        None
+        Some(self)
     }
 }
 
@@ -409,6 +409,22 @@ impl KvpChannel {
             ChannelState::Failed => std::future::pending().await,
         }
         Ok(())
+    }
+}
+
+// Like Hyper-V, no state is saved or restored. On restore, the channel starts
+// over with version negotiation.
+impl SaveRestoreSimpleVmbusDevice for KvpIc {
+    fn save_open(&mut self, _runner: &Self::Runner) -> Self::SavedState {
+        NoSavedState
+    }
+
+    fn restore_open(
+        &mut self,
+        NoSavedState: Self::SavedState,
+        channel: RawAsyncChannel<GpadlRingMem>,
+    ) -> Result<Self::Runner, ChannelOpenError> {
+        KvpChannel::new(channel, None)
     }
 }
 
