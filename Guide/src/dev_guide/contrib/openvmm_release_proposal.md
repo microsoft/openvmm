@@ -92,9 +92,8 @@ from `openvmm-deps` are outside this build.
 Checksum verification, an explicit `.git` assertion, binary-version
 validation, and direct OpenSSL linkage inspection are possible follow-up
 checks. They should be added only when maintainers agree that each check
-enforces a release requirement worth owning. In particular, binary-version
-validation depends on the unresolved build-identity design and is not part of
-the initial gate.
+enforces a release requirement worth owning. Binary-version validation is not
+part of the initial gate.
 
 Normal pull-request CI would run the same assembly and distribution-build
 logic against the commit under test. It must independently assemble its own
@@ -151,6 +150,10 @@ release identity.
 
 The published archive necessarily lacks `.git`, so the committed Cargo version
 is the only identity available.
+
+The initial binary identity does not separately expose the source commit for a
+Git-free build. The release tag, target, and provenance identify the published
+source, and another binary surface can be added later if needed.
 
 This classification is descriptive, not proof that arbitrary Git-free source
 is official. Consumers must verify the source archive's checksum and
