@@ -148,6 +148,7 @@ pub struct Server {
     // shared memory and we cannot set protections on shared memory.
     require_server_allocated_mnf: bool,
     use_absolute_channel_order: bool,
+    support_gpa_pinning: bool,
 }
 
 pub struct ServerWithNotifier<'a, T> {
@@ -1323,14 +1324,14 @@ static SUPPORTED_VERSIONS: &[Version] = &[
 
 // Feature flags that are always supported.
 // N.B. Confidential channels are conditionally supported if running in the paravisor.
+// N.B. GPA pinning is conditionally supported if the server is configured to support it.
 const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_channel_interrupt_redirection(true)
     .with_modify_connection(true)
     .with_client_id(true)
     .with_pause_resume(true)
-    .with_server_specified_monitor_pages(true)
-    .with_gpa_pinning(true);
+    .with_server_specified_monitor_pages(true);
 
 /// Trait for sending requests to devices and the guest.
 pub trait Notifier: Send {
@@ -1374,6 +1375,7 @@ impl Server {
         child_connection_id: u32,
         channel_id_offset: u16,
         use_absolute_channel_order: bool,
+        support_gpa_pinning: bool,
     ) -> Self {
         Server {
             state: ConnectionState::Disconnected,
@@ -1389,6 +1391,7 @@ impl Server {
             pending_messages: PendingMessages(VecDeque::new()),
             require_server_allocated_mnf: false,
             use_absolute_channel_order,
+            support_gpa_pinning,
         }
     }
 
@@ -2464,8 +2467,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         let supported_flags = if version >= Version::Copper {
             // Confidential channels should only be enabled if the connection is trusted.
-            let max_supported_flags =
-                SUPPORTED_FEATURE_FLAGS.with_confidential_channels(request.trusted);
+            let max_supported_flags = SUPPORTED_FEATURE_FLAGS
+                .with_confidential_channels(request.trusted)
+                .with_gpa_pinning(self.inner.support_gpa_pinning);
 
             // The max features may be limited in order to test older protocol versions.
             if let Some(max_version) = self.inner.max_version {

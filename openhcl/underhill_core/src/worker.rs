@@ -3229,15 +3229,18 @@ async fn new_underhill_vm(
             .vmbus_max_version
             .map(vmbus_core::MaxVersionInfo::new)
             .or_else(|| {
-                // For compatibility with rollback, any additional features are currently disabled,
-                // except for isolated guests which do not support servicing.
+                // For compatibility with rollback, the max version should only include feature
+                // flags that are available in all in-service versions of OpenHCL.
+                // N.B. Isolated VMs do not support servicing, so they can use all flags.
+                // N.B. VM SKUs that support GPA pinning are guaranteed to use a compatible
+                //      version of OpenHCL so it can safely be enabled here.
                 (!hardware_isolated).then_some(vmbus_core::MaxVersionInfo {
                     version: vmbus_core::protocol::Version::Copper as u32,
                     feature_flags: vmbus_core::protocol::FeatureFlags::new()
                         .with_guest_specified_signal_parameters(true)
                         .with_channel_interrupt_redirection(true)
                         .with_modify_connection(true)
-                        .with_gpa_pinning(use_gpa_pinning),
+                        .with_gpa_pinning(true),
                 })
             });
 
@@ -3263,7 +3266,8 @@ async fn new_underhill_vm(
                 .force_confidential_external_memory(
                     env_cfg.vmbus_force_confidential_external_memory,
                 )
-                .force_gpa_pinning(env_cfg.vmbus_force_gpa_pinning)
+                .support_gpa_pinning(use_gpa_pinning)
+                .force_gpa_pinning(use_gpa_pinning && env_cfg.vmbus_force_gpa_pinning)
                 .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
                 // For saved-state compat with release/2411.
                 .send_messages_while_stopped(true)

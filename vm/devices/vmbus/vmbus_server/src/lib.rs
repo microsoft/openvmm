@@ -139,6 +139,7 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     max_restore_version: Option<MaxVersionInfo>,
     enable_mnf: bool,
     force_confidential_external_memory: bool,
+    support_gpa_pinning: bool,
     force_gpa_pinning: bool,
     send_messages_while_stopped: bool,
     channel_unstick_delay: Option<Duration>,
@@ -316,6 +317,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
             use_absolute_channel_order: false,
+            support_gpa_pinning: false,
         }
     }
 
@@ -431,6 +433,12 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         self
     }
 
+    /// Indicates the current VM environment supports GPA pinning.
+    pub fn support_gpa_pinning(mut self, support: bool) -> Self {
+        self.support_gpa_pinning = support;
+        self
+    }
+
     /// Force all channels to use pinned GPA ranges. Used for testing purposes only.
     pub fn force_gpa_pinning(mut self, force: bool) -> Self {
         self.force_gpa_pinning = force;
@@ -537,6 +545,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             connection_id,
             self.channel_id_offset,
             self.use_absolute_channel_order,
+            self.support_gpa_pinning,
         );
 
         // If MNF is handled by this server and this is a paravisor for an isolated VM, the monitor
