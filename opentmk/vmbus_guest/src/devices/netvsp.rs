@@ -503,6 +503,37 @@ pub struct RndisInitializeComplete {
     pub af_list_size: u32,
 }
 
+/// `MESSAGE_TYPE_PACKET_MSG` body — the RNDIS wrapper around a
+/// single Ethernet frame. Sent VSC → VSP for TX and VSP → VSC for RX.
+///
+/// Wire layout (36 bytes) matches openvmm `rndisprot::Packet`. The
+/// data buffer follows this struct at the offset specified by
+/// `data_offset` (measured from the start of this `Packet` struct,
+/// **not** the RNDIS `MessageHeader`).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct RndisPacket {
+    /// Offset of the Ethernet frame relative to the start of this
+    /// `Packet` struct.
+    pub data_offset: u32,
+    /// Length of the Ethernet frame in bytes.
+    pub data_length: u32,
+    /// Offset of the OOB data buffer (unused: 0).
+    pub oob_data_offset: u32,
+    /// Length of the OOB data (unused: 0).
+    pub oob_data_length: u32,
+    /// Number of OOB elements (unused: 0).
+    pub num_oob_data_elements: u32,
+    /// Offset of the per-packet-info buffer (unused: 0).
+    pub per_packet_info_offset: u32,
+    /// Length of the per-packet-info buffer (unused: 0).
+    pub per_packet_info_length: u32,
+    /// VC handle (0 for connectionless).
+    pub vc_handle: u32,
+    /// Reserved (0).
+    pub reserved: u32,
+}
+
 /// Encode a NVSP message: header + body copied into a
 /// zero-padded fixed-size frame ([`frame_size_for`]).
 ///
@@ -1401,6 +1432,349 @@ impl Netvsp {
             got_rndis_response
         );
         Err(Error::Timeout)
+    }
+
+    /// Send a raw Ethernet frame via RNDIS `PACKET_MSG` wrapped in
+    /// `Nvsp1MsgSendRndisPacket(RMC_DATA)`, using a GPA-direct
+    /// external buffer for the RNDIS message.
+    ///
+    /// This is the TX equivalent of what puppet's `send_eth_packet`
+    /// does. `wait_for_completion` controls whether we spin waiting
+    /// for the paired `V1_SEND_RNDIS_PKT_COMPLETE` (round-trip
+    /// send) or fire-and-forget (bulk stress). Fire-and-forget still
+    /// signals the host and returns; the host will pipeline
+    /// completions on the recv ring for us to drain later.
+    ///
+    /// Requires [`Self::rndis_init`] to have succeeded (the host
+    /// won't accept data packets before RNDIS init).
+    ///
+    /// # Wire layout
+    ///
+    /// The RNDIS message written to the buffer:
+    /// ```text
+    /// RndisMessageHeader { PACKET_MSG, message_length }
+    /// RndisPacket { data_offset = size_of::<Packet>, data_length = frame.len() }
+    /// [frame bytes]
+    /// ```
+    /// `data_offset` is measured from the start of the `RndisPacket`
+    /// struct (openvmm convention). Note that per_packet_info /
+    /// oob_data all zero for a plain unadorned frame.
+    ///
+    /// The NVSP wrapper:
+    /// ```text
+    /// Nvsp1MsgSendRndisPacket {
+    ///   channel_type = RMC_DATA (0),
+    ///   send_buf_section_index = NETVSC_INVALID_INDEX,
+    ///   send_buf_section_size = 0,
+    /// }
+    /// ```
+    pub fn send_ethernet<C: HypercallTrait>(
+        &mut self,
+        ctx: &mut C,
+        frame: &[u8],
+        wait_for_completion: bool,
+    ) -> Result<()> {
+        if frame.is_empty() || frame.len() > 4096 - 64 {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "ethernet frame size out of range",
+            });
+        }
+        if self.recv_buf.is_none() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send_ethernet requires establish_recv_buffer first",
+            });
+        }
+
+        // Allocate a page-aligned buffer. Layout inside:
+        //   [0..8)   RndisMessageHeader
+        //   [8..44)  RndisPacket (36 bytes)
+        //   [44..)   Ethernet frame
+        let rndis_layout = core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| {
+            Error::Parse {
+                ty: None,
+                reason: "rndis buffer layout",
+            }
+        })?;
+        // SAFETY: validated single-page layout, single-threaded UEFI.
+        #[expect(unsafe_code, reason = "page-aligned RNDIS message allocation")]
+        let rndis_ptr = unsafe { alloc::alloc::alloc_zeroed(rndis_layout) };
+        if rndis_ptr.is_null() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "rndis buffer alloc failed",
+            });
+        }
+        let hdr_size = core::mem::size_of::<RndisMessageHeader>();
+        let pkt_size = core::mem::size_of::<RndisPacket>();
+        let total_len = (hdr_size + pkt_size + frame.len()) as u32;
+
+        let rndis_hdr = RndisMessageHeader {
+            message_type: rndis::MESSAGE_TYPE_PACKET_MSG,
+            message_length: total_len,
+        };
+        // data_offset is measured from the START of RndisPacket,
+        // not from the start of the whole RNDIS message. So it's
+        // just pkt_size (the frame sits immediately after the Packet
+        // struct).
+        let rndis_pkt = RndisPacket {
+            data_offset: pkt_size as u32,
+            data_length: frame.len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset: 0,
+            per_packet_info_length: 0,
+            vc_handle: 0,
+            reserved: 0,
+        };
+
+        // SAFETY: rndis_ptr is a valid 4 KiB allocation, and
+        // hdr_size + pkt_size + frame.len() <= 4096 by the input
+        // check above.
+        #[expect(unsafe_code, reason = "copy RNDIS message parts into own buffer")]
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                rndis_hdr.as_bytes().as_ptr(),
+                rndis_ptr,
+                hdr_size,
+            );
+            core::ptr::copy_nonoverlapping(
+                rndis_pkt.as_bytes().as_ptr(),
+                rndis_ptr.add(hdr_size),
+                pkt_size,
+            );
+            core::ptr::copy_nonoverlapping(
+                frame.as_ptr(),
+                rndis_ptr.add(hdr_size + pkt_size),
+                frame.len(),
+            );
+        }
+
+        // Build the NVSP wrapper.
+        let mut nvsp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+        let n = encode_message(
+            msg_type::V1_SEND_RNDIS_PKT,
+            &Nvsp1MsgSendRndisPacket {
+                channel_type: RMC_DATA,
+                send_buf_section_index: NETVSC_INVALID_INDEX,
+                send_buf_section_size: 0,
+            },
+            self.version_typed()?,
+            &mut nvsp_frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode SEND_RNDIS_PKT (data)",
+        })?;
+
+        // Post via GPA-direct.
+        if self.channel.state() != ChannelState::Open {
+            return Err(Error::Rescinded);
+        }
+        let tid = self.alloc_transaction_id();
+        let mut flags = PacketFlags::new();
+        if wait_for_completion {
+            flags.set_request_completion(true);
+        }
+        let rndis_gpa = rndis_ptr as u64;
+        let pfns = [rndis_gpa >> 12];
+        let offset = (rndis_gpa & 0xFFF) as u32;
+        let _need_signal = self.send.write_gpa_direct(
+            &pfns,
+            offset,
+            total_len,
+            &nvsp_frame[..n],
+            flags,
+            tid,
+        )?;
+        self.channel.signal(ctx)?;
+
+        if !wait_for_completion {
+            // Note: we leak the RNDIS buffer here. For the smoke
+            // + stress cases this is fine — opentmk's static heap
+            // is 512 MiB. A real driver would free after the paired
+            // completion arrives.
+            return Ok(());
+        }
+
+        // Wait for V1_SEND_RNDIS_PKT_COMPLETE (matching tid).
+        let mut buf = [0u8; 512];
+        for _ in 0..DEFAULT_MAX_POLLS {
+            match self.recv.read(&mut buf) {
+                Ok(pkt) => {
+                    if pkt.descriptor.packet_type
+                        == crate::protocol::PacketType::VM_PKT_COMP
+                        && pkt.descriptor.transaction_id == tid
+                    {
+                        // Peek the completion status — it's the first
+                        // 4 bytes of the NVSP body.
+                        let (_hdr, body) = parse_header(pkt.payload).map_err(|_| {
+                            Error::Parse {
+                                ty: None,
+                                reason: "parse SEND_RNDIS_PKT_COMPLETE hdr",
+                            }
+                        })?;
+                        let (comp, _) =
+                            Nvsp1MsgSendRndisPacketComplete::read_from_prefix(body).map_err(
+                                |_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse SEND_RNDIS_PKT_COMPLETE body",
+                                },
+                            )?;
+                        if comp.status != status::SUCCESS {
+                            return Err(Error::Parse {
+                                ty: None,
+                                reason: "SEND_RNDIS_PKT_COMPLETE non-success status",
+                            });
+                        }
+                        return Ok(());
+                    }
+                    // Any other packet type during a data send is
+                    // most likely an inbound Ethernet frame the host
+                    // is delivering to us. Log at debug and keep
+                    // looking for our completion; the caller can
+                    // drain those separately via receive_ethernet.
+                    log::debug!(
+                        "netvsp: skipping packet during send: type={:#x} tid={:#x}",
+                        pkt.descriptor.packet_type.0,
+                        pkt.descriptor.transaction_id,
+                    );
+                }
+                Err(Error::RingEmpty) => core::hint::spin_loop(),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::Timeout)
+    }
+
+    /// Drain any pending inbound Ethernet frames (host → guest) and
+    /// invoke `on_frame` with each one's bytes.
+    ///
+    /// The host delivers frames as `VM_PKT_DATA_USING_XFER_PAGES`
+    /// packets referencing recv-buffer sections. We also send back
+    /// `VM_PKT_COMP` for each so the host can free its transfer
+    /// pages.
+    ///
+    /// Returns the number of frames drained. `max_polls` bounds the
+    /// spin — 0 means "one non-blocking pass; return whatever's
+    /// currently on the ring".
+    pub fn drain_inbound<C: HypercallTrait>(
+        &mut self,
+        ctx: &mut C,
+        max_polls: usize,
+        mut on_frame: impl FnMut(&[u8]),
+    ) -> Result<usize> {
+        let recv_buf = self.recv_buf.as_ref().ok_or(Error::Parse {
+            ty: None,
+            reason: "drain_inbound requires establish_recv_buffer first",
+        })?;
+        let recv_base = recv_buf.ptr;
+        let recv_len = recv_buf.len;
+        let mut count = 0usize;
+        let mut buf = [0u8; 4096];
+        let iters = if max_polls == 0 { 1 } else { max_polls };
+        for _ in 0..iters {
+            match self.recv.read(&mut buf) {
+                Ok(pkt) => match pkt.descriptor.packet_type {
+                    crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                        let host_tid = pkt.descriptor.transaction_id;
+                        let (xhdr, _) =
+                            crate::protocol::TransferPageHeader::read_from_prefix(&buf)
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse TransferPageHeader",
+                                })?;
+                        for i in 0..xhdr.range_count as usize {
+                            let range_off = 8 + i * 8;
+                            let (r, _) =
+                                crate::protocol::TransferPageRange::read_from_prefix(
+                                    &buf[range_off..],
+                                )
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse TransferPageRange",
+                                })?;
+                            if (r.byte_offset as usize + r.byte_count as usize) > recv_len {
+                                continue;
+                            }
+                            // SAFETY: bounds-checked above; single-threaded.
+                            #[expect(unsafe_code, reason = "read from recv buffer")]
+                            let msg = unsafe {
+                                core::slice::from_raw_parts(
+                                    recv_base.add(r.byte_offset as usize),
+                                    r.byte_count as usize,
+                                )
+                            };
+                            let (rhdr, rest) =
+                                RndisMessageHeader::read_from_prefix(msg).map_err(|_| {
+                                    Error::Parse {
+                                        ty: None,
+                                        reason: "parse RndisMessageHeader",
+                                    }
+                                })?;
+                            if rhdr.message_type == rndis::MESSAGE_TYPE_PACKET_MSG {
+                                let (rp, _) = RndisPacket::read_from_prefix(rest).map_err(
+                                    |_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse RndisPacket",
+                                    },
+                                )?;
+                                let frame_off = rp.data_offset as usize;
+                                let frame_len = rp.data_length as usize;
+                                if frame_off + frame_len <= rest.len() {
+                                    on_frame(&rest[frame_off..frame_off + frame_len]);
+                                    count += 1;
+                                }
+                            } else {
+                                log::debug!(
+                                    "netvsp: drain saw non-packet RNDIS type {:#x}",
+                                    rhdr.message_type
+                                );
+                            }
+                        }
+                        // Send VM_PKT_COMP so the host can reap the
+                        // transfer pages.
+                        let mut comp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+                        let m = encode_message(
+                            msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
+                            &Nvsp1MsgSendRndisPacketComplete {
+                                status: status::SUCCESS,
+                            },
+                            self.version_typed()?,
+                            &mut comp_frame,
+                        )
+                        .map_err(|_| Error::Parse {
+                            ty: None,
+                            reason: "encode V1_SEND_RNDIS_PKT_COMPLETE",
+                        })?;
+                        self.send.write_completion(&comp_frame[..m], host_tid)?;
+                        self.channel.signal(ctx)?;
+                    }
+                    crate::protocol::PacketType::VM_PKT_COMP => {
+                        log::debug!(
+                            "netvsp: drain saw stale VM_PKT_COMP tid={:#x}",
+                            pkt.descriptor.transaction_id
+                        );
+                    }
+                    _ => {
+                        log::debug!(
+                            "netvsp: drain saw unexpected packet type {:#x}",
+                            pkt.descriptor.packet_type.0
+                        );
+                    }
+                },
+                Err(Error::RingEmpty) => {
+                    if max_polls == 0 {
+                        break;
+                    }
+                    core::hint::spin_loop();
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(count)
     }
 
     /// Recover the underlying channel for closing.
