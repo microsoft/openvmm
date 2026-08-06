@@ -444,6 +444,24 @@ pub mod rndis {
     /// Max transfer size we request in `InitializeRequest`. 16 KiB
     /// matches puppet + Linux.
     pub const MAX_TRANSFER_SIZE: u32 = 0x4000;
+
+    // ---------- NDIS OIDs ----------
+
+    /// `OID_GEN_CURRENT_PACKET_FILTER` — the master packet-acceptance
+    /// filter. Until the driver sets a non-zero value, NDIS accepts
+    /// zero frames. Standard value bits below.
+    pub const OID_GEN_CURRENT_PACKET_FILTER: u32 = 0x0001_010E;
+
+    /// Accept frames whose destination MAC matches ours.
+    pub const NDIS_PACKET_TYPE_DIRECTED: u32 = 0x0001;
+    /// Accept specific multicasts (with a MAC list; not needed here).
+    pub const NDIS_PACKET_TYPE_MULTICAST: u32 = 0x0002;
+    /// Accept all multicasts.
+    pub const NDIS_PACKET_TYPE_ALL_MULTICAST: u32 = 0x0004;
+    /// Accept broadcast frames.
+    pub const NDIS_PACKET_TYPE_BROADCAST: u32 = 0x0008;
+    /// Accept every frame regardless of MAC.
+    pub const NDIS_PACKET_TYPE_PROMISCUOUS: u32 = 0x0020;
 }
 
 /// Common 8-byte header on every RNDIS message.
@@ -532,6 +550,39 @@ pub struct RndisPacket {
     pub vc_handle: u32,
     /// Reserved (0).
     pub reserved: u32,
+}
+
+/// `MESSAGE_TYPE_SET_MSG` body — set a single NDIS OID on the
+/// remote device.
+///
+/// Matches openvmm `rndisprot::SetRequest`. The information buffer
+/// follows this struct at `information_buffer_offset` (measured
+/// from start of `RndisSetRequest`, per RNDIS spec).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct RndisSetRequest {
+    /// Guest-chosen id echoed back in the completion.
+    pub request_id: u32,
+    /// OID identifier — e.g. [`rndis::OID_GEN_CURRENT_PACKET_FILTER`].
+    pub oid: u32,
+    /// Length of the information buffer in bytes.
+    pub information_buffer_length: u32,
+    /// Offset from the start of THIS struct to the information
+    /// buffer. Standard value = `size_of::<RndisSetRequest>()` for
+    /// an appended buffer.
+    pub information_buffer_offset: u32,
+    /// Device VC handle (unused, 0).
+    pub device_vc_handle: u32,
+}
+
+/// `MESSAGE_TYPE_SET_CMPLT` body.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct RndisSetComplete {
+    /// Echoes the `request_id` from the paired request.
+    pub request_id: u32,
+    /// [`rndis::STATUS_SUCCESS`] on success.
+    pub status: u32,
 }
 
 /// Encode a NVSP message: header + body copied into a
@@ -1428,6 +1479,253 @@ impl Netvsp {
         }
         log::warn!(
             "netvsp: rndis_init timed out (got_nvsp_comp={} got_rndis_response={})",
+            got_nvsp_comp,
+            got_rndis_response
+        );
+        Err(Error::Timeout)
+    }
+
+    /// Set the NDIS packet filter to accept common frame types
+    /// (broadcast, all multicast, directed unicast to our MAC).
+    ///
+    /// **Must be called before the host will deliver any Ethernet
+    /// frames.** Until this succeeds, NDIS's filter is 0 → every
+    /// frame is silently dropped by the vSwitch/netvsp pipeline
+    /// **on the receive side** (send still works). Matches Linux's
+    /// `rndis_filter_open`.
+    ///
+    /// Sequence:
+    /// 1. Allocate a page-aligned buffer, write `RndisMessageHeader
+    ///    + RndisSetRequest + [filter u32]`.
+    /// 2. Send via GPA-direct wrapped in `V1_SEND_RNDIS_PKT(RMC_CONTROL)`.
+    /// 3. Wait for `V1_SEND_RNDIS_PKT_COMPLETE` (NVSP-level ack).
+    /// 4. Wait for `RNDIS_SET_CMPLT` on the xfer-page path.
+    /// 5. Send `VM_PKT_COMP` back to release the transfer pages.
+    ///
+    /// Requires [`Self::rndis_init`] to have already succeeded.
+    pub fn set_packet_filter<C: HypercallTrait>(
+        &mut self,
+        ctx: &mut C,
+        filter: u32,
+    ) -> Result<()> {
+        let recv_buf = self.recv_buf.as_ref().ok_or(Error::Parse {
+            ty: None,
+            reason: "set_packet_filter requires recv buffer",
+        })?;
+        let recv_base = recv_buf.ptr;
+        let recv_len = recv_buf.len;
+
+        let rndis_layout = core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| {
+            Error::Parse {
+                ty: None,
+                reason: "set_pkt_filter buffer layout",
+            }
+        })?;
+        // SAFETY: page-sized page-aligned request.
+        #[expect(unsafe_code, reason = "page-aligned RNDIS SET buffer")]
+        let rndis_ptr = unsafe { alloc::alloc::alloc_zeroed(rndis_layout) };
+        if rndis_ptr.is_null() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "set_pkt_filter buffer alloc",
+            });
+        }
+
+        let hdr_size = core::mem::size_of::<RndisMessageHeader>();
+        let req_size = core::mem::size_of::<RndisSetRequest>();
+        let info_size = core::mem::size_of::<u32>();
+        let total_len = (hdr_size + req_size + info_size) as u32;
+
+        let request_id: u32 = 2;
+        let rndis_hdr = RndisMessageHeader {
+            message_type: rndis::MESSAGE_TYPE_SET_MSG,
+            message_length: total_len,
+        };
+        let set_req = RndisSetRequest {
+            request_id,
+            oid: rndis::OID_GEN_CURRENT_PACKET_FILTER,
+            information_buffer_length: info_size as u32,
+            information_buffer_offset: req_size as u32,
+            device_vc_handle: 0,
+        };
+
+        // SAFETY: rndis_ptr is a valid 4 KiB allocation; total_len
+        // = 8 + 20 + 4 = 32 << 4096.
+        #[expect(unsafe_code, reason = "copy RNDIS bytes into own buffer")]
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                rndis_hdr.as_bytes().as_ptr(),
+                rndis_ptr,
+                hdr_size,
+            );
+            core::ptr::copy_nonoverlapping(
+                set_req.as_bytes().as_ptr(),
+                rndis_ptr.add(hdr_size),
+                req_size,
+            );
+            core::ptr::copy_nonoverlapping(
+                filter.to_le_bytes().as_ptr(),
+                rndis_ptr.add(hdr_size + req_size),
+                info_size,
+            );
+        }
+
+        // NVSP wrapper.
+        let mut nvsp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+        let n = encode_message(
+            msg_type::V1_SEND_RNDIS_PKT,
+            &Nvsp1MsgSendRndisPacket {
+                channel_type: RMC_CONTROL,
+                send_buf_section_index: NETVSC_INVALID_INDEX,
+                send_buf_section_size: 0,
+            },
+            self.version_typed()?,
+            &mut nvsp_frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode SEND_RNDIS_PKT (set)",
+        })?;
+
+        // GPA-direct send with completion.
+        if self.channel.state() != ChannelState::Open {
+            return Err(Error::Rescinded);
+        }
+        let tid = self.alloc_transaction_id();
+        let mut flags = PacketFlags::new();
+        flags.set_request_completion(true);
+        let rndis_gpa = rndis_ptr as u64;
+        let pfns = [rndis_gpa >> 12];
+        let offset = (rndis_gpa & 0xFFF) as u32;
+        let _need_signal = self.send.write_gpa_direct(
+            &pfns,
+            offset,
+            total_len,
+            &nvsp_frame[..n],
+            flags,
+            tid,
+        )?;
+        self.channel.signal(ctx)?;
+        log::info!(
+            "netvsp: RNDIS SET packet_filter={:#x} sent (tid={:#x})",
+            filter,
+            tid
+        );
+
+        // Wait for both the NVSP send-completion AND the RNDIS SET
+        // response. Same pattern as rndis_init.
+        let mut got_nvsp_comp = false;
+        let mut got_rndis_response = false;
+        let mut buf = [0u8; 512];
+        for _ in 0..DEFAULT_MAX_POLLS {
+            match self.recv.read(&mut buf) {
+                Ok(pkt) => {
+                    match pkt.descriptor.packet_type {
+                        crate::protocol::PacketType::VM_PKT_COMP
+                            if pkt.descriptor.transaction_id == tid =>
+                        {
+                            log::info!("netvsp: RNDIS SET nvsp-comp received");
+                            got_nvsp_comp = true;
+                        }
+                        crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                            let host_tid = pkt.descriptor.transaction_id;
+                            let (xhdr, _) =
+                                crate::protocol::TransferPageHeader::read_from_prefix(&buf)
+                                    .map_err(|_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse TransferPageHeader",
+                                    })?;
+                            if xhdr.range_count == 0 {
+                                continue;
+                            }
+                            let (r0, _) = crate::protocol::TransferPageRange::read_from_prefix(
+                                &buf[8..],
+                            )
+                            .map_err(|_| Error::Parse {
+                                ty: None,
+                                reason: "parse TransferPageRange",
+                            })?;
+                            if (r0.byte_offset as usize + r0.byte_count as usize) > recv_len {
+                                continue;
+                            }
+                            // SAFETY: bounds-checked; single-threaded.
+                            #[expect(unsafe_code, reason = "read RNDIS SET response from recv")]
+                            let rndis_msg = unsafe {
+                                core::slice::from_raw_parts(
+                                    recv_base.add(r0.byte_offset as usize),
+                                    r0.byte_count as usize,
+                                )
+                            };
+                            let (rhdr, rest) =
+                                RndisMessageHeader::read_from_prefix(rndis_msg).map_err(|_| {
+                                    Error::Parse {
+                                        ty: None,
+                                        reason: "parse RndisMessageHeader",
+                                    }
+                                })?;
+                            if rhdr.message_type == rndis::MESSAGE_TYPE_SET_CMPLT {
+                                let (sc, _) = RndisSetComplete::read_from_prefix(rest).map_err(
+                                    |_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse RndisSetComplete",
+                                    },
+                                )?;
+                                log::info!(
+                                    "netvsp: RNDIS SET_CMPLT request_id={:#x} status={:#x}",
+                                    sc.request_id,
+                                    sc.status,
+                                );
+                                if sc.status != rndis::STATUS_SUCCESS {
+                                    return Err(Error::Parse {
+                                        ty: None,
+                                        reason: "RNDIS SET status != SUCCESS",
+                                    });
+                                }
+                                if sc.request_id != request_id {
+                                    return Err(Error::Parse {
+                                        ty: None,
+                                        reason: "RNDIS SET request_id mismatch",
+                                    });
+                                }
+                                got_rndis_response = true;
+                            }
+                            // Regardless of whether it was our SET
+                            // response or unrelated traffic, ack the
+                            // xfer-page so the host can reap it.
+                            let mut cf = [0u8; NVSP_V61_MESSAGE_SIZE];
+                            let m = encode_message(
+                                msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
+                                &Nvsp1MsgSendRndisPacketComplete {
+                                    status: status::SUCCESS,
+                                },
+                                self.version_typed()?,
+                                &mut cf,
+                            )
+                            .map_err(|_| Error::Parse {
+                                ty: None,
+                                reason: "encode SET-ack",
+                            })?;
+                            self.send.write_completion(&cf[..m], host_tid)?;
+                            self.channel.signal(ctx)?;
+                        }
+                        _ => {
+                            log::debug!(
+                                "netvsp: unexpected packet during SET: type={:#x} tid={:#x}",
+                                pkt.descriptor.packet_type.0,
+                                pkt.descriptor.transaction_id,
+                            );
+                        }
+                    }
+                    if got_nvsp_comp && got_rndis_response {
+                        return Ok(());
+                    }
+                }
+                Err(Error::RingEmpty) => core::hint::spin_loop(),
+                Err(e) => return Err(e),
+            }
+        }
+        log::warn!(
+            "netvsp: set_packet_filter timed out (nvsp={} rndis={})",
             got_nvsp_comp,
             got_rndis_response
         );
