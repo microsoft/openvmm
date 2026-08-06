@@ -505,11 +505,22 @@ pub struct Netvsp {
     /// Starts at 1; 0 is reserved for "no completion".
     next_transaction_id: u64,
 
-    // Phase 2+ state. Left as None in Phase 1.
-    #[expect(dead_code, reason = "populated in phase 2")]
+    /// Guest-owned receive buffer + GPADL registered with the VSP.
+    /// Populated by [`Self::establish_recv_buffer`].
     recv_buf: Option<OwnedBuf>,
-    #[expect(dead_code, reason = "populated in phase 2")]
+    /// `sub_alloc_size` reported by the host in the recv-buf
+    /// completion. Non-zero means the recv buffer is live.
+    recv_section_size: u32,
+    /// Number of receive sub-allocations.
+    recv_section_count: u32,
+
+    /// Guest-owned send buffer + GPADL. Populated by
+    /// [`Self::establish_send_buffer`].
     send_buf: Option<OwnedBuf>,
+    /// `section_size` reported by the host in the send-buf completion.
+    send_section_size: u32,
+    /// Send-section count = send_buf.len / send_section_size.
+    send_section_count: u32,
 }
 
 /// Reasonable default retry budget for ring-buffer completion polling.
@@ -625,7 +636,11 @@ impl Netvsp {
             version: INVALID_PROTOCOL_VERSION,
             next_transaction_id: 1,
             recv_buf: None,
+            recv_section_size: 0,
+            recv_section_count: 0,
             send_buf: None,
+            send_section_size: 0,
+            send_section_count: 0,
         })
     }
 
@@ -760,6 +775,220 @@ impl Netvsp {
         self.send_no_completion(ctx, &frame[..n])
     }
 
+    /// Establish the receive buffer (host → guest data path).
+    ///
+    /// Allocates `size` bytes (must be page-multiple), registers a
+    /// GPADL for the whole region, sends `V1_SEND_RECV_BUF`, and
+    /// waits for `V1_SEND_RECV_BUF_COMPLETE`. Validates:
+    /// * `status == SUCCESS`
+    /// * `num_sections == 1` (spec quirk: no VSP has ever sent more)
+    /// * `sections[0].offset == 0`
+    /// * `sub_alloc_size >= NETVSC_MTU_MIN`
+    /// * `u64(sub_alloc_size) * u64(num_sub_allocs) <= size`
+    ///
+    /// A 16 MiB buffer produces ~147 `GpadlBody` messages posted
+    /// back-to-back — this is the first real exercise of the
+    /// `hypercalls::post_message` retry loop added in a prior commit.
+    pub fn establish_recv_buffer<C: HypercallTrait>(
+        &mut self,
+        ctx: &mut C,
+        size: usize,
+    ) -> Result<()> {
+        if self.recv_buf.is_some() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "recv buffer already established",
+            });
+        }
+        let buf = allocate_gpadl_buffer(ctx, self.channel.channel_id(), size)?;
+        log::info!(
+            "netvsp: recv-buf allocated {} bytes, GPADL id={:?}",
+            size,
+            buf.gpadl.id(),
+        );
+
+        let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+        let n = encode_message(
+            msg_type::V1_SEND_RECV_BUF,
+            &Nvsp1MsgSendBuffer {
+                gpadl_handle: buf.gpadl.id().0,
+                id: NETVSC_RECEIVE_BUFFER_ID,
+                pad: 0,
+            },
+            self.version_typed()?,
+            &mut frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode SEND_RECV_BUF",
+        })?;
+
+        let response = self.send_and_await(ctx, &frame[..n], DEFAULT_MAX_POLLS)?;
+        let (ty, body) = parse_header(&response).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "parse SEND_RECV_BUF_COMPLETE header",
+        })?;
+        if ty != msg_type::V1_SEND_RECV_BUF_COMPLETE {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "expected SEND_RECV_BUF_COMPLETE",
+            });
+        }
+        let (parsed, _) = Nvsp1MsgSendRecvBufComplete::read_from_prefix(body).map_err(|_| {
+            Error::Parse {
+                ty: None,
+                reason: "parse SEND_RECV_BUF_COMPLETE body",
+            }
+        })?;
+
+        if parsed.status != status::SUCCESS {
+            log::warn!(
+                "netvsp: recv-buf complete status = {} (not SUCCESS)",
+                parsed.status
+            );
+            return Err(Error::Parse {
+                ty: None,
+                reason: "recv-buf complete non-success status",
+            });
+        }
+        if parsed.num_sections != 1 {
+            log::warn!(
+                "netvsp: recv-buf num_sections = {} (expected 1)",
+                parsed.num_sections
+            );
+            return Err(Error::Parse {
+                ty: None,
+                reason: "recv-buf num_sections != 1",
+            });
+        }
+        let sec = &parsed.sections[0];
+        if sec.offset != 0 {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "recv-buf section offset != 0",
+            });
+        }
+        if sec.sub_alloc_size < NETVSC_MTU_MIN {
+            log::warn!(
+                "netvsp: recv-buf sub_alloc_size = {} (< MTU_MIN={})",
+                sec.sub_alloc_size,
+                NETVSC_MTU_MIN
+            );
+            return Err(Error::Parse {
+                ty: None,
+                reason: "recv-buf sub_alloc_size < MTU_MIN",
+            });
+        }
+        let used = (sec.sub_alloc_size as u64) * (sec.num_sub_allocs as u64);
+        if used > size as u64 {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "recv-buf sub_alloc_size * count > allocation",
+            });
+        }
+        log::info!(
+            "netvsp: recv-buf established: sub_alloc_size={}, num_sub_allocs={}, used={}/{}",
+            sec.sub_alloc_size,
+            sec.num_sub_allocs,
+            used,
+            size,
+        );
+
+        self.recv_section_size = sec.sub_alloc_size;
+        self.recv_section_count = sec.num_sub_allocs;
+        self.recv_buf = Some(buf);
+        Ok(())
+    }
+
+    /// Establish the send buffer (guest → host bulk data path).
+    ///
+    /// Same shape as [`Self::establish_recv_buffer`] but for the
+    /// `SEND_SEND_BUF` variant. Response validation:
+    /// * `status == SUCCESS`
+    /// * `section_size >= NETVSC_MTU_MIN`
+    /// * `send_section_count = size / section_size > 0`
+    pub fn establish_send_buffer<C: HypercallTrait>(
+        &mut self,
+        ctx: &mut C,
+        size: usize,
+    ) -> Result<()> {
+        if self.send_buf.is_some() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send buffer already established",
+            });
+        }
+        let buf = allocate_gpadl_buffer(ctx, self.channel.channel_id(), size)?;
+        log::info!(
+            "netvsp: send-buf allocated {} bytes, GPADL id={:?}",
+            size,
+            buf.gpadl.id(),
+        );
+
+        let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+        let n = encode_message(
+            msg_type::V1_SEND_SEND_BUF,
+            &Nvsp1MsgSendBuffer {
+                gpadl_handle: buf.gpadl.id().0,
+                id: NETVSC_SEND_BUFFER_ID,
+                pad: 0,
+            },
+            self.version_typed()?,
+            &mut frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode SEND_SEND_BUF",
+        })?;
+
+        let response = self.send_and_await(ctx, &frame[..n], DEFAULT_MAX_POLLS)?;
+        let (ty, body) = parse_header(&response).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "parse SEND_SEND_BUF_COMPLETE header",
+        })?;
+        if ty != msg_type::V1_SEND_SEND_BUF_COMPLETE {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "expected SEND_SEND_BUF_COMPLETE",
+            });
+        }
+        let (parsed, _) = Nvsp1MsgSendSendBufComplete::read_from_prefix(body).map_err(|_| {
+            Error::Parse {
+                ty: None,
+                reason: "parse SEND_SEND_BUF_COMPLETE body",
+            }
+        })?;
+        if parsed.status != status::SUCCESS {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send-buf complete non-success status",
+            });
+        }
+        if parsed.section_size < NETVSC_MTU_MIN {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send-buf section_size < MTU_MIN",
+            });
+        }
+        let count = (size as u32) / parsed.section_size;
+        if count == 0 {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send-buf section_size larger than buffer",
+            });
+        }
+        log::info!(
+            "netvsp: send-buf established: section_size={}, count={}",
+            parsed.section_size,
+            count,
+        );
+
+        self.send_section_size = parsed.section_size;
+        self.send_section_count = count;
+        self.send_buf = Some(buf);
+        Ok(())
+    }
+
     /// The negotiated version, converted back to the typed enum.
     /// Errors if negotiation hasn't happened yet.
     pub fn version_typed(&self) -> Result<Version> {
@@ -772,6 +1001,18 @@ impl Netvsp {
             v if v == Version::V61 as u32 => Ok(Version::V61),
             _ => Err(Error::VersionMismatch),
         }
+    }
+
+    /// Section size reported by the host for the receive buffer.
+    /// Zero until [`Self::establish_recv_buffer`] succeeds.
+    pub fn recv_section_size(&self) -> u32 {
+        self.recv_section_size
+    }
+
+    /// Section size reported by the host for the send buffer.
+    /// Zero until [`Self::establish_send_buffer`] succeeds.
+    pub fn send_section_size(&self) -> u32 {
+        self.send_section_size
     }
 
     /// Recover the underlying channel for closing.
@@ -856,4 +1097,51 @@ impl Netvsp {
         }
         tid
     }
+}
+
+/// Allocate a page-aligned buffer of `size` bytes, register it as a
+/// GPADL on `channel_id`, and return an [`OwnedBuf`] carrying the
+/// pointer + gpadl handle.
+///
+/// `size` must be a multiple of 4096. Uses opentmk's static heap via
+/// `alloc::alloc::alloc_zeroed`.
+fn allocate_gpadl_buffer<C: HypercallTrait>(
+    ctx: &mut C,
+    channel_id: crate::protocol::ChannelId,
+    size: usize,
+) -> Result<OwnedBuf> {
+    if size % 4096 != 0 || size == 0 {
+        return Err(Error::Parse {
+            ty: None,
+            reason: "GPADL buffer size must be a positive multiple of 4096",
+        });
+    }
+    let layout = core::alloc::Layout::from_size_align(size, 4096).map_err(|_| Error::Parse {
+        ty: None,
+        reason: "GPADL buffer layout invalid",
+    })?;
+    // SAFETY: layout is a validated non-zero page-aligned request.
+    // The pointer is never freed — the host holds it for the
+    // lifetime of the channel.
+    #[expect(unsafe_code, reason = "page-aligned allocation for GPADL registration")]
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return Err(Error::Parse {
+            ty: None,
+            reason: "GPADL buffer allocation failed",
+        });
+    }
+    let base_gpa = ptr as u64;
+
+    let pfn_count = size / 4096;
+    let mut pfns: Vec<u64> = Vec::with_capacity(pfn_count);
+    for i in 0..pfn_count {
+        pfns.push((base_gpa + (i * 4096) as u64) >> 12);
+    }
+    let gpadl = crate::gpadl::establish_gpadl(ctx, channel_id, size as u32, &pfns)?;
+    Ok(OwnedBuf {
+        ptr,
+        len: size,
+        gpadl,
+    })
 }
