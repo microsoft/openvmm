@@ -417,15 +417,21 @@ where
         run: F,
     ) -> SimpleTest<A, impl 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>> {
         SimpleTest::new_sync(leaf_name, resolve, move |params, artifacts| {
-            // Catch the panic inside the pool so that a panicking test returns
-            // control to it, letting it drive detached diagnostic tasks to
-            // completion before the panic propagates.
-            let r = DefaultPool::run_with(async |driver| {
-                AssertUnwindSafe(run(params, driver, artifacts))
-                    .catch_unwind()
-                    .await
-            });
-            match r {
+            let mut pool = DefaultPool::named(std::thread::current().name().unwrap_or(leaf_name));
+            let driver = pool.driver();
+            // The inner catch keeps a panicking test body from unwinding through
+            // the pool; the outer one catches panics raised by spawned tasks,
+            // such as the VM's timeout watchdog.
+            let r = catch_unwind(AssertUnwindSafe(|| {
+                pool.run_until(
+                    AssertUnwindSafe(run(params, driver.clone(), artifacts)).catch_unwind(),
+                )
+            }));
+            // Let the diagnostic tasks the VM spawns as it is dropped finish
+            // before the failure is reported.
+            drop(driver);
+            pool.run();
+            match r.and_then(|r| r) {
                 Ok(r) => r,
                 Err(panic) => std::panic::resume_unwind(panic),
             }
