@@ -836,3 +836,49 @@ pub struct GpaRange {
     pub byte_offset: u32,
     // Followed by a variable number of PFNs (`[u64; N]`) on the wire.
 }
+
+/// Extended header sitting between the [`PacketDescriptor`] and the
+/// payload for `VM_PKT_DATA_USING_GPA_DIRECT` packets. Followed by
+/// `range_count` [`GpaRange`]s each followed by their PFN list.
+///
+/// Matches `vmbus_ring::GpaDirectHeader` in openvmm.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct GpaDirectHeader {
+    /// Reserved on the wire — may carry garbage on receive per
+    /// openvmm's comment; must be zero on send.
+    pub reserved: u32,
+    /// Number of `GpaRange` records that follow.
+    pub range_count: u32,
+}
+
+/// Extended header on `VM_PKT_DATA_USING_XFER_PAGES` packets, sitting
+/// between the [`PacketDescriptor`] and the payload. Followed by
+/// `range_count` [`TransferPageRange`] records.
+///
+/// Matches `vmbus_ring::TransferPageHeader` in openvmm.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct TransferPageHeader {
+    /// Identifies the transfer-page set (recv buffer). NVSP hosts
+    /// echo the guest-chosen `NETVSC_RECEIVE_BUFFER_ID`.
+    pub transfer_page_set_id: u16,
+    /// Reserved — may carry garbage.
+    pub reserved: u16,
+    /// Number of `TransferPageRange` records that follow.
+    pub range_count: u32,
+}
+
+/// One entry in a `VM_PKT_DATA_USING_XFER_PAGES` packet describing
+/// where in the recv buffer the host wrote a single sub-message.
+///
+/// Matches `vmbus_ring::TransferPageRange` in openvmm.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct TransferPageRange {
+    /// Length of the sub-message in bytes.
+    pub byte_count: u32,
+    /// Offset from the start of the recv buffer where the sub-message
+    /// lives.
+    pub byte_offset: u32,
+}

@@ -1837,6 +1837,78 @@ mod ring_tests {
         let write_idx = mem.control()[0].load(core::sync::atomic::Ordering::Relaxed);
         assert_eq!(write_idx, 32);
     }
+
+    /// `write_gpa_direct` builds the correct on-wire layout:
+    /// descriptor, GpaDirectHeader, GpaRange, PFN list, then payload.
+    #[test]
+    fn write_gpa_direct_layout() {
+        use crate::protocol::{GpaDirectHeader, GpaRange};
+        use crate::ring::RingMem;
+
+        let (send, recv) = pair(4096);
+        let pfns = [0x1000u64, 0x1001, 0x1002];
+        let byte_count = 3 * 4096;
+        let byte_offset = 0;
+        let payload = b"nvsp-inline";
+        let mut flags = PacketFlags::new();
+        flags.set_request_completion(true);
+        send.write_gpa_direct(&pfns, byte_offset, byte_count, payload, flags, 42)
+            .unwrap();
+
+        // Descriptor sanity: type = 0x9 (GPA_DIRECT), tid = 42.
+        let mut buf = [0u8; 256];
+        let pkt = recv.read(&mut buf).unwrap();
+        assert_eq!(
+            pkt.descriptor.packet_type,
+            PacketType::VM_PKT_DATA_USING_GPA_DIRECT
+        );
+        assert_eq!(pkt.descriptor.transaction_id, 42);
+        assert_eq!(pkt.descriptor.flags.request_completion(), true);
+
+        // ext_header_len = 8 (hdr) + 8 (range) + 3*8 (pfns) = 40.
+        assert_eq!(pkt.ext_header_len, 40);
+
+        // Payload should be the inline "nvsp-inline" (padded to 8).
+        assert_eq!(&pkt.payload[..payload.len()], payload);
+
+        // Parse the ext header out of buf.
+        let (hdr, _) = GpaDirectHeader::read_from_prefix(&buf).unwrap();
+        assert_eq!(hdr.reserved, 0);
+        assert_eq!(hdr.range_count, 1);
+
+        let (rng, _) = GpaRange::read_from_prefix(&buf[8..]).unwrap();
+        assert_eq!(rng.byte_count, byte_count);
+        assert_eq!(rng.byte_offset, byte_offset);
+
+        // PFNs follow.
+        for (i, &expected) in pfns.iter().enumerate() {
+            let off = 16 + i * 8;
+            let actual = u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
+            assert_eq!(actual, expected);
+        }
+    }
+
+    /// write_gpa_direct rejects empty PFN lists and oversized byte
+    /// counts.
+    #[test]
+    fn write_gpa_direct_validates_inputs() {
+        let (send, _recv) = pair(4096);
+        // Empty PFN list.
+        assert!(
+            send.write_gpa_direct(&[], 0, 0, b"", PacketFlags::new(), 0)
+                .is_err()
+        );
+        // byte_count > PFN range.
+        assert!(
+            send.write_gpa_direct(&[0x1000], 0, 4097, b"", PacketFlags::new(), 0)
+                .is_err()
+        );
+        // byte_count <= PFN range should succeed.
+        assert!(
+            send.write_gpa_direct(&[0x1000], 0, 4096, b"", PacketFlags::new(), 0)
+                .is_ok()
+        );
+    }
 }
 
 /// NVSP wire-type layout and encoder tests.

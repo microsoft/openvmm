@@ -452,6 +452,90 @@ impl<M: RingMem> SendRing<M> {
         )
     }
 
+    /// Post a `VM_PKT_DATA_USING_GPA_DIRECT` (type 0x9) packet with
+    /// a single-range GPA-direct extended header referencing an
+    /// external, contiguous buffer via its guest PFNs.
+    ///
+    /// Wire layout after descriptor:
+    /// ```text
+    /// GpaDirectHeader { reserved: 0, range_count: 1 }
+    /// GpaRange { byte_count, byte_offset }
+    /// u64 pfns[]
+    /// ```
+    /// then the (optional) `payload` bytes, then footer.
+    ///
+    /// * `pfns` — page frame numbers of the external data buffer,
+    ///   in order. Must not be empty.
+    /// * `byte_offset` — byte offset into the first PFN's page where
+    ///   the data starts (typically 0 for page-aligned buffers).
+    /// * `byte_count` — total byte length of the external data. Must
+    ///   be `<= pfns.len() * 4096 - byte_offset`.
+    /// * `payload` — additional inline payload (typically the NVSP
+    ///   `Nvsp1MsgSendRndisPacket` header). Empty payload is fine.
+    ///
+    /// Called with `flags.set_request_completion(true)` when a
+    /// completion is expected.
+    pub fn write_gpa_direct(
+        &self,
+        pfns: &[u64],
+        byte_offset: u32,
+        byte_count: u32,
+        payload: &[u8],
+        flags: PacketFlags,
+        transaction_id: u64,
+    ) -> Result<bool> {
+        if pfns.is_empty() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "write_gpa_direct requires >= 1 PFN",
+            });
+        }
+        let expected_bytes = pfns.len() as u64 * 4096 - byte_offset as u64;
+        if (byte_count as u64) > expected_bytes {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "write_gpa_direct byte_count exceeds PFN range",
+            });
+        }
+
+        // Build the extended header on the stack — max reasonable
+        // size is `range_count=1, PFN count < 4` for our RNDIS use
+        // (single-page control message). Cap at 32 PFNs = ~264 bytes.
+        //
+        // Header layout:
+        //   GpaDirectHeader (8B) + GpaRange (8B) + PFNs (8B × N)
+        const MAX_PFNS: usize = 32;
+        if pfns.len() > MAX_PFNS {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "write_gpa_direct pfn list too long for stack buffer",
+            });
+        }
+        let mut ext_buf = [0u8; 16 + 8 * MAX_PFNS];
+        let hdr = crate::protocol::GpaDirectHeader {
+            reserved: 0,
+            range_count: 1,
+        };
+        let rng = crate::protocol::GpaRange {
+            byte_count,
+            byte_offset,
+        };
+        ext_buf[..8].copy_from_slice(hdr.as_bytes());
+        ext_buf[8..16].copy_from_slice(rng.as_bytes());
+        for (i, &pfn) in pfns.iter().enumerate() {
+            let off = 16 + i * 8;
+            ext_buf[off..off + 8].copy_from_slice(&pfn.to_le_bytes());
+        }
+        let ext_len = 16 + pfns.len() * 8;
+        self.write_packet(
+            PacketType::VM_PKT_DATA_USING_GPA_DIRECT,
+            &ext_buf[..ext_len],
+            payload,
+            flags,
+            transaction_id,
+        )
+    }
+
     /// Post a packet of arbitrary type. `ext_header` is placed between
     /// the descriptor and payload (used e.g. for GPA-direct headers).
     /// Returns whether the caller should signal.

@@ -415,8 +415,93 @@ pub struct Nvsp2MsgSendNdisConfig {
 }
 
 // ---------------------------------------------------------------------
-// Helpers
+// RNDIS wire types (Phase 3)
 // ---------------------------------------------------------------------
+
+/// RNDIS message-type identifiers. See openvmm
+/// `rndisprot.rs::MESSAGE_TYPE_*` and MS-RNDIS §2.2.
+pub mod rndis {
+    #![expect(missing_docs, reason = "self-documenting constants from MS-RNDIS")]
+
+    // Request messages.
+    pub const MESSAGE_TYPE_PACKET_MSG: u32 = 0x0000_0001;
+    pub const MESSAGE_TYPE_INITIALIZE_MSG: u32 = 0x0000_0002;
+    pub const MESSAGE_TYPE_HALT_MSG: u32 = 0x0000_0003;
+    pub const MESSAGE_TYPE_QUERY_MSG: u32 = 0x0000_0004;
+    pub const MESSAGE_TYPE_SET_MSG: u32 = 0x0000_0005;
+
+    // Response messages.
+    pub const MESSAGE_TYPE_INITIALIZE_CMPLT: u32 = 0x8000_0002;
+    pub const MESSAGE_TYPE_QUERY_CMPLT: u32 = 0x8000_0004;
+    pub const MESSAGE_TYPE_SET_CMPLT: u32 = 0x8000_0005;
+
+    pub const STATUS_SUCCESS: u32 = 0x0000_0000;
+
+    // RNDIS init version we advertise.
+    pub const MAJOR_VERSION: u32 = 1;
+    pub const MINOR_VERSION: u32 = 0;
+
+    /// Max transfer size we request in `InitializeRequest`. 16 KiB
+    /// matches puppet + Linux.
+    pub const MAX_TRANSFER_SIZE: u32 = 0x4000;
+}
+
+/// Common 8-byte header on every RNDIS message.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct RndisMessageHeader {
+    /// One of [`rndis`] `MESSAGE_TYPE_*`.
+    pub message_type: u32,
+    /// Total message length in bytes including this header.
+    pub message_length: u32,
+}
+
+/// `MESSAGE_TYPE_INITIALIZE_MSG` body (VSC → VSP), sent inside a
+/// `V1_SEND_RNDIS_PKT(RMC_CONTROL)` on the netvsp channel.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct RndisInitializeRequest {
+    /// Guest-chosen id echoed back in the completion.
+    pub request_id: u32,
+    /// RNDIS major version — we advertise
+    /// [`rndis::MAJOR_VERSION`].
+    pub major_version: u32,
+    /// RNDIS minor version.
+    pub minor_version: u32,
+    /// Max transfer size we support (bytes).
+    pub max_transfer_size: u32,
+}
+
+/// `MESSAGE_TYPE_INITIALIZE_CMPLT` body (VSP → VSC), delivered via
+/// `VM_PKT_DATA_USING_XFER_PAGES` referencing the recv buffer.
+///
+/// Field layout matches openvmm `rndisprot::InitializeComplete`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct RndisInitializeComplete {
+    /// Echoes the `request_id` from the paired request.
+    pub request_id: u32,
+    /// [`rndis::STATUS_SUCCESS`] on success.
+    pub status: u32,
+    /// RNDIS major version the host is speaking.
+    pub major_version: u32,
+    /// RNDIS minor version.
+    pub minor_version: u32,
+    /// `DF_CONNECTIONLESS` etc.
+    pub device_flags: u32,
+    /// Medium — 0 for 802.3.
+    pub medium: u32,
+    /// Max RNDIS packets per netvsp message.
+    pub max_packets_per_message: u32,
+    /// Max transfer size the VSP accepts.
+    pub max_transfer_size: u32,
+    /// Log2 alignment factor for RNDIS packets.
+    pub packet_alignment_factor: u32,
+    /// Address-family list offset (unused for Ethernet).
+    pub af_list_offset: u32,
+    /// Address-family list size (unused).
+    pub af_list_size: u32,
+}
 
 /// Encode a NVSP message: header + body copied into a
 /// zero-padded fixed-size frame ([`frame_size_for`]).
@@ -1013,6 +1098,309 @@ impl Netvsp {
     /// Zero until [`Self::establish_send_buffer`] succeeds.
     pub fn send_section_size(&self) -> u32 {
         self.send_section_size
+    }
+
+    /// Send RNDIS `Initialize` and wait for the paired
+    /// `RNDIS_INITIALIZE_COMPLETE`.
+    ///
+    /// Sequence per §7 phase 3 of the design doc:
+    /// 1. Allocate a page-aligned buffer, write
+    ///    `RndisMessageHeader + RndisInitializeRequest`.
+    /// 2. Send `V1_SEND_RNDIS_PKT(RMC_CONTROL)` via
+    ///    `SendRing::write_gpa_direct` with the RNDIS bytes carried
+    ///    as external GPA-direct data. Completion-requested flag set.
+    /// 3. Wait for `V1_SEND_RNDIS_PKT_COMPLETE` — acks the NVSP
+    ///    resource, NOT the RNDIS init itself.
+    /// 4. Wait for the RNDIS response arriving as a
+    ///    `VM_PKT_DATA_USING_XFER_PAGES` referencing our recv buffer.
+    /// 5. Parse the transfer-page header + range, read
+    ///    `RndisInitializeComplete` from recv_buf + range.byte_offset,
+    ///    verify `status == STATUS_SUCCESS`.
+    /// 6. Send `VM_PKT_COMP` back so the host can free its transfer
+    ///    pages.
+    ///
+    /// Requires [`Self::establish_recv_buffer`] to have succeeded
+    /// (we need the recv buffer to receive the completion into).
+    pub fn rndis_init<C: HypercallTrait>(&mut self, ctx: &mut C) -> Result<()> {
+        let recv_buf = self.recv_buf.as_ref().ok_or(Error::Parse {
+            ty: None,
+            reason: "rndis_init requires establish_recv_buffer first",
+        })?;
+        let recv_base = recv_buf.ptr;
+        let recv_len = recv_buf.len;
+
+        // Allocate a page-aligned RNDIS message buffer. Total is
+        // small (8 + 16 = 24 bytes) but we take a whole page for
+        // clean GPA-direct addressing.
+        let rndis_layout = core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| {
+            Error::Parse {
+                ty: None,
+                reason: "rndis buffer layout",
+            }
+        })?;
+        // SAFETY: layout is a validated single-page allocation.
+        // Kept alive at least until we've received the completion.
+        #[expect(unsafe_code, reason = "page-aligned RNDIS message allocation")]
+        let rndis_ptr = unsafe { alloc::alloc::alloc_zeroed(rndis_layout) };
+        if rndis_ptr.is_null() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "rndis buffer alloc failed",
+            });
+        }
+
+        // Build RNDIS message: header + InitializeRequest.
+        let request_id: u32 = 1;
+        let hdr = RndisMessageHeader {
+            message_type: rndis::MESSAGE_TYPE_INITIALIZE_MSG,
+            message_length: (core::mem::size_of::<RndisMessageHeader>()
+                + core::mem::size_of::<RndisInitializeRequest>())
+                as u32,
+        };
+        let req = RndisInitializeRequest {
+            request_id,
+            major_version: rndis::MAJOR_VERSION,
+            minor_version: rndis::MINOR_VERSION,
+            max_transfer_size: rndis::MAX_TRANSFER_SIZE,
+        };
+        let hdr_bytes = hdr.as_bytes();
+        let req_bytes = req.as_bytes();
+        // SAFETY: `rndis_ptr` is a valid 4 KiB allocation and the
+        // combined write is 24 bytes.
+        #[expect(unsafe_code, reason = "copy RNDIS bytes into own buffer")]
+        unsafe {
+            core::ptr::copy_nonoverlapping(hdr_bytes.as_ptr(), rndis_ptr, hdr_bytes.len());
+            core::ptr::copy_nonoverlapping(
+                req_bytes.as_ptr(),
+                rndis_ptr.add(hdr_bytes.len()),
+                req_bytes.len(),
+            );
+        }
+        let rndis_total_bytes = (hdr_bytes.len() + req_bytes.len()) as u32;
+        log::info!(
+            "netvsp: rndis buffer at GPA {:#x}, {} bytes",
+            rndis_ptr as u64,
+            rndis_total_bytes
+        );
+
+        // Build the NVSP wrapper.
+        let mut nvsp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+        let n = encode_message(
+            msg_type::V1_SEND_RNDIS_PKT,
+            &Nvsp1MsgSendRndisPacket {
+                channel_type: RMC_CONTROL,
+                send_buf_section_index: NETVSC_INVALID_INDEX,
+                send_buf_section_size: 0,
+            },
+            self.version_typed()?,
+            &mut nvsp_frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode SEND_RNDIS_PKT",
+        })?;
+
+        // Send GPA-direct with completion.
+        let tid = self.alloc_transaction_id();
+        let mut flags = PacketFlags::new();
+        flags.set_request_completion(true);
+        let rndis_gpa = rndis_ptr as u64;
+        let pfns = [rndis_gpa >> 12];
+        let offset = (rndis_gpa & 0xFFF) as u32;
+        if self.channel.state() != ChannelState::Open {
+            return Err(Error::Rescinded);
+        }
+        let need_signal = self.send.write_gpa_direct(
+            &pfns,
+            offset,
+            rndis_total_bytes,
+            &nvsp_frame[..n],
+            flags,
+            tid,
+        )?;
+        let _ = need_signal;
+        self.channel.signal(ctx)?;
+        log::info!("netvsp: RNDIS INITIALIZE sent (tid={:#x})", tid);
+
+        // Wait for the two responses on the recv ring:
+        // (a) VM_PKT_COMP with our tid → acks the NVSP send.
+        // (b) VM_PKT_DATA_USING_XFER_PAGES → carries
+        //     RNDIS_INITIALIZE_COMPLETE inside the recv buffer.
+        // They can arrive in either order in principle; puppet
+        // observed nvsp completion first, then xfer-page. We accept
+        // both orders.
+        let mut got_nvsp_comp = false;
+        let mut got_rndis_response = false;
+        let mut buf = [0u8; 512];
+        for _ in 0..DEFAULT_MAX_POLLS {
+            match self.recv.read(&mut buf) {
+                Ok(pkt) => {
+                    match pkt.descriptor.packet_type {
+                        crate::protocol::PacketType::VM_PKT_COMP
+                            if pkt.descriptor.transaction_id == tid =>
+                        {
+                            log::info!(
+                                "netvsp: got V1_SEND_RNDIS_PKT_COMPLETE (tid={:#x})",
+                                tid
+                            );
+                            got_nvsp_comp = true;
+                        }
+                        crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                            // Parse: pkt.buf starts at ext_header,
+                            // then payload. buf[..ext_header_len] is
+                            // the transfer-page header + ranges.
+                            let ext_len = pkt.ext_header_len;
+                            let host_tid = pkt.descriptor.transaction_id;
+                            let (xhdr, _) =
+                                crate::protocol::TransferPageHeader::read_from_prefix(&buf)
+                                    .map_err(|_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse TransferPageHeader",
+                                    })?;
+                            log::info!(
+                                "netvsp: xfer-page packet: set_id={:#x} range_count={} host_tid={:#x}",
+                                xhdr.transfer_page_set_id,
+                                xhdr.range_count,
+                                host_tid
+                            );
+                            if xhdr.transfer_page_set_id != NETVSC_RECEIVE_BUFFER_ID {
+                                log::warn!(
+                                    "netvsp: xfer-page set_id={:#x} != NETVSC_RECEIVE_BUFFER_ID",
+                                    xhdr.transfer_page_set_id
+                                );
+                                continue;
+                            }
+                            if xhdr.range_count == 0 {
+                                continue;
+                            }
+                            // First range describes the RNDIS message.
+                            let (range0, _) = crate::protocol::TransferPageRange::read_from_prefix(
+                                &buf[8..],
+                            )
+                            .map_err(|_| Error::Parse {
+                                ty: None,
+                                reason: "parse TransferPageRange",
+                            })?;
+                            log::info!(
+                                "netvsp: xfer-page range0: offset={:#x} count={}",
+                                range0.byte_offset,
+                                range0.byte_count,
+                            );
+                            if (range0.byte_offset as usize + range0.byte_count as usize)
+                                > recv_len
+                            {
+                                return Err(Error::Parse {
+                                    ty: None,
+                                    reason: "xfer-page range out of recv buf",
+                                });
+                            }
+                            // SAFETY: recv_base + byte_offset..
+                            // +byte_count is within the recv buffer
+                            // we own; single-threaded UEFI.
+                            #[expect(unsafe_code, reason = "read RNDIS response from recv buffer")]
+                            let rndis_msg = unsafe {
+                                core::slice::from_raw_parts(
+                                    recv_base.add(range0.byte_offset as usize),
+                                    range0.byte_count as usize,
+                                )
+                            };
+                            let (rhdr, rest) = RndisMessageHeader::read_from_prefix(rndis_msg)
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse RndisMessageHeader",
+                                })?;
+                            log::info!(
+                                "netvsp: RNDIS response type={:#x} len={}",
+                                rhdr.message_type,
+                                rhdr.message_length,
+                            );
+                            if rhdr.message_type != rndis::MESSAGE_TYPE_INITIALIZE_CMPLT {
+                                return Err(Error::Parse {
+                                    ty: None,
+                                    reason: "expected RNDIS_INITIALIZE_CMPLT",
+                                });
+                            }
+                            let (comp, _) = RndisInitializeComplete::read_from_prefix(rest)
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse RndisInitializeComplete",
+                                })?;
+                            log::info!(
+                                "netvsp: RNDIS init complete status={:#x} request_id={:#x} \
+                                 major={} minor={} device_flags={:#x} medium={} \
+                                 max_packets={} max_transfer={}",
+                                comp.status,
+                                comp.request_id,
+                                comp.major_version,
+                                comp.minor_version,
+                                comp.device_flags,
+                                comp.medium,
+                                comp.max_packets_per_message,
+                                comp.max_transfer_size,
+                            );
+                            if comp.status != rndis::STATUS_SUCCESS {
+                                return Err(Error::Parse {
+                                    ty: None,
+                                    reason: "RNDIS init status != SUCCESS",
+                                });
+                            }
+                            if comp.request_id != request_id {
+                                return Err(Error::Parse {
+                                    ty: None,
+                                    reason: "RNDIS response request_id mismatch",
+                                });
+                            }
+
+                            // Send VM_PKT_COMP back so the host can
+                            // free its transfer pages. Payload =
+                            // Nvsp1MsgSendRndisPacketComplete { SUCCESS }
+                            // per puppet's convention.
+                            let mut comp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+                            let m = encode_message(
+                                msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
+                                &Nvsp1MsgSendRndisPacketComplete {
+                                    status: status::SUCCESS,
+                                },
+                                self.version_typed()?,
+                                &mut comp_frame,
+                            )
+                            .map_err(|_| Error::Parse {
+                                ty: None,
+                                reason: "encode V1_SEND_RNDIS_PKT_COMPLETE",
+                            })?;
+                            self.send.write_completion(&comp_frame[..m], host_tid)?;
+                            self.channel.signal(ctx)?;
+                            log::info!(
+                                "netvsp: xfer-page COMP sent back (host_tid={:#x})",
+                                host_tid
+                            );
+                            got_rndis_response = true;
+                            let _ = ext_len;
+                        }
+                        _ => {
+                            log::debug!(
+                                "netvsp: unexpected packet during rndis_init: type={:#x} tid={:#x}",
+                                pkt.descriptor.packet_type.0,
+                                pkt.descriptor.transaction_id,
+                            );
+                        }
+                    }
+                    if got_nvsp_comp && got_rndis_response {
+                        return Ok(());
+                    }
+                }
+                Err(Error::RingEmpty) => {
+                    core::hint::spin_loop();
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        log::warn!(
+            "netvsp: rndis_init timed out (got_nvsp_comp={} got_rndis_response={})",
+            got_nvsp_comp,
+            got_rndis_response
+        );
+        Err(Error::Timeout)
     }
 
     /// Recover the underlying channel for closing.
