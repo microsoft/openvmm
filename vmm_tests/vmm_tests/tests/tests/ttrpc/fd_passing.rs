@@ -18,7 +18,7 @@ use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
 use guid::Guid;
 use openvmm_ttrpc_vmservice as vmservice;
-use pal_async::DefaultPool;
+use pal_async::DefaultDriver;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::AsSockRef;
@@ -50,112 +50,111 @@ petri::test!(fd_passing_tap, |resolver| {
     Some([openvmm.erase(), kernel.erase(), initrd.erase()])
 });
 
-fn fd_passing_tap(
+async fn fd_passing_tap(
     params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path]: [ResolvedArtifact; 3],
 ) -> anyhow::Result<()> {
     let tempdir = tempfile::tempdir()?;
     let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
 
-    DefaultPool::run_with(async |driver| {
-        let (mut child, client, _stderr_task) =
-            super::launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, _stderr_task) =
+        super::launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
-        // Open a dedicated fd-passing connection and exercise the wire protocol
-        // against the live server. Async IO keeps the single-threaded executor
-        // free to run co-scheduled tasks (e.g. the stderr pump).
-        let mut fd_conn = PolledSocket::connect_unix(&driver, &socket_path)
-            .await
-            .context("connecting fd-passing socket")?;
-        handshake(&mut fd_conn)
-            .await
-            .context("fd-passing handshake")?;
+    // Open a dedicated fd-passing connection and exercise the wire protocol
+    // against the live server. Async IO keeps the single-threaded executor
+    // free to run co-scheduled tasks (e.g. the stderr pump).
+    let mut fd_conn = PolledSocket::connect_unix(&driver, &socket_path)
+        .await
+        .context("connecting fd-passing socket")?;
+    handshake(&mut fd_conn)
+        .await
+        .context("fd-passing handshake")?;
 
-        // A real (but non-tap) descriptor to register: one end of a socket
-        // pair. The other end is held open so the fd stays valid.
-        let (registered_fd, _keepalive) = UnixStream::pair()?;
-        let registered_fd = registered_fd.as_fd();
+    // A real (but non-tap) descriptor to register: one end of a socket
+    // pair. The other end is held open so the fd stays valid.
+    let (registered_fd, _keepalive) = UnixStream::pair()?;
+    let registered_fd = registered_fd.as_fd();
 
-        // Register succeeds.
-        let (status, msg) = register(&mut fd_conn, "t0", registered_fd).await?;
-        anyhow::ensure!(status == 0, "register 't0' failed: {msg}");
-        // Registering the same name again fails; the connection stays usable.
-        let (status, _) = register(&mut fd_conn, "t0", registered_fd).await?;
-        anyhow::ensure!(status != 0, "duplicate register unexpectedly succeeded");
-        // Registering without an attached descriptor fails.
-        let (status, _) = register_without_fd(&mut fd_conn, "t2").await?;
-        anyhow::ensure!(status != 0, "register without fd unexpectedly succeeded");
-        // Deregistering an unknown name fails.
-        let (status, _) = deregister(&mut fd_conn, "nope").await?;
-        anyhow::ensure!(
-            status != 0,
-            "deregister of unknown name unexpectedly succeeded"
-        );
-        // Deregister then re-register so 't0' is available for CreateVm below.
-        let (status, _) = deregister(&mut fd_conn, "t0").await?;
-        anyhow::ensure!(status == 0, "deregister 't0' failed");
-        let (status, msg) = register(&mut fd_conn, "t0", registered_fd).await?;
-        anyhow::ensure!(status == 0, "re-register 't0' failed: {msg}");
-        // NOTE: `fd_conn` is intentionally kept open for the rest of the test:
-        // names are dropped when the registering connection closes.
+    // Register succeeds.
+    let (status, msg) = register(&mut fd_conn, "t0", registered_fd).await?;
+    anyhow::ensure!(status == 0, "register 't0' failed: {msg}");
+    // Registering the same name again fails; the connection stays usable.
+    let (status, _) = register(&mut fd_conn, "t0", registered_fd).await?;
+    anyhow::ensure!(status != 0, "duplicate register unexpectedly succeeded");
+    // Registering without an attached descriptor fails.
+    let (status, _) = register_without_fd(&mut fd_conn, "t2").await?;
+    anyhow::ensure!(status != 0, "register without fd unexpectedly succeeded");
+    // Deregistering an unknown name fails.
+    let (status, _) = deregister(&mut fd_conn, "nope").await?;
+    anyhow::ensure!(
+        status != 0,
+        "deregister of unknown name unexpectedly succeeded"
+    );
+    // Deregister then re-register so 't0' is available for CreateVm below.
+    let (status, _) = deregister(&mut fd_conn, "t0").await?;
+    anyhow::ensure!(status == 0, "deregister 't0' failed");
+    let (status, msg) = register(&mut fd_conn, "t0", registered_fd).await?;
+    anyhow::ensure!(status == 0, "re-register 't0' failed: {msg}");
+    // NOTE: `fd_conn` is intentionally kept open for the rest of the test:
+    // names are dropped when the registering connection closes.
 
-        // Negative case: an unregistered `fd_name` fails to resolve during
-        // CreateVm, proving the proto -> registry resolution path is wired in.
-        let err = client
-            .call()
-            .start(
-                vmservice::Vm::CreateVm,
-                create_vm_request(&kernel_path, &initrd_path, "does-not-exist"),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            err.message.contains("failed to resolve tap fd"),
-            "expected an fd resolution error, got: {}",
-            err.message
-        );
+    // Negative case: an unregistered `fd_name` fails to resolve during
+    // CreateVm, proving the proto -> registry resolution path is wired in.
+    let err = client
+        .call()
+        .start(
+            vmservice::Vm::CreateVm,
+            create_vm_request(&kernel_path, &initrd_path, "does-not-exist"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("failed to resolve tap fd"),
+        "expected an fd resolution error, got: {}",
+        err.message
+    );
 
-        // Positive case: a `fd_name` registered on the *fd-passing* connection
-        // resolves from this *separate* TTRPC connection, proving both share one
-        // global registry. The descriptor is a socket pair, not a real tap, so
-        // VM bring-up still fails -- but past resolution, with a different
-        // error (never the "failed to resolve" error above).
-        let result = client
-            .call()
-            .start(
-                vmservice::Vm::CreateVm,
-                create_vm_request(&kernel_path, &initrd_path, "t0"),
-            )
-            .await;
-        match result {
-            // Resolution succeeded and the VM was created; tear it back down.
-            Ok(()) => {
-                let _ = client.call().start(vmservice::Vm::TeardownVm, ()).await;
-            }
-            Err(err) => assert!(
-                !err.message.contains("failed to resolve tap fd"),
-                "registered fd_name should have resolved, got: {}",
-                err.message
-            ),
+    // Positive case: a `fd_name` registered on the *fd-passing* connection
+    // resolves from this *separate* TTRPC connection, proving both share one
+    // global registry. The descriptor is a socket pair, not a real tap, so
+    // VM bring-up still fails -- but past resolution, with a different
+    // error (never the "failed to resolve" error above).
+    let result = client
+        .call()
+        .start(
+            vmservice::Vm::CreateVm,
+            create_vm_request(&kernel_path, &initrd_path, "t0"),
+        )
+        .await;
+    match result {
+        // Resolution succeeded and the VM was created; tear it back down.
+        Ok(()) => {
+            let _ = client.call().start(vmservice::Vm::TeardownVm, ()).await;
         }
+        Err(err) => assert!(
+            !err.message.contains("failed to resolve tap fd"),
+            "registered fd_name should have resolved, got: {}",
+            err.message
+        ),
+    }
 
-        // Shut down openvmm and confirm a clean exit.
-        let _ = client.call().start(vmservice::Vm::Quit, ()).await;
-        drop(fd_conn);
+    // Shut down openvmm and confirm a clean exit.
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+    drop(fd_conn);
 
-        let exit_status = child.wait().await?;
-        tracing::info!(?exit_status, "openvmm exited");
-        assert!(
-            exit_status.success(),
-            "openvmm exited abnormally: {exit_status:?}"
-        );
-        assert!(
-            !pidfile_path.exists(),
-            "pidfile should be removed after exit"
-        );
-        Ok(())
-    })
+    let exit_status = child.wait().await?;
+    tracing::info!(?exit_status, "openvmm exited");
+    assert!(
+        exit_status.success(),
+        "openvmm exited abnormally: {exit_status:?}"
+    );
+    assert!(
+        !pidfile_path.exists(),
+        "pidfile should be removed after exit"
+    );
+    Ok(())
 }
 
 /// Sends the client handshake and validates the server's reply.
