@@ -22,7 +22,12 @@
 //!
 //! where `len = total bytes`, `offset = 0`, and `pfnI = gpa_of_page_I >> 12`.
 //!
-//! See §3/§4 (message flow) and §8.1 test 4 of `tasks/vmbus-port-design.md`.
+//! The wire encoder splits large PFN lists across a
+//! `GpadlHeader` + N `GpadlBody` messages — the header carries
+//! `HEADER_RANGE_CAPACITY_BYTES` of payload; each body carries up
+//! to `BODY_RANGE_CAPACITY_BYTES`. All messages share the same
+//! `gpadl_id`. The host acknowledges the whole batch with a single
+//! `GpadlCreated` matched by `gpadl_id`.
 
 use crate::Error;
 use crate::Result;

@@ -3,9 +3,9 @@
 
 //! Guest-side VMBus client for opentmk-invariant.
 //!
-//! This crate implements the guest half of the VMBus protocol described in
-//! `tasks/vmbus-port-design.md`. It targets `#![no_std] + alloc` and runs
-//! inside a UEFI image alongside the rest of the opentmk framework.
+//! This crate implements the guest half of the VMBus protocol. It targets
+//! `#![no_std] + alloc` and runs inside a UEFI image alongside the rest of
+//! the opentmk framework.
 //!
 //! # Scope
 //!
@@ -91,7 +91,7 @@ use opentmk::context::HypercallTrait;
 /// After this call succeeds, use [`request_offers`] to enumerate channels
 /// and [`open_channel`](channel::open_channel) to open one.
 ///
-/// See §4 of `tasks/vmbus-port-design.md` for the full sequence.
+/// Delegates to [`synic::init_synic`] and [`connection::initiate`].
 pub fn init<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
     synic::init_synic(ctx)?;
     connection::initiate(ctx)?;

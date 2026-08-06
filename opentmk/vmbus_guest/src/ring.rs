@@ -26,8 +26,9 @@
 //! ```
 //!
 //! The writer signals the host **only** on an empty → non-empty
-//! transition when `interrupt_mask == 0` (see §4 "Ring buffer
-//! conventions" of `tasks/vmbus-port-design.md`).
+//! transition when `interrupt_mask == 0`. Signalling on every
+//! packet risks Hyper-V's DoS throttling; the peer clears
+//! `interrupt_mask` to explicitly ask for the wake.
 
 use crate::Error;
 use crate::Result;
@@ -576,13 +577,15 @@ impl<M: RingMem> SendRing<M> {
         let read_idx = ctrl_out(&self.mem).load(Ordering::Acquire);
         let free = available_free(write_idx, read_idx, ring_len) as usize;
         if free < total_ring_len {
-            // Not enough room. Publish the pending_send_sz hint on our
-            // SendRing so the reader knows how much to free before
-            // signalling us — see §7.5 of the netvsp design doc. Then
-            // reload read_idx (SeqCst) and recheck; a concurrent
-            // reader may have drained between the load above and the
-            // store below. Without the recheck we could lose the
-            // wakeup and deadlock.
+            // Not enough room. Publish the pending_send_sz hint on
+            // our SendRing so the reader knows how much space we
+            // need before signalling us. Then reload read_idx
+            // (SeqCst) and recheck; a concurrent reader may have
+            // drained between the initial load above and our store
+            // below. Without the recheck we could lose the wakeup
+            // and deadlock (writer waits for signal that reader
+            // won't send because pending_send_sz wasn't visible
+            // yet when it drained).
             ctrl_pending_send(&self.mem).store(total_ring_len as u32, Ordering::SeqCst);
             let read_idx_reload = ctrl_out(&self.mem).load(Ordering::SeqCst);
             let free_reload =
@@ -788,8 +791,12 @@ pub enum SignalDecision {
 impl<M: RingMem> RecvRing<M> {
     /// Compute the signal decision for a batch of reads that
     /// advanced `read_index` by `bytes_read`. This is the
-    /// reader-side half of the `pending_send_sz` protocol described
-    /// in §7.5 of `tasks/netvsp-port-design.md`.
+    /// reader-side half of the `pending_send_sz` protocol: the
+    /// peer writer parks itself and posts a `pending_send_sz`
+    /// hint (in bytes) when its ring is full; we drain, compute
+    /// how much space is now free, and signal the writer only on
+    /// the transition from "not enough free space" to "enough
+    /// free space".
     ///
     /// Call this **after** all reads in a batch have completed and
     /// `read_index` has been published. Returns

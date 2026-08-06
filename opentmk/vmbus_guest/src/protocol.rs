@@ -9,8 +9,7 @@
 //! module is `#![no_std]`-compatible.
 //!
 //! Layouts match the authoritative Windows minkernel headers
-//! (`VmbusChannelMessages.h`, `VmbusVersions.h`) — see the design doc for
-//! citations.
+//! (`VmbusChannelMessages.h`, `VmbusVersions.h`).
 //!
 //! When adding a new field or struct, prefer copying the openvmm layout
 //! verbatim so the two stay in sync.
@@ -192,9 +191,11 @@ pub enum Version {
 }
 
 impl Version {
-    /// Version-negotiation ladder in the order we attempt it.
-    ///
-    /// See §3 of `tasks/vmbus-port-design.md`.
+    /// Version-negotiation ladder in the order we attempt it —
+    /// newest first, walking backward to Win8 (the oldest still
+    /// exchanging the `InitiateContact` format we support).
+    /// Callers post `InitiateContact` for each entry in turn until
+    /// one gets `version_supported == 1`.
     pub const NEGOTIATION_LADDER: &'static [Version] = &[
         Version::Copper,
         Version::Iron,
@@ -652,7 +653,8 @@ pub struct ModifyConnectionResponse {
 }
 
 // ---------------------------------------------------------------------------
-// hv-socket (structs-only pass, see §7 of the design doc)
+// hv-socket wire types (structs-only pass — no listen / stream API yet;
+// see `crate::hvsock` for the outbound-only helpers built on top).
 // ---------------------------------------------------------------------------
 
 open_enum! {

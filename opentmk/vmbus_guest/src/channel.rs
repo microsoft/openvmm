@@ -99,7 +99,8 @@ impl Channel {
     /// Signal the host that we've published data on the send ring.
     ///
     /// Only invokes `HvSignalEvent`; monitor-page-based signalling is
-    /// out of scope for the initial port (§4 signal-path notes).
+    /// out of scope for this port (it's a Copper+ optimisation that
+    /// avoids a hypercall by touching a shared monitor page instead).
     ///
     /// The event flag is always `0` for guest→host signals — the
     /// `event_flag` we carry on [`Channel`] is only used for the

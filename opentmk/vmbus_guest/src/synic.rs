@@ -12,8 +12,7 @@
 //!    `masked = false`.
 //! 4. Enable `SCONTROL`.
 //!
-//! Register writes go through
-//! [`HypercallTrait`]; we never touch
+//! Register writes go through [`HypercallTrait`]; we never touch
 //! the raw hypercall page ourselves. Page allocation is UEFI-specific
 //! and gated behind `cfg(target_os = "uefi")`.
 //!

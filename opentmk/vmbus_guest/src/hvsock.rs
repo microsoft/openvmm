@@ -3,7 +3,7 @@
 
 //! hv-socket wire helpers.
 //!
-//! §7 of `tasks/vmbus-port-design.md` keeps the initial pass to:
+//! Initial pass covers:
 //! * the wire structs (re-exported from [`crate::protocol`]),
 //! * an outbound `TlConnectRequest[/2]` helper, and
 //! * a callback slot for the resulting `TlConnectResult`.

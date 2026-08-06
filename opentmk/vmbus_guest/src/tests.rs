@@ -3,9 +3,10 @@
 
 //! Wire-format round-trip and layout tests.
 //!
-//! These are the "unit tests without a VM" tests from §8.1 of the design
-//! doc. Nothing here touches hypercalls; it exists purely to protect the
-//! wire types in [`crate::protocol`] from accidental layout changes.
+//! Pure computation, no hypercalls — protects the wire types in
+//! [`crate::protocol`] and the device drivers in [`crate::devices`]
+//! from accidental layout changes that would only surface at
+//! runtime against a real host.
 
 use crate::message;
 use crate::protocol::*;
@@ -183,7 +184,7 @@ fn message_parse_rejects_wrong_type() {
 }
 
 // ---------------------------------------------------------------------------
-// GPADL tests (§8.1 test 4)
+// GPADL encoder tests
 // ---------------------------------------------------------------------------
 
 mod gpadl_tests {
@@ -237,8 +238,9 @@ mod gpadl_tests {
         assert_eq!(message::peek_header(m0).unwrap(), MessageType::GPADL_HEADER);
     }
 
-    /// Exact §8.1 test 4: given P pages, we emit
-    /// `1 + ceil((range_bytes - HEADER_CAP) / BODY_CAP)` messages.
+    /// Given P pages, the encoder emits
+    /// `1 + ceil((range_bytes - HEADER_CAP) / BODY_CAP)` messages
+    /// (1 for the header, rest for continuation bodies).
     #[test]
     fn message_count_by_pages() {
         for pages in [1usize, 10, 26, 27, 28, 60, 100, 1000] {
@@ -1533,7 +1535,7 @@ mod synic_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Ring buffer tests (§8.1 test 3)
+// Ring buffer tests
 // ---------------------------------------------------------------------------
 
 mod ring_tests {
@@ -1941,7 +1943,8 @@ mod netvsp_tests {
 
     #[test]
     fn wire_body_sizes() {
-        // Match the sizes documented in tasks/netvsp-port-design.md §4.
+        // Sizes match Windows `nvspprotocol.h` /
+        // openvmm `vm/devices/net/netvsp/src/protocol.rs`.
         assert_eq!(size_of::<netvsp::MessageHeader>(), 4);
         assert_eq!(size_of::<netvsp::NvspMsgInit>(), 8);
         assert_eq!(size_of::<netvsp::NvspMsgInitComplete>(), 12);

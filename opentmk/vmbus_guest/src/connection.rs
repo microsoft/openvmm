@@ -4,9 +4,11 @@
 //! `InitiateContact` / `VersionResponse` negotiation and top-level
 //! connection state.
 //!
-//! Implements the version-negotiation ladder from §3 of
-//! `tasks/vmbus-port-design.md` and `RequestOffers` /
-//! `AllOffersDelivered` enumeration.
+//! Implements the version-negotiation ladder (walk newest → oldest
+//! version, register a completion, post `InitiateContact`, wait for
+//! `VersionResponse`; if `version_supported == 0`, fall through to
+//! the next version) plus `RequestOffers` / `AllOffersDelivered`
+//! enumeration.
 //!
 //! # Structure
 //!

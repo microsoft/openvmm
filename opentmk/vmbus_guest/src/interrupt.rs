@@ -199,9 +199,9 @@ pub fn drain_once<C: HypercallTrait, S: MessageSink + ?Sized>(
 /// Each `poll_until` call polls the slot up to `max_retries` times,
 /// sleeping via `core::hint::spin_loop()` between empty reads. When
 /// `max_retries` is exhausted without seeing the awaited completion,
-/// [`Error::Timeout`] is returned. This bound avoids the "waiter
-/// hangs forever if the host drops a signal" footgun called out in §5
-/// of the design doc.
+/// [`Error::Timeout`] is returned. This bound guarantees forward
+/// progress even if the host drops a signal — the guest never
+/// blocks indefinitely on a specific message.
 ///
 /// Constructed with [`SimpPump::new`], which requires a valid SIMP GPA
 /// (typically returned by [`crate::synic::synic_pages`]).

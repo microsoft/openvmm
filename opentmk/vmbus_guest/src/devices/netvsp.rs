@@ -11,9 +11,30 @@
 //! - openvmm `vm/devices/net/netvsp/src/protocol.rs`,
 //! - puppet `kernel/shared/src/nvsc/ty.rs`.
 //!
-//! See `tasks/netvsp-port-design.md` for the phased plan. This
-//! scaffold ships only the wire types + constants; the `Netvsp`
-//! handle and phase-1 flow are added in a follow-on commit.
+//! # Bring-up sequence
+//!
+//! The canonical sequence to go from an offer to a working data path
+//! (matches Linux `netvsc_connect_vsp` and the Windows NVSC
+//! driver):
+//!
+//! 1. [`Netvsp::open`] — allocate ring pages, establish the ring
+//!    GPADL, open the channel with polling target VP.
+//! 2. [`Netvsp::negotiate_version`] — walk [`NEGOTIATION_LADDER`]
+//!    high → low. `INIT` messages always use
+//!    [`NVSP_LEGACY_MESSAGE_SIZE`] regardless of version because we
+//!    haven't negotiated yet.
+//! 3. [`Netvsp::send_ndis_config`] — V2+ only, fire-and-forget.
+//! 4. [`Netvsp::send_ndis_version`] — fire-and-forget.
+//! 5. [`Netvsp::establish_recv_buffer`] — host writes RX packets
+//!    into this buffer and delivers pointers via xfer-page packets.
+//! 6. [`Netvsp::establish_send_buffer`] — optional send-buffer
+//!    section allocator for RNDIS packets that fit in a section.
+//! 7. [`Netvsp::rndis_init`] — RNDIS `Initialize` handshake.
+//! 8. [`Netvsp::set_packet_filter`] — **required for RX**. NDIS's
+//!    default filter is 0; the vSwitch silently drops every frame
+//!    until we opt in via `OID_GEN_CURRENT_PACKET_FILTER`.
+//! 9. [`Netvsp::send_ethernet`] / [`Netvsp::drain_inbound`] —
+//!    normal data path.
 
 use crate::Error;
 use crate::Result;
@@ -1185,7 +1206,7 @@ impl Netvsp {
     /// Send RNDIS `Initialize` and wait for the paired
     /// `RNDIS_INITIALIZE_COMPLETE`.
     ///
-    /// Sequence per §7 phase 3 of the design doc:
+    /// Sequence:
     /// 1. Allocate a page-aligned buffer, write
     ///    `RndisMessageHeader + RndisInitializeRequest`.
     /// 2. Send `V1_SEND_RNDIS_PKT(RMC_CONTROL)` via

@@ -6,9 +6,10 @@
 //! `HvCallSetVpRegisters` (0x51).
 //!
 //! Callers construct a [`HvTestCtx`](opentmk::platform::hyperv::ctx::HvTestCtx)
-//! and pass it here through the [`HypercallTrait`] abstraction so ownership
-//! of the hypercall input/output page stays inside the ctx (see §5 of
-//! `tasks/vmbus-port-design.md`).
+//! and pass it here through the [`HypercallTrait`] abstraction so
+//! ownership of the hypercall input/output page stays inside the
+//! ctx — the ctx owns the aligned pages and the calling convention;
+//! this crate contributes only the payload encoders.
 
 use crate::Error;
 use crate::Result;
@@ -120,8 +121,11 @@ pub const POST_MESSAGE_BACKOFF_ITERS: usize = 10_000;
 
 /// Signal an event flag on the specified connection.
 ///
-/// Used on the ring-buffer send path to notify the host that data has
-/// been produced (§4 of the design doc — the "signal path" bullets).
+/// Used on the ring-buffer send path to notify the host that data
+/// has been produced. Guest→host signals always use `flag_number = 0`
+/// per Hyper-V convention (matches `vmbus_client::guest_to_host_interrupt`
+/// in openvmm); the per-channel `event_flag` field is for the
+/// **host→guest** direction only (bit position in the SIEFP page).
 pub fn signal_event<C: HypercallTrait>(
     ctx: &mut C,
     connection_id: u32,
