@@ -1306,31 +1306,15 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         {
             const TIMEOUT_DURATION_MINUTES: u64 = 10;
             const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60);
-            let log_source = resources.log_source.clone();
-            let inspect_task =
-                |name,
-                 driver: &DefaultDriver,
-                 inspect: std::pin::Pin<Box<dyn Future<Output = _> + Send>>| {
-                    driver.spawn(format!("petri-watchdog-inspect-{name}"), async move {
-                        collect_inspect(name, inspect, InspectSink::Attachment(&log_source)).await;
-                    })
-                };
 
+            // The panic unwinds out of the task pool, which drops the VM and
+            // triggers the same inspect capture as any other failure.
             let driver = resources.driver.clone();
-            let vmm_inspector = runtime.inspector();
-            let openhcl_diag_handler = runtime.openhcl_diag();
             tasks.push(resources.driver.spawn("timer-watchdog", async move {
                 PolledTimer::new(&driver).sleep(TIMER_DURATION).await;
-                tracing::warn!("Test timeout reached after {TIMEOUT_DURATION_MINUTES} minutes, collecting diagnostics.");
-                let mut timeout_tasks = Vec::new();
-                if let Some(inspector) = vmm_inspector {
-                    timeout_tasks.push(inspect_task.clone()("vmm", &driver, Box::pin(async move { inspector.inspect("").await })) );
-                }
-                if let Some(openhcl_diag_handler) = openhcl_diag_handler {
-                    timeout_tasks.push(inspect_task("openhcl", &driver, Box::pin(async move { openhcl_diag_handler.inspect("", None, None).await })));
-                }
-                futures::future::join_all(timeout_tasks).await;
-                tracing::error!("Test time out diagnostics collection complete, aborting.");
+                tracing::error!(
+                    "Test timeout reached after {TIMEOUT_DURATION_MINUTES} minutes, aborting."
+                );
                 panic!("Test timed out");
             }));
         }
