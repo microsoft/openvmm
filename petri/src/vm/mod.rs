@@ -654,8 +654,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// This removes all VMBus storage controllers. For Linux guests,
     /// virtio-vsock is used for pipette communication. For Windows guests,
     /// the caller must also configure TCP pipette transport via
-    /// `modify_backend(|b| b.with_tcp_pipette_nic())`. The guest must boot
-    /// from a non-VMBus device (e.g. PCIe NVMe).
+    /// `modify_backend(|b| b.with_tcp_pipette_nic(port, mac_address))`. The
+    /// guest must boot from a non-VMBus device (e.g. PCIe NVMe).
     pub fn with_no_vmbus(mut self) -> Self {
         self.no_vmbus = true;
         if self.config.firmware.os_flavor() != OsFlavor::Windows {
