@@ -312,6 +312,19 @@ fn ctrl_interrupt_mask<M: RingMem>(m: &M) -> &AtomicU32 {
 fn ctrl_pending_send<M: RingMem>(m: &M) -> &AtomicU32 {
     &m.control()[IDX_PENDING_SEND_SZ]
 }
+fn ctrl_feature_bits<M: RingMem>(m: &M) -> &AtomicU32 {
+    &m.control()[IDX_FEATURE_BITS]
+}
+
+/// Feature bit 0 in `feature_bits`. When set by the ring's **writer**,
+/// the writer promises to observe the `pending_send_sz` protocol
+/// (i.e. it will kick the reader when free space crosses the pending
+/// threshold). Openvmm and Linux both check this bit on the ring
+/// they're reading, so the guest must set it on its **SendRing** at
+/// init; the host sets it on the guest's **RecvRing**.
+///
+/// Matches `vmbus_ring::FEATURE_SUPPORTS_PENDING_SEND_SIZE = 1`.
+pub const FEATURE_SUPPORTS_PENDING_SEND_SIZE: u32 = 0x1;
 
 /// Write `bytes` into `mem` at `off`, wrapping at the ring boundary.
 fn write_wrapping<M: RingMem>(mem: &M, off: usize, bytes: &[u8]) {
@@ -374,8 +387,32 @@ pub struct SendRing<M: RingMem> {
 
 impl<M: RingMem> SendRing<M> {
     /// Construct a new send ring over `mem`.
+    ///
+    /// Advertises `FEATURE_SUPPORTS_PENDING_SEND_SIZE` on the send
+    /// ring's control page — the guest is the writer of this ring,
+    /// and the writer owns the `feature_bits` slot per
+    /// `vmbus_ring::OutgoingRing::new` in openvmm. Openvmm and
+    /// Linux both check this bit on the ring they're reading before
+    /// honouring any `pending_send_sz` we might post.
+    ///
+    /// Also zeros `pending_send_sz` to a known state.
     pub fn new(mem: M) -> Self {
+        ctrl_feature_bits(&mem)
+            .store(FEATURE_SUPPORTS_PENDING_SEND_SIZE, Ordering::Relaxed);
+        ctrl_pending_send(&mem).store(0, Ordering::Relaxed);
         Self { mem }
+    }
+
+    /// Set the pending-send-size hint on our SendRing's control page.
+    ///
+    /// The peer (host reader) inspects this after draining and, on a
+    /// transition from "not enough space" → "enough space", signals
+    /// us. `size` is the number of free bytes we need before we can
+    /// make progress. `size == 0` clears the hint. Uses `SeqCst` to
+    /// keep ordering with the `read_idx` load we perform on the
+    /// retry path in `write_packet`.
+    pub fn set_pending_send_size(&self, size: u32) {
+        ctrl_pending_send(&self.mem).store(size, Ordering::SeqCst);
     }
 
     /// Backing memory.
@@ -427,13 +464,22 @@ impl<M: RingMem> SendRing<M> {
         transaction_id: u64,
     ) -> Result<bool> {
         let ring_len = self.mem.data_len() as u32;
-        // ext_header + payload must be padded to 8. length8 / data_offset8
-        // are total 64-bit words including descriptor + footer.
+        // `msg_len` = descriptor + ext_header + payload (all padded to
+        // 8). This is what goes into `length8`. `total_ring_len` also
+        // includes the 8-byte footer and is what we advance
+        // `write_idx` by. Must match openvmm/Windows/Linux wire
+        // convention — see `vmbus_ring::OutgoingRing::write` in
+        // openvmm:
+        //   length8 = msg_len / 8    (EXCLUDES footer)
+        //   ring advances by msg_len + FOOTER_SIZE
+        // Getting this wrong makes every packet mis-parseable by the
+        // host.
         let ext_hdr_aligned = align8(ext_header.len());
         let payload_aligned = align8(payload.len());
         let data_offset_bytes = DESCRIPTOR_SIZE + ext_hdr_aligned;
-        let total_bytes = data_offset_bytes + payload_aligned + FOOTER_SIZE;
-        if total_bytes > u16::MAX as usize * 8 {
+        let msg_len = data_offset_bytes + payload_aligned;
+        let total_ring_len = msg_len + FOOTER_SIZE;
+        if msg_len > u16::MAX as usize * 8 {
             return Err(Error::Parse {
                 ty: None,
                 reason: "packet too large",
@@ -445,8 +491,26 @@ impl<M: RingMem> SendRing<M> {
         let write_idx = ctrl_in(&self.mem).load(Ordering::Relaxed);
         let read_idx = ctrl_out(&self.mem).load(Ordering::Acquire);
         let free = available_free(write_idx, read_idx, ring_len) as usize;
-        if free < total_bytes {
-            return Err(Error::RingFull);
+        if free < total_ring_len {
+            // Not enough room. Publish the pending_send_sz hint on our
+            // SendRing so the reader knows how much to free before
+            // signalling us — see §7.5 of the netvsp design doc. Then
+            // reload read_idx (SeqCst) and recheck; a concurrent
+            // reader may have drained between the load above and the
+            // store below. Without the recheck we could lose the
+            // wakeup and deadlock.
+            ctrl_pending_send(&self.mem).store(total_ring_len as u32, Ordering::SeqCst);
+            let read_idx_reload = ctrl_out(&self.mem).load(Ordering::SeqCst);
+            let free_reload =
+                available_free(write_idx, read_idx_reload, ring_len) as usize;
+            if free_reload < total_ring_len {
+                // Still full. Leave pending_send_sz set — the reader
+                // will kick us when it frees the room.
+                return Err(Error::RingFull);
+            }
+            // Space appeared after our store. Clear the hint (we
+            // don't need a signal) and fall through to the write.
+            ctrl_pending_send(&self.mem).store(0, Ordering::SeqCst);
         }
 
         // Descriptor.
@@ -454,7 +518,7 @@ impl<M: RingMem> SendRing<M> {
             packet_type,
             flags,
             data_offset8: (data_offset_bytes / 8) as u16,
-            length8: (total_bytes / 8) as u16,
+            length8: (msg_len / 8) as u16,
             transaction_id,
         };
         let mut cursor = write_idx as usize;
@@ -489,8 +553,9 @@ impl<M: RingMem> SendRing<M> {
         write_wrapping(&self.mem, cursor, footer.as_bytes());
 
         // Publish the new write_index. `Release` synchronises with the
-        // reader's `Acquire` load.
-        let new_write_idx = (write_idx + total_bytes as u32) & (ring_len - 1);
+        // reader's `Acquire` load. Advance by `total_ring_len` =
+        // msg_len + FOOTER_SIZE.
+        let new_write_idx = (write_idx + total_ring_len as u32) & (ring_len - 1);
         ctrl_in(&self.mem).store(new_write_idx, Ordering::Release);
 
         // Signal decision: only on empty→non-empty, and only when the
@@ -560,18 +625,23 @@ impl<M: RingMem> RecvRing<M> {
                 reason: "descriptor cast failed",
             })?;
 
-        let length_bytes = descriptor.length8 as usize * 8;
+        // Wire semantics: `length8` is msg_len/8 EXCLUDING the
+        // 8-byte footer (matches openvmm `vmbus_ring::parse_packet`
+        // and Windows). The reader must advance by
+        // `msg_len + FOOTER_SIZE`.
+        let msg_len = descriptor.length8 as usize * 8;
         let data_offset_bytes = descriptor.data_offset8 as usize * 8;
-        if length_bytes < data_offset_bytes + FOOTER_SIZE
+        let total_ring_len = msg_len + FOOTER_SIZE;
+        if msg_len < data_offset_bytes
             || data_offset_bytes < DESCRIPTOR_SIZE
-            || length_bytes > available_data(write_idx, read_idx, ring_len) as usize
+            || total_ring_len > available_data(write_idx, read_idx, ring_len) as usize
         {
             return Err(Error::Parse {
                 ty: None,
                 reason: "descriptor length out of range",
             });
         }
-        let payload_bytes = length_bytes - data_offset_bytes - FOOTER_SIZE;
+        let payload_bytes = msg_len - data_offset_bytes;
         let ext_header_len = data_offset_bytes - DESCRIPTOR_SIZE;
         let needed = ext_header_len + payload_bytes;
         if buf.len() < needed {
@@ -585,8 +655,8 @@ impl<M: RingMem> RecvRing<M> {
         let ext_off = read_idx as usize + DESCRIPTOR_SIZE;
         read_wrapping(&self.mem, ext_off, &mut buf[..needed]);
 
-        // Advance read_index past the whole packet.
-        let new_read_idx = (read_idx + length_bytes as u32) & (ring_len - 1);
+        // Advance read_index past the whole packet (msg_len + footer).
+        let new_read_idx = (read_idx + total_ring_len as u32) & (ring_len - 1);
         ctrl_out(&self.mem).store(new_read_idx, Ordering::Release);
 
         Ok(RecvPacket {
@@ -601,9 +671,80 @@ impl<M: RingMem> RecvRing<M> {
         ctrl_interrupt_mask(&self.mem).store(masked as u32, Ordering::Release);
     }
 
-    /// Ask the peer to signal us when at least `size` free bytes are
-    /// available in the ring. Setting to 0 disables the hint.
-    pub fn set_pending_send_size(&self, size: u32) {
-        ctrl_pending_send(&self.mem).store(size, Ordering::Release);
+    /// Whether the ring's **writer** (the host, for a RecvRing) has
+    /// advertised support for the `pending_send_sz` protocol. When
+    /// this is false, we should not perform the reader-side signal
+    /// decision — the host won't be listening.
+    pub fn supports_pending_send_size(&self) -> bool {
+        let bits = ctrl_feature_bits(&self.mem).load(Ordering::Relaxed);
+        (bits & FEATURE_SUPPORTS_PENDING_SEND_SIZE) != 0
+    }
+
+    /// Read the writer's current pending-send-size hint. Non-zero
+    /// means the writer is blocked waiting for at least this many
+    /// free bytes.
+    pub fn pending_send_size(&self) -> u32 {
+        ctrl_pending_send(&self.mem).load(Ordering::SeqCst)
+    }
+}
+
+/// Decision returned by [`RecvRing::drain_signal_decision`] after
+/// draining packets from the RECV ring.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SignalDecision {
+    /// The peer (host) is blocked writing and just crossed from
+    /// "not enough space" → "enough space". The caller should invoke
+    /// `Channel::signal(ctx)` to wake it.
+    Signal,
+    /// No signal is needed: the writer isn't blocked, doesn't
+    /// support the protocol, or hasn't crossed the transition.
+    NoSignal,
+}
+
+impl<M: RingMem> RecvRing<M> {
+    /// Compute the signal decision for a batch of reads that
+    /// advanced `read_index` by `bytes_read`. This is the
+    /// reader-side half of the `pending_send_sz` protocol described
+    /// in §7.5 of `tasks/netvsp-port-design.md`.
+    ///
+    /// Call this **after** all reads in a batch have completed and
+    /// `read_index` has been published. Returns
+    /// [`SignalDecision::Signal`] on the exact boundary crossing —
+    /// signalling on every drain would risk Hyper-V's DoS throttling.
+    ///
+    /// # Convention
+    ///
+    /// `bytes_read` is the difference between the pre-drain and
+    /// post-drain `read_index` (mod ring length). Callers can obtain
+    /// it by snapshotting `mem().control()[IDX_OUT]` before their
+    /// first read.
+    ///
+    /// The test corresponds to:
+    /// * `old_free < pending_send_sz` **and**
+    /// * `new_free >= pending_send_sz`
+    ///
+    /// Matches Linux's `hv_pkt_iter_close` and openvmm's
+    /// `IncomingRing::commit_read_and_notify` semantics.
+    pub fn drain_signal_decision(&self, bytes_read: u32) -> SignalDecision {
+        if !self.supports_pending_send_size() {
+            return SignalDecision::NoSignal;
+        }
+        let pending = self.pending_send_size();
+        if pending == 0 {
+            return SignalDecision::NoSignal;
+        }
+        let ring_len = self.mem.data_len() as u32;
+        let write_idx = ctrl_in(&self.mem).load(Ordering::Acquire);
+        let read_idx = ctrl_out(&self.mem).load(Ordering::Acquire);
+        let new_free = available_free(write_idx, read_idx, ring_len);
+        // `old_free` reconstructed: before this batch of reads,
+        // `read_idx` was `bytes_read` behind, so `free` was smaller
+        // by the same amount.
+        let old_free = new_free.saturating_sub(bytes_read);
+        if old_free < pending && new_free >= pending {
+            SignalDecision::Signal
+        } else {
+            SignalDecision::NoSignal
+        }
     }
 }

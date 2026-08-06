@@ -1538,6 +1538,7 @@ mod synic_tests {
 
 mod ring_tests {
     use crate::Error;
+    use crate::protocol::PacketDescriptor;
     use crate::protocol::PacketFlags;
     use crate::protocol::PacketType;
     use crate::ring::FlatRingMem;
@@ -1545,6 +1546,7 @@ mod ring_tests {
     use crate::ring::RingMem;
     use crate::ring::SendRing;
     use alloc::sync::Arc;
+    use zerocopy::FromBytes;
 
     /// Small helper: build a paired sender + receiver over the same
     /// underlying [`FlatRingMem`].
@@ -1682,17 +1684,93 @@ mod ring_tests {
     }
 
     #[test]
+    #[test]
     fn pending_send_size_hint_persists() {
-        let (_send, recv) = pair(4096);
-        recv.set_pending_send_size(2048);
-        // Read it back through the control-word slice.
-        let v = recv
+        // The pending_send_sz hint is now owned by the SendRing
+        // (writer). Verify it round-trips through the control page.
+        let (send, _recv) = pair(4096);
+        send.set_pending_send_size(2048);
+        let v = send
             .mem()
             .control()
             .get(3)
             .unwrap()
             .load(core::sync::atomic::Ordering::Relaxed);
         assert_eq!(v, 2048);
+    }
+
+    /// SendRing::new should set FEATURE_SUPPORTS_PENDING_SEND_SIZE
+    /// on the control page — the guest (writer) owns feature_bits
+    /// on this ring per openvmm's OutgoingRing::new convention.
+    #[test]
+    fn send_ring_advertises_pending_send_size_feature() {
+        let (send, _recv) = pair(4096);
+        let bits = send.mem().control()[16].load(core::sync::atomic::Ordering::Relaxed);
+        assert_eq!(bits & crate::ring::FEATURE_SUPPORTS_PENDING_SEND_SIZE, 1);
+    }
+
+    /// RecvRing::drain_signal_decision should return NoSignal when
+    /// pending_send_size is zero (writer not blocked).
+    #[test]
+    fn recv_signal_decision_no_pending() {
+        let (send, recv) = pair(4096);
+        send.write_inband(b"x", crate::protocol::PacketFlags::new(), 0)
+            .unwrap();
+        let mut buf = [0u8; 32];
+        recv.read(&mut buf).unwrap();
+        // pending_send_sz is 0 (writer hasn't stored anything).
+        assert_eq!(
+            recv.drain_signal_decision(32),
+            crate::ring::SignalDecision::NoSignal
+        );
+    }
+
+    /// RecvRing::drain_signal_decision returns Signal exactly on the
+    /// "not enough" → "enough" transition.
+    #[test]
+    fn recv_signal_decision_on_transition() {
+        let (_send, recv) = pair(4096);
+        // Simulate the host having filled the ring and posted a
+        // pending_send_sz hint. We poke the shared control page
+        // directly (via recv.mem().control()) rather than going
+        // through SendRing::write_packet, since our writer clears
+        // the hint on any successful write.
+        let ctrl = recv.mem().control();
+        let write_idx_slot = &ctrl[0]; // IDX_IN
+        let read_idx_slot = &ctrl[1]; // IDX_OUT
+        let pending_slot = &ctrl[3]; // IDX_PENDING_SEND_SZ
+
+        // Ring state before drain: 4000 bytes queued (recv sees full).
+        // free = 4096 - 4000 - 8 = 88.
+        write_idx_slot.store(4000, core::sync::atomic::Ordering::SeqCst);
+        read_idx_slot.store(0, core::sync::atomic::Ordering::SeqCst);
+        pending_slot.store(200, core::sync::atomic::Ordering::SeqCst);
+
+        // Simulate draining 128 bytes worth (advance read_idx). Now:
+        // free = 4096 - 4000 + 128 - 8 = 216 >= pending (200).
+        // old_free = 216 - 128 = 88 < pending → transition.
+        read_idx_slot.store(128, core::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(
+            recv.drain_signal_decision(128),
+            crate::ring::SignalDecision::Signal
+        );
+    }
+
+    /// Below-threshold drains should NOT signal.
+    #[test]
+    fn recv_signal_decision_no_transition_below_threshold() {
+        let (_send, recv) = pair(4096);
+        let ctrl = recv.mem().control();
+        // free = 88 before, pending = 200. After draining 32 bytes,
+        // free = 120 < pending. No transition.
+        ctrl[0].store(4000, core::sync::atomic::Ordering::SeqCst); // IN
+        ctrl[3].store(200, core::sync::atomic::Ordering::SeqCst); // PENDING
+        ctrl[1].store(32, core::sync::atomic::Ordering::SeqCst); // OUT
+        assert_eq!(
+            recv.drain_signal_decision(32),
+            crate::ring::SignalDecision::NoSignal
+        );
     }
 
     #[test]
@@ -1718,5 +1796,45 @@ mod ring_tests {
         assert_eq!(&pkt.payload[..payload.len()], &payload);
         // The ext header sits before the payload in the read buffer.
         assert_eq!(&buf[..8], &ext);
+    }
+
+    /// Cross-implementation wire test: verify our `SendRing` produces
+    /// on-wire bytes matching openvmm's `vmbus_ring::OutgoingRing`.
+    ///
+    /// Openvmm sets `length8 = msg_len / 8` where `msg_len` **excludes**
+    /// the 8-byte footer, then advances `write_idx` by
+    /// `msg_len + FOOTER_SIZE`. Windows and Linux match.
+    ///
+    /// Payload = 8 bytes, no ext header:
+    ///   msg_len       = DESCRIPTOR_SIZE (16) + 0 + 8 = 24 bytes
+    ///   footer        = 8 bytes
+    ///   length8       = 24 / 8 = 3
+    ///   data_offset8  = 16 / 8 = 2
+    ///   write_idx advances by 24 + 8 = 32 bytes
+    #[test]
+    fn length8_matches_openvmm_wire_convention() {
+        let (send, _recv) = pair(4096);
+        let payload = [0xCDu8; 8];
+        send.write_inband(&payload, PacketFlags::new(), 0xdeadbeef)
+            .unwrap();
+
+        // Read the descriptor bytes directly from the ring at offset 0.
+        let mem = send.mem();
+        let mut desc_bytes = [0u8; core::mem::size_of::<PacketDescriptor>()];
+        mem.read_at(0, &mut desc_bytes);
+        let (desc, _) = PacketDescriptor::read_from_prefix(&desc_bytes).unwrap();
+
+        // Expected values per openvmm's OutgoingRing::write:
+        assert_eq!(desc.packet_type, PacketType::VM_PKT_DATA_INBAND);
+        assert_eq!(desc.data_offset8, 2, "data_offset8 = descriptor_size / 8");
+        assert_eq!(
+            desc.length8, 3,
+            "length8 = (descriptor + payload) / 8, EXCLUDING footer"
+        );
+        assert_eq!(desc.transaction_id, 0xdeadbeef);
+
+        // write_idx should be at 32 (24 msg + 8 footer).
+        let write_idx = mem.control()[0].load(core::sync::atomic::Ordering::Relaxed);
+        assert_eq!(write_idx, 32);
     }
 }

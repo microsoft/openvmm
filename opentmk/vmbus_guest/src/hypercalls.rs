@@ -35,6 +35,14 @@ use zerocopy::IntoBytes;
 /// * `payload` — the encoded VMBus message including its `MessageHeader`.
 ///
 /// The payload is truncated at `HV_MESSAGE_PAYLOAD_SIZE` (240 bytes).
+///
+/// Retries transient `HV_STATUS_INSUFFICIENT_BUFFERS` up to
+/// [`POST_MESSAGE_MAX_RETRIES`] times. The hypervisor's per-VP
+/// message queue can transiently reject posts under load — bursts of
+/// GPADL body messages (netvsp establishes a 16 MiB recv buffer via
+/// ~147 back-to-back posts) will otherwise trip it. Matches Linux's
+/// `vmbus_post_msg` (drivers/hv/connection.c) which uses the same
+/// bounded retry approach.
 pub fn post_message<C: HypercallTrait>(
     ctx: &mut C,
     connection_id: u32,
@@ -61,16 +69,54 @@ pub fn post_message<C: HypercallTrait>(
         connection_id,
         payload.len()
     );
-    let r = ctx.hypercall(
-        HypercallCode::HvCallPostMessage.0 as u64,
-        msg.as_bytes(),
-        &mut [],
-        HypercallConfig::default(),
-    );
-    log::debug!("post_message: hypercall returned {r:?}");
-    r?;
-    Ok(())
+    for attempt in 0..POST_MESSAGE_MAX_RETRIES {
+        let r = ctx.hypercall(
+            HypercallCode::HvCallPostMessage.0 as u64,
+            msg.as_bytes(),
+            &mut [],
+            HypercallConfig::default(),
+        );
+        match r {
+            Ok(()) => {
+                if attempt > 0 {
+                    log::debug!("post_message: succeeded after {} retries", attempt);
+                }
+                return Ok(());
+            }
+            Err(opentmk::tmkdefs::TmkError::InsufficientBuffers) => {
+                // Transient — the per-VP message queue is full. Yield
+                // briefly so the hypervisor drains, then retry.
+                if attempt + 1 == POST_MESSAGE_MAX_RETRIES {
+                    log::warn!(
+                        "post_message: gave up after {} InsufficientBuffers retries",
+                        POST_MESSAGE_MAX_RETRIES,
+                    );
+                }
+                for _ in 0..POST_MESSAGE_BACKOFF_ITERS {
+                    core::hint::spin_loop();
+                }
+                continue;
+            }
+            Err(e) => {
+                log::debug!("post_message: hypercall returned Err({:?})", e);
+                return Err(Error::Hypercall(e));
+            }
+        }
+    }
+    Err(Error::Hypercall(
+        opentmk::tmkdefs::TmkError::InsufficientBuffers,
+    ))
 }
+
+/// Number of attempts (including the first) before giving up on
+/// `HV_STATUS_INSUFFICIENT_BUFFERS`.
+pub const POST_MESSAGE_MAX_RETRIES: usize = 20;
+
+/// Spin-loop iterations between `post_message` retries. Not a
+/// wall-clock duration — chosen empirically to be roughly a few
+/// microseconds on modern CPUs, enough for the hypervisor to drain
+/// its message queue without dominating the retry loop cost.
+pub const POST_MESSAGE_BACKOFF_ITERS: usize = 10_000;
 
 /// Signal an event flag on the specified connection.
 ///
