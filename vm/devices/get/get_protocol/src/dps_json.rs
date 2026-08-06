@@ -245,6 +245,12 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub force_dma_bounce_enabled: bool,
     #[serde(default)]
     pub hardware_sealing_policy_id: HardwareSealingPolicy,
+    /// Whether NVIDIA GPUs and NVLink/NVSwitch fabric devices may be relayed
+    /// into a confidential guest.
+    ///
+    /// Defaults to `false`, so hosts that do not set it are unaffected.
+    #[serde(default)]
+    pub nvidia_vpci_relay_allowed: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

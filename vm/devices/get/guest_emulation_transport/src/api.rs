@@ -121,6 +121,9 @@ pub mod platform_settings {
 
         pub vmbus_redirection_enabled: bool,
         pub always_relay_host_mmio: bool,
+        /// Whether NVIDIA GPUs and NVLink/NVSwitch fabric devices may be
+        /// relayed into a confidential guest.
+        pub nvidia_vpci_relay_allowed: bool,
         pub vtl2_settings: Option<underhill_config::Vtl2Settings>,
 
         pub is_servicing_scenario: bool,

@@ -229,9 +229,33 @@ mod tests {
             tpm_persisted: false,
             hardware_sealing_policy,
             filtered_vpci_devices_allowed: true,
+            nvidia_vpci_relay_allowed: None,
             vm_unique_id: "".to_string(),
             vmgs_provisioner: None,
         }
+    }
+
+    /// The serialized `AttestationVmConfig` is an input to the hardware-derived
+    /// key KDF, so a guest that does not opt into the NVIDIA VPCI relay must
+    /// serialize exactly as it did before the field was introduced. Otherwise
+    /// every existing stateful CVM would derive different sealing keys and fail
+    /// to unseal its state after an upgrade.
+    #[test]
+    fn nvidia_vpci_relay_claim_omitted_when_unset() {
+        let vm_config = create_test_vm_config(HardwareSealingPolicy::Hash);
+        let json = serde_json::to_string(&vm_config).unwrap();
+        assert!(
+            !json.contains("nvidia-vpci-relay-allowed"),
+            "claim must be omitted when unset, got {json}"
+        );
+
+        let enabled = AttestationVmConfig {
+            nvidia_vpci_relay_allowed: Some(true),
+            ..create_test_vm_config(HardwareSealingPolicy::Hash)
+        };
+        let enabled_json = serde_json::to_string(&enabled).unwrap();
+        assert!(enabled_json.contains(r#""nvidia-vpci-relay-allowed":true"#));
+        assert_ne!(json, enabled_json);
     }
 
     #[test]

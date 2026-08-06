@@ -1353,6 +1353,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     smbios: Default::default(),
                     watchdog_enabled: false,
                     always_relay_host_mmio: false,
+                    nvidia_vpci_relay_allowed: false,
                     imc_enabled: false,
                     cxl_memory_enabled: false,
                     guest_state_lifetime: state.config.guest_state_lifetime,

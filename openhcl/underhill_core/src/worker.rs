@@ -199,7 +199,6 @@ const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
 // NVIDIA PCI vendor ID (used to relay NVIDIA GPUs and NVLink/NVSwitch fabric
 // devices to Azure Local confidential guests).
-#[cfg(feature = "nvidia_vpci_relay_allowed")]
 const NVIDIA_VPCI_VENDOR_ID: u16 = 0x10DE;
 
 struct GuestEmulationTransportInfra {
@@ -1641,6 +1640,10 @@ async fn new_underhill_vm(
         Arc::new(UeventListener::new(tp.driver(0)).context("failed to start uevent listener")?);
 
     let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
+    // Host-configured opt-in to relaying NVIDIA GPUs and NVLink/NVSwitch fabric
+    // devices into the guest. Only meaningful for hardware-isolated guests
+    // using the VPCI relay; see where the relay allow-list is built.
+    let nvidia_vpci_relay_allowed = dps.general.nvidia_vpci_relay_allowed;
     // TODO: Centralize cpuid based feature determination.
     #[cfg(guest_arch = "x86_64")]
     let use_mmio_hypercalls = use_mmio_hypercalls
@@ -2112,6 +2115,9 @@ async fn new_underhill_vm(
         || dps.general.com2_vmbus_redirector;
     let interactive_console =
         console_enabled && !dps.general.management_vtl_features.tx_only_serial_port();
+    let vpci_relay_active =
+        with_vmbus_relay && dps.general.vpci_boot_enabled && isolation.is_isolated();
+
     let attestation_vm_config = AttestationVmConfig {
         current_time: None,
         // TODO CVM: Support vmgs provisioning config
@@ -2124,9 +2130,11 @@ async fn new_underhill_vm(
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
         hardware_sealing_policy,
-        filtered_vpci_devices_allowed: with_vmbus_relay
-            && dps.general.vpci_boot_enabled
-            && isolation.is_isolated(),
+        filtered_vpci_devices_allowed: vpci_relay_active,
+        // Only reported when the devices can actually be relayed, and omitted
+        // entirely otherwise so that the runtime claims (and hence the sealing
+        // key derivation) are unchanged for guests not using this feature.
+        nvidia_vpci_relay_allowed: (vpci_relay_active && nvidia_vpci_relay_allowed).then_some(true),
         vm_unique_id: dps.general.bios_guid.to_string(),
         vmgs_provisioner: prov_claims.clone(),
     };
@@ -3404,8 +3412,7 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
-                #[cfg(feature = "nvidia_vpci_relay_allowed")]
-                {
+                if nvidia_vpci_relay_allowed {
                     // Datacenter GPUs (e.g. H100/H200/B200/B300) are headless and
                     // enumerate as a 3D controller (class 0x0302), not VGA.
                     relay.add_allowed_device(AllowedDevice {
@@ -3865,6 +3872,13 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         vmbus_redirection_enabled: _,
         always_relay_host_mmio: _,
         imc_enabled: _,
+
+        // Only widens the set of devices the VPCI relay will re-expose to the
+        // guest. Relayed devices DMA solely into shared memory and cannot reach
+        // guest-private memory or lower a VTL, so this does not weaken
+        // isolation; the guest is responsible for attesting any device it
+        // chooses to trust.
+        nvidia_vpci_relay_allowed: _,
 
         // PXE not supported today
         pxe_ip_v6: _,
