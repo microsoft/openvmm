@@ -38,7 +38,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 @dataclass(frozen=True)
@@ -225,14 +225,25 @@ def gh_pr_list_label(label: str, repo: Optional[str]) -> List[dict]:
         "--limit",
         "1000",
         "--json",
-        "number,title,body,url,state,mergedAt",
+        "number,title,body,url,state,mergedAt,labels",
     ]
     if repo:
         cmd.extend(["-R", repo])
     out = run(cmd)
     if not out.strip():
         return []
-    return json.loads(out)
+    prs = json.loads(out)
+    # gh may return PRs that previously had the label, so verify their current labels.
+    return [
+        pr
+        for pr in prs
+        if any(
+            item == label
+            if isinstance(item, str)
+            else isinstance(item, dict) and item.get("name") == label
+            for item in (pr.get("labels") or [])
+        )
+    ]
 
 
 def extract_merge_sha(prj: dict) -> str:
@@ -351,7 +362,24 @@ def main() -> int:
     ap.add_argument("--draft", action="store_true", help="Create the cherry-pick PRs as draft PRs")
     ap.add_argument("--allow-dirty", action="store_true", help="Do not require a clean git working tree")
     ap.add_argument("--force-push", action="store_true", help="Force-with-lease push if branch already exists remotely")
-    ap.add_argument("--dry-run", action="store_true", help="Print what would happen, but do not modify git or create PRs")
+    output_mode = ap.add_mutually_exclusive_group()
+    output_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would happen, but do not modify git or create PRs",
+    )
+    output_mode.add_argument(
+        "--status-only",
+        action="store_true",
+        help="Show detailed backport status, but do not modify git or create PRs",
+    )
+    ap.add_argument(
+        "--skip-prs",
+        nargs="+",
+        default=[],
+        metavar="PR",
+        help="PR numbers or URLs to skip when creating cherry-pick PRs",
+    )
     ap.add_argument(
         "--from-backport-label",
         action="store_true",
@@ -360,12 +388,14 @@ def main() -> int:
 
     args = ap.parse_args()
 
-    ensure_clean_worktree(args.allow_dirty)
+    if not args.dry_run and not args.status_only:
+        ensure_clean_worktree(args.allow_dirty)
 
     if not args.from_backport_label and not args.prs:
         raise SystemExit("Must provide PR numbers, or use --from-backport-label.")
 
     pr_numbers = parse_pr_numbers(args.prs) if args.prs else []
+    skip_pr_numbers = set(parse_pr_numbers(args.skip_prs))
 
     infos: List[PRInfo] = []
     not_completed: List[PRInfo] = []
@@ -463,23 +493,12 @@ def main() -> int:
                 print(f"  #{info.number} {info.title}")
         return 0
 
-    # Make sure we have the latest release branch
-    git_fetch(args.base_remote)
-
     base_repo = args.repo
-    base_remote_repo = None
-    push_remote_repo = None
-    try:
-        base_remote_repo = parse_github_owner_repo(git_remote_url(args.base_remote))
-    except Exception:
-        base_remote_repo = None
-    try:
-        push_remote_repo = parse_github_owner_repo(git_remote_url(args.push_remote))
-    except Exception:
-        push_remote_repo = None
-
     if base_repo is None:
-        base_repo = base_remote_repo
+        try:
+            base_repo = parse_github_owner_repo(git_remote_url(args.base_remote))
+        except Exception:
+            base_repo = None
     if base_repo is None:
         print(
             "Error: Could not determine base repo from git remotes."
@@ -527,9 +546,24 @@ def main() -> int:
             print(f"      title: {info.title}")
             print(f"      {info.url}")
 
+    if args.status_only:
+        return 0
+
+    # Make sure we have the latest release branch before creating local branches.
+    git_fetch(args.base_remote)
+
+    try:
+        push_remote_repo = parse_github_owner_repo(git_remote_url(args.push_remote))
+    except Exception:
+        push_remote_repo = None
+
     created: List[Tuple[int, str]] = []
 
     for info in infos:
+        if info.number in skip_pr_numbers:
+            print(f"Skipping PR #{info.number} (--skip-prs).")
+            continue
+
         bps = backport_map.get(info.number) or []
         active = [bp for bp in bps if bp.state in ("OPEN", "MERGED")]
         if active:
