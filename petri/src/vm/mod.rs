@@ -200,6 +200,9 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
 
 type InspectBuffer = Arc<Mutex<BTreeMap<&'static str, String>>>;
 
+/// How long to wait on a single inspect before giving up on it.
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PetriVmBuilder")
@@ -477,32 +480,22 @@ impl<T: PetriVmRuntime> Drop for PetriVmRuntimeGuard<T> {
             return;
         }
 
-        /// Collects inspect output for `name` into the snapshot cache, to be written
-        /// out later if the test failed.
-        async fn snapshot_inspect(
-            name: &'static str,
-            inspect: impl Future<Output = anyhow::Result<inspect::Node>>,
-            snapshots: &InspectBuffer,
-        ) {
-            match CancelContext::new()
-                .with_timeout(Duration::from_secs(10))
-                .until_cancelled(inspect)
-                .await
-            {
-                Ok(Ok(node)) => {
-                    snapshots.lock().insert(name, format!("{node:#}"));
-                }
-                Ok(Err(e)) => tracing::warn!(name, ?e, "failed to collect inspect snapshot"),
-                Err(_) => tracing::warn!(name, "timed out collecting inspect snapshot"),
-            }
-        }
-
         let capture = async move {
             if let Some(inspector) = &inspector {
-                snapshot_inspect("vmm", inspector.inspect(""), &snapshots).await;
+                collect_inspect(
+                    "vmm",
+                    inspector.inspect(""),
+                    InspectSink::Buffer(&snapshots),
+                )
+                .await;
             }
             if let Some(diag) = &openhcl_diag_handler {
-                snapshot_inspect("openhcl", diag.inspect("", None, None), &snapshots).await;
+                collect_inspect(
+                    "openhcl",
+                    diag.inspect("", None, None),
+                    InspectSink::Buffer(&snapshots),
+                )
+                .await;
             }
             drop(runtime);
         };
@@ -1319,14 +1312,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                  driver: &DefaultDriver,
                  inspect: std::pin::Pin<Box<dyn Future<Output = _> + Send>>| {
                     driver.spawn(format!("petri-watchdog-inspect-{name}"), async move {
-                        if CancelContext::new()
-                            .with_timeout(Duration::from_secs(10))
-                            .until_cancelled(save_inspect(name, inspect, &log_source))
-                            .await
-                            .is_err()
-                        {
-                            tracing::warn!(name, "Failed to collect inspect data within timeout");
-                        }
+                        collect_inspect(name, inspect, InspectSink::Attachment(&log_source)).await;
                     })
                 };
 
@@ -2132,10 +2118,10 @@ impl<T: PetriVmmBackend> PetriVm<T> {
                 Err(_) => {
                     tracing::error!("Did not get boot event in required time, resetting...");
                     if let Some(inspector) = self.runtime.inspector() {
-                        save_inspect(
+                        collect_inspect(
                             "vmm",
-                            Box::pin(async move { inspector.inspect("").await }),
-                            &self.resources.log_source,
+                            async move { inspector.inspect("").await },
+                            InspectSink::Attachment(&self.resources.log_source),
                         )
                         .await;
                     }
@@ -3608,27 +3594,48 @@ fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {
     }
 }
 
-async fn save_inspect(
-    name: &str,
-    inspect: std::pin::Pin<Box<dyn Future<Output = anyhow::Result<inspect::Node>> + Send>>,
-    log_source: &PetriLogSource,
+async fn collect_inspect(
+    name: &'static str,
+    inspect: impl Future<Output = anyhow::Result<inspect::Node>>,
+    sink: InspectSink<'_>,
 ) {
-    tracing::info!("Collecting {name} inspect details.");
-    let node = match inspect.await {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::error!(?e, "Failed to get {name}");
+    let node = match CancelContext::new()
+        .with_timeout(INSPECT_TIMEOUT)
+        .until_cancelled(inspect)
+        .await
+    {
+        Ok(Ok(node)) => node,
+        Ok(Err(e)) => {
+            tracing::warn!(name, ?e, "failed to collect inspect state");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(name, "timed out collecting inspect state");
             return;
         }
     };
-    if let Err(e) = log_source.write_attachment(
-        &format!("timeout_inspect_{name}.log"),
-        format!("{node:#}").as_bytes(),
-    ) {
-        tracing::error!(?e, "Failed to save {name} inspect log");
-        return;
+
+    match sink {
+        InspectSink::Attachment(log_source) => {
+            if let Err(e) = log_source.write_attachment(
+                &format!("timeout_inspect_{name}.log"),
+                format!("{node:#}").as_bytes(),
+            ) {
+                tracing::error!(name, ?e, "failed to save inspect log");
+            }
+        }
+        InspectSink::Buffer(snapshots) => {
+            snapshots.lock().insert(name, format!("{node:#}"));
+        }
     }
-    tracing::info!("{name} inspect task finished.");
+}
+
+/// Where [`collect_inspect`] puts the state it collects.
+enum InspectSink<'a> {
+    /// Written out immediately as `timeout_inspect_{name}.log`.
+    Attachment(&'a PetriLogSource),
+    /// Buffered for the post-test hook to write out if the test failed.
+    Buffer(&'a InspectBuffer),
 }
 
 /// Wrapper for modification functions with stubbed out debug impl
