@@ -11,3 +11,4 @@
 //! test the framework end-to-end.
 
 pub mod keyboard;
+pub mod netvsp;

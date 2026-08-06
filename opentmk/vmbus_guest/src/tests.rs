@@ -1838,3 +1838,167 @@ mod ring_tests {
         assert_eq!(write_idx, 32);
     }
 }
+
+/// NVSP wire-type layout and encoder tests.
+mod netvsp_tests {
+    use crate::devices::netvsp;
+    use core::mem::size_of;
+    use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
+
+    #[test]
+    fn version_ladder_ordered_high_to_low() {
+        let l = netvsp::NEGOTIATION_LADDER;
+        assert_eq!(l[0], netvsp::Version::V61);
+        assert_eq!(l[l.len() - 1], netvsp::Version::V1);
+        // Non-strict ordering because V3 is skipped, but each step
+        // should be >= the next.
+        for w in l.windows(2) {
+            assert!(w[0] >= w[1]);
+        }
+    }
+
+    #[test]
+    fn frame_sizes() {
+        assert_eq!(netvsp::NVSP_LEGACY_MESSAGE_SIZE, 28);
+        assert_eq!(netvsp::NVSP_V61_MESSAGE_SIZE, 40);
+        assert_eq!(netvsp::frame_size_for(netvsp::Version::V1), 28);
+        assert_eq!(netvsp::frame_size_for(netvsp::Version::V6), 28);
+        assert_eq!(netvsp::frame_size_for(netvsp::Version::V61), 40);
+    }
+
+    #[test]
+    fn wire_body_sizes() {
+        // Match the sizes documented in tasks/netvsp-port-design.md §4.
+        assert_eq!(size_of::<netvsp::MessageHeader>(), 4);
+        assert_eq!(size_of::<netvsp::NvspMsgInit>(), 8);
+        assert_eq!(size_of::<netvsp::NvspMsgInitComplete>(), 12);
+        assert_eq!(size_of::<netvsp::Nvsp1MsgSendNdisVersion>(), 8);
+        assert_eq!(size_of::<netvsp::Nvsp1MsgSendBuffer>(), 8);
+        assert_eq!(size_of::<netvsp::Nvsp1ReceiveBufferSection>(), 16);
+        // status + num_sections + 1×section = 4 + 4 + 16 = 24
+        assert_eq!(size_of::<netvsp::Nvsp1MsgSendRecvBufComplete>(), 24);
+        assert_eq!(size_of::<netvsp::Nvsp1MsgSendSendBufComplete>(), 8);
+        assert_eq!(size_of::<netvsp::Nvsp1MsgSendRndisPacket>(), 12);
+        assert_eq!(size_of::<netvsp::Nvsp1MsgSendRndisPacketComplete>(), 4);
+        assert_eq!(size_of::<netvsp::Nvsp2MsgSendNdisConfig>(), 16);
+    }
+
+    #[test]
+    fn interface_guid_matches_spec() {
+        let g = &netvsp::INTERFACE_GUID;
+        assert_eq!(g.data1, 0xf8615163);
+        assert_eq!(g.data2, 0xdf3e);
+        assert_eq!(g.data3, 0x46c5);
+        assert_eq!(g.data4, [0x91, 0x3f, 0xf2, 0xd2, 0xf9, 0x65, 0xed, 0x0e]);
+    }
+
+    #[test]
+    fn encode_init_message_pads_to_frame_size() {
+        let mut buf = [0xFFu8; 64];
+        let n = netvsp::encode_message(
+            netvsp::msg_type::INIT,
+            &netvsp::NvspMsgInit {
+                protocol_version: netvsp::Version::V61 as u32,
+                protocol_version2: netvsp::Version::V61 as u32,
+            },
+            netvsp::Version::V61,
+            &mut buf,
+        )
+        .unwrap();
+        assert_eq!(n, netvsp::NVSP_V61_MESSAGE_SIZE);
+        // Header: 4 bytes = INIT (1).
+        assert_eq!(&buf[..4], &1u32.to_le_bytes());
+        // Body: 8 bytes = version × 2.
+        assert_eq!(&buf[4..8], &(netvsp::Version::V61 as u32).to_le_bytes());
+        assert_eq!(&buf[8..12], &(netvsp::Version::V61 as u32).to_le_bytes());
+        // Padding bytes 12..40 must be zero-filled.
+        for &b in &buf[12..40] {
+            assert_eq!(b, 0);
+        }
+        // Anything past the frame should be untouched.
+        assert_eq!(buf[40], 0xFF);
+    }
+
+    #[test]
+    fn encode_message_rejects_undersized_buffer() {
+        let mut buf = [0u8; 20];
+        let r = netvsp::encode_message(
+            netvsp::msg_type::INIT,
+            &netvsp::NvspMsgInit {
+                protocol_version: 0,
+                protocol_version2: 0,
+            },
+            netvsp::Version::V61, // needs 40 bytes
+            &mut buf,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn parse_header_roundtrip() {
+        let mut buf = [0u8; netvsp::NVSP_LEGACY_MESSAGE_SIZE];
+        netvsp::encode_message(
+            netvsp::msg_type::INIT_COMPLETE,
+            &netvsp::NvspMsgInitComplete {
+                deprecated: 0,
+                maximum_mdl_chain_length: 0x400,
+                status: netvsp::status::SUCCESS,
+            },
+            netvsp::Version::V6,
+            &mut buf,
+        )
+        .unwrap();
+        let (ty, body) = netvsp::parse_header(&buf).unwrap();
+        assert_eq!(ty, netvsp::msg_type::INIT_COMPLETE);
+        let (parsed, _) =
+            netvsp::NvspMsgInitComplete::read_from_prefix(body).unwrap();
+        assert_eq!(parsed.status, netvsp::status::SUCCESS);
+        assert_eq!(parsed.maximum_mdl_chain_length, 0x400);
+    }
+
+    #[test]
+    fn ndis_caps_recommended_by_version() {
+        assert_eq!(
+            netvsp::NdisCapabilities::recommended(netvsp::Version::V2).0,
+            netvsp::NdisCapabilities::IEEE_8021Q
+        );
+        assert_eq!(
+            netvsp::NdisCapabilities::recommended(netvsp::Version::V5).0,
+            netvsp::NdisCapabilities::IEEE_8021Q
+                | netvsp::NdisCapabilities::SRIOV
+                | netvsp::NdisCapabilities::TEAMING
+        );
+        assert_eq!(
+            netvsp::NdisCapabilities::recommended(netvsp::Version::V61).0,
+            netvsp::NdisCapabilities::IEEE_8021Q
+                | netvsp::NdisCapabilities::SRIOV
+                | netvsp::NdisCapabilities::TEAMING
+                | netvsp::NdisCapabilities::RSC_OVER_VMBUS
+        );
+    }
+
+    #[test]
+    fn ndis_caps_bit_4_never_set_by_default() {
+        // NVSP_2_NETVSC_CAPABILITIES bit 4 (CorrelationIdBroken) must
+        // remain 0 per Windows source comment. Verify none of our
+        // preset masks set it.
+        for v in netvsp::NEGOTIATION_LADDER {
+            let caps = netvsp::NdisCapabilities::recommended(v).0;
+            assert_eq!(caps & (1 << 4), 0);
+        }
+    }
+
+    #[test]
+    fn message_type_ranges() {
+        assert_eq!(netvsp::msg_type::INIT, 1);
+        assert_eq!(netvsp::msg_type::INIT_COMPLETE, 2);
+        assert_eq!(netvsp::msg_type::VERSION_MSG_START, 100);
+        assert_eq!(netvsp::msg_type::V1_SEND_NDIS_VERSION, 100);
+        assert_eq!(netvsp::msg_type::V2_SEND_NDIS_CONFIG, 125);
+        assert_eq!(netvsp::msg_type::V1_SEND_RECV_BUF_COMPLETE, 102);
+        assert_eq!(netvsp::msg_type::V1_SEND_SEND_BUF_COMPLETE, 105);
+        assert_eq!(netvsp::msg_type::V1_SEND_RNDIS_PKT, 107);
+        assert_eq!(netvsp::msg_type::V1_SEND_RNDIS_PKT_COMPLETE, 108);
+    }
+}
