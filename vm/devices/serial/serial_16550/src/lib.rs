@@ -203,7 +203,7 @@ impl Serial16550 {
             register_width,
             register_shift: register_width.trailing_zeros() as u8,
             wait_for_rts,
-            state: State::new(),
+            state: State::new(io.is_connected()),
             interrupt,
             io,
             rx_waker: None,
@@ -216,9 +216,6 @@ impl Serial16550 {
             }),
             stats: Default::default(),
         };
-        if this.io.is_connected() {
-            this.state.connect();
-        }
         this.sync();
         Ok(this)
     }
@@ -513,8 +510,7 @@ impl ChangeDeviceState for Serial16550 {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        self.state = State::new();
-        self.state.connect();
+        self.state = State::new(self.io.is_connected());
         self.sync();
     }
 }
@@ -544,8 +540,8 @@ impl PollDevice for Serial16550 {
 }
 
 impl State {
-    fn new() -> Self {
-        Self {
+    fn new(is_connected: bool) -> Self {
+        let mut this = Self {
             ier: InterruptEnableRegister::new(),
             lcr: LineControlRegister::new(),
             mcr: ModemControlRegister::new(),
@@ -558,7 +554,11 @@ impl State {
             tx_buffer: VecDeque::new(),
             rx_buffer: VecDeque::new(),
             fcr: FifoControlRegister::new(),
+        };
+        if is_connected {
+            this.connect();
         }
+        this
     }
 
     /// Updates MSR when the modem connects.
@@ -857,7 +857,7 @@ impl State {
             rx_overrun,
             tx_buffer,
             rx_buffer,
-        } = Self::new();
+        } = Self::new(false);
 
         // Reset this state.
         self.ier = ier;
@@ -1346,6 +1346,28 @@ mod tests {
                 "reads must never be deferred without debugger mode"
             );
         }
+    }
+
+    /// Resetting the device must leave the modem lines matching the backend, so
+    /// a port with no backend attached does not come back reporting carrier.
+    #[async_test]
+    async fn reset_does_not_connect_disconnected_backend() {
+        let mut serial = Serial16550::new(
+            "com1".to_string(),
+            MmioOrIoPort::IoPort(0x3f8),
+            1,
+            LineInterrupt::detached(),
+            Box::new(serial_core::disconnected::Disconnected),
+            false,
+            None,
+        )
+        .unwrap();
+
+        serial.reset().await;
+
+        // MSR: no carrier detect, and no delta bits to raise a modem-status
+        // interrupt with.
+        assert_eq!(read_reg(&mut serial, Register::MSR), 0);
     }
 
     #[async_test]
