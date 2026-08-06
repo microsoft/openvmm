@@ -20,6 +20,7 @@ use crate::vtl2_settings::Vtl2LunBuilder;
 use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use async_trait::async_trait;
+use futures::FutureExt as _;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use mesh::CancelContext;
@@ -28,6 +29,7 @@ use pal_async::DefaultDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
+use parking_lot::Mutex;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::InitialRebootCondition;
@@ -47,6 +49,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -190,7 +193,12 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     vhost_vsock_guest_cid: Option<u32>,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
+    // Inspect state buffer, captured when the VM is dropped. `None` disables
+    // the capture.
+    inspect_snapshots: Option<InspectBuffer>,
 }
+
+type InspectBuffer = Arc<Mutex<BTreeMap<&'static str, String>>>;
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -409,7 +417,7 @@ pub(crate) const PETRI_PCIE_NVME_AGENT_NSID: u32 = 1;
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
     resources: PetriVmResources,
-    runtime: T::VmRuntime,
+    runtime: PetriVmRuntimeGuard<T::VmRuntime>,
     watchdog_tasks: Vec<Task<()>>,
     openhcl_diag_handler: Option<OpenHclDiagHandler>,
 
@@ -419,6 +427,117 @@ pub struct PetriVm<T: PetriVmmBackend> {
     expected_boot_event: Option<FirmwareEvent>,
 
     config: PetriVmRuntimeConfig,
+}
+
+/// Wrapper around the VMM backend's runtime that captures inspect state if the
+/// VM is dropped without being torn down, which is what happens when a test
+/// fails partway through.
+struct PetriVmRuntimeGuard<T: PetriVmRuntime> {
+    runtime: Option<T>,
+    driver: DefaultDriver,
+    snapshots: Option<InspectBuffer>,
+    /// Temporary disk files that must outlive the VMM process, whose teardown
+    /// is deferred along with the runtime.
+    temp_disks: Vec<Arc<TempPath>>,
+}
+
+impl<T: PetriVmRuntime> PetriVmRuntimeGuard<T> {
+    /// Takes the runtime, suppressing the inspect capture on drop.
+    fn take(&mut self) -> T {
+        self.runtime.take().expect("runtime has already been taken")
+    }
+}
+
+impl<T: PetriVmRuntime> std::ops::Deref for PetriVmRuntimeGuard<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.runtime
+            .as_ref()
+            .expect("runtime has already been taken")
+    }
+}
+
+impl<T: PetriVmRuntime> std::ops::DerefMut for PetriVmRuntimeGuard<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.runtime
+            .as_mut()
+            .expect("runtime has already been taken")
+    }
+}
+
+impl<T: PetriVmRuntime> Drop for PetriVmRuntimeGuard<T> {
+    fn drop(&mut self) {
+        let (Some(runtime), Some(snapshots)) = (self.runtime.take(), self.snapshots.clone()) else {
+            return;
+        };
+        let inspector = runtime.inspector();
+        let openhcl_diag_handler = runtime.openhcl_diag();
+        if inspector.is_none() && openhcl_diag_handler.is_none() {
+            return;
+        }
+
+        /// Collects inspect output for `name` into the snapshot cache, to be written
+        /// out later if the test failed.
+        async fn snapshot_inspect(
+            name: &'static str,
+            inspect: impl Future<Output = anyhow::Result<inspect::Node>>,
+            snapshots: &InspectBuffer,
+        ) {
+            match CancelContext::new()
+                .with_timeout(Duration::from_secs(10))
+                .until_cancelled(inspect)
+                .await
+            {
+                Ok(Ok(node)) => {
+                    snapshots.lock().insert(name, format!("{node:#}"));
+                }
+                Ok(Err(e)) => tracing::warn!(name, ?e, "failed to collect inspect snapshot"),
+                Err(_) => tracing::warn!(name, "timed out collecting inspect snapshot"),
+            }
+        }
+
+        let capture = async move {
+            if let Some(inspector) = &inspector {
+                snapshot_inspect("vmm", inspector.inspect(""), &snapshots).await;
+            }
+            if let Some(diag) = &openhcl_diag_handler {
+                snapshot_inspect("openhcl", diag.inspect("", None, None), &snapshots).await;
+            }
+            drop(runtime);
+        };
+
+        let temp_disks = std::mem::take(&mut self.temp_disks);
+
+        // `SimpleTest::new_async` joins the test body with the task pool, so
+        // the pool keeps polling detached tasks until they complete. This
+        // finishes before the post-test hooks run.
+        self.driver
+            .spawn("petri-inspect-on-drop", async move {
+                // A panic here would propagate out of the task pool and replace
+                // the failure the test is already reporting.
+                if AssertUnwindSafe(capture).catch_unwind().await.is_err() {
+                    tracing::error!("panicked while collecting inspect state");
+                }
+                // Only safe to delete once the VMM process is gone.
+                drop(temp_disks);
+            })
+            .detach();
+    }
+}
+
+/// The temporary disk files backing the VM.
+fn temp_disks(config: &PetriVmRuntimeConfig) -> Vec<Arc<TempPath>> {
+    config
+        .vmbus_storage_controllers
+        .values()
+        .flat_map(|c| c.drives.values())
+        .chain(config.ide_controllers.iter().flatten().flatten().flatten())
+        .filter_map(|drive| match &drive.disk {
+            Some(Disk::Temporary(path)) => Some(path.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -445,6 +564,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             } => BootDeviceType::None,
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
         };
+
+        let post_test_hooks = params.post_test_hooks;
 
         Ok(Self {
             backend: artifacts.backend,
@@ -488,9 +609,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            inspect_snapshots: Some(InspectBuffer::default()),
         }
         .add_petri_scsi_controllers()
-        .add_guest_crash_disk(params.post_test_hooks))
+        .add_guest_crash_disk(post_test_hooks)
+        .save_inspect_state_on_failure(post_test_hooks))
     }
 
     /// Create a minimal VM builder with only the bare minimum device set.
@@ -568,6 +691,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            inspect_snapshots: None,
         })
     }
 
@@ -786,6 +910,31 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         } else {
             self
         }
+    }
+
+    fn save_inspect_state_on_failure(self, post_test_hooks: &mut Vec<PetriPostTestHook>) -> Self {
+        let Some(snapshots) = self.inspect_snapshots.clone() else {
+            return self;
+        };
+        let logger = self.resources.log_source.clone();
+
+        post_test_hooks.push(PetriPostTestHook::new(
+            "save inspect state".into(),
+            move |test_passed| {
+                if test_passed {
+                    return Ok(());
+                }
+                for (name, node) in snapshots.lock().iter() {
+                    logger.write_attachment(
+                        &format!("failure_inspect_{name}.log"),
+                        node.as_bytes(),
+                    )?;
+                }
+                Ok(())
+            },
+        ));
+
+        self
     }
 
     fn add_agent_disks(self) -> Self {
@@ -1104,8 +1253,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             Self::start_watchdog_tasks(&self.resources, &mut runtime, self.enable_screenshots)?;
 
         let mut vm = PetriVm {
+            runtime: PetriVmRuntimeGuard {
+                runtime: Some(runtime),
+                driver: self.resources.driver.clone(),
+                snapshots: self.inspect_snapshots,
+                temp_disks: temp_disks(&config),
+            },
             resources: self.resources,
-            runtime,
             watchdog_tasks,
             openhcl_diag_handler,
 
@@ -1767,9 +1921,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
 impl<T: PetriVmmBackend> PetriVm<T> {
     /// Immediately tear down the VM.
-    pub async fn teardown(self) -> anyhow::Result<()> {
+    pub async fn teardown(mut self) -> anyhow::Result<()> {
         tracing::info!("Tearing down VM...");
-        self.runtime.teardown().await
+        self.runtime.take().teardown().await
     }
 
     /// Wait for the VM to halt, returning the reason for the halt.
