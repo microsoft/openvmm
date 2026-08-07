@@ -18,6 +18,7 @@ impl BuildKind {
 
 pub struct GitSource {
     pub revision: String,
+    pub dirty: bool,
 }
 
 pub struct VersionInfo {
@@ -36,8 +37,9 @@ pub fn resolve_version(product_version: &str, git: Option<GitSource>) -> Version
     };
 
     let short_revision = &git.revision[..9.min(git.revision.len())];
+    let dirty = if git.dirty { ".dirty" } else { "" };
     VersionInfo {
-        version: format!("{product_version}+g{short_revision}"),
+        version: format!("{product_version}+g{short_revision}{dirty}"),
         kind: BuildKind::Development,
         revision: git.revision,
     }
@@ -53,6 +55,7 @@ mod tests {
     fn git() -> GitSource {
         GitSource {
             revision: REVISION.into(),
+            dirty: false,
         }
     }
 
@@ -70,6 +73,18 @@ mod tests {
         assert_eq!(version.version, "0.2.0+g012345678");
         assert_eq!(version.kind, BuildKind::Development);
         assert_eq!(version.revision, REVISION);
+    }
+
+    #[test]
+    fn a_dirty_checkout_is_marked() {
+        let version = resolve_version(
+            "0.2.0",
+            Some(GitSource {
+                dirty: true,
+                ..git()
+            }),
+        );
+        assert_eq!(version.version, "0.2.0+g012345678.dirty");
     }
 
     #[test]

@@ -13,18 +13,21 @@ fn main() {
 
         // Embed version/resource info into the EXE.
         println!("cargo:rerun-if-changed=resources.rc");
-        println!("cargo:rerun-if-env-changed=OPENVMM_MAJOR");
-        println!("cargo:rerun-if-env-changed=OPENVMM_MINOR");
-        println!("cargo:rerun-if-env-changed=OPENVMM_PATCH");
-        println!("cargo:rerun-if-env-changed=OPENVMM_REVISION");
-
-        let parse_u16 = |s: String| s.parse::<u16>().unwrap_or(0);
-        let major = std::env::var("OPENVMM_MAJOR").map(parse_u16).unwrap_or(0);
-        let minor = std::env::var("OPENVMM_MINOR").map(parse_u16).unwrap_or(0);
-        let patch = std::env::var("OPENVMM_PATCH").map(parse_u16).unwrap_or(0);
-        let revision = std::env::var("OPENVMM_REVISION")
-            .map(parse_u16)
-            .unwrap_or(0);
+        let mut version = env!("CARGO_PKG_VERSION").split('.');
+        let mut next_component = || {
+            version
+                .next()
+                .and_then(|component| component.parse::<u16>().ok())
+                .expect("OpenVMM's Cargo version must be MAJOR.MINOR.PATCH with u16 components")
+        };
+        let major = next_component();
+        let minor = next_component();
+        let patch = next_component();
+        assert!(
+            version.next().is_none(),
+            "OpenVMM's Cargo version must contain exactly three components"
+        );
+        let revision = 0;
 
         let macros = [
             (
