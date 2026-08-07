@@ -788,10 +788,10 @@ jobs:
       shell: bash
     - name: collect openvmm_hcl files for analysis
       run: |-
-        flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
-        flowey v 11 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:113:27' --is-raw-string write-to-env github floweyvar1
+        flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
+        flowey v 11 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:9:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:121:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
-    - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
+    - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__3
       uses: actions/upload-artifact@v7
       with:
         name: aarch64-openhcl-baseline
@@ -836,7 +836,11 @@ jobs:
         EOF
       shell: bash
     - name: setup gh cli
-      run: flowey e 11 flowey_lib_common::use_gh_cli 0
+      run: |-
+        flowey e 11 flowey_lib_common::use_gh_cli 0
+        flowey v 11 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:3:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.base_ref <<EOF
+        ${{ github.base_ref }}
+        EOF
       shell: bash
     - name: get merge commit
       run: flowey e 11 flowey_lib_common::git_merge_commit 0
@@ -844,13 +848,13 @@ jobs:
     - name: get action id by commit
       run: |-
         flowey e 11 flowey_lib_common::gh_workflow_id 0
-        flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 0
+        flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
       shell: bash
     - name: download artifacts from github actions run
       run: flowey e 11 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: binary size comparison
-      run: flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 3
+      run: flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 4
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 11 flowey_lib_common::cache 3
@@ -1399,10 +1403,10 @@ jobs:
       shell: bash
     - name: collect openvmm_hcl files for analysis
       run: |-
-        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
-        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:113:27' --is-raw-string write-to-env github floweyvar1
+        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
+        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:9:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:121:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
-    - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
+    - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__3
       uses: actions/upload-artifact@v7
       with:
         name: x64-openhcl-baseline
@@ -1447,7 +1451,11 @@ jobs:
         EOF
       shell: bash
     - name: setup gh cli
-      run: flowey e 13 flowey_lib_common::use_gh_cli 0
+      run: |-
+        flowey e 13 flowey_lib_common::use_gh_cli 0
+        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:3:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.base_ref <<EOF
+        ${{ github.base_ref }}
+        EOF
       shell: bash
     - name: get merge commit
       run: flowey e 13 flowey_lib_common::git_merge_commit 0
@@ -1455,13 +1463,13 @@ jobs:
     - name: get action id by commit
       run: |-
         flowey e 13 flowey_lib_common::gh_workflow_id 0
-        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 0
+        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
       shell: bash
     - name: download artifacts from github actions run
       run: flowey e 13 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: binary size comparison
-      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 3
+      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 4
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 13 flowey_lib_common::cache 3
