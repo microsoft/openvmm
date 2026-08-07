@@ -84,6 +84,32 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Override the SMBIOS identity delivered to the guest, regardless of how
+    /// the VM is loaded.
+    ///
+    /// For OpenHCL the identity is forwarded to the paravisor over the Guest
+    /// Emulation Transport (GET), which synthesizes the guest's DMI tables from
+    /// it. For direct OpenVMM boot (Linux direct, UEFI, or PCAT) it is applied
+    /// to the loader's SMBIOS config. Each load path honors only the subset of
+    /// fields it can express and fails closed on the rest.
+    pub fn with_smbios(mut self, f: impl FnOnce(&mut smbios_defs::SmbiosConfig)) -> Self {
+        if self.resources.properties.is_openhcl {
+            let ged = self.ged.as_mut().expect("OpenHCL config must have a GED.");
+            f(&mut ged.smbios);
+        } else {
+            let smbios = match &mut self.config.load_mode {
+                LoadMode::Linux { smbios, .. }
+                | LoadMode::Uefi { smbios, .. }
+                | LoadMode::Pcat { smbios, .. } => &mut **smbios,
+                LoadMode::Igvm { .. } | LoadMode::None => {
+                    panic!("SMBIOS configuration is not supported for this load mode.")
+                }
+            };
+            f(smbios);
+        }
+        self
+    }
+
     /// Enable a synthnic for the VM.
     ///
     /// Uses a mana emulator and the paravisor if a paravisor is present.

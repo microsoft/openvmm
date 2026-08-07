@@ -115,6 +115,8 @@ enum Error {
     TestIgvmAgent(#[source] test_igvm_agent_lib::Error),
     #[error("failed to write to shared memory")]
     SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
+    #[error("SMBIOS field `{0}` cannot be configured over the paravisor GET path")]
+    UnsupportedSmbiosField(&'static str),
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -167,6 +169,9 @@ pub struct GuestConfig {
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
     /// Force UEFI to bounce-buffer all DMA traffic.
     pub force_dma_bounce_enabled: bool,
+    /// SMBIOS identity overrides.
+    #[inspect(skip)]
+    pub smbios: smbios_defs::SmbiosConfig,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -1263,6 +1268,44 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         &mut self,
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
+        // The paravisor GET path only carries the SMBIOS *system* (Type 1)
+        // identity. BIOS (Type 0) overrides have no wire representation and the
+        // paravisor's direct loader builds Type 0 from its own defaults, so
+        // fail closed rather than silently dropping a requested override
+        // (mirrors the UEFI load path's handling).
+        let smbios_defs::SmbiosBiosOverrides {
+            vendor,
+            version,
+            release_date,
+            release,
+        } = &state.config.smbios.bios;
+        if vendor.is_some() {
+            return Err(Error::UnsupportedSmbiosField("BIOS vendor"));
+        }
+        if version.is_some() {
+            return Err(Error::UnsupportedSmbiosField("BIOS version"));
+        }
+        if release_date.is_some() {
+            return Err(Error::UnsupportedSmbiosField("BIOS release date"));
+        }
+        if release.is_some() {
+            return Err(Error::UnsupportedSmbiosField("BIOS release"));
+        }
+
+        // Destructure the Type 1 (System) overrides so that every field is
+        // explicitly forwarded below; adding a field to `SmbiosSystemOverrides`
+        // is then a compile error here until it is wired into the DPS payload,
+        // rather than being silently dropped.
+        let smbios_defs::SmbiosSystemOverrides {
+            manufacturer: system_manufacturer,
+            product_name: system_product_name,
+            version: system_version,
+            serial_number: system_serial_number,
+            sku_number: system_sku_number,
+            family: system_family,
+            uuid: system_uuid,
+        } = &state.config.smbios.system;
+
         let vpci_boot_enabled;
         let enable_firmware_debugging;
         let disable_frontpage;
@@ -1327,8 +1370,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 bios_guid: if state.test_gsp_by_id {
                     guid::guid!("2b701019-2816-4a85-9692-3981f1af4423")
                 } else {
-                    Default::default()
+                    *system_uuid
                 },
+                serial_number: system_serial_number.clone().unwrap_or_default(),
                 ..Default::default()
             },
             v2: get_protocol::dps_json::HclDevicePlatformSettingsV2 {
@@ -1350,7 +1394,14 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     vpci_instance_filter: None,
                     num_lock_enabled: false,
                     pcat_boot_device_order,
-                    smbios: Default::default(),
+                    smbios: get_protocol::dps_json::HclDevicePlatformSettingsV2StaticSmbios {
+                        system_manufacturer: system_manufacturer.clone().unwrap_or_default(),
+                        system_product_name: system_product_name.clone().unwrap_or_default(),
+                        system_version: system_version.clone().unwrap_or_default(),
+                        system_sku_number: system_sku_number.clone().unwrap_or_default(),
+                        system_family: system_family.clone().unwrap_or_default(),
+                        ..Default::default()
+                    },
                     watchdog_enabled: false,
                     always_relay_host_mmio: false,
                     imc_enabled: false,

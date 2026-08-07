@@ -215,6 +215,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     }
                 },
                 force_dma_bounce_enabled: resource.force_dma_bounce_enabled,
+                smbios: resource.smbios,
             },
             halt,
             resource.firmware_event_send,

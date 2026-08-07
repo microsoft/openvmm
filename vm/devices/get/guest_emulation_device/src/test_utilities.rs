@@ -264,6 +264,7 @@ pub fn create_host_channel(
         hardware_sealing_policy: Default::default(),
         efi_diagnostics_log_level: Default::default(),
         force_dma_bounce_enabled: false,
+        smbios: Default::default(),
     };
 
     let halt_reason = Arc::new(Mutex::new(None));

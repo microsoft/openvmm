@@ -51,31 +51,71 @@ pub struct KernelConfig<'a> {
     pub cmdline: &'a str,
     pub mem_layout: &'a MemoryLayout,
     pub isolation: Option<IsolationType>,
+    pub smbios: &'a openvmm_defs::config::SmbiosConfig,
 }
 
-/// The default SMBIOS identity for firmware-less Linux direct boot.
+/// Merges the owned SMBIOS override config into the borrowed table view the
+/// builder consumes, substituting the `loader` crate's default strings for any
+/// unset (`None`) override.
 ///
-/// There is no configuration surface yet, so every direct-boot VM gets this
-/// fixed OpenVMM identity. The UUID is left nil.
-fn default_smbios_tables() -> loader::smbios::SmbiosTables<'static> {
+/// This merge lives here in `openvmm_core` because it is the only crate that
+/// sees both the `loader` crate's default string constants and `openvmm_defs`'
+/// override config — `openvmm_defs` deliberately does not duplicate the default
+/// literals, and `loader` does not depend on `openvmm_defs`.
+fn smbios_tables_from_config(
+    config: &openvmm_defs::config::SmbiosConfig,
+) -> loader::smbios::SmbiosTables<'_> {
     use loader::smbios;
+
+    // Destructure fully so that adding a field to `SmbiosConfig` (or either of
+    // its per-type override sub-structs) is a compile error here until it is
+    // wired into the table view, rather than being silently dropped.
+    let openvmm_defs::config::SmbiosConfig { bios, system } = config;
+    let openvmm_defs::config::SmbiosBiosOverrides {
+        vendor,
+        version: bios_version,
+        release_date,
+        release,
+    } = bios;
+    let openvmm_defs::config::SmbiosSystemOverrides {
+        manufacturer,
+        product_name,
+        version: system_version,
+        serial_number,
+        sku_number,
+        family,
+        uuid,
+    } = system;
+
+    const DEFAULT_BIOS_VENDOR: &str = "OpenVMM";
+    const DEFAULT_BIOS_VERSION: &str = "OpenVMM Direct";
+    const DEFAULT_BIOS_RELEASE_DATE: &str = "06/19/2026";
+    const DEFAULT_BIOS_MAJOR: u8 = 0;
+    const DEFAULT_BIOS_MINOR: u8 = 0;
+    const DEFAULT_MANUFACTURER: &str = "OpenVMM";
+    const DEFAULT_PRODUCT_NAME: &str = "OpenVMM Virtual Machine";
 
     smbios::SmbiosTables {
         bios: smbios::SmbiosBiosInfo {
-            vendor: "OpenVMM",
-            version: "OpenVMM Direct",
-            release_date: "06/19/2026",
-            major: 0,
-            minor: 0,
+            vendor: vendor.as_deref().unwrap_or(DEFAULT_BIOS_VENDOR),
+            version: bios_version.as_deref().unwrap_or(DEFAULT_BIOS_VERSION),
+            release_date: release_date.as_deref().unwrap_or(DEFAULT_BIOS_RELEASE_DATE),
+            major: release.map_or(DEFAULT_BIOS_MAJOR, |(major, _)| major),
+            minor: release.map_or(DEFAULT_BIOS_MINOR, |(_, minor)| minor),
         },
         system: smbios::SmbiosSystemInfo {
-            manufacturer: "OpenVMM",
-            product_name: "OpenVMM Virtual Machine",
-            version: "",
-            serial_number: "",
-            sku_number: "",
-            family: "",
-            uuid: [0; 16],
+            manufacturer: manufacturer.as_deref().unwrap_or(DEFAULT_MANUFACTURER),
+            product_name: product_name.as_deref().unwrap_or(DEFAULT_PRODUCT_NAME),
+            version: system_version.as_deref().unwrap_or(""),
+            serial_number: serial_number.as_deref().unwrap_or(""),
+            sku_number: sku_number.as_deref().unwrap_or(""),
+            family: family.as_deref().unwrap_or(""),
+            // SMBIOS (>= 2.6) stores the Type 1 UUID's first three fields
+            // little-endian, which is exactly the in-memory byte layout of our
+            // `Guid` type, so its raw bytes go in directly with no swap. The
+            // UEFI boot path uses the same VM BIOS GUID, so a guest reports the
+            // same `product_uuid` whether booted via UEFI or direct boot.
+            uuid: (*uuid).into(),
         },
     }
 }
@@ -110,7 +150,7 @@ pub fn load_linux_x86(
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
 
     // The loader owns the sub-1 MB layout; we supply only the kernel, command
-    // line, an ACPI builder, and the default SMBIOS identity.
+    // line, an ACPI builder, and the configured SMBIOS identity.
     loader::linux::load_x86(
         &mut loader,
         &mut kernel_file,
@@ -118,7 +158,7 @@ pub fn load_linux_x86(
         &cmdline,
         cfg.mem_layout,
         acpi_at_gpa,
-        Some(default_smbios_tables()),
+        Some(smbios_tables_from_config(cfg.smbios)),
         snp_boot,
     )
     .map_err(Error::Loader)?;
@@ -611,6 +651,7 @@ fn write_efi_and_acpi_tables(
     rsdp_addr: u64,
     mem_layout: &MemoryLayout,
     acpi_tables: &vmm_core::acpi_builder::BuiltAcpiTables,
+    smbios: &openvmm_defs::config::SmbiosConfig,
 ) -> Result<Aarch64EfiInfo, Error> {
     use memory_range::MemoryRange;
     use uefi_specs::uefi::boot::ACPI_20_TABLE_GUID;
@@ -675,7 +716,7 @@ fn write_efi_and_acpi_tables(
     cursor += loader::smbios::ENTRY_POINT_SIZE as u64;
     cursor = align_up(cursor, 16);
     let smbios_table_addr = cursor;
-    let smbios = loader::smbios::build(&default_smbios_tables(), smbios_table_addr);
+    let smbios = loader::smbios::build(&smbios_tables_from_config(smbios), smbios_table_addr);
     cursor += smbios.structure_table.len() as u64;
 
     // Compute how many pages the metadata region spans.
@@ -913,6 +954,7 @@ pub fn load_linux_arm64(
             rsdp_addr,
             cfg.mem_layout,
             &acpi_tables,
+            cfg.smbios,
         )?;
         build_stub_dt(cfg.cmdline, initrd_start, initrd_end, &efi_info)
             .map_err(|e| Error::Dt(DtError(e)))?
