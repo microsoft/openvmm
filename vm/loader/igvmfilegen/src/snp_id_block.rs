@@ -39,15 +39,19 @@ use x86defs::snp::SnpPspIdBlock;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
-/// SNP family identifier for OpenHCL/Underhill guests.
+/// SNP family identifier for OpenHCL guests.
+///
+/// Layout convention:
+/// - `byte[3] == 0x01` identifies OpenHCL.
+/// - all other bytes are reserved and must remain `0x00`.
 ///
 /// This value is baked into externally-consumed SNP ID blocks; changing it
 /// alters attestation identity, so any edit must be deliberate.
 pub const SNP_FAMILY_ID: [u8; 16] = [
-    0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
-/// SNP image identifier for OpenHCL/Underhill guests.
-pub const SNP_IMAGE_ID: [u8; 16] = *b"underhill\0\0\0\0\0\0\0";
+/// SNP image identifier for OpenHCL guests.
+pub const SNP_IMAGE_ID: [u8; 16] = *b"openhcl\0\0\0\0\0\0\0\0\0";
 
 const SHA_384_OUTPUT_SIZE_BYTES: usize = 48;
 const SNP_ID_KEY_ALGORITHM_ECDSA_P384_SHA384: u32 = 1;
@@ -764,11 +768,11 @@ mod tests {
         assert_eq!(
             SNP_FAMILY_ID,
             [
-                0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00,
             ]
         );
-        assert_eq!(SNP_IMAGE_ID, *b"underhill\0\0\0\0\0\0\0");
+        assert_eq!(SNP_IMAGE_ID, *b"openhcl\0\0\0\0\0\0\0\0\0");
         assert_eq!(SNP_FAMILY_ID.len(), 16);
         assert_eq!(SNP_IMAGE_ID.len(), 16);
     }
