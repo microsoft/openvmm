@@ -5800,6 +5800,7 @@ name = "openvmm_entry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "build_rs_git_info",
  "build_rs_guest_arch",
  "chipset_device_worker_defs",
  "chipset_resources",

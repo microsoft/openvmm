@@ -32,6 +32,7 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use thiserror::Error;
 
 /// Parse CLI options, using a thread with a larger stack on Windows to avoid
@@ -138,11 +139,29 @@ pub struct NumaDistanceCli {
     pub distance: u8,
 }
 
+/// Formats the `--version` output from the crate version and the git revision
+/// the build recorded, if any.
+fn version_string(pkg_version: &str, revision: Option<&str>) -> String {
+    match revision {
+        Some(revision) if !revision.is_empty() => format!("{pkg_version} ({revision})"),
+        _ => pkg_version.to_owned(),
+    }
+}
+
+static VERSION: LazyLock<String> =
+    LazyLock::new(|| version_string(env!("CARGO_PKG_VERSION"), option_env!("BUILD_GIT_SHA")));
+
+/// The `--version` text, built once on first use.
+fn version() -> &'static str {
+    VERSION.as_str()
+}
+
 /// OpenVMM virtual machine monitor.
 ///
 /// This is not yet a stable interface and may change radically between
 /// versions.
 #[derive(Parser)]
+#[command(name = "openvmm", version = version())]
 pub struct Options {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
@@ -3391,6 +3410,24 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn version_string_includes_the_revision_when_the_build_had_one() {
+        assert_eq!(version_string("1.2.3", Some("abc1234")), "1.2.3 (abc1234)");
+    }
+
+    #[test]
+    fn version_string_falls_back_to_the_crate_version_without_a_repository() {
+        // A source build outside a git checkout emits no revision. It has to
+        // produce a usable version rather than an empty or malformed one.
+        assert_eq!(version_string("1.2.3", None), "1.2.3");
+    }
+
+    #[test]
+    fn version_string_ignores_a_blank_revision() {
+        // `git` succeeding with empty output would otherwise render "1.2.3 ()".
+        assert_eq!(version_string("1.2.3", Some("")), "1.2.3");
+    }
 
     #[test]
     fn test_parse_rpc() {
