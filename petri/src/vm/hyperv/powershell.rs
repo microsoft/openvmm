@@ -1631,6 +1631,8 @@ pub async fn run_get_winevent(
 
 const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
 const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
+const HYPERV_WORKER_OPERATIONAL_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Operational";
+const HYPERV_VMMS_OPERATIONAL_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Operational";
 
 /// Providers that report a process fault to Windows Error Reporting and the
 /// Azure Watson agent.
@@ -1740,7 +1742,12 @@ pub async fn hyperv_event_logs(
 ) -> anyhow::Result<Vec<WinEvent>> {
     let vmid = vmid.map(|id| id.to_string());
     run_get_winevent(
-        &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
+        &[
+            HYPERV_WORKER_TABLE,
+            HYPERV_VMMS_TABLE,
+            HYPERV_WORKER_OPERATIONAL_TABLE,
+            HYPERV_VMMS_OPERATIONAL_TABLE,
+        ],
         &[],
         Some(start_time),
         vmid.as_deref(),
