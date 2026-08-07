@@ -2309,6 +2309,94 @@ async fn initialize_nic(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn initialize_retries_invalid_buffer_gpadls(driver: DefaultDriver) {
+    let mut nic = TestNicDevice::new(&driver).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+
+    channel.send_initialize_message().await;
+    channel
+        .send_ndis_config_message(protocol::NdisConfigCapabilities::new())
+        .await;
+    channel.send_ndis_version_message().await;
+
+    let invalid_gpadl = GpadlId(u32::MAX);
+    let receive_buffer = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE1_TYPE_SEND_RECEIVE_BUFFER,
+        },
+        data: protocol::Message1SendReceiveBuffer {
+            gpadl_handle: invalid_gpadl,
+            id: 0,
+            reserved: 0,
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 100,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &receive_buffer.payload(),
+        })
+        .await;
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE1_TYPE_SEND_RECEIVE_BUFFER_COMPLETE
+                );
+                let completion: protocol::Message1SendReceiveBufferComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion.status, protocol::Status::FAILURE);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("receive-buffer failure completion");
+    channel.send_receive_buffer_message(1).await;
+
+    let send_buffer = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE1_TYPE_SEND_SEND_BUFFER,
+        },
+        data: protocol::Message1SendSendBuffer {
+            gpadl_handle: invalid_gpadl,
+            id: 0,
+            reserved: 0,
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 101,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &send_buffer.payload(),
+        })
+        .await;
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE1_TYPE_SEND_SEND_BUFFER_COMPLETE
+                );
+                let completion: protocol::Message1SendSendBufferComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion.status, protocol::Status::FAILURE);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("send-buffer failure completion");
+    channel.send_send_buffer_message().await;
+}
+
+#[async_test]
 async fn initialize_rndis(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
@@ -3093,6 +3181,44 @@ async fn rndis_handle_packet_errors(driver: DefaultDriver) {
 
     let completion = channel.read_rndis_packet_complete_message().await.unwrap();
     assert_eq!(completion.status, protocol::Status::FAILURE);
+}
+
+#[async_test]
+async fn malformed_vmbus_packet_does_not_stop_worker(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 0,
+            packet_type: OutgoingPacketType::InBandNoCompletion,
+            payload: &[],
+        })
+        .await;
+
+    endpoint_state.lock().send_rx(0, vec![0xAA; 60]);
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(_) => {}
+            _ => panic!("Unexpected packet type on RX"),
+        })
+        .await
+        .expect("worker should keep processing after malformed packet");
 }
 
 #[async_test]
@@ -7047,6 +7173,58 @@ async fn rndis_rx_vlan_preserves_packet_data(driver: DefaultDriver) {
         1,
         "netvsp should count 1 RX packet"
     );
+}
+
+#[async_test]
+async fn rndis_invalid_packet_complete(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    // Send a completion for a transaction_id that was never allocated.
+    channel
+        .write(OutgoingPacket {
+            transaction_id: u32::MAX as u64,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+
+    // Inject an RX packet. Should be able to read the packet from the guest channel.
+    {
+        let locked_state = endpoint_state.lock();
+        locked_state.send_rx(0, vec![0xAA; 60]);
+    }
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(_) => {}
+            _ => panic!("Unexpected packet type on RX"),
+        })
+        .await
+        .expect("worker should keep processing after invalid completion");
 }
 
 /// Helper: builds an RSS-enable parameter block that the set_rss_parameter
