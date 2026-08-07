@@ -190,6 +190,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     vhost_vsock_guest_cid: Option<u32>,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
+    // Disable the hypervisor (HV#1) enlightenments. Implies `no_vmbus`.
+    no_hv: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -213,6 +215,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
             .field("no_vmbus", &self.no_vmbus)
+            .field("no_hv", &self.no_hv)
             .finish()
     }
 }
@@ -312,6 +315,8 @@ pub struct PetriVmProperties {
     pub vhost_vsock_guest_cid: Option<u32>,
     /// VMBus is entirely disabled
     pub no_vmbus: bool,
+    /// The hypervisor (HV#1) enlightenments are entirely disabled
+    pub no_hv: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -401,9 +406,10 @@ pub(crate) const PETRI_NVME_BOOT_VTL0_CONTROLLER: Guid =
 pub(crate) const PETRI_NVME_BOOT_VTL2_CONTROLLER: Guid =
     guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
-/// PCIe root port used by Petri for the agent/cidata disk (no-vmbus mode)
+/// PCIe root port used by Petri for the agent/cidata disk when there is no
+/// existing PCIe NVMe controller (no-vmbus mode).
 pub(crate) const PETRI_PCIE_NVME_AGENT_PORT: &str = "s0rc0rp1";
-/// NVMe namespace ID used by Petri for the agent/cidata disk (no-vmbus mode)
+/// Default NVMe namespace ID used by Petri for the agent/cidata disk.
 pub(crate) const PETRI_PCIE_NVME_AGENT_NSID: u32 = 1;
 
 /// A constructed Petri VM
@@ -488,6 +494,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            no_hv: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -568,6 +575,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            no_hv: false,
         })
     }
 
@@ -715,6 +723,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Disable the hypervisor (HV#1) enlightenments.
+    ///
+    /// This also disables VMBus, since VMBus depends on the hypervisor. On
+    /// aarch64 UEFI this causes the loader to pass the generic SEC platform
+    /// type to the firmware. This mode is not supported on x86_64 UEFI.
+    pub fn with_no_hv(mut self) -> Self {
+        self.no_hv = true;
+        self.with_no_vmbus()
+    }
+
     fn add_petri_scsi_controllers(self) -> Self {
         let builder = self.add_vmbus_storage_controller(
             &PETRI_SCSI_VTL0_CONTROLLER,
@@ -822,9 +840,27 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         // When VMBus is disabled, route the agent disk through PCIe NVMe
         // instead of VMBus SCSI.
         if self.no_vmbus {
+            let (port_name, nsid) = if let Some(controller) = self.config.pcie_nvme_drives.first() {
+                let nsid = self
+                    .config
+                    .pcie_nvme_drives
+                    .iter()
+                    .filter(|drive| drive.port_name == controller.port_name)
+                    .map(|drive| drive.nsid)
+                    .max()
+                    .unwrap()
+                    .checked_add(1)
+                    .expect("PCIe NVMe namespace ID overflow");
+                (controller.port_name.clone(), nsid)
+            } else {
+                (
+                    PETRI_PCIE_NVME_AGENT_PORT.into(),
+                    PETRI_PCIE_NVME_AGENT_NSID,
+                )
+            };
             self.config.pcie_nvme_drives.push(PcieNvmeDrive {
-                port_name: PETRI_PCIE_NVME_AGENT_PORT.into(),
-                nsid: PETRI_PCIE_NVME_AGENT_NSID,
+                port_name,
+                nsid,
                 drive: Drive::new(
                     Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
                     false,
@@ -1027,6 +1063,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: self.vhost_vsock_guest_cid,
             no_vmbus: self.no_vmbus,
+            no_hv: self.no_hv,
         }
     }
 

@@ -76,6 +76,7 @@ use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_socket::net::OpenSocketSerialConfig;
 use sparse_mmap::alloc_shared_memory;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -156,6 +157,7 @@ impl PetriVmConfigOpenVmm {
             enable_serial: properties.enable_serial,
             use_virtio_vsock: properties.use_virtio_vsock,
             no_vmbus: properties.no_vmbus,
+            no_hv: properties.no_hv,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -231,6 +233,7 @@ impl PetriVmConfigOpenVmm {
             vmbus_storage_controllers_to_openvmm(&vmbus_storage_controllers).await?;
 
         let mut pcie_devices = Vec::new();
+        let mut pcie_nvme_controllers = BTreeMap::<String, Vec<NamespaceDefinition>>::new();
         for PcieNvmeDrive {
             port_name,
             nsid,
@@ -243,17 +246,25 @@ impl PetriVmConfigOpenVmm {
                 )
             })?;
             let disk = petri_disk_to_openvmm(&disk).await?;
+            let namespaces = pcie_nvme_controllers.entry(port_name).or_default();
+            anyhow::ensure!(
+                namespaces.iter().all(|namespace| namespace.nsid != nsid),
+                "duplicate PCIe NVMe namespace ID {nsid}"
+            );
+            namespaces.push(NamespaceDefinition {
+                nsid,
+                read_only: false,
+                disk,
+            });
+        }
+        for (port_name, namespaces) in pcie_nvme_controllers {
             pcie_devices.push(PcieDeviceConfig {
                 port_name,
                 resource: NvmeControllerHandle {
                     subsystem_id: Guid::new_random(),
                     max_io_queues: 64,
                     msix_count: 64,
-                    namespaces: vec![NamespaceDefinition {
-                        nsid,
-                        read_only: false,
-                        disk,
-                    }],
+                    namespaces,
                     requests: None,
                 }
                 .into_resource(),
@@ -655,7 +666,7 @@ impl PetriVmConfigOpenVmm {
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {
-                with_hv: true,
+                with_hv: !properties.no_hv,
                 with_vtl2,
                 with_isolation: match firmware.isolation() {
                     Some(IsolationType::Vbs) => Some(openvmm_defs::config::IsolationType::Vbs),
@@ -781,6 +792,7 @@ struct PetriVmConfigSetupCore<'a> {
     enable_serial: bool,
     use_virtio_vsock: bool,
     no_vmbus: bool,
+    no_hv: bool,
 }
 
 struct SerialData {
@@ -963,6 +975,7 @@ impl PetriVmConfigSetupCore<'_> {
                     bios_guid: Guid::new_random(),
                     enable_vmbus: !self.no_vmbus,
                     force_dma_bounce: *force_dma_bounce,
+                    enable_hv: !self.no_hv,
                 }
             }
             (
