@@ -18,6 +18,8 @@ use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::x86::X86VpInfo;
 use x86defs::cpuid::CpuidFunction;
+use x86defs::cpuid::ExtendedSevFeaturesEax;
+use x86defs::cpuid::ExtendedSevFeaturesEbx;
 use x86defs::cpuid::SgxCpuidSubleafEax;
 use x86defs::cpuid::Vendor;
 use x86defs::xsave::XSAVE_VARIABLE_OFFSET;
@@ -79,6 +81,8 @@ pub struct X86PartitionCapabilities {
     pub vtom: Option<u64>,
     /// The physical address width of the CPU, as reported by CPUID.
     pub physical_address_width: u8,
+    /// The page-table bit that marks private memory for SNP, if supported.
+    pub snp_c_bit: Option<u8>,
 
     /// The hypervisor can freeze time across state manipulation.
     pub can_freeze_time: bool,
@@ -130,6 +134,7 @@ impl X86PartitionCapabilities {
             tsc_aux: false,
             vtom: None,
             physical_address_width: max_physical_address_size_from_cpuid(&mut *f),
+            snp_c_bit: snp_c_bit_from_cpuid(&mut *f),
             can_freeze_time: false,
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,
@@ -507,6 +512,18 @@ impl TryFrom<usize> for BreakpointSize {
     }
 }
 
+fn snp_c_bit_from_cpuid(mut cpuid: impl FnMut(u32, u32) -> [u32; 4]) -> Option<u8> {
+    let max_extended = cpuid(CpuidFunction::ExtendedMaxFunction.0, 0)[0];
+    if max_extended < CpuidFunction::ExtendedSevFeatures.0 {
+        return None;
+    }
+
+    let [eax, ebx, _, _] = cpuid(CpuidFunction::ExtendedSevFeatures.0, 0);
+    ExtendedSevFeaturesEax::from(eax)
+        .sev_snp()
+        .then(|| ExtendedSevFeaturesEbx::from(ebx).cbit_position())
+}
+
 /// Query the max physical address size of the system.
 pub fn max_physical_address_size_from_cpuid(mut cpuid: impl FnMut(u32, u32) -> [u32; 4]) -> u8 {
     const DEFAULT_PHYSICAL_ADDRESS_SIZE: u8 = 32;
@@ -521,6 +538,32 @@ pub fn max_physical_address_size_from_cpuid(mut cpuid: impl FnMut(u32, u32) -> [
         (result[0] & 0xFF) as u8
     } else {
         DEFAULT_PHYSICAL_ADDRESS_SIZE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snp_c_bit_requires_snp_cpuid_support() {
+        let cpuid = |function, _| match CpuidFunction(function) {
+            CpuidFunction::ExtendedMaxFunction => [CpuidFunction::ExtendedSevFeatures.0, 0, 0, 0],
+            CpuidFunction::ExtendedSevFeatures => [
+                ExtendedSevFeaturesEax::new().with_sev_snp(true).into(),
+                ExtendedSevFeaturesEbx::new().with_cbit_position(51).into(),
+                0,
+                0,
+            ],
+            _ => [0; 4],
+        };
+        assert_eq!(snp_c_bit_from_cpuid(cpuid), Some(51));
+
+        let cpuid_without_snp = |function, _| match CpuidFunction(function) {
+            CpuidFunction::ExtendedMaxFunction => [CpuidFunction::ExtendedSevFeatures.0, 0, 0, 0],
+            _ => [0; 4],
+        };
+        assert_eq!(snp_c_bit_from_cpuid(cpuid_without_snp), None);
     }
 }
 

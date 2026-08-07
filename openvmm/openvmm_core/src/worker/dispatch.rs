@@ -1170,6 +1170,43 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
+        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
+            if !matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+                anyhow::bail!("KVM SNP guest_memfd currently only supports direct Linux load mode");
+            }
+            if cfg.hypervisor.with_hv {
+                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V enlightenments");
+            }
+            if cfg.hypervisor.with_vtl2.is_some() {
+                anyhow::bail!("KVM SNP guest_memfd does not support VTL2");
+            }
+            if cfg.chipset.with_hyperv_vga {
+                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V VGA");
+            }
+            if cfg.chipset_capabilities.with_i440bx_host_pci_bridge {
+                anyhow::bail!("KVM SNP guest_memfd does not support the i440BX host PCI bridge");
+            }
+            if cfg.vmbus.is_some() || cfg.vtl2_vmbus.is_some() || !cfg.vmbus_devices.is_empty() {
+                anyhow::bail!("KVM SNP guest_memfd does not support VMBus");
+            }
+            if !cfg.floppy_disks.is_empty()
+                || !cfg.ide_disks.is_empty()
+                || !cfg.virtio_devices.is_empty()
+            {
+                anyhow::bail!("KVM SNP guest_memfd does not support disks");
+            }
+            if matches!(
+                cfg.vmgs,
+                Some(
+                    VmgsResource::Disk(_)
+                        | VmgsResource::ReprovisionOnFailure(_)
+                        | VmgsResource::Reprovision(_)
+                )
+            ) {
+                anyhow::bail!("KVM SNP guest_memfd does not support VMGS disks");
+            }
+        }
+
         // Build per-node RAM backing requests. Each NUMA node with memory
         // gets its own backing (memfd), enabling per-node hugepage settings
         // and host NUMA binding.
@@ -3126,6 +3163,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: self.hypervisor_cfg.with_isolation,
+                    snp_c_bit: self.partition.caps().snp_c_bit,
                 };
                 super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
                     let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
@@ -3164,6 +3202,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: self.hypervisor_cfg.with_isolation,
+                    snp_c_bit: None,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {

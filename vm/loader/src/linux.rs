@@ -270,7 +270,10 @@ const KERNEL_BASE: u64 = 0x100000;
 
 /// Enables allocation of the SEV-SNP Linux boot protocol pages.
 #[derive(Debug, Clone, Copy)]
-pub struct SnpBootConfig;
+pub struct SnpBootConfig {
+    /// The page-table bit that marks private memory.
+    pub c_bit: u8,
+}
 
 const SNP_BOOT_PAGE_COUNT: u64 = 4;
 
@@ -633,12 +636,15 @@ fn import_config(
     let mut page_table_work_buffer: Vec<PageTable> =
         vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
     let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
-    let page_table_builder = IdentityMapBuilder::new(
+    let mut page_table_builder = IdentityMapBuilder::new(
         CR3_BASE,
         IdentityMapSize::Size4Gb,
         page_table_work_buffer.as_mut_slice(),
         page_table.as_mut_slice(),
     )?;
+    if let Some(snp_boot) = snp_boot {
+        page_table_builder = page_table_builder.with_confidential_bit(snp_boot.c_bit.into());
+    }
     let page_table = page_table_builder.build();
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
@@ -1499,6 +1505,39 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, Error::CommandLineTooLong(..)), "got {err:?}");
         assert!(importer.pages.is_empty(), "importer used before the check");
+    }
+
+    #[test]
+    fn import_config_sets_snp_c_bit_in_page_tables() {
+        const C_BIT: u8 = 51;
+        let acpi = AcpiTables {
+            rsdp: vec![0u8; 0x1000],
+            tables: vec![0u8; 0x1000],
+        };
+        let mut importer = RecordingImporter::default();
+        import_config(
+            &mut importer,
+            &test_load_info(),
+            &CString::new("").unwrap(),
+            &make_layout(256 * MB),
+            &acpi,
+            None,
+            Some(SnpBootConfig { c_bit: C_BIT }),
+        )
+        .unwrap();
+
+        let page_tables = importer
+            .imports
+            .iter()
+            .find(|import| import.tag == "linux-pagetables")
+            .unwrap();
+        for entry in page_tables.data.chunks_exact(8).map(|entry| {
+            u64::from_ne_bytes(entry.try_into().expect("page table entry is eight bytes"))
+        }) {
+            if entry & 1 != 0 {
+                assert_ne!(entry & (1 << C_BIT), 0);
+            }
+        }
     }
 
     #[test]
