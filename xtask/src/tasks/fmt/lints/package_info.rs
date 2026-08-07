@@ -73,7 +73,8 @@ impl Lint for PackageInfo {
             .unwrap_or(false);
 
         let package_name = package["name"].as_str().unwrap();
-        let check_version = !VERSION_EXCEPTIONS.contains(&package_name);
+        let is_version_exception = VERSION_EXCEPTIONS.contains(&package_name);
+        let check_version = !is_version_exception;
 
         let mut lints_table = Table::new();
         lints_table.insert("workspace", Item::Value(true.into()));
@@ -88,6 +89,8 @@ impl Lint for PackageInfo {
 
         let has_authors = package.contains_key("authors");
         let has_version = check_version && package.contains_key("version");
+        let needs_publish_false =
+            is_version_exception && package.get("publish").and_then(Item::as_bool) != Some(false);
         let needs_lints_fix = !excluded_from_workspace
             && content.get("lints").map(|o| o.to_string()).as_deref()
                 != Some(&lints_table.to_string());
@@ -110,6 +113,15 @@ impl Lint for PackageInfo {
         if has_version {
             content.fix("package should not have version field", |doc| {
                 doc["package"].as_table_mut().unwrap().remove("version");
+            });
+        }
+
+        if needs_publish_false {
+            content.fix("versioned package should set publish = false", |doc| {
+                doc["package"]
+                    .as_table_mut()
+                    .unwrap()
+                    .insert("publish", Item::Value(false.into()));
             });
         }
 

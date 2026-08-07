@@ -6,7 +6,6 @@
 #![expect(missing_docs)]
 
 #[cfg(test)]
-#[path = "../version.rs"]
 mod version;
 
 #[derive(Debug)]

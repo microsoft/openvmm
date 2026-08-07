@@ -8,6 +8,9 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 
+[build-dependencies]
+vergen-gitcl.workspace = true
+
 [dev-dependencies]
 test_with_tracing.workspace = true
 
