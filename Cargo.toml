@@ -69,6 +69,9 @@ exclude = [
 [workspace.package]
 rust-version = "1.95"
 edition = "2024"
+# The canonical OpenVMM version. It remains at the most recently released
+# version until a reviewed pull request selects the next release.
+version = "0.1.0"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -85,6 +88,7 @@ flowey_lib_hvlite = { path = "flowey/flowey_lib_hvlite" }
 schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
 openvmm_core = { path = "openvmm/openvmm_core" }
+openvmm_build_info = { path = "openvmm/openvmm_build_info" }
 openvmm_defs = { path = "openvmm/openvmm_defs" }
 openvmm_entry = { path = "openvmm/openvmm_entry" }
 openvmm_helpers = { path = "openvmm/openvmm_helpers" }
@@ -504,6 +508,7 @@ embed-resource = "3.0.2"
 linkme = "0.3.9"
 static_assertions = "1.1"
 target-lexicon = "0.13.2"
+vergen-gitcl = "=10.0.0-beta.8"
 
 # --- Serialization / encoding ---
 base64 = "0.22.1"
