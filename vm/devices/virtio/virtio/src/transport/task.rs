@@ -245,8 +245,14 @@ impl DeviceTask {
     }
 
     async fn stop_all_queues(&mut self) {
+        // Reset/disable path: call `abort_queue`, which a device with in-flight
+        // host IO overrides to discard those completions rather than publish
+        // them (as `stop_queue` does). The queue is being torn down, so
+        // publishing a completion into its guest memory can corrupt a rebooted
+        // guest that has reused those pages. Suspend uses `stop()` instead,
+        // which drains and completes so the resumed guest sees its completions.
         for idx in 0..self.max_queues {
-            self.device.stop_queue(idx).await;
+            self.device.abort_queue(idx).await;
         }
     }
 }
