@@ -385,9 +385,7 @@ impl ConsommeControl {
         record: StaticDnsRecord,
         name: String,
     ) -> Result<(), ConsommeMessageError> {
-        let addr = match record {
-            StaticDnsRecord::A(addr) => addr,
-        };
+        let StaticDnsRecord::A(addr) = record;
         self.request_send
             .call(
                 ConsommeRequest::AddDnsRecord,
