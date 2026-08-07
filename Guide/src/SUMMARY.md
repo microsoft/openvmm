@@ -63,6 +63,7 @@
   - [Snapshot Format](./dev_guide/snapshot_format.md)
   - [Releases & Code Flow](./dev_guide/contrib/release.md)
   - [Security Releases](./dev_guide/contrib/security_releases.md)
+  - [Packaging OpenVMM for Linux](./dev_guide/contrib/openvmm_packaging.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)
   - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)

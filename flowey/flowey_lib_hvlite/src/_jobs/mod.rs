@@ -17,6 +17,8 @@ pub mod cfg_hvlite_reposource;
 pub mod cfg_nix;
 pub mod cfg_versions;
 pub mod check_clippy;
+pub mod check_distro_build;
+pub mod check_distro_build_from_checkout;
 pub mod check_openvmm_hcl_size;
 pub mod check_xtask_fmt;
 pub mod consolidate_and_publish_gh_pages;

@@ -2360,6 +2360,7 @@ dependencies = [
  "serde_json",
  "target-lexicon",
  "tempfile",
+ "toml_edit",
  "vmm_test_images",
  "which 8.0.0",
 ]

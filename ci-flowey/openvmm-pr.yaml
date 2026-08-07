@@ -223,6 +223,89 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
     displayName: 🌼🥾 Publish bootstrapped flowey
     artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+- job: job21
+  displayName: build openvmm [distribution config, x64-linux-gnu]
+  pool:
+    demands:
+    - ImageOverride -equals ubuntu2404-amd64
+    name: openvmm-ado-amd-westus2-v6
+  dependsOn:
+  - job0
+  condition: and(succeeded(), not(canceled()))
+  variables:
+  - name: FLOWEY_TEMP_DIR
+    value: $(Build.StagingDirectory)/.flowey-internal
+  steps:
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼🥾 Download bootstrapped flowey
+    inputs:
+      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+      path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
+  - bash: |
+      set -e
+      AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+      AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+      echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+      chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
+      FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey"
+      echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+    displayName: Set flowey path
+  - bash: |
+      set -e
+      echo '"debug"' | $FLOWEY_BIN v 21 'FLOWEY_LOG' update
+      echo "$(FLOWEY_TEMP_DIR)/work" | $FLOWEY_BIN v 21 '_internal_WORKING_DIR' --is-raw-string update
+
+      cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 21 'verbose' update
+      ${{ parameters.verbose }}
+      EOF
+    displayName: 🌼🛫 Initialize job
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::install_rust 0
+    displayName: install Rust
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::install_dist_pkg 0
+    displayName: checking if packages need to be installed
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_common::install_dist_pkg 1
+    displayName: installing packages
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 21 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 21 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: check if openvmm needs to be cloned
+  - checkout: self
+    path: repo0
+    fetchTags: false
+    fetchDepth: 1
+    persistCredentials: $(floweyvar1)
+    submodules: recursive
+    displayName: checkout repo openvmm
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 21 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 21 flowey_lib_common::git_checkout 3
+    displayName: report cloned repo directories
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_common::system_info 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+    displayName: print system info
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 1
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 2
+    displayName: resolve source archive identity
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::assemble_openvmm_source_release 0
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 3
+      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 4
+    displayName: assemble OpenVMM source archive
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build 0
+    displayName: build openvmm in a distribution configuration
 - job: job15
   displayName: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
   pool:
