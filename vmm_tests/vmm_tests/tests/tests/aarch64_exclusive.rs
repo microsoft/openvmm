@@ -192,6 +192,191 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
     Ok(())
 }
 
+/// Assign a VFIO device into an aarch64 guest behind an **accelerated**
+/// (iommufd-nested) SMMU, and exercise the nested stage-1 translation path.
+///
+/// The same incubator `test-disk` device as [`boot_no_vmbus_pcie_aarch64_tcg`],
+/// but placed behind an accel-capable SMMU and forced into translating (not
+/// passthrough) stage-1 domains with `iommu.passthrough=0`, so the host nested
+/// HWPT is what the device's DMA actually goes through.
+///
+/// Beyond booting and reading, this covers two things the non-accel test
+/// cannot: that stage-1 translation is genuinely in effect rather than bypass,
+/// and that a StreamID survives being retired and re-derived — the VMM
+/// destroys the host vDevice and nested HWPT on a function-level reset and
+/// rebuilds both from the routed configuration write that follows.
+///
+/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
+/// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
+#[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_aarch64))]
+async fn boot_no_vmbus_pcie_smmu_accel_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let vfio_bdf = incubator_vfio_bdf("test-disk")?;
+
+    tracing::info!(vfio_bdf = %vfio_bdf, "assigning VFIO device behind an accelerated SMMU");
+
+    let cdev = open_vfio_cdev(&vfio_bdf)?;
+    let iommufd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/iommu")
+        .context("failed to open /dev/iommu")?;
+
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            // Single root complex s0rc0 with an accelerated (iommufd-nested)
+            // SMMU, so the assigned device's stage-1 translation is honored
+            // via a host nested HWPT.
+            b.with_pcie_root_topology(1, 1, 3)
+                .with_smmu_accel(&["s0rc0"])
+                .with_custom_config(move |c| {
+                    c.hypervisor.with_hv = false;
+                    // Force the guest to use translating (not passthrough)
+                    // SMMU stage-1 domains, so the accelerated nested-HWPT
+                    // path is actually exercised rather than bypass.
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        cmdline.push_str(" iommu.passthrough=0");
+                    }
+                    // Real ACS bits on the SMMU root complex's ports so Linux
+                    // places the assigned device in its own IOMMU group.
+                    for rc in &mut c.pcie_root_complexes {
+                        if rc.name == "s0rc0" {
+                            for port in &mut rc.ports {
+                                port.acs_capabilities_supported = Some(0x5D);
+                            }
+                        }
+                    }
+                    c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                        port_name: "s0rc0rp1".into(),
+                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: vfio_bdf,
+                            cdev,
+                            iommufd,
+                            iommu_id: "iommu0".into(),
+                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                        }
+                        .into_resource(),
+                    });
+                })
+        })
+        .run()
+        .await?;
+
+    // The incubator provisions a 64 MiB VFIO-backed virtio-blk disk, so the
+    // sysfs size proves the assigned device is the one that showed up rather
+    // than merely that *some* vda exists.
+    const TEST_DISK_SIZE: u64 = 64 * 1024 * 1024;
+    let sh = agent.unix_shell();
+    let vda_size = sh
+        .read_file("/sys/block/vda/size")
+        .await
+        .context("VFIO-assigned virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    tracing::info!(vda_sectors, "guest /dev/vda size");
+    anyhow::ensure!(
+        vda_sectors == TEST_DISK_SIZE / 512,
+        "unexpected /dev/vda size: expected {} sectors, got {vda_sectors}",
+        TEST_DISK_SIZE / 512
+    );
+
+    // Read from the disk to exercise DMA and interrupts through the nested
+    // HWPT.
+    let dd_output = cmd!(sh, "dd if=/dev/vda of=/dev/null bs=4096 count=16")
+        .read_stderr()
+        .await?;
+    tracing::info!(dd_output = %dd_output, "dd completed");
+    anyhow::ensure!(
+        dd_output.contains("16+0 records"),
+        "expected 16 records read, got: {dd_output}"
+    );
+
+    // Validate that stage-1 SMMU translation is actually in effect (not
+    // bypass/identity). Resolve /dev/vda to its PCI device and read the
+    // default-domain type of its IOMMU group.
+    //
+    // For a passthrough (VFIO-assigned) device the emulator is not in the DMA
+    // data path, so the device's DMA can only reach the correct guest pages if
+    // the host honors the guest's stage-1 tables via the accelerated nested
+    // HWPT. Two facts together prove translation is in effect:
+    //   1. The group's default domain type is `DMA`/`DMA-FQ` (translating),
+    //      not `identity` — so the guest programmed non-identity IOVAs, and
+    //   2. the `dd` read above succeeded — so those translated IOVAs resolved
+    //      to the right physical pages through the nested HWPT.
+    // If the SMMU were bypassed the type would be `identity`; if the nested
+    // HWPT were mis-programmed the read would have faulted or returned garbage.
+    let dev_path = cmd!(sh, "readlink -f /sys/block/vda/device").read().await?;
+    let dev_path = dev_path.trim();
+    let group_type = sh
+        .read_file(format!("{dev_path}/../iommu_group/type"))
+        .await?;
+    let group_type = group_type.trim();
+    tracing::info!(
+        dev_path,
+        group_type,
+        "assigned device IOMMU group default-domain type"
+    );
+    anyhow::ensure!(
+        group_type == "DMA" || group_type == "DMA-FQ",
+        "expected the assigned device to be in a translating SMMU domain \
+         (DMA/DMA-FQ), got {group_type:?}: stage-1 translation is not in effect"
+    );
+
+    // Exercise the StreamID rebind path. A function-level reset clears the
+    // device's captured BDF, so the VMM retires its StreamID — destroying the
+    // host vDevice naming it and driving the stream to abort — and re-derives
+    // both from the routed config write that follows. Everything DMA depends
+    // on is rebuilt, so a read afterwards only succeeds if the new vDevice and
+    // nested HWPT were programmed correctly.
+    //
+    // Unbind the driver around the reset so it re-probes cleanly rather than
+    // being reset underneath.
+    let pci_sysfs = dev_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .context("assigned device has no parent PCI node")?;
+    let guest_bdf = pci_sysfs
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .context("could not derive the assigned device's guest BDF")?;
+
+    // Only FLR is routed through the VMM's function-reset path; the `pm` and
+    // `bus` fallbacks would make this test pass without exercising it.
+    let reset_methods = sh.read_file(format!("{pci_sysfs}/reset_method")).await?;
+    anyhow::ensure!(
+        reset_methods.split_whitespace().next() == Some("flr"),
+        "assigned device must prefer FLR to exercise the StreamID rebind path, \
+         got {reset_methods:?}"
+    );
+
+    let flr = format!(
+        "echo {guest_bdf} > /sys/bus/pci/drivers/virtio-pci/unbind && \
+         echo 1 > {pci_sysfs}/reset && \
+         echo {guest_bdf} > /sys/bus/pci/drivers/virtio-pci/bind"
+    );
+    cmd!(sh, "sh -c {flr}").run().await?;
+
+    let dd_output = cmd!(sh, "dd if=/dev/vda of=/dev/null bs=4096 count=16")
+        .read_stderr()
+        .await
+        .context("read after FLR failed: the rebound StreamID does not translate")?;
+    tracing::info!(dd_output = %dd_output, "dd after FLR completed");
+    anyhow::ensure!(
+        dd_output.contains("16+0 records"),
+        "expected 16 records read after FLR, got: {dd_output}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Open the VFIO cdev for an assigned device given its PCI BDF.
 ///
 /// Returns the opened character device file. The device must already be bound

@@ -174,6 +174,37 @@ pub struct Idr0 {
     _reserved2: u32,
 }
 
+/// IDR0.TTF — translation table formats supported.
+///
+/// The two bits are independent capability flags, not an ordered value:
+/// `aarch32` (LPAE) and `aarch64` may each be set independently.
+#[bitfield(u8)]
+#[derive(PartialEq, Eq)]
+pub struct Idr0Ttf {
+    /// AArch32 (LPAE) translation tables supported.
+    pub aarch32: bool,
+    /// AArch64 translation tables supported.
+    pub aarch64: bool,
+    #[bits(6)]
+    _reserved: u8,
+}
+
+open_enum! {
+    /// IDR0.TTENDIAN — translation table endianness support.
+    ///
+    /// These are distinct configurations, not an ordered range: `MIXED`
+    /// supports both endiannesses, while `LE`/`BE` are single-endian only.
+    /// Test for `MIXED | LE` rather than comparing values.
+    pub enum Idr0TtEndian: u8 {
+        /// Mixed endianness (both little- and big-endian supported).
+        MIXED = 0b00,
+        /// Little-endian only.
+        LE = 0b10,
+        /// Big-endian only.
+        BE = 0b11,
+    }
+}
+
 /// SMMU_IDR1: Queue and stream size identification.
 #[bitfield(u32)]
 #[derive(PartialEq, Eq, Inspect)]
