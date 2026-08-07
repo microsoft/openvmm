@@ -83,6 +83,7 @@ use storvsp_resources::ScsiPath;
 use tempfile::TempPath;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
 use uidevices_resources::SynthVideoHandle;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
@@ -1263,6 +1264,7 @@ impl PetriVmConfigSetupCore<'_> {
                 name: "tpm".to_string(),
                 resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                     device: TpmDeviceHandle {
+                        version: TpmVersion::V185,
                         ppi_store,
                         nvram_store,
                         refresh_tpm_seeds: false,
