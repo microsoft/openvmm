@@ -34,6 +34,7 @@ use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::DnsRecordConfig;
 use net_backend_resources::consomme::HostIpAddress;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
@@ -97,8 +98,8 @@ fn socket_family(socket: &socket2::Socket) -> Result<IpVersion, consomme::BindEr
 
 pub struct ConsommeEndpoint {
     endpoint_state: Arc<Mutex<Option<EndpointState>>>,
-    /// In-process requests which cannot cross a process boundary.
-    local_recv: Option<mesh::Receiver<LocalRequest>>,
+    /// In-process state updates, which cannot cross a process boundary.
+    state_update_recv: Option<mesh::Receiver<StateUpdateRequest>>,
     /// Serializable requests originating either in-process or remotely.
     request_recv: Option<mesh::Receiver<ConsommeRequest>>,
     /// Requests buffered while the queue owns the consomme state, applied in
@@ -166,12 +167,17 @@ impl ConsommeEndpoint {
     /// runtime bind/unbind and state updates.
     pub fn new_dynamic(state: ConsommeParams) -> (Self, ConsommeControl) {
         let (request_send, request_recv) = mesh::channel();
-        let (local_send, local_recv) = mesh::channel();
+        let (state_update_send, state_update_recv) = mesh::channel();
         (
-            Self::with_state(state, Vec::new(), Some(request_recv), Some(local_recv)),
+            Self::with_state(
+                state,
+                Vec::new(),
+                Some(request_recv),
+                Some(state_update_recv),
+            ),
             ConsommeControl {
                 request_send,
-                local_send,
+                state_update_send,
             },
         )
     }
@@ -190,14 +196,14 @@ impl ConsommeEndpoint {
         state: ConsommeParams,
         ports: Vec<PortForwardConfig>,
         request_recv: Option<mesh::Receiver<ConsommeRequest>>,
-        local_recv: Option<mesh::Receiver<LocalRequest>>,
+        state_update_recv: Option<mesh::Receiver<StateUpdateRequest>>,
     ) -> Self {
         ConsommeEndpoint {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                 consomme: Consomme::new(state),
                 port_forwards: ports,
             }))),
-            local_recv,
+            state_update_recv,
             request_recv,
             pending: VecDeque::new(),
         }
@@ -208,13 +214,13 @@ impl ConsommeEndpoint {
     /// was read.
     fn drain_channels(&mut self, cx: &mut Context<'_>) -> bool {
         let Self {
-            local_recv,
+            state_update_recv,
             request_recv,
             pending,
             ..
         } = self;
-        let mut received = drain_receiver(local_recv, cx, "local request", |request| {
-            pending.push_back(PendingRequest::Local(request))
+        let mut received = drain_receiver(state_update_recv, cx, "state update", |request| {
+            pending.push_back(PendingRequest::StateUpdate(request))
         });
         received |= drain_receiver(request_recv, cx, "request", |request| {
             pending.push_back(PendingRequest::Request(request))
@@ -236,7 +242,7 @@ impl InspectMut for ConsommeEndpoint {
 /// Provide dynamic updates during runtime.
 pub struct ConsommeControl {
     request_send: mesh::Sender<ConsommeRequest>,
-    local_send: mesh::Sender<LocalRequest>,
+    state_update_send: mesh::Sender<StateUpdateRequest>,
 }
 
 /// Error type returned from some dynamic update functions like bind_port.
@@ -289,22 +295,10 @@ impl From<IpProtocol> for HostPortProtocol {
     }
 }
 
-struct AddDnsRecordConfig {
-    /// The type and data of the record (currently only `A` is supported).
-    record: StaticDnsRecord,
-    /// The query name in presentation form (e.g. `"example.com"`).
-    name: String,
-}
-
-enum LocalRequest {
-    StateUpdate(StateUpdateRequest),
-    AddDnsRecord(Rpc<AddDnsRecordConfig, Result<(), StaticDnsRecordError>>),
-}
-
 /// A request buffered until the endpoint regains ownership of the Consomme state.
 enum PendingRequest {
     Request(ConsommeRequest),
-    Local(LocalRequest),
+    StateUpdate(StateUpdateRequest),
 }
 
 impl ConsommeControl {
@@ -378,8 +372,8 @@ impl ConsommeControl {
         &self,
         f: ConsommeParamsUpdateFn,
     ) -> Result<(), ConsommeMessageError> {
-        self.local_send
-            .call(LocalRequest::StateUpdate, f)
+        self.state_update_send
+            .call(|rpc| rpc, f)
             .await
             .map_err(ConsommeMessageError::Mesh)
     }
@@ -391,14 +385,15 @@ impl ConsommeControl {
         record: StaticDnsRecord,
         name: String,
     ) -> Result<(), ConsommeMessageError> {
-        self.local_send
+        let StaticDnsRecord::A(addr) = record;
+        self.request_send
             .call(
-            LocalRequest::AddDnsRecord,
-                AddDnsRecordConfig { record, name },
+            ConsommeRequest::AddDnsRecord,
+            DnsRecordConfig { record: addr, name },
             )
             .await
             .map_err(ConsommeMessageError::Mesh)?
-            .map_err(ConsommeMessageError::DnsRecord)
+            .map_err(ConsommeMessageError::Remote)
     }
 
     /// Allocates a virtual IP address within the endpoint's subnet and routes
@@ -494,19 +489,12 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             for request in pending {
                 match request {
                     PendingRequest::Request(request) => process_request(c, request),
-                    PendingRequest::Local(request) => match request {
-                        LocalRequest::StateUpdate(rpc) => {
-                            rpc.handle_sync(|f| {
-                                f(c.get_mut().params_mut());
-                                c.get_mut().clear_local_addr_map();
-                                c.update_dns_nameservers()
-                            });
-                        }
-                        LocalRequest::AddDnsRecord(rpc) => {
-                            rpc.handle_sync(|cfg| {
-                                c.get_mut().add_dns_record(cfg.record, &cfg.name)
-                            });
-                        }
+                    PendingRequest::StateUpdate(rpc) => {
+                        rpc.handle_sync(|f| {
+                            f(c.get_mut().params_mut());
+                            c.get_mut().clear_local_addr_map();
+                            c.update_dns_nameservers()
+                        });
                     }
                 }
             }
@@ -699,6 +687,13 @@ fn process_request(
                     .get_mut()
                     .create_virtual_address(destination.into())
                     .map(HostIpAddress::from)
+            });
+        }
+        ConsommeRequest::AddDnsRecord(rpc) => {
+            rpc.handle_failable_sync(|cfg: DnsRecordConfig| {
+                consomme
+                    .get_mut()
+                    .add_dns_record(StaticDnsRecord::A(cfg.record), &cfg.name)
             });
         }
     }
