@@ -714,8 +714,8 @@ impl State {
             // When in loopback mode, modem status is reflected from the modem
             // control register.
             self.msr
-                .with_cts(self.mcr.dtr())
-                .with_dsr(self.mcr.rts())
+                .with_cts(self.mcr.rts())
+                .with_dsr(self.mcr.dtr())
                 .with_ri(self.mcr.out1())
                 .with_dcd(self.mcr.out2())
         } else {
