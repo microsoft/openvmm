@@ -487,6 +487,14 @@ impl HardDrive {
         // Initialize drive geometry
         let read_only = disk.is_read_only();
         let geometry = MediaGeometry::new(disk.sector_count(), disk.sector_size())?;
+        // IDEPROBE (temporary): non-512 sector disks expose the IDENTIFY word 106/117-118 gap.
+        if disk.sector_size() != 512 {
+            tracing::warn!(
+                sector_size = disk.sector_size(),
+                %disk_path,
+                "IDEPROBE_E_NON512_SECTOR non-512 sector IDE disk attached"
+            );
+        }
         Ok(Self {
             disk,
             state: DriveState::new(),
@@ -565,7 +573,7 @@ impl HardDrive {
                     && self.state.command.is_some()
                 {
                     tracing::warn!(
-                        "Changing selected drive in the middle of operation. Resetting previously selected drive"
+                        "IDEPROBE_F_DRIVE_CHANGE_MID_CMD Changing selected drive in the middle of operation. Resetting previously selected drive"
                     );
                     self.reset();
                 }
@@ -627,6 +635,17 @@ impl HardDrive {
             && !self.state.regs.device_control_reg.interrupt_mask()
             && self.is_selected()
             && !self.state.pending_software_reset
+    }
+
+    // DIVERGENCE PROBES (temporary).
+    pub fn probe_pending_unselected(&self) -> bool {
+        self.state.pending_interrupt
+            && !self.state.regs.device_control_reg.interrupt_mask()
+            && !self.state.pending_software_reset
+            && !self.is_selected()
+    }
+    pub fn probe_raw_pending(&self) -> bool {
+        self.state.pending_interrupt
     }
 
     pub fn dma_request(&self) -> Option<(&DmaType, usize)> {
@@ -946,6 +965,14 @@ impl HardDrive {
                 None
             }
             IdeCommand::SET_FEATURES => {
+                // IDEPROBE (temporary): detect guest write-cache control that UH silently ignores.
+                let sub = self.state.regs.features;
+                if sub == 0x02 || sub == 0x82 {
+                    tracing::warn!(
+                        subcommand = sub,
+                        "IDEPROBE_D_SET_FEATURES_CACHE guest toggled write cache; UH ignores"
+                    );
+                }
                 // TODO
                 //
                 // Saw in Gen 1 VM boot but this is likely not necessary because
@@ -959,6 +986,12 @@ impl HardDrive {
             | IdeCommand::IDLE_IMMEDIATE
             | IdeCommand::STANDBY_IMMEDIATE => None,
             command => {
+                if crate::probe::first_unknown_hdd(command.0) {
+                    tracing::warn!(
+                        opcode = command.0,
+                        "IDEPROBE_C_UNKNOWN_CMD_HDD unimplemented command aborted"
+                    );
+                }
                 tracing::debug!(?command, "unknown command");
                 self.state.error_pending = true;
                 self.state.regs.error = ErrorReg::new().with_unknown_command(true);

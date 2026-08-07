@@ -350,6 +350,17 @@ impl AtapiDrive {
             && !self.state.pending_software_reset
     }
 
+    // DIVERGENCE PROBES (temporary).
+    pub fn probe_pending_unselected(&self) -> bool {
+        self.state.pending_interrupt
+            && !self.state.regs.device_control_reg.interrupt_mask()
+            && !self.state.pending_software_reset
+            && !self.is_selected()
+    }
+    pub fn probe_raw_pending(&self) -> bool {
+        self.state.pending_interrupt
+    }
+
     pub fn dma_request(&self) -> Option<(&DmaType, usize)> {
         if let Some(buffer) = &self.state.buffer {
             buffer
@@ -627,6 +638,12 @@ impl AtapiDrive {
                 self.state.regs.error = ErrorReg::new().with_unknown_command(true);
             }
             command => {
+                if crate::probe::first_unknown_atapi(command.0) {
+                    tracing::warn!(
+                        opcode = command.0,
+                        "IDEPROBE_C_UNKNOWN_CMD_ATAPI unimplemented command aborted"
+                    );
+                }
                 tracing::debug!(?command, "unknown command");
                 self.state.regs.status.set_err(true);
                 self.state.regs.error = ErrorReg::new().with_unknown_command(true);
