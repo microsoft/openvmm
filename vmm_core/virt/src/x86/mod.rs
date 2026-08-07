@@ -246,11 +246,21 @@ impl X86PartitionCapabilities {
                     found: true,
                 });
             }
-            (ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled, false) => {
+            (ApicMode::X2ApicEnabled, false) => {
+                // x2APIC was explicitly requested enabled at boot, but the
+                // guest CPUID does not advertise it (e.g. a selected CPU model
+                // without x2apic). This is a genuine conflict.
                 return Err(X86PartitionCapabilitiesError::X2ApicMismatch {
                     expected: true,
                     found: false,
                 });
+            }
+            (ApicMode::X2ApicSupported, false) => {
+                // x2APIC is supported by the platform but the guest CPUID does
+                // not carry it (the selected CPU model does not define x2apic).
+                // Run the guest in xAPIC mode: "supported" does not require the
+                // CPU model to provide it.
+                this.x2apic = false;
             }
             (ApicMode::XApic, false) | (ApicMode::X2ApicSupported, true) => {}
             (ApicMode::X2ApicEnabled, true) => {

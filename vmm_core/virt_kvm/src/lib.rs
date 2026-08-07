@@ -74,6 +74,18 @@ pub enum KvmError {
     #[error("unsupported CPU vendor")]
     UnsupportedCpuVendor,
     #[cfg(guest_arch = "x86_64")]
+    #[error("unknown CPU model: {0}; expected `host`, `max`, or a known model name")]
+    UnknownCpuModel(String),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("invalid hv enlightenment spec: {0}")]
+    HvSpec(String),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "evmcs and reenlightenment are nested-only enlightenments and require \
+         nested virtualization; add --nested-virt or drop them"
+    )]
+    EvmcsWithoutNested,
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
@@ -112,6 +124,11 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     reserved_vps_per_socket: u32,
 
+    /// The Hyper-V enlightenments configured for this partition, consulted at
+    /// VP bind time to enable the matching KVM capabilities.
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    hv_enlightenments: hypervisor_resources::HvEnlightenments,
     /// Whether the host allows advertising `MCG_CMCI_P` in the guest's
     /// `IA32_MCG_CAP` (required for KVM to expose the CMCI LVT register).
     #[cfg(guest_arch = "x86_64")]

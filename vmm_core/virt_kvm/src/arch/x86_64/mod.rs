@@ -5,6 +5,7 @@
 
 #![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
+mod cpu_models;
 mod regs;
 mod vm_state;
 mod vp_state;
@@ -32,6 +33,9 @@ use hvdef::HvSynicSimpSiefp;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
 use hvdef::hypercall::Control;
+use hypervisor_resources::HvEnlightenments;
+use hypervisor_resources::HvHostCaps;
+use hypervisor_resources::HvSpecOverrides;
 use inspect::Inspect;
 use inspect::InspectMut;
 use kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
@@ -99,6 +103,16 @@ const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x1
 #[derive(Debug)]
 pub struct Kvm {
     kvm: kvm::Kvm,
+    /// Raw `hv=` enlightenment spec, resolved to an `HvEnlightenments` set at
+    /// partition creation (in `new_partition`), where the generic `nested_virt`
+    /// request is known. The `windows` preset is nested-aware, so the spec
+    /// cannot be resolved earlier (nested_virt moved to `ProtoPartitionConfig`
+    /// in upstream #3869).
+    pub hv_spec: Option<String>,
+    /// Guest CPU model to present. `None` or `"host"`/`"max"` passes the host
+    /// features through; any other name masks the guest CPUID down to that
+    /// model's feature set (see the `cpu_models` table).
+    pub cpu_model: Option<String>,
 }
 
 impl Kvm {
@@ -106,13 +120,19 @@ impl Kvm {
     pub fn new() -> Result<Self, KvmError> {
         Ok(Self {
             kvm: kvm::Kvm::new()?,
+            hv_spec: None,
+            cpu_model: None,
         })
     }
 
     /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
     pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
         let kvm = kvm::Kvm::from(file);
-        Ok(Self { kvm })
+        Ok(Self {
+            kvm,
+            hv_spec: None,
+            cpu_model: None,
+        })
     }
 }
 
@@ -155,6 +175,81 @@ impl virt::Hypervisor for Kvm {
         // Query which MCE capability bits this host allows us to set so that
         // bind() can advertise CMCI to the guest where supported (Intel).
         let supported_mce_cap = self.kvm.supported_mce_cap()?;
+
+        // Resolve the Hyper-V enlightenment set now that the generic nested_virt
+        // request is known. Upstream #3869 moved nested_virt off the KVM handle
+        // onto ProtoPartitionConfig, so it is not available when the `hv=` kvm
+        // parameter is parsed; the `windows` preset is nested-aware, so its
+        // resolution moved here. Later `+name`/`+no_name` tokens still win.
+        let mut hv_enlightenments = HvEnlightenments::default();
+        let overrides = if let Some(spec) = self.hv_spec.as_deref() {
+            hv_enlightenments
+                .apply_spec(spec, nested_virt)
+                .map_err(KvmError::HvSpec)?
+        } else if nested_virt {
+            // A nested guest needs the nested enlightenment set when no explicit
+            // `hv=` spec was given.
+            hv_enlightenments = HvEnlightenments::windows_nested();
+            HvSpecOverrides::default()
+        } else {
+            HvSpecOverrides::default()
+        };
+
+        // eVMCS and reenlightenment are nested-only enlightenments: their CPUID is
+        // coherent only when `nested` is advertised (the eVMCS version lives in the
+        // HV_NESTED_FEATURES leaf, emitted only for a nested partition). Reject the
+        // inconsistent combination rather than boot a guest that sees eVMCS with
+        // nesting off. The presets gate both flags on nested_virt, so this only
+        // catches an explicit `hv=...+evmcs` without --nested-virt.
+        if (hv_enlightenments.evmcs || hv_enlightenments.reenlightenment) && !nested_virt {
+            return Err(KvmError::EvmcsWithoutNested);
+        }
+
+        // Narrow direct synthetic timers to what this host actually supports,
+        // leaving anything the user pinned in the `hv=` spec alone. Only probe
+        // when stimer_direct is requested; adjust_for_host gates only that flag.
+        if hv_enlightenments.stimer_direct {
+            // CPUID 0x40000003 (HV_CPUID_FUNCTION_MS_HV_FEATURES) EDX bit 19,
+            // HV_STIMER_DIRECT_MODE_AVAILABLE: the host advertises direct-mode
+            // synthetic timers. KVM returns it through KVM_GET_SUPPORTED_HV_CPUID
+            // only when the in-kernel LAPIC is in use; there is no separate cap.
+            const HV_MS_HV_FEATURES: u32 = 0x4000_0003;
+            const HV_STIMER_DIRECT_MODE_AVAILABLE: u32 = 1 << 19;
+            match self.kvm.supported_hv_cpuid() {
+                Ok(hv_cpuid) => {
+                    let stimer_direct = hv_cpuid
+                        .iter()
+                        .find(|e| e.function == HV_MS_HV_FEATURES)
+                        .is_some_and(|e| e.edx & HV_STIMER_DIRECT_MODE_AVAILABLE != 0);
+                    let adjustments =
+                        hv_enlightenments.adjust_for_host(HvHostCaps { stimer_direct }, overrides);
+                    if adjustments.stimer_direct_dropped_unsupported {
+                        tracing::warn!(
+                            "host does not advertise direct-mode synthetic timers \
+                             (HV_STIMER_DIRECT_MODE_AVAILABLE absent in CPUID 0x40000003 \
+                             EDX); disabling stimer_direct, which cannot work without host \
+                             support."
+                        );
+                    }
+                    if adjustments.stimer_direct_request_unsupported {
+                        tracing::warn!(
+                            "stimer_direct was requested but the host does not advertise \
+                             direct-mode synthetic timers; leaving it off, since it cannot \
+                             work without host support."
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        "could not probe KVM host timer-enlightenment support; keeping the \
+                         requested Hyper-V enlightenments unchanged"
+                    );
+                }
+            }
+        } else {
+            let _ = overrides;
+        }
 
         // Determine the CPU vendor from CPUID leaf 0.
         let vendor = supported_cpuid
@@ -258,15 +353,28 @@ impl virt::Hypervisor for Kvm {
             };
 
             use hvdef::*;
+            // Build the synthetic-hypervisor CPUID leaves from the configured
+            // enlightenment set (see `HvEnlightenments`) so the guest sees the
+            // requested combination instead of a fixed one.
+            let hv = hv_enlightenments;
             let privileges = HvPartitionPrivilege::new()
-                .with_access_partition_reference_counter(true)
-                .with_access_hypercall_msrs(true)
-                .with_access_vp_index(true)
-                .with_access_frequency_msrs(true)
-                .with_access_synic_msrs(true)
-                .with_access_synthetic_timer_msrs(true)
-                .with_access_vp_runtime_msr(true)
-                .with_access_apic_msrs(true);
+                .with_access_partition_reference_counter(hv.time)
+                .with_access_partition_reference_tsc(hv.time && hv.reference_tsc_page)
+                .with_access_hypercall_msrs(hv.hypercall)
+                .with_access_vp_index(hv.vp_index)
+                // Advertise the reset MSR (`HV_X64_MSR_RESET`) availability bit
+                // (TLFS `AccessResetReg`). KVM handles the MSR write in-kernel and
+                // exits `KVM_SYSTEM_EVENT_RESET`, already mapped to
+                // `VpHaltReason::Reset` below; this bit only lets the guest reach
+                // the MSR. Availability only, no `HV_SYSTEM_RESET_RECOMMENDED` hint
+                // (leaf 0x40000004).
+                .with_access_reset_msr(hv.reset)
+                .with_access_frequency_msrs(hv.frequencies)
+                .with_access_synic_msrs(hv.synic)
+                .with_access_synthetic_timer_msrs(hv.stimer)
+                .with_access_vp_runtime_msr(hv.vp_runtime)
+                .with_access_apic_msrs(hv.vapic)
+                .with_access_reenlightenment_ctrls(hv.reenlightenment);
 
             // Query KVM's supported Hyper-V CPUID leaves to find the
             // nested virtualization features leaf (0x4000000A), but only
@@ -306,7 +414,13 @@ impl virt::Hypervisor for Kvm {
                     split_u128(u128::from(
                         HvFeatures::new()
                             .with_privileges(privileges)
-                            .with_frequency_regs_available(true),
+                            .with_frequency_regs_available(hv.frequencies)
+                            .with_direct_synthetic_timers(hv.stimer_direct)
+                            // Advertise the guest-crash MSRs so the guest reports
+                            // its bugcheck code to the host (see the crash exit in
+                            // the run loop). KVM serves the MSRs in-kernel once the
+                            // bit is set.
+                            .with_guest_crash_regs_available(hv.crash),
                     )),
                 ),
                 CpuidLeaf::new(
@@ -314,7 +428,14 @@ impl virt::Hypervisor for Kvm {
                     split_u128(
                         HvEnlightenmentInformation::new()
                             .with_deprecate_auto_eoi(true)
-                            .with_long_spin_wait_count(0xffffffff) // no spin wait notifications
+                            .with_use_relaxed_timing(hv.relaxed)
+                            .with_use_apic_msrs(hv.vapic)
+                            .with_use_hypercall_for_remote_flush_and_local_flush_entire(hv.tlbflush)
+                            .with_use_ex_processor_masks(hv.tlbflush)
+                            .with_use_synthetic_cluster_ipi(hv.ipi)
+                            .with_use_vmcs_enlightenments(hv.evmcs)
+                            .with_nested(nested_virt)
+                            .with_long_spin_wait_count(hv.spinlock_retries)
                             .into(),
                     ),
                 ),
@@ -329,6 +450,82 @@ impl virt::Hypervisor for Kvm {
                     HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES,
                     [leaf.eax, leaf.ebx, leaf.ecx, leaf.edx],
                 ));
+            }
+        }
+
+        // Apply a selected guest CPU model by masking the host feature leaves
+        // down to the model's feature set (guest features = host & model), and
+        // by reporting the model's vendor and family/model/stepping. `host` and
+        // `max` (and no selection) pass the host CPUID through unchanged.
+        if let Some(model_name) = self.cpu_model.as_deref() {
+            if model_name != "host" && model_name != "max" {
+                let def = cpu_models::X86_CPU_MODELS
+                    .iter()
+                    .find(|m| m.name == model_name)
+                    .ok_or_else(|| KvmError::UnknownCpuModel(model_name.to_owned()))?;
+
+                for l in def.leaves {
+                    // Force every feature bit not in the model to 0, but keep
+                    // the OSXSAVE (27) and hypervisor-present (31) bits in leaf 1
+                    // ECX: neither is a model feature. OSXSAVE reflects guest
+                    // CR4.OSXSAVE at CPUID-read time, and hypervisor-present is
+                    // always set for a guest. X2APIC (bit 21) is deliberately not
+                    // preserved here: it is a per-model feature, so it must come
+                    // from the model mask like any other bit. The partition APIC
+                    // mode is reconciled to the model below (a model without
+                    // x2apic runs the guest in xAPIC mode) rather than forcing
+                    // x2apic on.
+                    let preserve = if l.leaf == CpuidFunction::VersionAndFeatures.0 && l.reg == 2 {
+                        (1 << 27) | (1 << 31)
+                    } else {
+                        0
+                    };
+                    let mut mask = [0u32; 4];
+                    let Some(slot) = mask.get_mut(l.reg) else {
+                        debug_assert!(false, "cpu model leaf reg {} out of range", l.reg);
+                        continue;
+                    };
+                    *slot = !l.allowed & !preserve;
+                    let mut leaf = CpuidLeaf::new(l.leaf, [0; 4]).masked(mask);
+                    if let Some(sub) = l.subleaf {
+                        leaf = leaf.indexed(sub);
+                    }
+                    cpuid_entries.push(leaf);
+                }
+
+                // Report the model's family/model/stepping in leaf 1 EAX.
+                let base_family = def.family.min(0xf);
+                let ext_family = def.family.saturating_sub(0xf);
+                let eax = (ext_family << 20)
+                    | ((def.model >> 4) << 16)
+                    | (base_family << 8)
+                    | ((def.model & 0xf) << 4)
+                    | (def.stepping & 0xf);
+                cpuid_entries.push(
+                    CpuidLeaf::new(CpuidFunction::VersionAndFeatures.0, [eax, 0, 0, 0]).masked([
+                        0x0fff_3fff,
+                        0,
+                        0,
+                        0,
+                    ]),
+                );
+
+                // Report the model's vendor string in leaf 0 (ebx/edx/ecx). The
+                // generated table always carries a 12-byte vendor; assert it so a
+                // malformed entry is caught, and skip the override otherwise
+                // rather than write a truncated vendor.
+                debug_assert_eq!(def.vendor.len(), 12, "CPU model vendor must be 12 bytes");
+                if def.vendor.len() == 12 {
+                    let v = def.vendor.as_bytes();
+                    let word = |i: usize| u32::from_le_bytes([v[i], v[i + 1], v[i + 2], v[i + 3]]);
+                    cpuid_entries.push(
+                        CpuidLeaf::new(
+                            CpuidFunction::VendorAndMaxFunction.0,
+                            [0, word(0), word(8), word(4)],
+                        )
+                        .masked([0, !0, !0, !0]),
+                    );
+                }
             }
         }
 
@@ -364,6 +561,7 @@ impl virt::Hypervisor for Kvm {
             config,
             cpuid: cpuid_entries,
             nested_virt,
+            hv_enlightenments,
             supported_mce_cap,
         })
     }
@@ -375,6 +573,7 @@ pub struct KvmProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     cpuid: CpuidLeafSet,
     nested_virt: bool,
+    hv_enlightenments: HvEnlightenments,
     /// MCE capability bits (`IA32_MCG_CAP`) the host allows setting, from
     /// `KVM_X86_GET_MCE_CAP_SUPPORTED`.
     supported_mce_cap: u64,
@@ -492,6 +691,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             caps,
             cpuid,
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
+            hv_enlightenments: self.hv_enlightenments,
             mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
             synic_ports: Default::default(),
         });
@@ -709,17 +909,37 @@ impl virt::BindProcessor for KvmProcessorBinder {
 
         // Enable synic and set initial MSRs.
         if self.partition.hv1_enabled {
-            kvm.enable_synic()?;
+            // Enable the KVM capabilities for the advertised enlightenments;
+            // the CPUID bits alone do not wire up the backend state.
+            let hv = self.partition.hv_enlightenments;
+            if hv.synic {
+                kvm.enable_synic()?;
+            }
+            if hv.evmcs {
+                kvm.enable_hyperv_evmcs()?;
+            }
+            if hv.enforce_cpuid {
+                kvm.enable_hyperv_enforce_cpuid()?;
+            }
 
-            // Set the VP index. Also, KVM incorrectly initializes
-            // SCONTROL to 0. Set it to 1 on each processor.
-            kvm.set_msrs(&[
-                (
+            // Collect the per-enlightenment initial MSRs and set them in one
+            // ioctl. The VP index MSR is set only when that enlightenment is
+            // advertised; SCONTROL is set with the synic, because KVM
+            // incorrectly initializes it to 0 and it must read as 1 on each
+            // processor.
+            let mut msrs = Vec::new();
+            if hv.vp_index {
+                msrs.push((
                     hvdef::HV_X64_MSR_VP_INDEX,
                     vp_info.base.vp_index.index().into(),
-                ),
-                (hvdef::HV_X64_MSR_SCONTROL, 1),
-            ])?;
+                ));
+            }
+            if hv.synic {
+                msrs.push((hvdef::HV_X64_MSR_SCONTROL, 1));
+            }
+            if !msrs.is_empty() {
+                kvm.set_msrs(&msrs)?;
+            }
         }
 
         // Unlike the Microsoft hypervisor, KVM allows this MSR to be
@@ -1590,6 +1810,33 @@ impl<'p> Processor for KvmProcessor<'p> {
                                 return Err(VpHaltReason::Reset);
                             }
                             kvm::KVM_SYSTEM_EVENT_CRASH => {
+                                // The guest reported a bugcheck via the Hyper-V
+                                // crash MSRs (`hv_crash`) and set the notify bit;
+                                // KVM stored the params and exits here. Read them
+                                // back and log the stop code so the host record
+                                // shows why the guest crashed, then fall through to
+                                // the crash halt (the configured crash action
+                                // decides what happens next). `P0` is the bugcheck
+                                // code, `P1..P4` its parameters.
+                                let crash_msrs: [u32; 5] = std::array::from_fn(|i| {
+                                    hvdef::HV_X64_MSR_GUEST_CRASH_P0 + i as u32
+                                });
+                                let mut crash = [0u64; 5];
+                                match self.kvm.get_msrs(&crash_msrs, &mut crash) {
+                                    Ok(()) => tracing::error!(
+                                        bugcheck_code = format_args!("{:#x}", crash[0]),
+                                        p1 = format_args!("{:#x}", crash[1]),
+                                        p2 = format_args!("{:#x}", crash[2]),
+                                        p3 = format_args!("{:#x}", crash[3]),
+                                        p4 = format_args!("{:#x}", crash[4]),
+                                        "guest reported a Hyper-V bugcheck (hv_crash)"
+                                    ),
+                                    Err(err) => tracing::error!(
+                                        error = &err as &dyn std::error::Error,
+                                        "guest reported a Hyper-V bugcheck (hv_crash); \
+                                         reading the crash MSRs failed"
+                                    ),
+                                }
                                 return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
                             }
                             _ => {
