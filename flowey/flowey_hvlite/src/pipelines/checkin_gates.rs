@@ -1438,6 +1438,7 @@ impl IntoPipeline for CheckinGatesCli {
             /// the resolver to supply an incubator artifact.
             incubator_profile: Option<&'a str>,
             nextest_filter_expr: String,
+            needs_release_2505_igvm: bool,
             test_artifacts: Vec<KnownTestArtifacts>,
             prep_steps_variants: Vec<String>,
             hugetlb_2mb_overcommit_pages: Option<u64>,
@@ -1548,6 +1549,7 @@ impl IntoPipeline for CheckinGatesCli {
             resolve_vmm_tests_artifacts,
             incubator_profile,
             nextest_filter_expr,
+            needs_release_2505_igvm,
             test_artifacts,
             prep_steps_variants,
             hugetlb_2mb_overcommit_pages,
@@ -1562,6 +1564,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 incubator_profile: None,
                 nextest_filter_expr: standard_filter.clone(),
+                needs_release_2505_igvm: false,
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1577,6 +1580,7 @@ impl IntoPipeline for CheckinGatesCli {
                 incubator_profile: None,
                 nextest_filter_expr: "test(openhcl) & !test(servicing) & !test(cvm) & !test(memory_validation) & !test(very_heavy) & !test(hyperv_openhcl_pcat) & !test(prepped_vbs) & !test(256mb)"
                     .to_string(),
+                needs_release_2505_igvm: false,
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: Vec::new(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1591,6 +1595,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
                 incubator_profile: None,
                 nextest_filter_expr: cvm_filter("tdx"),
+                needs_release_2505_igvm: true,
                 test_artifacts: cvm_x64_test_artifacts.clone(),
                 prep_steps_variants: vec!["standard".into()],
                 hugetlb_2mb_overcommit_pages: None,
@@ -1607,6 +1612,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 incubator_profile: None,
                 nextest_filter_expr: standard_filter.clone(),
+                needs_release_2505_igvm: false,
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1621,6 +1627,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
                 incubator_profile: None,
                 nextest_filter_expr: cvm_filter("snp"),
+                needs_release_2505_igvm: false,
                 test_artifacts: cvm_x64_test_artifacts,
                 prep_steps_variants: vec!["standard".into()],
                 hugetlb_2mb_overcommit_pages: None,
@@ -1636,6 +1643,7 @@ impl IntoPipeline for CheckinGatesCli {
                 incubator_profile: None,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
+                needs_release_2505_igvm: false,
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
@@ -1652,6 +1660,7 @@ impl IntoPipeline for CheckinGatesCli {
                 incubator_profile: None,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
+                needs_release_2505_igvm: false,
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1666,6 +1675,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
                 incubator_profile: None,
                 nextest_filter_expr: "all()".to_string(),
+                needs_release_2505_igvm: false,
                 test_artifacts: vec![
                     KnownTestArtifacts::Alpine323Aarch64Vhd,
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
@@ -1688,6 +1698,7 @@ impl IntoPipeline for CheckinGatesCli {
                 // inside the QEMU TCG incubator rather than directly on the host.
                 incubator_profile: Some("aarch64-tcg-pcie"),
                 nextest_filter_expr: "test(aarch64_tcg)".to_string(),
+                needs_release_2505_igvm: false,
                 test_artifacts: vec![
                     KnownTestArtifacts::Alpine323Aarch64Vhd,
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
@@ -1734,6 +1745,7 @@ impl IntoPipeline for CheckinGatesCli {
                     target: target.as_triple(),
                     nextest_profile: flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
                     nextest_filter_expr: Some(nextest_filter_expr),
+                    needs_release_2505_igvm,
                     dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
                     test_artifacts,
                     incubator_profile: incubator_profile.map(Into::into),

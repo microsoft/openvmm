@@ -433,7 +433,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
         };
 
-        let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
+        let mut vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
 
         if properties.is_openhcl {
             // Copy the IGVM file locally, since it may not be accessible by
@@ -497,6 +497,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 .firmware
                 .into_runtime_config(config.vmbus_storage_controllers),
         ))
+    }
+}
+
+impl HyperVPetriRuntime {
+    pub(crate) async fn start(&mut self) -> anyhow::Result<()> {
+        self.vm.start().await
     }
 }
 

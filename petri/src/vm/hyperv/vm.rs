@@ -314,9 +314,11 @@ impl HyperVVM {
     }
 
     /// Start the VM
-    pub async fn start(&self) -> anyhow::Result<()> {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         self.check_state(VmState::Off).await?;
+        let start_time = Timestamp::now();
         hvc::hvc_start(&self.vmid).await?;
+        self.last_start_time = Some(start_time);
         Ok(())
     }
 

@@ -61,6 +61,7 @@ flowey_request! {
         /// Get a map of env vars required to be set when running VMM tests
         pub get_env: WriteVar<BTreeMap<String, String>>,
         pub release_igvm_files: Option<ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>>,
+        pub release_2505_igvm_files: Option<ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>>,
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
         /// Disable lazy remote artifact fetching (set PETRI_REMOTE_ARTIFACTS=0).
@@ -107,6 +108,7 @@ impl SimpleFlowNode for Node {
             get_test_log_path,
             get_env,
             release_igvm_files,
+            release_2505_igvm_files,
             use_relative_paths,
             disable_remote_artifacts,
             reuse_prepped_vhds,
@@ -173,12 +175,14 @@ impl SimpleFlowNode for Node {
             let uefi = uefi.claim(ctx);
             let virtio_win_dir = virtio_win_dir.claim(ctx);
             let release_igvm_files_dir = release_igvm_files.claim(ctx);
+            let release_2505_igvm_files_dir = release_2505_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
                 let test_linux_bzimage = test_linux_bzimage.map(|v| rt.read(v));
                 let uefi = rt.read(uefi);
                 let release_igvm_files_dir = rt.read(release_igvm_files_dir);
+                let release_2505_igvm_files_dir = rt.read(release_2505_igvm_files_dir);
                 let test_content_dir = rt.read(test_content_dir);
 
                 let test_log_dir = test_content_dir.join("test_results");
@@ -464,6 +468,15 @@ impl SimpleFlowNode for Node {
 
                     if let Some(src) = &release_igvm_files.openhcl_direct {
                         let new_name = format!("{latest_release_version}-x64-direct-openhcl.bin");
+                        fs_err::copy(src, test_content_dir.join(new_name))?;
+                    }
+                }
+
+                if let Some(release_igvm_files) = release_2505_igvm_files_dir {
+                    let release_version = OpenhclReleaseVersion::Release2505;
+
+                    if let Some(src) = &release_igvm_files.openhcl {
+                        let new_name = format!("{release_version}-x64-openhcl.bin");
                         fs_err::copy(src, test_content_dir.join(new_name))?;
                     }
                 }

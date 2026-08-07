@@ -33,6 +33,8 @@ pub struct VmmTestSelections {
     pub deps: VmmTestsDepSelections,
     /// Whether to download release IGVM files from GitHub
     pub needs_release_igvm: bool,
+    /// Whether to download the OpenHCL release 2505 IGVM from GitHub
+    pub needs_release_2505_igvm: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -184,6 +186,7 @@ impl SimpleFlowNode for Node {
             build,
             deps,
             needs_release_igvm,
+            needs_release_2505_igvm,
         } = selections;
 
         let build_openhcl = build.openhcl_standard
@@ -704,6 +707,16 @@ impl SimpleFlowNode for Node {
                 },
             )
         });
+        let release_2505_igvm_files = needs_release_2505_igvm.then(|| {
+            ctx.reqv(
+                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
+                    arch,
+                    release_igvm_files: v,
+                    release_version:
+                        crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::Release2505,
+                },
+            )
+        });
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
@@ -726,6 +739,7 @@ impl SimpleFlowNode for Node {
             get_test_log_path: None,
             get_env: v,
             release_igvm_files,
+            release_2505_igvm_files,
             use_relative_paths: build_only,
             disable_remote_artifacts: false,
             reuse_prepped_vhds,

@@ -155,6 +155,8 @@ struct ResolvedArtifactSelections {
     force_downloads: BTreeSet<KnownTestArtifacts>,
     /// Whether any tests need release IGVM files from GitHub
     needs_release_igvm: bool,
+    /// Whether any tests need the OpenHCL release 2505 IGVM from GitHub
+    needs_release_2505_igvm: bool,
     /// Whether any of the tests require Hyper-V
     needs_hyperv: bool,
     /// Whether any of the tests require hardware isolation
@@ -733,6 +735,7 @@ fn selections_from_resolved(
             _ => unreachable!(),
         },
         needs_release_igvm: resolved.needs_release_igvm,
+        needs_release_2505_igvm: resolved.needs_release_2505_igvm,
     }
 }
 
@@ -782,6 +785,10 @@ impl ResolvedArtifactSelections {
             {
                 // These are downloaded from GitHub releases, not built
                 self.needs_release_igvm = true;
+            }
+            petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_X64::GLOBAL_UNIQUE_ID =>
+            {
+                self.needs_release_2505_igvm = true;
             }
 
             // Guest test UEFI

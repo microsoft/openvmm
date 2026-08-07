@@ -96,6 +96,21 @@ impl SimpleFlowNode for Node {
                     )
                     .into_side_effect(),
                 );
+
+                if arch == CommonArch::X86_64 {
+                    deps.push(
+                        ctx.reqv(
+                            |v| crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Request {
+                                arch,
+                                release_version:
+                                    crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::Release2505,
+                                release_artifact: release_artifact.clone(),
+                                done: v,
+                            },
+                        )
+                        .into_side_effect(),
+                    );
+                }
             }
         }
 

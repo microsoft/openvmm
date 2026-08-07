@@ -213,6 +213,8 @@ pub mod artifacts {
             LATEST_STANDARD_X64,
             /// OpenHCL IGVM last release (standard)
             LATEST_RELEASE_STANDARD_X64,
+            /// OpenHCL IGVM 2505 release (standard)
+            RELEASE_25_05_STANDARD_X64,
             /// OpenHCL IGVM (standard, with VTL2 dev kernel)
             LATEST_STANDARD_DEV_KERNEL_X64,
             /// OpenHCL IGVM (for CVM)
@@ -238,6 +240,11 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
         impl IsOpenhclIgvm for LATEST_RELEASE_STANDARD_X64 {}
+
+        impl IsLoadable for RELEASE_25_05_STANDARD_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+        impl IsOpenhclIgvm for RELEASE_25_05_STANDARD_X64 {}
 
         impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;

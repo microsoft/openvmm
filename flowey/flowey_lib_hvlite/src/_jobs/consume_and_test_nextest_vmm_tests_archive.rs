@@ -96,6 +96,8 @@ flowey_request! {
         pub nextest_profile: NextestProfile,
         /// Nextest test filter expression.
         pub nextest_filter_expr: Option<String>,
+        /// Whether the selected tests require the OpenHCL release 2505 IGVM.
+        pub needs_release_2505_igvm: bool,
         /// Artifacts corresponding to required test dependencies
         pub dep_artifact_dirs: VmmTestsDepArtifacts,
         /// Test artifacts to download
@@ -151,6 +153,7 @@ impl SimpleFlowNode for Node {
             target,
             nextest_profile,
             nextest_filter_expr,
+            needs_release_2505_igvm,
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
@@ -236,6 +239,20 @@ impl SimpleFlowNode for Node {
         } else {
             None
         };
+        let release_2505_igvm_files = if needs_release_2505_igvm
+            && !matches!(ctx.backend(), FlowBackend::Ado)
+        {
+            Some(ctx.reqv(
+                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
+                    arch,
+                    release_igvm_files: v,
+                    release_version:
+                        crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::Release2505,
+                },
+            ))
+        } else {
+            None
+        };
 
         let mut pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
 
@@ -262,6 +279,7 @@ impl SimpleFlowNode for Node {
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
             release_igvm_files,
+            release_2505_igvm_files,
             use_relative_paths: false,
             disable_remote_artifacts: true,
             reuse_prepped_vhds: false,
