@@ -136,7 +136,7 @@ impl HyperVVM {
     /// Get Hyper-V logs and write them to the log file
     pub async fn flush_logs(&mut self) -> anyhow::Result<()> {
         let start_time = self.last_log_flushed.as_ref().unwrap_or(&self.create_time);
-        for event in powershell::hyperv_event_logs(Some(&self.vmid), start_time).await? {
+        for event in powershell::hyperv_event_logs(Some(&self.vmid), start_time).await {
             self.log_winevent(&event);
             if self.last_log_flushed.is_none_or(|t| t < event.time_created) {
                 // add 1ms to avoid duplicate log entries

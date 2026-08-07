@@ -1633,6 +1633,9 @@ const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
 const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
 const HYPERV_WORKER_OPERATIONAL_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Operational";
 const HYPERV_VMMS_OPERATIONAL_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Operational";
+const HYPERV_WORKER_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Analytic";
+const HYPERV_WORKER_VDEV_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-VDev-Analytic";
+const HYPERV_VMMS_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Analytic";
 
 /// Providers that report a process fault to Windows Error Reporting and the
 /// Azure Watson agent.
@@ -1736,24 +1739,32 @@ define_winevents!(
 );
 
 /// Get Hyper-V event logs for a VM
-pub async fn hyperv_event_logs(
-    vmid: Option<&Guid>,
-    start_time: &Timestamp,
-) -> anyhow::Result<Vec<WinEvent>> {
+pub async fn hyperv_event_logs(vmid: Option<&Guid>, start_time: &Timestamp) -> Vec<WinEvent> {
     let vmid = vmid.map(|id| id.to_string());
-    run_get_winevent(
-        &[
-            HYPERV_WORKER_TABLE,
-            HYPERV_VMMS_TABLE,
-            HYPERV_WORKER_OPERATIONAL_TABLE,
-            HYPERV_VMMS_OPERATIONAL_TABLE,
-        ],
-        &[],
-        Some(start_time),
-        vmid.as_deref(),
-        &[],
-    )
-    .await
+    let mut events = Vec::new();
+    // Query each log separately, since `Get-WinEvent` fails the whole query if
+    // any one log is unregistered or disabled on this machine. Batching them
+    // would let a missing operational channel take the admin logs down with it.
+    for log in [
+        HYPERV_WORKER_TABLE,
+        HYPERV_VMMS_TABLE,
+        HYPERV_WORKER_OPERATIONAL_TABLE,
+        HYPERV_VMMS_OPERATIONAL_TABLE,
+        HYPERV_WORKER_ANALYTIC_TABLE,
+        HYPERV_WORKER_VDEV_ANALYTIC_TABLE,
+        HYPERV_VMMS_ANALYTIC_TABLE,
+    ] {
+        match run_get_winevent(&[log], &[], Some(start_time), vmid.as_deref(), &[]).await {
+            Ok(e) => events.extend(e),
+            Err(err) => tracing::warn!(
+                log,
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to read hyper-v event log"
+            ),
+        }
+    }
+    events.sort_by_key(|e| e.time_created);
+    events
 }
 
 /// Get the Windows Error Reporting / Azure Watson events logged since
