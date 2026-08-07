@@ -329,6 +329,15 @@ pub enum Error {
     GetMsrs(#[source] nix::Error),
     #[error("SetMsrs")]
     SetMsrs(#[source] nix::Error),
+    #[error(
+        "MSR access only processed {completed} of {requested} entries (first failed MSR: {failed_msr:#x}, write={write})"
+    )]
+    IncompleteMsrs {
+        write: bool,
+        completed: usize,
+        requested: usize,
+        failed_msr: u32,
+    },
     #[error("SetupMce")]
     SetupMce(#[source] nix::Error),
     #[error("GetMceCapSupported")]
@@ -1408,9 +1417,18 @@ impl<'a> Processor<'a> {
         }
 
         // SAFETY: Our Msrs type puts the entries array immediately after the header in memory, as required.
-        unsafe {
+        let completed = unsafe {
             ioctl::kvm_get_msrs(self.get().vcpu.as_raw_fd(), &mut input.header)
-                .map_err(Error::GetMsrs)?;
+                .map_err(Error::GetMsrs)?
+        } as usize;
+        assert!(completed <= msrs.len());
+        if completed < msrs.len() {
+            return Err(Error::IncompleteMsrs {
+                requested: msrs.len(),
+                completed,
+                failed_msr: msrs.get(completed).copied().unwrap(),
+                write: false,
+            });
         }
         for (v, e) in values.iter_mut().zip(&input.entries) {
             *v = e.data;
@@ -1444,9 +1462,18 @@ impl<'a> Processor<'a> {
         }
 
         // SAFETY: Our Msrs type puts the entries array immediately after the header in memory, as required.
-        unsafe {
+        let completed = unsafe {
             ioctl::kvm_set_msrs(self.get().vcpu.as_raw_fd(), &input.header)
-                .map_err(Error::SetMsrs)?;
+                .map_err(Error::SetMsrs)?
+        } as usize;
+        assert!(completed <= msrs.len());
+        if completed < msrs.len() {
+            return Err(Error::IncompleteMsrs {
+                requested: msrs.len(),
+                completed,
+                failed_msr: msrs.get(completed).copied().unwrap().0,
+                write: true,
+            });
         }
         Ok(())
     }
