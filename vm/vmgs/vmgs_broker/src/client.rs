@@ -63,6 +63,14 @@ impl VmgsClient {
         Ok(res)
     }
 
+    /// Returns the total size, in bytes, of the underlying VMGS backing store.
+    #[instrument(skip_all)]
+    pub async fn device_size(&self) -> Result<u64, VmgsClientError> {
+        let res = self.control.call(VmgsBrokerRpc::DeviceSize, ()).await?;
+
+        Ok(res)
+    }
+
     /// Reads the specified `file_id`.
     #[instrument(skip_all, fields(file_id))]
     pub async fn read_file(&self, file_id: FileId) -> Result<Vec<u8>, VmgsClientError> {
@@ -99,6 +107,16 @@ impl VmgsClient {
     ) -> Result<(), VmgsClientError> {
         self.control
             .call_failable(VmgsBrokerRpc::WriteFileEncrypted, (file_id.into(), buf))
+            .await?;
+
+        Ok(())
+    }
+
+    /// Deletes the specified `file_id` from the VMGS.
+    #[instrument(skip_all, fields(file_id))]
+    pub async fn delete_file(&self, file_id: FileId) -> Result<(), VmgsClientError> {
+        self.control
+            .call_failable(VmgsBrokerRpc::DeleteFile, file_id.into())
             .await?;
 
         Ok(())

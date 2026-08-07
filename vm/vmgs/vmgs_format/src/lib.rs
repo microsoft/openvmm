@@ -53,11 +53,12 @@ open_enum! {
         GUEST_WATCHDOG = 10,
         HW_KEY_PROTECTOR = 11,
         GUEST_SECRET_KEY = 13,
-        HIBERNATION_FIRMWARE = 14,
+        HIBERNATION_TOKEN = 14,
         PLATFORM_SEED = 15,
         PROVENANCE_DOC = 16,
         TPM_NVRAM_BACKUP = 17,
         PROVISIONING_MARKER = 18,
+        HIBERNATION_FIRMWARE = 19,
 
         EXTENDED_FILE_TABLE = 63,
     }
@@ -67,6 +68,25 @@ impl Display for FileId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("File ID {} ({:?})", self.0, self))
     }
+}
+
+/// The minimum overall VMGS backing-store size, in bytes, required before a UEFI
+/// firmware image snapshot ([`FileId::HIBERNATION_FIRMWARE`]) is stored for
+/// hibernation. This is a minimum overall size so that the firmware image fits
+/// alongside the other VMGS files, not just a tight fit of the image itself.
+pub const VMGS_HIBERNATION_FIRMWARE_MIN_SIZE: u64 = 32 * 1024 * 1024;
+
+/// Values for the 8-byte little-endian hibernate token stored in
+/// [`FileId::HIBERNATION_TOKEN`], mirroring the legacy HCL `HclPowerServices`
+/// behavior. The token is written on a power transition and consumed/cleared on
+/// resume.
+pub mod hibernate_token {
+    /// Written on hibernate when a firmware image snapshot is stored in VMGS.
+    pub const FIRMWARE_STORED: u64 = u64::MAX;
+    /// Written on hibernate when no firmware image snapshot is stored.
+    pub const HIBERNATED: u64 = 0x1;
+    /// Written on a clean power off / reset to clear any prior hibernate state.
+    pub const NONE: u64 = 0x0;
 }
 
 pub const VMGS_VERSION_2_0: u32 = 0x00020000;
