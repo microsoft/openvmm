@@ -2136,11 +2136,10 @@ impl InitializedVm {
                     cxl,
                     vnode: rc.vnode,
                     preserve_bars: rc.preserve_bars,
-                    // OpenVMM assigns PCI resources before loading UEFI and
-                    // tells the firmware to use that configuration. Tell the
-                    // guest OS to preserve it as well; otherwise Linux may
-                    // transiently program overlapping BARs while reallocating
-                    // resources, which the device model cannot map.
+                    // Pinned BARs require the guest to preserve their assigned
+                    // addresses. UEFI also consumes OpenVMM's preassigned PCI
+                    // configuration, so tell the guest OS not to reallocate it
+                    // and transiently overlap BAR mappings.
                     preserve_boot_config: rc.preserve_bars
                         || matches!(&cfg.load_mode, LoadMode::Uefi { .. }),
                 });
