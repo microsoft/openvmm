@@ -9938,6 +9938,7 @@ dependencies = [
  "guestmem",
  "guid",
  "inspect",
+ "mesh",
  "open_enum",
  "task_control",
  "thiserror 2.0.16",
