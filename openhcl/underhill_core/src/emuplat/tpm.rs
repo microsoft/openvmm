@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
@@ -29,6 +30,7 @@ pub struct TpmRequestAkCertHelper {
     attestation_type: AttestationType,
     attestation_vm_config: AttestationVmConfig,
     attestation_agent_data: Option<Vec<u8>>,
+    tvm_host_certification: bool,
 }
 
 impl TpmRequestAkCertHelper {
@@ -38,6 +40,7 @@ impl TpmRequestAkCertHelper {
         attestation_type: AttestationType,
         attestation_vm_config: AttestationVmConfig,
         attestation_agent_data: Option<Vec<u8>>,
+        tvm_host_certification: bool,
     ) -> Self {
         Self {
             get_client,
@@ -45,6 +48,7 @@ impl TpmRequestAkCertHelper {
             attestation_type,
             attestation_vm_config,
             attestation_agent_data,
+            tvm_host_certification,
         }
     }
 }
@@ -60,12 +64,21 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         guest_input: &[u8],
         is_attestation_report: bool,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        tracing::info!(
+            CVM_ALLOWED,
+            attestation_type = ?self.attestation_type,
+            tvm_host_certification = self.tvm_host_certification,
+            is_attestation_report,
+            "creating TPM AK certificate request"
+        );
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
             AttestationType::Cca => Some(tee_call::TeeType::Cca),
             AttestationType::Vbs => Some(tee_call::TeeType::Vbs),
-            AttestationType::Host => None,
+            AttestationType::Host => self
+                .tvm_host_certification
+                .then_some(tee_call::TeeType::Host),
         };
         let ak_cert_request_helper =
             underhill_attestation::IgvmAttestRequestHelper::prepare_ak_cert_request(
@@ -86,6 +99,12 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         } else {
             vec![]
         };
+        tracing::info!(
+            CVM_ALLOWED,
+            attestation_type = ?self.attestation_type,
+            report_size = attestation_report.len(),
+            "attestation report generated for TPM request"
+        );
 
         let version = if is_attestation_report {
             // If this is an attestation report, use the version 1, the stable structure exposed
@@ -99,6 +118,14 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         let request = ak_cert_request_helper
             .create_request(version, &attestation_report)
             .map_err(TpmAttestationError::CreateAkCertRequest)?;
+        tracing::info!(
+            CVM_ALLOWED,
+            attestation_type = ?self.attestation_type,
+            is_attestation_report,
+            report_size = attestation_report.len(),
+            request_size = request.len(),
+            "TPM request created"
+        );
 
         Ok(request)
     }
@@ -107,6 +134,11 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         &self,
         request: Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        tracing::info!(
+            CVM_ALLOWED,
+            request_size = request.len(),
+            "sending TPM AK certificate request to IGVM"
+        );
         let agent_data = self.attestation_agent_data.clone().unwrap_or_default();
         let result = self
             .get_client
@@ -118,6 +150,12 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             // Let the caller to handle the empty response.
             vec![]
         };
+        tracing::info!(
+            CVM_ALLOWED,
+            response_size = result.response.len(),
+            payload_size = payload.len(),
+            "TPM AK certificate response received from IGVM"
+        );
 
         Ok(payload)
     }
@@ -181,6 +219,7 @@ pub mod resources {
         attestation_type: AttestationType,
         attestation_vm_config: AttestationVmConfig,
         attestation_agent_data: Option<Vec<u8>>,
+        tvm_host_certification: bool,
     }
 
     impl GetTpmRequestAkCertHelperHandle {
@@ -188,11 +227,13 @@ pub mod resources {
             attestation_type: AttestationType,
             attestation_vm_config: AttestationVmConfig,
             attestation_agent_data: Option<Vec<u8>>,
+            tvm_host_certification: bool,
         ) -> Self {
             Self {
                 attestation_type,
                 attestation_vm_config,
                 attestation_agent_data,
+                tvm_host_certification,
             }
         }
     }
@@ -233,6 +274,9 @@ pub mod resources {
                     tracing::warn!("CCA: resolve: tee_call is not implemented yet");
                     None
                 }
+                AttestationType::Host if handle.tvm_host_certification => {
+                    Some(Arc::new(tee_call::HostCall))
+                }
                 AttestationType::Host => None,
             };
 
@@ -242,6 +286,7 @@ pub mod resources {
                 handle.attestation_type,
                 handle.attestation_vm_config,
                 handle.attestation_agent_data,
+                handle.tvm_host_certification,
             )
             .into())
         }
@@ -278,5 +323,127 @@ pub mod resources {
 
             Ok(GetTpmLogger::new(get).into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TpmRequestAkCertHelper;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::sync::Arc;
+    use tpm_device::ak_cert::RequestAkCert;
+    use underhill_attestation::AttestationType;
+    use zerocopy::FromBytes;
+
+    struct TestHostCall;
+
+    impl tee_call::TeeCall for TestHostCall {
+        fn get_attestation_report(
+            &self,
+            _report_data: &[u8; tee_call::REPORT_DATA_SIZE],
+        ) -> Result<tee_call::GetAttestationReportResult, tee_call::Error> {
+            Ok(tee_call::GetAttestationReportResult {
+                report: vec![0x42; tee_call::TVM_REPORT_SIZE],
+                tcb_version: None,
+            })
+        }
+
+        fn supports_get_derived_key(&self) -> Option<&dyn tee_call::TeeCallGetDerivedKey> {
+            None
+        }
+
+        fn tee_type(&self) -> tee_call::TeeType {
+            tee_call::TeeType::Host
+        }
+    }
+
+    fn test_attestation_vm_config() -> AttestationVmConfig {
+        AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            secure_boot: false,
+            tpm_enabled: false,
+            tpm_persisted: false,
+            hardware_sealing_policy: HardwareSealingPolicy::None,
+            filtered_vpci_devices_allowed: true,
+            vm_unique_id: String::new(),
+            vmgs_provisioner: None,
+        }
+    }
+
+    #[async_test]
+    async fn host_certification_enabled_request_includes_396_byte_report(driver: DefaultDriver) {
+        let get_pair = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let helper = TpmRequestAkCertHelper::new(
+            get_pair.client,
+            Some(Arc::new(TestHostCall)),
+            AttestationType::Host,
+            test_attestation_vm_config(),
+            None,
+            true,
+        );
+
+        let request = helper
+            .create_ak_cert_request(&[], &[], &[], &[], &[], false)
+            .expect("host-certified request generation");
+
+        let (parsed, _) =
+            IgvmAttestRequestBase::read_from_prefix(&request).expect("parse IgvmAttestRequest");
+        assert_eq!(
+            parsed.request_data.report_type,
+            IgvmAttestReportType::TVM_REPORT
+        );
+        assert_eq!(
+            &parsed.attestation_report[..tee_call::TVM_REPORT_SIZE],
+            [0x42; tee_call::TVM_REPORT_SIZE].as_slice()
+        );
+    }
+
+    #[async_test]
+    async fn host_certification_disabled_retains_zero_report_legacy_request(driver: DefaultDriver) {
+        let get_pair = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let helper = TpmRequestAkCertHelper::new(
+            get_pair.client,
+            None,
+            AttestationType::Host,
+            test_attestation_vm_config(),
+            None,
+            false,
+        );
+
+        let request = helper
+            .create_ak_cert_request(&[], &[], &[], &[], &[], false)
+            .expect("legacy request generation");
+
+        let (parsed, _) =
+            IgvmAttestRequestBase::read_from_prefix(&request).expect("parse IgvmAttestRequest");
+        assert_eq!(
+            parsed.request_data.report_type,
+            IgvmAttestReportType::TVM_REPORT
+        );
+        assert!(parsed.attestation_report.iter().all(|&b| b == 0));
     }
 }
