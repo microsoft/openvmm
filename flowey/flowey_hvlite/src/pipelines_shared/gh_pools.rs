@@ -103,6 +103,16 @@ pub fn windows_snp_self_hosted_baremetal() -> GhRunner {
     ])
 }
 
+pub fn windows_turin_self_hosted_nested() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "Windows".to_string(),
+        "X64".to_string(),
+        "Turin".to_string(),
+        "Nested".to_string(),
+    ])
+}
+
 pub fn default_windows() -> GhRunner {
     windows_intel_v6_1es()
 }

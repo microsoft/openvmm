@@ -1600,7 +1600,7 @@ impl IntoPipeline for CheckinGatesCli {
                 arch: FlowArch::X86_64,
                 // a Windows hypervisor bug causes VMM tests to crash
                 // when running on v7, so use v6
-                gh_pool: gh_pools::windows_amd_v6_1es(),
+                gh_pool: gh_pools::windows_turin_self_hosted_nested(),
                 ado_pool: Some(ado_pools::windows_amd_v6_1es()),
                 label: "x64-windows-amd",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,

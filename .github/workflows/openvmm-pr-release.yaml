@@ -4282,9 +4282,10 @@ jobs:
     name: run vmm-tests [x64-windows-amd]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v6
-    - 1ES.ImageOverride=win-amd64-v2
-    - JobId=job22-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - Turin
+    - Nested
     permissions:
       contents: read
       id-token: write
