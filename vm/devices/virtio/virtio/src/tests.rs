@@ -1051,9 +1051,15 @@ impl VirtioTestGuest {
                 0
             };
             if matches!(self.info, VirtioQueueInfo::Packed(_)) {
-                // buffer id (ignored for indirect descriptors)
+                // Buffer id. A packed completion is posted against the id in the
+                // PRIMARY ring descriptor; the ids inside an indirect table are
+                // reserved and must be ignored (spec 2.8.7). Stamp a sentinel
+                // rather than 0 so that reading one by mistake cannot coincide
+                // with the head's id, which is what the completion assertions
+                // check. With 0 here the two were indistinguishable and the
+                // distinction went untested.
                 self.test_mem
-                    .modify_memory_map(base + 12, &0_u16.to_le_bytes(), false);
+                    .modify_memory_map(base + 12, &(0xD1E0 + i).to_le_bytes(), false);
                 // flags
                 self.test_mem
                     .modify_memory_map(base + 14, &flags.to_le_bytes(), false);
@@ -2756,6 +2762,70 @@ async fn verify_split_queue_linked(driver: DefaultDriver) {
 async fn verify_packed_queue_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_queue_linked_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true)).await;
+}
+
+/// A chain longer than the payload's inline capacity, so it spills to the heap.
+///
+/// Every other chain test here stays at or under the inline bound, so this is the
+/// only one that would catch a spill dropping, duplicating or reordering buffers.
+async fn verify_queue_chain_longer_than_inline_capacity_inner(mut guest: VirtioTestGuest) {
+    // Comfortably past the inline bound while still fitting the size-8 ring.
+    const CHAIN_LEN: usize = 6;
+
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let base_address = guest.get_queue_descriptor_backing_memory_address(0);
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(
+                        work.payload.len(),
+                        CHAIN_LEN,
+                        "spilled chain lost or gained buffers"
+                    );
+                    // Order matters as much as count: the buffers are one packet.
+                    for (i, payload) in work.payload.iter().enumerate() {
+                        assert_eq!(payload.address, base_address + 0x1000 * i as u64);
+                        assert_eq!(payload.length, 0x1000);
+                    }
+                    queue.complete(work, 789);
+                },
+            ),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    guest.add_linked_to_avail_queue(0, CHAIN_LEN as u16);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(desc, 0u16);
+    assert_eq!(len, 789);
+    assert_eq!(guest.get_next_completed(0).is_none(), true);
+
+    queues[0].stop().await;
+}
+
+#[async_test]
+async fn verify_split_queue_chain_longer_than_inline_capacity(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_chain_longer_than_inline_capacity_inner(VirtioTestGuest::new_split(
+        &driver, &test_mem, 1, 8, true,
+    ))
+    .await;
+}
+#[async_test]
+async fn verify_packed_queue_chain_longer_than_inline_capacity(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_chain_longer_than_inline_capacity_inner(VirtioTestGuest::new_packed(
+        &driver, &test_mem, 1, 8, true,
+    ))
+    .await;
 }
 /// A packed linked chain that starts near the end of the ring and wraps to
 /// the beginning (indices 2 → 3 → 0 in a queue_size=4 ring). Without
