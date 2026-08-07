@@ -433,17 +433,22 @@ impl PetriVmmBackend for HyperVPetriBackend {
             ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
         };
 
-        let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
-
-        if properties.is_openhcl {
-            // Copy the IGVM file locally, since it may not be accessible by
-            // Hyper-V (e.g., if it is in a WSL filesystem).
-            let local_path = igvm_file.as_ref().unwrap();
+        // Copy the IGVM file locally, since it may not be accessible by Hyper-V
+        // (e.g., if it is in a WSL filesystem). This has to happen before the VM
+        // is created.
+        if let Some(local_path) = &igvm_file {
             fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
                 .context("failed to copy igvm file")?;
+        }
+
+        let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
+
+        if let Some(local_path) = &igvm_file {
             acl_for_vm(local_path, Some(*vm.vmid()), false)
                 .context("failed to set ACL for igvm file")?;
+        }
 
+        if properties.is_openhcl {
             let openhcl_log_file = log_source.log_file("openhcl")?;
             if supports_com3 {
                 tracing::debug!("getting kmsg logs from COM3");
