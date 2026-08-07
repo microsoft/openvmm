@@ -48,6 +48,7 @@ pub struct HclDevicePlatformSettings {
     pub console_mode: u8,
     pub enable_firmware_debugging: bool,
     pub enable_hibernation: bool,
+    pub enable_ipmi: bool,
     pub serial_number: String,
     pub base_board_serial_number: String,
     pub chassis_serial_number: String,
