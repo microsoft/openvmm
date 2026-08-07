@@ -96,8 +96,8 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                 })
             })
             .collect::<Result<Vec<_>, ResolveConsommeError>>()?;
-        let endpoint = if let Some(port_recv) = resource.recv {
-            ConsommeEndpoint::new_with_port_channel(state, port_forwards, port_recv)
+        let endpoint = if let Some(request_recv) = resource.recv {
+            ConsommeEndpoint::new_with_request_channel(state, port_forwards, request_recv)
         } else {
             ConsommeEndpoint::new_with_ports(state, port_forwards)
         };
