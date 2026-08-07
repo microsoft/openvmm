@@ -89,19 +89,19 @@ impl FlowNodeWithConfig for Node {
             path: v,
         });
 
-        let persistent_dir = ctx.persistent_dir();
+        let memo_store = ctx.memo_store();
 
         ctx.emit_rust_step("unpack openvmm-test-virtio-win archive", |ctx| {
-            let persistent_dir = persistent_dir.claim(ctx);
+            let memo_store = memo_store.claim(ctx);
             let archive = archive.claim(ctx);
             let out_vars = out_vars.claim(ctx);
             let version = version.clone();
             move |rt| {
-                let persistent_dir = persistent_dir.map(|d| rt.read(d));
+                let memo_store = memo_store.map(|d| rt.read(d));
                 let file = rt.read(archive);
                 let dir = flowey_lib_common::_util::extract::extract_tar_gz_if_new(
                     rt,
-                    persistent_dir.as_deref(),
+                    memo_store.as_ref(),
                     &file,
                     &version,
                 )?;

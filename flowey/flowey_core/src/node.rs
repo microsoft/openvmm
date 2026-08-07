@@ -6,6 +6,8 @@
 mod github_context;
 mod spec;
 
+pub mod memo;
+
 pub use github_context::GhOutput;
 pub use github_context::GhToRust;
 pub use github_context::RustToGh;
@@ -70,6 +72,10 @@ pub mod user_facing {
     pub use crate::new_flow_node_with_config;
     pub use crate::new_simple_flow_node;
     pub use crate::node::FlowPlatformLinuxDistro;
+    pub use crate::node::memo;
+    pub use crate::node::memo::MemoKey;
+    pub use crate::node::memo::MemoKeySpec;
+    pub use crate::node::memo::MemoStore;
     pub use crate::pipeline::Artifact;
     pub use crate::pipeline::ArtifactType;
 
@@ -1777,12 +1783,12 @@ impl<'ctx> NodeCtx<'ctx> {
             .replace("::", "__");
 
         Some(
-            self.emit_rust_stepv("🌼 Create persistent store dir", |ctx| {
+            self.emit_minor_rust_stepv("🌼 Create persistent store dir", |ctx| {
                 let path = path.claim(ctx);
                 |rt| {
                     let dir = rt.read(path).join(folder_name);
-                    fs_err::create_dir_all(&dir)?;
-                    Ok(dir)
+                    fs_err::create_dir_all(&dir).unwrap();
+                    dir
                 }
             }),
         )
@@ -1794,6 +1800,117 @@ impl<'ctx> NodeCtx<'ctx> {
             .borrow_mut()
             .persistent_dir_path_var()
             .is_some()
+    }
+
+    /// Return a flowey Var carrying a handle to the **shared** flowey
+    /// memoization store, if persistent storage is available.
+    ///
+    /// Unlike [`NodeCtx::persistent_dir`], the store is _not_ node-specific:
+    /// entries are keyed by content, and are garbage collected centrally.
+    ///
+    /// Most node authors should not need this - prefer
+    /// [`NodeCtx::emit_memoized_rust_step`]. It is exposed for helper code that
+    /// needs to memoize something from within an existing step, via
+    /// [`MemoStore::get_or_insert_with`](memo::MemoStore::get_or_insert_with).
+    #[track_caller]
+    #[must_use]
+    pub fn memo_store(&mut self) -> Option<ReadVar<memo::MemoStore>> {
+        let path: ReadVar<PathBuf> = ReadVar {
+            backing_var: ReadVarBacking::RuntimeVar {
+                var: self.backend.borrow_mut().persistent_dir_path_var()?,
+                is_side_effect: false,
+            },
+            _kind: std::marker::PhantomData,
+        };
+
+        Some(
+            self.emit_minor_rust_stepv("🌼 Open memoization store", |ctx| {
+                let path = path.claim(ctx);
+                |rt| memo::MemoStore::open(rt.read(path).join(memo::MEMO_STORE_DIR_NAME)).unwrap()
+            }),
+        )
+    }
+
+    /// Emit a rust step whose work is skipped when a previous run already
+    /// produced the same results, returning the directory holding them.
+    ///
+    /// The body is an **ordinary flowey step**: it does its work in the step's
+    /// working directory, exactly as it would without memoization. The only
+    /// difference is that the working directory may be a memoization store
+    /// entry, and that on a hit the body does not run at all.
+    ///
+    /// The returned Var is that directory. Derive whatever paths the step
+    /// exposes from it in a single follow-up step - there is no separate notion
+    /// of "declared outputs", because the result _is_ the directory.
+    ///
+    /// If persistent storage is unavailable (as is typical on CI), or
+    /// memoization has been disabled via `FLOWEY_NO_MEMO`, this is exactly
+    /// [`NodeCtx::emit_rust_step`] and the returned Var is the step's own
+    /// working dir.
+    ///
+    /// # Contract
+    ///
+    /// - The `key` must include _everything_ the results depend on, including a
+    ///   `version` that gets bumped whenever the body's logic changes. See
+    ///   [`MemoKeySpec`](memo::MemoKeySpec).
+    /// - Everything the step exposes must live in the working directory. A path
+    ///   pointing outside it will dangle, since the working directory is moved
+    ///   into the store once the body succeeds.
+    /// - Downstream consumers must treat the contents as **read-only**, since
+    ///   they may live directly in the store.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let dir = ctx.emit_memoized_rust_step(
+    ///     "strip binary",
+    ///     MemoKeySpec::new("my_node::strip", 1)
+    ///         .tool(strip_bin)
+    ///         .path("in_bin", &in_bin),
+    ///     |ctx| {
+    ///         let in_bin = in_bin.clone().claim(ctx);
+    ///         move |rt| {
+    ///             let in_bin = rt.read(in_bin);
+    ///             let out = rt.sh.current_dir().join(in_bin.file_name().unwrap());
+    ///             flowey::shell_cmd!(rt, "{strip_bin} {in_bin} -o {out}").run()?;
+    ///             Ok(())
+    ///         }
+    ///     },
+    /// );
+    ///
+    /// ctx.emit_minor_rust_step("🌼 resolve stripped binary path", |ctx| {
+    ///     let dir = dir.claim(ctx);
+    ///     let in_bin = in_bin.claim(ctx);
+    ///     let write_bin = write_bin.claim(ctx);
+    ///     move |rt| {
+    ///         let name = rt.read(in_bin).file_name().unwrap().to_owned();
+    ///         rt.write(write_bin, &rt.read(dir).join(name));
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// That follow-up step runs at runtime, so it can also inspect the finished
+    /// directory - handy when the body produces files only under some
+    /// configurations.
+    #[track_caller]
+    pub fn emit_memoized_rust_step<F, G>(
+        &mut self,
+        label: impl AsRef<str>,
+        key: memo::MemoKeySpec,
+        code: F,
+    ) -> ReadVar<PathBuf>
+    where
+        F: for<'a> FnOnce(&'a mut StepCtx<'_>) -> G,
+        G: for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
+    {
+        let store = self.memo_store();
+
+        self.emit_rust_stepv(label, |ctx| {
+            let store = store.claim(ctx);
+            let key = key.claim(ctx);
+            let code = code(ctx);
+            move |rt| memo::run_memoized(rt, store, key, code)
+        })
     }
 }
 

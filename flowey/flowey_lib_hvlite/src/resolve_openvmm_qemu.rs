@@ -140,22 +140,22 @@ impl FlowNodeWithConfig for Node {
             archives.insert(arch, archive);
         }
 
-        let persistent_dir = ctx.persistent_dir();
+        let memo_store = ctx.memo_store();
 
         ctx.emit_rust_step("unpack QEMU archive", |ctx| {
-            let persistent_dir = persistent_dir.claim(ctx);
+            let memo_store = memo_store.claim(ctx);
             let archives = archives.claim(ctx);
             let deps = deps.claim(ctx);
             let version = version.clone();
             move |rt| {
-                let persistent_dir = persistent_dir.map(|d| rt.read(d));
+                let memo_store = memo_store.map(|d| rt.read(d));
 
                 let mut extract_dirs = BTreeMap::new();
                 for (arch, archive) in archives {
                     let file = rt.read(archive);
                     let dir = flowey_lib_common::_util::extract::extract_tar_gz_if_new(
                         rt,
-                        persistent_dir.as_deref(),
+                        memo_store.as_ref(),
                         &file,
                         &version,
                     )?;

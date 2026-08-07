@@ -102,36 +102,42 @@ impl FlowNodeWithConfig for Node {
             path: v,
         });
 
-        ctx.emit_rust_step("extract azcopy from archive", |ctx| {
-            bsdtar_installed.claim(ctx);
+        let dir = ctx.emit_memoized_rust_step(
+            "extract azcopy from archive",
+            MemoKeySpec::new("flowey_lib_common::download_azcopy", 1)
+                .value("version", version)
+                .value("is_tar", &is_tar)
+                .value("azcopy_bin", &azcopy_bin)
+                .path("archive", &azcopy_archive),
+            |ctx| {
+                bsdtar_installed.claim(ctx);
+                let azcopy_archive = azcopy_archive.claim(ctx);
+                move |rt| {
+                    let azcopy_archive = rt.read(azcopy_archive);
+
+                    if is_tar {
+                        flowey::shell_cmd!(rt, "tar -xf {azcopy_archive} --strip-components=1")
+                            .run()?;
+                    } else {
+                        let bsdtar = crate::_util::bsdtar_name(rt);
+                        flowey::shell_cmd!(
+                            rt,
+                            "{bsdtar} -xf {azcopy_archive} --strip-components=1"
+                        )
+                        .run()?;
+                    }
+
+                    Ok(())
+                }
+            },
+        );
+
+        ctx.emit_minor_rust_step("resolve azcopy path", |ctx| {
+            let dir = dir.claim(ctx);
             let get_azcopy = get_azcopy.claim(ctx);
-            let azcopy_archive = azcopy_archive.claim(ctx);
-            let azcopy_bin = azcopy_bin.clone();
             move |rt| {
-                let azcopy_archive = rt.read(azcopy_archive);
-
-                rt.sh.change_dir(azcopy_archive.parent().unwrap());
-
-                if is_tar {
-                    flowey::shell_cmd!(rt, "tar -xf {azcopy_archive} --strip-components=1")
-                        .run()?;
-                } else {
-                    let bsdtar = crate::_util::bsdtar_name(rt);
-                    flowey::shell_cmd!(rt, "{bsdtar} -xf {azcopy_archive} --strip-components=1")
-                        .run()?;
-                }
-
-                let path_to_azcopy = azcopy_archive
-                    .parent()
-                    .unwrap()
-                    .join(&azcopy_bin)
-                    .absolute()?;
-
-                for var in get_azcopy {
-                    rt.write(var, &path_to_azcopy)
-                }
-
-                Ok(())
+                let path = rt.read(dir).join(&azcopy_bin);
+                rt.write_all(get_azcopy, &path);
             }
         });
 
