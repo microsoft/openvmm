@@ -162,6 +162,59 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
     Ok(())
 }
 
+/// Boot a small aarch64 Linux guest via UEFI without Hyper-V enlightenments.
+///
+/// The loader must pass the generic SEC platform type in `x2`, allowing the
+/// firmware to avoid Hyper-V-specific facilities. PCIe NVMe provides the boot
+/// and CIDATA disks on separate controllers, and virtio-vsock provides the
+/// pipette transport because VMBus is off. Keeping separate controllers also
+/// verifies that the guest preserves OpenVMM's preassigned PCI resources.
+/// The `_aarch64_tcg` suffix opts the test into the QEMU incubator CI pass.
+/// The normal Windows AArch64 CI pass uses `all()`, so it runs there as well.
+#[openvmm_test(uefi_aarch64(vhd(alpine_3_23_aarch64)))]
+#[openvmm_test(uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
+async fn boot_no_hv_uefi_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_hv()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    let shell = agent.unix_shell();
+    let dmesg = cmd!(shell, "dmesg").read().await?;
+    let hyperv_detection_lines: Vec<_> = dmesg
+        .lines()
+        .filter(|line| line.contains("Hyper-V:") || line.contains("Microsoft Hyper-V"))
+        .collect();
+    assert!(
+        hyperv_detection_lines.is_empty(),
+        "guest detected Hyper-V despite no-hv configuration:\n{}",
+        hyperv_detection_lines.join("\n")
+    );
+
+    // ACPI FADT offset 268 is the 8-byte hypervisor vendor identity. A zero
+    // value confirms that OpenVMM did not describe Hyper-V to the guest.
+    const FADT_HYPERVISOR_VENDOR_ID_OFFSET: usize = 268;
+    let facp = shell
+        .read_file_raw("/sys/firmware/acpi/tables/FACP")
+        .await?;
+    let vendor_id = u64::from_le_bytes(
+        facp.get(FADT_HYPERVISOR_VENDOR_ID_OFFSET..FADT_HYPERVISOR_VENDOR_ID_OFFSET + 8)
+            .context("FADT is missing the hypervisor vendor identity")?
+            .try_into()
+            .context("invalid FADT hypervisor vendor identity length")?,
+    );
+    assert_eq!(vendor_id, 0, "guest FADT advertised a hypervisor vendor");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Verify that the Linux direct loader synthesizes SMBIOS (DMI) tables so the
 /// guest can read `/sys/class/dmi/id/*`. The two architectures exercise
 /// different delivery paths for the same `_SM3_` entry point: on x86 the kernel
