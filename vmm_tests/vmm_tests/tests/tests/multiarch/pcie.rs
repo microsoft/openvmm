@@ -934,9 +934,9 @@ async fn verify_ioapic_interrupt_remapping(
     // (kernel console, getty) owns the tty while the test drives it. The 8250
     // driver only requests the port's IRQ while the port is open, so `ttyS1`
     // has no `/proc/interrupts` line until then — both snapshots have to be
-    // taken from a shell that is holding the port open. `set -e` matters
-    // because a `for` loop's status is just its last iteration's, so without it
-    // a failed write anywhere but the final one is silently ignored.
+    // taken from a shell that is holding the port open. `set -e` matters so any
+    // failure in the snapshot or write sequence causes the script to fail (and the
+    // test to surface the error) instead of silently continuing.
     //
     // The traffic has to be larger than the tty's transmit buffer (one page).
     // A smaller write only lands in that buffer and returns immediately,
