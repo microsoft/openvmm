@@ -937,10 +937,19 @@ async fn verify_ioapic_interrupt_remapping(
     // taken from a shell that is holding the port open. `set -e` matters
     // because a `for` loop's status is just its last iteration's, so without it
     // a failed write anywhere but the final one is silently ignored.
+    //
+    // The traffic has to be larger than the tty's transmit buffer (one page).
+    // A smaller write only lands in that buffer and returns immediately,
+    // leaving the transmission — and therefore every interrupt it raises —
+    // racing the second snapshot below. Overflowing the buffer makes `write()`
+    // block until the driver has drained it, and the driver only drains from
+    // its THR-empty interrupt handler, so a completed write proves interrupts
+    // were delivered.
     const SNAPSHOT_SEPARATOR: &str = "===petri-after===";
+    const TX_PAGES: usize = 4;
     let script = format!(
         "set -e; exec 3>/dev/ttyS1; cat /proc/interrupts; echo {SNAPSHOT_SEPARATOR}; \
-         for i in $(seq 1 100); do echo ir-remap-test >&3; done; cat /proc/interrupts"
+         dd if=/dev/zero bs=4096 count={TX_PAGES} 2>/dev/null >&3; cat /proc/interrupts"
     );
     let snapshots = cmd!(sh, "sh -c {script}").read().await?;
     let (interrupts, interrupts_after) = snapshots
