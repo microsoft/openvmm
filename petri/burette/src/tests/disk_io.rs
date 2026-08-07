@@ -12,6 +12,7 @@
 //! Supports both virtio-blk and storvsc (synthetic SCSI) disk backends.
 
 use crate::report::MetricResult;
+use crate::tests::common;
 use anyhow::Context as _;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
@@ -59,30 +60,16 @@ pub struct DiskIoTestState {
     disk_device: String,
 }
 
-fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    petri::Firmware::linux_direct(resolver, MachineArch::host())
-}
-
-fn require_petritools_erofs(
-    resolver: &petri::ArtifactResolver<'_>,
-) -> petri_artifacts_core::ResolvedArtifact {
-    use petri_artifacts_vmm_test::artifacts::petritools::*;
-    match MachineArch::host() {
-        MachineArch::X86_64 => resolver.require(PETRITOOLS_EROFS_X64).erase(),
-        MachineArch::Aarch64 => resolver.require(PETRITOOLS_EROFS_AARCH64).erase(),
-    }
-}
-
 /// Register artifacts needed by the disk I/O test.
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
-    let firmware = build_firmware(resolver);
+    let firmware = common::build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
         resolver,
         firmware,
         MachineArch::host(),
         true,
     );
-    require_petritools_erofs(resolver);
+    common::require_petritools_erofs(resolver);
 }
 
 /// GUID for the data disk SCSI controller (used for storvsc backend).
@@ -135,7 +122,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             );
         }
 
-        let firmware = build_firmware(resolver);
+        let firmware = common::build_firmware(resolver);
 
         let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
             resolver,
@@ -154,7 +141,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
         };
 
         // Open the perf rootfs erofs image for the virtio-blk device.
-        let erofs_path = require_petritools_erofs(resolver);
+        let erofs_path = common::require_petritools_erofs(resolver);
         let erofs_file = fs_err::File::open(&erofs_path)?;
 
         let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
