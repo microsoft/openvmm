@@ -166,8 +166,9 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 ///
 /// The loader must pass the generic SEC platform type in `x2`, allowing the
 /// firmware to avoid Hyper-V-specific facilities. PCIe NVMe provides the boot
-/// and CIDATA disks as separate namespaces, and virtio-vsock provides the
-/// pipette transport because VMBus is off.
+/// and CIDATA disks on separate controllers, and virtio-vsock provides the
+/// pipette transport because VMBus is off. Keeping separate controllers also
+/// verifies that the guest preserves OpenVMM's preassigned PCI resources.
 /// The `_aarch64_tcg` suffix opts the test into the QEMU incubator CI pass.
 /// The normal Windows AArch64 CI pass uses `all()`, so it runs there as well.
 #[openvmm_test(uefi_aarch64(vhd(alpine_3_23_aarch64)))]
@@ -179,7 +180,7 @@ async fn boot_no_hv_uefi_aarch64_tcg(
         .with_no_hv()
         .with_boot_device_type(petri::BootDeviceType::PcieNvme)
         .with_default_boot_always_attempt(true)
-        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 2))
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
         .run()
         .await?;
 

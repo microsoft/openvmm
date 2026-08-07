@@ -76,7 +76,6 @@ use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_socket::net::OpenSocketSerialConfig;
 use sparse_mmap::alloc_shared_memory;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -233,7 +232,6 @@ impl PetriVmConfigOpenVmm {
             vmbus_storage_controllers_to_openvmm(&vmbus_storage_controllers).await?;
 
         let mut pcie_devices = Vec::new();
-        let mut pcie_nvme_controllers = BTreeMap::<String, Vec<NamespaceDefinition>>::new();
         for PcieNvmeDrive {
             port_name,
             nsid,
@@ -246,25 +244,17 @@ impl PetriVmConfigOpenVmm {
                 )
             })?;
             let disk = petri_disk_to_openvmm(&disk).await?;
-            let namespaces = pcie_nvme_controllers.entry(port_name).or_default();
-            anyhow::ensure!(
-                namespaces.iter().all(|namespace| namespace.nsid != nsid),
-                "duplicate PCIe NVMe namespace ID {nsid}"
-            );
-            namespaces.push(NamespaceDefinition {
-                nsid,
-                read_only: false,
-                disk,
-            });
-        }
-        for (port_name, namespaces) in pcie_nvme_controllers {
             pcie_devices.push(PcieDeviceConfig {
                 port_name,
                 resource: NvmeControllerHandle {
                     subsystem_id: Guid::new_random(),
                     max_io_queues: 64,
                     msix_count: 64,
-                    namespaces,
+                    namespaces: vec![NamespaceDefinition {
+                        nsid,
+                        read_only: false,
+                        disk,
+                    }],
                     requests: None,
                 }
                 .into_resource(),

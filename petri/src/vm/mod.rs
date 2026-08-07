@@ -406,10 +406,9 @@ pub(crate) const PETRI_NVME_BOOT_VTL0_CONTROLLER: Guid =
 pub(crate) const PETRI_NVME_BOOT_VTL2_CONTROLLER: Guid =
     guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
-/// PCIe root port used by Petri for the agent/cidata disk when there is no
-/// existing PCIe NVMe controller (no-vmbus mode).
+/// PCIe root port used by Petri for the agent/cidata disk (no-vmbus mode)
 pub(crate) const PETRI_PCIE_NVME_AGENT_PORT: &str = "s0rc0rp1";
-/// Default NVMe namespace ID used by Petri for the agent/cidata disk.
+/// NVMe namespace ID used by Petri for the agent/cidata disk (no-vmbus mode)
 pub(crate) const PETRI_PCIE_NVME_AGENT_NSID: u32 = 1;
 
 /// A constructed Petri VM
@@ -840,27 +839,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         // When VMBus is disabled, route the agent disk through PCIe NVMe
         // instead of VMBus SCSI.
         if self.no_vmbus {
-            let (port_name, nsid) = if let Some(controller) = self.config.pcie_nvme_drives.first() {
-                let nsid = self
-                    .config
-                    .pcie_nvme_drives
-                    .iter()
-                    .filter(|drive| drive.port_name == controller.port_name)
-                    .map(|drive| drive.nsid)
-                    .max()
-                    .unwrap()
-                    .checked_add(1)
-                    .expect("PCIe NVMe namespace ID overflow");
-                (controller.port_name.clone(), nsid)
-            } else {
-                (
-                    PETRI_PCIE_NVME_AGENT_PORT.into(),
-                    PETRI_PCIE_NVME_AGENT_NSID,
-                )
-            };
             self.config.pcie_nvme_drives.push(PcieNvmeDrive {
-                port_name,
-                nsid,
+                port_name: PETRI_PCIE_NVME_AGENT_PORT.into(),
+                nsid: PETRI_PCIE_NVME_AGENT_NSID,
                 drive: Drive::new(
                     Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
                     false,

@@ -2136,9 +2136,13 @@ impl InitializedVm {
                     cxl,
                     vnode: rc.vnode,
                     preserve_bars: rc.preserve_bars,
-                    // A request to pin BARs (GPA = HPA) also requires the guest
-                    // to leave the firmware's boot configuration alone.
-                    preserve_boot_config: rc.preserve_bars,
+                    // OpenVMM assigns PCI resources before loading UEFI and
+                    // tells the firmware to use that configuration. Tell the
+                    // guest OS to preserve it as well; otherwise Linux may
+                    // transiently program overlapping BARs while reallocating
+                    // resources, which the device model cannot map.
+                    preserve_boot_config: rc.preserve_bars
+                        || matches!(&cfg.load_mode, LoadMode::Uefi { .. }),
                 });
 
                 pcie_root_complexes.push(root_complex.clone());
