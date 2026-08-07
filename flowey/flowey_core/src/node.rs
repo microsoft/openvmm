@@ -2234,6 +2234,7 @@ pub mod steps {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
         pub enum GhPermission {
             Actions,
+            ArtifactMetadata,
             Attestations,
             Checks,
             Contents,

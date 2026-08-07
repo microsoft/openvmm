@@ -576,6 +576,7 @@ EOF
 
         let perm_kind_to_yaml = |permission: &GhPermission| match permission {
             GhPermission::Actions => github_yaml_defs::Permissions::Actions,
+            GhPermission::ArtifactMetadata => github_yaml_defs::Permissions::ArtifactMetadata,
             GhPermission::Attestations => github_yaml_defs::Permissions::Attestations,
             GhPermission::Checks => github_yaml_defs::Permissions::Checks,
             GhPermission::Contents => github_yaml_defs::Permissions::Contents,
