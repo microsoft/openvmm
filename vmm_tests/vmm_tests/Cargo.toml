@@ -35,6 +35,7 @@ openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 disk_backend_resources.workspace = true
 hyperv_ic_resources.workspace = true
+hyperv_secure_boot_templates.workspace = true
 memory_range.workspace = true
 net_backend_resources.workspace = true
 nvme_resources.workspace = true
