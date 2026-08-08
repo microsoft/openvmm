@@ -926,6 +926,12 @@ impl ResolvedArtifactSelections {
                 self.downloads.insert(KnownTestArtifacts::VmgsWith16kTpm);
             }
 
+            // VMM.Perf runtimes
+            petri_artifacts_vmm_test::artifacts::vmm_perf::RUNTIME_LINUX_X64::GLOBAL_UNIQUE_ID => {
+                self.downloads
+                    .insert(KnownTestArtifacts::VmmPerfRuntimeLinuxX64);
+            }
+
             // OpenHCL usermode binaries (built as part of IGVM)
             petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
             | petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>

@@ -18,6 +18,10 @@ harness = false
 name = "cca"
 harness = false
 
+[[test]]
+name = "vmm_perf"
+harness = false
+
 [dev-dependencies]
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true

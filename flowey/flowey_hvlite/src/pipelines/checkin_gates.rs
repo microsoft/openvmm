@@ -27,6 +27,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use target_lexicon::Triple;
 use vmm_test_images::KnownTestArtifacts;
+use vmm_test_images::KnownTestArtifacts::VmmPerfRuntimeLinuxX64;
 
 // This is a cap for surplus 2 MiB hugetlb pages, not a reservation. Keep it
 // generous enough for VMM tests without tying CI provisioning to one test's RAM.
@@ -1701,7 +1702,24 @@ impl IntoPipeline for CheckinGatesCli {
                 continue;
             }
 
-            let nextest_filter_expr = exclude_checkin_disabled_vmm_tests(nextest_filter_expr);
+            let mut nextest_filter_expr =
+                exclude_checkin_disabled_vmm_tests(nextest_filter_expr);
+            let mut test_artifacts = test_artifacts;
+            let vmm_perf_runtime = match (backend_hint, config, label) {
+                (
+                    PipelineBackendHint::Github,
+                    PipelineConfig::Ci,
+                    "x64-linux-amd-kvm",
+                ) => Some(VmmPerfRuntimeLinuxX64),
+                _ => None,
+            };
+
+            if let Some(runtime) = vmm_perf_runtime {
+                test_artifacts.push(runtime);
+            } else {
+                nextest_filter_expr =
+                    format!("({nextest_filter_expr}) & !binary(vmm_perf)");
+            }
             let test_label = format!("{label}-vmm-tests");
 
             let pub_vmm_tests_results = if matches!(backend_hint, PipelineBackendHint::Local) {

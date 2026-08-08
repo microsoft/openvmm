@@ -6,11 +6,10 @@
 //! If persistent storage is available, caches downloaded artifacts locally.
 
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
-use vmm_test_images::CONTAINER;
 use vmm_test_images::KnownTestArtifacts;
-use vmm_test_images::STORAGE_ACCOUNT;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CustomDiskPolicy {
@@ -87,7 +86,7 @@ impl FlowNodeWithConfig for Node {
 
         let azcopy_bin = ctx.reqv(flowey_lib_common::download_azcopy::Request::GetAzCopy);
 
-        let (files_to_download, write_files_to_download) = ctx.new_var::<Vec<(String, u64)>>();
+        let (files_to_download, write_files_to_download) = ctx.new_var::<Vec<KnownTestArtifacts>>();
         let (output_folder, write_output_folder) = ctx.new_var();
 
         ctx.emit_rust_step("calculating required VMM tests disk images", |ctx| {
@@ -123,9 +122,9 @@ impl FlowNodeWithConfig for Node {
                         continue;
                     };
 
-                    if let Some(vhd) = KnownTestArtifacts::from_filename(filename) {
+                    if let Some(artifact) = KnownTestArtifacts::from_filename(filename) {
                         let size = e.metadata()?.len();
-                        let expected_size = vhd.file_size();
+                        let expected_size = artifact.file_size();
                         if size != expected_size {
                             log::warn!(
                                 "unexpected size for {}: expected {}, found {}",
@@ -133,9 +132,9 @@ impl FlowNodeWithConfig for Node {
                                 expected_size,
                                 size
                             );
-                            unexpected_artifacts.insert(vhd);
+                            unexpected_artifacts.insert(artifact);
                         } else {
-                            skip_artifacts.insert(vhd);
+                            skip_artifacts.insert(artifact);
                         }
                     } else {
                         continue;
@@ -181,12 +180,12 @@ Detected inconsistencies between expected and cached VMM test images.
                         if !skip_artifacts.contains(&artifact)
                             || unexpected_artifacts.contains(&artifact)
                         {
-                            files.push((artifact.filename().to_string(), artifact.file_size()));
+                            files.push(artifact);
                         }
                     }
 
                     // for aesthetic reasons
-                    files.sort();
+                    files.sort_by_key(|artifact| artifact.filename());
                     files
                 };
 
@@ -199,11 +198,15 @@ Detected inconsistencies between expected and cached VMM test images.
                         let output_folder = output_folder.display();
                         let disk_image_list = files_to_download
                             .iter()
-                            .map(|(name, size)| format!("  - {name} ({size})"))
+                            .map(|artifact| {
+                                format!("  - {} ({})", artifact.filename(), artifact.file_size())
+                            })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let download_size: u64 =
-                            files_to_download.iter().map(|(_, size)| size).sum();
+                        let download_size: u64 = files_to_download
+                            .iter()
+                            .map(|artifact| artifact.file_size())
+                            .sum();
                         let msg = format!(
                             r#"
 ================================================================================
@@ -275,13 +278,25 @@ Otherwise, press anything else with <enter> to cancel the run.
                 let azcopy_bin = rt.read(azcopy_bin);
 
                 if !files_to_download.is_empty() {
-                    download_blobs_from_azure(
-                        rt,
-                        &azcopy_bin,
-                        None,
-                        files_to_download,
-                        &output_folder,
-                    )?;
+                    let mut grouped = BTreeMap::<(&str, &str), Vec<KnownTestArtifacts>>::new();
+                    for artifact in files_to_download {
+                        grouped
+                            .entry((artifact.storage_account(), artifact.container()))
+                            .or_default()
+                            .push(artifact);
+                    }
+
+                    for ((storage_account, container), artifacts) in grouped {
+                        download_blobs_from_azure(
+                            rt,
+                            &azcopy_bin,
+                            None,
+                            storage_account,
+                            container,
+                            artifacts,
+                            &output_folder,
+                        )?;
+                    }
                 }
 
                 Ok(())
@@ -318,17 +333,19 @@ fn download_blobs_from_azure(
     rt: &mut RustRuntimeServices<'_>,
     azcopy_bin: &PathBuf,
     azcopy_auth_method: Option<AzCopyAuthMethod>,
-    files_to_download: Vec<(String, u64)>,
+    storage_account: &str,
+    container: &str,
+    files_to_download: Vec<KnownTestArtifacts>,
     output_folder: &Path,
 ) -> anyhow::Result<()> {
     //
     // Use azcopy to download the files
     //
-    let url = format!("https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/*");
+    let url = format!("https://{storage_account}.blob.core.windows.net/{container}/*");
 
     let include_path = files_to_download
-        .into_iter()
-        .map(|(name, _)| name)
+        .iter()
+        .map(|artifact| artifact.filename())
         .collect::<Vec<_>>()
         .join(";");
 

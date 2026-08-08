@@ -19,6 +19,7 @@ use petri_artifacts_core::ArtifactId;
 use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
 use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
+use petri_artifacts_vmm_test::tags::IsHostedOnVmmPerfAzureBlobStore;
 
 pub use petri_artifacts_vmm_test::artifacts::CONTAINER;
 pub use petri_artifacts_vmm_test::artifacts::STORAGE_ACCOUNT;
@@ -43,6 +44,7 @@ pub enum KnownTestArtifacts {
     Windows11EnterpriseAarch64Vhdx,
     VmgsWithBootEntry,
     VmgsWith16kTpm,
+    VmmPerfRuntimeLinuxX64,
 }
 
 struct KnownTestArtifactMeta {
@@ -52,6 +54,8 @@ struct KnownTestArtifactMeta {
     size: u64,
     download_name: &'static str,
     supports_blob_disk: bool,
+    storage_account: &'static str,
+    container: &'static str,
 }
 
 const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
@@ -81,6 +85,7 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
         ),
         meta::<test_vmgs::VMGS_WITH_BOOT_ENTRY>(KnownTestArtifacts::VmgsWithBootEntry),
         meta::<test_vmgs::VMGS_WITH_16K_TPM>(KnownTestArtifacts::VmgsWith16kTpm),
+        vmm_perf_meta::<vmm_perf::RUNTIME_LINUX_X64>(KnownTestArtifacts::VmmPerfRuntimeLinuxX64),
     ]
 };
 
@@ -94,6 +99,23 @@ const fn meta<T: ArtifactId + IsHostedOnHvliteAzureBlobStore>(
         size: T::SIZE,
         download_name: T::DOWNLOAD_NAME,
         supports_blob_disk: T::SUPPORTS_BLOB_DISK,
+        storage_account: STORAGE_ACCOUNT,
+        container: CONTAINER,
+    }
+}
+
+const fn vmm_perf_meta<T: ArtifactId + IsHostedOnVmmPerfAzureBlobStore>(
+    variant: KnownTestArtifacts,
+) -> KnownTestArtifactMeta {
+    KnownTestArtifactMeta {
+        variant,
+        handle_fn: || petri_artifacts_core::ArtifactHandle::<T>::new().erase(),
+        filename: T::FILENAME,
+        size: T::SIZE,
+        download_name: T::DOWNLOAD_NAME,
+        supports_blob_disk: false,
+        storage_account: "vmmperf",
+        container: "vmmperf/latest",
     }
 }
 
@@ -118,6 +140,16 @@ impl KnownTestArtifacts {
     /// Get the expected file size of the image.
     pub fn file_size(self) -> u64 {
         self.meta().size
+    }
+
+    /// Get the Azure Storage account containing the artifact.
+    pub fn storage_account(self) -> &'static str {
+        self.meta().storage_account
+    }
+
+    /// Get the Azure Blob container containing the artifact.
+    pub fn container(self) -> &'static str {
+        self.meta().container
     }
 
     /// Get the erased artifact handle for this image.
