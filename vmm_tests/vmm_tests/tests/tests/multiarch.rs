@@ -19,6 +19,7 @@ use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 #[cfg(target_os = "linux")]
 use petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_NATIVE;
+use std::mem::size_of;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -170,7 +171,7 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 /// pipette transport because VMBus is off. Keeping separate controllers also
 /// verifies that the guest preserves OpenVMM's preassigned PCI resources.
 /// The `_aarch64_tcg` suffix opts the test into the QEMU incubator CI pass.
-/// The normal Windows AArch64 CI pass uses `all()`, so it runs there as well.
+#[cfg(target_os = "linux")]
 #[openvmm_test(uefi_aarch64(vhd(alpine_3_23_aarch64)))]
 #[openvmm_test(uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
 async fn boot_no_hv_uefi_aarch64_tcg(
@@ -196,14 +197,15 @@ async fn boot_no_hv_uefi_aarch64_tcg(
         hyperv_detection_lines.join("\n")
     );
 
-    // ACPI FADT offset 268 is the 8-byte hypervisor vendor identity. A zero
-    // value confirms that OpenVMM did not describe Hyper-V to the guest.
-    const FADT_HYPERVISOR_VENDOR_ID_OFFSET: usize = 268;
     let facp = shell
         .read_file_raw("/sys/firmware/acpi/tables/FACP")
         .await?;
+    let vendor_id_offset = facp
+        .len()
+        .checked_sub(size_of::<u64>())
+        .context("FADT is too short to contain the hypervisor vendor identity")?;
     let vendor_id = u64::from_le_bytes(
-        facp.get(FADT_HYPERVISOR_VENDOR_ID_OFFSET..FADT_HYPERVISOR_VENDOR_ID_OFFSET + 8)
+        facp.get(vendor_id_offset..)
             .context("FADT is missing the hypervisor vendor identity")?
             .try_into()
             .context("invalid FADT hypervisor vendor identity length")?,

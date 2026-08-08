@@ -948,6 +948,10 @@ impl PetriVmConfigSetupCore<'_> {
                         },
                 },
             ) => {
+                anyhow::ensure!(
+                    !(self.no_hv && self.arch == MachineArch::X86_64),
+                    "x86_64 UEFI firmware requires Hyper-V enlightenments"
+                );
                 let firmware = File::open(firmware.clone())
                     .context("Failed to open uefi firmware file")?
                     .into();

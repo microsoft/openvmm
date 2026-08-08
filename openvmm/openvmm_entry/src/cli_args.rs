@@ -281,7 +281,11 @@ Examples:
 
     /// Boot UEFI without exposing hypervisor (HV#1) enlightenments. Requires
     /// `--no-vmbus` since VMBus depends on the hypervisor.
-    #[clap(long, requires("no_vmbus"), conflicts_with_all = ["hv", "vtl2", "get", "pcat"])]
+    #[clap(
+        long,
+        requires_all = ["uefi", "no_vmbus"],
+        conflicts_with_all = ["hv", "vtl2", "get", "pcat", "igvm"]
+    )]
     pub no_hv: bool,
 
     /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
@@ -4838,11 +4842,14 @@ mod tests {
     fn test_no_hv_requires_no_vmbus() {
         assert!(Options::try_parse_from(["openvmm", "--no-hv"]).is_err());
 
-        let opt = Options::try_parse_from(["openvmm", "--no-hv", "--no-vmbus"]).unwrap();
+        let opt = Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus"]).unwrap();
         assert!(opt.no_hv);
         assert!(opt.no_vmbus);
 
-        assert!(Options::try_parse_from(["openvmm", "--no-hv", "--no-vmbus", "--hv"]).is_err());
+        assert!(
+            Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus", "--hv"])
+                .is_err()
+        );
     }
 
     #[test]
