@@ -6,13 +6,12 @@
 /// A trait used to retrieve data from a framebuffer.
 pub trait Framebuffer: Send + Sync {
     /// Returns the current framebuffer resolution as `(width, height)` in
-    /// pixels. Called once per update cycle so the server can react to
-    /// guest-driven resolution changes.
+    /// pixels.
     fn resolution(&mut self) -> (u16, u16);
-    /// Reads the pixel data for one scanline (`line`, 0-based) into `data`.
-    /// `data` is sized by the caller for one full scanline at the current
-    /// resolution in the internal `0x00RRGGBB` format.
-    fn read_line(&mut self, line: u16, data: &mut [u8]);
+    /// Reads pixel data for one scanline (`line`, 0-based) starting at pixel
+    /// column `x` into `data`, in the internal `0x00RRGGBB` format. `data` is
+    /// sized by the caller for the span being read.
+    fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]);
 }
 
 pub(crate) const HID_MOUSE_MAX_ABS_VALUE: u32 = 0x7FFF;

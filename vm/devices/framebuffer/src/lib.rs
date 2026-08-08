@@ -159,13 +159,33 @@ pub struct View {
 impl View {
     /// Reads a line within the framebuffer.
     pub fn read_line(&mut self, line: u16, data: &mut [u8]) {
+        self.read_line_at(line, 0, data);
+    }
+
+    /// Reads part of a line, starting at pixel column `x`, into `data`. The
+    /// caller must pass an in-bounds span: `x` plus `data.len() / 4` pixels must
+    /// not exceed the line width. An oversized span trips a debug assertion; in
+    /// release the part past the line is zero-filled, never an out-of-bounds
+    /// read.
+    pub fn read_line_at(&mut self, line: u16, x: u16, data: &mut [u8]) {
         if let Some(format) = &self.format {
             if let Some(offset) = (line as usize)
                 .checked_mul(format.bytes_per_line)
-                .and_then(|x| x.checked_add(format.offset))
+                .and_then(|v| v.checked_add(format.offset))
+                .and_then(|v| v.checked_add(x as usize * 4))
             {
-                let len = std::cmp::min(data.len(), format.width * 4);
+                let avail = format.width.saturating_sub(x as usize) * 4;
+                debug_assert!(
+                    data.len() <= avail,
+                    "read_line_at span runs past end of line (data.len()={}, avail={})",
+                    data.len(),
+                    avail,
+                );
+                let len = std::cmp::min(data.len(), avail);
                 let _ = self.mapping.read_at(offset, &mut data[..len]);
+                // If the span ran past the current line width, zero the off-line
+                // tail rather than leaving a previous frame's pixels there.
+                data[len..].fill(0);
                 return;
             }
         }
