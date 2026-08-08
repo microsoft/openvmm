@@ -373,6 +373,8 @@ struct GuestVsmVpState {
     #[inspect(with = "|x| x.as_ref().map(inspect::AsDebug)")]
     vtl0_exit_pending_event: Option<hvdef::HvX64PendingExceptionEvent>,
     reg_intercept: SecureRegisterInterceptState,
+    /// Whether Mode-Based Execution Control is enabled on this VP.
+    vp_mbec_enabled: bool,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -381,6 +383,7 @@ impl GuestVsmVpState {
         GuestVsmVpState {
             vtl0_exit_pending_event: None,
             reg_intercept: Default::default(),
+            vp_mbec_enabled: false,
         }
     }
 }
@@ -495,6 +498,8 @@ struct UhCvmPartitionState {
     hv: GlobalHv<2>,
     /// Guest VSM state.
     guest_vsm: RwLock<GuestVsmState<CvmVtl1State>>,
+    /// Whether the partition has the access vsm privilege.
+    access_vsm_privilege: bool,
     /// Dma client for shared visibility pages.
     shared_dma_client: Arc<dyn DmaClient>,
     /// Dma client for private visibility pages.
@@ -519,6 +524,10 @@ impl UhCvmPartitionState {
                 }
             }
         )
+    }
+
+    fn access_vsm_privilege(&self) -> bool {
+        self.access_vsm_privilege
     }
 }
 
@@ -2288,6 +2297,7 @@ impl UhProtoPartition<'_> {
             lapic,
             hv,
             guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
+            access_vsm_privilege: guest_vsm_available,
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
             hide_isolation: params.hide_isolation,
