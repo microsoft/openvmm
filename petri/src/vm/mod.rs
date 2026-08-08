@@ -218,7 +218,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
 }
 
 /// Petri VM configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PetriVmConfig {
     /// The name of the VM
     pub name: String,
@@ -247,7 +247,7 @@ pub struct PetriVmConfig {
 }
 
 /// PCIe NVMe drive configuration.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PcieNvmeDrive {
     /// PCIe root port name (e.g. "s0rc0rp0").
     pub port_name: String,
@@ -258,7 +258,7 @@ pub struct PcieNvmeDrive {
 }
 
 /// PCIe virtio-blk drive configuration.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PcieVirtioBlkDrive {
     /// PCIe root port name (e.g. "s0rc0rp0").
     pub port_name: String,
@@ -2302,7 +2302,7 @@ impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
 }
 
 /// Common processor topology information for the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessorTopology {
     /// The number of virtual processors.
     pub vp_count: u32,
@@ -2357,7 +2357,7 @@ pub enum ApicMode {
 }
 
 /// Common memory configuration information for the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MemoryConfig {
     /// Specifies the amount of memory, in bytes, to assign to the
     /// virtual machine.
@@ -2415,7 +2415,7 @@ impl Default for MemoryConfig {
 }
 
 /// UEFI firmware configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UefiConfig {
     /// Enable secure boot
     pub secure_boot_enabled: bool,
@@ -2492,7 +2492,7 @@ pub enum OpenvmmLogConfig {
 }
 
 /// OpenHCL configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OpenHclConfig {
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
@@ -2567,7 +2567,7 @@ impl Default for OpenHclConfig {
 }
 
 /// TPM configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TpmConfig {
     /// Use ephemeral TPM state (do not persist to VMGS)
     pub no_persistent_secrets: bool,
@@ -2602,7 +2602,7 @@ pub enum PetriHardwareSealingPolicy {
 /// Firmware to load into the test VM.
 // TODO: remove the guests from the firmware enum so that we don't pass them
 // to the VMM backend after we have already used them generically.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Firmware {
     /// Boot Linux directly, without any firmware.
     LinuxDirect {
@@ -3102,7 +3102,7 @@ impl Firmware {
 
 /// The guest the VM will boot into. A boot drive with the chosen setup
 /// will be automatically configured.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PcatGuest {
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),
@@ -3125,7 +3125,7 @@ impl PcatGuest {
 
 /// The guest the VM will boot into. A boot drive with the chosen setup
 /// will be automatically configured.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UefiGuest {
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),
@@ -3192,6 +3192,17 @@ pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     quirks: GuestQuirks,
     /// Marker denoting what type of media `artifact` corresponds to
     _type: core::marker::PhantomData<T>,
+}
+
+impl<T: boot_image_type::BootImageType> Clone for BootImageConfig<T> {
+    fn clone(&self) -> Self {
+        Self {
+            artifact: self.artifact.clone(),
+            os_flavor: self.os_flavor,
+            quirks: self.quirks.clone(),
+            _type: core::marker::PhantomData,
+        }
+    }
 }
 
 impl<T: boot_image_type::BootImageType> BootImageConfig<T> {

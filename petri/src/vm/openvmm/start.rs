@@ -11,10 +11,12 @@ use crate::PetriLogFile;
 use crate::PetriVmRuntimeConfig;
 use crate::worker::Worker;
 use anyhow::Context;
+use mesh::payload::message::ProtobufMessage;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
 use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::LoadMode;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use petri_artifacts_common::tags::MachineArch;
@@ -26,7 +28,26 @@ use std::sync::Arc;
 use vm_resource::IntoResource;
 
 impl PetriVmConfigOpenVmm {
-    async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+    pub(super) async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        self.run_core_inner(None).await
+    }
+
+    /// Launch a fresh worker that restores from `saved_state`, mirroring
+    /// production `--restore-snapshot`: `load_mode` is forced to
+    /// [`LoadMode::None`] and the snapshot is handed to the worker. Exercises
+    /// the path the in-process pulse (`verify_save_restore`) cannot reach.
+    pub(crate) async fn run_restore(
+        self,
+        saved_state: ProtobufMessage,
+    ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        self.run_core_inner(Some(saved_state)).await
+    }
+
+    async fn run_core_inner(
+        self,
+        saved_state: Option<ProtobufMessage>,
+    ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        let restoring = saved_state.is_some();
         let Self {
             runtime_config,
             arch,
@@ -56,6 +77,13 @@ impl PetriVmConfigOpenVmm {
                 .find(|rc| rc.name == *name)
                 .with_context(|| format!("IOMMU configured for unknown root complex '{name}'"))?;
             rc.iommu = Some(iommu_config.clone());
+        }
+
+        // Restore path: force load_mode to None as production
+        // `--restore-snapshot` does (the precondition that arms the
+        // UEFI-resolver regression).
+        if restoring {
+            config.load_mode = LoadMode::None;
         }
 
         // TODO: OpenHCL needs virt_whp support
@@ -145,7 +173,7 @@ impl PetriVmConfigOpenVmm {
             );
         }
 
-        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory)
+        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory, saved_state)
             .await
             .context("failed to launch vm worker")?;
 
@@ -181,8 +209,9 @@ impl PetriVmConfigOpenVmm {
         tracing::info!("Resuming VM");
         vm.resume().await?;
 
-        // Run basic save/restore test if it is supported
-        if supports_save_restore && !is_minimal {
+        // Run the basic save/restore pulse if supported. Skip on the restore
+        // path (the worker is already restoring a snapshot).
+        if supports_save_restore && !is_minimal && !restoring {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
         }
