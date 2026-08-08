@@ -354,18 +354,19 @@ impl ChunkBuf {
                 0
             };
             let data_len = file_remaining.min((chunk_bytes - data_start) as u64) as usize;
+            let data_end = data_start + data_len;
 
-            // Zero leading padding on the first chunk.
+            // Zero the leading padding on the first chunk, and the trailing
+            // bytes of this chunk.
             chunk_buf[..data_start].fill(0);
-
-            // Read file data.
-            file.read_exact(&mut chunk_buf[data_start..data_start + data_len])
+            file.read_exact(&mut chunk_buf[data_start..data_end])
                 .map_err(ImportFileRegionError::Read)?;
+            chunk_buf[data_end..].fill(0);
 
             file_remaining -= data_len as u64;
 
             // On the last chunk with file data, extend page_count to cover all
-            // remaining pages. import_pages will zero beyond the data.
+            // remaining pages.
             let import_page_count = if file_remaining == 0 {
                 total_page_count - pages_done
             } else {
@@ -378,7 +379,7 @@ impl ChunkBuf {
                     import_page_count,
                     tag,
                     acceptance,
-                    &chunk_buf[..data_start + data_len],
+                    chunk_buf,
                 )
                 .map_err(ImportFileRegionError::ImportPages)?;
 
