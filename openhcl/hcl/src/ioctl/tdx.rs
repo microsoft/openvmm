@@ -31,6 +31,7 @@ use tdcall::tdcall_vm_wr;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
+use x86defs::tdx::DmarTarget;
 use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
@@ -39,8 +40,12 @@ use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdVpsClassCode;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
+use x86defs::tdx::TdgTdiMmioAcceptR9;
+use x86defs::tdx::TdgTdiMmioAcceptRcx;
+use x86defs::tdx::TdiRdField;
 use x86defs::tdx::TdxContextCode;
 use x86defs::tdx::TdxExtendedFieldCode;
+use x86defs::tdx::TdxFunctionId;
 use x86defs::tdx::TdxGlaListInfo;
 use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxL2Ctls;
@@ -143,6 +148,61 @@ impl MshvVtl {
         )?);
 
         Ok(controls.enable_hw_seal_keys())
+    }
+
+    /// Issues a TDG.TDI.RD tdcall to read a field of a TDX Connect TDI.
+    ///
+    /// Unlike the TD-scoped calls above, the TDI-scoped Connect calls can fail
+    /// for reasons the caller is expected to handle (the TDI is not bound, is
+    /// in the wrong TDISP state, or is not assigned to this TD), so the status
+    /// is returned rather than unwrapped.
+    pub fn tdx_tdi_rd(
+        &self,
+        function_id: TdxFunctionId,
+        field: TdiRdField,
+        out_buf_gpa: u64,
+    ) -> Result<u64, TdCallResult> {
+        tdcall::tdcall_tdi_rd(&mut MshvVtlTdcall(self), function_id, field, out_buf_gpa)
+    }
+
+    /// Issues a TDG.TDI.START tdcall to authorize starting a TDI's interface.
+    pub fn tdx_tdi_start(
+        &self,
+        function_id: TdxFunctionId,
+        exp_bind_session: u64,
+    ) -> Result<(), TdCallResult> {
+        tdcall::tdcall_tdi_start(&mut MshvVtlTdcall(self), function_id, exp_bind_session)
+    }
+
+    /// Issues a TDG.DMAR.ACCEPT tdcall to accept a TDI's DMA remapping entry.
+    pub fn tdx_dmar_accept(
+        &self,
+        function_id: TdxFunctionId,
+        target: DmarTarget,
+    ) -> Result<(), TdCallResult> {
+        tdcall::tdcall_dmar_accept(&mut MshvVtlTdcall(self), function_id, target)
+    }
+
+    /// Issues a TDG.TDI.MMIO.ACCEPT tdcall to accept a sub-range of a TDI's
+    /// MMIO.
+    ///
+    /// The ioctl this goes through cannot read back the leaf's R9 resume
+    /// cursor, so `range` must cover a single page and the caller must drive
+    /// its own cursor. See [`tdcall::tdcall_tdi_mmio_accept`].
+    pub fn tdx_tdi_mmio_accept(
+        &self,
+        function_id: TdxFunctionId,
+        gpa_base_and_level: TdgTdiMmioAcceptRcx,
+        mmio_range_idx: u16,
+        range: TdgTdiMmioAcceptR9,
+    ) -> Result<(), TdCallResult> {
+        tdcall::tdcall_tdi_mmio_accept(
+            &mut MshvVtlTdcall(self),
+            function_id,
+            gpa_base_and_level,
+            mmio_range_idx,
+            range,
+        )
     }
 }
 
