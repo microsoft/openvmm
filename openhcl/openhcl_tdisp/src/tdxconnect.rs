@@ -114,6 +114,19 @@ impl TdispTdxConnectResourceValidator {
     fn probe_tdi(&self, device_id: u16) -> anyhow::Result<()> {
         let mshv_vtl = Self::open_mshv_vtl()?;
 
+        // Sleep for 10 seconds to allow debuggers to see what we're about to do.
+        tracing::info!(
+            vtom = self.vtom,
+            device_id,
+            "TDX Connect validator sleeping 10 seconds before issuing TDG.TDI.RD probe"
+        );
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        tracing::info!(
+            vtom = self.vtom,
+            device_id,
+            "TDX Connect validator issuing TDG.TDI.RD probe"
+        );
+
         // The Connect leaves are only present on a TD that enabled the feature,
         // so check before issuing one rather than diagnosing a fault later.
         let config_flags = mshv_vtl.tdx_get_config_flags();
@@ -159,6 +172,36 @@ impl TdispTdxConnectResourceValidator {
 }
 
 impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
+    #[tracing::instrument(skip(self), fields(device_id))]
+    fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        // Nothing for the TD to do before the host binds the TDI: until the
+        // bind completes there is no TDI control structure for the Connect
+        // TDCALLs to address.
+        tracing::info!(?target_vtl, device_id, "TDX Connect on_pre_bind: no-op");
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), fields(device_id))]
+    fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        // The TDI is bound but not yet running, which is the first point in the
+        // flow where TDG.TDI.RD should succeed. Probe it to confirm the Connect
+        // TDCALLs reach this TDI.
+        self.probe_tdi(device_id)?;
+
+        // TEST SCAFFOLDING: the probe succeeded, but deliberately fail the
+        // attestation so the device is not started. Remove this once the accept
+        // TDCALLs are implemented and starting is safe.
+        tracing::warn!(
+            ?target_vtl,
+            device_id,
+            "TDX Connect on_pre_start: TDG.TDI.RD probe succeeded; failing attestation on purpose so the TDI is not started"
+        );
+        anyhow::bail!(
+            "TDX Connect on_pre_start: TDG.TDI.RD probe succeeded for requester id {device_id:#x}, \
+             but start is intentionally blocked while the accept TDCALLs are unimplemented"
+        );
+    }
+
     #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     fn tdisp_unblock_mmio(
         &self,

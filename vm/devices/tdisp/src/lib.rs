@@ -561,6 +561,10 @@ pub trait TdispGuestRequestInterface {
     ///
     /// Attempting to retrieve the attestation report while the device is not in
     /// the `Locked` or `Run` state will cause an error and unbind the device.
+    ///
+    /// [`TdispReportType::GuestDeviceId`] is exempt from that state
+    /// requirement and can be requested in any state, since it identifies the
+    /// device rather than describing attestation state.
     fn request_attestation_report(
         &mut self,
         report_type: TdispReportType,
@@ -735,7 +739,15 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         self.ensure_negotiated_protocol()
             .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
 
-        if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
+        // The guest device ID identifies the TDI rather than describing any
+        // attestation state, and the guest needs it before it can address the
+        // device in platform calls (for example to build a TDX Connect
+        // FUNCTION_ID ahead of the bind). Allow it in any state; every other
+        // report describes state that only exists once the TDI is Locked.
+        if report_type != TdispReportType::GuestDeviceId
+            && self.current_state != TdispTdiState::Locked
+            && self.current_state != TdispTdiState::Run
+        {
             tracing::error!(
                 "Request to retrieve attestation report called while device was not in Locked or Run state."
             );

@@ -59,6 +59,24 @@ impl TdispNoopResourceValidator {
 }
 
 impl TdispResourceValidationInterface for TdispNoopResourceValidator {
+    fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        tracing::info!(
+            ?target_vtl,
+            ?device_id,
+            "mock resource validator on_pre_bind"
+        );
+        Ok(())
+    }
+
+    fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        tracing::info!(
+            ?target_vtl,
+            ?device_id,
+            "mock resource validator on_pre_start"
+        );
+        Ok(())
+    }
+
     fn tdisp_unblock_mmio(
         &self,
         target_vtl: Vtl,

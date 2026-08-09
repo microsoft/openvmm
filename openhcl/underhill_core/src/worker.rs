@@ -3402,20 +3402,22 @@ async fn new_underhill_vm(
                 // pick a validator by isolation type. SEV-TIO stays behind its
                 // feature; TDX Connect and the no-op validator are always
                 // available. Isolation types without a real validator (or with
-                // SEV-TIO compiled out) fall through to the no-op validator.
-                let resource_validator: Option<Arc<dyn TdispResourceValidationInterface>> =
+                // SEV-TIO compiled out) fall through to the no-op validator: a
+                // device driven through the TDISP flow always has one, so no
+                // platform can silently skip resource validation.
+                let resource_validator: Arc<dyn TdispResourceValidationInterface> =
                     if test_tdisp_flow {
-                        Some(Arc::new(TdispNoopResourceValidator::new()))
+                        Arc::new(TdispNoopResourceValidator::new())
                     } else {
                         match isolation {
-                            virt::IsolationType::Tdx => Some(Arc::new(
-                                TdispTdxConnectResourceValidator::new(vtom.unwrap_or(0))?,
-                            )),
+                            virt::IsolationType::Tdx => {
+                                Arc::new(TdispTdxConnectResourceValidator::new(vtom.unwrap_or(0))?)
+                            }
                             #[cfg(feature = "dev_snp_ohcl_tio_support")]
-                            virt::IsolationType::Snp => Some(Arc::new(
-                                TdispSevTioResourceValidator::new(vtom.unwrap_or(0))?,
-                            )),
-                            _ => Some(Arc::new(TdispNoopResourceValidator::new())),
+                            virt::IsolationType::Snp => {
+                                Arc::new(TdispSevTioResourceValidator::new(vtom.unwrap_or(0))?)
+                            }
+                            _ => Arc::new(TdispNoopResourceValidator::new()),
                         }
                     };
 

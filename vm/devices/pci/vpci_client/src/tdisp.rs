@@ -123,8 +123,12 @@ pub struct VpciClientTdispState {
     #[inspect(debug)]
     target_vtl: Vtl,
     mutable_state: VpciClientTdispMutableState,
+    /// Platform hooks used to gate attestation and unblock device resources.
+    /// Required: a device driven through the TDISP flow must always have a
+    /// validator, so that no platform silently skips validation. Platforms with
+    /// nothing to do use `mocks::TdispNoopResourceValidator`.
     #[inspect(skip)]
-    resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
+    resource_validator: Arc<dyn TdispResourceValidationInterface>,
 }
 
 /// Manages the TDISP protocol for a TDISP-capable VPCI device.
@@ -132,7 +136,7 @@ impl VpciClientTdispState {
     pub(super) fn new(
         worker_req: mesh::Sender<WorkerRequest>,
         device_id: u64,
-        resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
+        resource_validator: Arc<dyn TdispResourceValidationInterface>,
         isolation_type: IsolationType,
         vtom: u64,
         target_vtl: Vtl,
@@ -363,48 +367,47 @@ impl VpciClientTdispState {
         // the host to unbind the TDI. This is best-effort: a failure here is
         // logged but doesn't abort the unbind (this is not security critical to
         // perform).
-        if let Some(validator) = self.resource_validator.clone() {
-            let device_id = self.mutable_state.guest_device_id;
-            let validated_bars_clone = self.mutable_state.validated_mmio_bars.clone();
-            for (bar_id, mmio) in validated_bars_clone {
-                // length == 0 is the "classified SHARED, never unblocked"
-                // sentinel meaning there is nothing to block.
-                if mmio.length_in_bytes == 0 {
-                    self.mutable_state.validated_mmio_bars.remove(&bar_id);
-                    continue;
-                }
-                if let Err(e) = validator.tdisp_block_mmio(
-                    Vtl::Vtl2,
-                    device_id,
-                    mmio.base_gpa,
-                    0,
-                    mmio.length_in_bytes,
-                    bar_id,
-                ) {
-                    tracing::error!(
-                        bar_id,
-                        base_gpa = format_args!("{:#x}", mmio.base_gpa),
-                        length_in_bytes = mmio.length_in_bytes,
-                        error = &*e as &dyn std::error::Error,
-                        "tdisp_unbind: failed to re-block MMIO range"
-                    );
-                } else {
-                    // Successful re-block, remove the bar from the validated list.
-                    self.mutable_state.validated_mmio_bars.remove(&bar_id);
-                }
+        let validator = self.resource_validator.clone();
+        let device_id = self.mutable_state.guest_device_id;
+        let validated_bars_clone = self.mutable_state.validated_mmio_bars.clone();
+        for (bar_id, mmio) in validated_bars_clone {
+            // length == 0 is the "classified SHARED, never unblocked"
+            // sentinel meaning there is nothing to block.
+            if mmio.length_in_bytes == 0 {
+                self.mutable_state.validated_mmio_bars.remove(&bar_id);
+                continue;
             }
+            if let Err(e) = validator.tdisp_block_mmio(
+                Vtl::Vtl2,
+                device_id,
+                mmio.base_gpa,
+                0,
+                mmio.length_in_bytes,
+                bar_id,
+            ) {
+                tracing::error!(
+                    bar_id,
+                    base_gpa = format_args!("{:#x}", mmio.base_gpa),
+                    length_in_bytes = mmio.length_in_bytes,
+                    error = &*e as &dyn std::error::Error,
+                    "tdisp_unbind: failed to re-block MMIO range"
+                );
+            } else {
+                // Successful re-block, remove the bar from the validated list.
+                self.mutable_state.validated_mmio_bars.remove(&bar_id);
+            }
+        }
 
-            if self.mutable_state.dma_unblocked {
-                if let Err(e) = validator.tdisp_block_dma(Vtl::Vtl2, device_id) {
-                    tracing::error!(
-                        device_id,
-                        error = &*e as &dyn std::error::Error,
-                        "tdisp_unbind: failed to re-block DMA"
-                    );
-                } else {
-                    // Successful re-block, clear the DMA unblocked flag.
-                    self.mutable_state.dma_unblocked = false;
-                }
+        if self.mutable_state.dma_unblocked {
+            if let Err(e) = validator.tdisp_block_dma(Vtl::Vtl2, device_id) {
+                tracing::error!(
+                    device_id,
+                    error = &*e as &dyn std::error::Error,
+                    "tdisp_unbind: failed to re-block DMA"
+                );
+            } else {
+                // Successful re-block, clear the DMA unblocked flag.
+                self.mutable_state.dma_unblocked = false;
             }
         }
 
@@ -413,6 +416,20 @@ impl VpciClientTdispState {
         self.mutable_state.tdi_report = None;
         self.mutable_state.guest_device_id = 0;
         self.mutable_state.intercepted_bars.clear();
+
+        // TEST SCAFFOLDING: the host unbind command is skipped under TDX
+        // Connect because unbind is not functional there yet. Restore the call
+        // below once it is. Note that skipping it leaves the guest's view of
+        // the TDI state untouched (the host's response is what advances it), so
+        // a subsequent re-attest will still see a non-Unlocked TDI.
+        if matches!(self.isolation_type, IsolationType::Tdx) {
+            tracing::warn!(
+                device_id = self.vpci_device_id,
+                ?reason,
+                "tdisp_unbind: skipping host unbind command, unbind is not functional right now in TDX Connect"
+            );
+            return Ok(());
+        }
 
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_unbind_command(
@@ -531,25 +548,34 @@ impl VpciClientTdispState {
             );
         }
 
-        self.tdisp_bind_interface()
-            .await
-            .context("tdisp_attest_device: failed to bind device interface")?;
-
-        self.tdisp_start_device()
-            .await
-            .context("tdisp_attest_device: failed to start device")?;
-
-        // Request the guest device ID to use in firmware calls to unblock resources
+        // Request the guest device ID before binding so the pre-bind and
+        // pre-start validator hooks can identify the TDI they are gating.
         let guest_device_id = self
             .tdisp_get_tdi_device_id()
             .await
-            .context("tdisp_attest_device: failed to get TDI device ID after starting device")?;
+            .context("tdisp_attest_device: failed to get TDI device ID before binding device")?;
 
         // Platforms require a u16 device ID even though the report returns a
         // u64. Ensure the returned device ID fits within that constraint before
         // proceeding.
         let guest_device_id_u16 = u16::try_from(guest_device_id)
             .context("tdisp_attest_device: guest device ID must fit within u16")?;
+
+        self.resource_validator
+            .on_pre_bind(self.target_vtl, guest_device_id_u16)
+            .context("tdisp_attest_device: pre-bind validation failed")?;
+
+        self.tdisp_bind_interface()
+            .await
+            .context("tdisp_attest_device: failed to bind device interface")?;
+
+        self.resource_validator
+            .on_pre_start(self.target_vtl, guest_device_id_u16)
+            .context("tdisp_attest_device: pre-start validation failed")?;
+
+        self.tdisp_start_device()
+            .await
+            .context("tdisp_attest_device: failed to start device")?;
 
         // Fetch and save the TDI interface report so callers can inspect the
         // attested device's reported capabilities and MMIO ranges.
@@ -722,95 +748,91 @@ impl VpciClientTdispState {
         base_address: u64,
         length: u32,
     ) -> anyhow::Result<()> {
-        if let Some(validator) = &self.resource_validator {
-            // If the device is not attested and in Run state, don't attempt to unblock resources
-            if self.tdi_state() != TdispTdiState::Run {
-                tracing::warn!(
+        // If the device is not attested and in Run state, don't attempt to unblock resources
+        if self.tdi_state() != TdispTdiState::Run {
+            tracing::warn!(
+                bar_id,
+                base_address,
+                length,
+                "ignoring MMIO reconfiguration callback because device is not in Run state"
+            );
+            return Ok(());
+        }
+
+        if self.mutable_state.validated_mmio_bars.contains_key(&bar_id) {
+            tracing::debug!(
+                bar_id,
+                "skipping MMIO unblock for BAR that has already been validated"
+            );
+            return Ok(());
+        }
+
+        match self.classify_bar(bar_id) {
+            ResourceIsolation::SHARED => {
+                tracing::info!(
                     bar_id,
                     base_address,
                     length,
-                    "ignoring MMIO reconfiguration callback because device is not in Run state"
+                    "skipping MMIO unblock for BAR classified SHARED \
+                     (intercepted or non-TEE memory)"
                 );
-                return Ok(());
-            }
-
-            if self.mutable_state.validated_mmio_bars.contains_key(&bar_id) {
-                tracing::debug!(
+                // Record with a zero-length entry so we don't repeatedly
+                // fall through here on subsequent reconfigurations. The
+                // unbind path uses length == 0 as a sentinel for "no
+                // block call needed."
+                self.mutable_state.validated_mmio_bars.insert(
                     bar_id,
-                    "skipping MMIO unblock for BAR that has already been validated"
+                    ValidatedMmio {
+                        base_gpa: base_address,
+                        length_in_bytes: 0,
+                    },
                 );
                 return Ok(());
             }
-
-            match self.classify_bar(bar_id) {
-                ResourceIsolation::SHARED => {
-                    tracing::info!(
-                        bar_id,
-                        base_address,
-                        length,
-                        "skipping MMIO unblock for BAR classified SHARED \
-                         (intercepted or non-TEE memory)"
-                    );
-                    // Record with a zero-length entry so we don't repeatedly
-                    // fall through here on subsequent reconfigurations. The
-                    // unbind path uses length == 0 as a sentinel for "no
-                    // block call needed."
-                    self.mutable_state.validated_mmio_bars.insert(
-                        bar_id,
-                        ValidatedMmio {
-                            base_gpa: base_address,
-                            length_in_bytes: 0,
-                        },
-                    );
-                    return Ok(());
-                }
-                ResourceIsolation::INVALID => {
-                    anyhow::bail!(
-                        "tdisp_on_mmio_reconfigured: BAR {bar_id} has no entry in \
-                         the TDI interface report (or report not available); \
-                         device has not been attested"
-                    );
-                }
-                ResourceIsolation::PRIVATE => {}
-                other => {
-                    anyhow::bail!(
-                        "tdisp_on_mmio_reconfigured: unexpected BAR {bar_id} \
-                         classification {:?}",
-                        other
-                    );
-                }
+            ResourceIsolation::INVALID => {
+                anyhow::bail!(
+                    "tdisp_on_mmio_reconfigured: BAR {bar_id} has no entry in \
+                     the TDI interface report (or report not available); \
+                     device has not been attested"
+                );
             }
-
-            let device_id = self.mutable_state.guest_device_id;
-
-            validator
-                .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
-                .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO")?;
-
-            self.mutable_state.validated_mmio_bars.insert(
-                bar_id,
-                ValidatedMmio {
-                    base_gpa: base_address,
-                    length_in_bytes: length,
-                },
-            );
-
-            // After the first successful MMIO unblock following attestation,
-            // unblock DMA as well so the device can issue DMA traffic to the
-            // guest. Guard with `dma_unblocked` so it only fires once per
-            // bind/attest cycle (cleared on unbind).
-            if !self.mutable_state.dma_unblocked {
-                validator
-                    .tdisp_unblock_dma(self.target_vtl, device_id)
-                    .context("tdisp_on_mmio_reconfigured: failed to unblock DMA")?;
-                self.mutable_state.dma_unblocked = true;
-                tracing::info!(device_id, "tdisp_on_mmio_reconfigured: DMA unblocked");
+            ResourceIsolation::PRIVATE => {}
+            other => {
+                anyhow::bail!(
+                    "tdisp_on_mmio_reconfigured: unexpected BAR {bar_id} \
+                     classification {:?}",
+                    other
+                );
             }
-
-            Ok(())
-        } else {
-            Ok(())
         }
+
+        let device_id = self.mutable_state.guest_device_id;
+
+        self.resource_validator
+            .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
+            .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO")?;
+
+        self.mutable_state.validated_mmio_bars.insert(
+            bar_id,
+            ValidatedMmio {
+                base_gpa: base_address,
+                length_in_bytes: length,
+            },
+        );
+
+        // After the first successful MMIO unblock following attestation,
+        // unblock DMA as well so the device can issue DMA traffic to the
+        // guest. Guard with `dma_unblocked` so it only fires once per
+        // bind/attest cycle (cleared on unbind).
+        if !self.mutable_state.dma_unblocked {
+            self.resource_validator
+                .tdisp_unblock_dma(self.target_vtl, device_id)
+                .context("tdisp_on_mmio_reconfigured: failed to unblock DMA")?;
+            self.mutable_state.dma_unblocked = true;
+            tracing::info!(device_id, "tdisp_on_mmio_reconfigured: DMA unblocked");
+        }
+
+        Ok(())
     }
 }
 
@@ -989,7 +1011,8 @@ mod tests {
         VpciClientTdispState::new(
             worker_req,
             /* device_id = */ 0,
-            /* resource_validator = */ None,
+            /* resource_validator = */
+            Arc::new(openhcl_tdisp::mocks::TdispNoopResourceValidator::new()),
             IsolationType::None,
             /* vtom = */ 0,
             Vtl::Vtl0,

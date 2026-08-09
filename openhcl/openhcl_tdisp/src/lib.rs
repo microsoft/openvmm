@@ -107,6 +107,27 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
 /// to make device resources (MMIO, DMA) accessible to the guest. This trait
 /// abstracts those operations.
 pub trait TdispResourceValidationInterface: Send + Sync {
+    /// Called immediately before the device is bound, while the TDI is still
+    /// Unlocked.
+    ///
+    /// Returning an error fails the attestation, leaving the device unbound.
+    ///
+    /// * `target_vtl` - The VTL the device is being attested for.
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
+
+    /// Called after the device has been bound and is Locked, immediately before
+    /// it is started.
+    ///
+    /// This is where a platform can inspect the bound-but-not-yet-running TDI
+    /// and refuse to let it run. Returning an error fails the attestation; the
+    /// device is left bound and the caller unbinds it as part of clearing the
+    /// failed attestation.
+    ///
+    /// * `target_vtl` - The VTL the device is being attested for.
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
+
     /// Unblock MMIO access for a specific resource on the device.
     ///
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).

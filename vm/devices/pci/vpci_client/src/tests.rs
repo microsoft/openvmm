@@ -129,7 +129,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         .next()
         .unwrap()
         .init(
-            Some(Arc::new(TdispNoopResourceValidator::new())),
+            Arc::new(TdispNoopResourceValidator::new()),
             IsolationType::None,
             0,
             Vtl::Vtl0,
@@ -201,7 +201,7 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
         .next()
         .unwrap()
         .init(
-            Some(Arc::new(TdispNoopResourceValidator::new())),
+            Arc::new(TdispNoopResourceValidator::new()),
             IsolationType::None,
             0,
             Vtl::Vtl0,

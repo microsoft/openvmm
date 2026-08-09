@@ -112,7 +112,7 @@ pub struct VpciRelay {
     isolation_type: IsolationType,
     options: VpciRelayOptions,
     #[inspect(skip)]
-    resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
+    resource_validator: Arc<dyn TdispResourceValidationInterface>,
 }
 
 #[derive(Inspect)]
@@ -220,7 +220,7 @@ impl VpciRelay {
         dma_client: Arc<dyn DmaClient>,
         mmio_range: MemoryRange,
         mmio_access: Box<dyn CreateMemoryAccess>,
-        resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
+        resource_validator: Arc<dyn TdispResourceValidationInterface>,
         isolation_type: IsolationType,
         vtom: Option<u64>,
         options: VpciRelayOptions,

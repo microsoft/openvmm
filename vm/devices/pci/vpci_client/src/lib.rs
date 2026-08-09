@@ -356,7 +356,7 @@ impl VpciDeviceDescription {
     /// when the device is ejected or surprise removed.
     pub async fn init(
         self,
-        resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
+        resource_validator: Arc<dyn TdispResourceValidationInterface>,
         isolation_type: IsolationType,
         vtom: u64,
         target_vtl: hvdef::Vtl,
@@ -583,7 +583,7 @@ impl VpciDevice {
         accessor.write(
             self.dev.id,
             HeaderType00::STATUS_COMMAND.0,
-            u32::from(u16::from(cleared)),
+            ByteEnabledDwordWrite::with_all_bytes_enabled(u32::from(u16::from(cleared))),
         );
     }
 
@@ -602,7 +602,7 @@ impl VpciDevice {
     /// Returns `true` only if attestation and every BAR notification succeeded
     /// completely. On `false` the command register is left off: either it was
     /// never written, or [`Self::tdisp_fail_attestation`] cleared it.
-    pub async fn tdisp_on_device_activate(&self, command_value: u32) -> bool {
+    pub async fn tdisp_on_device_activate(&self, command_value: ByteEnabledDwordWrite) -> bool {
         use tdisp::TdispVpciAttestationInterface;
 
         tracing::info!(
@@ -636,10 +636,9 @@ impl VpciDevice {
         self.write_cfg(HeaderType00::STATUS_COMMAND.0, command_value);
 
         tracing::info!(
-            command_value,
-            "tdisp_on_device_activate: command register written at {:#x} = {:#x}, MMIO BARs are now mapped",
+            ?command_value,
+            "tdisp_on_device_activate: command register written at {:#x}, MMIO BARs are now mapped",
             HeaderType00::STATUS_COMMAND.0,
-            command_value
         );
 
         let bars = self.shadows.lock().bars;
