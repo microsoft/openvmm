@@ -307,6 +307,40 @@ open_enum! {
     }
 }
 
+/// `FUNCTION_ID`, the TDISP identifier for a TDI. Passed zero-extended in RCX
+/// as `GFUNCTION_ID` to the TDI-scoped guest leaves (TDG.TDI.RD, TDG.TDI.START,
+/// TDG.DMAR.ACCEPT, TDG.TDI.MMIO.ACCEPT).
+///
+/// Defined by the TDISP standard; see the FUNCTION_ID table in the TDX Connect
+/// ABI EAS and [PCI-SIG, TDISP] v1.0.
+#[bitfield(u32)]
+pub struct TdxFunctionId {
+    /// The PCIe requester ID (bus/device/function) of the interface.
+    #[bits(16)]
+    pub requester_id: u16,
+    /// The requester segment. Reserved if `segment_valid` is clear.
+    #[bits(8)]
+    pub requester_segment: u8,
+    /// Whether `requester_segment` holds a valid value.
+    pub segment_valid: bool,
+    #[bits(7)]
+    pub reserved: u8,
+}
+
+open_enum! {
+    /// The TDISP interface state returned in RCX by
+    /// TDG.TDI.RD(`GET_TDISP_STATE`).
+    ///
+    /// The TDX Connect ABI EAS defers the encoding to [PCI-SIG, TDISP] v1.0,
+    /// which is where these values come from.
+    pub enum TdispInterfaceState: u64 {
+        CONFIG_UNLOCKED = 0,
+        CONFIG_LOCKED = 1,
+        RUN = 2,
+        ERROR = 3,
+    }
+}
+
 /// The value specified in `r11` when making a TD vmcall, specified by `r10 =
 /// 0`.
 #[repr(u64)]
