@@ -1744,7 +1744,7 @@ pub async fn hyperv_event_logs(vmid: Option<&Guid>, start_time: &Timestamp) -> V
     // All the logs are fetched in a single query. `Get-WinEvent` reports a log
     // that is missing or disabled as a non-terminating error and still returns
     // the events from the remaining logs.
-    let events = match run_get_winevent(
+    let mut events = match run_get_winevent(
         &[
             HYPERV_WORKER_TABLE,
             HYPERV_VMMS_TABLE,
