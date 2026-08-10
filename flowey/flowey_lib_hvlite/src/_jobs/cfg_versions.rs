@@ -24,7 +24,7 @@ pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const MU_MSVM: &str = "26.0.19";
+pub const MU_MSVM: &str = "26.0.22";
 pub const NEXTEST: &str = "0.9.133";
 pub const NODEJS: &str = "24.x";
 // None disables hcl-dev builds and tests; Some(version) enables them.
