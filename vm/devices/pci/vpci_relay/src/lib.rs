@@ -171,6 +171,14 @@ impl AllowedDevice {
     }
 }
 
+/// Whether any entry in `allowed` admits the device described by `hw_ids`.
+///
+/// Deny by default: an empty list admits nothing, so a failure to populate the
+/// allow-list cannot silently become "relay everything".
+fn device_allowed(allowed: &[AllowedDevice], hw_ids: &HardwareIds) -> bool {
+    allowed.iter().any(|d| d.allows(hw_ids))
+}
+
 impl VpciRelay {
     /// Creates a new VPCI relay.
     pub fn new(
@@ -201,7 +209,8 @@ impl VpciRelay {
     /// Adds an allowed device to the list. If one of the hardware ID is `!0`
     /// then it is treated as a wildcard.
     ///
-    /// Note that if no devices are on the list, then all devices are allowed.
+    /// Devices are denied by default: a relay with no allowed devices admits
+    /// nothing.
     pub fn add_allowed_device(&mut self, dev: AllowedDevice) {
         self.allowed_devices.push(dev);
     }
@@ -292,9 +301,8 @@ impl VpciRelay {
 
         let hw_ids = vpci_device.hw_ids();
 
-        if !self.allowed_devices.is_empty()
-            && !self.allowed_devices.iter().any(|d| d.allows(hw_ids))
-        {
+        // Deny by default; see `device_allowed`.
+        if !device_allowed(&self.allowed_devices, hw_ids) {
             let prog_if = hw_ids.prog_if;
             let sub_class = hw_ids.sub_class;
             let base_class = hw_ids.base_class;
@@ -446,5 +454,60 @@ impl SaveRestore for RelayedVpciDevice {
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
         match state {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AllowedDevice;
+    use super::device_allowed;
+    use pci_core::spec::hwid::ClassCode;
+    use pci_core::spec::hwid::HardwareIds;
+    use pci_core::spec::hwid::ProgrammingInterface;
+    use pci_core::spec::hwid::Subclass;
+
+    fn nvidia_gpu() -> HardwareIds {
+        HardwareIds {
+            vendor_id: 0x10DE,
+            device_id: 0x2330,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::DISPLAY_CONTROLLER_3D,
+            base_class: ClassCode::DISPLAY_CONTROLLER,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        }
+    }
+
+    fn gpu_rule() -> AllowedDevice {
+        AllowedDevice {
+            vendor_id: Some(0x10DE),
+            device_id: None,
+            revision_id: None,
+            prog_if: None,
+            sub_class: Some(Subclass::DISPLAY_CONTROLLER_3D),
+            base_class: Some(ClassCode::DISPLAY_CONTROLLER),
+            sub_vendor_id: None,
+            sub_system_id: None,
+        }
+    }
+
+    /// An empty allow-list must admit nothing. Previously it meant "allow
+    /// everything", so failing to populate the list was a silent relay bypass.
+    #[test]
+    fn empty_allow_list_denies() {
+        assert!(!device_allowed(&[], &nvidia_gpu()));
+    }
+
+    #[test]
+    fn matching_rule_admits() {
+        assert!(device_allowed(&[gpu_rule()], &nvidia_gpu()));
+    }
+
+    #[test]
+    fn non_matching_rule_denies() {
+        let mut other_vendor = nvidia_gpu();
+        other_vendor.vendor_id = 0x1234;
+        assert!(!device_allowed(&[gpu_rule()], &other_vendor));
     }
 }
