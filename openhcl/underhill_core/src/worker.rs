@@ -2113,7 +2113,12 @@ async fn new_underhill_vm(
         || dps.general.com2_vmbus_redirector;
     let interactive_console =
         console_enabled && !dps.general.management_vtl_features.tx_only_serial_port();
-    let vpci_relay_active =
+    // Value of the legacy `filtered-vpci-devices-allowed` attestation claim.
+    // Despite the name this does not track whether the VPCI relay is running:
+    // it omits `enable_vpci_relay`. Do not reuse it to describe relay state.
+    // It is left as-is because it feeds the hardware-derived key KDF, so
+    // redefining it would rotate sealing keys for existing guests.
+    let filtered_vpci_devices_allowed =
         with_vmbus_relay && dps.general.vpci_boot_enabled && isolation.is_isolated();
 
     let attestation_vm_config = AttestationVmConfig {
@@ -2128,7 +2133,7 @@ async fn new_underhill_vm(
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
         hardware_sealing_policy,
-        filtered_vpci_devices_allowed: vpci_relay_active,
+        filtered_vpci_devices_allowed,
         // Reported only when the devices are actually relayed, and omitted
         // entirely otherwise so that the runtime claims (and hence the sealing
         // key derivation) are unchanged for guests not using this feature.
