@@ -1451,6 +1451,10 @@ async fn vm_config_from_command_line(
                         .then(|| SharedFramebufferHandle.into_resource()),
                     guest_request_recv,
                     enable_tpm: opt.tpm.is_some(),
+                    tpm_version: match opt.tpm {
+                        Some(TpmVersionCli::V138) => get_resources::ged::TpmVersion::V138,
+                        None | Some(TpmVersionCli::V185)  => get_resources::ged::TpmVersion::V185,
+                    },
                     firmware_event_send: None,
                     secure_boot_enabled: opt.secure_boot,
                     secure_boot_template: match opt.secure_boot_template {

@@ -253,6 +253,7 @@ pub fn create_host_channel(
         serial_tx_only: false,
         vmbus_redirection: false,
         enable_tpm: false,
+        tpm_version: get_protocol::dps_json::TpmVersion::V185,
         vtl2_settings: None,
         secure_boot_enabled: false,
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,

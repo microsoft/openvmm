@@ -44,6 +44,8 @@ mod pcie;
 mod secureboot;
 /// Tests involving TPM functionality
 mod tpm;
+/// TPM tests that run against the 1.38 TPM reference implementation.
+mod tpm138;
 /// Tests for VLAN (802.1Q) support on virtual NICs.
 mod vlan;
 /// Tests of vmbus relay functionality.

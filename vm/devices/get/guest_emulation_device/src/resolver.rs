@@ -12,6 +12,7 @@ use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
 use get_resources::ged::GuestSecureBootTemplateType;
 use get_resources::ged::PcatBootDevice;
+use get_resources::ged::TpmVersion;
 use get_resources::ged::UefiConsoleMode;
 use power_resources::PowerRequestHandleKind;
 use thiserror::Error;
@@ -178,6 +179,10 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 serial_tx_only: resource.serial_tx_only,
                 vmbus_redirection: resource.vmbus_redirection,
                 enable_tpm: resource.enable_tpm,
+                tpm_version: match resource.tpm_version {
+                    TpmVersion::V185 => get_protocol::dps_json::TpmVersion::V185,
+                    TpmVersion::V138 => get_protocol::dps_json::TpmVersion::V138,
+                },
                 vtl2_settings: resource.vtl2_settings,
                 secure_boot_enabled: resource.secure_boot_enabled,
                 secure_boot_template: match resource.secure_boot_template {

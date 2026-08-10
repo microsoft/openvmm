@@ -10,6 +10,7 @@ use petri::PetriGuestStateLifetime;
 use petri::PetriHaltReason;
 #[cfg(windows)]
 use petri::PetriHardwareSealingPolicy;
+use petri::PetriTpmVersion;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
@@ -344,8 +345,16 @@ impl<'a> TpmGuestTests<'a> {
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_with_tpm<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    boot_with_tpm_impl(config, PetriTpmVersion::V185).await
+}
+
+pub(crate) async fn boot_with_tpm_impl<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run()
@@ -365,10 +374,19 @@ async fn tpm_ak_cert_persisted<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
+    tpm_ak_cert_persisted_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (ResolvedArtifact<T>,),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (mut vm, mut agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .modify_backend(|b| {
             b.with_igvm_attest_test_config(
@@ -427,10 +445,19 @@ async fn tpm_ak_cert_retry<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
+    tpm_ak_cert_retry_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+pub(crate) async fn tpm_ak_cert_retry_impl<T>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (ResolvedArtifact<T>,),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .modify_backend(|b| {
             b.with_igvm_attest_test_config(
@@ -511,6 +538,15 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    ak_cert_cache_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn ak_cert_cache_impl<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
@@ -519,6 +555,7 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
 
     let (mut vm, mut agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run()
@@ -583,6 +620,15 @@ async fn ak_cert_retry<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    ak_cert_retry_hyperv_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn ak_cert_retry_hyperv_impl<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
@@ -591,6 +637,7 @@ async fn ak_cert_retry<T, S, U: PetriVmmBackend>(
 
     let (vm, agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run()
@@ -638,8 +685,16 @@ async fn ak_cert_retry<T, S, U: PetriVmmBackend>(
 async fn vbs_boot_with_attestation(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
+    vbs_boot_with_attestation_impl(config, PetriTpmVersion::V185).await
+}
+
+pub(crate) async fn vbs_boot_with_attestation_impl(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let mut vm = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run_without_agent()
@@ -656,9 +711,17 @@ async fn vbs_boot_with_attestation(
 async fn tpm_test_platform_hierarchy_disabled(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
+    tpm_test_platform_hierarchy_disabled_impl(config, PetriTpmVersion::V185).await
+}
+
+pub(crate) async fn tpm_test_platform_hierarchy_disabled_impl(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .run()
         .await?;
 
@@ -781,6 +844,15 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    cvm_tpm_guest_tests_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let isolation = config.isolation();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
@@ -791,6 +863,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
     let config = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
@@ -909,6 +982,15 @@ async fn ak_pub_refresh<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    ak_pub_refresh_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn ak_pub_refresh_impl<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
@@ -917,6 +999,7 @@ async fn ak_pub_refresh<T, S, U: PetriVmmBackend>(
 
     let (mut vm, agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run()
@@ -991,6 +1074,15 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
+    skip_hw_unseal_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn skip_hw_unseal_impl<T, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>,),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let (rpc_server_artifact,) = extra_deps;
 
     let rpc_server_path = rpc_server_artifact.get();
@@ -998,6 +1090,7 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
 
     let (mut vm, agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run()
@@ -1074,6 +1167,15 @@ async fn use_hw_unseal<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    use_hw_unseal_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn use_hw_unseal_impl<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
@@ -1082,6 +1184,7 @@ async fn use_hw_unseal<T, S, U: PetriVmmBackend>(
 
     let (mut vm, agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run()
@@ -1143,16 +1246,28 @@ async fn use_hw_unseal<T, S, U: PetriVmmBackend>(
 )]
 async fn tpm_servicing<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
+    extra_deps: (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<VMGS_WITH_16K_TPM>,
+    ),
+) -> anyhow::Result<()> {
+    tpm_servicing_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+pub(crate) async fn tpm_servicing_impl<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
     (igvm_file, vmgs_file): (
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
         ResolvedArtifact<VMGS_WITH_16K_TPM>,
     ),
+    tpm_version: PetriTpmVersion,
 ) -> anyhow::Result<()> {
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
 
     let config = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_initial_vmgs(vmgs_file);
@@ -1207,6 +1322,15 @@ async fn hw_seal_hash<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    hw_seal_hash_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn hw_seal_hash_impl<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
@@ -1215,6 +1339,7 @@ async fn hw_seal_hash<T, S, U: PetriVmmBackend>(
 
     let (mut vm, agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(false)
         .with_hardware_sealing_policy(PetriHardwareSealingPolicy::HashPolicy)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
@@ -1294,6 +1419,15 @@ async fn hw_seal_signer<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    hw_seal_signer_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn hw_seal_signer_impl<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
@@ -1302,6 +1436,7 @@ async fn hw_seal_signer<T, S, U: PetriVmmBackend>(
 
     let (mut vm, agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(false)
         .with_hardware_sealing_policy(PetriHardwareSealingPolicy::SignerPolicy)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
@@ -1393,6 +1528,15 @@ async fn hw_ak_stable<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    hw_ak_stable_impl(config, extra_deps, PetriTpmVersion::V185).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn hw_ak_stable_impl<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    tpm_version: PetriTpmVersion,
+) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
@@ -1401,6 +1545,7 @@ async fn hw_ak_stable<T, S, U: PetriVmmBackend>(
 
     let (mut vm, agent) = config
         .with_tpm(true)
+        .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(false)
         .with_hardware_sealing_policy(PetriHardwareSealingPolicy::HashPolicy)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)

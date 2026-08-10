@@ -46,6 +46,7 @@ use get_protocol::dps_json::HardwareSealingPolicy;
 use get_protocol::dps_json::HclSecureBootTemplateId;
 use get_protocol::dps_json::ManagementVtlFeatures;
 use get_protocol::dps_json::PcatBootDevice;
+use get_protocol::dps_json::TpmVersion;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
@@ -138,6 +139,9 @@ pub struct GuestConfig {
     pub vmbus_redirection: bool,
     /// Enable the TPM.
     pub enable_tpm: bool,
+    /// TPM reference implementation version.
+    #[inspect(debug)]
+    pub tpm_version: TpmVersion,
     /// The encoded VTL2 settings document.
     #[inspect(with = "Option::is_some")]
     pub vtl2_settings: Option<Vec<u8>>,
@@ -1361,6 +1365,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     hardware_sealing_policy_id: state.config.hardware_sealing_policy,
                     efi_diagnostics_log_level: state.config.efi_diagnostics_log_level,
                     force_dma_bounce_enabled: state.config.force_dma_bounce_enabled,
+                    tpm_version: state.config.tpm_version,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),
