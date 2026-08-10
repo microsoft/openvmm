@@ -19,6 +19,7 @@ use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 #[cfg(target_os = "linux")]
 use petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_NATIVE;
+#[cfg(target_os = "linux")]
 use std::mem::size_of;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
