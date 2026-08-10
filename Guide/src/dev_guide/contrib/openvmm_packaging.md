@@ -6,9 +6,25 @@ This page describes the source archive and build configuration OpenVMM provides 
 
 The Flowey source-archive node exports the tracked repository tree at `HEAD` under an `openvmm-<VERSION>/` prefix. `<VERSION>` is the canonical `[workspace.package] version` in the root `Cargo.toml`.
 
-Archive assembly uses `git archive` with a fixed mode mask and `gzip -n`, so repeated assembly at the same commit produces the same `openvmm-<VERSION>-source.tar.gz` bytes. The assembly also generates `SHA256SUMS`.
+The archive is named `openvmm-<VERSION>.tar.gz` and unpacks into `openvmm-<VERSION>/`. The filename and the root directory deliberately match `%{name}-%{version}`, so RPM's `%autosetup` and Fedora's forge macros work without a `-n` override or a renamed source.
+
+Archive assembly uses `git archive` with a fixed mode mask and `gzip -n`, so repeated assembly at the same commit produces the same `openvmm-<VERSION>.tar.gz` bytes. The assembly also generates `SHA256SUMS`.
 
 The archive contains no `.git` directory and does not stamp a second version into the source. Consequently, a binary built from the extracted archive reports the plain workspace version.
+
+```admonish note
+Archive bytes are a function of the commit, not of when the archive was built. `git archive` takes file timestamps from the commit, and `gzip -n` omits the compression timestamp. Setting `SOURCE_DATE_EPOCH` during assembly is therefore unnecessary; it would not change the output.
+```
+
+## Verifying the archive
+
+`SHA256SUMS` is published alongside the archive and covers it by its published name:
+
+```bash
+sha256sum --check SHA256SUMS
+```
+
+Pin that digest in the distribution package rather than re-downloading the archive at build time. Do not substitute GitHub's automatically generated source links: those are produced on demand and are not guaranteed to stay byte-identical, so their digests are unsuitable for pinning.
 
 ## Build requirements
 
@@ -21,6 +37,16 @@ The distribution build requires:
 - OpenSSL development headers;
 - `pkg-config`;
 - a Protocol Buffers compiler providing `protoc`.
+
+These map to the following distribution packages, which is what OpenVMM's own distribution-build gate installs:
+
+| Requirement | Debian / Ubuntu | Fedora |
+| --- | --- | --- |
+| C compiler and linker | `build-essential` | `gcc`, `binutils` |
+| Linux UAPI headers | `linux-libc-dev` | `kernel-headers` |
+| OpenSSL development headers | `libssl-dev` | `openssl-devel` |
+| `pkg-config` | `pkg-config` | `pkgconf-pkg-config` |
+| `protoc` | `protobuf-compiler` | `protobuf-compiler` |
 
 Do not use `cargo xflowey restore-packages` when building a distribution package. That command restores prebuilt native dependencies intended for repository development.
 
@@ -55,6 +81,35 @@ cargo build --release --locked --offline -p openvmm \
 ```
 
 `cargo vendor` operates on the workspace, so the vendor tree includes dependencies not compiled by the OpenVMM Linux binary.
+
+```admonish warning
+Distributions treat a vendored Rust build as statically linked third-party source, and require the licenses of the vendored crates to be recorded in the binary package. Generating the vendor tree is not sufficient on its own; see the distribution-specific requirements below.
+```
+
+## Distribution integration
+
+OpenVMM publishes an upstream source archive and its checksum. Mapping those onto a distribution's own conventions is the packager's job, but the points below are the ones OpenVMM's layout affects directly.
+
+### RPM
+
+Because the archive name and root directory both match `%{name}-%{version}`, `%autosetup` needs no arguments beyond the defaults.
+
+Fedora's [Rust packaging guidelines](https://docs.fedoraproject.org/en-US/packaging-guidelines/Rust/) additionally require, for a package like OpenVMM that ships an executable with statically linked Rust dependencies:
+
+- `%cargo_prep` in `%prep`, after the source is unpacked.
+- `%cargo_license_summary` (and `%cargo_license`) in `%build` after the build, because the package includes a binary target. Any feature flags passed to the build must also be passed to these macros, or the recorded licenses will not match what was compiled.
+- `%cargo_vendor_manifest` in `%build` when building with vendored dependencies. It writes `cargo-vendor.txt`, which must be shipped as a `%license` file in the package containing the executable.
+- `%cargo_generate_buildrequires` in `%generate_buildrequires` — except when building with vendored dependencies, which is the expected configuration for OpenVMM.
+
+### Debian
+
+`debian/watch` must match the published asset rather than GitHub's generated source links, so that `uscan` retrieves the same bytes covered by `SHA256SUMS`. See the [Debian watch documentation](https://wiki.debian.org/debian/watch) for the GitHub-specific patterns.
+
+Record the vendored crate licenses in `debian/copyright` for the same reason Fedora requires a vendor manifest.
+
+```admonish note
+OpenVMM does not currently publish an OpenPGP signature alongside the archive, so `uscan` signature verification cannot be enabled. Verify the archive against `SHA256SUMS` instead.
+```
 
 ## Package identity
 

@@ -67,8 +67,15 @@ impl SourceIdentity {
     }
 
     /// The name of the source archive.
+    ///
+    /// This is `<name>-<version>.tar.gz`, matching the root directory. That
+    /// pairing is what distribution tooling assumes by default: RPM's
+    /// `%autosetup` unpacks the source and enters `%{name}-%{version}`, and
+    /// Fedora's forge macros derive this filename. Naming the file anything
+    /// else would still package, but every spec file would have to override
+    /// the default to say so.
     pub fn archive_name(&self) -> String {
-        format!("{}-source.tar.gz", self.source_root())
+        format!("{}.tar.gz", self.source_root())
     }
 }
 
@@ -231,7 +238,18 @@ mod tests {
     fn asset_names_follow_the_version() {
         let identity = identity("0.12.3");
         assert_eq!(identity.source_root(), "openvmm-0.12.3");
-        assert_eq!(identity.archive_name(), "openvmm-0.12.3-source.tar.gz");
+        assert_eq!(identity.archive_name(), "openvmm-0.12.3.tar.gz");
+    }
+
+    /// Distribution tooling defaults to entering `<name>-<version>` after
+    /// unpacking `<name>-<version>.tar.gz`, so the two must agree.
+    #[test]
+    fn archive_name_is_the_source_root_plus_an_extension() {
+        let identity = identity("0.12.3");
+        assert_eq!(
+            identity.archive_name(),
+            format!("{}.tar.gz", identity.source_root())
+        );
     }
 
     #[test]
