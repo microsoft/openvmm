@@ -209,7 +209,9 @@ impl SimpleFlowNode for Node {
                 //
                 // `gzip` replaces the tar in place rather than writing to
                 // stdout, so the archive is never buffered in this process.
-                flowey::shell_cmd!(rt, "gzip -n --best {source_tar}").run()?;
+                // `-f` because `gzip` otherwise refuses to replace an archive
+                // left behind by an earlier run in the same directory.
+                flowey::shell_cmd!(rt, "gzip -n --best -f {source_tar}").run()?;
 
                 let source_archive = output_dir.join(identity.archive_name());
                 if !source_archive.exists() {
