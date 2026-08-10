@@ -4,9 +4,12 @@ This page proposes how OpenVMM should identify builds and publish standalone
 source releases for Linux distributions.
 
 ```admonish important title="Request for consensus"
-This is a design proposal, not current release policy. The implementation
-should be split into separately reviewed phases only after maintainers agree
-on the decisions below.
+This is a design proposal, not current release policy. The decisions below are
+what maintainers are being asked to confirm.
+
+Implementation is already underway against these decisions, in the separately
+reviewed phases listed at the end of this page. Where a phase has landed, this
+page has been updated to describe what was built rather than what was planned.
 ```
 
 ## Goals
@@ -59,7 +62,7 @@ request to select a new patch version, followed by a new release.
 
 The release would contain:
 
-- `openvmm-<VERSION>-source.tar.gz`;
+- `openvmm-<VERSION>.tar.gz`;
 - `SHA256SUMS`;
 - GitHub build provenance attestations for both published files.
 
@@ -105,11 +108,13 @@ The statuses below record the proposal author's current direction. **Chosen
 direction** records a decision supported by current maintainer feedback.
 **Open question** means maintainers are specifically being asked to choose
 between alternatives. **Proposed direction** means feedback is still welcome,
-but the RFC recommends that choice.
+but the RFC recommends that choice. **Implemented** means a merged phase
+already behaves this way, so revisiting it now means changing shipped
+behavior.
 
 ### 1. Canonical product version
 
-**Status: Proposed direction**
+**Status: Implemented**
 
 **Proposal:** Store a stable `MAJOR.MINOR.PATCH` in
 `[workspace.package] version` in the root `Cargo.toml`. Keep the most recently
@@ -120,7 +125,7 @@ requiring Git metadata.
 
 ### 2. Development-build identity
 
-**Status: Chosen direction**
+**Status: Implemented**
 
 **Proposal:** A normal Git checkout reports
 `<VERSION>+g<9-character-commit>`, identified as a development build.
@@ -131,7 +136,7 @@ in concise version output.
 
 ### 3. Git checkout classification
 
-**Status: Chosen direction**
+**Status: Implemented**
 
 **Proposal:** Treat every Git checkout as development, including an exact
 checkout of an `openvmm-v<VERSION>` release tag.
@@ -143,7 +148,7 @@ release identity.
 
 ### 4. Build from an extracted archive
 
-**Status: Proposed direction**
+**Status: Implemented**
 
 **Proposal:** A build with no applicable Git repository reports plain
 `<VERSION>` as a release-shaped build.
@@ -168,7 +173,7 @@ differently unless every packager reproduces the release environment.
 
 ### 5. Distribution package override
 
-**Status: Proposed direction**
+**Status: Implemented**
 
 **Proposal:** Do not add a package-version override. The OpenVMM binary reports
 the committed product version, while a distribution records its package
@@ -186,7 +191,7 @@ and is not required to build an official source archive.
 
 ### 6. Identity integration surfaces
 
-**Status: Proposed direction**
+**Status: Implemented**
 
 **Proposal:** Limit the initial implementation to concise `openvmm -V` and
 detailed `openvmm --version` output.
@@ -209,19 +214,23 @@ Publishing the draft last avoids creating an official tag before archive
 validation succeeds. The tradeoff is that the release workflow must validate
 tag availability and rely on a human for the final action.
 
-## Proposed implementation phases
+## Implementation phases
 
-After consensus, implementation would be divided into independently reviewed
-pull requests:
+Implementation is divided into independently reviewed pull requests. Phases
+landed in a different order than they are numbered: the generic release
+helpers were reviewable on their own and merged before source assembly.
 
-1. establish the canonical Cargo product version;
-2. implement only the agreed build-identity behavior and integrations;
-3. add deterministic source assembly and the distribution-build CI gate;
-4. add generic GitHub release and provenance helpers;
-5. add the manual OpenVMM release workflow and maintainer documentation.
+1. establish the canonical Cargo product version — **merged**;
+2. implement only the agreed build-identity behavior and integrations —
+   **merged**;
+3. add deterministic source assembly and the distribution-build CI gate — **in
+   review**;
+4. add generic GitHub release and provenance helpers — **merged**;
+5. add the manual OpenVMM release workflow and maintainer documentation —
+   **in progress**.
 
-Generated workflow files would land with the Flowey source that produces them.
-Each phase would remain buildable and testable before the next phase begins.
+Generated workflow files land with the Flowey source that produces them. Each
+phase remains buildable and testable before the next phase begins.
 
 ## Review guidance
 
@@ -233,6 +242,11 @@ implementation. In particular:
 - Are CLI outputs sufficient for the initial identity implementation?
 - Are there objections to manual draft publication as the initial safety
   boundary?
+
+The first three of those questions are about decisions a merged phase already
+implements. They remain open in the sense that they can still be changed, but
+changing one now means revising shipped behavior rather than choosing a
+direction.
 
 Implementation details should be revised or removed when they do not follow
 from an accepted decision.
