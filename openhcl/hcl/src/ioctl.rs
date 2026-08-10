@@ -218,30 +218,6 @@ pub enum ApplyVtlProtectionsError {
     InvalidVtl(Vtl),
 }
 
-/// Error setting guest VSM configuration.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum SetGuestVsmConfigError {
-    #[error("hypervisor failed to configure guest vsm to {enable_guest_vsm}")]
-    Hypervisor {
-        enable_guest_vsm: bool,
-        #[source]
-        hv_error: HvError,
-    },
-}
-
-/// Error getting the VP idnex from an APIC ID.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum GetVpIndexFromApicIdError {
-    #[error("hypervisor failed when querying vp index for {apic_id}")]
-    Hypervisor {
-        #[source]
-        hv_error: HvError,
-        apic_id: u32,
-    },
-}
-
 /// Error setting VSM partition configuration.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]

@@ -935,11 +935,6 @@ pub fn new_import_ctx(backend: &mut dyn ImportCtxBackend) -> ImportCtx<'_> {
     ImportCtx { backend }
 }
 
-#[derive(Debug)]
-pub enum CtxAnchor {
-    PostJob,
-}
-
 pub trait NodeCtxBackend {
     /// Handle to the current node this `ctx` corresponds to
     fn current_node(&self) -> NodeHandle;

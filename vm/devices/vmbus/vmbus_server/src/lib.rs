@@ -700,13 +700,6 @@ impl VmbusServer {
     }
 }
 
-#[derive(mesh::MeshPayload)]
-pub struct RestoreInfo {
-    open_data: Option<OpenData>,
-    gpadls: Vec<(GpadlId, u16, Vec<u64>)>,
-    interrupt: Option<Interrupt>,
-}
-
 #[derive(Default)]
 pub struct SynicMessage {
     data: Vec<u8>,

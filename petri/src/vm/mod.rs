@@ -2289,18 +2289,6 @@ pub trait PetriVmFramebufferAccess: Send + 'static {
     -> anyhow::Result<Option<VmScreenshotMeta>>;
 }
 
-/// Use this for the associated type if not supported
-pub struct NoPetriVmFramebufferAccess;
-#[async_trait]
-impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
-    async fn screenshot(
-        &mut self,
-        _image: &mut Vec<u8>,
-    ) -> anyhow::Result<Option<VmScreenshotMeta>> {
-        unreachable!()
-    }
-}
-
 /// Common processor topology information for the VM.
 #[derive(Debug)]
 pub struct ProcessorTopology {
