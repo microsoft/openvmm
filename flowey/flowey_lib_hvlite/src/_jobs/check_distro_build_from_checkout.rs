@@ -2,6 +2,15 @@
 // Licensed under the MIT License.
 
 //! Assemble the OpenVMM source archive and run the distribution-build gate.
+//!
+//! This exists separately from [`crate::_jobs::check_distro_build`] because
+//! the two entry points differ only in where the archive comes from. The
+//! release pipeline assembles once and hands the same bytes to the gate and
+//! to publication, so its gate job receives a pre-built archive. Ordinary
+//! pull-request CI has no release preparation job, so it must assemble its
+//! own snapshot of the commit under test first. Both then run the same
+//! build via `check_distro_build`, which keeps PR CI honest: it exercises
+//! the code path a release actually uses.
 
 use crate::assemble_openvmm_source_release::SourceReleaseOutput;
 use flowey::node::prelude::*;

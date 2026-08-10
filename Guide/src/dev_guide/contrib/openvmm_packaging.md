@@ -23,6 +23,13 @@ The archive contains no `.git` directory and does not stamp a second
 version into the source. Consequently, a binary built from the extracted
 archive reports the plain workspace version.
 
+The export covers the entire tracked tree, including components a Linux
+package does not build — OpenHCL, firmware, and test infrastructure
+among them. The root `Cargo.toml` defines a workspace spanning those
+paths, so narrowing the archive means restructuring the workspace rather
+than filtering files out of the export. Build `-p openvmm` and package
+only that binary.
+
 ```admonish note
 Archive bytes are a function of the commit, not of when the archive was
 built. `git archive` takes file timestamps from the commit, and `gzip -n`
@@ -50,6 +57,12 @@ the archive at build time. Do not substitute GitHub's automatically
 generated source links: those are produced on demand and are not
 guaranteed to stay byte-identical, so their digests are unsuitable for
 pinning.
+
+A build with no `.git` reports the plain product version, because the
+committed Cargo version is the only identity available to it. That
+describes the build's inputs; it is not evidence that the source is
+official, since any Git-free copy of the tree reports the same version.
+The checksum and the attestation are what establish provenance.
 
 ## Build requirements
 
@@ -177,6 +190,11 @@ archive against `SHA256SUMS` instead.
 The OpenVMM binary reports the upstream product version committed in the
 source tree. Record a distribution-specific package revision in the
 distribution package metadata rather than replacing the binary version.
+
+OpenVMM deliberately offers no environment variable or build flag that
+overrides the reported version. The version is chosen by a reviewed
+commit to the root `Cargo.toml`, which keeps a binary's self-reported
+identity tied to the source it was built from.
 
 ## Runtime dependencies
 
