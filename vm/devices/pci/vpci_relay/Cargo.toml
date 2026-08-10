@@ -27,6 +27,7 @@ mesh.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 slab.workspace = true
+tracelimit.workspace = true
 tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -34,7 +35,6 @@ fs-err.workspace = true
 hcl.workspace = true
 hvdef.workspace = true
 sparse_mmap.workspace = true
-tracelimit.workspace = true
 
 [dev-dependencies]
 vpci.workspace = true
