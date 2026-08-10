@@ -2,11 +2,13 @@
 // Licensed under the MIT License.
 
 use crate::test_tpm_backend as test_tpm;
+use crate::test_tpm_backend::MAX_NV_INDEX_SIZE;
 use crate::test_tpm_backend::TestTpmPlatform;
 use crate::test_tpm_backend::USE_LEGACY_PREPROVISIONED_STATE;
 use crate::tpm_lib::*;
 use std::time::Instant;
 use tpm_protocol::TPM_AZURE_AIK_HANDLE;
+use tpm_protocol::TPM_DEFAULT_AKCERT_SIZE;
 use tpm_protocol::TPM_GUEST_SECRET_HANDLE;
 use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
 use tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
@@ -42,6 +44,10 @@ impl TpmEngine for TestTpmPlatform {
         TestTpmPlatform::execute_command(self, command, response)
             .map(|_| ())
             .map_err(TpmEngineError::from_error)
+    }
+
+    fn max_nv_index_size(&self) -> u16 {
+        MAX_NV_INDEX_SIZE
     }
 }
 
@@ -344,7 +350,7 @@ fn test_allocate_guest_attestation_nv_indices() {
     // Expect only the ak cert nv index to be created but with no data
     // Do not write AK cert data to index after allocation.
     {
-        let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+        let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
         let mut attestation_report_output = [0u8; MAX_ATTESTATION_INDEX_SIZE as usize];
 
         // Ensure both nv indices are not present
@@ -387,7 +393,7 @@ fn test_allocate_guest_attestation_nv_indices() {
     // Expect only the ak cert nv index to be created but with no data
     // Write AK cert data to index after allocation.
     {
-        let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+        let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
         let mut attestation_report_output = [0u8; MAX_ATTESTATION_INDEX_SIZE as usize];
 
         restart_tpm_engine(&mut tpm_engine_helper, true, true);
@@ -439,7 +445,7 @@ fn test_allocate_guest_attestation_nv_indices() {
         assert!(matches!(result.unwrap(), NvIndexState::Available));
         let input_with_padding = {
             let mut input = AK_CERT_INPUT_512.to_vec();
-            input.resize(MAX_NV_INDEX_SIZE.into(), 0);
+            input.resize(TPM_DEFAULT_AKCERT_SIZE, 0);
             input
         };
         assert_eq!(&ak_cert_output, input_with_padding.as_slice());
@@ -448,7 +454,7 @@ fn test_allocate_guest_attestation_nv_indices() {
     // Test allocation after a restart with preserve_ak_cert = true, support_attestation_report = false
     // Expect the content of ak cert nv index to be re-created and the ak cert is preserved
     {
-        let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+        let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
         let mut attestation_report_output = [0u8; MAX_ATTESTATION_INDEX_SIZE as usize];
 
         restart_tpm_engine(&mut tpm_engine_helper, true, true);
@@ -492,7 +498,7 @@ fn test_allocate_guest_attestation_nv_indices() {
         assert!(matches!(result.unwrap(), NvIndexState::Available));
         let input_with_padding = {
             let mut input = AK_CERT_INPUT_512.to_vec();
-            input.resize(MAX_NV_INDEX_SIZE.into(), 0);
+            input.resize(TPM_DEFAULT_AKCERT_SIZE, 0);
             input
         };
         assert_eq!(&ak_cert_output, input_with_padding.as_slice());
@@ -511,7 +517,7 @@ fn test_allocate_guest_attestation_nv_indices() {
         assert!(matches!(result.unwrap(), NvIndexState::Available));
         let input_with_padding = {
             let mut input = AK_CERT_INPUT_1024.to_vec();
-            input.resize(MAX_NV_INDEX_SIZE.into(), 0);
+            input.resize(TPM_DEFAULT_AKCERT_SIZE, 0);
             input
         };
         assert_eq!(&ak_cert_output, input_with_padding.as_slice());
@@ -520,7 +526,7 @@ fn test_allocate_guest_attestation_nv_indices() {
     // Test allocation after a restart with preserve_ak_cert = false, support_attestation_report = false
     // Expect ak cert nv index to be re-created and the ak cert is not preserved
     {
-        let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+        let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
         let mut attestation_report_output = [0u8; MAX_ATTESTATION_INDEX_SIZE as usize];
 
         restart_tpm_engine(&mut tpm_engine_helper, true, true);
@@ -572,7 +578,7 @@ fn test_allocate_guest_attestation_nv_indices() {
         assert!(matches!(result.unwrap(), NvIndexState::Available));
         let input_with_padding = {
             let mut input = AK_CERT_INPUT_512.to_vec();
-            input.resize(MAX_NV_INDEX_SIZE.into(), 0);
+            input.resize(TPM_DEFAULT_AKCERT_SIZE, 0);
             input
         };
         assert_eq!(&ak_cert_output, input_with_padding.as_slice());
@@ -581,7 +587,7 @@ fn test_allocate_guest_attestation_nv_indices() {
     // Test allocation after a restart preserve_ak_cert = false, support_attestation_report = true
     // Expect ak cert nv index to be re-created and attestation report nv index to be created
     {
-        let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+        let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
         let mut attestation_report_output = [0u8; MAX_ATTESTATION_INDEX_SIZE as usize];
 
         restart_tpm_engine(&mut tpm_engine_helper, true, true);
@@ -634,7 +640,7 @@ fn test_allocate_guest_attestation_nv_indices() {
         assert!(matches!(result.unwrap(), NvIndexState::Available));
         let input_with_padding = {
             let mut input = AK_CERT_INPUT_512.to_vec();
-            input.resize(MAX_NV_INDEX_SIZE.into(), 0);
+            input.resize(TPM_DEFAULT_AKCERT_SIZE, 0);
             input
         };
         assert_eq!(&ak_cert_output, input_with_padding.as_slice());
@@ -664,7 +670,7 @@ fn test_allocate_guest_attestation_nv_indices() {
     // Test allocation after a restart preserve_ak_cert = false, support_attestation_report = true
     // Expect both ak cert and attestation report nv indices to be re-created
     {
-        let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+        let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
         let mut attestation_report_output = [0u8; MAX_ATTESTATION_INDEX_SIZE as usize];
 
         restart_tpm_engine(&mut tpm_engine_helper, true, true);
@@ -731,7 +737,7 @@ fn test_read_write_guest_attestation_indices() {
 
     // Test writing to ak cert nv index with data size equal to index size
     {
-        let ak_cert_input_equal = [7u8; MAX_NV_INDEX_SIZE as usize];
+        let ak_cert_input_equal = [7u8; TPM_DEFAULT_AKCERT_SIZE];
         let result = tpm_engine_helper.write_to_nv_index(
             AUTH_VALUE,
             TPM_NV_INDEX_AIK_CERT,
@@ -739,7 +745,7 @@ fn test_read_write_guest_attestation_indices() {
         );
         assert!(result.is_ok());
 
-        let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+        let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
         let result =
             tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
         assert!(result.is_ok());
@@ -748,7 +754,7 @@ fn test_read_write_guest_attestation_indices() {
 
     // Test writing to ak cert nv index with data size less than index size
     {
-        let ak_cert_input_less = [7u8; MAX_NV_INDEX_SIZE as usize - 1024];
+        let ak_cert_input_less = [7u8; TPM_DEFAULT_AKCERT_SIZE - 1024];
         let result = tpm_engine_helper.write_to_nv_index(
             AUTH_VALUE,
             TPM_NV_INDEX_AIK_CERT,
@@ -757,13 +763,13 @@ fn test_read_write_guest_attestation_indices() {
         assert!(result.is_ok());
 
         // Read the data and ensure it is zero-padded
-        let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+        let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
         let result =
             tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
         assert!(result.is_ok());
         let input_with_padding = {
             let mut input = ak_cert_input_less.to_vec();
-            input.resize(MAX_NV_INDEX_SIZE.into(), 0);
+            input.resize(TPM_DEFAULT_AKCERT_SIZE, 0);
             input
         };
         assert_eq!(&ak_cert_output, input_with_padding.as_slice());
@@ -771,7 +777,7 @@ fn test_read_write_guest_attestation_indices() {
 
     // Test writing to ak cert nv index with data size larger than index size
     {
-        let ak_cert_input_larger = [7u8; MAX_NV_INDEX_SIZE as usize + 1024];
+        let ak_cert_input_larger = [7u8; TPM_DEFAULT_AKCERT_SIZE + 1024];
         let result = tpm_engine_helper.write_to_nv_index(
             AUTH_VALUE,
             TPM_NV_INDEX_AIK_CERT,
@@ -787,7 +793,7 @@ fn test_read_write_guest_attestation_indices() {
         {
             assert_eq!(nv_index, TPM_NV_INDEX_AIK_CERT);
             assert_eq!(input_size, ak_cert_input_larger.len());
-            assert_eq!(allocated_size, MAX_NV_INDEX_SIZE as usize);
+            assert_eq!(allocated_size, TPM_DEFAULT_AKCERT_SIZE);
         } else {
             panic!()
         }
@@ -795,7 +801,7 @@ fn test_read_write_guest_attestation_indices() {
 
     // Test writing to ak cert nv index with wrong authorization value
     {
-        let ak_cert_input_larger = [7u8; MAX_NV_INDEX_SIZE as usize];
+        let ak_cert_input_larger = [7u8; TPM_DEFAULT_AKCERT_SIZE];
         let result =
             tpm_engine_helper.write_to_nv_index(0, TPM_NV_INDEX_AIK_CERT, &ak_cert_input_larger);
         assert!(result.is_err());
@@ -882,7 +888,7 @@ fn test_read_write_guest_attestation_indices() {
 
     // Test writing to attestation report nv index with wrong authorization value
     {
-        let ak_cert_input_larger = [7u8; MAX_NV_INDEX_SIZE as usize];
+        let ak_cert_input_larger = [7u8; TPM_DEFAULT_AKCERT_SIZE];
         let result = tpm_engine_helper.write_to_nv_index(
             0,
             TPM_NV_INDEX_ATTESTATION_REPORT,
@@ -924,7 +930,7 @@ fn test_with_pre_provisioned_state() {
 
     // The provisioned nv size is less than the created one
     let nv_size = nv_read_public_reply.nv_public.nv_public.data_size.get();
-    assert!(nv_size < MAX_NV_INDEX_SIZE);
+    assert!((nv_size as usize) < TPM_DEFAULT_AKCERT_SIZE);
 
     // Ensure AK is provisioned
     assert!(
@@ -934,7 +940,7 @@ fn test_with_pre_provisioned_state() {
             .is_some()
     );
 
-    let mut provisioned_ak_cert = [0u8; MAX_NV_INDEX_SIZE as usize];
+    let mut provisioned_ak_cert = [0u8; TPM_DEFAULT_AKCERT_SIZE];
     let result =
         tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut provisioned_ak_cert);
     assert!(matches!(result.unwrap(), NvIndexState::Available));
@@ -957,7 +963,7 @@ fn test_with_pre_provisioned_state() {
     let nv_read_public_reply = result.unwrap();
     assert!(nv_read_public_reply.nv_public.nv_public.data_size.get() == nv_size);
 
-    let mut provisioned_ak_cert_after_call = [0u8; MAX_NV_INDEX_SIZE as usize];
+    let mut provisioned_ak_cert_after_call = [0u8; TPM_DEFAULT_AKCERT_SIZE];
     let result = tpm_engine_helper
         .read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut provisioned_ak_cert_after_call);
     assert!(matches!(result.unwrap(), NvIndexState::Available));
@@ -971,7 +977,7 @@ fn test_with_pre_provisioned_state() {
     assert!(result.is_ok());
 
     // Ensure the data is overwritten
-    let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
+    let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
     let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
     assert!(matches!(result.unwrap(), NvIndexState::Available));
 

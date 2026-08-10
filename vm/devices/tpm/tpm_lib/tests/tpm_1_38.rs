@@ -10,6 +10,7 @@ mod test_tpm_backend {
 
     pub(crate) type TestTpmPlatform = ms_tpm_20_ref::MsTpm20RefPlatform;
     pub(crate) const USE_LEGACY_PREPROVISIONED_STATE: bool = true;
+    pub(crate) const MAX_NV_INDEX_SIZE: u16 = tpm_protocol::TPM_V138_MAX_NV_INDEX_SIZE;
 }
 
 /// TPM helper implementation and shared tests.

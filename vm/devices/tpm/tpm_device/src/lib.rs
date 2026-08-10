@@ -55,6 +55,8 @@ use thiserror::Error;
 use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
 use tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
 use tpm_protocol::TPM_NV_INDEX_GUEST_ATTESTATION_INPUT;
+use tpm_protocol::TPM_V138_MAX_NV_INDEX_SIZE;
+use tpm_protocol::TPM_V185_MAX_NV_INDEX_SIZE;
 use tpm_protocol::tpm20proto;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
 use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
@@ -331,6 +333,13 @@ impl TpmEngine for TpmRefLib {
             TpmRefLib::V185(inner) => MsTpm185Platform::execute_command(inner, command, response)
                 .map(|_| ())
                 .map_err(TpmEngineError::from_error),
+        }
+    }
+
+    fn max_nv_index_size(&self) -> u16 {
+        match self {
+            TpmRefLib::V138(_) => TPM_V138_MAX_NV_INDEX_SIZE,
+            TpmRefLib::V185(_) => TPM_V185_MAX_NV_INDEX_SIZE,
         }
     }
 }

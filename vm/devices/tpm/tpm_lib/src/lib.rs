@@ -61,8 +61,6 @@ use zerocopy::IntoBytes;
 // would need to scale this value up in case it is not sufficient.
 const TPM_PAGE_SIZE: usize = 4096;
 const MAX_NV_BUFFER_SIZE: usize = MAX_DIGEST_BUFFER_SIZE;
-// TODO: Support larger NV index size for V185
-pub(crate) const MAX_NV_INDEX_SIZE: u16 = 4096;
 // Scale this with maximum attestation payload
 pub(crate) const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
 
@@ -147,6 +145,10 @@ pub trait TpmEngine: Send {
         command: &mut [u8],
         response: &mut [u8],
     ) -> Result<(), TpmEngineError>;
+
+    /// Returns the largest NV index size (`MAX_NV_INDEX_SIZE`) that the
+    /// underlying TPM implementation supports.
+    fn max_nv_index_size(&self) -> u16;
 }
 
 /// TPM command debug information used by error logs.
@@ -598,7 +600,8 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
     ///
     /// Owner owned nv index is left as-is.
     fn take_existing_ak_cert(&mut self) -> Result<AkCertType, Error> {
-        let mut output = vec![0; MAX_NV_INDEX_SIZE as usize];
+        let max_nv_index_size = self.tpm_engine.max_nv_index_size();
+        let mut output = vec![0; max_nv_index_size as usize];
 
         // Read the AK cert from the index. If the index is not owner owned, the
         // index will be removed.
@@ -612,7 +615,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
 
                 // Resize the output vector to match exactly what the nv index
                 // size is.
-                assert!(size <= MAX_NV_INDEX_SIZE);
+                assert!(size <= max_nv_index_size);
                 output.resize(size as usize, 0);
 
                 let platform_cert = nv_bits.nv_platformcreate();
@@ -674,7 +677,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
             // VM has a small-vTPM mitigation marker. Don't touch anything, but
             // log whether the AK cert exists, as that previous write might have
             // failed.
-            let mut output = vec![0u8; MAX_NV_INDEX_SIZE as usize];
+            let mut output = vec![0u8; self.tpm_engine.max_nv_index_size() as usize];
             let r = self.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
             tracing::warn!("VM has 16k vTPM mitigation marker");
             match r {
@@ -799,7 +802,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
             }
             AkCertType::PlatformOwned(mut cert) => {
                 let will_mitigate_cert =
-                    params.mitigate_legacy_akcert && cert.len() == MAX_NV_INDEX_SIZE as usize;
+                    params.mitigate_legacy_akcert && cert.len() == TPM_DEFAULT_AKCERT_SIZE;
 
                 if will_mitigate_cert {
                     self.write_mitigation_marker(auth_value);
@@ -811,13 +814,13 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
                     // size (plus 4 bytes for the DER header).
                     if let &[0x30, 0x82, len0, len1, ..] = cert.as_slice() {
                         let len = u16::from_be_bytes([len0, len1]);
-                        let parsed_size = len.saturating_add(4).min(MAX_NV_INDEX_SIZE);
+                        let parsed_size = len.saturating_add(4).min(TPM_DEFAULT_AKCERT_SIZE as u16);
                         tracing::warn!(parsed_size, "redefining AKCert index with limited size");
                         assert!(parsed_size as usize <= cert.len());
                         cert.resize(parsed_size as usize, 0);
                         parsed_size
                     } else {
-                        MAX_NV_INDEX_SIZE
+                        TPM_DEFAULT_AKCERT_SIZE as u16
                     }
                 } else {
                     TPM_DEFAULT_AKCERT_SIZE as u16
