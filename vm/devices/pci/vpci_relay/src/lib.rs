@@ -206,8 +206,8 @@ impl VpciRelay {
         }
     }
 
-    /// Adds an allowed device to the list. If one of the hardware ID is `!0`
-    /// then it is treated as a wildcard.
+    /// Adds an allowed device to the list. Fields left as `None` act as
+    /// wildcards, matching any value.
     ///
     /// Devices are denied by default: a relay with no allowed devices admits
     /// nothing.

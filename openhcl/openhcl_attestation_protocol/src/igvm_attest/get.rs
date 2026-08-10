@@ -500,8 +500,12 @@ pub mod runtime_claims {
         pub vmgs_provisioner: Option<VmgsProvisioner>,
         /// Hardware sealing policy
         pub hardware_sealing_policy: HardwareSealingPolicy,
-        /// Whether NVIDIA GPUs and NVLink/NVSwitch fabric devices were relayed
-        /// into this guest.
+        /// Whether NVIDIA GPUs and NVLink/NVSwitch fabric devices are permitted
+        /// through the device filter for this guest.
+        ///
+        /// This reports that the filter was widened to admit those device
+        /// classes, not that such a device is present or attached. Per-device
+        /// trust comes from the guest's own device attestation.
         ///
         /// `None` when the relay was not enabled for these devices, which is
         /// the default. This field is skipped during serialization when `None`
