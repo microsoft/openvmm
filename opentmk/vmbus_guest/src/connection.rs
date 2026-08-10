@@ -10,6 +10,49 @@
 //! the next version) plus `RequestOffers` / `AllOffersDelivered`
 //! enumeration.
 //!
+//! # When to use this module
+//!
+//! Most callers should use the top-level [`crate::init`] /
+//! [`crate::request_offers`] / [`crate::unload`] wrappers rather than
+//! calling into this module directly. Reach for [`initiate`] /
+//! [`request_offers`] / [`unload`] here only when you need to
+//! interleave with your own SynIC bring-up (e.g. deferred
+//! `exit_boot_services`), and for [`negotiate_version`] /
+//! [`request_offers_with`] / [`unload_with`] when you're building a
+//! composite pump against a private [`crate::message::CompletionTable`].
+//!
+//! # Example (custom pump)
+//!
+//! ```ignore
+//! use vmbus_guest::connection::{
+//!     self, MessagePump, OfferCollector, negotiate_version, CLIENT_ID,
+//! };
+//! use vmbus_guest::interrupt::SimpPump;
+//! use vmbus_guest::message::completion_table;
+//! use vmbus_guest::protocol::Version;
+//!
+//! // 1. Bring up SynIC (or reuse an existing bring-up).
+//! vmbus_guest::synic::init_synic(&mut ctx)?;
+//!
+//! // 2. Negotiate version.
+//! let mut pump = SimpPump::new(vmbus_guest::synic::synic_pages().unwrap().simp_gpa);
+//! let table = completion_table();
+//! let state = negotiate_version(
+//!     &mut ctx,
+//!     table,
+//!     &mut pump,
+//!     CLIENT_ID,
+//!     Version::NEGOTIATION_LADDER,
+//! )?;
+//! let connection_id = state.connection_id;
+//!
+//! // 3. Enumerate offers.
+//! let mut sink = OfferCollector::default();
+//! connection::request_offers_with(&mut ctx, table, &mut pump, &mut sink, connection_id)?;
+//! let offers = sink.into_offers();
+//! # Ok::<_, vmbus_guest::Error>(())
+//! ```
+//!
 //! # Structure
 //!
 //! * The wire-format work (encode an `InitiateContact[/2]`, parse a
@@ -288,17 +331,13 @@ where
         match pump.poll_until(ctx, &handle, &mut discard) {
             Ok(()) => {}
             Err(Error::Timeout) => {
-                log::warn!(
-                    "negotiate: timeout on version {version:?}, trying next in ladder"
-                );
+                log::warn!("negotiate: timeout on version {version:?}, trying next in ladder");
                 continue;
             }
             Err(e) => return Err(e),
         }
         let Some(bytes) = handle.take_response() else {
-            log::warn!(
-                "negotiate: no response for version {version:?}, trying next in ladder"
-            );
+            log::warn!("negotiate: no response for version {version:?}, trying next in ladder");
             continue;
         };
         let parsed = parse_version_response(&bytes)?;

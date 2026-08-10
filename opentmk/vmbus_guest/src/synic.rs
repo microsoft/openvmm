@@ -16,6 +16,40 @@
 //! the raw hypercall page ourselves. Page allocation is UEFI-specific
 //! and gated behind `cfg(target_os = "uefi")`.
 //!
+//! # Typical use
+//!
+//! Callers should invoke [`init_synic`] once per session (it's called
+//! for you by [`crate::init`]). The bring-up records the allocated
+//! pages in a process-wide slot readable via [`synic_pages`], which
+//! [`crate::interrupt::SimpPump::new`] consumes as the SIMP GPA.
+//!
+//! # Advanced entry points
+//!
+//! * `preallocate_synic_pages` (UEFI-only) — allocate the pages
+//!   without programming the SynIC. Useful when the caller wants to
+//!   run the page allocator before `exit_boot_services` and defer the
+//!   hypercalls until after.
+//! * [`init_synic_with_pages`] — program the registers over a caller-
+//!   supplied [`SynicPages`]. Pair with `preallocate_synic_pages`.
+//! * [`program_synic_registers`] — the raw four-register write, used
+//!   by unit tests against a mock [`HypercallTrait`].
+//!
+//! ```ignore
+//! use vmbus_guest::synic;
+//!
+//! // Simple path (called for you by vmbus_guest::init):
+//! synic::init_synic(&mut ctx)?;
+//!
+//! // Deferred path (allocate early, program late):
+//! # #[cfg(target_os = "uefi")]
+//! # {
+//! let pages = synic::preallocate_synic_pages()?;
+//! // ...work that shouldn't happen after we start receiving SINT2...
+//! synic::init_synic_with_pages(&mut ctx, pages)?;
+//! # }
+//! # Ok::<_, vmbus_guest::Error>(())
+//! ```
+//!
 //! [hcall]: hvdef::HypercallCode::HvCallSetVpRegisters
 
 use crate::Error;

@@ -28,6 +28,31 @@
 //! to `BODY_RANGE_CAPACITY_BYTES`. All messages share the same
 //! `gpadl_id`. The host acknowledges the whole batch with a single
 //! `GpadlCreated` matched by `gpadl_id`.
+//!
+//! # Example (register a 16 MiB receive buffer)
+//!
+//! ```ignore
+//! use vmbus_guest::gpadl;
+//!
+//! let mut pfns = Vec::with_capacity(4096);
+//! for i in 0..4096 {
+//!     pfns.push(((base_gpa + (i * 4096) as u64) >> 12));
+//! }
+//! let handle = gpadl::establish_gpadl(&mut ctx, channel_id, 16 * 1024 * 1024, &pfns)?;
+//! // handle.id() is the GpadlId the host will echo in subsequent
+//! // messages that reference this buffer (e.g. netvsp's
+//! // SendReceiveBuffer).
+//!
+//! // ...use the buffer...
+//!
+//! gpadl::teardown_gpadl(&mut ctx, channel_id, handle)?;
+//! # Ok::<_, vmbus_guest::Error>(())
+//! ```
+//!
+//! The encoder handles arbitrarily large PFN lists — netvsp
+//! establishes a 4096-PFN GPADL via ~147 back-to-back messages,
+//! which `establish_gpadl` posts as a batch before polling for the
+//! completion.
 
 use crate::Error;
 use crate::Result;

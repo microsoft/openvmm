@@ -551,7 +551,8 @@ mod connection_tests {
 
     #[test]
     fn encode_initiate_contact_pre_copper_no_client_id() {
-        let bytes = encode_initiate_contact(Version::Win10Rs5, None, FeatureFlags::supported(), (0, 0));
+        let bytes =
+            encode_initiate_contact(Version::Win10Rs5, None, FeatureFlags::supported(), (0, 0));
         assert_eq!(bytes.len(), HEADER_SIZE + size_of::<InitiateContact>());
         let ic: InitiateContact = crate::message::parse(&bytes).unwrap();
         assert_eq!(ic.version_requested, Version::Win10Rs5.raw());
@@ -564,8 +565,12 @@ mod connection_tests {
 
     #[test]
     fn encode_initiate_contact_copper_uses_v2() {
-        let bytes =
-            encode_initiate_contact(Version::Copper, Some(CLIENT_ID), FeatureFlags::supported(), (0, 0));
+        let bytes = encode_initiate_contact(
+            Version::Copper,
+            Some(CLIENT_ID),
+            FeatureFlags::supported(),
+            (0, 0),
+        );
         assert_eq!(bytes.len(), HEADER_SIZE + size_of::<InitiateContact2>());
         let ic2: InitiateContact2 = crate::message::parse(&bytes).unwrap();
         assert_eq!(
@@ -577,7 +582,8 @@ mod connection_tests {
 
     #[test]
     fn encode_initiate_contact_v1_no_target_info() {
-        let bytes = encode_initiate_contact(Version::Win10, None, FeatureFlags::supported(), (0, 0));
+        let bytes =
+            encode_initiate_contact(Version::Win10, None, FeatureFlags::supported(), (0, 0));
         let ic: InitiateContact = crate::message::parse(&bytes).unwrap();
         assert_eq!(ic.interrupt_page_or_target_info, 0);
     }
@@ -2076,8 +2082,7 @@ mod netvsp_tests {
         .unwrap();
         let (ty, body) = netvsp::parse_header(&buf).unwrap();
         assert_eq!(ty, netvsp::msg_type::INIT_COMPLETE);
-        let (parsed, _) =
-            netvsp::NvspMsgInitComplete::read_from_prefix(body).unwrap();
+        let (parsed, _) = netvsp::NvspMsgInitComplete::read_from_prefix(body).unwrap();
         assert_eq!(parsed.status, netvsp::status::SUCCESS);
         assert_eq!(parsed.maximum_mdl_chain_length, 0x400);
     }

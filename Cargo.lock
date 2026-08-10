@@ -10370,7 +10370,6 @@ dependencies = [
  "opentmk",
  "spin",
  "thiserror 2.0.16",
- "uefi",
  "zerocopy",
 ]
 

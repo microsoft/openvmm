@@ -245,8 +245,9 @@ pub fn get_vp_registers<C: HypercallTrait>(
         rsvd: [0; 3],
     };
 
-    let mut input =
-        Vec::with_capacity(size_of::<GetSetVpRegisters>() + names.len() * size_of::<HvRegisterName>());
+    let mut input = Vec::with_capacity(
+        size_of::<GetSetVpRegisters>() + names.len() * size_of::<HvRegisterName>(),
+    );
     input.extend_from_slice(header.as_bytes());
     for &n in names {
         input.extend_from_slice(n.as_bytes());

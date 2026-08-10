@@ -23,10 +23,41 @@
 //!    [`crate::message::route_message`].
 //! 4. Write [`HvMessageType::HvMessageTypeNone`] back into the slot
 //!    header to signal the hypervisor we're done with it.
-//! 5. If `header.flags.message_pending()` is set, tell the hypervisor
-//!    we can now accept another message by writing to
-//!    [`HV_REGISTER_EOM`] via `HvCallSetVpRegisters`. If not set, no
-//!    further ack is required.
+//! 5. Re-read `message_flags.message_pending` **after** the clear (the
+//!    fence inside [`clear_slot`] guarantees we observe any write the
+//!    hypervisor made between our snapshot and the clear). If set,
+//!    write [`HV_REGISTER_EOM`] via `HvCallSetVpRegisters` to accept
+//!    the next message.
+//!
+//! # Typical use
+//!
+//! Callers get a [`SimpPump`] automatically when they use the
+//! top-level entry points ([`crate::init`], [`crate::request_offers`],
+//! [`crate::channel::open_channel`], etc.). Instantiate one directly
+//! only when building a custom pump against a private completion
+//! table, or when you want to interleave draining with your own
+//! polling loop.
+//!
+//! # Example (private pump)
+//!
+//! ```ignore
+//! use vmbus_guest::interrupt::SimpPump;
+//! use vmbus_guest::message::{CompletionKey, CompletionTable};
+//! use vmbus_guest::connection::MessagePump;
+//!
+//! let table = CompletionTable::new();
+//! let mut pump = SimpPump::new(vmbus_guest::synic::synic_pages().unwrap().simp_gpa);
+//!
+//! // Register a completion, then drive the pump until it fires.
+//! let handle = table.register(CompletionKey::VersionResponse);
+//! pump.poll_until(&mut ctx, &handle, &mut sink)?;
+//! # Ok::<_, vmbus_guest::Error>(())
+//! ```
+//!
+//! [`SimpPump`] implements
+//! [`MessagePump::poll_until`](crate::connection::MessagePump::poll_until),
+//! which returns [`crate::Error::Timeout`] after `max_retries` empty
+//! reads — the guest never blocks indefinitely.
 
 use crate::Error;
 use crate::Result;
@@ -279,16 +310,12 @@ impl crate::connection::MessagePump for SimpPump {
             if first_byte != 0 {
                 peek_count = peek_count.saturating_add(1);
                 if peek_count <= 4 {
-                    log::trace!(
-                        "poll_until: iter={i} non-empty first_byte={first_byte:#x}"
-                    );
+                    log::trace!("poll_until: iter={i} non-empty first_byte={first_byte:#x}");
                 }
             }
             let drained = drain_once(ctx, slot, table, sink)?;
             if handle.completed() {
-                log::debug!(
-                    "poll_until: iter={i} handle completed (peek_count={peek_count})"
-                );
+                log::debug!("poll_until: iter={i} handle completed (peek_count={peek_count})");
                 return Ok(());
             }
             if !drained {

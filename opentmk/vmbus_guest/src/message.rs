@@ -12,6 +12,45 @@
 //!   `MessageHeader::message_type()`.
 //! * Route completions to the pending request that owns them, matched by
 //!   `(msg_type, key)` — see [`CompletionKey`].
+//!
+//! # When to use this module
+//!
+//! The high-level entry points ([`crate::init`], [`crate::channel::open_channel`],
+//! [`crate::gpadl::establish_gpadl`]) already register + await the right
+//! completions through the process-wide [`completion_table`]. Use this
+//! module directly only when:
+//!
+//! * You want an isolated table (e.g. an integration test that needs
+//!   to inject scripted completions without touching the global one) —
+//!   call [`CompletionTable::new`] and pass the ref through the `_with`
+//!   variants of the connection / channel / gpadl APIs.
+//! * You're adding a new message type. Add a variant to [`CompletionKey`],
+//!   handle it in [`route_message`], and thread it through the
+//!   `_with` entry point that owns the request.
+//!
+//! # Example (private table)
+//!
+//! ```ignore
+//! use vmbus_guest::connection::{negotiate_version, CLIENT_ID};
+//! use vmbus_guest::interrupt::SimpPump;
+//! use vmbus_guest::message::CompletionTable;
+//! use vmbus_guest::protocol::Version;
+//!
+//! let table = CompletionTable::new();
+//! let mut pump = SimpPump::new(simp_gpa);
+//!
+//! // Every _with entry point takes the same `table` + `pump`. Mixing
+//! // a private table with the default pump (or vice versa) loses
+//! // completions — see the module-level notes in lib.rs.
+//! let _state = negotiate_version(
+//!     &mut ctx,
+//!     &table,
+//!     &mut pump,
+//!     CLIENT_ID,
+//!     Version::NEGOTIATION_LADDER,
+//! )?;
+//! # Ok::<_, vmbus_guest::Error>(())
+//! ```
 
 use crate::Error;
 use crate::Result;

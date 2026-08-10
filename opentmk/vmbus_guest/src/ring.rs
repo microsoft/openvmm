@@ -29,6 +29,71 @@
 //! transition when `interrupt_mask == 0`. Signalling on every
 //! packet risks Hyper-V's DoS throttling; the peer clears
 //! `interrupt_mask` to explicitly ask for the wake.
+//!
+//! # Usage
+//!
+//! Rings are single-producer / single-consumer, always paired
+//! `SendRing<M>` + `RecvRing<M>` per direction, both wrapping a shared
+//! memory abstraction:
+//!
+//! * [`RawRingMem`] — for real GPA-mapped rings (UEFI target).
+//! * [`OwnedRingMem`] — for host tests. Allocates a boxed buffer.
+//! * [`FlatRingMem`] — for pure computation in tests.
+//!
+//! ## Writing a packet (guest → host)
+//!
+//! ```ignore
+//! use vmbus_guest::ring::{SendRing, PacketFlags};
+//!
+//! let mut flags = PacketFlags::new();
+//! flags.set_request_completion(true);
+//! let need_signal = send.write_inband(payload, flags, /*tid=*/ 42)?;
+//! // Always signal after a successful write. The `bool` is
+//! // informational; the host's interrupt-mask + pending_send_sz
+//! // machinery already decides whether the signal is needed.
+//! channel.signal(&mut ctx)?;
+//! # Ok::<_, vmbus_guest::Error>(())
+//! ```
+//!
+//! For a GPA-direct external buffer (used by netvsp for RNDIS
+//! payloads), use [`SendRing::write_gpa_direct`] instead — it packs
+//! the descriptor + [`crate::protocol::GpaDirectHeader`] +
+//! [`crate::protocol::GpaRange`] + PFN list before the NVSP payload.
+//!
+//! ## Reading a packet (host → guest)
+//!
+//! ```ignore
+//! use vmbus_guest::Error;
+//! let mut buf = [0u8; 4096];
+//! loop {
+//!     match recv.read(&mut buf) {
+//!         Ok(pkt) => { /* dispatch on pkt.descriptor.packet_type */ }
+//!         Err(Error::RingEmpty) => break,
+//!         Err(e) => return Err(e),
+//!     }
+//! }
+//! // After draining a batch, tell the host whether it needs to be
+//! // woken (only fires on the pending_send_sz threshold crossing).
+//! if recv.drain_signal_decision(bytes_read) == SignalDecision::Signal {
+//!     channel.signal(&mut ctx)?;
+//! }
+//! ```
+//!
+//! ## Back-pressure (writer blocked)
+//!
+//! When [`SendRing::write_packet`] returns
+//! [`crate::Error::RingFull`], the ring has already published a
+//! non-zero `pending_send_sz` hint so the reader will kick us once it
+//! frees enough room. Bounded retry / caller-supplied yielding is
+//! the correct response; do not busy-loop the write.
+//!
+//! # Concurrency
+//!
+//! Rings are single-threaded on both sides. On weakly-ordered targets
+//! (aarch64 UEFI) the implementation uses `SeqCst` on both the
+//! writer's `write_idx` publish + `read_idx` reload and the reader's
+//! `read_idx` publish + `pending_send_sz` reload to close the Dekker
+//! rendezvous that decides when a signal is needed.
 
 use crate::Error;
 use crate::Result;
@@ -398,8 +463,7 @@ impl<M: RingMem> SendRing<M> {
     ///
     /// Also zeros `pending_send_sz` to a known state.
     pub fn new(mem: M) -> Self {
-        ctrl_feature_bits(&mem)
-            .store(FEATURE_SUPPORTS_PENDING_SEND_SIZE, Ordering::Relaxed);
+        ctrl_feature_bits(&mem).store(FEATURE_SUPPORTS_PENDING_SEND_SIZE, Ordering::Relaxed);
         ctrl_pending_send(&mem).store(0, Ordering::Relaxed);
         Self { mem }
     }
@@ -598,8 +662,7 @@ impl<M: RingMem> SendRing<M> {
             // yet when it drained).
             ctrl_pending_send(&self.mem).store(total_ring_len as u32, Ordering::SeqCst);
             let read_idx_reload = ctrl_out(&self.mem).load(Ordering::SeqCst);
-            let free_reload =
-                available_free(write_idx, read_idx_reload, ring_len) as usize;
+            let free_reload = available_free(write_idx, read_idx_reload, ring_len) as usize;
             if free_reload < total_ring_len {
                 // Still full. Leave pending_send_sz set — the reader
                 // will kick us when it frees the room.

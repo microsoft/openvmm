@@ -9,8 +9,9 @@
 //!
 //! # Flow
 //!
-//! 1. Caller identifies the keyboard offer in the [`OfferChannel`]
-//!    list returned by [`crate::request_offers`] (interface GUID
+//! 1. Caller identifies the keyboard offer in the
+//!    [`OfferChannel`](crate::protocol::OfferChannel) list returned
+//!    by [`crate::request_offers`] (interface GUID
 //!    [`INTERFACE_GUID`]).
 //! 2. Caller allocates a 4-page ring region (send-ctrl, send-data,
 //!    recv-ctrl, recv-data), establishes a GPADL over it with
@@ -279,21 +280,21 @@ impl Keyboard {
                         payload_len: pkt.payload.len(),
                     }));
                 }
-                let (hdr, _) = MessageHeader::read_from_prefix(pkt.payload).map_err(|_| {
-                    Error::Parse {
+                let (hdr, _) =
+                    MessageHeader::read_from_prefix(pkt.payload).map_err(|_| Error::Parse {
                         ty: None,
                         reason: "keyboard header parse failed",
-                    }
-                })?;
+                    })?;
                 let body = &pkt.payload[core::mem::size_of::<MessageHeader>()..];
                 match hdr.message_type {
                     MESSAGE_PROTOCOL_RESPONSE => {
-                        let (resp, _) = MessageProtocolResponse::read_from_prefix(body).map_err(
-                            |_| Error::Parse {
-                                ty: None,
-                                reason: "keyboard protocol response parse failed",
-                            },
-                        )?;
+                        let (resp, _) =
+                            MessageProtocolResponse::read_from_prefix(body).map_err(|_| {
+                                Error::Parse {
+                                    ty: None,
+                                    reason: "keyboard protocol response parse failed",
+                                }
+                            })?;
                         Ok(Some(InboundPacket::ProtocolResponse(resp)))
                     }
                     MESSAGE_EVENT => {

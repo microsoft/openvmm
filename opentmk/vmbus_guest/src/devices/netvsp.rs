@@ -35,6 +35,76 @@
 //!    until we opt in via `OID_GEN_CURRENT_PACKET_FILTER`.
 //! 9. [`Netvsp::send_ethernet`] / [`Netvsp::drain_inbound`] —
 //!    normal data path.
+//!
+//! # End-to-end example
+//!
+//! ```ignore
+//! use vmbus_guest::devices::netvsp::{self, Netvsp, rndis};
+//!
+//! // 1. Pick the netvsp offer out of the enumerated list.
+//! let offer = offers
+//!     .iter()
+//!     .find(|o| o.interface_id == netvsp::INTERFACE_GUID)
+//!     .ok_or(vmbus_guest::Error::NotFound)?;
+//!
+//! // 2. Bring the channel up all the way to a working data path.
+//! let mut nic = Netvsp::open(&mut ctx, offer)?;
+//! let version = nic.negotiate_version(&mut ctx)?;
+//! log::info!("netvsp: negotiated version {:#x}", version);
+//! nic.send_ndis_config(&mut ctx, /*mtu=*/ 1500)?;
+//! nic.send_ndis_version(&mut ctx)?;
+//! nic.establish_recv_buffer(&mut ctx, 16 * 1024 * 1024)?;
+//! nic.establish_send_buffer(&mut ctx,  1 * 1024 * 1024)?;
+//! nic.rndis_init(&mut ctx)?;
+//!
+//! // Matches Linux rndis_filter_open. PROMISCUOUS is only needed if
+//! // the ARP source MAC we send doesn't match the vNIC's assigned MAC.
+//! let filter = rndis::NDIS_PACKET_TYPE_DIRECTED
+//!     | rndis::NDIS_PACKET_TYPE_BROADCAST
+//!     | rndis::NDIS_PACKET_TYPE_ALL_MULTICAST
+//!     | rndis::NDIS_PACKET_TYPE_PROMISCUOUS;
+//! nic.set_packet_filter(&mut ctx, filter)?;
+//!
+//! // 3a. Round-trip send — waits for the paired VM_PKT_COMP and
+//! //     frees the RNDIS buffer before returning.
+//! nic.send_ethernet(&mut ctx, &arp_request, /*wait=*/ true)?;
+//! nic.drain_inbound(&mut ctx, /*max_polls=*/ 10_000_000, |frame| {
+//!     log::info!("rx {} bytes", frame.len());
+//! })?;
+//!
+//! // 3b. Fire-and-forget stress burst.
+//! for _ in 0..1024 {
+//!     match nic.send_ethernet(&mut ctx, &eth, /*wait=*/ false) {
+//!         Ok(()) => {}
+//!         Err(vmbus_guest::Error::RingFull) => {
+//!             nic.drain_inbound(&mut ctx, 100_000, |_| {})?;
+//!             nic.send_ethernet(&mut ctx, &eth, false)?;
+//!         }
+//!         Err(e) => return Err(e),
+//!     }
+//! }
+//! // Flush before returning: drains every outstanding TX completion
+//! // and frees the backing allocations. Without this, TX buffers
+//! // registered with the pending_tx tracker leak at drop.
+//! nic.flush_tx(&mut ctx, /*max_polls=*/ 10_000_000, |_| {})?;
+//! # Ok::<_, vmbus_guest::Error>(())
+//! ```
+//!
+//! # Gotchas
+//!
+//! * **Always drain the recv ring under sustained TX bursts.**
+//!   Every fire-and-forget send leaves a `pending_tx` entry until its
+//!   `VM_PKT_COMP` is observed on the recv ring. If the caller never
+//!   drains, the recv ring fills up (32 KiB per direction), the host
+//!   stops posting completions, and the outstanding heap grows
+//!   unbounded until [`Netvsp::send_ethernet`] starts returning
+//!   [`crate::Error::RingFull`] at the internal `PENDING_TX_MAX`
+//!   cap. Interleave [`Netvsp::drain_inbound`] periodically, and
+//!   always call [`Netvsp::flush_tx`] before returning from a burst.
+//! * **`set_packet_filter` is not optional.** Skipping it produces a
+//!   NIC that can send but never receives.
+//! * **`send_ndis_config` is V2+ only** (fire-and-forget). On V1 the
+//!   host rejects it; the negotiation ladder already skips this on V1.
 
 use crate::Error;
 use crate::Result;
@@ -670,9 +740,15 @@ pub struct OwnedBuf {
 
 // SAFETY: `OwnedBuf` is only ever accessed by the single-threaded
 // UEFI runtime; the pointer is a stable identity-mapped allocation.
-#[expect(unsafe_code, reason = "single-threaded UEFI runtime; identity-mapped GPADL pages")]
+#[expect(
+    unsafe_code,
+    reason = "single-threaded UEFI runtime; identity-mapped GPADL pages"
+)]
 unsafe impl Send for OwnedBuf {}
-#[expect(unsafe_code, reason = "single-threaded UEFI runtime; identity-mapped GPADL pages")]
+#[expect(
+    unsafe_code,
+    reason = "single-threaded UEFI runtime; identity-mapped GPADL pages"
+)]
 unsafe impl Sync for OwnedBuf {}
 
 /// Guest-side handle to an open Hyper-V synthetic NIC channel.
@@ -768,8 +844,8 @@ impl Netvsp {
         //   pages 10..=17: recv data
         const TOTAL_PAGES: usize = 2 * (1 + RING_DATA_PAGES);
         const REGION_BYTES: usize = TOTAL_PAGES * 4096;
-        let layout = core::alloc::Layout::from_size_align(REGION_BYTES, 4096)
-            .map_err(|_| Error::Parse {
+        let layout =
+            core::alloc::Layout::from_size_align(REGION_BYTES, 4096).map_err(|_| Error::Parse {
                 ty: None,
                 reason: "netvsp ring layout invalid",
             })?;
@@ -793,12 +869,8 @@ impl Netvsp {
         for i in 0..TOTAL_PAGES {
             pfns.push((base_gpa + (i * 4096) as u64) >> 12);
         }
-        let gpadl = crate::gpadl::establish_gpadl(
-            ctx,
-            offer.channel_id,
-            REGION_BYTES as u32,
-            &pfns,
-        )?;
+        let gpadl =
+            crate::gpadl::establish_gpadl(ctx, offer.channel_id, REGION_BYTES as u32, &pfns)?;
         log::info!(
             "netvsp: ring GPADL established id={:?} for channel {:?}",
             gpadl.id(),
@@ -917,8 +989,7 @@ impl Netvsp {
             reason: "encode INIT",
         })?;
 
-        let response =
-            self.send_and_await(ctx, &frame, DEFAULT_MAX_POLLS)?;
+        let response = self.send_and_await(ctx, &frame, DEFAULT_MAX_POLLS)?;
         let (ty, body) = parse_header(&response).map_err(|_| Error::Parse {
             ty: None,
             reason: "parse INIT_COMPLETE header",
@@ -929,12 +1000,11 @@ impl Netvsp {
                 reason: "expected INIT_COMPLETE",
             });
         }
-        let (parsed, _) = NvspMsgInitComplete::read_from_prefix(body).map_err(|_| {
-            Error::Parse {
+        let (parsed, _) =
+            NvspMsgInitComplete::read_from_prefix(body).map_err(|_| Error::Parse {
                 ty: None,
                 reason: "parse INIT_COMPLETE body",
-            }
-        })?;
+            })?;
         Ok(parsed.status == status::SUCCESS)
     }
 
@@ -1050,12 +1120,11 @@ impl Netvsp {
                 reason: "expected SEND_RECV_BUF_COMPLETE",
             });
         }
-        let (parsed, _) = Nvsp1MsgSendRecvBufComplete::read_from_prefix(body).map_err(|_| {
-            Error::Parse {
+        let (parsed, _) =
+            Nvsp1MsgSendRecvBufComplete::read_from_prefix(body).map_err(|_| Error::Parse {
                 ty: None,
                 reason: "parse SEND_RECV_BUF_COMPLETE body",
-            }
-        })?;
+            })?;
 
         if parsed.status != status::SUCCESS {
             log::warn!(
@@ -1168,12 +1237,11 @@ impl Netvsp {
                 reason: "expected SEND_SEND_BUF_COMPLETE",
             });
         }
-        let (parsed, _) = Nvsp1MsgSendSendBufComplete::read_from_prefix(body).map_err(|_| {
-            Error::Parse {
+        let (parsed, _) =
+            Nvsp1MsgSendSendBufComplete::read_from_prefix(body).map_err(|_| Error::Parse {
                 ty: None,
                 reason: "parse SEND_SEND_BUF_COMPLETE body",
-            }
-        })?;
+            })?;
         if parsed.status != status::SUCCESS {
             return Err(Error::Parse {
                 ty: None,
@@ -1263,12 +1331,11 @@ impl Netvsp {
         // Allocate a page-aligned RNDIS message buffer. Total is
         // small (8 + 16 = 24 bytes) but we take a whole page for
         // clean GPA-direct addressing.
-        let rndis_layout = core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| {
-            Error::Parse {
+        let rndis_layout =
+            core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
                 ty: None,
                 reason: "rndis buffer layout",
-            }
-        })?;
+            })?;
         // SAFETY: layout is a validated single-page allocation.
         // Kept alive at least until we've received the completion.
         #[expect(unsafe_code, reason = "page-aligned RNDIS message allocation")]
@@ -1370,10 +1437,7 @@ impl Netvsp {
                         crate::protocol::PacketType::VM_PKT_COMP
                             if pkt.descriptor.transaction_id == tid =>
                         {
-                            log::info!(
-                                "netvsp: got V1_SEND_RNDIS_PKT_COMPLETE (tid={:#x})",
-                                tid
-                            );
+                            log::info!("netvsp: got V1_SEND_RNDIS_PKT_COMPLETE (tid={:#x})", tid);
                             got_nvsp_comp = true;
                         }
                         crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
@@ -1411,20 +1475,18 @@ impl Netvsp {
                                 continue;
                             }
                             // First range describes the RNDIS message.
-                            let (range0, _) = crate::protocol::TransferPageRange::read_from_prefix(
-                                &buf[8..],
-                            )
-                            .map_err(|_| Error::Parse {
-                                ty: None,
-                                reason: "parse TransferPageRange",
-                            })?;
+                            let (range0, _) =
+                                crate::protocol::TransferPageRange::read_from_prefix(&buf[8..])
+                                    .map_err(|_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse TransferPageRange",
+                                    })?;
                             log::info!(
                                 "netvsp: xfer-page range0: offset={:#x} count={}",
                                 range0.byte_offset,
                                 range0.byte_count,
                             );
-                            if (range0.byte_offset as usize + range0.byte_count as usize)
-                                > recv_len
+                            if (range0.byte_offset as usize + range0.byte_count as usize) > recv_len
                             {
                                 return Err(Error::Parse {
                                     ty: None,
@@ -1558,11 +1620,7 @@ impl Netvsp {
     /// 5. Send `VM_PKT_COMP` back to release the transfer pages.
     ///
     /// Requires [`Self::rndis_init`] to have already succeeded.
-    pub fn set_packet_filter<C: HypercallTrait>(
-        &mut self,
-        ctx: &mut C,
-        filter: u32,
-    ) -> Result<()> {
+    pub fn set_packet_filter<C: HypercallTrait>(&mut self, ctx: &mut C, filter: u32) -> Result<()> {
         let recv_buf = self.recv_buf.as_ref().ok_or(Error::Parse {
             ty: None,
             reason: "set_packet_filter requires recv buffer",
@@ -1570,12 +1628,11 @@ impl Netvsp {
         let recv_base = recv_buf.ptr;
         let recv_len = recv_buf.len;
 
-        let rndis_layout = core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| {
-            Error::Parse {
+        let rndis_layout =
+            core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
                 ty: None,
                 reason: "set_pkt_filter buffer layout",
-            }
-        })?;
+            })?;
         // SAFETY: page-sized page-aligned request.
         #[expect(unsafe_code, reason = "page-aligned RNDIS SET buffer")]
         let rndis_ptr = unsafe { alloc::alloc::alloc_zeroed(rndis_layout) };
@@ -1608,11 +1665,7 @@ impl Netvsp {
         // = 8 + 20 + 4 = 32 << 4096.
         #[expect(unsafe_code, reason = "copy RNDIS bytes into own buffer")]
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                rndis_hdr.as_bytes().as_ptr(),
-                rndis_ptr,
-                hdr_size,
-            );
+            core::ptr::copy_nonoverlapping(rndis_hdr.as_bytes().as_ptr(), rndis_ptr, hdr_size);
             core::ptr::copy_nonoverlapping(
                 set_req.as_bytes().as_ptr(),
                 rndis_ptr.add(hdr_size),
@@ -1652,14 +1705,9 @@ impl Netvsp {
         let rndis_gpa = rndis_ptr as u64;
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
-        let _need_signal = self.send.write_gpa_direct(
-            &pfns,
-            offset,
-            total_len,
-            &nvsp_frame[..n],
-            flags,
-            tid,
-        )?;
+        let _need_signal =
+            self.send
+                .write_gpa_direct(&pfns, offset, total_len, &nvsp_frame[..n], flags, tid)?;
         self.channel.signal(ctx)?;
         log::info!(
             "netvsp: RNDIS SET packet_filter={:#x} sent (tid={:#x})",
@@ -1694,13 +1742,12 @@ impl Netvsp {
                                 self.ack_xfer_page(ctx, host_tid)?;
                                 continue;
                             }
-                            let (r0, _) = crate::protocol::TransferPageRange::read_from_prefix(
-                                &buf[8..],
-                            )
-                            .map_err(|_| Error::Parse {
-                                ty: None,
-                                reason: "parse TransferPageRange",
-                            })?;
+                            let (r0, _) =
+                                crate::protocol::TransferPageRange::read_from_prefix(&buf[8..])
+                                    .map_err(|_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse TransferPageRange",
+                                    })?;
                             if (r0.byte_offset as usize + r0.byte_count as usize) > recv_len {
                                 self.ack_xfer_page(ctx, host_tid)?;
                                 continue;
@@ -1713,20 +1760,19 @@ impl Netvsp {
                                     r0.byte_count as usize,
                                 )
                             };
-                            let (rhdr, rest) =
-                                RndisMessageHeader::read_from_prefix(rndis_msg).map_err(|_| {
-                                    Error::Parse {
-                                        ty: None,
-                                        reason: "parse RndisMessageHeader",
-                                    }
+                            let (rhdr, rest) = RndisMessageHeader::read_from_prefix(rndis_msg)
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse RndisMessageHeader",
                                 })?;
                             if rhdr.message_type == rndis::MESSAGE_TYPE_SET_CMPLT {
-                                let (sc, _) = RndisSetComplete::read_from_prefix(rest).map_err(
-                                    |_| Error::Parse {
-                                        ty: None,
-                                        reason: "parse RndisSetComplete",
-                                    },
-                                )?;
+                                let (sc, _) =
+                                    RndisSetComplete::read_from_prefix(rest).map_err(|_| {
+                                        Error::Parse {
+                                            ty: None,
+                                            reason: "parse RndisSetComplete",
+                                        }
+                                    })?;
                                 log::info!(
                                     "netvsp: RNDIS SET_CMPLT request_id={:#x} status={:#x}",
                                     sc.request_id,
@@ -1798,7 +1844,7 @@ impl Netvsp {
     /// for the paired `V1_SEND_RNDIS_PKT_COMPLETE` (round-trip
     /// send) or return as soon as the packet is signalled (bulk
     /// stress). In **both** modes the RNDIS buffer is registered
-    /// with the [`Self::pending_tx`] tracker and reclaimed when its
+    /// with an internal `pending_tx` tracker and reclaimed when its
     /// completion is later observed by [`Self::drain_inbound`],
     /// [`Self::flush_tx`], or a subsequent `send_ethernet` call.
     /// Callers doing bursts of fire-and-forget sends must
@@ -1852,12 +1898,11 @@ impl Netvsp {
         //   [0..8)   RndisMessageHeader
         //   [8..44)  RndisPacket (36 bytes)
         //   [44..)   Ethernet frame
-        let rndis_layout = core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| {
-            Error::Parse {
+        let rndis_layout =
+            core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
                 ty: None,
                 reason: "rndis buffer layout",
-            }
-        })?;
+            })?;
         // SAFETY: validated single-page layout, single-threaded UEFI.
         #[expect(unsafe_code, reason = "page-aligned RNDIS message allocation")]
         let rndis_ptr = unsafe { alloc::alloc::alloc_zeroed(rndis_layout) };
@@ -1896,11 +1941,7 @@ impl Netvsp {
         // check above.
         #[expect(unsafe_code, reason = "copy RNDIS message parts into own buffer")]
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                rndis_hdr.as_bytes().as_ptr(),
-                rndis_ptr,
-                hdr_size,
-            );
+            core::ptr::copy_nonoverlapping(rndis_hdr.as_bytes().as_ptr(), rndis_ptr, hdr_size);
             core::ptr::copy_nonoverlapping(
                 rndis_pkt.as_bytes().as_ptr(),
                 rndis_ptr.add(hdr_size),
@@ -1963,14 +2004,9 @@ impl Netvsp {
         let rndis_gpa = rndis_ptr as u64;
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
-        let _need_signal = self.send.write_gpa_direct(
-            &pfns,
-            offset,
-            total_len,
-            &nvsp_frame[..n],
-            flags,
-            tid,
-        )?;
+        let _need_signal =
+            self.send
+                .write_gpa_direct(&pfns, offset, total_len, &nvsp_frame[..n], flags, tid)?;
         self.channel.signal(ctx)?;
         // Register the buffer for reclaim BEFORE we might block on
         // the recv ring: any code path from here on that returns
@@ -2008,19 +2044,16 @@ impl Netvsp {
                         {
                             // Our completion — parse status, free our
                             // buffer, return.
-                            let (_hdr, body) = parse_header(pkt.payload).map_err(|_| {
-                                Error::Parse {
+                            let (_hdr, body) =
+                                parse_header(pkt.payload).map_err(|_| Error::Parse {
                                     ty: None,
                                     reason: "parse SEND_RNDIS_PKT_COMPLETE hdr",
-                                }
-                            })?;
-                            let (comp, _) =
-                                Nvsp1MsgSendRndisPacketComplete::read_from_prefix(body).map_err(
-                                    |_| Error::Parse {
-                                        ty: None,
-                                        reason: "parse SEND_RNDIS_PKT_COMPLETE body",
-                                    },
-                                )?;
+                                })?;
+                            let (comp, _) = Nvsp1MsgSendRndisPacketComplete::read_from_prefix(body)
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse SEND_RNDIS_PKT_COMPLETE body",
+                                })?;
                             let ok = comp.status == status::SUCCESS;
                             let _ = self.free_completed_tx(tid);
                             if !ok {
@@ -2096,22 +2129,20 @@ impl Netvsp {
                 Ok(pkt) => match pkt.descriptor.packet_type {
                     crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
                         let host_tid = pkt.descriptor.transaction_id;
-                        let (xhdr, _) =
-                            crate::protocol::TransferPageHeader::read_from_prefix(&buf)
-                                .map_err(|_| Error::Parse {
-                                    ty: None,
-                                    reason: "parse TransferPageHeader",
-                                })?;
+                        let (xhdr, _) = crate::protocol::TransferPageHeader::read_from_prefix(&buf)
+                            .map_err(|_| Error::Parse {
+                                ty: None,
+                                reason: "parse TransferPageHeader",
+                            })?;
                         for i in 0..xhdr.range_count as usize {
                             let range_off = 8 + i * 8;
-                            let (r, _) =
-                                crate::protocol::TransferPageRange::read_from_prefix(
-                                    &buf[range_off..],
-                                )
-                                .map_err(|_| Error::Parse {
-                                    ty: None,
-                                    reason: "parse TransferPageRange",
-                                })?;
+                            let (r, _) = crate::protocol::TransferPageRange::read_from_prefix(
+                                &buf[range_off..],
+                            )
+                            .map_err(|_| Error::Parse {
+                                ty: None,
+                                reason: "parse TransferPageRange",
+                            })?;
                             if (r.byte_offset as usize + r.byte_count as usize) > recv_len {
                                 continue;
                             }
@@ -2131,12 +2162,13 @@ impl Netvsp {
                                     }
                                 })?;
                             if rhdr.message_type == rndis::MESSAGE_TYPE_PACKET_MSG {
-                                let (rp, _) = RndisPacket::read_from_prefix(rest).map_err(
-                                    |_| Error::Parse {
-                                        ty: None,
-                                        reason: "parse RndisPacket",
-                                    },
-                                )?;
+                                let (rp, _) =
+                                    RndisPacket::read_from_prefix(rest).map_err(|_| {
+                                        Error::Parse {
+                                            ty: None,
+                                            reason: "parse RndisPacket",
+                                        }
+                                    })?;
                                 let frame_off = rp.data_offset as usize;
                                 let frame_len = rp.data_length as usize;
                                 if frame_off + frame_len <= rest.len() {
@@ -2175,10 +2207,7 @@ impl Netvsp {
                         // reclaim.
                         let tid = pkt.descriptor.transaction_id;
                         if !self.free_completed_tx(tid) {
-                            log::debug!(
-                                "netvsp: drain saw stale VM_PKT_COMP tid={:#x}",
-                                tid,
-                            );
+                            log::debug!("netvsp: drain saw stale VM_PKT_COMP tid={:#x}", tid,);
                         }
                     }
                     _ => {
@@ -2235,8 +2264,7 @@ impl Netvsp {
         for _ in 0..max_polls {
             match self.recv.read(&mut recv_buf) {
                 Ok(pkt) => {
-                    if pkt.descriptor.packet_type
-                        == crate::protocol::PacketType::VM_PKT_COMP
+                    if pkt.descriptor.packet_type == crate::protocol::PacketType::VM_PKT_COMP
                         && pkt.descriptor.transaction_id == tid
                     {
                         // Copy payload out and return.
@@ -2268,8 +2296,7 @@ impl Netvsp {
         if self.channel.state() != ChannelState::Open {
             return Err(Error::Rescinded);
         }
-        let need_signal =
-            self.send.write_inband(frame, PacketFlags::new(), 0)?;
+        let need_signal = self.send.write_inband(frame, PacketFlags::new(), 0)?;
         let _ = need_signal;
         self.channel.signal(ctx)
     }

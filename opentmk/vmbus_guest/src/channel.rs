@@ -17,6 +17,57 @@
 //! host-testable and lets callers plug in either the
 //! [`crate::ring::OwnedRingMem`] host allocator or a UEFI page
 //! allocation.
+//!
+//! # Typical use
+//!
+//! Most consumers should use the vdev helpers instead of talking to
+//! [`Channel`] directly:
+//! * [`crate::devices::keyboard::Keyboard`] — synthetic keyboard.
+//! * [`crate::devices::netvsp::Netvsp::open`] — synthetic NIC.
+//!
+//! Reach for [`open_channel`] here only when adding a new vdev
+//! driver or exercising the raw state machine.
+//!
+//! # Example (raw channel over an owned ring)
+//!
+//! ```ignore
+//! use vmbus_guest::{channel, gpadl, protocol::ChannelId};
+//! use vmbus_guest::ring::{RawRingMem, SendRing, RecvRing};
+//!
+//! // 1. Allocate contiguous ring pages (send ctrl + send data + recv ctrl + recv data).
+//! //    The caller owns this allocation for the lifetime of the channel.
+//! # let (base_ptr, region_bytes, pfns, data_pages) = todo!();
+//!
+//! // 2. Register a GPADL for the whole region.
+//! let g = gpadl::establish_gpadl(&mut ctx, offer.channel_id, region_bytes as u32, &pfns)?;
+//!
+//! // 3. Open the channel. `send_data_pages` tells the host where the
+//! //    send ring ends and the recv ring begins.
+//! let ch = channel::open_channel(
+//!     &mut ctx,
+//!     &offer,
+//!     g,
+//!     data_pages,
+//!     offer.connection_id,
+//!     offer.channel_id.0 as u16,
+//! )?;
+//!
+//! // 4. Wrap send + recv halves in the ring API.
+//! // let send = SendRing::new(unsafe { RawRingMem::new(send_ctrl, send_data, data_bytes) });
+//! // let recv = RecvRing::new(unsafe { RawRingMem::new(recv_ctrl, recv_data, data_bytes) });
+//!
+//! // 5. After every send.write_* call, signal the host:
+//! ch.signal(&mut ctx)?;
+//!
+//! // 6. On shutdown:
+//! channel::close_channel(&mut ctx, ch)?;
+//! # Ok::<_, vmbus_guest::Error>(())
+//! ```
+//!
+//! Note that `Channel` doesn't own the ring memory or the GPADL
+//! lifetime beyond recording the handle. If you close a channel you
+//! must also tear down its GPADL via [`crate::gpadl::teardown_gpadl`]
+//! and free the backing pages yourself.
 
 use crate::Error;
 use crate::Result;

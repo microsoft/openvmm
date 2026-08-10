@@ -46,9 +46,8 @@
 //!                     └────►  unload(ctx)
 //! ```
 //!
-//! All hypercalls flow through a caller-supplied
-//! [`HypercallTrait`](opentmk::context::HypercallTrait) implementation
-//! (typically
+//! All hypercalls flow through a caller-supplied [`HypercallTrait`]
+//! implementation (typically
 //! [`HvTestCtx`](opentmk::platform::hyperv::ctx::HvTestCtx)); this crate
 //! never touches the raw hypercall page itself.
 //!
@@ -81,8 +80,8 @@
 //! let offers = vmbus_guest::request_offers(&mut ctx)?;
 //! for offer in &offers {
 //!     log::info!(
-//!         "offer: itype={:?} iid={:?} channel_id={:?}",
-//!         offer.interface_type,
+//!         "offer: iid={:?} instance={:?} channel_id={:?}",
+//!         offer.interface_id,
 //!         offer.interface_instance,
 //!         offer.channel_id,
 //!     );
@@ -91,9 +90,9 @@
 //! ```
 //!
 //! Well-known device GUIDs are defined by their vdev module — e.g.
-//! [`devices::keyboard::INTERFACE_TYPE`] and
-//! [`devices::netvsp::INTERFACE_TYPE`]. Compare each offer against the
-//! GUIDs you care about.
+//! [`devices::keyboard::INTERFACE_GUID`] and
+//! [`devices::netvsp::INTERFACE_GUID`]. Compare each offer's
+//! `interface_id` against the GUIDs you care about.
 //!
 //! ## 3. Open a channel
 //!
@@ -110,7 +109,7 @@
 //!
 //! let kbd_offer = offers
 //!     .iter()
-//!     .find(|o| o.interface_type == keyboard::INTERFACE_TYPE)
+//!     .find(|o| o.interface_id == keyboard::INTERFACE_GUID)
 //!     .ok_or(vmbus_guest::Error::NotFound)?;
 //! let mut kbd = keyboard::Keyboard::open(&mut ctx, kbd_offer)?;
 //! kbd.negotiate_version(&mut ctx, keyboard::VERSION_WIN8, 1_000_000)?;
@@ -128,14 +127,14 @@
 //! See [`devices::netvsp`] for the full bring-up sequence. In short:
 //!
 //! ```ignore
-//! use vmbus_guest::devices::netvsp;
+//! use vmbus_guest::devices::netvsp::{self, rndis, Netvsp};
 //!
 //! let nic_offer = offers
 //!     .iter()
-//!     .find(|o| o.interface_type == netvsp::INTERFACE_TYPE)
+//!     .find(|o| o.interface_id == netvsp::INTERFACE_GUID)
 //!     .ok_or(vmbus_guest::Error::NotFound)?;
 //!
-//! let mut nic = netvsp::Netvsp::open(&mut ctx, nic_offer)?;
+//! let mut nic = Netvsp::open(&mut ctx, nic_offer)?;
 //! let ver = nic.negotiate_version(&mut ctx)?;
 //! nic.send_ndis_config(&mut ctx, /*mtu=*/ 1500)?;
 //! nic.send_ndis_version(&mut ctx)?;
@@ -144,10 +143,10 @@
 //! nic.rndis_init(&mut ctx)?;
 //! nic.set_packet_filter(
 //!     &mut ctx,
-//!     netvsp::PACKET_FILTER_DIRECTED
-//!         | netvsp::PACKET_FILTER_BROADCAST
-//!         | netvsp::PACKET_FILTER_ALL_MULTICAST
-//!         | netvsp::PACKET_FILTER_PROMISCUOUS,
+//!     rndis::NDIS_PACKET_TYPE_DIRECTED
+//!         | rndis::NDIS_PACKET_TYPE_BROADCAST
+//!         | rndis::NDIS_PACKET_TYPE_ALL_MULTICAST
+//!         | rndis::NDIS_PACKET_TYPE_PROMISCUOUS,
 //! )?;
 //!
 //! // Send-and-wait: blocks until the paired completion arrives.
@@ -316,10 +315,10 @@ pub fn init<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
 /// until `AllOffersDelivered` is received.
 ///
 /// Returns the offers in the order the host delivered them. Compare
-/// [`OfferChannel::interface_type`](protocol::OfferChannel::interface_type)
+/// [`OfferChannel::interface_id`](protocol::OfferChannel::interface_id)
 /// against a known device GUID (e.g.
-/// [`devices::keyboard::INTERFACE_TYPE`] or
-/// [`devices::netvsp::INTERFACE_TYPE`]) to pick the offer you want.
+/// [`devices::keyboard::INTERFACE_GUID`] or
+/// [`devices::netvsp::INTERFACE_GUID`]) to pick the offer you want.
 pub fn request_offers<C: HypercallTrait>(ctx: &mut C) -> Result<Vec<protocol::OfferChannel>> {
     connection::request_offers(ctx)
 }
