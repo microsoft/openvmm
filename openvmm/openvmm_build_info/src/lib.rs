@@ -55,6 +55,6 @@ mod tests {
         assert!(long.starts_with(info.version()), "{long:?}");
         assert!(long.contains("version:"), "{long:?}");
         assert!(long.contains("commit:"), "{long:?}");
-        assert!(long.contains("host:"), "{long:?}");
+        assert!(long.contains("target:"), "{long:?}");
     }
 }

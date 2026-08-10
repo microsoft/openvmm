@@ -6,8 +6,6 @@
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use vergen_gitcl::Emitter;
-use vergen_gitcl::Gitcl;
 
 #[path = "src/version.rs"]
 mod version;
@@ -27,54 +25,93 @@ fn git(repo: &Path, args: &[&str]) -> Option<String> {
         .map(|output| output.trim().to_owned())
 }
 
-fn watch_git_path(repo: &Path, name: &str) {
-    if let Some(path) = git(repo, &["rev-parse", "--git-path", name]) {
-        let path = PathBuf::from(path);
-        let path = if path.is_absolute() {
-            path
-        } else {
-            repo.join(path)
+fn git_path(repo: &Path, name: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(git(repo, &["rev-parse", "--git-path", name])?);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        repo.join(path)
+    })
+}
+
+fn watch_path(path: &Path) {
+    println!("cargo:rerun-if-changed={}", path.display());
+}
+
+fn watch_path_or_existing_parent(path: &Path) {
+    let mut path = path;
+    while !path.exists() {
+        let Some(parent) = path.parent() else {
+            return;
         };
-        println!("cargo:rerun-if-changed={}", path.display());
+        path = parent;
     }
+    watch_path(path);
+}
+
+fn watch_tracked_path(repo: &Path, path: &Path) {
+    let mut path = repo.join(path);
+    while !path.exists() {
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        // Watching the repository root would recursively include `target` and
+        // make build outputs continually invalidate this script.
+        if parent == repo {
+            return;
+        }
+        path = parent.to_owned();
+    }
+    watch_path(&path);
 }
 
 fn collect_git_source(repo: &Path) -> Option<version::GitSource> {
-    // Do not let an extracted archive nested under an unrelated checkout
-    // inherit that checkout's identity.
-    if !repo.join(".git").exists() {
+    // Git searches parent directories. Reject one so an extracted archive
+    // nested in an unrelated checkout cannot inherit that repository's HEAD.
+    let actual_root = PathBuf::from(git(repo, &["rev-parse", "--show-toplevel"])?);
+    // Canonicalization is intentional here: Git and Cargo may reach the same
+    // checkout through paths with different symlink components.
+    #[expect(clippy::disallowed_methods)]
+    if std::fs::canonicalize(actual_root).ok()? != std::fs::canonicalize(repo).ok()? {
         return None;
     }
 
-    watch_git_path(repo, "HEAD");
-    watch_git_path(repo, "packed-refs");
-    if let Some(head_ref) = git(repo, &["symbolic-ref", "HEAD"]) {
-        watch_git_path(repo, &head_ref);
-    }
-    // Refresh the dirty marker when changes are staged. Unstaged-only changes
-    // are intentionally best-effort until another watched input changes.
-    watch_git_path(repo, "index");
-
-    let mut git = Gitcl::builder().sha(false).dirty(false).build();
-    git.at_path(repo.to_owned());
-    let mut emitter = Emitter::default();
-    emitter.add_instructions(&git).ok()?;
-    let values = emitter.cargo_rustc_env_map();
-    let value = |name| {
-        values
-            .iter()
-            .find_map(|(key, value)| (key.name() == name).then(|| value.clone()))
-    };
-
-    let revision = value("VERGEN_GIT_SHA")?;
+    let revision = git(repo, &["rev-parse", "HEAD"])?;
     if !matches!(revision.len(), 40 | 64) || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         panic!("git returned an invalid OpenVMM revision: {revision:?}");
     }
 
-    let dirty = value("VERGEN_GIT_DIRTY")?.parse().ok()?;
+    let dirty = !git(repo, &["status", "--porcelain=v1", "--untracked-files=no"])?.is_empty();
 
     Some(version::GitSource { revision, dirty })
+}
+
+fn watch_git_identity(repo: &Path) {
+    if let Some(path) = git_path(repo, "HEAD") {
+        watch_path(&path);
+    }
+    if let Some(path) = git_path(repo, "packed-refs")
+        && path.exists()
+    {
+        watch_path(&path);
+    }
+    if let Some(path) = git_path(repo, "index") {
+        watch_path_or_existing_parent(&path);
+    }
+    if let Some(head_ref) = git(repo, &["symbolic-ref", "HEAD"])
+        && let Some(path) = git_path(repo, &head_ref)
+    {
+        // A cloned branch may initially exist only in packed-refs. Watch its
+        // nearest existing parent until the first local commit creates the
+        // loose ref, then Cargo will rerun this script and watch the ref itself.
+        watch_path_or_existing_parent(&path);
+    }
+    if let Some(paths) = git(repo, &["ls-files", "-z"]) {
+        for path in paths.split_terminator('\0') {
+            watch_tracked_path(repo, Path::new(path));
+        }
+    }
 }
 
 fn main() {
@@ -84,6 +121,9 @@ fn main() {
     let product_version = env!("CARGO_PKG_VERSION");
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let git = collect_git_source(&repo_root);
+    if git.is_some() {
+        watch_git_identity(&repo_root);
+    }
 
     let version = version::resolve_version(product_version, git);
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());
@@ -97,7 +137,7 @@ fn main() {
          build:   {}\n\
          version: {product_version}\n\
          commit:  {revision}\n\
-         host:    {target}",
+         target:  {target}",
         version.version,
         version.kind.description(),
     );
