@@ -298,7 +298,7 @@ impl VpciRelay {
             let prog_if = hw_ids.prog_if;
             let sub_class = hw_ids.sub_class;
             let base_class = hw_ids.base_class;
-            tracing::warn!(
+            tracelimit::warn_ratelimited!(
                 %instance_id,
                 vendor_id = hw_ids.vendor_id,
                 device_id = hw_ids.device_id,
