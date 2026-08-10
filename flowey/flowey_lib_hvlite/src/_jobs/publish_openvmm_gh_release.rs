@@ -57,7 +57,7 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        let identity = resolved.clone().map(ctx, |(identity, _)| identity);
+        let identity = resolved.map(ctx, |(identity, _)| identity);
         let files = resolved.map(ctx, |(_, files)| files);
 
         // Attest the exact files that are about to be uploaded, so a consumer
@@ -68,9 +68,7 @@ impl SimpleFlowNode for Node {
         });
 
         let target = identity.map(ctx, |identity| identity.revision);
-        let tag = identity
-            .clone()
-            .map(ctx, |identity| format!("openvmm-v{}", identity.version));
+        let tag = identity.map(ctx, |identity| format!("openvmm-v{}", identity.version));
         let title = identity.map(ctx, |identity| format!("OpenVMM v{}", identity.version));
 
         ctx.req(flowey_lib_common::publish_gh_release::Request(
