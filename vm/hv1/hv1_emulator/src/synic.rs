@@ -115,6 +115,11 @@ impl SharedProcessorState {
             sint: [hvdef::HvSynicSint::new().with_masked(true); NUM_SINTS],
         }
     }
+
+    fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
+        self.siefp_page.reset(prot_access);
+        *self = Self::at_reset();
+    }
 }
 
 /// A partition-wide synthetic interrupt controller.
@@ -278,16 +283,17 @@ impl GlobalSynic {
 
 impl ProcessorSynic {
     /// Resets the synic state back to its initial state.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
         let Self {
             sints,
             timers,
             shared,
             vina,
         } = self;
-        *sints = SintState::default();
+
+        sints.reset(prot_access);
         *timers = array::from_fn(|_| Timer::default());
-        *shared.write() = SharedProcessorState::at_reset();
+        shared.write().reset(prot_access);
         *vina = HvRegisterVsmVina::new();
     }
 
@@ -717,5 +723,10 @@ impl SintState {
         }
         self.ready_sints |= 1 << sint;
         true
+    }
+
+    fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
+        self.simp_page.reset(prot_access);
+        *self = Self::default();
     }
 }

@@ -177,7 +177,7 @@ impl ProcessorVtlHv {
     }
 
     /// Resets the processor's state.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
         let Self {
             vp_index: _,
             partition_state: _,
@@ -187,9 +187,9 @@ impl ProcessorVtlHv {
             vp_assist_page,
         } = self;
 
-        synic.reset();
+        synic.reset(prot_access);
         *vp_assist_page_reg = Default::default();
-        *vp_assist_page = OverlayPage::default();
+        vp_assist_page.reset(prot_access);
     }
 
     /// Emulates an MSR write for the guest OS ID MSR.

@@ -761,6 +761,10 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
 
+    /// select the bus for virtio vsock devices (pci | mmio)
+    #[clap(long, value_name = "BUS", value_parser = parse_virtio_vsock_bus)]
+    pub virtio_vsock_bus: Option<VirtioBusCli>,
+
     /// add a virtio vsock device with the given Unix socket base path
     #[clap(long, value_name = "PATH")]
     pub virtio_vsock_path: Option<String>,
@@ -1455,6 +1459,13 @@ pub enum VirtioBusCli {
     Mmio,
     Pci,
     Vpci,
+}
+
+fn parse_virtio_vsock_bus(value: &str) -> Result<VirtioBusCli, String> {
+    match VirtioBusCli::from_str(value, true) {
+        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci)) => Ok(bus),
+        _ => Err("expected mmio or pci".to_string()),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -5039,6 +5050,18 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn test_virtio_vsock_bus_cli() {
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "mmio"]).unwrap();
+        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio)));
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pci"]).unwrap();
+        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci)));
+
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "auto"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "vpci"]).is_err());
     }
 
     #[test]
