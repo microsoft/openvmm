@@ -1279,9 +1279,7 @@ async fn vm_config_from_command_line(
         use openvmm_defs::config::UefiConsoleMode;
 
         if opt.no_hv && cfg!(guest_arch = "x86_64") {
-            anyhow::bail!(
-                "--no-hv is not supported on x86_64"
-            );
+            anyhow::bail!("--no-hv is not supported on x86_64");
         }
 
         with_hv = !opt.no_hv;
