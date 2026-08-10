@@ -492,16 +492,6 @@ pub mod runtime_claims {
         pub tpm_persisted: bool,
         /// Whether certain vPCI devices are allowed through the device filter
         pub filtered_vpci_devices_allowed: bool,
-        /// Whether NVIDIA GPUs and NVLink/NVSwitch fabric devices were relayed
-        /// into this guest.
-        ///
-        /// `None` when the relay was not enabled for these devices, which is
-        /// the default. This field is skipped during serialization when `None`
-        /// so that the runtime claims — and therefore the hardware-derived key
-        /// KDF input (see `underhill_attestation::hardware_key_sealing`) — are
-        /// byte-for-byte unchanged for guests that do not use this feature.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub nvidia_vpci_relay_allowed: Option<bool>,
         /// VM id
         #[serde(rename = "vmUniqueId")]
         pub vm_unique_id: String,
@@ -510,6 +500,20 @@ pub mod runtime_claims {
         pub vmgs_provisioner: Option<VmgsProvisioner>,
         /// Hardware sealing policy
         pub hardware_sealing_policy: HardwareSealingPolicy,
+        /// Whether NVIDIA GPUs and NVLink/NVSwitch fabric devices were relayed
+        /// into this guest.
+        ///
+        /// `None` when the relay was not enabled for these devices, which is
+        /// the default. This field is skipped during serialization when `None`
+        /// so that the runtime claims — and therefore the hardware-derived key
+        /// KDF input (see `underhill_attestation::hardware_key_sealing`) — are
+        /// byte-for-byte unchanged for guests that do not use this feature.
+        ///
+        /// Declared last on purpose: `MeshPayload` numbers fields by
+        /// declaration order, so inserting a field mid-struct would renumber
+        /// the following ones and break wire compatibility.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub nvidia_vpci_relay_allowed: Option<bool>,
     }
 
     impl Default for AttestationVmConfig {
@@ -523,10 +527,10 @@ pub mod runtime_claims {
                 tpm_enabled: true,
                 tpm_persisted: true,
                 filtered_vpci_devices_allowed: false,
-                nvidia_vpci_relay_allowed: None,
                 vm_unique_id: String::new(),
                 vmgs_provisioner: None,
                 hardware_sealing_policy: HardwareSealingPolicy::None,
+                nvidia_vpci_relay_allowed: None,
             }
         }
     }
