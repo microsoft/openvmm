@@ -84,12 +84,8 @@ impl SimpleFlowNode for Node {
 
                 // `.cargo/config.toml` does not force its `PROTOC` value, so an
                 // inherited value redirects the build to the system compiler.
-                //
-                // `which` rather than the `command -v` shown in the packaging
-                // guide: flowey execs directly instead of through a shell, so
-                // a shell builtin is not callable here.
-                let protoc = flowey::shell_cmd!(rt, "which protoc").read()?;
-                let protoc = protoc.trim();
+                let protoc = which::which("protoc")
+                    .context("could not find the distribution-provided protoc")?;
 
                 let target = target.to_string();
                 flowey::shell_cmd!(

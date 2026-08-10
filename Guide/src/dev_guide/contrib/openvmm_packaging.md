@@ -32,11 +32,17 @@ assembly is therefore unnecessary; it would not change the output.
 
 ## Verifying the archive
 
-`SHA256SUMS` is published alongside the archive and covers it by its
-published name:
+Assembly writes `SHA256SUMS` next to the archive, covering it under the
+archive's own name:
 
 ```bash
 sha256sum --check SHA256SUMS
+```
+
+```admonish warning
+OpenVMM does not yet upload the archive and `SHA256SUMS` as release
+assets; assembly currently runs only as a CI gate. Until publication
+lands, there is no upstream URL for a packaging recipe to point at.
 ```
 
 Pin that digest in the distribution package rather than re-downloading
@@ -122,9 +128,9 @@ sufficient on its own; see the distribution-specific requirements below.
 
 ## Distribution integration
 
-OpenVMM publishes an upstream source archive and its checksum. Mapping
-those onto a distribution's own conventions is the packager's job, but
-the points below are the ones OpenVMM's layout affects directly.
+OpenVMM's assembly produces an upstream source archive and its checksum.
+Mapping those onto a distribution's own conventions is the packager's
+job, but the points below are the ones OpenVMM's layout affects directly.
 
 ### RPM
 

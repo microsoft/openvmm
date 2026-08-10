@@ -156,6 +156,12 @@ impl SimpleFlowNode for Node {
                 let output_dir = rt.read(output_dir);
                 let repo_path = rt.read(openvmm_repo_path);
 
+                // Assets are named after the version, so a stale archive from a
+                // different version would survive reassembly and ride along
+                // into whatever publishes this directory.
+                if output_dir.exists() {
+                    fs_err::remove_dir_all(&output_dir)?;
+                }
                 fs_err::create_dir_all(&output_dir)?;
                 rt.sh.change_dir(&repo_path);
 
