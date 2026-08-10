@@ -19,9 +19,13 @@ Navigate to the project directory and install all required packages:
 # Navigate to the logview directory
 cd .\petri\logview
 
-# Install all dependencies
-npm install
+# Install all dependencies exactly as locked
+npm ci
 ```
+
+`npm ci` installs the exact versions recorded in `package-lock.json`, which is
+what CI runs. Use `npm install` only when you intend to add or update a
+dependency, and commit the resulting `package-lock.json` changes.
 
 ### 2. Verify Installation
 
@@ -82,7 +86,7 @@ logview/
 
 ### Common Issues
 
-1. **Module not found errors**: Ensure all dependencies are installed with `npm install`
+1. **Module not found errors**: Ensure all dependencies are installed with `npm ci`
 2. **TypeScript errors**: Make sure both `tsconfig.json` and `tsconfig.node.json` are present
 3. **Port already in use**: The dev server uses port 3000 by default. You can change this in `vite.config.ts`
 
