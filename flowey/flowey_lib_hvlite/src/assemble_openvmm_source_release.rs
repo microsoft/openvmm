@@ -178,20 +178,26 @@ impl SimpleFlowNode for Node {
                 }
 
                 // `git archive` exports the tree at HEAD, so an uncommitted
-                // change would silently not appear in the archive.
+                // change would silently not appear in the archive. Untracked
+                // files are excluded from the archive by design and so are
+                // deliberately not checked here.
                 let dirty =
                     flowey::shell_cmd!(rt, "git status --porcelain --untracked-files=no").read()?;
                 if !dirty.trim().is_empty() {
                     anyhow::bail!(
-                        "refusing to assemble a source archive from a dirty working tree; \
+                        "refusing to assemble a source archive with tracked modifications; \
                          the archive would not match HEAD.\nmodified:\n{dirty}"
                     );
                 }
 
                 // Pin the mode mask rather than inheriting machine-specific
                 // Git configuration.
+                //
+                // The intermediate tar is named so that `gzip` produces
+                // exactly `archive_name()`, since `gzip` derives its output
+                // name by appending `.gz`.
                 let prefix = format!("{}/", identity.source_root());
-                let source_tar = output_dir.join("openvmm-source.tar");
+                let source_tar = output_dir.join(format!("{}.tar", identity.source_root()));
                 flowey::shell_cmd!(
                     rt,
                     "git -c tar.umask=0002 archive --format=tar --output {source_tar} --prefix={prefix} HEAD"
@@ -200,11 +206,18 @@ impl SimpleFlowNode for Node {
 
                 // Do not use `git archive --format=tar.gz`: it defers to the
                 // machine's `tar.tgz.command` configuration.
+                //
+                // `gzip` replaces the tar in place rather than writing to
+                // stdout, so the archive is never buffered in this process.
+                flowey::shell_cmd!(rt, "gzip -n --best {source_tar}").run()?;
+
                 let source_archive = output_dir.join(identity.archive_name());
-                let compressed =
-                    flowey::shell_cmd!(rt, "gzip -n --best --stdout {source_tar}").output()?;
-                fs_err::write(&source_archive, compressed.stdout)?;
-                fs_err::remove_file(source_tar)?;
+                if !source_archive.exists() {
+                    anyhow::bail!(
+                        "gzip did not produce the expected archive {}",
+                        source_archive.display()
+                    );
+                }
 
                 let archive_name = identity.archive_name();
                 rt.sh.change_dir(&output_dir);
