@@ -491,7 +491,17 @@ impl<M: RingMem> SendRing<M> {
                 reason: "write_gpa_direct requires >= 1 PFN",
             });
         }
-        let expected_bytes = pfns.len() as u64 * 4096 - byte_offset as u64;
+        // Guard against byte_offset >= the covered region so the
+        // subtraction below can't underflow into a huge u64 and
+        // silently pass a caller that's out of range.
+        let region = (pfns.len() as u64).saturating_mul(4096);
+        if byte_offset as u64 >= region {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "write_gpa_direct byte_offset exceeds PFN range",
+            });
+        }
+        let expected_bytes = region - byte_offset as u64;
         if (byte_count as u64) > expected_bytes {
             return Err(Error::Parse {
                 ty: None,
@@ -639,16 +649,31 @@ impl<M: RingMem> SendRing<M> {
         };
         write_wrapping(&self.mem, cursor, footer.as_bytes());
 
-        // Publish the new write_index. `Release` synchronises with the
-        // reader's `Acquire` load. Advance by `total_ring_len` =
-        // msg_len + FOOTER_SIZE.
+        // Publish the new write_index with SeqCst. This is required
+        // to correctly race with the reader's SeqCst read_index
+        // store in `RecvRing::read`: the SeqCst pair guarantees that
+        // when both threads reload the peer's index after their own
+        // publish, at least one observes the other's fresh value.
+        // Without this, the "was the reader idle at publish time"
+        // test below can miss a wakeup and deadlock the guest→host
+        // path (matches openvmm `OutgoingRing::commit_write` in
+        // `vmbus_ring::lib.rs`, and the memory-barrier + reload
+        // pattern in Linux's `hv_signal_on_write`).
+        let old_write_idx = write_idx;
         let new_write_idx = (write_idx + total_ring_len as u32) & (ring_len - 1);
-        ctrl_in(&self.mem).store(new_write_idx, Ordering::Release);
+        ctrl_in(&self.mem).store(new_write_idx, Ordering::SeqCst);
 
-        // Signal decision: only on empty→non-empty, and only when the
-        // peer hasn't masked interrupts (`interrupt_mask == 0`).
-        let was_empty = write_idx == read_idx;
-        let peer_wants_signal = ctrl_interrupt_mask(&self.mem).load(Ordering::Acquire) == 0;
+        // Signal decision: after publishing our new write_idx,
+        // reload read_idx with SeqCst. The reader was idle at the
+        // moment we published iff it has caught up to the write_idx
+        // we had **before** this write — i.e. `read_idx_after ==
+        // old_write_idx`. Comparing against the pre-load snapshot
+        // (as we used to do) misses the case where the reader
+        // drained everything between the pre-load and our publish
+        // and then parked.
+        let read_idx_after = ctrl_out(&self.mem).load(Ordering::SeqCst);
+        let was_empty = read_idx_after == old_write_idx;
+        let peer_wants_signal = ctrl_interrupt_mask(&self.mem).load(Ordering::SeqCst) == 0;
         Ok(was_empty && peer_wants_signal)
     }
 }
@@ -743,8 +768,17 @@ impl<M: RingMem> RecvRing<M> {
         read_wrapping(&self.mem, ext_off, &mut buf[..needed]);
 
         // Advance read_index past the whole packet (msg_len + footer).
+        // SeqCst is required to correctly rendezvous with the peer
+        // writer's `pending_send_sz` protocol: the writer does
+        // `pending_send_sz.store(SeqCst); read_idx.load(SeqCst)`; the
+        // reader must mirror with a SeqCst store on read_idx (and a
+        // SeqCst load of pending_send_sz in `drain_signal_decision`)
+        // for the "at least one side observes the other's store"
+        // guarantee to hold on weakly-ordered targets (aarch64 UEFI).
+        // openvmm's `IncomingRing::commit_read` uses SeqCst here for
+        // the same reason.
         let new_read_idx = (read_idx + total_ring_len as u32) & (ring_len - 1);
-        ctrl_out(&self.mem).store(new_read_idx, Ordering::Release);
+        ctrl_out(&self.mem).store(new_read_idx, Ordering::SeqCst);
 
         Ok(RecvPacket {
             descriptor,
@@ -825,8 +859,11 @@ impl<M: RingMem> RecvRing<M> {
             return SignalDecision::NoSignal;
         }
         let ring_len = self.mem.data_len() as u32;
-        let write_idx = ctrl_in(&self.mem).load(Ordering::Acquire);
-        let read_idx = ctrl_out(&self.mem).load(Ordering::Acquire);
+        // SeqCst on both loads — the reader half of the pending_send_sz
+        // Dekker rendezvous requires all four Dekker operations
+        // (writer's store+load, reader's store+load) be SeqCst.
+        let write_idx = ctrl_in(&self.mem).load(Ordering::SeqCst);
+        let read_idx = ctrl_out(&self.mem).load(Ordering::SeqCst);
         let new_free = available_free(write_idx, read_idx, ring_len);
         // `old_free` reconstructed: before this batch of reads,
         // `read_idx` was `bytes_read` behind, so `free` was smaller

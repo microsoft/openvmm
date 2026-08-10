@@ -1398,6 +1398,46 @@ mod interrupt_tests {
         assert!(!drained);
     }
 
+    /// Regression test for the EOM race described in the code review.
+    ///
+    /// The old `drain_once` snapshotted `message_pending` from the
+    /// slot BEFORE clearing and used the snapshot to gate EOM. That
+    /// missed hypervisor-set flags that arrived between the snapshot
+    /// and the clear. The fix reads the flag AFTER the clear (and
+    /// after the SeqCst fence inside `clear_slot`).
+    ///
+    /// This test verifies the read-after-clear behaviour by leaving
+    /// only bit 0 of `slot[5]` set — with `pending=false` in the
+    /// initial layout but the flag byte manually set to `0x1` before
+    /// draining. The post-clear read must observe the flag and fire
+    /// EOM.
+    #[test]
+    fn drain_once_reads_pending_flag_after_clear() {
+        // Build with pending=false, then manually set the flag byte
+        // (simulating the hypervisor setting it between the pre-clear
+        // snapshot and the clear).
+        let vr = VersionResponse::new_zeroed();
+        let mut payload = [0u8; MAX_MESSAGE_SIZE];
+        let used = encode(&vr, &mut payload);
+        let mut slot = build_slot_bytes(1, /*pending=*/ false, &payload[..used]);
+        // Simulate hypervisor writing message_pending after we've
+        // already read the slot but before clear_slot runs — set the
+        // flag by hand.
+        slot[5] = 0x1;
+
+        let mut ctx = RecordingCtx::default();
+        let table = CompletionTable::new();
+        let _handle = table.register(CompletionKey::VersionResponse);
+        let mut sink = NullSink;
+
+        drain_once(&mut ctx, &mut slot, &table, &mut sink).unwrap();
+        assert!(
+            ctx.calls
+                .contains(&(HypercallCode::HvCallSetVpRegisters.0 as u64)),
+            "drain_once must issue EOM when the post-clear flag is set",
+        );
+    }
+
     #[test]
     fn simp_pump_has_expected_defaults() {
         let pump = SimpPump::new(0x1000);
@@ -1903,6 +1943,16 @@ mod ring_tests {
         // byte_count > PFN range.
         assert!(
             send.write_gpa_direct(&[0x1000], 0, 4097, b"", PacketFlags::new(), 0)
+                .is_err()
+        );
+        // byte_offset >= region — must reject (would previously
+        // underflow expected_bytes into a huge u64 and silently pass).
+        assert!(
+            send.write_gpa_direct(&[0x1000], 4096, 1, b"", PacketFlags::new(), 0)
+                .is_err()
+        );
+        assert!(
+            send.write_gpa_direct(&[0x1000], 8192, 1, b"", PacketFlags::new(), 0)
                 .is_err()
         );
         // byte_count <= PFN range should succeed.

@@ -121,10 +121,17 @@ pub fn read_slot(slot: &[u8]) -> Result<Option<SlotView<'_>>> {
 /// Clear the `HvMessageType` field of a slot in place — the guest's
 /// signal to the hypervisor that the message has been consumed.
 ///
+/// Emits a `SeqCst` fence after the store so that any subsequent
+/// re-read of the slot's `message_pending` flag will observe writes
+/// the hypervisor made after seeing the cleared type. This mirrors
+/// Linux's `vmbus_signal_eom`, which does `virt_mb()` between
+/// zeroing `message_type` and reading `message_flags.msg_pending`.
+///
 /// Byte-level, host-testable.
 pub fn clear_slot(slot: &mut [u8]) {
     assert!(slot.len() >= HV_MESSAGE_SIZE);
     slot[0..4].copy_from_slice(&HvMessageType::HvMessageTypeNone.0.to_le_bytes());
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 /// Issue an end-of-message write via `HvCallSetVpRegisters`.
@@ -157,12 +164,12 @@ pub fn drain_once<C: HypercallTrait, S: MessageSink + ?Sized>(
     let Some(view) = read_slot(slot)? else {
         return Ok(false);
     };
-    let needs_eom = view.message_pending;
     // Copy the payload out before we touch the slot — `slot` is
     // borrowed mutably below.
     let mut payload_buf: [u8; HV_MESSAGE_PAYLOAD_SIZE] = [0; HV_MESSAGE_PAYLOAD_SIZE];
     let payload_len = view.payload_len as usize;
     payload_buf[..payload_len].copy_from_slice(view.payload);
+    let pre_clear_pending = view.message_pending;
 
     // Log every message we see so we can trace routing decisions.
     let vmbus_ty = if payload_len >= 4 {
@@ -171,17 +178,27 @@ pub fn drain_once<C: HypercallTrait, S: MessageSink + ?Sized>(
         u32::MAX
     };
     log::debug!(
-        "drain_once: hv_typ={:#x} pending={} payload_len={} vmbus_typ={:#x}",
+        "drain_once: hv_typ={:#x} pre_clear_pending={} payload_len={} vmbus_typ={:#x}",
         view.message_type.0,
-        needs_eom,
+        pre_clear_pending,
         payload_len,
         vmbus_ty,
     );
 
     route_message(&payload_buf[..payload_len], table, sink)?;
 
+    // Clear-then-recheck EOM sequence: the hypervisor may set
+    // `message_flags.message_pending = 1` on this slot AFTER we
+    // snapshotted `view` but BEFORE the clear lands, leaving us
+    // with a stale `false` snapshot. Using that stale snapshot to
+    // gate EOM would deadlock the SINT2 message pipe — any later
+    // message the hypervisor queued would sit undelivered until
+    // some unrelated EOM. Instead, clear the slot (which emits a
+    // `SeqCst` fence) then re-read `slot[5] & 0x1` and use that
+    // fresh value. This matches Linux `vmbus_signal_eom`.
     clear_slot(slot);
-    if needs_eom {
+    let post_clear_pending = slot[5] & 0x1 != 0;
+    if post_clear_pending {
         write_eom(ctx)?;
     }
     Ok(true)

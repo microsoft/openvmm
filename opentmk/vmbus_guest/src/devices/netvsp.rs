@@ -709,11 +709,38 @@ pub struct Netvsp {
     send_section_size: u32,
     /// Send-section count = send_buf.len / send_section_size.
     send_section_count: u32,
+
+    /// TX buffers whose paired `V1_SEND_RNDIS_PKT_COMPLETE` we
+    /// haven't yet observed. Populated by [`Self::send_ethernet`]
+    /// (both wait and fire-and-forget modes) and drained by
+    /// [`Self::drain_inbound`] and the completion-wait loop inside
+    /// `send_ethernet`. Each entry owns the backing allocation and
+    /// is freed via `alloc::alloc::dealloc` when the matching
+    /// completion arrives.
+    ///
+    /// Bounded at [`PENDING_TX_MAX`] — bursts beyond that must be
+    /// interleaved with [`Self::flush_tx`] or [`Self::drain_inbound`].
+    pending_tx: alloc::collections::VecDeque<PendingTx>,
+}
+
+/// A raw pointer + layout for a TX RNDIS buffer that's been handed
+/// to the host but whose completion hasn't been observed yet. Not
+/// `Send`/`Sync` on purpose — UEFI is single-threaded.
+struct PendingTx {
+    tid: u64,
+    ptr: *mut u8,
+    layout: core::alloc::Layout,
 }
 
 /// Reasonable default retry budget for ring-buffer completion polling.
 /// Roughly a few seconds of spinning on modern hardware.
 const DEFAULT_MAX_POLLS: usize = 100_000_000;
+
+/// Soft cap on in-flight TX buffers awaiting completion. Sized to
+/// keep the outstanding heap footprint bounded at ~2 MiB (512 × 4 KiB)
+/// under a stress burst. When we reach the cap, `send_ethernet` will
+/// synchronously drain completions before returning `Err(RingFull)`.
+const PENDING_TX_MAX: usize = 512;
 
 /// Ring size: 8 data pages = 32 KiB per direction, power-of-two as
 /// required by `RawRingMem::new`. Plus 1 control page → 9 pages per
@@ -829,6 +856,7 @@ impl Netvsp {
             send_buf: None,
             send_section_size: 0,
             send_section_count: 0,
+            pending_tx: alloc::collections::VecDeque::new(),
         })
     }
 
@@ -1371,9 +1399,15 @@ impl Netvsp {
                                     "netvsp: xfer-page set_id={:#x} != NETVSC_RECEIVE_BUFFER_ID",
                                     xhdr.transfer_page_set_id
                                 );
+                                // Still ack — the host has already
+                                // handed us the transfer-page range,
+                                // and if we don't ack it stays
+                                // reserved forever.
+                                self.ack_xfer_page(ctx, host_tid)?;
                                 continue;
                             }
                             if xhdr.range_count == 0 {
+                                self.ack_xfer_page(ctx, host_tid)?;
                                 continue;
                             }
                             // First range describes the RNDIS message.
@@ -1657,6 +1691,7 @@ impl Netvsp {
                                         reason: "parse TransferPageHeader",
                                     })?;
                             if xhdr.range_count == 0 {
+                                self.ack_xfer_page(ctx, host_tid)?;
                                 continue;
                             }
                             let (r0, _) = crate::protocol::TransferPageRange::read_from_prefix(
@@ -1667,6 +1702,7 @@ impl Netvsp {
                                 reason: "parse TransferPageRange",
                             })?;
                             if (r0.byte_offset as usize + r0.byte_count as usize) > recv_len {
+                                self.ack_xfer_page(ctx, host_tid)?;
                                 continue;
                             }
                             // SAFETY: bounds-checked; single-threaded.
@@ -1760,9 +1796,15 @@ impl Netvsp {
     /// This is the TX equivalent of what puppet's `send_eth_packet`
     /// does. `wait_for_completion` controls whether we spin waiting
     /// for the paired `V1_SEND_RNDIS_PKT_COMPLETE` (round-trip
-    /// send) or fire-and-forget (bulk stress). Fire-and-forget still
-    /// signals the host and returns; the host will pipeline
-    /// completions on the recv ring for us to drain later.
+    /// send) or return as soon as the packet is signalled (bulk
+    /// stress). In **both** modes the RNDIS buffer is registered
+    /// with the [`Self::pending_tx`] tracker and reclaimed when its
+    /// completion is later observed by [`Self::drain_inbound`],
+    /// [`Self::flush_tx`], or a subsequent `send_ethernet` call.
+    /// Callers doing bursts of fire-and-forget sends must
+    /// periodically call `drain_inbound` (or `flush_tx` at the end)
+    /// to bound the outstanding heap footprint and to keep the
+    /// recv ring from filling up.
     ///
     /// Requires [`Self::rndis_init`] to have succeeded (the host
     /// won't accept data packets before RNDIS init).
@@ -1888,15 +1930,36 @@ impl Netvsp {
             reason: "encode SEND_RNDIS_PKT (data)",
         })?;
 
-        // Post via GPA-direct.
+        // Post via GPA-direct. Always request completion so we can
+        // track and eventually free `rndis_ptr` — leaking a page per
+        // frame is not viable under sustained load. Fire-and-forget
+        // callers can pick up the completion asynchronously via
+        // `drain_inbound` / `flush_tx`.
         if self.channel.state() != ChannelState::Open {
+            // SAFETY: we own `rndis_ptr` and no aliasing has occurred.
+            #[expect(unsafe_code, reason = "reclaim allocation on early exit")]
+            unsafe {
+                alloc::alloc::dealloc(rndis_ptr, rndis_layout);
+            }
             return Err(Error::Rescinded);
+        }
+        // Cap the outstanding-TX queue: opportunistically drain, and
+        // if still full, bail with `RingFull` so the caller knows to
+        // flush.
+        if self.pending_tx.len() >= PENDING_TX_MAX {
+            let _ = self.drain_inbound(ctx, PENDING_TX_MAX, |_| {});
+            if self.pending_tx.len() >= PENDING_TX_MAX {
+                // SAFETY: we own `rndis_ptr` and no aliasing has occurred.
+                #[expect(unsafe_code, reason = "reclaim allocation on early exit")]
+                unsafe {
+                    alloc::alloc::dealloc(rndis_ptr, rndis_layout);
+                }
+                return Err(Error::RingFull);
+            }
         }
         let tid = self.alloc_transaction_id();
         let mut flags = PacketFlags::new();
-        if wait_for_completion {
-            flags.set_request_completion(true);
-        }
+        flags.set_request_completion(true);
         let rndis_gpa = rndis_ptr as u64;
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
@@ -1909,57 +1972,91 @@ impl Netvsp {
             tid,
         )?;
         self.channel.signal(ctx)?;
+        // Register the buffer for reclaim BEFORE we might block on
+        // the recv ring: any code path from here on that returns
+        // early must not touch `rndis_ptr` (the tracker owns it now).
+        self.pending_tx.push_back(PendingTx {
+            tid,
+            ptr: rndis_ptr,
+            layout: rndis_layout,
+        });
 
         if !wait_for_completion {
-            // Note: we leak the RNDIS buffer here. For the smoke
-            // + stress cases this is fine — opentmk's static heap
-            // is 512 MiB. A real driver would free after the paired
-            // completion arrives.
+            // Fire-and-forget: opportunistically drain any pending
+            // recv-side traffic so the recv ring doesn't fill up
+            // (which would eventually starve the host's ability to
+            // deliver our TX completions). We do a bounded non-
+            // blocking pass — the caller is responsible for periodic
+            // `drain_inbound` / `flush_tx` under sustained bursts.
+            let _ = self.drain_inbound(ctx, 0, |_| {});
             return Ok(());
         }
 
-        // Wait for V1_SEND_RNDIS_PKT_COMPLETE (matching tid).
-        let mut buf = [0u8; 512];
+        // Wait for V1_SEND_RNDIS_PKT_COMPLETE (matching tid). Use a
+        // 4 KiB scratch buffer to accommodate large xfer-page
+        // packets that may arrive interleaved with our completion —
+        // a 512-byte buffer would trip `RingEmpty`'s "recv buffer
+        // smaller than packet payload" error and wedge the ring
+        // (the packet stays at head, no future read makes progress).
+        let mut buf = [0u8; 4096];
         for _ in 0..DEFAULT_MAX_POLLS {
             match self.recv.read(&mut buf) {
                 Ok(pkt) => {
-                    if pkt.descriptor.packet_type
-                        == crate::protocol::PacketType::VM_PKT_COMP
-                        && pkt.descriptor.transaction_id == tid
-                    {
-                        // Peek the completion status — it's the first
-                        // 4 bytes of the NVSP body.
-                        let (_hdr, body) = parse_header(pkt.payload).map_err(|_| {
-                            Error::Parse {
-                                ty: None,
-                                reason: "parse SEND_RNDIS_PKT_COMPLETE hdr",
-                            }
-                        })?;
-                        let (comp, _) =
-                            Nvsp1MsgSendRndisPacketComplete::read_from_prefix(body).map_err(
-                                |_| Error::Parse {
+                    match pkt.descriptor.packet_type {
+                        crate::protocol::PacketType::VM_PKT_COMP
+                            if pkt.descriptor.transaction_id == tid =>
+                        {
+                            // Our completion — parse status, free our
+                            // buffer, return.
+                            let (_hdr, body) = parse_header(pkt.payload).map_err(|_| {
+                                Error::Parse {
                                     ty: None,
-                                    reason: "parse SEND_RNDIS_PKT_COMPLETE body",
-                                },
-                            )?;
-                        if comp.status != status::SUCCESS {
-                            return Err(Error::Parse {
-                                ty: None,
-                                reason: "SEND_RNDIS_PKT_COMPLETE non-success status",
-                            });
+                                    reason: "parse SEND_RNDIS_PKT_COMPLETE hdr",
+                                }
+                            })?;
+                            let (comp, _) =
+                                Nvsp1MsgSendRndisPacketComplete::read_from_prefix(body).map_err(
+                                    |_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse SEND_RNDIS_PKT_COMPLETE body",
+                                    },
+                                )?;
+                            let ok = comp.status == status::SUCCESS;
+                            let _ = self.free_completed_tx(tid);
+                            if !ok {
+                                return Err(Error::Parse {
+                                    ty: None,
+                                    reason: "SEND_RNDIS_PKT_COMPLETE non-success status",
+                                });
+                            }
+                            return Ok(());
                         }
-                        return Ok(());
+                        crate::protocol::PacketType::VM_PKT_COMP => {
+                            // A completion for a previous fire-and-
+                            // forget — reap the associated buffer.
+                            let _ = self.free_completed_tx(pkt.descriptor.transaction_id);
+                        }
+                        crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                            // An inbound Ethernet delivery. We MUST
+                            // ack it so the host can reclaim the
+                            // transfer-page range; skipping the ack
+                            // eventually stalls the host RX path and
+                            // (transitively) our TX completions.
+                            let host_tid = pkt.descriptor.transaction_id;
+                            self.ack_xfer_page(ctx, host_tid)?;
+                            // Note: the frame bytes are dropped here.
+                            // Callers that want to receive frames
+                            // should use `drain_inbound` on the pre-
+                            // send / post-flush path.
+                        }
+                        _ => {
+                            log::debug!(
+                                "netvsp: skipping packet during send: type={:#x} tid={:#x}",
+                                pkt.descriptor.packet_type.0,
+                                pkt.descriptor.transaction_id,
+                            );
+                        }
                     }
-                    // Any other packet type during a data send is
-                    // most likely an inbound Ethernet frame the host
-                    // is delivering to us. Log at debug and keep
-                    // looking for our completion; the caller can
-                    // drain those separately via receive_ethernet.
-                    log::debug!(
-                        "netvsp: skipping packet during send: type={:#x} tid={:#x}",
-                        pkt.descriptor.packet_type.0,
-                        pkt.descriptor.transaction_id,
-                    );
                 }
                 Err(Error::RingEmpty) => core::hint::spin_loop(),
                 Err(e) => return Err(e),
@@ -2072,10 +2169,17 @@ impl Netvsp {
                         self.channel.signal(ctx)?;
                     }
                     crate::protocol::PacketType::VM_PKT_COMP => {
-                        log::debug!(
-                            "netvsp: drain saw stale VM_PKT_COMP tid={:#x}",
-                            pkt.descriptor.transaction_id
-                        );
+                        // Might be a completion for a fire-and-forget
+                        // (or previously-abandoned) `send_ethernet`
+                        // TX buffer we're still holding — try to
+                        // reclaim.
+                        let tid = pkt.descriptor.transaction_id;
+                        if !self.free_completed_tx(tid) {
+                            log::debug!(
+                                "netvsp: drain saw stale VM_PKT_COMP tid={:#x}",
+                                tid,
+                            );
+                        }
                     }
                     _ => {
                         log::debug!(
@@ -2177,6 +2281,81 @@ impl Netvsp {
             self.next_transaction_id = 1; // skip 0 sentinel
         }
         tid
+    }
+
+    /// Encode a `V1_SEND_RNDIS_PKT_COMPLETE(SUCCESS)` on the send
+    /// ring targeting `host_tid`. Emitted for every
+    /// `VM_PKT_DATA_USING_XFER_PAGES` we consume from the recv ring
+    /// so the host can reclaim its transfer pages; without this ack
+    /// the host will eventually stall as its transfer-page pool
+    /// drains.
+    fn ack_xfer_page<C: HypercallTrait>(&mut self, ctx: &mut C, host_tid: u64) -> Result<()> {
+        let mut cf = [0u8; NVSP_V61_MESSAGE_SIZE];
+        let m = encode_message(
+            msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
+            &Nvsp1MsgSendRndisPacketComplete {
+                status: status::SUCCESS,
+            },
+            self.version_typed()?,
+            &mut cf,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode xfer-page ack",
+        })?;
+        self.send.write_completion(&cf[..m], host_tid)?;
+        self.channel.signal(ctx)?;
+        Ok(())
+    }
+
+    /// If `tid` matches a buffer in [`Self::pending_tx`], drop it
+    /// from the queue and free the backing allocation. Returns
+    /// `true` on a hit.
+    fn free_completed_tx(&mut self, tid: u64) -> bool {
+        if let Some(idx) = self.pending_tx.iter().position(|p| p.tid == tid) {
+            let entry = self.pending_tx.remove(idx).unwrap();
+            // SAFETY: `entry.ptr` was returned by
+            // `alloc::alloc::alloc_zeroed(entry.layout)` in
+            // `send_ethernet` and has not been referenced by any
+            // other code since. The paired host completion means
+            // the host is done with the pages.
+            #[expect(unsafe_code, reason = "free completed TX buffer")]
+            unsafe {
+                alloc::alloc::dealloc(entry.ptr, entry.layout);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Spin draining the recv ring until every outstanding TX buffer
+    /// has been reclaimed or `max_polls` iterations elapse. Also
+    /// acks any xfer-page packets encountered along the way (frames
+    /// are handed to `on_frame`).
+    ///
+    /// Returns [`Error::Timeout`] if the drain didn't complete.
+    pub fn flush_tx<C: HypercallTrait>(
+        &mut self,
+        ctx: &mut C,
+        max_polls: usize,
+        mut on_frame: impl FnMut(&[u8]),
+    ) -> Result<()> {
+        let mut polls = 0usize;
+        while !self.pending_tx.is_empty() {
+            if polls >= max_polls {
+                return Err(Error::Timeout);
+            }
+            polls += 1;
+            self.drain_inbound(ctx, 1, &mut on_frame)?;
+        }
+        Ok(())
+    }
+
+    /// Number of TX buffers whose completion hasn't been observed.
+    /// Exposed for smoke-test assertions.
+    pub fn pending_tx_len(&self) -> usize {
+        self.pending_tx.len()
     }
 }
 

@@ -84,16 +84,27 @@ pub fn post_message<C: HypercallTrait>(
                 }
                 return Ok(());
             }
-            Err(opentmk::tmkdefs::TmkError::InsufficientBuffers) => {
-                // Transient — the per-VP message queue is full. Yield
-                // briefly so the hypervisor drains, then retry.
+            Err(
+                e @ (opentmk::tmkdefs::TmkError::InsufficientBuffers
+                | opentmk::tmkdefs::TmkError::InsufficientMemory),
+            ) => {
+                // Transient — the per-VP message queue is full or the
+                // hypervisor is under memory pressure. Both are the
+                // same class of resource-exhaustion status Linux's
+                // `vmbus_post_msg` treats as -EAGAIN.
                 if attempt + 1 == POST_MESSAGE_MAX_RETRIES {
                     log::warn!(
-                        "post_message: gave up after {} InsufficientBuffers retries",
+                        "post_message: gave up after {} transient retries (last={:?})",
                         POST_MESSAGE_MAX_RETRIES,
+                        e,
                     );
                 }
-                for _ in 0..POST_MESSAGE_BACKOFF_ITERS {
+                // Exponential backoff, capped, to give the hypervisor
+                // room to drain under sustained pressure. Linux's
+                // vmbus_post_msg does up to MAX_UDELAY_MS per attempt.
+                let shift = attempt.min(POST_MESSAGE_BACKOFF_MAX_SHIFT);
+                let iters = POST_MESSAGE_BACKOFF_ITERS.saturating_mul(1usize << shift);
+                for _ in 0..iters {
                     core::hint::spin_loop();
                 }
                 continue;
@@ -109,15 +120,21 @@ pub fn post_message<C: HypercallTrait>(
     ))
 }
 
-/// Number of attempts (including the first) before giving up on
-/// `HV_STATUS_INSUFFICIENT_BUFFERS`.
-pub const POST_MESSAGE_MAX_RETRIES: usize = 20;
+/// Number of attempts (including the first) before giving up on a
+/// transient `post_message` failure. Matches Linux's
+/// `MAX_MSG_RETRY_COUNT = 100`.
+pub const POST_MESSAGE_MAX_RETRIES: usize = 100;
 
-/// Spin-loop iterations between `post_message` retries. Not a
-/// wall-clock duration — chosen empirically to be roughly a few
-/// microseconds on modern CPUs, enough for the hypervisor to drain
-/// its message queue without dominating the retry loop cost.
+/// Base spin-loop iterations between `post_message` retries. The
+/// backoff doubles up to [`POST_MESSAGE_BACKOFF_MAX_SHIFT`] and then
+/// caps out. Not a wall-clock duration, but ~10 000 spin_loops is a
+/// few microseconds on modern CPUs.
 pub const POST_MESSAGE_BACKOFF_ITERS: usize = 10_000;
+
+/// Cap on the exponential-backoff shift. `1 << 12 = 4096`, i.e. the
+/// max per-iteration wait is ~40M spin_loops (single-digit ms) —
+/// comparable to Linux's `MAX_UDELAY_MS`.
+pub const POST_MESSAGE_BACKOFF_MAX_SHIFT: usize = 12;
 
 /// Signal an event flag on the specified connection.
 ///
