@@ -832,7 +832,7 @@ impl HclNetworkVFManagerWorker {
     /// When `vtl2_device_state` is `Present`, the guest-visible VF id and
     /// arrival/removal notifications are updated immediately. Otherwise the bus
     /// change is recorded on `self.vtl0_bus_control` and the guest-facing state
-    /// remains cleared until the VTL2 device is started again.
+    /// is left unchanged until the VTL2 device is started again.
     async fn update_vtl0_vf(
         &mut self,
         rpc: Rpc<Option<HclVpciBusControl>, ()>,
@@ -886,13 +886,23 @@ impl HclNetworkVFManagerWorker {
                         _ => unreachable!(),
                     }
                 }
+                (Vtl2DeviceState::Reconfiguring, _) => {
+                    let bus_control = bus_control
+                        .map(Vtl0Bus::Present)
+                        .unwrap_or(Vtl0Bus::NotPresent);
+                    let old_bus_control =
+                        std::mem::replace(&mut self.vtl0_bus_control, bus_control);
+                    // Revoke the VTL0 VF on removal, even when the VTL2 device is not present.
+                    if matches!(self.vtl0_bus_control, Vtl0Bus::NotPresent) {
+                        self.try_notify_guest_and_revoke_vtl0_vf(
+                            &old_bus_control,
+                            vtl2_device_state,
+                        )
+                        .await;
+                    }
+                }
                 // When the VTL2 device is restored, the VTL0 update will be applied.
-                (
-                    Vtl2DeviceState::Reconfiguring
-                    | Vtl2DeviceState::Missing
-                    | Vtl2DeviceState::DeviceEnumerated,
-                    _,
-                ) => {
+                (Vtl2DeviceState::Missing | Vtl2DeviceState::DeviceEnumerated, _) => {
                     self.vtl0_bus_control = bus_control
                         .map(Vtl0Bus::Present)
                         .unwrap_or(Vtl0Bus::NotPresent);
