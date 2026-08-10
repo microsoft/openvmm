@@ -23,8 +23,7 @@ zerocopy.workspace = true
 [target.'cfg(target_env = "musl")'.dependencies]
 # TODO: Change this to symcrypt if the OSS TPM 1.38 can be made to work with it
 ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
-# TODO: Change this to symcrypt
-ms-tcg-tpm-sys = { optional = true, workspace = true, features = ["openssl"] }
+ms-tcg-tpm-sys = { optional = true, workspace = true, features = ["symcrypt"] }
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
 ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
