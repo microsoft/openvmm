@@ -1640,10 +1640,6 @@ async fn new_underhill_vm(
         Arc::new(UeventListener::new(tp.driver(0)).context("failed to start uevent listener")?);
 
     let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
-    // Host-configured opt-in to relaying NVIDIA GPUs and NVLink/NVSwitch fabric
-    // devices into the guest. Only meaningful for hardware-isolated guests
-    // using the VPCI relay; see where the relay allow-list is built.
-    let nvidia_vpci_relay_allowed = dps.general.nvidia_vpci_relay_allowed;
     // TODO: Centralize cpuid based feature determination.
     #[cfg(guest_arch = "x86_64")]
     let use_mmio_hypercalls = use_mmio_hypercalls
@@ -1730,6 +1726,8 @@ async fn new_underhill_vm(
     if enable_vpci_relay && !with_vmbus_relay {
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
     }
+
+    let nvidia_vpci_devices_relayed = enable_vpci_relay && dps.general.nvidia_vpci_relay_allowed;
 
     // Construct chipset MMIO ranges from the positional convention in the
     // device tree: [0] = low (below 4 GiB), [1] = high (above RAM).
@@ -2131,10 +2129,10 @@ async fn new_underhill_vm(
         tpm_persisted: stateful,
         hardware_sealing_policy,
         filtered_vpci_devices_allowed: vpci_relay_active,
-        // Only reported when the devices can actually be relayed, and omitted
+        // Reported only when the devices are actually relayed, and omitted
         // entirely otherwise so that the runtime claims (and hence the sealing
         // key derivation) are unchanged for guests not using this feature.
-        nvidia_vpci_relay_allowed: (vpci_relay_active && nvidia_vpci_relay_allowed).then_some(true),
+        nvidia_vpci_relay_allowed: nvidia_vpci_devices_relayed.then_some(true),
         vm_unique_id: dps.general.bios_guid.to_string(),
         vmgs_provisioner: prov_claims.clone(),
     };
@@ -3412,7 +3410,9 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
-                if nvidia_vpci_relay_allowed {
+                // Gated on the same value that drives the attestation claim, so
+                // the guest cannot be given these devices without saying so.
+                if nvidia_vpci_devices_relayed {
                     // Datacenter GPUs (e.g. H100/H200/B200/B300) are headless and
                     // enumerate as a 3D controller (class 0x0302), not VGA.
                     relay.add_allowed_device(AllowedDevice {
