@@ -555,10 +555,7 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
     }
 }
 
-/// Build a compact one-shot diagnostic string describing an initrd CRC
-/// mismatch, sized to fit in the 512-byte enlightened-panic buffer so it
-/// survives via whatever channel currently delivers the assert message
-/// (Hyper-V crash MSRs / serial / in-memory bootshim log).
+/// Dump diagnostics when initrd CRC32 does not match the build-time value.
 ///
 /// Contents:
 ///
@@ -581,9 +578,10 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
 fn build_initrd_crc_diagnostic(p: &ShimParams, first_computed_crc: u32) -> ArrayString<384> {
     let initrd_bytes = p.initrd();
 
-    // Second read of the same virtual range. Compared against the first
-    // read to distinguish stable data corruption from read-time
-    // instability.
+    // A second read from the same VA. If this differs from the first read,
+    // the initrd memory is not being read consistently, which typically
+    // indicates stale/mismatched cache lines rather than actual data
+    // corruption.
     let second_computed_crc = crc32fast::hash(initrd_bytes);
 
     // First 16 and last 16 bytes, as fixed-size arrays so we can rely on
@@ -616,8 +614,6 @@ fn build_initrd_crc_diagnostic(p: &ShimParams, first_computed_crc: u32) -> Array
     }
 
     let mut buf = ArrayString::<384>::new();
-    // Best-effort: if any write hits the cap, truncated output is still
-    // better than nothing.
     let _ = write!(
         &mut buf,
         "initrd crc mismatch: iso={:?} base={:#x} size={:#x} \
@@ -804,19 +800,16 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let initrd = p.initrd_base..p.initrd_base + p.initrd_size;
 
     // Validate the initrd crc matches what was put at file generation time.
-    //
-    // SNP TODO: this is intentionally emitted as a single panic string
-    // (rather than an `assert_eq!`) so the full diagnostic rides along on
-    // the same channel that currently delivers the panic message (Hyper-V
-    // crash MSRs / serial / in-memory bootshim log) instead of relying on
-    // multi-line log output that may not be captured before the shim
-    // faults.
     let computed_crc = crc32fast::hash(p.initrd());
-    if computed_crc != p.initrd_crc {
+    if computed_crc != p.initrd_crc && is_confidential_debug {
         let diag = build_initrd_crc_diagnostic(&p, computed_crc);
         log::error!("{}", diag.as_str());
         panic!("{}", diag.as_str());
     }
+    assert_eq!(
+        computed_crc, p.initrd_crc,
+        "computed initrd crc does not match build time calculated crc"
+    );
 
     #[cfg(target_arch = "x86_64")]
     let boot_params = x86_boot::build_boot_params(
