@@ -1859,10 +1859,12 @@ async fn vm_config_from_command_line(
         }
     }
 
+    let virtio_vsock_bus = opt.virtio_vsock_bus.unwrap_or(VirtioBusCli::Auto);
+
     if let Some(vsock_path) = &opt.virtio_vsock_path {
         let listener = vsock_listener(Some(vsock_path))?.unwrap();
         add_virtio_device(
-            VirtioBusCli::Auto,
+            virtio_vsock_bus,
             virtio_resources::vsock::VirtioVsockHandle {
                 // The guest CID does not matter since the UDS relay does not use it. It just needs
                 // to be some non-reserved value for the guest to use.
@@ -1883,7 +1885,7 @@ async fn vm_config_from_command_line(
             .context("failed to open /dev/vhost-vsock")?
             .into();
         add_virtio_device(
-            VirtioBusCli::Auto,
+            virtio_vsock_bus,
             virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource(),
         );
     }

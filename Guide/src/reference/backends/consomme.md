@@ -260,6 +260,14 @@ through the host network stack like any other application.
 IPv6 is only enabled if the host has a routable IPv6 address at VM
 start time.
 
+### Static DNS records only support the `A` record type
+
+Only `A` records are currently supported.
+
+### Static DNS records don't support DNSSEC
+
+All static DNS replies are returned with the AD flag unset.
+
 ## Crate structure
 
 | Crate | Path | Purpose |

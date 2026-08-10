@@ -164,6 +164,9 @@ as well as the generated CLI help (via `cargo run -- --help`).
   Defaults to `auto`.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using OpenVMM's
   hybrid Unix-socket relay.
+* `--virtio-vsock-bus <mmio|pci>`: Select the bus for a virtio-vsock device
+  created by `--virtio-vsock-path` or `--virtio-vsock-vhost-cid`. When omitted,
+  OpenVMM selects the bus automatically.
 * `--virtio-vsock-vhost-cid <CID>`: Add a virtio-vsock device backed by the
   Linux kernel's `vhost_vsock` implementation. This makes the guest reachable
   from host applications through `AF_VSOCK` at `CID`, which must be between 3

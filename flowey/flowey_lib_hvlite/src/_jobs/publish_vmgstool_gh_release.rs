@@ -94,7 +94,13 @@ impl SimpleFlowNode for Node {
                 tag,
                 title,
                 files,
+                notes: flowey_lib_common::publish_gh_release::GhReleaseNotes::Text("TODO".into()),
                 draft: true,
+                // This job runs on every push to main, but the tag only
+                // changes when the version in the tree does, so an existing
+                // release is the normal steady state rather than a problem.
+                on_existing: flowey_lib_common::publish_gh_release::OnExistingRelease::Skip,
+                prerequisites: Vec::new(),
                 done,
             },
         ));

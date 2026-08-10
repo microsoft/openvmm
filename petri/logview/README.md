@@ -4,7 +4,7 @@ A React-based web application for viewing and analyzing Petri logs, built with T
 
 ## Prerequisites
 
-- **Node.js** (version `^20.19.0 || >=22.12.0`, as required by Vite 8)
+- **Node.js** (version `>=22.22.0`, as required by react-router 8)
 - **npm** (comes with Node.js)
 
 ## Initial Setup
@@ -30,7 +30,7 @@ After installation, you should have the following key dependencies:
 **Runtime Dependencies:**
 
 - `react` & `react-dom` - React framework
-- `react-router-dom` - Client-side routing
+- `react-router` - Client-side routing
 - `@tanstack/react-query` - Data fetching and caching
 - `@tanstack/react-table` - Table component library
 - `@tanstack/react-virtual` - Virtual scrolling

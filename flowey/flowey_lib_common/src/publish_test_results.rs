@@ -101,12 +101,16 @@ impl FlowNode for Node {
                     // should be used instead of this, but here we need to
                     // manually upload the artifact now so that it is still
                     // uploaded even if the pipeline fails.
+                    // actions/upload-artifact v7.0.1
                     use_side_effects.push(
-                        ctx.emit_gh_step(step_name, "actions/upload-artifact@v7")
-                            .condition(has_junit_xml)
-                            .with("name", artifact_name)
-                            .with("path", junit_xml)
-                            .finish(ctx),
+                        ctx.emit_gh_step(
+                            step_name,
+                            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                        )
+                        .condition(has_junit_xml)
+                        .with("name", artifact_name)
+                        .with("path", junit_xml)
+                        .finish(ctx),
                     );
                 }
                 FlowBackend::Local => {
@@ -190,12 +194,16 @@ impl FlowNode for Node {
                     }
                     FlowBackend::Github => {
                         // See above comment about manually publishing artifacts
+                        // actions/upload-artifact v7.0.1
                         use_side_effects.push(
-                            ctx.emit_gh_step(step_name.clone(), "actions/upload-artifact@v7")
-                                .condition(attachment_exists)
-                                .with("name", artifact_name)
-                                .with("path", attachment_path_string)
-                                .finish(ctx),
+                            ctx.emit_gh_step(
+                                step_name.clone(),
+                                "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                            )
+                            .condition(attachment_exists)
+                            .with("name", artifact_name)
+                            .with("path", attachment_path_string)
+                            .finish(ctx),
                         );
                     }
                     FlowBackend::Local => {
