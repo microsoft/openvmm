@@ -126,6 +126,7 @@ pub mod platform_settings {
         ///
         /// When enabled and the VPCI relay is active, the attestation runtime
         /// claims include `nvidia-vpci-relay-allowed=true`.
+        pub nvidia_vpci_relay_allowed: bool,
         pub vtl2_settings: Option<underhill_config::Vtl2Settings>,
 
         pub is_servicing_scenario: bool,
