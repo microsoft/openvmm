@@ -555,6 +555,94 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
     }
 }
 
+/// Build a compact one-shot diagnostic string describing an initrd CRC
+/// mismatch, sized to fit in the 512-byte enlightened-panic buffer so it
+/// survives via whatever channel currently delivers the assert message
+/// (Hyper-V crash MSRs / serial / in-memory bootshim log).
+///
+/// Contents:
+///
+/// - `base` / `size` / `expected` (build-time) / `got` (first read)
+///   CRCs.
+/// - `got2` — a second CRC re-computed immediately from the same virtual
+///   range. If `got2 != got`, initrd memory is not being read consistently
+///   (typical symptom of stale/mismatched cache lines after the SNP shared
+///   -> private transition, rather than data being wrong in memory).
+/// - `head` / `tail` — first and last 16 bytes as hex, to fingerprint what
+///   is actually in memory.
+/// - `eighths` — CRC32 of eight roughly-equal slices of the initrd. This
+///   is a coarse "which region diverges" locator that is cheap to compute
+///   and stable across boots, so it can be compared with a known-good
+///   build without needing a per-page dump (which would blow the log
+///   budget for real-sized initrds).
+//
+// SNP TODO: temporary diagnostic; remove once the SNP initrd CRC mismatch
+// is root-caused.
+fn build_initrd_crc_diagnostic(p: &ShimParams, first_computed_crc: u32) -> ArrayString<384> {
+    let initrd_bytes = p.initrd();
+
+    // Second read of the same virtual range. Compared against the first
+    // read to distinguish stable data corruption from read-time
+    // instability.
+    let second_computed_crc = crc32fast::hash(initrd_bytes);
+
+    // First 16 and last 16 bytes, as fixed-size arrays so we can rely on
+    // Debug's `{:02x?}` slice formatting.
+    let mut head = [0u8; 16];
+    let head_len = head.len().min(initrd_bytes.len());
+    head[..head_len].copy_from_slice(&initrd_bytes[..head_len]);
+
+    let mut tail = [0u8; 16];
+    let tail_len = tail.len().min(initrd_bytes.len());
+    if tail_len > 0 {
+        let start = initrd_bytes.len() - tail_len;
+        tail[..tail_len].copy_from_slice(&initrd_bytes[start..]);
+    }
+
+    // Split the initrd into (up to) 8 roughly-equal slices and CRC each.
+    // Bytes past the aligned slices go into the last chunk.
+    let mut eighths = [0u32; 8];
+    let n = initrd_bytes.len();
+    if n > 0 {
+        let step = n.div_ceil(8);
+        for (i, e) in eighths.iter_mut().enumerate() {
+            let start = i * step;
+            if start >= n {
+                break;
+            }
+            let end = ((i + 1) * step).min(n);
+            *e = crc32fast::hash(&initrd_bytes[start..end]);
+        }
+    }
+
+    let mut buf = ArrayString::<384>::new();
+    // Best-effort: if any write hits the cap, truncated output is still
+    // better than nothing.
+    let _ = write!(
+        &mut buf,
+        "initrd crc mismatch: iso={:?} base={:#x} size={:#x} \
+         exp={:#x} got={:#x} got2={:#x} head={:02x?} tail={:02x?} \
+         eighths=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+        p.isolation_type,
+        p.initrd_base,
+        p.initrd_size,
+        p.initrd_crc,
+        first_computed_crc,
+        second_computed_crc,
+        &head[..head_len],
+        &tail[..tail_len],
+        eighths[0],
+        eighths[1],
+        eighths[2],
+        eighths[3],
+        eighths[4],
+        eighths[5],
+        eighths[6],
+        eighths[7],
+    );
+    buf
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
     if p.isolation_type == IsolationType::None {
@@ -716,11 +804,19 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let initrd = p.initrd_base..p.initrd_base + p.initrd_size;
 
     // Validate the initrd crc matches what was put at file generation time.
+    //
+    // SNP TODO: this is intentionally emitted as a single panic string
+    // (rather than an `assert_eq!`) so the full diagnostic rides along on
+    // the same channel that currently delivers the panic message (Hyper-V
+    // crash MSRs / serial / in-memory bootshim log) instead of relying on
+    // multi-line log output that may not be captured before the shim
+    // faults.
     let computed_crc = crc32fast::hash(p.initrd());
-    assert_eq!(
-        computed_crc, p.initrd_crc,
-        "computed initrd crc does not match build time calculated crc"
-    );
+    if computed_crc != p.initrd_crc {
+        let diag = build_initrd_crc_diagnostic(&p, computed_crc);
+        log::error!("{}", diag.as_str());
+        panic!("{}", diag.as_str());
+    }
 
     #[cfg(target_arch = "x86_64")]
     let boot_params = x86_boot::build_boot_params(
