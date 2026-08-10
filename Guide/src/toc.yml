@@ -121,6 +121,8 @@
       href: "./dev_guide/snapshot_format.md"
     - name: Releases & Code Flow
       href: "./dev_guide/contrib/release.md"
+    - name: Security Releases
+      href: "./dev_guide/contrib/security_releases.md"
     - name: Packaging OpenVMM for Linux
       href: "./dev_guide/contrib/openvmm_packaging.md"
     - name: Submitting Changes
