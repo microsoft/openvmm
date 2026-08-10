@@ -1280,7 +1280,7 @@ async fn vm_config_from_command_line(
 
         if opt.no_hv && cfg!(guest_arch = "x86_64") {
             anyhow::bail!(
-                "--no-hv is not supported on x86_64; the firmware always runs under Hyper-V"
+                "--no-hv is not supported on x86_64"
             );
         }
 
