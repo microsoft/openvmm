@@ -107,12 +107,16 @@ impl FlowNodeWithConfig for Node {
 
         let rust_toolchain = (!ignore_version).then_some(rust_toolchain);
 
+        // `toolchain_only` restricts the check to "is a suitable Rust
+        // toolchain installed", skipping the target-triple / component
+        // checks. This is what lets the install step below distinguish
+        // "Rust is missing" from "Rust is fine, but a target is missing".
         let check_rust_install = {
             let rust_toolchain = rust_toolchain.clone();
             let additional_target_triples = additional_target_triples.clone();
             let additional_components = additional_components.clone();
 
-            move |rt: &mut RustRuntimeServices<'_>| {
+            move |rt: &mut RustRuntimeServices<'_>, toolchain_only: bool| {
                 if flowey::shell_cmd!(rt, "cargo --version").run().is_err() {
                     anyhow::bail!("did not find `cargo` on $PATH");
                 }
@@ -140,6 +144,10 @@ impl FlowNodeWithConfig for Node {
                     }
                 } else {
                     flowey::shell_cmd!(rt, "rustc -vV").run()?;
+                }
+
+                if toolchain_only {
+                    return anyhow::Ok(());
                 }
 
                 // make sure the additional target triples were installed
@@ -242,18 +250,22 @@ impl FlowNodeWithConfig for Node {
                             }
 
                             let rust_toolchain = rust_toolchain.clone();
-                            if check_rust_install.clone()(rt).is_ok() {
+                            if check_rust_install(rt, false).is_ok() {
                                 return Ok(());
                             }
 
-                            // If cargo is already on PATH but rustup is not then assume
-                            // rust is being managed manually (Nix for example) and bail
+                            // Something is missing. Every remaining path below
+                            // - `rustup-init`, `rustup target add`, `rustup
+                            // component add` - needs rustup. If cargo is
+                            // already on PATH but rustup is not then assume
+                            // rust is being managed manually (Nix for example)
+                            // and bail with a clear message, rather than
+                            // failing later on a missing `rustup` binary.
                             let cargo_available =
                                 flowey::shell_cmd!(rt, "cargo --version").run().is_ok();
                             let rustup_available =
                                 flowey::shell_cmd!(rt, "rustup --version").run().is_ok();
-                            if cargo_available && !rustup_available
-                            {
+                            if cargo_available && !rustup_available {
                                 anyhow::bail!(
                                     "Rust installation check failed and rustup is \
                                      not available; Rust appears to be externally \
@@ -261,52 +273,61 @@ impl FlowNodeWithConfig for Node {
                                 );
                             }
 
-                            match rt.platform() {
-                                FlowPlatform::Linux(_) => {
-                                    let interactive_prompt = Some("-y");
-                                    let mut default_toolchain = Vec::new();
-                                    if let Some(ver) = rust_toolchain {
-                                        default_toolchain.push("--default-toolchain".into());
-                                        default_toolchain.push(ver)
-                                    };
+                            // The check above also fails when Rust itself is
+                            // fine and only a target triple / component is
+                            // missing. `rustup-init` refuses to run over an
+                            // existing installation ("cannot install while
+                            // Rust is installed"), so only run it when the
+                            // toolchain check fails on its own - otherwise
+                            // fall through to `rustup {target,component} add`.
+                            if check_rust_install(rt, true).is_err() {
+                                match rt.platform() {
+                                    FlowPlatform::Linux(_) => {
+                                        let interactive_prompt = Some("-y");
+                                        let mut default_toolchain = Vec::new();
+                                        if let Some(ver) = rust_toolchain {
+                                            default_toolchain.push("--default-toolchain".into());
+                                            default_toolchain.push(ver)
+                                        };
 
-                                    flowey::shell_cmd!(
-                                        rt,
-                                        "curl --fail --proto =https --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh"
-                                    )
-                                    .run()?;
-                                    flowey::shell_cmd!(rt, "chmod +x ./rustup-init.sh").run()?;
-                                    flowey::shell_cmd!(
-                                        rt,
-                                        "./rustup-init.sh {interactive_prompt...} {default_toolchain...}"
-                                    )
-                                    .run()?;
+                                        flowey::shell_cmd!(
+                                            rt,
+                                            "curl --fail --proto =https --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh"
+                                        )
+                                        .run()?;
+                                        flowey::shell_cmd!(rt, "chmod +x ./rustup-init.sh").run()?;
+                                        flowey::shell_cmd!(
+                                            rt,
+                                            "./rustup-init.sh {interactive_prompt...} {default_toolchain...}"
+                                        )
+                                        .run()?;
+                                    }
+                                    FlowPlatform::Windows => {
+                                        let interactive_prompt = Some("-y");
+                                        let mut default_toolchain = Vec::new();
+                                        if let Some(ver) = rust_toolchain {
+                                            default_toolchain.push("--default-toolchain".into());
+                                            default_toolchain.push(ver)
+                                        };
+
+                                        let arch = match rt.arch() {
+                                            FlowArch::X86_64 => "x86_64",
+                                            FlowArch::Aarch64 => "aarch64",
+                                            arch => anyhow::bail!("unsupported arch {arch}"),
+                                        };
+
+                                        flowey::shell_cmd!(
+                                            rt,
+                                            "curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/{arch}"
+                                        ).run()?;
+                                        flowey::shell_cmd!(
+                                            rt,
+                                            "./rustup-init.exe {interactive_prompt...} {default_toolchain...}"
+                                        )
+                                        .run()?;
+                                    },
+                                    platform => anyhow::bail!("unsupported platform {platform}"),
                                 }
-                                FlowPlatform::Windows => {
-                                    let interactive_prompt = Some("-y");
-                                    let mut default_toolchain = Vec::new();
-                                    if let Some(ver) = rust_toolchain {
-                                        default_toolchain.push("--default-toolchain".into());
-                                        default_toolchain.push(ver)
-                                    };
-
-                                    let arch = match rt.arch() {
-                                        FlowArch::X86_64 => "x86_64",
-                                        FlowArch::Aarch64 => "aarch64",
-                                        arch => anyhow::bail!("unsupported arch {arch}"),
-                                    };
-
-                                    flowey::shell_cmd!(
-                                        rt,
-                                        "curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/{arch}"
-                                    ).run()?;
-                                    flowey::shell_cmd!(
-                                        rt,
-                                        "./rustup-init.exe {interactive_prompt...} {default_toolchain...}"
-                                    )
-                                    .run()?;
-                                },
-                                platform => anyhow::bail!("unsupported platform {platform}"),
                             }
 
                             if !additional_target_triples.is_empty() {
@@ -332,7 +353,7 @@ impl FlowNodeWithConfig for Node {
                                 )),
                             );
 
-                            check_rust_install(rt)?;
+                            check_rust_install(rt, false)?;
                             Ok(())
                         }
                     })
