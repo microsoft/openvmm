@@ -17,6 +17,10 @@
 //! The node is shared by CI and the release pipeline so that CI builds the
 //! exact source artifact intended for distribution rather than a lookalike.
 //!
+//! The identity is derived from the checkout being archived rather than
+//! supplied by the caller, so it cannot describe a tree other than the one
+//! exported, and callers need no preparation step to use this node.
+//!
 //! Assembly is reproducible: `git archive` emits a deterministic tar for a
 //! given commit, and `gzip -n` omits the timestamp that would otherwise vary.
 
@@ -120,13 +124,14 @@ fn workspace_version(manifest_path: &Path) -> anyhow::Result<String> {
 
 flowey_request! {
     pub struct Request {
-        /// Identity to assemble under.
-        pub identity: ReadVar<SourceIdentity>,
-        /// Directory to assemble the source assets into. Created if absent.
-        pub output_dir: ReadVar<PathBuf>,
-        pub done: WriteVar<SideEffect>,
+        /// The assembled source assets.
+        pub release: WriteVar<SourceReleaseOutput>,
     }
 }
+
+/// The directory the source assets are assembled into, relative to the job's
+/// working directory.
+const OUTPUT_DIR: &str = "openvmm-source-release";
 
 new_simple_flow_node!(struct Node);
 
@@ -138,22 +143,15 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request {
-            identity,
-            output_dir,
-            done,
-        } = request;
+        let Request { release } = request;
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
         ctx.emit_rust_step("assemble OpenVMM source archive", |ctx| {
-            done.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
-            let identity = identity.claim(ctx);
-            let output_dir = output_dir.claim(ctx);
+            let release = release.claim(ctx);
             move |rt| {
-                let identity = rt.read(identity);
-                let output_dir = rt.read(output_dir);
+                let output_dir = std::env::current_dir()?.join(OUTPUT_DIR);
                 let repo_path = rt.read(openvmm_repo_path);
 
                 // Assets are named after the version, so a stale archive from a
@@ -165,23 +163,9 @@ impl SimpleFlowNode for Node {
                 fs_err::create_dir_all(&output_dir)?;
                 rt.sh.change_dir(&repo_path);
 
-                let head = flowey::shell_cmd!(rt, "git rev-parse HEAD").read()?;
-                if identity.revision.trim() != head.trim() {
-                    anyhow::bail!(
-                        "source archive identity revision {} does not match HEAD {}",
-                        identity.revision,
-                        head.trim()
-                    );
-                }
-
-                let version = workspace_version(&repo_path.join("Cargo.toml"))?;
-                if identity.version != version {
-                    anyhow::bail!(
-                        "source archive identity version {} does not match workspace version {}",
-                        identity.version,
-                        version
-                    );
-                }
+                // Derived from the checkout being archived, so the identity
+                // cannot describe a different tree than the one exported.
+                let identity = resolve_identity(rt)?;
 
                 // `git archive` exports the tree at HEAD, so an uncommitted
                 // change would silently not appear in the archive. Untracked
@@ -235,6 +219,8 @@ impl SimpleFlowNode for Node {
                     output_dir.join(IDENTITY_FILE),
                     serde_json::to_vec(&identity)?,
                 )?;
+
+                rt.write(release, &SourceReleaseOutput { assets: output_dir });
 
                 Ok(())
             }

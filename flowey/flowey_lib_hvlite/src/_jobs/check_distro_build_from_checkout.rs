@@ -1,18 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Assemble the OpenVMM source archive and run the distribution-build gate.
+//! Assemble the OpenVMM source archive and run the distribution-build gate in
+//! a single job.
 //!
-//! This exists separately from [`crate::_jobs::check_distro_build`] because
-//! the two entry points differ only in where the archive comes from. The
-//! release pipeline assembles once and hands the same bytes to the gate and
-//! to publication, so its gate job receives a pre-built archive. Ordinary
-//! pull-request CI has no release preparation job, so it must assemble its
-//! own snapshot of the commit under test first. Both then run the same
-//! build via `check_distro_build`, which keeps PR CI honest: it exercises
-//! the code path a release actually uses.
+//! The release pipeline assembles the archive in a dedicated job and passes it
+//! onward as an artifact, so its gate job receives a pre-built archive.
+//! Ordinary pull-request CI has no release preparation job, so it must
+//! assemble its own snapshot of the commit under test. A pipeline job can only
+//! name root nodes, not wire variables between them, so that hand-off lives
+//! here. Both entry points then run the same build via `check_distro_build`,
+//! which keeps PR CI honest: it exercises the code path a release actually
+//! uses.
 
-use crate::assemble_openvmm_source_release::SourceReleaseOutput;
 use flowey::node::prelude::*;
 
 flowey_request! {
@@ -28,37 +28,14 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::assemble_openvmm_source_release::Node>();
-        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::_jobs::check_distro_build::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request { done } = request;
 
-        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-        let resolved = ctx.emit_rust_stepv("resolve source archive identity", |ctx| {
-            let openvmm_repo_path = openvmm_repo_path.claim(ctx);
-            move |rt| {
-                let assets = std::env::current_dir()?.join("openvmm-source-release");
-                let path = rt.read(openvmm_repo_path);
-                rt.sh.change_dir(path);
-
-                Ok((
-                    crate::assemble_openvmm_source_release::resolve_identity(rt)?,
-                    assets,
-                ))
-            }
-        });
-        let identity = resolved.clone().map(ctx, |(identity, _)| identity);
-        let output_dir = resolved.clone().map(ctx, |(_, assets)| assets);
-        let assembled = ctx.reqv(|done| crate::assemble_openvmm_source_release::Request {
-            identity,
-            output_dir,
-            done,
-        });
-        let release = resolved
-            .depending_on(ctx, &assembled)
-            .map(ctx, |(_, assets)| SourceReleaseOutput { assets });
+        let release =
+            ctx.reqv(|release| crate::assemble_openvmm_source_release::Request { release });
 
         ctx.req(crate::_jobs::check_distro_build::Request { release, done });
 

@@ -292,17 +292,7 @@ jobs:
       $(FLOWEY_BIN) e 21 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 21 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: print system info
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 0
-      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 1
-      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 2
-    displayName: resolve source archive identity
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::assemble_openvmm_source_release 0
-      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 3
-      $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build_from_checkout 4
+  - bash: $(FLOWEY_BIN) e 21 flowey_lib_hvlite::assemble_openvmm_source_release 0
     displayName: assemble OpenVMM source archive
   - bash: $(FLOWEY_BIN) e 21 flowey_lib_hvlite::_jobs::check_distro_build 0
     displayName: build openvmm in a distribution configuration
