@@ -4,10 +4,10 @@
 use hvdef::Vtl;
 use nostd_spin_channel::Channel;
 
-use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecToken;
-use crate::context::VtlPlatformTrait;
-use crate::tmk_assert;
+use opentmk_core::context::VirtualProcessorPlatformTrait;
+use opentmk_core::context::VpExecToken;
+use opentmk_core::context::VtlPlatformTrait;
+use opentmk_core::tmk_assert;
 
 /// Executes a series of tests to validate VTL and VP functionalities.
 pub fn exec<T>(ctx: &mut T)

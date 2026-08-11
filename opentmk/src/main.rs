@@ -1,26 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// UNSAFETY: This crate contains unsafe code to perform low-level operations such as managing memory, handling interrupts, and invoking hypercalls.
+// UNSAFETY: This crate defines the config region patched by host tooling, and its tests use inline assembly.
 #![expect(unsafe_code)]
 #![doc = include_str!("../README.md")]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_main)]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_std)]
 
-// Actual entrypoint is `uefi::uefi_main`, via the `#[entry]` macro
+// Actual entrypoint is `entry::uefi_main`, via the `#[entry]` macro
 #[cfg(any(test, not(target_os = "uefi")))]
 fn main() {}
 
 #[macro_use]
 extern crate alloc;
 
-pub mod arch;
-pub mod context;
-pub mod devices;
-pub mod platform;
-pub mod tests;
-pub mod tmk_assert;
-pub mod tmk_logger;
-pub mod tmkdefs;
+pub mod config;
 #[cfg(target_os = "uefi")]
-mod uefi;
+mod entry;
+#[cfg(target_os = "uefi")]
+mod rt;
+pub mod tests;

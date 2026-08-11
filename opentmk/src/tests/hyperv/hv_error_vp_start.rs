@@ -4,10 +4,10 @@
 use hvdef::Vtl;
 use nostd_spin_channel::Channel;
 
-use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecToken;
-use crate::context::VtlPlatformTrait;
-use crate::tmk_assert;
+use opentmk_core::context::VirtualProcessorPlatformTrait;
+use opentmk_core::context::VpExecToken;
+use opentmk_core::context::VtlPlatformTrait;
+use opentmk_core::tmk_assert;
 
 /// Executes a series of negitive tests to validate VTL and VP functionalities.
 pub fn exec<T>(ctx: &mut T)
@@ -47,7 +47,7 @@ where
 
         tmk_assert!(result.is_err(), "start_on_vp should fail");
         tmk_assert!(
-            result.unwrap_err() == crate::tmkdefs::TmkError::InvalidVtlState,
+            result.unwrap_err() == opentmk_core::tmkdefs::TmkError::InvalidVtlState,
             "start_on_vp should fail with InvalidVtlState"
         );
         log::info!("result on start_on_vp: {:?}", result);
