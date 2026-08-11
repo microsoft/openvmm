@@ -857,6 +857,18 @@ impl UhVmNetworkSettings {
             VfioDmaClients::EphemeralOnly(ephemeral_dma_client)
         };
 
+        tracing::info!(
+            CVM_ALLOWED,
+            pci_id = %nic_config.pci_id,
+            %instance_id,
+            keepalive_mode = ?keepalive_mode,
+            keepalive_enabled = keepalive_mode.is_enabled(),
+            has_saved_mana_state = saved_mana_state.is_some(),
+            saved_mana_state_pci_id = saved_mana_state.map(|s| s.pci_id.as_str()),
+            dma_clients_mode = if matches!(dma_clients, VfioDmaClients::Split { .. }) { "Split" } else { "EphemeralOnly" },
+            "checking for MANA VF keepalive prior to creating underhill NIC"
+        );
+
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
             nic_config.pci_id,
@@ -3544,6 +3556,20 @@ async fn new_underhill_vm(
             } else {
                 None
             };
+
+            tracing::info!(
+                CVM_ALLOWED,
+                pci_id = %nic_config.pci_id,
+                instance_id = %nic_config.instance_id,
+                has_servicing_mana_state = servicing_state.mana_state.is_some(),
+                num_mana_devices = servicing_state
+                    .mana_state
+                    .as_ref()
+                    .map(|s| s.len())
+                    .unwrap_or(0),
+                has_nic_servicing_state = nic_servicing_state.is_some(),
+                "MANA keepalive: resolved saved state for NIC"
+            );
 
             let save_state = uh_network_settings
                 .add_network(
