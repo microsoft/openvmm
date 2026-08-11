@@ -28,13 +28,7 @@ To run one profile, add its test name:
 cargo xflowey vmm-tests-run --filter "binary(vmm_perf) & test(fio)"
 ```
 
-Each profile runs the default VM matrix:
-
-- 2 CPUs and 4096 MB
-- 4 CPUs and 8192 MB
-- 8 CPUs and 16384 MB
-
-Replace that matrix locally with concise, repeatable parameter sets:
+To run explicit VM sizes:
 
 ```text
 cargo xflowey vmm-tests-run \
@@ -42,40 +36,6 @@ cargo xflowey vmm-tests-run \
   --vmm-perf-vmsizes 'CpuCount=2,MemoryMB=4096' \
   --vmm-perf-vmsizes 'CpuCount=8,MemoryMB=16384'
 ```
-
-Each `--vmm-perf-vmsizes` occurrence creates one run and accepts comma-separated
-`KEY=VALUE` parameters. Runs with both `CpuCount` and `MemoryMB` use descriptive
-output directories such as `cpu-2-memory-4096mb`. To keep the existing matrix
-and apply an override to every run, use repeatable `--vmm-perf-parameter`
-options:
-
-```text
---vmm-perf-parameter 'WorkDir=/mnt/perf-work' \
---vmm-perf-parameter 'HypervisorBackend=mshv'
-```
-
-Parameters may include any scalar VirtualClient profile parameter. Explicit
-values override harness-generated defaults.
-
-Before launching VirtualClient, each run validates its resolved `CpuCount`
-against the host's available logical processors and `MemoryMB` against Linux
-`MemAvailable`. The resolved `WorkDir` filesystem must also have at least 30
-GiB available. An oversized configuration fails independently while the
-remaining configurations continue. By default, temporary run data uses
-`std::env::temp_dir()`, which resolves to Flowey's test temp directory because
-Flowey sets `TMPDIR`; an explicit `WorkDir` parameter overrides the profile's
-work output location.
-
-Results are isolated under
-`test_results/vmm_perf__<profile>/<configuration>/`. All configurations run
-even if one fails, and the profile reports an aggregate failure afterward. The
-GitHub PR pipeline runs these profiles in the Linux x64 KVM and MSHV VMM-test
-jobs; the harness selects the backend from `/dev/kvm` or `/dev/mshv`.
-
-The Linux ARM64 runtime is available to artifact discovery and local tooling,
-but performance CI requires a native ARM64 runner and ARM64-compatible
-firmware, guest image, and profile inputs. The emulated ARM64 TCG job is not
-used for performance results.
 
 ## `xflowey` vs `xtask`
 
