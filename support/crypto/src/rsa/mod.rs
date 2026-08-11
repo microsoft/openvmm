@@ -258,13 +258,18 @@ mod tests {
         assert!(valid);
     }
 
-    /// OAEP encrypt/decrypt round-trip with both supported hash algorithms.
+    /// OAEP encrypt/decrypt round-trip with every supported hash algorithm.
     #[test]
     #[expect(deprecated)]
     fn oaep_roundtrip() {
         let key = RsaKeyPair::generate(2048).unwrap();
         let payload = b"a secret message";
-        for alg in [HashAlgorithm::Sha1, HashAlgorithm::Sha256] {
+        for alg in [
+            HashAlgorithm::Sha1,
+            HashAlgorithm::Sha256,
+            HashAlgorithm::Sha384,
+            HashAlgorithm::Sha512,
+        ] {
             let ct = key.oaep_encrypt(payload, alg).unwrap();
             let pt = key.oaep_decrypt(&ct, alg).unwrap();
             assert_eq!(pt, payload);
