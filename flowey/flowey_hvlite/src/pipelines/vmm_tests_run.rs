@@ -57,6 +57,19 @@ pub struct VmmTestsRunCli {
     #[clap(long, default_value = "all()")]
     filter: String,
 
+    /// Replace the default VMM.Perf VM matrix with one parameter set.
+    ///
+    /// May be repeated. Use comma-separated KEY=VALUE pairs; each occurrence
+    /// creates one run.
+    #[clap(long = "vmm-perf-vmsizes", value_name = "KEY=VALUE,...")]
+    vmm_perf_vm_sizes: Vec<String>,
+
+    /// Override a VMM.Perf parameter on every selected configuration.
+    ///
+    /// May be repeated without changing the number of runs.
+    #[clap(long, value_name = "KEY=VALUE")]
+    vmm_perf_parameter: Vec<String>,
+
     /// pass `--verbose` to cargo
     #[clap(long)]
     verbose: bool,
@@ -171,6 +184,8 @@ impl IntoPipeline for VmmTestsRunCli {
             target,
             dir,
             filter,
+            vmm_perf_vm_sizes,
+            vmm_perf_parameter,
             verbose,
             install_missing_deps,
             release,
@@ -186,6 +201,9 @@ impl IntoPipeline for VmmTestsRunCli {
             disable_secure_avic,
             incubator,
         } = self;
+
+        let vmm_perf_vm_sizes = serialize_vmm_perf_vm_sizes(&vmm_perf_vm_sizes)?;
+        let vmm_perf_parameters = serialize_vmm_perf_parameters(&vmm_perf_parameter)?;
 
         // When --incubator is set, --target must also be specified
         // to indicate the cross-compilation target for the incubator.
@@ -448,6 +466,8 @@ impl IntoPipeline for VmmTestsRunCli {
                     reuse_prepped_vhds: !no_reuse_prepped_vhds,
                     disable_secure_avic,
                     incubator_profile,
+                    vmm_perf_vm_sizes,
+                    vmm_perf_parameters,
                     done: ctx.new_done_handle(),
                 }
             });
@@ -456,6 +476,59 @@ impl IntoPipeline for VmmTestsRunCli {
 
         Ok(pipeline)
     }
+}
+
+fn serialize_vmm_perf_vm_sizes(vm_sizes: &[String]) -> anyhow::Result<Option<String>> {
+    if vm_sizes.is_empty() {
+        return Ok(None);
+    }
+
+    let mut parsed = Vec::with_capacity(vm_sizes.len());
+    for (index, vm_size) in vm_sizes.iter().enumerate() {
+        let parameters = parse_parameter_set(
+            vm_size.split(','),
+            &format!("--vmm-perf-vmsizes at position {}", index + 1),
+        )?;
+        parsed.push(serde_json::json!({ "parameters": parameters }));
+    }
+
+    Ok(Some(serde_json::to_string(&parsed)?))
+}
+
+fn serialize_vmm_perf_parameters(parameters: &[String]) -> anyhow::Result<Option<String>> {
+    if parameters.is_empty() {
+        return Ok(None);
+    }
+    let parameters = parse_parameter_set(
+        parameters.iter().map(String::as_str),
+        "--vmm-perf-parameter",
+    )?;
+    Ok(Some(serde_json::to_string(&parameters)?))
+}
+
+fn parse_parameter_set<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+    context: &str,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut parameters = BTreeMap::new();
+    for value in values {
+        let (name, value) = value
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("{context} value {value:?} must use KEY=VALUE"))?;
+        let name = name.trim();
+        anyhow::ensure!(
+            !name.is_empty(),
+            "{context} contains an empty parameter name"
+        );
+        anyhow::ensure!(
+            parameters
+                .insert(name.to_owned(), value.to_owned())
+                .is_none(),
+            "{context} contains duplicate parameter {name:?}"
+        );
+    }
+    anyhow::ensure!(!parameters.is_empty(), "{context} cannot be empty");
+    Ok(parameters)
 }
 
 /// Get test binaries and associated matching tests for a given nextest filter.
@@ -930,6 +1003,10 @@ impl ResolvedArtifactSelections {
             petri_artifacts_vmm_test::artifacts::vmm_perf::RUNTIME_LINUX_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::VmmPerfRuntimeLinuxX64);
+            }
+            petri_artifacts_vmm_test::artifacts::vmm_perf::RUNTIME_LINUX_ARM64::GLOBAL_UNIQUE_ID => {
+                self.downloads
+                    .insert(KnownTestArtifacts::VmmPerfRuntimeLinuxArm64);
             }
 
             // OpenHCL usermode binaries (built as part of IGVM)

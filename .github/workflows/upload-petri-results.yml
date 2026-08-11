@@ -27,6 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BASE_URL: https://openvmmghtestresults.blob.core.windows.net
+      VMMPERF_STORAGE_ACCOUNT: vmmperfmetricssa
+      VMMPERF_STORAGE_CONTAINER: allmetrics
+      VMMPERF_METRICS_PREFIX: openvmm-petri
 
     steps:
       - name: Free Disk Space (Ubuntu)
@@ -99,6 +102,48 @@ jobs:
               "ghbranch=$SOURCE_BRANCH" \
               "ghpr=$SOURCE_PR" \
             --auth-mode login
+        env:
+          run_id: ${{ github.event.workflow_run.id }}
+          run_attempt: ${{ github.event.workflow_run.run_attempt }}
+
+      - name: Upload VMM.Perf metrics to Azure Blob Storage
+        run: |
+          set -uo pipefail
+
+          mapfile -d '' metric_files < <(
+            find results \
+              -type f \
+              -path '*vmm_perf__*/*' \
+              \( -name 'metrics.csv' -o -name 'vc.metrics' -o -name 'vc_*.metrics' \) \
+              -print0
+          )
+
+          if [ "${#metric_files[@]}" -eq 0 ]; then
+            echo "No VMM.Perf metrics found; skipping dedicated metrics publication."
+            exit 0
+          fi
+
+          prefix="$VMMPERF_METRICS_PREFIX/${run_id}/attempt-${run_attempt}"
+          status=0
+          for metric_file in "${metric_files[@]}"; do
+            relative_path="${metric_file#results/}"
+            destination="$prefix/$relative_path"
+            echo "Uploading $metric_file -> $destination"
+            if ! az storage blob upload \
+              --account-name "$VMMPERF_STORAGE_ACCOUNT" \
+              --container-name "$VMMPERF_STORAGE_CONTAINER" \
+              --name "$destination" \
+              --file "$metric_file" \
+              --auth-mode login \
+              --overwrite false \
+              --only-show-errors \
+              --output none; then
+              echo "VMM.Perf metrics upload failed for $metric_file" >&2
+              status=1
+            fi
+          done
+
+          exit "$status"
         env:
           run_id: ${{ github.event.workflow_run.id }}
           run_attempt: ${{ github.event.workflow_run.run_attempt }}

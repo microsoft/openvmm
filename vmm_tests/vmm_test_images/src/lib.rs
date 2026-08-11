@@ -45,6 +45,7 @@ pub enum KnownTestArtifacts {
     VmgsWithBootEntry,
     VmgsWith16kTpm,
     VmmPerfRuntimeLinuxX64,
+    VmmPerfRuntimeLinuxArm64,
 }
 
 struct KnownTestArtifactMeta {
@@ -86,6 +87,9 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
         meta::<test_vmgs::VMGS_WITH_BOOT_ENTRY>(KnownTestArtifacts::VmgsWithBootEntry),
         meta::<test_vmgs::VMGS_WITH_16K_TPM>(KnownTestArtifacts::VmgsWith16kTpm),
         vmm_perf_meta::<vmm_perf::RUNTIME_LINUX_X64>(KnownTestArtifacts::VmmPerfRuntimeLinuxX64),
+        vmm_perf_meta::<vmm_perf::RUNTIME_LINUX_ARM64>(
+            KnownTestArtifacts::VmmPerfRuntimeLinuxArm64,
+        ),
     ]
 };
 
@@ -114,8 +118,8 @@ const fn vmm_perf_meta<T: ArtifactId + IsHostedOnVmmPerfAzureBlobStore>(
         size: T::SIZE,
         download_name: T::DOWNLOAD_NAME,
         supports_blob_disk: false,
-        storage_account: "vmmperf",
-        container: "vmmperf/latest",
+        storage_account: "vmmperfartifactpublic",
+        container: "perfpackage/latest",
     }
 }
 

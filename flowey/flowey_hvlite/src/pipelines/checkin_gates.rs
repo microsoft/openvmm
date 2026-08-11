@@ -1530,6 +1530,24 @@ impl IntoPipeline for CheckinGatesCli {
             // custom CCA Petri test binary.
             format!("({filter}) & !binary(cca)")
         };
+        let exclude_vmm_perf = |filter: String| format!("({filter}) & !binary(vmm_perf)");
+        let enable_pr_vmm_perf = matches!(
+            (backend_hint, config),
+            (PipelineBackendHint::Github, PipelineConfig::Pr)
+        );
+        let pr_vmm_perf_filter = |filter: String| {
+            if enable_pr_vmm_perf {
+                filter
+            } else {
+                exclude_vmm_perf(filter)
+            }
+        };
+        let pr_vmm_perf_artifacts = |mut artifacts: Vec<KnownTestArtifacts>| {
+            if enable_pr_vmm_perf {
+                artifacts.push(VmmPerfRuntimeLinuxX64);
+            }
+            artifacts
+        };
 
         let cvm_x64_test_artifacts = vec![
             KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
@@ -1562,7 +1580,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 incubator_profile: None,
-                nextest_filter_expr: standard_filter.clone(),
+                nextest_filter_expr: exclude_vmm_perf(standard_filter.clone()),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1576,8 +1594,10 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_mi_secure_x86,
                 incubator_profile: None,
-                nextest_filter_expr: "test(openhcl) & !test(servicing) & !test(cvm) & !test(memory_validation) & !test(very_heavy) & !test(hyperv_openhcl_pcat) & !test(prepped_vbs) & !test(256mb)"
-                    .to_string(),
+                nextest_filter_expr: exclude_vmm_perf(
+                    "test(openhcl) & !test(servicing) & !test(cvm) & !test(memory_validation) & !test(very_heavy) & !test(hyperv_openhcl_pcat) & !test(prepped_vbs) & !test(256mb)"
+                        .to_string(),
+                ),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: Vec::new(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1591,7 +1611,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
                 incubator_profile: None,
-                nextest_filter_expr: cvm_filter("tdx"),
+                nextest_filter_expr: exclude_vmm_perf(cvm_filter("tdx")),
                 test_artifacts: cvm_x64_test_artifacts.clone(),
                 prep_steps_variants: vec!["standard".into()],
                 hugetlb_2mb_overcommit_pages: None,
@@ -1607,7 +1627,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 incubator_profile: None,
-                nextest_filter_expr: standard_filter.clone(),
+                nextest_filter_expr: exclude_vmm_perf(standard_filter.clone()),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1621,7 +1641,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
                 incubator_profile: None,
-                nextest_filter_expr: cvm_filter("snp"),
+                nextest_filter_expr: exclude_vmm_perf(cvm_filter("snp")),
                 test_artifacts: cvm_x64_test_artifacts,
                 prep_steps_variants: vec!["standard".into()],
                 hugetlb_2mb_overcommit_pages: None,
@@ -1636,8 +1656,10 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
                 incubator_profile: None,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
-                test_artifacts: standard_x64_test_artifacts.clone(),
+                nextest_filter_expr: pr_vmm_perf_filter(format!(
+                    "{standard_filter} & !test(pcat_x64)"
+                )),
+                test_artifacts: pr_vmm_perf_artifacts(standard_x64_test_artifacts.clone()),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
             },
@@ -1652,8 +1674,10 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
                 incubator_profile: None,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
-                test_artifacts: standard_x64_test_artifacts.clone(),
+                nextest_filter_expr: pr_vmm_perf_filter(format!(
+                    "{standard_filter} & !test(pcat_x64)"
+                )),
+                test_artifacts: pr_vmm_perf_artifacts(standard_x64_test_artifacts.clone()),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
             },
@@ -1666,7 +1690,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::AARCH64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
                 incubator_profile: None,
-                nextest_filter_expr: "all()".to_string(),
+                nextest_filter_expr: exclude_vmm_perf("all()".to_string()),
                 test_artifacts: vec![
                     KnownTestArtifacts::Alpine323Aarch64Vhd,
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
@@ -1688,7 +1712,7 @@ impl IntoPipeline for CheckinGatesCli {
                 // aarch64-linux tests have no native CI hardware, so they run
                 // inside the QEMU TCG incubator rather than directly on the host.
                 incubator_profile: Some("aarch64-tcg-pcie"),
-                nextest_filter_expr: "test(aarch64_tcg)".to_string(),
+                nextest_filter_expr: exclude_vmm_perf("test(aarch64_tcg)".to_string()),
                 test_artifacts: vec![
                     KnownTestArtifacts::Alpine323Aarch64Vhd,
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
@@ -1702,24 +1726,8 @@ impl IntoPipeline for CheckinGatesCli {
                 continue;
             }
 
-            let mut nextest_filter_expr =
+            let nextest_filter_expr =
                 exclude_checkin_disabled_vmm_tests(nextest_filter_expr);
-            let mut test_artifacts = test_artifacts;
-            let vmm_perf_runtime = match (backend_hint, config, label) {
-                (
-                    PipelineBackendHint::Github,
-                    PipelineConfig::Ci,
-                    "x64-linux-amd-kvm",
-                ) => Some(VmmPerfRuntimeLinuxX64),
-                _ => None,
-            };
-
-            if let Some(runtime) = vmm_perf_runtime {
-                test_artifacts.push(runtime);
-            } else {
-                nextest_filter_expr =
-                    format!("({nextest_filter_expr}) & !binary(vmm_perf)");
-            }
             let test_label = format!("{label}-vmm-tests");
 
             let pub_vmm_tests_results = if matches!(backend_hint, PipelineBackendHint::Local) {
