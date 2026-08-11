@@ -47,7 +47,12 @@ where
     }
 }
 
-pub(crate) fn format_assert_json_string<T>(
+/// Formats an assertion result as a JSON log record.
+///
+/// Public because the exported [`tmk_assert!`] macro expands to a call to it
+/// from the consuming crate; not intended for direct use.
+#[doc(hidden)]
+pub fn format_assert_json_string<T>(
     s: &str,
     terminate_new_line: bool,
     line: String,
@@ -66,7 +71,12 @@ where
     out
 }
 
-pub(crate) fn write_str(s: &str) {
+/// Writes a preformatted record to the logger's serial writer.
+///
+/// Public because the exported [`tmk_assert!`] macro expands to a call to it
+/// from the consuming crate; not intended for direct use.
+#[doc(hidden)]
+pub fn write_str(s: &str) {
     _ = crate::tmk_logger::LOGGER.get_writer().write_str(s);
 }
 
@@ -77,7 +87,7 @@ macro_rules! tmk_assert {
     ($condition:expr, $message:expr) => {{
         let file = core::file!();
         let line = line!();
-        let file_line = format!("{}:{}", file, line);
+        let file_line = ::alloc::format!("{}:{}", file, line);
         let expn = stringify!($condition);
         let result: bool = $condition;
         let js = $crate::tmk_assert::format_assert_json_string(
