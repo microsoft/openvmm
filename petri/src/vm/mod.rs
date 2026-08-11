@@ -2898,7 +2898,6 @@ impl Firmware {
     }
 
     /// Whether the guest is an OpenTMK test image (results streamed over COM1).
-    // Only consumed by the Hyper-V backend, which is Windows-only.
     #[cfg_attr(not(windows), expect(dead_code))]
     pub(crate) fn is_opentmk(&self) -> bool {
         matches!(

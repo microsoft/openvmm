@@ -478,9 +478,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let serial_pipe_path = vm.get_vm_com_port_path(1);
 
-        // OpenTMK streams its newline-JSON results over COM1. Scan it (the scan
-        // task also mirrors every line to a log file); the result is collected
-        // later via `wait_for_opentmk`. Other guests use the normal serial log.
+        // The scan task also mirrors every line to a log file; the result is
+        // collected later via `wait_for_opentmk`. Other guests use the normal
+        // serial log.
         let opentmk_scan = if config.firmware.is_opentmk() {
             let opentmk_log_file = log_source.log_file("opentmk")?;
             Some(driver.spawn(

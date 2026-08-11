@@ -3,12 +3,10 @@
 
 //! The build-time-patchable config region.
 //!
-//! This lives in the test binary rather than in `opentmk_core` on purpose. The
-//! region is a `#[used]` static pinned to its own linker section, which host
-//! tooling locates in the built `.efi` to select the test to run. A `#[used]`
-//! static in a library can be dropped when the linker never pulls its object
-//! out of the archive, which would leave the section missing and every run
-//! failing to patch.
+//! This lives in the test binary rather than in `opentmk_core` on purpose: a
+//! `#[used]` static in a library can be dropped when the linker never pulls its
+//! object out of the archive, which would leave the section missing and every
+//! run failing to patch.
 
 use opentmk_protocol::OpenTmkConfig;
 

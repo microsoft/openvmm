@@ -3,13 +3,12 @@
 
 //! Test entrypoint for running OpenTMK guest tests.
 //!
-//! Each test boots a Hyper-V VM with OpenHCL as the paravisor and a specific
-//! OpenTMK test selection (patched in by [`petri::UefiGuest::opentmk`]), waits
-//! for the guest to stream its results over COM1, and asserts every check
-//! passed. Variants cover a non-isolated VM and SNP/TDX confidential VMs.
+//! Each test boots a VM with a specific OpenTMK test selection patched in by
+//! [`petri::UefiGuest::opentmk`], waits for the guest to stream its results
+//! over COM1, and asserts every check passed.
 
 #![forbid(unsafe_code)]
-// Hyper-V is only available on Windows, so the whole suite is Windows-only.
+// The shared helpers below are referenced only by platform-gated test modules.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use petri::PetriVmArtifacts;
@@ -17,7 +16,7 @@ use petri::PetriVmmBackend;
 use petri_artifacts_common::tags::MachineArch;
 use std::time::Duration;
 
-/// OpenTMK's `hyperv`-backend tests require exactly four VPs (assert `vp_count == 4`).
+/// VP count the guest-side tests assert on.
 const OPENTMK_VP_COUNT: u32 = 4;
 
 /// How long to wait for the guest to stream its results before giving up.
@@ -31,8 +30,7 @@ struct OpentmkArtifacts<T: PetriVmmBackend> {
     tpm: bool,
 }
 
-/// Build the embedded config selecting the `hyperv` backend and the given
-/// `test`. Must match `opentmk_protocol::TestConfig`.
+/// Build the embedded config for `test`. Must match `opentmk_protocol::TestConfig`.
 fn opentmk_config_json(test: &str) -> Vec<u8> {
     // Build via serde_json so the test name is escaped and the payload stays
     // well-formed if fields are added.
@@ -42,10 +40,8 @@ fn opentmk_config_json(test: &str) -> Vec<u8> {
 
 /// Build the host requirements for an OpenTMK test with the given `isolation`.
 ///
-/// Non-isolated tests can run on any host; isolated variants declare an
-/// [`petri::requirements::TestRequirement::Isolation`] requirement so they are
-/// only selected on hosts that support the corresponding isolation type (e.g.
-/// SNP/TDX CVM runners) and are automatically excluded elsewhere.
+/// Isolated variants declare an isolation requirement so they are only selected
+/// on hosts that support that isolation type, and are excluded elsewhere.
 fn opentmk_requirements(
     isolation: Option<petri::IsolationType>,
 ) -> petri::requirements::TestCaseRequirements {
@@ -67,11 +63,10 @@ fn opentmk_requirements(
     petri::requirements::TestCaseRequirements::new(requirement)
 }
 
-/// Resolve the artifacts to boot OpenTMK (selecting `test`) on Hyper-V with
-/// OpenHCL, optionally as a confidential VM. Returns `None` if the host can't
-/// run it (non-x86_64).
+/// Resolve the artifacts to boot OpenTMK under OpenHCL, optionally as a
+/// confidential VM. Returns `None` if the host can't run it (non-x86_64).
 ///
-/// `tpm` attaches a vTPM to the VM; the `hv_tpm_*` scenarios require it.
+/// `tpm` attaches a vTPM to the VM.
 fn resolve_opentmk_openhcl<T: PetriVmmBackend>(
     resolver: &petri::ArtifactResolver<'_>,
     test: &str,
@@ -131,8 +126,7 @@ mod hyperv {
     use petri::IsolationType;
     use petri::hyperv::HyperVPetriBackend;
 
-    /// Maps an isolation token (`none`/`snp`/`tdx`) to its
-    /// `Option<petri::IsolationType>` value.
+    /// Maps an isolation token to its `Option<petri::IsolationType>` value.
     macro_rules! opentmk_isolation {
         (none) => {
             None
@@ -148,14 +142,11 @@ mod hyperv {
         };
     }
 
-    /// Defines one or more Hyper-V + OpenHCL OpenTMK tests for the guest-internal
-    /// scenario `$test`, one per isolation token in the `[..]` list.
+    /// Defines one OpenHCL OpenTMK test per isolation token in the `[..]` list,
+    /// all running the guest-internal scenario `$test`.
     ///
-    /// Each generated test is named `$base` plus an isolation suffix (`_snp` /
-    /// `_tdx`, no suffix for `none`). Isolated variants declare an isolation host
-    /// requirement so they only run on isolation-capable CI runners and are
-    /// skipped elsewhere. `$tpm` attaches a vTPM to the VM (required by the
-    /// `hv_tpm_*` scenarios).
+    /// Each generated test is named `$base` plus the isolation suffix (`none`
+    /// gets no suffix). `$tpm` attaches a vTPM to the VM.
     macro_rules! opentmk_test {
         ($base:literal, $test:literal, $tpm:expr, [$($iso:tt),+ $(,)?]) => {
             ::petri::multitest!(vec![

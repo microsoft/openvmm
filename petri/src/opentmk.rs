@@ -4,9 +4,9 @@
 //! Running OpenTMK tests through Petri.
 //!
 //! OpenTMK boots as a UEFI guest and emits newline-delimited JSON over a serial
-//! port (COM1 on x86_64). This module parses that stream, forwards each line to
-//! the test log, and decides pass/fail from the assertion results and lifecycle
-//! markers (`TEST_START` / `TEST_END`), accumulated in [`TmkRun`].
+//! port. This module parses that stream, forwards each line to the test log,
+//! and decides pass/fail from the assertion results and lifecycle markers
+//! (`TEST_START` / `TEST_END`), accumulated in [`TmkRun`].
 
 use crate::PetriLogFile;
 use futures::AsyncBufRead;
