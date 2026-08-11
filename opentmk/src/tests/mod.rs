@@ -5,7 +5,7 @@
 
 mod hyperv;
 
-opentmk_core::opentmk_backends! {
+crate::opentmk_backends! {
     hyperv => |_params: &serde_json::Value| {
         let mut ctx = opentmk_core::platform::hyperv::ctx::HvTestCtx::new();
         ctx.init(hvdef::Vtl::Vtl0).expect("failed to init on BSP");
@@ -16,5 +16,5 @@ opentmk_core::opentmk_backends! {
 /// Reads the embedded config and runs the selected backend/test.
 /// Panics if the config is invalid or names an unknown backend/test.
 pub fn run_test() {
-    opentmk_core::run_test(&crate::config::OPENTMK_CONFIG, dispatch);
+    crate::dispatch::run_test(&crate::config::OPENTMK_CONFIG, dispatch);
 }

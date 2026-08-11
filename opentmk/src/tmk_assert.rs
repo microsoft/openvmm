@@ -48,11 +48,7 @@ where
 }
 
 /// Formats an assertion result as a JSON log record.
-///
-/// Public because the exported [`tmk_assert!`] macro expands to a call to it
-/// from the consuming crate; not intended for direct use.
-#[doc(hidden)]
-pub fn format_assert_json_string<T>(
+pub(crate) fn format_assert_json_string<T>(
     s: &str,
     terminate_new_line: bool,
     line: String,
@@ -72,12 +68,8 @@ where
 }
 
 /// Writes a preformatted record to the logger's serial writer.
-///
-/// Public because the exported [`tmk_assert!`] macro expands to a call to it
-/// from the consuming crate; not intended for direct use.
-#[doc(hidden)]
-pub fn write_str(s: &str) {
-    _ = crate::tmk_logger::LOGGER.get_writer().write_str(s);
+pub(crate) fn write_str(s: &str) {
+    _ = opentmk_core::tmk_logger::LOGGER.get_writer().write_str(s);
 }
 
 #[macro_export]
