@@ -30,7 +30,7 @@ pub(crate) mod win;
 use win as sys;
 
 #[cfg(all(native, target_os = "macos"))]
-mod mac;
+pub(crate) mod mac;
 #[cfg(all(native, target_os = "macos"))]
 use mac as sys;
 
@@ -48,6 +48,37 @@ pub struct X509Error(#[source] pub(crate) super::BackendError);
 #[error("X.509 error during {1}")]
 pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
+/// A public key extracted from an X.509 certificate.
+pub enum X509PublicKey {
+    /// An RSA public key.
+    Rsa(crate::rsa::RsaPublicKey),
+    /// An ECDSA public key.
+    #[cfg(any(openssl, symcrypt, all(native, windows)))]
+    Ecdsa(crate::ecdsa::EcdsaPublicKey),
+}
+
+impl X509PublicKey {
+    /// Extract the RSA public key, or `None` if the certificate's key is not an
+    /// RSA key.
+    pub fn rsa(self) -> Option<crate::rsa::RsaPublicKey> {
+        match self {
+            X509PublicKey::Rsa(key) => Some(key),
+            #[cfg(any(openssl, symcrypt, all(native, windows)))]
+            _ => None,
+        }
+    }
+
+    /// Extract the ECDSA public key, or `None` if the certificate's key is not
+    /// an ECDSA key.
+    #[cfg(any(openssl, symcrypt, all(native, windows)))]
+    pub fn ecdsa(self) -> Option<crate::ecdsa::EcdsaPublicKey> {
+        match self {
+            X509PublicKey::Ecdsa(key) => Some(key),
+            _ => None,
+        }
+    }
+}
+
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
 
@@ -58,7 +89,7 @@ impl X509Certificate {
     }
 
     /// Extract the public key from this certificate.
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
+    pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         self.0.public_key()
     }
 
@@ -172,6 +203,8 @@ mod tests {
         )
         .unwrap()
         .public_key()
+        .unwrap()
+        .rsa()
         .unwrap();
         // Invalid signatures must be reported as `Ok(false)`, not `Err`.
         assert!(matches!(cert.verify(&other_pubkey), Ok(false)));
@@ -184,7 +217,7 @@ mod tests {
         let cert = build_test_cert(&key);
         let der = cert.to_der().unwrap();
         let reparsed = X509Certificate::from_der(&der).unwrap();
-        let pubkey = reparsed.public_key().unwrap();
+        let pubkey = reparsed.public_key().unwrap().rsa().unwrap();
         assert!(reparsed.verify(&pubkey).unwrap());
     }
 

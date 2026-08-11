@@ -272,6 +272,7 @@ impl SimpleFlowNode for Node {
                     custom_target: None,
                     extra_features: BTreeSet::new(),
                     disable_secure_avic,
+                    confidential_debug: true,
                     openhcl_igvm,
                     openhcl_igvm_extras,
                 });
@@ -324,7 +325,6 @@ impl SimpleFlowNode for Node {
                     // FIXME: this relies on openvmm default features
                     features: [].into(),
                 },
-                version: None,
                 openvmm: v,
             });
             if copy_extras {
@@ -881,7 +881,7 @@ impl SimpleFlowNode for Node {
                 crate::resolve_openvmm_test_linux_kernel::Request::Get(
                     crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
                     arch,
-                    crate::resolve_openvmm_test_linux_kernel::DEFAULT_LINUX_TEST_KERNEL_VERSION,
+                    crate::resolve_openvmm_test_linux_kernel::INCUBATOR_LINUX_TEST_KERNEL_VERSION,
                     v,
                 )
             });
@@ -967,6 +967,7 @@ impl SimpleFlowNode for Node {
             extra_env,
             pre_run_deps: side_effects,
             hugetlb_2mb_overcommit_pages: None,
+            prepare_vhost_vsock: false,
             results: v,
         });
 
@@ -1004,7 +1005,7 @@ impl SimpleFlowNode for Node {
                 if results.all_tests_passed {
                     log::info!("all tests passed!");
                 } else {
-                    log::error!("encountered test failures.");
+                    anyhow::bail!("encountered test failures.")
                 }
 
                 Ok(())

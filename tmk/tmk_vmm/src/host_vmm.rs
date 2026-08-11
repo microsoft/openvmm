@@ -56,6 +56,7 @@ impl RunContext<'_> {
                 guest_memory: &guest_memory,
                 cpuid: &[],
                 vtl0_alias_map: None,
+                fault_resolver: None,
             })
             .context("failed to build partition")?;
 

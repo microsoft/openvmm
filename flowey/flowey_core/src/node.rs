@@ -935,11 +935,6 @@ pub fn new_import_ctx(backend: &mut dyn ImportCtxBackend) -> ImportCtx<'_> {
     ImportCtx { backend }
 }
 
-#[derive(Debug)]
-pub enum CtxAnchor {
-    PostJob,
-}
-
 pub trait NodeCtxBackend {
     /// Handle to the current node this `ctx` corresponds to
     fn current_node(&self) -> NodeHandle;
@@ -1683,9 +1678,12 @@ impl<'ctx> NodeCtx<'ctx> {
         T: Serialize + DeserializeOwned,
     {
         // normalize call path to ensure determinism between windows and linux
-        let caller = std::panic::Location::caller()
-            .to_string()
-            .replace('\\', "/");
+        //
+        // Only the source file is kept, not line/column: `{modpath}:{ordinal}`
+        // already uniquely identifies the var, so including line/column would
+        // needlessly churn every generated pipeline whenever unrelated edits
+        // shift line numbers.
+        let caller = std::panic::Location::caller().file().replace('\\', "/");
 
         // until we have a proper way to "split" debug info related to vars, we
         // kinda just lump it in with the var name itself.
@@ -2231,6 +2229,7 @@ pub mod steps {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
         pub enum GhPermission {
             Actions,
+            ArtifactMetadata,
             Attestations,
             Checks,
             Contents,

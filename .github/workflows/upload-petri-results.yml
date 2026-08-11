@@ -30,13 +30,13 @@ jobs:
 
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
           # Azure CLI is considered a large package
           large-packages: false
 
       - name: Authenticate to Azure
-        uses: azure/login@v1
+        uses: azure/login@cb79c773a3cfa27f31f25eb3f677781210c9ce3d # v1.6.1
         with:
           client-id: ${{ secrets.OPENVMM_TEST_RESULT_CLIENT_ID }}
           tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
@@ -82,16 +82,16 @@ jobs:
 
       - name: Upload to Azure Blob Storage
         run: |
+          run_key="${run_id}_${run_attempt}"
+
           az storage blob upload-batch \
             --destination "$BASE_URL/results" \
-            --destination-path "$run_id" \
+            --destination-path "$run_key" \
             --source results \
             --auth-mode login
 
-          # Store a metadata blob in a separate portion of the hierarchy so that
-          # it can be cheaply queried.
           az storage blob upload \
-            --blob-url "$BASE_URL/results/runs/$run_id" \
+            --blob-url "$BASE_URL/results/attempts/$run_key" \
             --file /dev/null \
             --metadata \
               "petrifailed=$FAIL_COUNT" \
@@ -101,6 +101,7 @@ jobs:
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}
+          run_attempt: ${{ github.event.workflow_run.run_attempt }}
 
       - name: Upload to memory validation results to Azure Blob Storage
         run: |
@@ -136,10 +137,9 @@ jobs:
           gh pr comment \
             -R "$repo" \
             "$SOURCE_PR" \
-            -F - <<EOF
-          [$FAIL_COUNT Petri tests failed ($FAIL_UNSTABLE_COUNT unstable)](https://openvmm.dev/test-results/#/runs/$run_id)
-          EOF
+            -b "[$FAIL_COUNT Petri tests failed ($FAIL_UNSTABLE_COUNT unstable)](https://openvmm.dev/test-results/#/runs/${run_id}_${run_attempt})"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           repo: ${{ github.event.workflow_run.repository.full_name }}
           run_id: ${{ github.event.workflow_run.id }}
+          run_attempt: ${{ github.event.workflow_run.run_attempt }}

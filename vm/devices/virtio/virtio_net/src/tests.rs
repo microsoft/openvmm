@@ -278,6 +278,31 @@ impl MockQueueHandle {
         }
     }
 
+    /// Inject an RX packet into a *specific* pending RX buffer, identified by
+    /// its `RxId`. Unlike [`inject_rx_packet`], which uses the oldest pending
+    /// buffer, this lets tests complete buffers out of order.
+    fn inject_rx_packet_for(&self, rx_id: RxId, data: &[u8]) {
+        let mut pending = self.rx_pending.lock();
+        let pos = pending
+            .iter()
+            .position(|id| id.0 == rx_id.0)
+            .expect("rx_id not pending");
+        pending.remove(pos);
+        drop(pending);
+        self.rx_ready.lock().push_back((
+            rx_id,
+            data.to_vec(),
+            RxMetadata {
+                offset: 0,
+                len: data.len(),
+                ..Default::default()
+            },
+        ));
+        if let Some(waker) = self.ready_waker.lock().take() {
+            waker.wake();
+        }
+    }
+
     /// Wait until the device has called `rx_avail` for at least one buffer.
     async fn wait_for_rx_pending(&mut self) {
         mesh::CancelContext::new()
@@ -336,6 +361,7 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
 
 struct MockEndpoint {
     queue_tx: mesh::Sender<MockQueueHandle>,
+    is_ordered: bool,
 }
 
 impl InspectMut for MockEndpoint {
@@ -365,7 +391,7 @@ impl Endpoint for MockEndpoint {
     async fn stop(&mut self) {}
 
     fn is_ordered(&self) -> bool {
-        false
+        self.is_ordered
     }
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
@@ -457,11 +483,16 @@ impl TestHarness {
 
         // Create mock endpoint with channel
         let (queue_tx, queue_handle_rx) = mesh::channel();
-        let endpoint = MockEndpoint { queue_tx };
+        let endpoint = MockEndpoint {
+            queue_tx,
+            is_ordered: true,
+        };
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
-        let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
+        let device = Device::builder()
+            .build(&driver_source, Box::new(endpoint), mac)
+            .unwrap();
 
         let rx_event = Event::new();
         let rx_interrupt_event = Event::new();
@@ -652,6 +683,25 @@ impl TestHarness {
         .await
     }
 
+    /// Non-blocking read of the next RX used ring entry, if any.
+    fn try_read_rx_used(&mut self) -> Option<(u16, u32)> {
+        read_used(&self.mem, RX_USED_ADDR, QUEUE_SIZE, &mut self.rx_used_idx)
+    }
+
+    /// Non-blocking read of the next TX used ring entry, if any.
+    fn try_read_tx_used(&mut self) -> Option<(u16, u32)> {
+        read_used(&self.mem, TX_USED_ADDR, QUEUE_SIZE, &mut self.tx_used_idx)
+    }
+
+    /// Sleep for a bounded duration to let the worker make progress. Used by
+    /// tests that assert a completion has *not* been published yet.
+    async fn settle(&self) {
+        let _ = mesh::CancelContext::new()
+            .with_timeout(Duration::from_millis(250))
+            .until_cancelled(pending::<()>())
+            .await;
+    }
+
     /// Disable the device (stops all queues).
     async fn disable(&mut self) {
         self.device.stop_queue(1).await;
@@ -755,10 +805,11 @@ async fn async_completion_single_packet(driver: DefaultDriver) {
 }
 
 /// Submit a descriptor index that is already in-flight (async completion
-/// pending). The duplicate should be dropped immediately and the original
-/// should still complete normally.
+/// pending). A duplicate descriptor index cannot be tracked (the pending slot
+/// is already taken), so the device treats it as a fatal protocol violation:
+/// the queue worker stops and no further completions are published.
 #[async_test]
-async fn duplicate_descriptor_index_dropped(driver: DefaultDriver) {
+async fn duplicate_descriptor_index_is_fatal(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     let mut handle = harness.enable_and_get_handle().await;
 
@@ -778,29 +829,172 @@ async fn duplicate_descriptor_index_dropped(driver: DefaultDriver) {
     assert_eq!(log.len(), 1);
 
     // Now post the same descriptor index again. The device should detect the
-    // duplicate and complete it immediately without forwarding to the backend.
+    // duplicate and treat it as a fatal queue protocol violation, stopping the
+    // worker.
     harness.post_tx_and_signal(desc_index, data_len);
+    harness.settle().await;
 
-    // The duplicate gets completed immediately (dropped).
-    let (used_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_id, desc_index);
-    assert_eq!(used_len, 0);
+    // The duplicate must NOT be completed (old behavior dropped it with len 0).
+    assert_eq!(
+        harness.try_read_tx_used(),
+        None,
+        "duplicate descriptor must not produce a used ring entry"
+    );
 
-    // The backend should NOT have received a second tx_avail call for the
-    // duplicate packet's segments.
+    // The backend should NOT have received a second tx_avail call.
     let log = handle.take_tx_avail_log();
     assert!(
         log.is_empty(),
         "duplicate packet should not reach the backend"
     );
 
-    // Now complete the original packet.
+    // Because the worker stopped, even completing the original in-flight packet
+    // does not publish anything further.
     handle.complete_tx(vec![TxId(desc_index as u32)]);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_tx_used(),
+        None,
+        "no completions should be published after the fatal violation"
+    );
+}
 
-    // The original completion should appear in the used ring.
-    let (used_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_id, desc_index);
-    assert_eq!(used_len, 0);
+/// An unordered network backend is rejected at device creation with a clear
+/// error, rather than the device coming up and wedging when the guest activates
+/// it.
+#[async_test]
+async fn unordered_backend_rejected(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
+    let (queue_tx, _queue_handle_rx) = mesh::channel();
+    let endpoint = MockEndpoint {
+        queue_tx,
+        is_ordered: false,
+    };
+
+    let err = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .err()
+        .expect("build must fail on an unordered backend");
+    assert!(
+        err.to_string().contains("ordered backend"),
+        "unexpected error: {err}"
+    );
+}
+
+/// A backend that completes RX buffers out of order must still result in the
+/// used ring being published strictly in avail (consumption) order.
+#[async_test]
+async fn rx_out_of_order_completion_published_in_order(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let buffer_size: u32 = 512;
+    let mut gpas = Vec::new();
+    for i in 0u16..3 {
+        gpas.push(harness.post_rx_buffer_and_signal(i, buffer_size));
+    }
+    for _ in 0..3 {
+        handle.wait_for_rx_pending().await;
+    }
+
+    let payloads: [&[u8]; 3] = [b"packet-zero", b"packet-one!!", b"pkt-two"];
+
+    // Complete the last buffer first. Because descriptor 0 (and 1) are still
+    // outstanding, nothing may be published yet.
+    handle.inject_rx_packet_for(RxId(2), payloads[2]);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "descriptor 2 must not be published ahead of earlier outstanding buffers"
+    );
+
+    // Complete descriptor 0: it publishes, but descriptor 1 is still
+    // outstanding so descriptor 2 must not follow yet.
+    handle.inject_rx_packet_for(RxId(0), payloads[0]);
+    let (id0, len0) = harness.wait_for_rx_used().await;
+    assert_eq!(id0, 0);
+    assert_eq!(len0, NET_HEADER_SIZE + payloads[0].len() as u32);
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "descriptor 2 must not be published while descriptor 1 is outstanding"
+    );
+
+    // Complete descriptor 1: now 1 and the already-filled 2 both flush in order.
+    handle.inject_rx_packet_for(RxId(1), payloads[1]);
+    let (id1, len1) = harness.wait_for_rx_used().await;
+    assert_eq!(id1, 1);
+    assert_eq!(len1, NET_HEADER_SIZE + payloads[1].len() as u32);
+    let (id2, len2) = harness.wait_for_rx_used().await;
+    assert_eq!(id2, 2);
+    assert_eq!(len2, NET_HEADER_SIZE + payloads[2].len() as u32);
+
+    // Verify data integrity for each buffer.
+    for (i, payload) in payloads.iter().enumerate() {
+        let mut readback = vec![0u8; payload.len()];
+        harness
+            .mem
+            .read_at(gpas[i] + NET_HEADER_SIZE as u64, &mut readback)
+            .unwrap();
+        assert_eq!(&readback, payload, "buffer {i} data mismatch");
+    }
+}
+
+/// A malformed (too-small) RX buffer in the middle of the avail ring is dropped,
+/// but its completion is published in its avail-order position — never ahead of
+/// an earlier still-outstanding buffer.
+#[async_test]
+async fn rx_malformed_completed_in_order(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    // Descriptor 0: normal. Descriptor 1: too small (< virtio-net header) and
+    // will be dropped. Descriptor 2: normal.
+    harness.post_rx_buffer_and_signal(0, 512);
+    harness.post_rx_buffer_and_signal(1, 4); // smaller than header_size()
+    harness.post_rx_buffer_and_signal(2, 512);
+
+    // Descriptors 0 and 2 are posted to the backend (descriptor 1 is dropped).
+    handle.wait_for_rx_pending().await;
+    handle.wait_for_rx_pending().await;
+    harness.settle().await;
+
+    // The malformed descriptor 1 has been completed internally but is held
+    // behind the still-outstanding descriptor 0, so nothing is published yet.
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "malformed descriptor must not be published ahead of descriptor 0"
+    );
+
+    // Complete descriptor 2 out of order — still nothing publishes.
+    handle.inject_rx_packet_for(RxId(2), b"pkt-two");
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "descriptor 2 must not be published ahead of descriptors 0/1"
+    );
+
+    // Complete descriptor 0: now 0, the dropped 1 (len 0), and 2 flush in order.
+    handle.inject_rx_packet_for(RxId(0), b"packet-zero");
+
+    let (id0, len0) = harness.wait_for_rx_used().await;
+    assert_eq!(id0, 0);
+    assert_eq!(len0, NET_HEADER_SIZE + b"packet-zero".len() as u32);
+
+    let (id1, len1) = harness.wait_for_rx_used().await;
+    assert_eq!(
+        id1, 1,
+        "malformed descriptor completes in avail-order position"
+    );
+    assert_eq!(len1, 0, "malformed descriptor is dropped with len 0");
+
+    let (id2, len2) = harness.wait_for_rx_used().await;
+    assert_eq!(id2, 2);
+    assert_eq!(len2, NET_HEADER_SIZE + b"pkt-two".len() as u32);
 }
 
 /// Post 3 TX packets one at a time, each completing synchronously.
@@ -1695,7 +1889,9 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
         },
     };
 
-    let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
+    let device = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .unwrap();
     let traits = device.traits();
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
@@ -1721,6 +1917,43 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
     );
 }
 
+/// The device advertises VIRTIO_F_IN_ORDER, since it guarantees in-order
+/// descriptor completion per queue.
+#[async_test]
+async fn advertises_in_order(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
+    let endpoint = MockEndpointWithOffloads {
+        offloads: TxOffloadSupport::default(),
+    };
+    let device = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .unwrap();
+    assert!(
+        device.traits().device_features.in_order(),
+        "VIRTIO_F_IN_ORDER must be advertised"
+    );
+}
+
+/// With VIRTIO_F_IN_ORDER negotiated, the RX path still round-trips a packet
+/// (negotiating the feature must not break queue setup or completion).
+#[async_test]
+async fn in_order_negotiated_rx_roundtrip(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness
+        .enable_and_get_handle_with_features(VirtioDeviceFeatures::new().with_in_order(true))
+        .await;
+
+    let _gpa = harness.post_rx_buffer_and_signal(0, 1500);
+    handle.wait_for_rx_pending().await;
+    let payload = b"in-order rx";
+    handle.inject_rx_packet(payload);
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+}
+
 /// Verify that the device does NOT advertise offload features when the
 /// endpoint supports none.
 #[async_test]
@@ -1732,7 +1965,9 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
         offloads: TxOffloadSupport::default(),
     };
 
-    let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
+    let device = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .unwrap();
     let traits = device.traits();
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
@@ -1782,6 +2017,10 @@ impl Endpoint for MockEndpointWithOffloads {
     }
 
     async fn stop(&mut self) {}
+
+    fn is_ordered(&self) -> bool {
+        true
+    }
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
         self.offloads

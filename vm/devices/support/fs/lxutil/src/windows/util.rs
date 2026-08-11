@@ -155,29 +155,32 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
     let mut client_token_raw = Foundation::HANDLE::default();
     let mut duplicate_token_raw = Foundation::HANDLE::default();
     // SAFETY: Calling Win32 API as documented.
-    let result = unsafe {
-        check_status(FileSystem::NtOpenThreadToken(
+    //
+    // N.B. The raw NTSTATUS is inspected directly (rather than going through
+    //      `check_status`) so that `STATUS_NO_TOKEN` can be distinguished from
+    //      other failures. `check_status` maps the NTSTATUS to an `lx::Error`
+    //      errno, which cannot be compared against an NTSTATUS constant.
+    let status = unsafe {
+        FileSystem::NtOpenThreadToken(
             Threading::GetCurrentThread(),
             Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
             true,
             &mut client_token_raw,
-        ))
+        )
     };
 
-    if let Err(e) = result {
-        // Use the process token if there's no token.
-        if e.value() == Foundation::STATUS_NO_TOKEN.0 {
-            // SAFETY: Calling Win32 API as documented.
-            unsafe {
-                let _ = check_status(FileSystem::NtOpenProcessToken(
-                    Threading::GetCurrentProcess(),
-                    Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
-                    &mut client_token_raw,
-                ))?;
-            }
-        } else {
-            return Err(e);
+    if status == Foundation::STATUS_NO_TOKEN {
+        // The thread is not impersonating, so use the process token instead.
+        // SAFETY: Calling Win32 API as documented.
+        unsafe {
+            let _ = check_status(FileSystem::NtOpenProcessToken(
+                Threading::GetCurrentProcess(),
+                Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
+                &mut client_token_raw,
+            ))?;
         }
+    } else {
+        let _ = check_status(status)?;
     }
 
     // Create the RAII handle now so it gets closed on drop if we need
@@ -213,7 +216,10 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
             },
             EffectiveOnly: false,
         };
-        let mut object_attributes = Wdk::Foundation::OBJECT_ATTRIBUTES::default();
+        let mut object_attributes = Wdk::Foundation::OBJECT_ATTRIBUTES {
+            Length: size_of::<Wdk::Foundation::OBJECT_ATTRIBUTES>() as u32,
+            ..Default::default()
+        };
         object_attributes.SecurityQualityOfService =
             ptr::from_ref::<W32Sec::SECURITY_QUALITY_OF_SERVICE>(&security_qos).cast();
 
@@ -973,19 +979,18 @@ pub fn set_attr(
     mut attr: SetAttributes,
 ) -> lx::Result<()> {
     set_attr_check_kill_priv(handle, state, &mut attr)?;
-    set_attr_core(handle, handle, state, &attr)
+    set_attr_core(handle, state, &attr)
 }
 
 /// Set the attributes of a file (assumes the kill privilege check was already done)
 /// N.B. All functions attempting to change attributes should call set_attr_check_kill_priv() first.
 pub fn set_attr_core(
     handle: &OwnedHandle,
-    truncate_handle: &OwnedHandle,
     state: &super::VolumeState,
     attr: &SetAttributes,
 ) -> lx::Result<()> {
     if let Some(size) = attr.size {
-        fs::truncate(truncate_handle, size as u64)?;
+        fs::truncate(handle, size as u64)?;
     }
 
     if state.options.metadata && (attr.mode.is_some() || attr.uid.is_some() || attr.gid.is_some()) {

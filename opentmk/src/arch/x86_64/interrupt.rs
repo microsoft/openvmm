@@ -6,7 +6,7 @@
 use alloc::boxed::Box;
 
 use spin::Lazy;
-use spin::Mutex;
+use spin::RwLock;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 use super::interrupt_handler_register::register_interrupt_handler;
@@ -17,24 +17,21 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     idt
 });
 
-static mut HANDLERS: [Option<Box<dyn Fn() + 'static>>; 256] = [const { None }; 256];
-static WRITE_LOCK: Mutex<()> = Mutex::new(());
+static HANDLERS: RwLock<[Option<Box<dyn Fn() + Send + Sync + 'static>>; 256]> =
+    RwLock::new([const { None }; 256]);
 
 /// Dispatches to the registered handler for `vector`, if any.
 ///
-/// Called from the assembly ISR trampoline with interrupts disabled.
+/// Called by ISR handler
 pub(super) fn dispatch(vector: u8) {
-    // SAFETY: entries are only published by `set_handler` (serialized by
-    // `WRITE_LOCK`, before the corresponding interrupt is armed), and the IDT
-    // gates disable interrupts on entry so this read cannot race a writer.
-    let handlers = unsafe { &*core::ptr::addr_of!(HANDLERS) };
+    let handlers = HANDLERS.read();
     if let Some(handler) = handlers[vector as usize].as_ref() {
         handler();
         return;
     }
-    // No handler registered: log so an unexpected fault is not silently
-    // `iretq`'d back into the faulting instruction with no diagnostics.
+
     log::error!("unhandled interrupt/exception vector {vector}");
+
     // Vectors 8 (#DF) and 18 (#MC) cannot be resumed; returning here would
     // `iretq` and almost certainly re-fault into a triple fault (silent reset).
     // Halt instead so the message above survives on the serial log.
@@ -46,13 +43,11 @@ pub(super) fn dispatch(vector: u8) {
 }
 
 /// Sets the handler for a specific interrupt vector.
-pub fn set_handler(interrupt: u8, handler: Box<dyn Fn() + 'static>) {
-    let _lock = WRITE_LOCK.lock();
-    // SAFETY: writers are serialized by `WRITE_LOCK`, and `set_handler` runs
-    // during test setup before the corresponding interrupt is armed, so no ISR
-    // reads a partially written entry.
-    let handlers = unsafe { &mut *core::ptr::addr_of_mut!(HANDLERS) };
-    handlers[interrupt as usize] = Some(handler);
+pub fn set_handler(interrupt: u8, handler: Box<dyn Fn() + Send + Sync + 'static>) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut handlers = HANDLERS.write();
+        handlers[interrupt as usize] = Some(handler);
+    });
 }
 
 /// Initializes and loads the IDT and enables interrupts.

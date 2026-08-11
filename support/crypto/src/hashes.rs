@@ -18,6 +18,11 @@ pub enum HashAlgorithm {
 }
 
 impl HashAlgorithm {
+    #[cfg(openssl)]
+    pub(crate) fn hash(self, data: &[u8]) -> Vec<u8> {
+        openssl::hash::hash(self.into(), data).unwrap().to_vec()
+    }
+
     #[cfg(symcrypt)]
     pub(crate) fn hash(self, data: &[u8]) -> Vec<u8> {
         match self {

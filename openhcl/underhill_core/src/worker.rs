@@ -75,7 +75,6 @@ use firmware_uefi_resources::UefiCommandSet;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
-use get_protocol::EventLogId;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
@@ -90,7 +89,6 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvGuestOsId;
 use hyperv_ic_guest::ShutdownGuestIc;
 use ide_resources::GuestMedia;
-use ide_resources::IdePath;
 use igvm_defs::MemoryMapEntryType;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
@@ -128,7 +126,6 @@ use std::future;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use storvsp::ScsiControllerDisk;
 use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
@@ -2539,34 +2536,24 @@ async fn new_underhill_vm(
 
     if matches!(firmware_type, FirmwareType::Uefi) {
         use crate::emuplat::uefi::*;
-        use firmware_uefi_custom_vars::CustomVars;
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
-        // map the GET's template enum onto the hardcoded secureboot template type
-        let base_vars = match dps.general.secure_boot_template {
-            SecureBootTemplateType::None => CustomVars::default(),
+        #[cfg(guest_arch = "aarch64")]
+        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
+        #[cfg(guest_arch = "x86_64")]
+        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
+        let base_template_json = match &dps.general.secure_boot_template {
+            SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
-                if cfg!(guest_arch = "x86_64") {
-                    hyperv_secure_boot_templates::x64::microsoft_windows()
-                } else if cfg!(guest_arch = "aarch64") {
-                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                } else {
-                    anyhow::bail!("no secure boot template for current guest_arch")
-                }
+                Some(secure_boot_templates::microsoft_windows())
             }
             SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                if cfg!(guest_arch = "x86_64") {
-                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                } else if cfg!(guest_arch = "aarch64") {
-                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                } else {
-                    anyhow::bail!("no secure boot template for current guest_arch")
-                }
+                Some(secure_boot_templates::microsoft_uefi_ca())
             }
         };
 
         // check if vmgs includes custom UEFI JSON
-        let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
+        let custom_uefi_json = if let Some(vmgs_client) = vmgs_client.as_ref() {
             vmgs_client
                 .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
                 .context("failed to instantiate custom UEFI JSON store")?
@@ -2575,33 +2562,12 @@ async fn new_underhill_vm(
                 .context("failed to get custom UEFI JSON data")?
         } else {
             None
-        };
-
-        // obtain the final custom uefi vars by applying the delta onto
-        // the base vars
-        let custom_uefi_vars = match custom_uefi_json_data {
-            Some(data) => {
-                let res = (|| -> Result<CustomVars, anyhow::Error> {
-                    let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                    Ok(base_vars.apply_delta(delta)?)
-                })();
-
-                match res {
-                    Ok(vars) => vars,
-                    Err(e) => {
-                        tracing::error!(CVM_ALLOWED, "Failed to load custom UEFI vars");
-                        get_client
-                            .event_log_fatal(EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED)
-                            .await;
-                        return Err(e).context("failed to load custom UEFI variables");
-                    }
-                }
-            }
-            None => base_vars,
-        };
+        }
+        .map(Into::into);
 
         let config = firmware_uefi_resources::UefiConfig {
-            custom_uefi_vars,
+            base_template_json,
+            custom_uefi_json,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,
             use_mmio: cfg!(not(guest_arch = "x86_64")),
@@ -2831,21 +2797,22 @@ async fn new_underhill_vm(
                     GuestMedia::Disk {
                         disk_type,
                         read_only,
-                        disk_parameters,
                     } => {
                         let disk =
                             disk_from_disk_type(disk_type, read_only, &resolver, &driver_source)
                                 .await?;
-                        let scsi_disk = Arc::new(scsidisk::SimpleScsiDisk::new(
-                            disk.clone(),
-                            disk_parameters.unwrap_or_default(),
-                        ));
+
+                        let path = ide_resources::IdePath { channel, drive };
+                        let params = controllers
+                            .ide_disk_params
+                            .get(&path)
+                            .cloned()
+                            .unwrap_or_default();
+                        let scsi_disk =
+                            Arc::new(scsidisk::SimpleScsiDisk::new(disk.clone(), params));
 
                         // Only disks, not DVD drives, get IDE accelerator channels.
-                        storvsp_ide_disks.push((
-                            IdePath { channel, drive },
-                            ScsiControllerDisk::new(scsi_disk),
-                        ));
+                        storvsp_ide_disks.push((path, storvsp::ScsiControllerDisk::new(scsi_disk)));
 
                         ide::DriveMedia::hard_disk(disk)
                     }
@@ -3447,7 +3414,7 @@ async fn new_underhill_vm(
             let io_queue_depth = ide_io_queue_depth.unwrap_or(default_io_queue_depth);
             ide_accel_devices.push(
                 offer_channel_unit(
-                    &tp,
+                    tp,
                     &state_units,
                     vmbus_server
                         .as_ref()
@@ -3773,6 +3740,8 @@ async fn new_underhill_vm(
         get_client: get_client.clone(),
         device_platform_settings: dps,
         runtime_params,
+        #[cfg(feature = "product_policy")]
+        measured_product_policy: measured_vtl2_info.measured_product_policy().clone(),
 
         _input_distributor: input_distributor,
 
@@ -3789,6 +3758,9 @@ async fn new_underhill_vm(
         #[cfg(feature = "mem-profile-tracing")]
         profiler: mem_profile_tracing::HeapProfiler::new(),
     };
+
+    #[cfg(feature = "product_policy")]
+    crate::measured_product_policy::validate(&loaded_vm)?;
 
     Ok(loaded_vm)
 }

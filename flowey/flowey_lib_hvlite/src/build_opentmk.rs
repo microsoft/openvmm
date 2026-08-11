@@ -21,7 +21,7 @@ flowey_request! {
     pub struct Request {
         pub arch: CommonArch,
         pub profile: CommonProfile,
-        /// Custom output binary name. Defaults to "opentmk".
+        /// Custom output `.efi`/`.pdb` name. Defaults to "opentmk".
         pub out_name: Option<String>,
         pub opentmk: WriteVar<OpentmkOutput>,
     }
@@ -46,6 +46,7 @@ impl FlowNode for Node {
             opentmk,
         } in requests
         {
+            let out_name = out_name.unwrap_or_else(|| "opentmk".to_string());
             tasks
                 .entry((arch, profile, out_name))
                 .or_default()
@@ -53,8 +54,6 @@ impl FlowNode for Node {
         }
 
         for ((arch, profile, out_name), outvars) in tasks {
-            let out_name = out_name.unwrap_or_else(|| "opentmk".to_string());
-
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "opentmk".into(),
                 out_name: out_name.clone(),

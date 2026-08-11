@@ -25,7 +25,6 @@ use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvHvcall;
 use hcl::ioctl::MshvVtl;
-use hcl::ioctl::snp::SnpPageError;
 use hv1_structs::VtlArray;
 use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
 use hvdef::HV_MAP_GPA_PERMISSIONS_NONE;
@@ -57,14 +56,6 @@ use x86defs::tdx::GpaVmAttributes;
 use x86defs::tdx::GpaVmAttributesMask;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
-
-/// Error querying vtl permissions on a page
-#[derive(Debug, Error)]
-pub enum QueryVtlPermissionsError {
-    /// An SNP-specific error
-    #[error("failed to query rmp permissions")]
-    Snp(#[source] SnpPageError),
-}
 
 #[derive(Debug)]
 struct MshvVtlWithPolicy {
@@ -206,6 +197,11 @@ pub struct ModifyGpaVisibilityError {
     processed: usize,
 }
 
+#[derive(Default)]
+struct MemoryAcceptorFlags {
+    tdx_page_release_required: bool,
+}
+
 /// Interface to accept and manipulate lower VTL memory acceptance and page
 /// protections.
 ///
@@ -215,6 +211,7 @@ pub struct MemoryAcceptor {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
     isolation: IsolationType,
+    flags: MemoryAcceptorFlags,
 }
 
 impl MemoryAcceptor {
@@ -229,11 +226,28 @@ impl MemoryAcceptor {
             HypercallCode::HvCallModifyVtlProtectionMask,
         ]);
 
+        let mut flags = MemoryAcceptorFlags::default();
+
+        if isolation == IsolationType::Tdx {
+            // Check if TDX Connect is enabled on this TD. If so, page release is required when
+            // unaccepting pages.
+            let config_flags = mshv_vtl.tdx_get_config_flags();
+            if config_flags.tdx_connect() {
+                assert!(
+                    config_flags.page_release(),
+                    "TDX Connect enabled but CONFIG_FLAGS.page_release is not set",
+                );
+
+                flags.tdx_page_release_required = true;
+            }
+        }
+
         // On boot, VTL 0 should have permissions.
         Ok(Self {
             mshv_hvcall,
             mshv_vtl,
             isolation,
+            flags,
         })
     }
 
@@ -289,7 +303,11 @@ impl MemoryAcceptor {
             }
 
             IsolationType::Tdx => {
-                // Nothing to do for TDX.
+                if self.flags.tdx_page_release_required {
+                    self.mshv_vtl
+                        .tdx_release_pages(range)
+                        .unwrap_or_else(|e| panic!("Failed to release memory range {range}: {e}"));
+                }
             }
             IsolationType::Cca => {
                 // TODO: CCA: anything to do here?

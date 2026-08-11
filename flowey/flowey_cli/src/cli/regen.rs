@@ -58,7 +58,8 @@ impl Regen {
                         let sh = xshell::Shell::new()?;
                         sh.change_dir(&working_dir);
                         #[expect(clippy::disallowed_macros)]
-                        xshell::cmd!(sh, "cargo build -p {bin_name} {quiet...}").run()?;
+                        xshell::cmd!(sh, "cargo build -p {bin_name} --profile light {quiet...}")
+                            .run()?;
                     }
 
                     // find the built flowey
@@ -69,7 +70,7 @@ impl Regen {
                                 .unwrap_or("target"),
                         )
                         .join(std::env::var("CARGO_BUILD_TARGET").as_deref().unwrap_or(""))
-                        .join("debug")
+                        .join("light")
                         .join(&exe_name);
 
                     if !bin.exists() {

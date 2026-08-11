@@ -690,7 +690,6 @@ impl IntoPipeline for CheckinGatesCli {
                             // FIXME: this relies on openvmm default features
                             features: [].into(),
                         },
-                        version: None,
                         openvmm,
                     }
                 })
@@ -868,7 +867,6 @@ impl IntoPipeline for CheckinGatesCli {
                             features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
                                 .into(),
                         },
-                        version: None,
                         openvmm,
                     }
                 })
@@ -946,7 +944,6 @@ impl IntoPipeline for CheckinGatesCli {
                             features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
                                 .into(),
                         },
-                        version: None,
                         openvmm,
                     }
                 })
@@ -1048,7 +1045,7 @@ impl IntoPipeline for CheckinGatesCli {
                 OpenvmmHclBuildProfile::Debug
             };
 
-            let igvm_recipes = match (arch, mi_secure) {
+            let mut igvm_recipes = match (arch, mi_secure) {
                 (CommonArch::X86_64, false) => vec![
                     OpenhclIgvmRecipe::X64,
                     OpenhclIgvmRecipe::X64Devkern,
@@ -1069,6 +1066,9 @@ impl IntoPipeline for CheckinGatesCli {
                 }
                 _ => unreachable!(),
             };
+            if flowey_lib_hvlite::_jobs::cfg_versions::OPENHCL_KERNEL_DEV_VERSION.is_none() {
+                igvm_recipes.retain(|recipe| !recipe.uses_dev_kernel());
+            }
 
             let (mut pub_openhcl_igvms, use_openhcl_igvms) =
                 pipeline.new_typed_artifact_collection(igvm_recipes.clone(), additional_tag, None);
@@ -1147,6 +1147,9 @@ impl IntoPipeline for CheckinGatesCli {
                                         // VTL2 memory) since mi-secure adds overhead that may not fit in
                                         // the tighter release memory budget.
                                         release_cfg: release && !mi_secure,
+                                        // Enable confidential diagnostics on the CVM IGVM
+                                        // consumed by the VMM tests.
+                                        confidential_debug: true,
                                     },
                                     ctx.publish_typed_artifact(pub_openhcl_igvm),
                                     ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
@@ -1771,7 +1774,10 @@ impl IntoPipeline for CheckinGatesCli {
                 );
             }
 
-            all_jobs.push(vmm_tests_run_job.finish());
+            let vmm_tests_run_job = vmm_tests_run_job.finish();
+            if !label.contains("snp") {
+                all_jobs.push(vmm_tests_run_job);
+            }
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64

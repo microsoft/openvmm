@@ -21,6 +21,9 @@ use x86_64::structures::idt::InterruptDescriptorTable;
 /// bytes) followed by a `jmp rel32` to `isr_common` (5 bytes).
 const ISR_STUB_LEN: usize = 10;
 
+#[cfg(target_feature = "avx")]
+compile_error!("AVX is not supported by this module");
+
 core::arch::global_asm! {
     ".globl isr_common",
     "isr_common:",
@@ -72,6 +75,9 @@ core::arch::global_asm! {
 
 unsafe extern "C" {
     /// Base of the 256 assembly interrupt entry stubs defined in `global_asm!`.
+    //  SAFETY: ISR0 is used as reference symbol, we don't actually read/write to it,
+    //  the handler operations are already marked as unsafe when handlers defined
+    //  in global_asm are called.
     safe static ISR0: [u8; 256 * ISR_STUB_LEN];
 }
 
@@ -107,9 +113,10 @@ fn has_error_code(vector: u8) -> bool {
 ///
 /// # Safety
 /// Must only be called from `isr_common` with a valid pointer to the saved
-/// [`Frame`] on the interrupt stack.
+/// [`Frame`] on the interrupt stack. Invalid Frame pointers can cause
+/// undefined behavior.
 unsafe extern "sysv64" fn isr_handler(frame: *mut Frame) -> bool {
-    // SAFETY: `isr_common` passes a valid pointer to the saved frame.
+    // SAFETY: Caller guarantees a valid pointer to the saved frame.
     let vector = unsafe { (*frame).vector as u8 };
     super::interrupt::dispatch(vector);
     has_error_code(vector)

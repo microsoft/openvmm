@@ -12,7 +12,7 @@ flowey_request! {
 
         pub arch: crate::common::CommonArch,
         pub release: bool,
-        /// Custom name for the output binary and VHD. Defaults to "opentmk".
+        /// Custom name for the output `.efi`, `.vhd`, and `.pdb`. Defaults to "opentmk".
         pub name: Option<String>,
         /// Optional JSON test-selection config to embed in the built VHD.
         pub config: Option<PathBuf>,
@@ -81,6 +81,9 @@ impl SimpleFlowNode for Node {
                 } else {
                     opentmk_disk::build_opentmk_vhd(&efi_bytes, disk_arch)?
                 };
+                if vhd_path.exists() {
+                    fs_err::remove_file(&vhd_path)?;
+                }
                 image.persist(&vhd_path)?;
 
                 fs_err::copy(&efi, output_dir.join(format!("{name}.efi")))?;

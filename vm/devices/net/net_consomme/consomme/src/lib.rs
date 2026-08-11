@@ -40,6 +40,8 @@ const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
     max: 4 * 1024 * 1024,
 };
 
+pub use dns_resolver::StaticDnsRecord;
+pub use dns_resolver::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -60,6 +62,7 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
@@ -115,7 +118,7 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
-    dns: Option<dns_resolver::DnsResolver>,
+    dns: dns_resolver::DnsResolver,
     host_has_ipv6: bool,
 }
 
@@ -517,12 +520,32 @@ pub trait Client {
     /// packet contains an IPv4 header, TCP header, and/or UDP header with a
     /// valid checksum.
     ///
-    /// TODO:
-    ///
-    /// 1. support >MTU sized packets (RSC/LRO/GRO)
-    /// 2. allow discontiguous data to eliminate the extra copy from the TCP
-    ///    window.
+    /// TODO: support >MTU sized packets (RSC/LRO/GRO).
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState);
+
+    /// Transmits a packet whose bytes are provided as multiple discontiguous
+    /// segments, delivered in order as a single logical packet.
+    ///
+    /// This lets callers avoid linearizing a frame into a scratch buffer when
+    /// its payload is not contiguous (for example, a header segment followed by
+    /// TCP window bytes that wrap a ring buffer). The `checksum` argument has
+    /// the same meaning as for [`Client::recv`].
+    ///
+    /// The default implementation copies the segments into a contiguous buffer
+    /// and forwards to [`Client::recv`]. Clients that can write discontiguous
+    /// data directly to the guest should override this to eliminate the copy.
+    fn recv_segments(&mut self, segments: &[&[u8]], checksum: &ChecksumState) {
+        if let [segment] = segments {
+            self.recv(segment, checksum);
+            return;
+        }
+        let total = segments.iter().map(|s| s.len()).sum();
+        let mut data = Vec::with_capacity(total);
+        for segment in segments {
+            data.extend_from_slice(segment);
+        }
+        self.recv(&data, checksum);
+    }
 
     /// Specifies the maximum size for the next call to `recv`.
     ///
@@ -792,13 +815,15 @@ impl Consomme {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
                     params.nameservers = params.internal_nameservers(host_has_ipv6);
-                    Some(dns)
+                    dns
                 }
                 Err(_) => {
                     tracelimit::warn_ratelimited!(
                         "failed to initialize DNS resolver, falling back to using host DNS settings"
                     );
-                    None
+                    dns_resolver::DnsResolver::without_backend(
+                        dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
+                    )
                 }
             };
         let timeout = params.udp_timeout;
@@ -834,6 +859,43 @@ impl Consomme {
     /// acceptable.
     pub fn clear_local_addr_map(&mut self) {
         self.state.local_addr_map.clear();
+    }
+
+    /// Adds a static DNS record that will be returned directly
+    /// if the guest sends a matching query.
+    pub fn add_dns_record(
+        &mut self,
+        record: StaticDnsRecord,
+        name: &str,
+    ) -> Result<(), StaticDnsRecordError> {
+        self.dns.add_static_record(record, name)
+    }
+
+    /// Allocates a virtual address within this endpoint's subnet and routes
+    /// guest traffic sent to it to `destination` on the host.
+    /// Returns `None` if the subnet's virtual address pool is exhausted.
+    pub fn create_virtual_address(&mut self, destination: IpAddr) -> Option<IpAddr> {
+        match destination {
+            IpAddr::V4(destination) => {
+                let net_mask = self.state.params.net_mask;
+                let gateway_ip = self.state.params.gateway_ip;
+                let client_ip = self.state.params.client_ip;
+                let subnet_base = Ipv4Addr::from(u32::from(gateway_ip) & u32::from(net_mask));
+                self.state
+                    .local_addr_map
+                    .get_or_allocate_v4(destination, subnet_base, net_mask, gateway_ip, client_ip)
+                    .map(IpAddr::V4)
+            }
+            IpAddr::V6(destination) => {
+                let gateway_ll = self.state.params.gateway_link_local_ipv6;
+                let client_ll = self.state.params.client_ip_ipv6;
+                let client_routable = self.state.params.client_ip_ipv6_routable;
+                self.state
+                    .local_addr_map
+                    .get_or_allocate_v6(destination, gateway_ll, client_ll, client_routable)
+                    .map(IpAddr::V6)
+            }
+        }
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.
@@ -1081,7 +1143,7 @@ impl<T: Client> Access<'_, T> {
 
     /// Updates the DNS nameservers based on the current consomme parameters.
     pub fn update_dns_nameservers(&mut self) {
-        if self.inner.dns.is_some() {
+        if self.inner.dns.is_available() {
             self.inner.state.params.nameservers = self
                 .inner
                 .state

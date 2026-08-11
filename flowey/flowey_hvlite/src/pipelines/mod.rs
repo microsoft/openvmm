@@ -27,11 +27,10 @@ pub enum OpenvmmPipelines {
     },
 
     BuildIgvm(build_igvm::BuildIgvmCli),
-    BuildReproducible(build_reproducible::BuildReproducibleCli),
-    CustomVmfirmwareigvmDll(custom_vmfirmwareigvm_dll::CustomVmfirmwareigvmDllCli),
-
     /// Build OpenTMK and package it into a bootable VHD
     BuildOpentmk(build_opentmk::BuildOpentmkCli),
+    BuildReproducible(build_reproducible::BuildReproducibleCli),
+    CustomVmfirmwareigvmDll(custom_vmfirmwareigvm_dll::CustomVmfirmwareigvmDllCli),
 
     /// Flowey pipelines primarily designed to run in CI.
     #[clap(subcommand)]
@@ -58,7 +57,15 @@ impl IntoPipeline for OpenvmmPipelines {
         match self {
             OpenvmmPipelines::Regen { args } => {
                 let status = std::process::Command::new("cargo")
-                    .args(["run", "-p", "flowey_hvlite", "--", "regen"])
+                    .args([
+                        "run",
+                        "-p",
+                        "flowey_hvlite",
+                        "--profile",
+                        "light",
+                        "--",
+                        "regen",
+                    ])
                     .args(args)
                     .spawn()?
                     .wait()?;

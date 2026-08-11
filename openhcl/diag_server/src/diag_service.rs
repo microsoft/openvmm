@@ -437,7 +437,7 @@ impl DiagServiceHandler {
 
             builder
                 .spawn()
-                .with_context(|| format!("failed to launch {}", &request.command))?
+                .with_context(|| format!("failed to launch {}", request.command))?
         };
 
         let pid = child.id();

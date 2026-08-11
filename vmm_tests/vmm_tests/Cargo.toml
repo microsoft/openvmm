@@ -32,6 +32,7 @@ tmk_tests.workspace = true
 petri_artifacts_common.workspace = true
 petri.workspace = true
 inspect.workspace = true
+initrd_cpio.workspace = true
 
 get_resources.workspace = true
 openvmm_defs.workspace = true
@@ -51,6 +52,7 @@ vm_resource.workspace = true
 disk_vhd1.workspace = true
 
 guid.workspace = true
+hvs_file.workspace = true
 kmsg.workspace = true
 mesh.workspace = true
 pal.workspace = true

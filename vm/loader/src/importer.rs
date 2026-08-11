@@ -20,8 +20,6 @@ pub enum BootPageAcceptance {
     ExclusiveUnmeasured,
     /// The page contains hardware-specific VP context information.
     VpContext,
-    /// This page communicates error information to the host.
-    ErrorPage,
     /// This page communicates hardware-specific secret information and the page
     /// data is unmeasured.
     SecretsPage,
@@ -263,6 +261,12 @@ pub enum Aarch64Register {
     Pc(u64),
     X0(u64),
     X1(u64),
+    X2(u64),
+    X3(u64),
+    X4(u64),
+    X5(u64),
+    X6(u64),
+    X7(u64),
     Cpsr(u64),
     VbarEl1(u64),
     Ttbr0El1(u64),
@@ -279,6 +283,12 @@ impl From<igvm::registers::AArch64Register> for Aarch64Register {
             igvm_reg::Pc(v) => Aarch64Register::Pc(v),
             igvm_reg::X0(v) => Aarch64Register::X0(v),
             igvm_reg::X1(v) => Aarch64Register::X1(v),
+            igvm_reg::X2(v) => Aarch64Register::X2(v),
+            igvm_reg::X3(v) => Aarch64Register::X3(v),
+            igvm_reg::X4(v) => Aarch64Register::X4(v),
+            igvm_reg::X5(v) => Aarch64Register::X5(v),
+            igvm_reg::X6(v) => Aarch64Register::X6(v),
+            igvm_reg::X7(v) => Aarch64Register::X7(v),
             igvm_reg::Cpsr(v) => Aarch64Register::Cpsr(v),
             igvm_reg::SctlrEl1(v) => Aarch64Register::SctlrEl1(v),
             igvm_reg::TcrEl1(v) => Aarch64Register::TcrEl1(v),
@@ -297,6 +307,12 @@ impl From<Aarch64Register> for igvm::registers::AArch64Register {
             Aarch64Register::Pc(v) => igvm_reg::Pc(v),
             Aarch64Register::X0(v) => igvm_reg::X0(v),
             Aarch64Register::X1(v) => igvm_reg::X1(v),
+            Aarch64Register::X2(v) => igvm_reg::X2(v),
+            Aarch64Register::X3(v) => igvm_reg::X3(v),
+            Aarch64Register::X4(v) => igvm_reg::X4(v),
+            Aarch64Register::X5(v) => igvm_reg::X5(v),
+            Aarch64Register::X6(v) => igvm_reg::X6(v),
+            Aarch64Register::X7(v) => igvm_reg::X7(v),
             Aarch64Register::Cpsr(v) => igvm_reg::Cpsr(v),
             Aarch64Register::SctlrEl1(v) => igvm_reg::SctlrEl1(v),
             Aarch64Register::TcrEl1(v) => igvm_reg::TcrEl1(v),
@@ -358,19 +374,6 @@ impl IsolationConfig {
             edx: 0,
         }
     }
-}
-
-#[derive(Debug)]
-pub struct ImportRegion {
-    pub page_base: u64,
-    pub page_count: u64,
-    pub acceptance: BootPageAcceptance,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct PageRegion {
-    pub page_base: u64,
-    pub page_count: u64,
 }
 
 #[derive(Debug)]
@@ -466,7 +469,7 @@ where
         &mut self,
         page_base: u64,
         page_count: u64,
-        debug_tag: &str,
+        debug_tag: &'static str,
         acceptance: BootPageAcceptance,
         data: &[u8],
     ) -> anyhow::Result<()>;

@@ -1,14 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Build a bootable OpenTMK UEFI disk image, shared by host tooling.
-//!
-//! Both `petri` (test runtime) and the flowey `build-opentmk` pipeline turn the
-//! `opentmk.efi` application into a fixed VHD with a GPT + FAT32 ESP. This crate
-//! is the single owner of that logic so the two paths can't drift. Two builders
-//! are provided: [`build_opentmk_vhd`] for the bare artifact and
-//! [`build_opentmk_vhd_with_config`] which first patches an embedded
-//! [`opentmk_protocol::TestConfig`] to select a test.
+//! Build a bootable OpenTMK UEFI disk image for the flowey `build-opentmk` path.
+//! [`build_opentmk_vhd`] builds as-is; [`build_opentmk_vhd_with_config`] patches [`opentmk_protocol::TestConfig`].
 
 use anyhow::Context;
 use guid::Guid;
@@ -96,7 +90,8 @@ fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Resul
     };
     gpt.write_into(file)?;
     let start = gpt[1].starting_lba * SECTOR_SIZE;
-    let bytes = (gpt[1].ending_lba - gpt[1].starting_lba) * SECTOR_SIZE;
+    // GPT LBAs are inclusive, so the sector count spans `end - start + 1`.
+    let bytes = (gpt[1].ending_lba - gpt[1].starting_lba + 1) * SECTOR_SIZE;
     Ok(start..start + bytes)
 }
 

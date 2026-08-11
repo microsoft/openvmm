@@ -14,7 +14,10 @@ Examples:
     python repo_support/investigate_ci.py 23017249697   # Investigate run directly
 
 This script:
-  1. Finds the most recent CI run (or uses the given run ID)
+  1. Finds every failed CI run for the commit (or uses the given run ID).
+     A single commit can have multiple CI workflows (e.g. "OpenVMM PR" and
+     "OpenVMM Docs PR"); all failing ones are investigated. Only the newest
+     run of each workflow is considered, so superseded runs are ignored.
   2. Identifies failed jobs
   3. Downloads unit test JUnit XML artifacts and reports failures
   4. Downloads petri VMM test log artifacts for the run
@@ -27,6 +30,7 @@ Requires: gh (GitHub CLI), authenticated to microsoft/openvmm
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +39,10 @@ from pathlib import Path
 
 
 REPO = "microsoft/openvmm"
+
+# Leading timestamp emitted by GitHub Actions on each raw log line,
+# e.g. "2026-07-28T12:34:56.7890123Z ".
+_TIMESTAMP_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*")
 
 
 def gh(*args: str, check: bool = True, quiet: bool = False) -> str:
@@ -69,33 +77,77 @@ def gh(*args: str, check: bool = True, quiet: bool = False) -> str:
 # Workflow names for the main CI pipelines, in priority order.
 _CI_WORKFLOW_NAMES = ["OpenVMM PR", "[Optional] OpenVMM Release PR", "OpenVMM Docs PR"]
 
+# Conclusions that indicate a non-successful run.
+_FAILURE_CONCLUSIONS = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
 
-def _pick_best_run(runs: list[dict]) -> dict | None:
-    """Pick the most relevant run from a list, preferring failed CI runs."""
+
+def _workflow_sort_key(run: dict) -> int:
+    """Sort key placing known CI workflows first, in priority order."""
+    try:
+        return _CI_WORKFLOW_NAMES.index(run.get("name", ""))
+    except ValueError:
+        return len(_CI_WORKFLOW_NAMES)
+
+
+def _latest_per_workflow(runs: list[dict]) -> list[dict]:
+    """Keep only the newest run of each workflow.
+
+    A single commit can accumulate several runs of the *same* workflow: any
+    event that re-fires `pull_request` (reopening the PR, marking it ready for
+    review, ...) starts a fresh run against the same head SHA, and the
+    workflows' `cancel-in-progress` concurrency groups leave the superseded
+    run marked `cancelled`. Only the newest run of each workflow reflects the
+    current state, so drop the rest.
+
+    Note that GitHub's "re-run jobs" does *not* create a new run — it adds an
+    attempt to the existing run — so re-runs need no special handling here.
+    """
+    latest: dict[str, dict] = {}
+    for run in runs:
+        name = run.get("name", "")
+        prev = latest.get(name)
+        if prev is None or _recency_key(run) > _recency_key(prev):
+            latest[name] = run
+    return list(latest.values())
+
+
+def _recency_key(run: dict) -> tuple[str, int]:
+    """Sort key ordering runs from oldest to newest."""
+    return (run.get("createdAt", ""), run.get("databaseId", 0))
+
+
+def _pick_runs(runs: list[dict]) -> list[dict]:
+    """Pick the relevant runs from a list.
+
+    A single commit typically has several workflow runs (e.g. "OpenVMM PR"
+    and "OpenVMM Docs PR"), and more than one of them can fail. Return every
+    failed run so that none are silently ignored, plus any still-running CI
+    workflow, since it may already have failed jobs. If there is nothing to
+    investigate, return a single run so the caller can still report status.
+    """
+    runs = _latest_per_workflow(runs)
     if not runs:
-        return None
+        return []
 
-    # Conclusions that indicate a non-successful run.
-    _failure_conclusions = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
+    interesting = [
+        r
+        for r in runs
+        if r.get("conclusion") in _FAILURE_CONCLUSIONS
+        or (r.get("status") != "completed" and r.get("name") in _CI_WORKFLOW_NAMES)
+    ]
+    if interesting:
+        return sorted(interesting, key=_workflow_sort_key)
 
-    # First pass: prefer a failed run from a known CI workflow.
-    for name in _CI_WORKFLOW_NAMES:
-        for r in runs:
-            if r.get("name") == name and r.get("conclusion") in _failure_conclusions:
-                return r
-
-    # Second pass: any run from a known CI workflow.
-    for name in _CI_WORKFLOW_NAMES:
-        for r in runs:
-            if r.get("name") == name:
-                return r
-
-    # Fallback: first run.
-    return runs[0]
+    # Nothing failed: report on a single known CI workflow run, if any.
+    known = sorted(
+        (r for r in runs if r.get("name") in _CI_WORKFLOW_NAMES),
+        key=_workflow_sort_key,
+    )
+    return [known[0]] if known else [runs[0]]
 
 
-def _run_id_from_sha(head_sha: str, label: str) -> str:
-    """List CI runs for a commit SHA and return the best run's ID."""
+def _run_ids_from_sha(head_sha: str, label: str) -> list[str]:
+    """List CI runs for a commit SHA and return the relevant runs' IDs."""
     print(f"    Head SHA: {head_sha}")
     runs_json = gh(
         "run",
@@ -105,22 +157,30 @@ def _run_id_from_sha(head_sha: str, label: str) -> str:
         "--commit",
         head_sha,
         "--json",
-        "databaseId,status,conclusion,name",
+        "databaseId,status,conclusion,name,createdAt",
     )
     runs = json.loads(runs_json)
     if not runs:
         print(f"ERROR: No CI runs found for {label}", file=sys.stderr)
         sys.exit(1)
 
-    chosen = _pick_best_run(runs)
-    assert chosen is not None
-    run_id = str(chosen["databaseId"])
-    print(f"    Found run: {chosen.get('name', '?')} (ID: {run_id})")
-    return run_id
+    # Warn about workflows that haven't finished: their results are incomplete,
+    # and more failures may show up later.
+    pending = [r for r in _latest_per_workflow(runs) if r.get("status") != "completed"]
+    for r in sorted(pending, key=_workflow_sort_key):
+        print(f"    NOTE: {r.get('name', '?')} is still {r.get('status', '?')}")
+
+    chosen = _pick_runs(runs)
+    run_ids: list[str] = []
+    for r in chosen:
+        run_id = str(r["databaseId"])
+        run_ids.append(run_id)
+        print(f"    Found run: {r.get('name', '?')} (ID: {run_id})")
+    return run_ids
 
 
-def resolve_current_branch_run() -> str:
-    """Resolve the CI run for the PR associated with the current git branch.
+def resolve_current_branch_runs() -> list[str]:
+    """Resolve the CI runs for the PR associated with the current git branch.
 
     Uses `gh pr view` with no argument, which resolves the PR for the
     current branch. Exits with an error if there is no associated PR.
@@ -149,11 +209,11 @@ def resolve_current_branch_run() -> str:
         print("ERROR: Could not parse PR info for the current branch", file=sys.stderr)
         sys.exit(1)
     print(f"    Current branch PR: #{number}")
-    return _run_id_from_sha(head_sha, f"PR #{number}")
+    return _run_ids_from_sha(head_sha, f"PR #{number}")
 
 
-def resolve_run_id(input_val: str) -> str:
-    """Resolve a PR number or run ID string to a run ID."""
+def resolve_run_ids(input_val: str) -> list[str]:
+    """Resolve a PR number or run ID string to a list of run IDs."""
     try:
         num = int(input_val)
     except ValueError:
@@ -188,11 +248,11 @@ def resolve_run_id(input_val: str) -> str:
             head_sha = None
 
         if head_sha:
-            return _run_id_from_sha(head_sha, f"PR #{num}")
+            return _run_ids_from_sha(head_sha, f"PR #{num}")
 
     # PR lookup failed or returned invalid data; treat as run ID.
     print(f"==> Treating '{input_val}' as run ID...")
-    return input_val
+    return [input_val]
 
 
 def get_run_status(run_id: str) -> None:
@@ -506,10 +566,14 @@ def show_build_failure_logs(run_id: str, failed_jobs: list[dict]) -> None:
         for line in all_lines:
             # Strip the step-name prefix (tab-separated) for matching.
             text = line.split("\t", 1)[-1] if "\t" in line else line
+            # Strip a leading GitHub Actions ISO-8601 timestamp so that
+            # prefix matches below see the actual message.
+            text = _TIMESTAMP_PREFIX_RE.sub("", text)
             text_lower = text.lower()
             if any((
                 "error[e" in text_lower,          # rustc error codes
                 "error:" in text_lower,            # generic compiler errors
+                "[error]" in text_lower,           # mdbook / env_logger
                 "cannot find" in text_lower,       # resolution errors
                 "aborting due to" in text_lower,   # rustc abort summary
                 "could not compile" in text_lower, # cargo summary
@@ -538,24 +602,13 @@ def find_failed_tests(workdir: Path) -> list[Path]:
     return sorted(workdir.rglob("petri.failed"))
 
 
-def main() -> None:
-    if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
-        print(__doc__)
-        sys.exit(0)
-
-    if len(sys.argv) > 2:
-        print(__doc__)
-        sys.exit(1)
-
-    if len(sys.argv) == 2:
-        run_id = resolve_run_id(sys.argv[1])
-    else:
-        run_id = resolve_current_branch_run()
+def investigate_run(run_id: str) -> bool:
+    """Investigate a single CI run. Returns True if it had failed jobs."""
     get_run_status(run_id)
     failed_jobs = get_failed_jobs(run_id)
 
     if not failed_jobs:
-        sys.exit(0)
+        return False
 
     all_artifacts = list_artifacts(run_id)
     vmm_artifact_names = list_test_log_artifacts(all_artifacts)
@@ -565,7 +618,7 @@ def main() -> None:
     show_build_failure_logs(run_id, failed_jobs)
 
     if not vmm_artifact_names and not junit_artifact_names:
-        sys.exit(1)
+        return True
 
     # Set up work directory
     tmpdir_base = Path(tempfile.gettempdir()) / "openvmm-ci-investigate"
@@ -602,21 +655,33 @@ def main() -> None:
             print("  No petri.failed markers found.")
             if junit_failure_count == 0:
                 print("  Tests may have passed, or failure occurred before test execution.")
-                sys.exit(0)
+                return True
         else:
             print(f"  Found {len(failed_markers)} failed test(s):")
             print()
 
     for marker in failed_markers:
         test_dir = marker.parent
+        # petri records the test's real name in petri.test at the start of the
+        # run; the directory name is a lossy encoding of it.
+        start_marker = test_dir / "petri.test"
         try:
-            test_name = marker.read_text(encoding="utf-8", errors="replace").strip()
+            test_name = start_marker.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
+            test_name = ""
+        if not test_name:
             test_name = test_dir.name
 
         print("  ----------------------------------------")
         print(f"  TEST: {test_name}")
         print(f"  DIR:  {test_dir}")
+        # The failure marker holds the error petri recorded, if any.
+        try:
+            error = marker.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            error = ""
+        if error:
+            print(f"  ERROR: {error}")
         print("  ----------------------------------------")
 
         jsonl_file = test_dir / "petri.jsonl"
@@ -655,6 +720,33 @@ def main() -> None:
     print("    uefi.log     - UEFI serial output")
     print()
     print(f"  To view in browser: https://openvmm.dev/test-results/#/runs/{run_id}")
+    return True
+
+
+def main() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0)
+
+    if len(sys.argv) > 2:
+        print(__doc__)
+        sys.exit(1)
+
+    if len(sys.argv) == 2:
+        run_ids = resolve_run_ids(sys.argv[1])
+    else:
+        run_ids = resolve_current_branch_runs()
+
+    any_failed = False
+    for i, run_id in enumerate(run_ids):
+        if len(run_ids) > 1:
+            print()
+            print("##########################################")
+            print(f"# RUN {i + 1} of {len(run_ids)}: {run_id}")
+            print("##########################################")
+        any_failed |= investigate_run(run_id)
+
+    sys.exit(1 if any_failed else 0)
 
 
 if __name__ == "__main__":

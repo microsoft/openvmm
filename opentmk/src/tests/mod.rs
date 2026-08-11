@@ -7,17 +7,15 @@ use opentmk_protocol::OpenTmkConfig;
 
 mod hyperv;
 
-/// Declares a backend's test modules and generates `run_named`, which maps a
-/// test name to its `exec` function. Per-entry attributes gate the module and
-/// its dispatch arm together.
+/// Generates `run_named` to map test names to `exec`. Modules must be declared
+/// separately with explicit `mod` statements; per-entry attributes gate the
+/// matching dispatch arm.
 #[macro_export]
-macro_rules! tmk_tests {
+macro_rules! opentmk_tests {
     (
         ctx: $ctx:ty,
         tests: { $( $(#[$meta:meta])* $module:ident ),* $(,)? } $(,)?
     ) => {
-        $( $(#[$meta])* pub mod $module; )*
-
         /// Runs the named test. Returns `false` if no such test exists.
         pub fn run_named(test: &str, ctx: &mut $ctx) -> bool {
             match test {
@@ -34,13 +32,10 @@ macro_rules! tmk_tests {
     };
 }
 
-/// Generates `dispatch`, which selects a backend, builds its context, and runs
-/// the named test. Returns `false` if the backend or test is unknown.
-///
-/// Each entry maps a backend name to a context builder closure
-/// `|params: &serde_json::Value| -> Ctx`.
+/// Generates `dispatch` to select a backend, build context, and run the named test.
+/// Returns `false` if unknown; entries map names to `|params: &serde_json::Value| -> Ctx`.
 #[macro_export]
-macro_rules! tmk_backends {
+macro_rules! opentmk_backends {
     ( $( $(#[$meta:meta])* $backend:ident => $build:expr ),* $(,)? ) => {
         fn dispatch(backend: &str, test: &str, params: &::serde_json::Value) -> bool {
             match backend {
@@ -58,7 +53,7 @@ macro_rules! tmk_backends {
     };
 }
 
-crate::tmk_backends! {
+crate::opentmk_backends! {
     hyperv => |_params: &serde_json::Value| {
         let mut ctx = crate::platform::hyperv::ctx::HvTestCtx::new();
         ctx.init(hvdef::Vtl::Vtl0).expect("failed to init on BSP");
@@ -68,20 +63,19 @@ crate::tmk_backends! {
 
 /// The embedded config region, patched in place by host tooling to select the
 /// test to run. Layout and parsing live in [`opentmk_protocol`].
+// SAFETY: `OPENTMK_CONFIG` is unique, so `no_mangle` cannot collide.
+// `link_section = ".tmkcfg"` gives it a dedicated section with the patcher layout.
 #[used]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".tmkcfg")]
 pub static OPENTMK_CONFIG: OpenTmkConfig = OpenTmkConfig::new();
 
 /// Reads the embedded config and runs the selected backend/test.
-///
-/// Panics if the config is missing/invalid or names an unknown backend or test.
+/// Panics if config is invalid or names an unknown backend/test.
 pub fn run_test() {
-    // Read through a volatile load so the optimizer cannot assume the static
-    // still holds its empty initializer: the host patches these bytes in the
-    // on-disk image after the build.
-    // SAFETY: `OPENTMK_CONFIG` is a valid, initialized, aligned static of this type.
-    let cfg = unsafe { core::ptr::read_volatile(&raw const OPENTMK_CONFIG) };
+    // `black_box` forces an opaque load so the optimizer cannot fold in the empty
+    // initializer; host patching happens after build and is invisible to the compiler.
+    let cfg = core::hint::black_box(&OPENTMK_CONFIG);
     let Some(cfg) = cfg.parse() else {
         panic!("TMK config missing or invalid: binary must be patched with a backend and test");
     };

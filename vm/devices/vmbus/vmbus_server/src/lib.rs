@@ -700,13 +700,6 @@ impl VmbusServer {
     }
 }
 
-#[derive(mesh::MeshPayload)]
-pub struct RestoreInfo {
-    open_data: Option<OpenData>,
-    gpadls: Vec<(GpadlId, u16, Vec<u64>)>,
-    interrupt: Option<Interrupt>,
-}
-
 #[derive(Default)]
 pub struct SynicMessage {
     data: Vec<u8>,
@@ -2166,9 +2159,11 @@ fn gpadl_ring_size(gpadl: &AlignedGpadlView) -> usize {
 /// This allows us to lock a page in a `GuestMemory` that doesn't have a full mapping, but can
 /// create one for a subrange.
 fn lock_page_with_subrange(gm: &GuestMemory, offset: u64) -> anyhow::Result<guestmem::LockedPages> {
-    Ok(gm
-        .lockable_subrange(offset, PAGE_SIZE as u64)?
-        .lock_gpns(false, &[0])?)
+    Ok(gm.lockable_subrange(offset, PAGE_SIZE as u64)?.lock_gpns(
+        guestmem::AccessType::Write,
+        false,
+        &[0],
+    )?)
 }
 
 /// Helper to create a subrange before locking a single page from a gpn.

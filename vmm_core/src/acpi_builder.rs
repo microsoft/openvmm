@@ -45,9 +45,9 @@ pub struct AcpiSmmuConfig {
 
 /// Binary ACPI tables constructed by [`AcpiTablesBuilder`].
 pub struct BuiltAcpiTables {
-    /// The RDSP. Assumed to be given a whole page.
-    pub rdsp: Vec<u8>,
-    /// The remaining tables pointed to by the RDSP.
+    /// The RSDP. Assumed to be given a whole page.
+    pub rsdp: Vec<u8>,
+    /// The remaining tables pointed to by the RSDP.
     pub tables: Vec<u8>,
 }
 
@@ -1094,7 +1094,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
     /// Build ACPI tables based on the supplied closure that adds devices to the DSDT.
     ///
-    /// The RDSP is assumed to take one whole page.
+    /// The RSDP is assumed to take one whole page.
     ///
     /// Returns tables that should be loaded at the supplied gpa.
     pub fn build_acpi_tables<F>(&self, gpa: u64, add_devices_to_dsdt: F) -> BuiltAcpiTables
@@ -1133,15 +1133,6 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         }
 
         self.build_acpi_tables_inner(gpa, &dsdt_data.to_bytes())
-    }
-
-    /// Build ACPI tables based on the supplied custom DSDT.
-    ///
-    /// The RDSP is assumed to take one whole page.
-    ///
-    /// Returns tables that should be loaded at the supplied gpa.
-    pub fn build_acpi_tables_custom_dsdt(&self, gpa: u64, dsdt: &[u8]) -> BuiltAcpiTables {
-        self.build_acpi_tables_inner(gpa, dsdt)
     }
 
     fn build_acpi_tables_inner(&self, gpa: u64, dsdt: &[u8]) -> BuiltAcpiTables {
@@ -1326,9 +1317,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             self.with_gtdt(|t| b.append(t));
         }
 
-        let (rdsp, tables) = b.build();
+        let (rsdp, tables) = b.build();
 
-        BuiltAcpiTables { rdsp, tables }
+        BuiltAcpiTables { rsdp, tables }
     }
 
     /// Helper method to construct an MADT without constructing the rest of

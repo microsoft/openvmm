@@ -5,8 +5,8 @@
 
 use super::address_space::LocalMap;
 use core::arch::asm;
-use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
+use core::sync::atomic::fence;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
@@ -22,37 +22,34 @@ use {
     super::address_space::X64_PTE_READ_WRITE,
     crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL,
     crate::single_threaded::SingleThreaded, bitfield_struct::bitfield, core::cell::Cell,
-    core::cell::UnsafeCell, core::sync::atomic::compiler_fence, core::sync::atomic::fence,
-    hvdef::HvRegisterValue, hvdef::HvX64RegisterName, hvdef::hypercall::HvInputVtl,
-    hvdef::hypercall::HypercallOutput, x86defs::snp::GhcbProtocolVersion, x86defs::snp::GhcbUsage,
-    x86defs::snp::SevExitCode, x86defs::snp::SevIoAccessInfo, zerocopy::IntoBytes,
+    core::cell::UnsafeCell, core::sync::atomic::compiler_fence, hvdef::HvRegisterValue,
+    hvdef::HvX64RegisterName, hvdef::hypercall::HvInputVtl, hvdef::hypercall::HypercallOutput,
+    x86defs::snp::GhcbProtocolVersion, x86defs::snp::GhcbUsage, x86defs::snp::SevExitCode,
+    x86defs::snp::SevIoAccessInfo, zerocopy::IntoBytes,
 };
 
-/// Touch a freshly (re)assigned page so the cache engine clears any stale
-/// state left over from the previous page assignment.
+/// Flush all cache lines covering a single page-sized region starting at the
+/// given virtual address.
 ///
-/// Per AMD guidance, following a page assignment change (for example, a
-/// `pvalidate`) software must read the first and last byte of each 4 KiB page
-/// to force the cache engine to clear its state; failing to do so can result
-/// in memory corruption. Relaxed atomic loads are used so the compiler cannot
-/// optimize the accesses away and so they remain well defined even if the host
-/// concurrently modifies shared memory. The loaded values are intentionally
-/// discarded.
-///
-/// # Safety
-///
-/// The caller must guarantee that the 4 KiB page containing `addr` is mapped
-/// and safely accessible for reads for the duration of the call.
-pub(super) unsafe fn cache_lines_fixup_page(addr: u64) {
+/// On AMD SEV-SNP, the C-bit is part of the cache-line tag for a physical
+/// address. When transitioning a page between shared (C=0) and private (C=1)
+/// state, any cache lines tagged with the old C-bit setting must be evicted
+/// before the new mapping is accessed; otherwise stale cache lines can lead
+/// to data corruption observed via the new mapping. Callers must invoke this
+/// using a VA whose PTE has the C-bit setting that is being torn down.
+pub(super) fn cache_lines_flush_page(addr: u64) {
+    const FLUSH_SIZE: u64 = 64; // NOTE: hardcoded cache line size.
     let start = addr & !(X64_PAGE_SIZE - 1);
-    let last = start + X64_PAGE_SIZE - 1;
-    for byte_addr in [start, last] {
-        // SAFETY: The caller guarantees the page containing `addr` is mapped
-        // and readable, so `byte_addr` (its first or last byte) is a valid,
-        // readable address. The access only ever loads and the result is
-        // discarded.
-        let byte = unsafe { &*(byte_addr as *const AtomicU8) };
-        let _ = byte.load(Ordering::Relaxed);
+    let end = start + X64_PAGE_SIZE;
+
+    // Make sure there are no pending writes on the cache lines.
+    fence(Ordering::SeqCst);
+
+    for addr in (start..end).step_by(FLUSH_SIZE as usize) {
+        // SAFETY: No concurrency issues.
+        unsafe {
+            asm!("clflush [{0}]", in(reg) addr, options(nostack));
+        }
     }
 }
 
@@ -564,12 +561,8 @@ impl Ghcb {
         // Map the page as non-confidential by updating the PTE.
         page_table[PT_INDEX] = pte_for_pfn(page_number, false);
         flush_tlb();
-        // Fixup the page from the cache before changing the encrypted state.
-        // SAFETY: The GHCB page is mapped at `GHCB_GVA` (its PTE was set above
-        // and the TLB flushed), so it is mapped and readable here.
-        unsafe {
-            cache_lines_fixup_page(GHCB_GVA.into_bits());
-        }
+        // Evict the page from the cache before changing the encrypted state.
+        cache_lines_flush_page(GHCB_GVA.into_bits());
 
         // Flipping the C-bit makes the contents of the GHCB page scrambled,
         // zero it out.
@@ -650,6 +643,9 @@ impl Ghcb {
         // Map the GHCB page in the guest as confidential and accept it again
         // to return to the original state.
 
+        // Evict the page from the cache before changing the encrypted state.
+        cache_lines_flush_page(GHCB_GVA.into_bits());
+
         // Update the page table entry to make it confidential.
         // Running in identical mapping.
         let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
@@ -672,13 +668,6 @@ impl Ghcb {
 
         flush_tlb();
 
-        // No post-acceptance flush of the private (C=1) cache lines is needed
-        // here, unlike the shared -> private transition in
-        // `accept_pending_vtl2_memory`. That path preserves the page contents
-        // and later reads them back for integrity checks, so stale private
-        // lines left over from speculation must be evicted before the
-        // authoritative write-back. Here the previous contents are
-        // intentionally zeroed over, so any stale private lines are irrelevant.
         ghcb_access::zero_page();
 
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
@@ -870,10 +859,6 @@ fn pvalidate(
 
 /// Accepts or unaccepts a specific gpa range. On SNP systems, this corresponds to issuing a
 /// pvalidate over the GPA range with the desired value of the validate bit.
-///
-/// When accepting (`validate` is true), the cache lines of each freshly
-/// validated page are fixed up before the page is accessed under its new
-/// (private) assignment. No fixup is performed when unvalidating.
 pub fn set_page_acceptance(
     local_map: &mut LocalMap<'_>,
     range: MemoryRange,
@@ -885,29 +870,16 @@ pub fn set_page_acceptance(
 
     while page_count != 0 {
         // Attempt to validate a large page.
+        // Even when pvalidating a large page, the processor only does a 1 byte read. As a result
+        // mapping a single page is sufficient.
+        let mapping = local_map.map_pages(
+            MemoryRange::from_4k_gpn_range(page_base..page_base + 1),
+            true,
+        );
         if page_base.is_multiple_of(pages_per_large_page) && page_count >= pages_per_large_page {
-            let mapping = local_map.map_pages(
-                MemoryRange::from_4k_gpn_range(page_base..page_base + pages_per_large_page),
-                true,
-            );
-            let va = mapping.data.as_ptr() as u64;
-            let res = pvalidate(page_base, va, true, validate)?;
+            let res = pvalidate(page_base, mapping.data.as_ptr() as u64, true, validate)?;
             match res {
                 AcceptGpaStatus::Success => {
-                    if validate {
-                        // Fix up the cache state of every 4K page that was just
-                        // validated, before it is accessed under its new
-                        // (private) assignment.
-                        for page in 0..pages_per_large_page {
-                            // SAFETY: `va` is the base of a mapping covering
-                            // `pages_per_large_page` readable pages, so
-                            // `va + page * X64_PAGE_SIZE` is a mapped, readable
-                            // page.
-                            unsafe {
-                                cache_lines_fixup_page(va + page * X64_PAGE_SIZE);
-                            }
-                        }
-                    }
                     page_count -= pages_per_large_page;
                     page_base += pages_per_large_page;
                     continue;
@@ -917,23 +889,9 @@ pub fn set_page_acceptance(
         }
 
         // Attempt to validate a regular sized page.
-        let mapping = local_map.map_pages(
-            MemoryRange::from_4k_gpn_range(page_base..page_base + 1),
-            true,
-        );
-        let va = mapping.data.as_ptr() as u64;
-        let res = pvalidate(page_base, va, false, validate)?;
+        let res = pvalidate(page_base, mapping.data.as_ptr() as u64, false, validate)?;
         match res {
             AcceptGpaStatus::Success => {
-                if validate {
-                    // Fix up the cache state of the page just validated, before
-                    // it is accessed under its new (private) assignment.
-                    // SAFETY: `va` is the base of a mapping covering this
-                    // readable page.
-                    unsafe {
-                        cache_lines_fixup_page(va);
-                    }
-                }
                 page_count -= 1;
                 page_base += 1;
             }

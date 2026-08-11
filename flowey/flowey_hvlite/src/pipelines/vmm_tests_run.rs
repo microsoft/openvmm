@@ -41,8 +41,10 @@ pub struct VmmTestsRunCli {
     /// Directory for the output artifacts.
     ///
     /// If not specified, defaults to `target/vmm_tests`.
-    /// WSL-to-Windows runs still require explicitly overriding this to a
-    /// Windows-accessible output directory.
+    /// WSL-to-Windows runs must override this to a Windows-accessible output
+    /// directory (a DrvFs mount like `/mnt/c/...`) only when the selected tests
+    /// use disk images that require a Windows filesystem (Hyper-V disks, or
+    /// VHDX / dynamic VHD1 images); otherwise the default works.
     #[clap(long)]
     dir: Option<PathBuf>,
 
@@ -211,11 +213,6 @@ impl IntoPipeline for VmmTestsRunCli {
 
         let repo_root = crate::repo_root();
 
-        // Validate output directory for WSL
-        validate_output_dir(dir.as_deref(), target_os)?;
-        let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
-        std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
-
         // Resolve the incubator profile path. `--incubator` with no value uses
         // the default profile for the target; `--incubator <PATH>` overrides.
         let incubator_profile = match incubator {
@@ -350,6 +347,31 @@ impl IntoPipeline for VmmTestsRunCli {
         }
 
         log::info!("Resolved selections: {:?}", resolved);
+
+        // Validate the output directory now that we know which disk images the
+        // selected tests need. When targeting Windows from WSL, the only hard
+        // filesystem constraint is that certain disk images must live on a
+        // Windows filesystem rather than a `\\wsl$` 9p path:
+        //
+        // - Hyper-V tests attach their VHDs to a real Hyper-V VM, whose worker
+        //   process can't open disks over 9p, so any Hyper-V disk needs a
+        //   Windows path regardless of format.
+        // - OpenVMM opens fixed VHD1, VMGS, and raw/ISO images as plain files
+        //   (fine over 9p), but routes VHDX (and dynamic/differencing VHD1)
+        //   disks through the Windows virtual-disk mount API, which requires a
+        //   real local volume. The only such artifact today is the `.vhdx`.
+        //
+        // All other cases (streamed disks, or fixed-VHD1 files even with
+        // `--no-lazy-fetch`) work fine from the default WSL-side directory.
+        let needs_windows_disk = !build_only
+            && (resolved.needs_hyperv
+                || resolved
+                    .downloads
+                    .iter()
+                    .any(|a| a.filename().ends_with(".vhdx")));
+        validate_output_dir(dir.as_deref(), target_os, needs_windows_disk)?;
+        let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
+        std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
 
         let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
             ReadVar::from_static(repo_root),
@@ -650,29 +672,39 @@ fn default_incubator_profile(repo_root: &Path, target: &CommonTriple) -> Option<
 
 /// Validate the output directory path based on the current platform.
 ///
-/// When running under WSL and targeting Windows, the output directory must be a
-/// Windows-accessible path (DrvFs mount like `/mnt/c/...`) because Windows
-/// requires VHDs to reside on a Windows filesystem. On native Windows or Linux
-/// this check is a no-op.
+/// When running under WSL and targeting Windows, some disk images must live on
+/// a Windows-accessible path (a DrvFs mount like `/mnt/c/...`) rather than a
+/// `\\wsl$` 9p path: Hyper-V disks (attached to a real Hyper-V VM) and VHDX /
+/// dynamic VHD1 images (opened via the Windows virtual-disk mount API). This
+/// constraint only applies when the selected tests actually use such a disk
+/// (`needs_windows_disk`); fixed-VHD1, VMGS, ISO, and streamed disks work fine
+/// from the WSL side. On native Windows or Linux this check is a no-op.
 fn validate_output_dir(
     dir: Option<&Path>,
     target_os: target_lexicon::OperatingSystem,
+    needs_windows_disk: bool,
 ) -> anyhow::Result<()> {
-    if flowey_cli::running_in_wsl() && matches!(target_os, target_lexicon::OperatingSystem::Windows)
+    if needs_windows_disk
+        && flowey_cli::running_in_wsl()
+        && matches!(target_os, target_lexicon::OperatingSystem::Windows)
     {
         if let Some(dir) = dir {
             if !flowey_cli::is_wsl_windows_path(dir) {
                 anyhow::bail!(
                     "When targeting Windows from WSL, --dir must be a path on Windows \
-                        (i.e., on a DrvFs mount like /mnt/c/vmm_tests). \
+                        (i.e., on a DrvFs mount like /mnt/c/vmm_tests) because the selected \
+                        tests use disk images that require a Windows filesystem (Hyper-V \
+                        disks, or VHDX / dynamic VHD1 images). \
                         Got: {}",
                     dir.display()
                 );
             }
         } else {
             anyhow::bail!(
-                "An output directory on the Windows filesystem \
-                    must be specified when targeting Windows from WSL."
+                "The selected tests use disk images that require a Windows filesystem \
+                    (Hyper-V disks, or VHDX / dynamic VHD1 images) when targeting Windows \
+                    from WSL. Specify an output directory on a DrvFs mount with --dir \
+                    (e.g., --dir /mnt/c/vmm_tests)."
             )
         }
     }

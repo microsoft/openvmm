@@ -21,6 +21,7 @@ debug_worker_defs.workspace = true
 vmotherboard.workspace = true
 diag_client.workspace = true
 memory_range.workspace = true
+openvmm_build_info.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 vmm_core_defs.workspace = true
@@ -29,10 +30,7 @@ openvmm_pcat_locator.workspace = true
 openvmm_ttrpc_vmservice.workspace = true
 disk_backend_resources.workspace = true
 disk_crypt_resources.workspace = true
-firmware_uefi_custom_vars.workspace = true
 firmware_uefi_resources.workspace = true
-hyperv_secure_boot_templates.workspace = true
-hyperv_uefi_custom_vars_json.workspace = true
 floppy_resources.workspace = true
 framebuffer.workspace = true
 gdma_resources.workspace = true
@@ -80,6 +78,7 @@ sparse_mmap.workspace = true
 term.workspace = true
 tracelimit.workspace = true
 tracing_helpers.workspace = true
+vmm_cli.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "string"] }
@@ -89,6 +88,7 @@ fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
+parking_lot.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
 shell-words.workspace = true
@@ -119,6 +119,9 @@ features = [
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

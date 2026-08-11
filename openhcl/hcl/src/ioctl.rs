@@ -218,30 +218,6 @@ pub enum ApplyVtlProtectionsError {
     InvalidVtl(Vtl),
 }
 
-/// Error setting guest VSM configuration.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum SetGuestVsmConfigError {
-    #[error("hypervisor failed to configure guest vsm to {enable_guest_vsm}")]
-    Hypervisor {
-        enable_guest_vsm: bool,
-        #[source]
-        hv_error: HvError,
-    },
-}
-
-/// Error getting the VP idnex from an APIC ID.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum GetVpIndexFromApicIdError {
-    #[error("hypervisor failed when querying vp index for {apic_id}")]
-    Hypervisor {
-        #[source]
-        hv_error: HvError,
-        apic_id: u32,
-    },
-}
-
 /// Error setting VSM partition configuration.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
@@ -376,6 +352,7 @@ pub(crate) mod ioctls {
     const MSHV_VTL_RSI_SYSREG_READ: u16 = 0x42;
     const MSHV_VTL_RSI_SYSREG_WRITE: u16 = 0x43;
     const MSHV_VTL_RSI_SET_MEM_PERM: u16 = 0x44;
+    const MSHV_VTL_RSI_GET_IPA_STATE: u16 = 0x45;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -615,6 +592,14 @@ pub(crate) mod ioctls {
         MSHV_IOCTL,
         MSHV_VTL_RSI_SYSREG_READ,
         cca::mshv_rsi_sysreg_rw
+    );
+
+    // CCA: Get the RIPAS state of an ipa
+    ioctl_readwrite!(
+        hcl_rsi_ipa_state_read,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_GET_IPA_STATE,
+        cca::mshv_rsi_get_ipa_state
     );
 
     // CCA: Assign the address described by `mshv_rsi_set_mem_perm`
@@ -1849,8 +1834,19 @@ impl Hcl {
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
+        // This capability is TDX-only. On non-TDX guests treat EOPNOTSUPP as
+        // "not supported" rather than failing; on TDX propagate the error.
         let supports_lower_vtl_timer_virt =
-            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+            match mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT) {
+                Ok(supported) => supported,
+                Err(Error::CheckExtensions(_, nix::errno::Errno::EOPNOTSUPP))
+                    if isolation != IsolationType::Tdx =>
+                {
+                    false
+                }
+                Err(err) => return Err(err),
+            };
+
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,

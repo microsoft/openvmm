@@ -39,13 +39,14 @@ use pci_core::spec::cfg_space;
 use pci_core::spec::cfg_space::HeaderType00;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::os::fd::AsFd;
 use std::os::unix::fs::FileExt;
+use vfio_assigned_device_resources::BarAddressConfig;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
-use vmcore::vm_task::VmTaskDriverSource;
 
 /// VFIO BAR region information (offset and size within the device fd).
 #[derive(Debug, Clone, Copy, Inspect)]
@@ -279,28 +280,14 @@ impl VfioAssignedPciDevice {
     pub async fn new(
         binding: manager::VfioDeviceBinding,
         pci_id: String,
-        driver_source: &VmTaskDriverSource,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
-        bar_pt: [bool; 6],
+        bar_addresses: [BarAddressConfig; 6],
     ) -> anyhow::Result<Self> {
-        let driver = driver_source.simple();
-        let retry = vfio_sys::VfioRetry::new(&driver, &pci_id);
-        let is_enodev = |e: &anyhow::Error| {
-            e.chain().any(|cause| {
-                cause
-                    .downcast_ref::<nix::errno::Errno>()
-                    .is_some_and(|e| *e == nix::errno::Errno::ENODEV)
-            })
-        };
-        let vfio_device = retry
-            .retry(
-                || binding.group().open_device(&pci_id),
-                &is_enodev,
-                "open_device",
-            )
-            .await
+        let vfio_device = binding
+            .group()
+            .open_device(&pci_id)
             .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
 
         Self::from_device(
@@ -310,7 +297,7 @@ impl VfioAssignedPciDevice {
             register_mmio,
             msi_target,
             memory_mapper,
-            bar_pt,
+            bar_addresses,
         )
         .await
     }
@@ -322,7 +309,7 @@ impl VfioAssignedPciDevice {
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
-        bar_pt: [bool; 6],
+        bar_addresses: [BarAddressConfig; 6],
     ) -> anyhow::Result<Self> {
         let (device, binding) = cdev_binding.into_parts();
         Self::from_device(
@@ -332,19 +319,19 @@ impl VfioAssignedPciDevice {
             register_mmio,
             msi_target,
             memory_mapper,
-            bar_pt,
+            bar_addresses,
         )
         .await
     }
 
     async fn from_device(
         vfio_device: vfio_sys::Device,
-        binding: manager::VfioBinding,
+        mut binding: manager::VfioBinding,
         pci_id: String,
         register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
-        bar_pt: [bool; 6],
+        bar_addresses: [BarAddressConfig; 6],
     ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
@@ -447,6 +434,33 @@ impl VfioAssignedPciDevice {
         // guest enables MMIO, allowing direct hardware access without VM
         // exits. Non-mmappable regions (e.g. MSI-X table/PBA) remain
         // trap-and-emulate.
+        //
+        // For the iommufd/cdev path, also export each mmappable BAR area as a
+        // dmabuf and register it under the area's intrinsic identity (cdev
+        // inode + BAR-region file offset). This lets other assigned devices
+        // perform peer-to-peer DMA to this BAR via `IOMMU_IOAS_MAP_FILE` — the
+        // kernel maps the BAR's physical MMIO through the PCI P2PDMA provider,
+        // avoiding the need to pin MMIO pages by host VA (which usually fails).
+        // The legacy group/type1 path has no registry, so dmabuf P2P is
+        // skipped there and BAR P2P falls back to best-effort VA mapping.
+        let dmabuf_registry = binding.dmabuf_registry().cloned();
+        let dmabuf_inode = if dmabuf_registry.is_some() && vfio_device.device.supports_dma_buf()? {
+            Some(
+                vfio_sys::fd_identity(vfio_device.device.as_fd())
+                    .context("failed to stat VFIO cdev for dmabuf registration")?,
+            )
+        } else {
+            None
+        };
+        // Record the cdev inode up front, before registering any BAR dmabufs
+        // in the loop below. If device setup fails partway through (e.g. a
+        // region mapping error returns early), the binding's `Drop` then
+        // deregisters and closes whatever dmabufs were already registered.
+        // Deferring this until after the loop would leak those fds into the
+        // shared per-IOAS registry on an early return.
+        if let Some(inode) = dmabuf_inode {
+            binding.set_dmabuf_inode(inode);
+        }
         let mut bar_direct_maps = Vec::new();
         for (i, areas) in bar_mmap_areas.iter().enumerate() {
             let Some(region) = &bar_regions[i] else {
@@ -479,6 +493,45 @@ impl VfioAssignedPciDevice {
                     bar_range: area,
                     mapping: None,
                 });
+
+                // Export a dmabuf for this BAR area and register it under the
+                // same key the DMA target computes at map time: the cdev inode
+                // plus the BAR-region file offset (`vfio_offset + area.start`).
+                // The dmabuf itself is created from the BAR-relative range.
+                if let (Some(registry), Some((st_dev, st_ino))) = (&dmabuf_registry, dmabuf_inode) {
+                    match vfio_device
+                        .device
+                        .export_dma_buf(i as u32, area.start(), area.len())
+                    {
+                        Ok(dmabuf) => {
+                            registry.register(
+                                st_dev,
+                                st_ino,
+                                region.vfio_offset + area.start(),
+                                dmabuf,
+                            );
+                        }
+                        // Exporting a BAR dmabuf is best-effort and never
+                        // fatal. The common failure is EINVAL when the BAR has
+                        // no P2PDMA provider on this platform/topology (the
+                        // kernel's `vfio_pci_core_get_dmabuf_phys` calls
+                        // `pcim_p2pdma_provider()` and reports EINVAL when it
+                        // returns NULL). That just means this area can't be a
+                        // peer-to-peer DMA *target* here, so fall back to
+                        // best-effort VA mapping; device assignment still works
+                        // for everything except P2P into this BAR.
+                        Err(e) => {
+                            tracing::warn!(
+                                error = e.as_ref() as &dyn std::error::Error,
+                                pci_id = pci_id.as_str(),
+                                bar = i,
+                                area = %area,
+                                "failed to export BAR dmabuf; P2P DMA to this \
+                                 area will fall back to best-effort VA mapping"
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -490,10 +543,9 @@ impl VfioAssignedPciDevice {
             "VFIO assigned PCI device initialized"
         );
 
-        // Build initial BAR values. Start from bar_flags (encoding bits
-        // only — guaranteed clean). For passthrough BARs, overlay the
-        // physical addresses from sysfs.
-        let bars = apply_bar_passthrough(&pci_id, &bar_flags, &bar_masks, &bar_pt)?;
+        // Build initial BAR values from clean encoding bits, applying any
+        // configured host-assigned or fixed physical addresses.
+        let bars = apply_bar_addresses(&pci_id, &bar_flags, &bar_masks, &bar_addresses)?;
         let bar_reset_defaults = bars;
 
         Ok(Self {
@@ -567,12 +619,6 @@ impl VfioAssignedPciDevice {
     fn msix_enable(&mut self) -> anyhow::Result<()> {
         let msix = self.msix.as_ref().expect("msix must be present");
         let count = msix.vector_count;
-
-        // VFIO map_msix has a hard limit of 256 eventfds per call.
-        anyhow::ensure!(
-            count <= 256,
-            "MSI-X vector count ({count}) exceeds VFIO limit of 256"
-        );
 
         // Get an interrupt for each vector and trigger lazy irqfd route
         // creation by requesting the backing event.
@@ -733,28 +779,33 @@ fn page_size() -> u64 {
     vfio_sys::host_page_size()
 }
 
-/// Apply BAR passthrough: validate the `bar_pt` flags against the discovered
-/// BAR layout and overlay physical addresses from sysfs.
+/// Apply the configured initial addresses to the discovered BAR layout.
 ///
 /// Rejects requests for unimplemented BARs (zero mask) and for the upper half
 /// of a 64-bit BAR pair (the lower BAR implicitly covers both halves).
-fn apply_bar_passthrough(
+fn apply_bar_addresses(
     pci_id: &str,
     bar_flags: &[u32; 6],
     bar_masks: &[u32; 6],
-    bar_pt: &[bool; 6],
+    bar_addresses: &[BarAddressConfig; 6],
 ) -> anyhow::Result<[u32; 6]> {
-    if !bar_pt.iter().any(|&pt| pt) {
+    if bar_addresses
+        .iter()
+        .all(|bar| *bar == BarAddressConfig::GuestAssigned)
+    {
         return Ok(*bar_flags);
     }
 
     // Validate before reading sysfs.
     for i in 0..6 {
-        if !bar_pt[i] {
+        if bar_addresses[i] == BarAddressConfig::GuestAssigned {
             continue;
         }
         if bar_masks[i] == 0 {
             anyhow::bail!("BAR {i} is not implemented by the device");
+        }
+        if i == 5 && cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit() {
+            anyhow::bail!("64-bit BAR at index 5 is invalid");
         }
         // If the previous BAR is 64-bit, this index is its upper half.
         if i > 0
@@ -765,31 +816,56 @@ fn apply_bar_passthrough(
         }
     }
 
-    // VFIO config space returns cleared BARs after device reset, so sysfs
-    // is the only reliable source of physical addresses.
-    let phys = read_physical_bar_addresses(pci_id)?;
+    // VFIO config space returns cleared BARs after device reset, so sysfs is
+    // the reliable source for host-assigned addresses. Avoid requiring sysfs
+    // when every configured BAR has an explicit address.
+    let physical_addresses = bar_addresses
+        .contains(&BarAddressConfig::HostAssigned)
+        .then(|| read_physical_bar_addresses(pci_id))
+        .transpose()?;
     let mut bars = *bar_flags;
-    for i in 0..6 {
-        if bar_pt[i] {
-            let addr = phys[i];
-            if addr == 0 {
-                anyhow::bail!("BAR {i} passthrough requested but sysfs address is 0");
+    let mut i = 0;
+    while i < 6 {
+        let is_64bit = cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit();
+        let address = match bar_addresses[i] {
+            BarAddressConfig::GuestAssigned => None,
+            BarAddressConfig::HostAssigned => {
+                let address = physical_addresses.as_ref().unwrap()[i];
+                if address == 0 {
+                    anyhow::bail!(
+                        "BAR {i} host address reported by sysfs is 0; use an explicit address for a VFIO variant-driver BAR"
+                    );
+                }
+                Some(address)
             }
-            let is_64bit = cfg_space::BarEncodingBits::from(bar_flags[i]).type_64_bit();
-            if !is_64bit && addr > u32::MAX as u64 {
-                anyhow::bail!("BAR {i} is 32-bit but sysfs address {addr:#x} exceeds 4 GB");
+            BarAddressConfig::Fixed(0) => anyhow::bail!("BAR {i} fixed address is 0"),
+            BarAddressConfig::Fixed(address) => Some(address),
+        };
+        if let Some(address) = address {
+            if !is_64bit && address > u32::MAX as u64 {
+                anyhow::bail!("BAR {i} is 32-bit but address {address:#x} exceeds 4 GB");
             }
-            bars[i] = (addr as u32 & !0xf) | bar_flags[i];
-            if is_64bit && i + 1 < 6 {
-                bars[i + 1] = (addr >> 32) as u32;
+            let address_mask = if is_64bit {
+                (bar_masks[i + 1] as u64) << 32 | (bar_masks[i] as u64 & !0xf)
+            } else {
+                (bar_masks[i] as i32 as i64 as u64) & !0xf
+            };
+            let size = (!address_mask).wrapping_add(1);
+            if address & (size - 1) != 0 {
+                anyhow::bail!("BAR {i} address {address:#x} is not aligned to its size {size:#x}");
+            }
+            bars[i] = (address as u32 & !0xf) | bar_flags[i];
+            if is_64bit {
+                bars[i + 1] = (address >> 32) as u32;
             }
             tracing::info!(
                 pci_id,
                 bar_index = i,
-                addr = format_args!("{:#x}", addr),
-                "passthrough BAR"
+                address = format_args!("{address:#x}"),
+                "pre-programmed BAR address"
             );
         }
+        i += if is_64bit { 2 } else { 1 };
     }
     Ok(bars)
 }
@@ -1251,22 +1327,48 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     .with_mmio_enabled(true)
                     .into_bits()
                     .into();
-                if value.valid_mask() & mse_mask != 0 {
+
+                let mmio_change = if value.valid_mask() & mse_mask != 0 {
                     let command = cfg_space::Command::from_bits(value.extract_low());
                     let new_mmio_enabled = command.mmio_enabled();
+                    (new_mmio_enabled != self.mmio_enabled).then_some(new_mmio_enabled)
+                } else {
+                    None
+                };
 
-                    if new_mmio_enabled != self.mmio_enabled {
-                        self.mmio_enabled = new_mmio_enabled;
+                match mmio_change {
+                    // Enabling MMIO: propagate the Command write to the
+                    // physical device *before* mapping BARs into the IOMMU.
+                    // Enabling memory space on the real device un-revokes any
+                    // exported BAR dmabufs; the IOAS map-by-file P2P import
+                    // (IOMMU_IOAS_MAP_FILE) returns ENODEV while a dmabuf is
+                    // revoked, so the hardware enable must land first.
+                    Some(true) => {
+                        self.mmio_enabled = true;
+                        self.write_phys_config(offset, value);
                         self.update_bar_mappings();
-                        tracing::debug!(
-                            pci_id = self.pci_id.as_str(),
-                            enabled = new_mmio_enabled,
-                            "MMIO state changed by guest"
-                        );
+                    }
+                    // Disabling MMIO: tear down the IOMMU mappings while device
+                    // memory is still enabled, then propagate the disable to
+                    // the physical device.
+                    Some(false) => {
+                        self.mmio_enabled = false;
+                        self.update_bar_mappings();
+                        self.write_phys_config(offset, value);
+                    }
+                    // No MMIO-enable change: just forward the write.
+                    None => {
+                        self.write_phys_config(offset, value);
                     }
                 }
 
-                self.write_phys_config(offset, value);
+                if let Some(enabled) = mmio_change {
+                    tracing::debug!(
+                        pci_id = self.pci_id.as_str(),
+                        enabled,
+                        "MMIO state changed by guest"
+                    );
+                }
             }
             // BAR registers: mask and cache locally. If MMIO is active,
             // re-evaluate mappings so the device responds at the new address
@@ -1502,6 +1604,94 @@ mod tests {
     use super::*;
     use pci_core::msi::MsiTarget;
     use test_with_tracing::test;
+
+    #[test]
+    fn apply_explicit_32_bit_bar_address() {
+        let bar_flags = [0; 6];
+        let mut bar_masks = [0; 6];
+        bar_masks[0] = 0xffff_f000;
+        let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+        bar_addresses[0] = BarAddressConfig::Fixed(0x8000_0000);
+
+        let bars = apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+            .unwrap();
+
+        assert_eq!(bars[0], 0x8000_0000);
+    }
+
+    #[test]
+    fn apply_explicit_64_bit_bar_address() {
+        let mut bar_flags = [0; 6];
+        bar_flags[2] = 0x4;
+        let mut bar_masks = [0; 6];
+        bar_masks[2] = 0xffff_f004;
+        bar_masks[3] = 0xffff_ffff;
+        let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+        bar_addresses[2] = BarAddressConfig::Fixed(0x11_0000_0000);
+
+        let bars = apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+            .unwrap();
+
+        assert_eq!(bars[2], 0x4);
+        assert_eq!(bars[3], 0x11);
+    }
+
+    #[test]
+    fn reject_invalid_explicit_bar_addresses() {
+        let bar_flags = [0; 6];
+        let mut bar_masks = [0; 6];
+        bar_masks[0] = 0xffff_f000;
+
+        let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+        bar_addresses[0] = BarAddressConfig::Fixed(0);
+        let error =
+            apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+                .unwrap_err();
+        assert_eq!(error.to_string(), "BAR 0 fixed address is 0");
+
+        for address in [0x8000_0001, 0x1_0000_0000] {
+            let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+            bar_addresses[0] = BarAddressConfig::Fixed(address);
+            assert!(
+                apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn reject_invalid_bar_indices() {
+        let mut bar_flags = [0; 6];
+        bar_flags[0] = 0x4;
+        let mut bar_masks = [0; 6];
+        bar_masks[0] = 0xffff_f004;
+        bar_masks[1] = 0xffff_ffff;
+
+        let mut bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+        bar_addresses[1] = BarAddressConfig::Fixed(0x8000_0000);
+        assert!(
+            apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+                .is_err()
+        );
+
+        bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+        bar_addresses[2] = BarAddressConfig::Fixed(0x8000_0000);
+        assert!(
+            apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+                .is_err()
+        );
+
+        bar_flags = [0; 6];
+        bar_flags[5] = 0x4;
+        bar_masks = [0; 6];
+        bar_masks[5] = 0xffff_f004;
+        bar_addresses = [BarAddressConfig::GuestAssigned; 6];
+        bar_addresses[5] = BarAddressConfig::Fixed(0x8000_0000);
+        let error =
+            apply_bar_addresses("not-a-real-device", &bar_flags, &bar_masks, &bar_addresses)
+                .unwrap_err();
+        assert_eq!(error.to_string(), "64-bit BAR at index 5 is invalid");
+    }
 
     /// In-memory config space backing store for unit tests.
     struct MockConfigSpace {

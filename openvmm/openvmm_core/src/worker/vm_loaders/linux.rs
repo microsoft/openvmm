@@ -5,16 +5,14 @@ use crate::worker::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
 use loader::importer::Aarch64Register;
 use loader::importer::X86Register;
-use loader::linux::AcpiConfig;
-use loader::linux::CommandLineConfig;
 use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
-use loader::linux::RegisterConfig;
-use loader::linux::ZeroPageConfig;
 use memory_range::MemoryRange;
+use openvmm_defs::config::IsolationType;
 use std::ffi::CString;
 use std::io::Seek;
 use thiserror::Error;
+use vm_loader::InitialLoad;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
@@ -52,6 +50,7 @@ pub struct KernelConfig<'a> {
     pub initrd: &'a Option<std::fs::File>,
     pub cmdline: &'a str,
     pub mem_layout: &'a MemoryLayout,
+    pub isolation: Option<IsolationType>,
 }
 
 /// The default SMBIOS identity for firmware-less Linux direct boot.
@@ -81,26 +80,12 @@ fn default_smbios_tables() -> loader::smbios::SmbiosTables<'static> {
     }
 }
 
-pub struct AcpiTables {
-    /// The RDSP. Assumed to be given a whole page.
-    pub rdsp: Vec<u8>,
-    /// The remaining tables pointed to by the RDSP.
-    pub tables: Vec<u8>,
-}
-
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub fn load_linux_x86(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
-    acpi_at_gpa: impl FnOnce(u64) -> AcpiTables,
-) -> Result<Vec<X86Register>, Error> {
-    const GDT_BASE: u64 = 0x1000;
-    const CR3_BASE: u64 = 0x4000;
-    const ZERO_PAGE_BASE: u64 = 0x2000;
-    const CMDLINE_BASE: u64 = 0x3000;
-    const ACPI_BASE: u64 = 0xe0000;
-
-    let kaddr: u64 = 0x100000;
+    acpi_at_gpa: impl FnOnce(u64) -> loader::linux::AcpiTables,
+) -> Result<InitialLoad<X86Register>, Error> {
     let mut kernel_file = cfg.kernel;
 
     let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
@@ -119,49 +104,26 @@ pub fn load_linux_x86(
     });
 
     let cmdline = CString::new(cfg.cmdline).unwrap();
-    let cmdline_config = CommandLineConfig {
-        address: CMDLINE_BASE,
-        cmdline: &cmdline,
-    };
-
-    let register_config = RegisterConfig {
-        gdt_address: GDT_BASE,
-        page_table_address: CR3_BASE,
-    };
-
-    let acpi_tables = acpi_at_gpa(ACPI_BASE);
-
-    // NOTE: The rdsp is given a whole page.
-    let acpi_len = acpi_tables.tables.len() + 0x1000;
-    let acpi_config = AcpiConfig {
-        rdsp_address: ACPI_BASE,
-        rdsp: &acpi_tables.rdsp,
-        tables_address: ACPI_BASE + 0x1000,
-        tables: &acpi_tables.tables,
-    };
-
-    let zero_page_config = ZeroPageConfig {
-        address: ZERO_PAGE_BASE,
-        mem_layout: cfg.mem_layout,
-        acpi_base_address: ACPI_BASE,
-        acpi_len,
-    };
+    let snp_boot =
+        (cfg.isolation == Some(IsolationType::Snp)).then_some(loader::linux::SnpBootConfig);
 
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
 
+    // The loader owns the sub-1 MB layout; we supply only the kernel, command
+    // line, an ACPI builder, and the default SMBIOS identity.
     loader::linux::load_x86(
         &mut loader,
         &mut kernel_file,
-        kaddr,
         initrd_config,
-        cmdline_config,
-        zero_page_config,
-        acpi_config,
-        register_config,
+        &cmdline,
+        cfg.mem_layout,
+        acpi_at_gpa,
+        Some(default_smbios_tables()),
+        snp_boot,
     )
     .map_err(Error::Loader)?;
 
-    Ok(loader.initial_regs())
+    Ok(loader.initial_regs_and_page_imports())
 }
 
 /// Returns the device tree blob.
@@ -670,7 +632,7 @@ fn write_efi_and_acpi_tables(
 
     // --- ACPI tables ---
     let tables_addr = rsdp_addr + 0x1000;
-    gm.write_at(rsdp_addr, &acpi_tables.rdsp)
+    gm.write_at(rsdp_addr, &acpi_tables.rsdp)
         .map_err(Error::Efi)?;
     gm.write_at(tables_addr, &acpi_tables.tables)
         .map_err(Error::Efi)?;
@@ -856,6 +818,7 @@ fn build_stub_dt(
     let p_uefi_mmap_size = builder.add_string("linux,uefi-mmap-size")?;
     let p_uefi_mmap_desc_size = builder.add_string("linux,uefi-mmap-desc-size")?;
     let p_uefi_mmap_desc_ver = builder.add_string("linux,uefi-mmap-desc-ver")?;
+    let p_uefi_secure_boot = builder.add_string("linux,uefi-secure-boot")?;
 
     let root_builder = builder
         .start_node("")?
@@ -871,7 +834,16 @@ fn build_stub_dt(
         .add_u64(p_uefi_mmap_start, efi_info.mmap_addr)?
         .add_u32(p_uefi_mmap_size, efi_info.mmap_size)?
         .add_u32(p_uefi_mmap_desc_size, efi_info.mmap_desc_size)?
-        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?;
+        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?
+        // The Ubuntu kernel's EFI stub sets `linux,uefi-secure-boot` in the
+        // handoff FDT, and `efi_get_fdt_params()` then treats it as a required
+        // property. If it is absent, the kernel aborts the entire EFI handoff
+        // and never installs the memory map; because this stub DT has no
+        // `/memory` node, memblock ends up empty and the kernel panics with
+        // "Failed to allocate page table page" during paging_init. Emit it
+        // (0 = secure boot disabled) so those kernels boot. Mainline kernels
+        // ignore this property.
+        .add_u32(p_uefi_secure_boot, 0)?;
 
     let root_builder = chosen.end_node()?;
 
@@ -892,7 +864,7 @@ pub fn load_linux_arm64(
     smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
     chipset_mmio: &ChipsetMmioRanges,
     build_acpi: Option<impl FnOnce(u64) -> vmm_core::acpi_builder::BuiltAcpiTables>,
-) -> Result<Vec<Aarch64Register>, Error> {
+) -> Result<InitialLoad<Aarch64Register>, Error> {
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
     let mut kernel_file = cfg.kernel;
 
@@ -980,5 +952,5 @@ pub fn load_linux_arm64(
     loader::linux::set_direct_boot_registers_arm64(&mut loader, &load_info)
         .map_err(Error::Loader)?;
 
-    Ok(loader.initial_regs())
+    Ok(loader.initial_regs_and_page_imports())
 }
