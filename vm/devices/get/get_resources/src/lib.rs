@@ -97,6 +97,8 @@ pub mod ged {
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
         /// Force UEFI to bounce-buffer all DMA traffic.
         pub force_dma_bounce_enabled: bool,
+        /// SMBIOS identity overrides delivered to the guest firmware.
+        pub smbios: smbios_defs::SmbiosConfig,
     }
 
     /// The firmware and chipset configuration for the guest.

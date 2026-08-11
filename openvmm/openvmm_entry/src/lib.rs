@@ -225,6 +225,62 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
         .collect()
 }
 
+/// Build the loader's [`SmbiosConfig`](openvmm_defs::config::SmbiosConfig) from
+/// the parsed `--smbios` arguments.
+///
+/// Multiple `--smbios` arguments are merged (erroring on a field set twice).
+/// String overrides left unset fall through to the loader's default identity.
+/// The system UUID defaults to the all-zero GUID unless overridden with
+/// `uuid=GUID`; `uuid=random` requests a freshly generated per-VM GUID.
+fn smbios_config_from_cli(
+    args: &[cli_args::SmbiosCli],
+) -> anyhow::Result<openvmm_defs::config::SmbiosConfig> {
+    let mut merged = cli_args::SmbiosCli::default();
+    for arg in args {
+        merged.merge(arg.clone())?;
+    }
+    let cli_args::SmbiosCli {
+        bios:
+            cli_args::SmbiosBiosCli {
+                vendor: bios_vendor,
+                version: bios_version,
+                release_date: bios_release_date,
+                release: bios_release,
+            },
+        system:
+            cli_args::SmbiosSystemCli {
+                manufacturer: system_manufacturer,
+                product_name: system_product,
+                version: system_version,
+                serial_number: system_serial,
+                sku_number: system_sku,
+                family: system_family,
+                uuid: system_uuid,
+            },
+    } = merged;
+    Ok(openvmm_defs::config::SmbiosConfig {
+        bios: openvmm_defs::config::SmbiosBiosOverrides {
+            vendor: bios_vendor,
+            version: bios_version,
+            release_date: bios_release_date,
+            release: bios_release.map(|r| (r.0, r.1)),
+        },
+        system: openvmm_defs::config::SmbiosSystemOverrides {
+            manufacturer: system_manufacturer,
+            product_name: system_product,
+            version: system_version,
+            serial_number: system_serial,
+            sku_number: system_sku,
+            family: system_family,
+            uuid: match system_uuid {
+                None => Guid::ZERO,
+                Some(cli_args::SmbiosUuid::Random) => Guid::new_random(),
+                Some(cli_args::SmbiosUuid::Fixed(guid)) => guid,
+            },
+        },
+    })
+}
+
 async fn vm_config_from_command_line(
     spawner: impl Spawn,
     mesh: &VmmMesh,
@@ -1225,8 +1281,17 @@ async fn vm_config_from_command_line(
         ));
     }
 
-    // TODO: load from VMGS file if it exists
-    let bios_guid = Guid::new_random();
+    // Build the SMBIOS config once, up front, so that UEFI and Linux direct
+    // boot share a single source for the VM's BIOS GUID / system UUID. The TPM
+    // also keys off this GUID.
+    let smbios = Box::new(smbios_config_from_cli(&opt.smbios)?);
+    let bios_guid = smbios.system.uuid;
+
+    // Capture the SMBIOS config for the OpenHCL/GED path before `smbios` is
+    // potentially moved into a non-VTL2 LoadMode below. The GED forwards only
+    // the system identity to the paravisor and fails closed on BIOS overrides
+    // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
+    let ged_smbios = (*smbios).clone();
 
     let layout_config = chipset.layout_config();
     let VmChipsetResult {
@@ -1274,6 +1339,7 @@ async fn vm_config_from_command_line(
                 .pcat_boot_order
                 .map(|x| x.0)
                 .unwrap_or(DEFAULT_PCAT_BOOT_ORDER),
+            smbios,
         };
     } else if opt.uefi {
         use openvmm_defs::config::UefiConsoleMode;
@@ -1305,7 +1371,7 @@ async fn vm_config_from_command_line(
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
-            bios_guid,
+            smbios,
             enable_vmbus: !opt.no_vmbus,
             force_dma_bounce: opt.uefi_force_dma_bounce,
         };
@@ -1351,6 +1417,7 @@ async fn vm_config_from_command_line(
             } else {
                 openvmm_defs::config::LinuxDirectBootMode::Acpi
             },
+            smbios,
         };
     }
 
@@ -1474,6 +1541,7 @@ async fn vm_config_from_command_line(
                         }
                     },
                     force_dma_bounce_enabled: opt.uefi_force_dma_bounce,
+                    smbios: ged_smbios,
                 }
                 .into_resource(),
             ),

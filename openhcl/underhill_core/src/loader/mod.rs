@@ -280,6 +280,50 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         },
     };
 
+    // Synthesize SMBIOS tables from the host-provided platform settings so the
+    // guest kernel's DMI scan finds them. Type 0 (BIOS) has no host-provided
+    // source, so default identity strings are used; Type 1 (System) is
+    // populated from `DevicePlatformSettings`.
+    //
+    // The host forwards the same identity to the UEFI firmware, but it omits any
+    // empty field and lets the firmware substitute its own default. There is no
+    // firmware behind the direct-boot path, so to avoid a guest seeing a blank
+    // `sys_vendor`/`product_name`, empty manufacturer and product strings fall
+    // back to OpenHCL defaults (mirroring the OpenVMM direct-boot loader). The
+    // remaining identity fields are passed through as-is; the SMBIOS builder
+    // truncates any interior NUL and treats an empty string as "no string".
+    let smbios = &platform_config.smbios;
+    let manufacturer = if smbios.system_manufacturer.is_empty() {
+        "OpenHCL"
+    } else {
+        &smbios.system_manufacturer
+    };
+    let product_name = if smbios.system_product_name.is_empty() {
+        "OpenHCL Virtual Machine"
+    } else {
+        &smbios.system_product_name
+    };
+    let smbios_tables = loader::smbios::SmbiosTables {
+        bios: loader::smbios::SmbiosBiosInfo {
+            vendor: "OpenHCL",
+            version: "OpenHCL Direct",
+            release_date: "06/19/2026",
+            major: 0,
+            minor: 0,
+        },
+        system: loader::smbios::SmbiosSystemInfo {
+            manufacturer,
+            product_name,
+            version: &smbios.system_version,
+            serial_number: &smbios.serial_number,
+            sku_number: &smbios.system_sku_number,
+            family: &smbios.system_family,
+            // The Type 1 UUID uses the same VM BIOS GUID as the UEFI path; its
+            // raw bytes go in directly with no byte-order swap.
+            uuid: platform_config.general.bios_guid.into(),
+        },
+    };
+
     let mut loader = vm_loader::Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);
 
     let initrd_info = if let Some((initrd_base, initrd_size)) = initrd {
@@ -326,9 +370,9 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         bzimage_setup_header: None,
     };
 
-    // The loader owns the sub-1 MB layout; we supply only the command line and
-    // a builder that produces the ACPI tables at the loader's chosen address.
-    // OpenHCL's VTL0 direct boot exposes no SMBIOS identity.
+    // The loader owns the sub-1 MB layout; we supply only the command line, a
+    // builder that produces the ACPI tables at the loader's chosen address, and
+    // the SMBIOS identity forwarded by the host.
     loader::linux::load_config_x86(
         &mut loader,
         &load_info,
@@ -369,7 +413,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
                 tables: acpi_tables.tables,
             }
         },
-        None,
+        Some(smbios_tables),
         None,
     )
     .map_err(Error::LinuxLoader)?;
@@ -537,19 +581,19 @@ pub fn write_uefi_config(
     .add(&config::BiosGuid(platform_config.general.bios_guid))
     .add_cstring(
         config::BlobStructureType::SmbiosSystemSerialNumber,
-        &platform_config.smbios.serial_number,
+        platform_config.smbios.serial_number.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosBaseSerialNumber,
-        &platform_config.smbios.base_board_serial_number,
+        platform_config.smbios.base_board_serial_number.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosChassisSerialNumber,
-        &platform_config.smbios.chassis_serial_number,
+        platform_config.smbios.chassis_serial_number.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosChassisAssetTag,
-        &platform_config.smbios.chassis_asset_tag,
+        platform_config.smbios.chassis_asset_tag.as_bytes(),
     );
 
     cfg.add(&config::NvdimmCount {
@@ -563,31 +607,34 @@ pub fn write_uefi_config(
 
     cfg.add_cstring(
         config::BlobStructureType::SmbiosSystemManufacturer,
-        &platform_config.smbios.system_manufacturer,
+        platform_config.smbios.system_manufacturer.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosSystemProductName,
-        &platform_config.smbios.system_product_name,
+        platform_config.smbios.system_product_name.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosSystemVersion,
-        &platform_config.smbios.system_version,
+        platform_config.smbios.system_version.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosSystemSkuNumber,
-        &platform_config.smbios.system_sku_number,
+        platform_config.smbios.system_sku_number.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosSystemFamily,
-        &platform_config.smbios.system_family,
+        platform_config.smbios.system_family.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosBiosLockString,
-        &platform_config.smbios.bios_lock_string,
+        platform_config.smbios.bios_lock_string.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosMemoryDeviceSerialNumber,
-        &platform_config.smbios.memory_device_serial_number,
+        platform_config
+            .smbios
+            .memory_device_serial_number
+            .as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosProcessorManufacturer,
