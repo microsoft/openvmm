@@ -68,14 +68,39 @@ enum SignatureValue {
 type SignatureSet = BTreeSet<SignatureValue>;
 
 /// Secure Boot telemetry schema mirrored by legacy HCL's `UefiNvramStore.cpp`.
+struct SecureBootVariableReport<'a> {
+    name: &'a ucs2::Ucs2LeSlice,
+    loaded_bytes: usize,
+    loaded_entries: usize,
+    template_entries: usize,
+    missing_entries: usize,
+}
+
+impl Debug for SecureBootVariableReport<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            name,
+            loaded_bytes,
+            loaded_entries,
+            template_entries,
+            missing_entries,
+        } = self;
+
+        formatter
+            .debug_struct("SecureBootVariable")
+            .field("name", name)
+            .field("loaded_bytes", &format_args!("{loaded_bytes:#x}"))
+            .field("loaded_entries", &format_args!("{loaded_entries:#x}"))
+            .field("template_entries", &format_args!("{template_entries:#x}"))
+            .field("missing_entries", &format_args!("{missing_entries:#x}"))
+            .finish()
+    }
+}
+
 struct SecureBootConfigReport {
     template_guid: Guid,
     template_version: u16,
-    custom_uefi_config_present: bool,
-    pk: Option<SecureBootVariableReport>,
-    kek: Option<SecureBootVariableReport>,
-    db: Option<SecureBootVariableReport>,
-    dbx: Option<SecureBootVariableReport>,
+    custom_template_present: bool,
 }
 
 impl Debug for SecureBootConfigReport {
@@ -83,22 +108,14 @@ impl Debug for SecureBootConfigReport {
         let Self {
             template_guid,
             template_version,
-            custom_uefi_config_present,
-            pk,
-            kek,
-            db,
-            dbx,
+            custom_template_present,
         } = self;
 
         formatter
-            .debug_struct("SecureBootConfigReport")
+            .debug_struct("SecureBootConfig")
             .field("template_guid", template_guid)
             .field("template_version", &format_args!("{template_version}"))
-            .field("custom_uefi_config_present", custom_uefi_config_present)
-            .field("pk", pk)
-            .field("kek", kek)
-            .field("db", db)
-            .field("dbx", dbx)
+            .field("custom_template_present", custom_template_present)
             .finish()
     }
 }
@@ -106,40 +123,6 @@ impl Debug for SecureBootConfigReport {
 struct ParsedBaseTemplate {
     vars: BaseTemplateVars,
     identity: BaseTemplateIdentity,
-}
-
-/// Secure Boot telemetry for one authenticated variable.
-#[derive(Clone, Copy)]
-struct SecureBootVariableReport {
-    base_template_entries: usize,
-    loaded_entries: usize,
-    missing_entries: usize,
-    loaded_variable_bytes: usize,
-}
-
-impl Debug for SecureBootVariableReport {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self {
-            base_template_entries,
-            loaded_entries,
-            missing_entries,
-            loaded_variable_bytes,
-        } = self;
-
-        formatter
-            .debug_struct("SecureBootVariableReport")
-            .field(
-                "base_template_entries",
-                &format_args!("{base_template_entries:#x}"),
-            )
-            .field("loaded_entries", &format_args!("{loaded_entries:#x}"))
-            .field("missing_entries", &format_args!("{missing_entries:#x}"))
-            .field(
-                "loaded_variable_bytes",
-                &format_args!("{loaded_variable_bytes:#x}"),
-            )
-            .finish()
-    }
 }
 
 #[derive(Debug, Error)]
@@ -329,17 +312,16 @@ impl NvramServices {
     }
 
     /// Compare one loaded Secure Boot variable with its base-template signatures.
-    async fn get_secure_boot_variable_report(
+    async fn get_secure_boot_variable_report<'a>(
         &mut self,
-        variable_name: &str,
-        (vendor, name): (Guid, &ucs2::Ucs2LeSlice),
+        (vendor, name): (Guid, &'a ucs2::Ucs2LeSlice),
         template_signatures: &[Signature],
-    ) -> Option<SecureBootVariableReport> {
+    ) -> Option<SecureBootVariableReport<'a>> {
         let base_signatures = base_signature_set(template_signatures);
         if base_signatures.is_empty() {
             tracing::warn!(
                 CVM_ALLOWED,
-                variable_name,
+                %name,
                 "secure boot variable omitted from configuration report: baseline contains no signatures"
             );
             return None;
@@ -348,25 +330,27 @@ impl NvramServices {
         match self.services.get_variable_ucs2(vendor, name).await {
             // The variable exists in NVRAM but is empty
             Ok((_, data)) if data.is_empty() => Some(SecureBootVariableReport {
-                base_template_entries: base_signatures.len(),
+                name,
+                loaded_bytes: 0,
                 loaded_entries: 0,
+                template_entries: base_signatures.len(),
                 missing_entries: base_signatures.len(),
-                loaded_variable_bytes: 0,
             }),
             // The variable exists in NVRAM and has data
             Ok((_, data)) => match collect_signature_set(&data) {
                 // The data is valid
                 Ok(loaded_signatures) => Some(SecureBootVariableReport {
-                    base_template_entries: base_signatures.len(),
+                    name,
+                    loaded_bytes: data.len(),
                     loaded_entries: loaded_signatures.len(),
+                    template_entries: base_signatures.len(),
                     missing_entries: base_signatures.difference(&loaded_signatures).count(),
-                    loaded_variable_bytes: data.len(),
                 }),
                 // The data cannot be parsed
                 Err(error) => {
                     tracing::warn!(
                         CVM_CONFIDENTIAL,
-                        variable_name,
+                        %name,
                         error = &error as &dyn std::error::Error,
                         "secure boot variable omitted from configuration report: failed to parse variable"
                     );
@@ -379,7 +363,7 @@ impl NvramServices {
             Err((status, error)) => {
                 tracing::warn!(
                     CVM_CONFIDENTIAL,
-                    variable_name,
+                    %name,
                     ?status,
                     ?error,
                     "secure boot variable omitted from configuration report: failed to read variable"
@@ -395,6 +379,7 @@ impl NvramServices {
         base_template: Option<&ParsedBaseTemplate>,
         custom_uefi_config_present: bool,
     ) {
+        // Extract the signatures and identity from the base template
         let Some((identity, signatures)) = base_template.and_then(|template| {
             template
                 .vars
@@ -408,31 +393,28 @@ impl NvramServices {
             return;
         };
 
-        let pk = self
-            .get_secure_boot_variable_report("PK", vars::PK(), std::slice::from_ref(&signatures.pk))
-            .await;
-        let kek = self
-            .get_secure_boot_variable_report("KEK", vars::KEK(), &signatures.kek)
-            .await;
-        let db = self
-            .get_secure_boot_variable_report("db", vars::DB(), &signatures.db)
-            .await;
-        let dbx = self
-            .get_secure_boot_variable_report("dbx", vars::DBX(), &signatures.dbx)
-            .await;
+        // Report configuration shared by all Secure Boot variables.
+        let config_report = SecureBootConfigReport {
+            template_guid: identity.guid,
+            template_version: identity.version,
+            custom_template_present: custom_uefi_config_present,
+        };
+        tracing::info!(CVM_ALLOWED, "{config_report:?}");
 
-        tracing::info!(
-            CVM_ALLOWED,
-            report = ?(SecureBootConfigReport {
-                template_guid: identity.guid,
-                template_version: identity.version,
-                custom_uefi_config_present,
-                pk,
-                kek,
-                db,
-                dbx,
-            })
-        );
+        // Report each secure boot variable's loaded configuration against the baseline template
+        for (variable, template_signatures) in [
+            (vars::PK(), std::slice::from_ref(&signatures.pk)),
+            (vars::KEK(), signatures.kek.as_slice()),
+            (vars::DB(), signatures.db.as_slice()),
+            (vars::DBX(), signatures.dbx.as_slice()),
+        ] {
+            if let Some(variable_report) = self
+                .get_secure_boot_variable_report(variable, template_signatures)
+                .await
+            {
+                tracing::info!(CVM_ALLOWED, "{variable_report:?}");
+            }
+        }
     }
 
     async fn inject_hyperv_vars(&mut self) -> Result<(), NvramSetupError> {
@@ -828,6 +810,44 @@ mod tests {
         assert_eq!(base.difference(&loaded).count(), 1);
     }
 
+    #[test]
+    fn secure_boot_variable_report_fits_get_trace_limit() {
+        const GET_TRACE_MESSAGE_MAX_BYTES: usize = 256;
+
+        let report = SecureBootVariableReport {
+            name: vars::KEK().1,
+            loaded_bytes: usize::MAX,
+            loaded_entries: usize::MAX,
+            template_entries: usize::MAX,
+            missing_entries: usize::MAX,
+        };
+        let message = format!("{report:?}");
+
+        assert!(
+            message.len() <= GET_TRACE_MESSAGE_MAX_BYTES,
+            "Secure Boot variable report is {} bytes: {message}",
+            message.len()
+        );
+    }
+
+    #[test]
+    fn secure_boot_config_report_fits_get_trace_limit() {
+        const GET_TRACE_MESSAGE_MAX_BYTES: usize = 256;
+
+        let report = SecureBootConfigReport {
+            template_guid: Guid::default(),
+            template_version: u16::MAX,
+            custom_template_present: false,
+        };
+        let message = format!("{report:?}");
+
+        assert!(
+            message.len() <= GET_TRACE_MESSAGE_MAX_BYTES,
+            "Secure Boot config report is {} bytes: {message}",
+            message.len()
+        );
+    }
+
     #[async_test]
     async fn missing_secure_boot_variable_has_no_report() {
         let mut nvram = nvram_services(InMemoryNvram::new());
@@ -837,7 +857,7 @@ mod tests {
 
         assert!(
             nvram
-                .get_secure_boot_variable_report("db", vars::DB(), &template_signatures)
+                .get_secure_boot_variable_report(vars::DB(), &template_signatures)
                 .await
                 .is_none()
         );
@@ -858,14 +878,14 @@ mod tests {
         ])];
 
         let report = nvram
-            .get_secure_boot_variable_report("db", (vendor, name), &template_signatures)
+            .get_secure_boot_variable_report((vendor, name), &template_signatures)
             .await
             .unwrap();
 
-        assert_eq!(report.base_template_entries, 2);
+        assert_eq!(report.loaded_bytes, 0);
         assert_eq!(report.loaded_entries, 0);
+        assert_eq!(report.template_entries, 2);
         assert_eq!(report.missing_entries, 2);
-        assert_eq!(report.loaded_variable_bytes, 0);
     }
 
     #[async_test]
@@ -881,7 +901,7 @@ mod tests {
             ))
             .extend_as_spec_signature_list(&mut data);
         }
-        let loaded_variable_bytes = data.len();
+        let loaded_bytes = data.len();
         let mut storage = InMemoryNvram::new();
         storage
             .set_variable(name, vendor, 0, data, EFI_TIME::default())
@@ -894,14 +914,14 @@ mod tests {
         ])];
 
         let report = nvram
-            .get_secure_boot_variable_report("db", (vendor, name), &template_signatures)
+            .get_secure_boot_variable_report((vendor, name), &template_signatures)
             .await
             .unwrap();
 
-        assert_eq!(report.base_template_entries, 2);
+        assert_eq!(report.loaded_bytes, loaded_bytes);
         assert_eq!(report.loaded_entries, 2);
+        assert_eq!(report.template_entries, 2);
         assert_eq!(report.missing_entries, 1);
-        assert_eq!(report.loaded_variable_bytes, loaded_variable_bytes);
     }
 
     #[async_test]
