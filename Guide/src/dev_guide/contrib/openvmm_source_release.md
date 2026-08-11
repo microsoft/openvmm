@@ -15,6 +15,9 @@ files:
 
 Both files also get a GitHub build provenance attestation.
 
+A release publishes source. Prebuilt binaries, and any commitment to
+service a published version, are outside this process.
+
 `<VERSION>` is the `[workspace.package] version` in the root
 `Cargo.toml`. Nothing is stamped into the archive and the tree is never
 rewritten, so the version a release publishes is the version that was
@@ -66,6 +69,14 @@ The workflow fails rather than overwriting an existing release for the
 same tag, since that release may already have been reviewed or published.
 
 ## Limitations
+
+The distribution gate answers one question: can a distribution build the
+published archive without the repository's own dependency provisioning?
+It does not re-verify `SHA256SUMS`, assert that the extracted tree has
+no `.git`, check the version the built binary reports, or inspect how
+that binary links OpenSSL. Each is a reasonable check to add, but each
+should be added only when maintainers agree it enforces a release
+requirement worth owning.
 
 ```admonish note
 OpenVMM does not yet publish an OpenPGP signature alongside the archive,
