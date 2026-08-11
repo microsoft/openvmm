@@ -15,8 +15,11 @@ fn main() {}
 extern crate alloc;
 
 pub mod config;
+pub mod dispatch;
 #[cfg(target_os = "uefi")]
 mod entry;
 #[cfg(target_os = "uefi")]
 mod rt;
+pub mod test_helpers;
 pub mod tests;
+pub mod tmk_assert;

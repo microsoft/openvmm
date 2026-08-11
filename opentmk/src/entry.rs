@@ -3,7 +3,7 @@
 
 //! UEFI entrypoint for the OpenTMK test binary.
 
-use opentmk_core::tmk_assert;
+use crate::tmk_assert;
 use opentmk_core::uefi::init::init;
 use uefi::Status;
 

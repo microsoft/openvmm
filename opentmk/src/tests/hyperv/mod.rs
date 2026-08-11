@@ -14,7 +14,7 @@ pub mod hv_tpm_read_cvm;
 #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
 pub mod hv_tpm_write_cvm;
 
-opentmk_core::opentmk_tests! {
+crate::opentmk_tests! {
     ctx: opentmk_core::platform::hyperv::ctx::HvTestCtx,
     tests: {
         hv_error_vp_start,
