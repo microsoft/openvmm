@@ -186,10 +186,8 @@ mod hyperv {
                     )
                 },
                 run_opentmk_uefi::<HyperVPetriBackend>,
-                Some(crate::opentmk_requirements(opentmk_isolation!($iso))),
-                false,
-                ::petri::RemoteAccess::LocalOnly,
             )
+            .requirements(crate::opentmk_requirements(opentmk_isolation!($iso)))
             .into()
         };
     }
