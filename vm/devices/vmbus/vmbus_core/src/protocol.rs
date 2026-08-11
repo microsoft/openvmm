@@ -557,9 +557,9 @@ pub struct OfferFlags {
     /// Indicates the channel must use encrypted additional GPADLs and GPA direct ranges on a
     /// hardware-isolated VM.
     pub confidential_external_memory: bool, // 0x4
-    // Indicates that additional GPADLs and GPA direct packets must use pinned GPA ranges.
+    /// Indicates that additional GPADLs and GPA direct packets must use pinned GPA ranges.
     pub require_pinned_external_memory: bool, // 0x8
-    pub named_pipe_mode: bool,                // 0x10
+    pub named_pipe_mode: bool,            // 0x10
     #[bits(8)]
     _reserved2: u16,
     pub tlnpi_provider: bool, // 0x2000

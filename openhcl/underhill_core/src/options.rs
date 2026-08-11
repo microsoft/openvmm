@@ -200,7 +200,8 @@ pub struct Options {
     pub vmbus_force_confidential_external_memory: bool,
 
     /// (OPENHCL_VMBUS_FORCE_GPA_PINNING=1)
-    /// Force all vmbus channels to use pinned GPA ranges. Used for testing purposes only.
+    /// Force all vmbus channels to use pinned GPA ranges if the guest supports that feature. Used
+    /// for testing purposes only.
     pub vmbus_force_gpa_pinning: bool,
 
     /// (OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS=\<number\>) (default: 100)
