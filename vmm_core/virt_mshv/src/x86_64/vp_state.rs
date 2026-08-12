@@ -27,7 +27,7 @@ impl MshvProcessor<'_> {
     {
         // SNP initial VP state is supplied by the imported VMSA rather than
         // through host register writes.
-        if self.partition.isolation == virt::IsolationType::Snp {
+        if self.partition.snp.is_some() {
             return Ok(());
         }
 

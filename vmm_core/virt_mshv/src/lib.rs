@@ -258,19 +258,7 @@ struct MshvPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
     #[cfg(guest_arch = "x86_64")]
-    /// SNP launch progress, synchronized because loading and memory mapping use
-    /// shared partition references.
-    snp_launch_state: Mutex<arch::SnpLaunchState>,
-    #[cfg(guest_arch = "x86_64")]
-    /// BSP SEV features used to validate GHCB AP-creation requests.
-    ///
-    /// AMD GHCB specification 56421, "SNP AP Creation", supplies the AP VMSA's
-    /// SEV_FEATURES in RAX and requires them to match the requesting vCPU. Each
-    /// created AP is validated against this BSP value, making it the canonical
-    /// feature set for subsequent requests.
-    snp_sev_features: Mutex<Option<u64>>,
-    #[cfg(guest_arch = "x86_64")]
-    snp_cpuid_offloads_enabled: bool,
+    snp: Option<arch::SnpPartitionState>,
     isolation: virt::IsolationType,
     /// Set to `true` when partition time is frozen (e.g. during reset).
     /// The first VP to enter `run_vp` after a freeze will thaw time.
@@ -428,26 +416,7 @@ pub struct MshvProcessorBinder {
     vcpufd: Option<VcpuFd>,
     vpindex: VpIndex,
     #[cfg(guest_arch = "x86_64")]
-    ghcb_page: Option<MshvGhcbPage>,
-}
-
-#[cfg(guest_arch = "x86_64")]
-struct MshvGhcbPage(*mut x86defs::snp::GhcbPage);
-
-// SAFETY: The mapping is uniquely owned by the processor binder and is only
-// accessed while the binder is mutably borrowed by a bound processor.
-#[cfg(guest_arch = "x86_64")]
-unsafe impl Send for MshvGhcbPage {}
-
-#[cfg(guest_arch = "x86_64")]
-impl Drop for MshvGhcbPage {
-    fn drop(&mut self) {
-        // SAFETY: The pointer was returned by mmap for exactly one page and is
-        // unmapped exactly once here.
-        unsafe {
-            libc::munmap(self.0.cast(), hvdef::HV_PAGE_SIZE as usize);
-        }
-    }
+    snp: Option<arch::SnpVpState>,
 }
 
 /// Wraps a VcpuFd for running a VP. On x86_64, also provides access to the
@@ -914,8 +883,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         exec: bool,
     ) -> anyhow::Result<()> {
         #[cfg(guest_arch = "x86_64")]
-        let snp_launch_state =
-            (self.isolation == virt::IsolationType::Snp).then(|| self.snp_launch_state.lock());
+        let snp_launch_state = self.snp.as_ref().map(|snp| snp.launch_state.lock());
         let mut state = self.memory.lock();
 
         // Memory slots cannot be resized but can be moved within the guest
