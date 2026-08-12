@@ -417,20 +417,6 @@ impl VpciClientTdispState {
         self.mutable_state.guest_device_id = 0;
         self.mutable_state.intercepted_bars.clear();
 
-        // TEST SCAFFOLDING: the host unbind command is skipped under TDX
-        // Connect because unbind is not functional there yet. Restore the call
-        // below once it is. Note that skipping it leaves the guest's view of
-        // the TDI state untouched (the host's response is what advances it), so
-        // a subsequent re-attest will still see a non-Unlocked TDI.
-        if matches!(self.isolation_type, IsolationType::Tdx) {
-            tracing::warn!(
-                device_id = self.vpci_device_id,
-                ?reason,
-                "tdisp_unbind: skipping host unbind command, unbind is not functional right now in TDX Connect"
-            );
-            return Ok(());
-        }
-
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_unbind_command(
                 self.vpci_device_id,

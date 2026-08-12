@@ -515,13 +515,13 @@ impl VpciDevice {
                 .lock()
                 .read(self.dev.id, offset, value.reborrow()),
         };
-        tracing::info!(?offset, ?value, "config space read at {:#x}", offset);
+        tracing::trace!(?offset, ?value, "config space read at {:#x}", offset);
     }
 
     /// Writes device configuration space.
     /// Offset must be u32 aligned.
     pub fn write_cfg(&self, offset: u16, value: ByteEnabledDwordWrite) {
-        tracing::info!(?offset, ?value, "config space write at {:#x}", offset);
+        tracing::trace!(?offset, ?value, "config space write at {:#x}", offset);
         let mut shadows = self.shadows.lock();
         let shadows = &mut *shadows;
         let mut accessor = self.config_space.lock();

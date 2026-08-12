@@ -161,10 +161,7 @@ impl TdispTdxConnectResourceValidator {
             })?;
 
         tracing::info!(
-            requester_id = device_id,
-            tdisp_version = version,
-            tdisp_state = ?TdispInterfaceState(state),
-            "TDX Connect validator reached TDI via TDG.TDI.RD"
+            "TDX Connect validator reached TDI via TDG.TDI.RD: requester id {device_id:#x}, TDISP version {version}, TDISP state {state:#x}"
         );
 
         Ok(())
