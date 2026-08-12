@@ -252,6 +252,7 @@ pub fn create_host_channel(
         com2: true,
         serial_tx_only: false,
         vmbus_redirection: false,
+        nvidia_vpci_relay_allowed: false,
         enable_tpm: false,
         vtl2_settings: None,
         secure_boot_enabled: false,

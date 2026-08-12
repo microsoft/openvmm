@@ -136,6 +136,9 @@ pub struct GuestConfig {
     pub serial_tx_only: bool,
     /// Enable vmbus redirection.
     pub vmbus_redirection: bool,
+    /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the VPCI
+    /// relay's device filter.
+    pub nvidia_vpci_relay_allowed: bool,
     /// Enable the TPM.
     pub enable_tpm: bool,
     /// The encoded VTL2 settings document.
@@ -1353,7 +1356,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     smbios: Default::default(),
                     watchdog_enabled: false,
                     always_relay_host_mmio: false,
-                    nvidia_vpci_relay_allowed: false,
+                    nvidia_vpci_relay_allowed: state.config.nvidia_vpci_relay_allowed,
                     imc_enabled: false,
                     cxl_memory_enabled: false,
                     guest_state_lifetime: state.config.guest_state_lifetime,

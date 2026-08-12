@@ -69,6 +69,9 @@ pub mod ged {
         pub serial_tx_only: bool,
         /// Enable vmbus redirection.
         pub vmbus_redirection: bool,
+        /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the
+        /// VPCI relay's device filter.
+        pub nvidia_vpci_relay_allowed: bool,
         /// Enable the TPM.
         pub enable_tpm: bool,
         /// Encoded VTL2 settings.

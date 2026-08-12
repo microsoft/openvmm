@@ -177,6 +177,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 com2: resource.com2,
                 serial_tx_only: resource.serial_tx_only,
                 vmbus_redirection: resource.vmbus_redirection,
+                nvidia_vpci_relay_allowed: resource.nvidia_vpci_relay_allowed,
                 enable_tpm: resource.enable_tpm,
                 vtl2_settings: resource.vtl2_settings,
                 secure_boot_enabled: resource.secure_boot_enabled,
