@@ -68,6 +68,10 @@ impl RsaKeyPairInner {
                 self.0
                     .decrypt_blinded(&mut rng(), Oaep::<sha2::Sha384>::new(), input)
             }
+            HashAlgorithm::Sha512 => {
+                self.0
+                    .decrypt_blinded(&mut rng(), Oaep::<sha2::Sha512>::new(), input)
+            }
         }
         .map_err(|e| RsaError(e, "OAEP decryption"))
     }
@@ -93,6 +97,10 @@ impl RsaKeyPairInner {
             HashAlgorithm::Sha384 => {
                 self.0
                     .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha2::Sha384>(), &data)
+            }
+            HashAlgorithm::Sha512 => {
+                self.0
+                    .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha2::Sha512>(), &data)
             }
         }
         .map_err(|e| RsaError(e, "PKCS#1 signing"))
@@ -120,6 +128,10 @@ impl RsaKeyPairInner {
             HashAlgorithm::Sha384 => {
                 self.0
                     .sign_with_rng(&mut rng(), Pss::<sha2::Sha384>::new(), &data)
+            }
+            HashAlgorithm::Sha512 => {
+                self.0
+                    .sign_with_rng(&mut rng(), Pss::<sha2::Sha512>::new(), &data)
             }
         }
         .map_err(|e| RsaError(e, "PSS signing"))
@@ -157,6 +169,9 @@ impl RsaPublicKeyInner {
             HashAlgorithm::Sha384 => self
                 .0
                 .encrypt(&mut rng(), Oaep::<sha2::Sha384>::new(), input),
+            HashAlgorithm::Sha512 => self
+                .0
+                .encrypt(&mut rng(), Oaep::<sha2::Sha512>::new(), input),
         }
         .map_err(|e| RsaError(e, "OAEP encryption"))
     }
@@ -184,6 +199,10 @@ impl RsaPublicKeyInner {
                 self.0
                     .verify(Pkcs1v15Sign::new::<sha2::Sha384>(), &data, signature)
             }
+            HashAlgorithm::Sha512 => {
+                self.0
+                    .verify(Pkcs1v15Sign::new::<sha2::Sha512>(), &data, signature)
+            }
         };
         match result {
             Ok(()) => Ok(true),
@@ -207,6 +226,7 @@ impl RsaPublicKeyInner {
             HashAlgorithm::Sha1 => self.0.verify(Pss::<sha1::Sha1>::new(), &data, signature),
             HashAlgorithm::Sha256 => self.0.verify(Pss::<sha2::Sha256>::new(), &data, signature),
             HashAlgorithm::Sha384 => self.0.verify(Pss::<sha2::Sha384>::new(), &data, signature),
+            HashAlgorithm::Sha512 => self.0.verify(Pss::<sha2::Sha512>::new(), &data, signature),
         };
         match result {
             Ok(()) => Ok(true),

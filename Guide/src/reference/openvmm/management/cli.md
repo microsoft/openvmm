@@ -52,6 +52,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
   enlightenments.
+* `--no-hv`: Boots AArch64 UEFI without exposing Hyper-V enlightenments.
+  By default, UEFI exposes the enlightenments. This option requires
+  `--no-vmbus`, is not supported for x86_64 UEFI, and conflicts with `--hv`,
+  `--vtl2`, `--get`, and `--pcat`.
 * `--no-vmbus`: Disables the VMBus server and all VMBus devices, even when
   `--hv` or `--uefi` is active. The guest boots using only standard PCIe
   devices and virtio transports. Incompatible with `--disk`, `--pcat`,

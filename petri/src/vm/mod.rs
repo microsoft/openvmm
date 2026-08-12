@@ -190,6 +190,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     vhost_vsock_guest_cid: Option<u32>,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
+    // Disable the hypervisor (HV#1) enlightenments. Implies `no_vmbus`.
+    no_hv: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -213,6 +215,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
             .field("no_vmbus", &self.no_vmbus)
+            .field("no_hv", &self.no_hv)
             .finish()
     }
 }
@@ -312,6 +315,8 @@ pub struct PetriVmProperties {
     pub vhost_vsock_guest_cid: Option<u32>,
     /// VMBus is entirely disabled
     pub no_vmbus: bool,
+    /// The hypervisor (HV#1) enlightenments are entirely disabled
+    pub no_hv: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -488,6 +493,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            no_hv: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -568,6 +574,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            no_hv: false,
         })
     }
 
@@ -713,6 +720,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }
         self.config.vmbus_storage_controllers.clear();
         self
+    }
+
+    /// Disable the hypervisor (HV#1) enlightenments.
+    ///
+    /// This also disables VMBus, since VMBus depends on the hypervisor. On
+    /// aarch64 UEFI this causes the loader to pass the generic SEC platform
+    /// type to the firmware. This mode is not supported on x86_64 UEFI.
+    pub fn with_no_hv(mut self) -> Self {
+        self.no_hv = true;
+        self.with_no_vmbus()
     }
 
     fn add_petri_scsi_controllers(self) -> Self {
@@ -1027,6 +1044,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: self.vhost_vsock_guest_cid,
             no_vmbus: self.no_vmbus,
+            no_hv: self.no_hv,
         }
     }
 

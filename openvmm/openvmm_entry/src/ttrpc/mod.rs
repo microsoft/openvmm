@@ -805,6 +805,7 @@ impl VmService {
                         enable_vpci_boot: false,
                         default_boot_always_attempt: false,
                         force_dma_bounce: false,
+                        enable_hv: true,
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
                     Some((base_template_json, uefi.secure_boot_enabled)),
