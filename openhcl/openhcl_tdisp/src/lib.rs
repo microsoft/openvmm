@@ -28,16 +28,17 @@ pub use tdisp_proto::GuestToHostCommandExt;
 pub use tdisp_proto::GuestToHostResponse;
 pub use tdisp_proto::GuestToHostResponseExt;
 pub use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
-pub use tdisp_proto::TdispCommandResponseAcceptPrivateMmioRange;
 pub use tdisp_proto::TdispCommandResponseBind;
 pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 pub use tdisp_proto::TdispCommandResponseGetTdiReport;
+pub use tdisp_proto::TdispCommandResponseModifyMmioRange;
 pub use tdisp_proto::TdispCommandResponseStartTdi;
 pub use tdisp_proto::TdispCommandResponseUnbind;
 pub use tdisp_proto::TdispDeviceInterfaceInfo;
 pub use tdisp_proto::TdispGuestOperationErrorCode;
 pub use tdisp_proto::TdispGuestProtocolType;
 pub use tdisp_proto::TdispGuestUnbindReason;
+pub use tdisp_proto::TdispMmioRangeAction;
 pub use tdisp_proto::TdispReportType;
 pub use tdisp_proto::TdispTdiState;
 
@@ -47,9 +48,9 @@ pub use sevtio::TdispSevTioResourceValidator;
 pub use tdxconnect::TdispTdxConnectResourceValidator;
 
 use hvdef::Vtl;
-use tdisp_proto::TdispCommandRequestAcceptPrivateMmioRange;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
+use tdisp_proto::TdispCommandRequestModifyMmioRange;
 use tdisp_proto::TdispCommandRequestStartTdi;
 use tdisp_proto::TdispCommandRequestUnbind;
 use tdisp_proto::guest_to_host_command::Command;
@@ -100,14 +101,37 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
         reason: TdispGuestUnbindReason,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
-    /// Tell the host that an MMIO range is being accepted into the guest's
-    /// private context. The TDI must be Locked or Run.
+    /// Tell the host to unblock an MMIO range, making it accessible to the
+    /// guest's private context. The TDI must be Locked or Run.
     ///
-    /// * `range_id` - Identifies which MMIO range is being accepted (the PCI
-    ///   BAR index).
+    /// Not to be confused with
+    /// [`TdispResourceValidationInterface::tdisp_unblock_mmio`], which performs
+    /// the platform-side unblock. This one only notifies the host over the VPCI
+    /// channel.
+    ///
+    /// * `range_id` - Identifies which MMIO range to unblock (the PCI BAR
+    ///   index).
     /// * `gpa_base` - The guest physical base address of the range.
     /// * `range_len_bytes` - The length of the range, in bytes.
-    fn tdisp_accept_private_mmio_range(
+    fn tdisp_unblock_mmio_range(
+        &self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    /// Tell the host to block an MMIO range, reversing a previous unblock. The
+    /// TDI must be Locked or Run.
+    ///
+    /// Not to be confused with
+    /// [`TdispResourceValidationInterface::tdisp_block_mmio`], which performs
+    /// the platform-side block. This one only notifies the host over the VPCI
+    /// channel.
+    ///
+    /// * `range_id` - Identifies which MMIO range to block (the PCI BAR index).
+    /// * `gpa_base` - The guest physical base address of the range.
+    /// * `range_len_bytes` - The length of the range, in bytes.
+    fn tdisp_block_mmio_range(
         &self,
         range_id: u16,
         gpa_base: u64,
@@ -255,20 +279,60 @@ pub fn new_unbind_command(device_id: u64, reason: TdispGuestUnbindReason) -> Gue
     }
 }
 
-/// Creates a [`GuestToHostCommand`] for the `AcceptPrivateMmioRange` command.
+/// Creates a [`GuestToHostCommand`] for the `ModifyMmioRange` command with the
+/// `UnblockMmioRange` action.
 ///
 /// `range_id` is widened to a `u32` because protobuf has no 16-bit type; the
 /// host narrows it back before dispatching.
-pub fn new_accept_private_mmio_range_command(
+pub fn new_unblock_mmio_range_command(
     device_id: u64,
+    range_id: u16,
+    gpa_base: u64,
+    range_len_bytes: u64,
+) -> GuestToHostCommand {
+    new_modify_mmio_range_command(
+        device_id,
+        TdispMmioRangeAction::UnblockMmioRange,
+        range_id,
+        gpa_base,
+        range_len_bytes,
+    )
+}
+
+/// Creates a [`GuestToHostCommand`] for the `ModifyMmioRange` command with the
+/// `BlockMmioRange` action.
+///
+/// `range_id` is widened to a `u32` because protobuf has no 16-bit type; the
+/// host narrows it back before dispatching.
+pub fn new_block_mmio_range_command(
+    device_id: u64,
+    range_id: u16,
+    gpa_base: u64,
+    range_len_bytes: u64,
+) -> GuestToHostCommand {
+    new_modify_mmio_range_command(
+        device_id,
+        TdispMmioRangeAction::BlockMmioRange,
+        range_id,
+        gpa_base,
+        range_len_bytes,
+    )
+}
+
+/// Shared body of [`new_unblock_mmio_range_command`] and
+/// [`new_block_mmio_range_command`].
+fn new_modify_mmio_range_command(
+    device_id: u64,
+    action: TdispMmioRangeAction,
     range_id: u16,
     gpa_base: u64,
     range_len_bytes: u64,
 ) -> GuestToHostCommand {
     GuestToHostCommand {
         device_id,
-        command: Some(Command::AcceptPrivateMmioRange(
-            TdispCommandRequestAcceptPrivateMmioRange {
+        command: Some(Command::ModifyMmioRange(
+            TdispCommandRequestModifyMmioRange {
+                action: action as i32,
                 range_id: range_id.into(),
                 gpa_base,
                 range_len_bytes,

@@ -39,7 +39,7 @@ impl GuestToHostCommandExt for GuestToHostCommand {
             Some(Command::StartTdi(_)) => Some("StartTdi"),
             Some(Command::Unbind(_)) => Some("Unbind"),
             Some(Command::GetTdiReport(_)) => Some("GetTdiReport"),
-            Some(Command::AcceptPrivateMmioRange(_)) => Some("AcceptPrivateMmioRange"),
+            Some(Command::ModifyMmioRange(_)) => Some("ModifyMmioRange"),
             None => None,
         }
     }
@@ -96,10 +96,10 @@ impl GuestToHostResponseVariant for TdispCommandResponseUnbind {
     }
 }
 
-impl GuestToHostResponseVariant for TdispCommandResponseAcceptPrivateMmioRange {
+impl GuestToHostResponseVariant for TdispCommandResponseModifyMmioRange {
     fn from_response_variant(response: Response) -> Option<Self> {
         match response {
-            Response::AcceptPrivateMmioRange(r) => Some(r),
+            Response::ModifyMmioRange(r) => Some(r),
             _ => None,
         }
     }
@@ -142,7 +142,7 @@ impl GuestToHostResponseExt for GuestToHostResponse {
             Some(Response::StartTdi(_)) => Some("StartTdi"),
             Some(Response::Unbind(_)) => Some("Unbind"),
             Some(Response::GetTdiReport(_)) => Some("GetTdiReport"),
-            Some(Response::AcceptPrivateMmioRange(_)) => Some("AcceptPrivateMmioRange"),
+            Some(Response::ModifyMmioRange(_)) => Some("ModifyMmioRange"),
             None => None,
         }
     }

@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tdisp_proto::TdispDeviceInterfaceInfo;
 use tdisp_proto::TdispGuestProtocolType;
+use tdisp_proto::TdispMmioRangeAction;
 use tdisp_proto::TdispReportType;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -21,7 +22,8 @@ pub enum LastCall {
     StartDevice,
     UnbindDevice,
     GetDeviceReport(TdispReportType),
-    AcceptPrivateMmioRange {
+    ModifyMmioRange {
+        action: TdispMmioRangeAction,
         range_id: u16,
         gpa_base: u64,
         range_len_bytes: u64,
@@ -49,13 +51,15 @@ impl TdispHostDeviceInterface for TrackingHostInterface {
         Ok(())
     }
 
-    fn tdisp_accept_private_mmio_range(
+    fn tdisp_modify_mmio_range(
         &mut self,
+        action: TdispMmioRangeAction,
         range_id: u16,
         gpa_base: u64,
         range_len_bytes: u64,
     ) -> anyhow::Result<()> {
-        *self.last_call.lock() = Some(LastCall::AcceptPrivateMmioRange {
+        *self.last_call.lock() = Some(LastCall::ModifyMmioRange {
+            action,
             range_id,
             gpa_base,
             range_len_bytes,

@@ -111,6 +111,18 @@ enum TdispReportType {
   TDISP_REPORT_TYPE_IS_REGISTERED = 5;
 }
 
+// The operation a TdispCommandRequestModifyMmioRange applies to an MMIO range.
+enum TdispMmioRangeAction {
+  // Invalid action. All usages of this action should be treated as an error.
+  TDISP_MMIO_RANGE_ACTION_INVALID = 0;
+
+  // Unblock the range, making it accessible to the guest's private context.
+  TDISP_MMIO_RANGE_ACTION_UNBLOCK_MMIO_RANGE = 1;
+
+  // Block the range, reversing a previous unblock.
+  TDISP_MMIO_RANGE_ACTION_BLOCK_MMIO_RANGE = 2;
+}
+
 // Represents the type of CVM technology the guest requests to use.
 // As new features are added by respective OEMs, this enum will be extended
 // if these protocols change.
@@ -147,9 +159,10 @@ message GuestToHostCommand {
     TdispCommandRequestGetTdiReport get_tdi_report = 4;
     TdispCommandRequestStartTdi start_tdi = 5;
     TdispCommandRequestUnbind unbind = 6;
-    TdispCommandRequestAcceptPrivateMmioRange accept_private_mmio_range = 7;
+    TdispCommandRequestModifyMmioRange modify_mmio_range = 7;
   }
 }
+
 
 // Represents a response from a TDISP command sent to the host by a guest. The
 // active variant of `response` identifies the command that was processed and
@@ -171,7 +184,7 @@ message GuestToHostResponse {
     TdispCommandResponseGetTdiReport get_tdi_report = 6;
     TdispCommandResponseStartTdi start_tdi = 7;
     TdispCommandResponseUnbind unbind = 8;
-    TdispCommandResponseAcceptPrivateMmioRange accept_private_mmio_range = 9;
+    TdispCommandResponseModifyMmioRange modify_mmio_range = 9;
   }
 }
 
@@ -206,18 +219,21 @@ message TdispCommandRequestUnbind {
   TdispGuestUnbindReason unbind_reason = 1;
 }
 
-// Accept an MMIO range into the guest's private context. The TDI must be in
-// the Locked or Run state; any other state is an error. Does not transition
-// the TDI.
-message TdispCommandRequestAcceptPrivateMmioRange {
-  // Identifies which MMIO range is being accepted. This is the PCI BAR index.
-  uint32 range_id = 1;
+// Block or unblock an MMIO range in the guest's private context. The TDI must
+// be in the Locked or Run state; any other state is an error. Does not
+// transition the TDI.
+message TdispCommandRequestModifyMmioRange {
+  // The operation to apply to the range.
+  TdispMmioRangeAction action = 1;
 
-  // The guest physical base address of the range being accepted.
-  uint64 gpa_base = 2;
+  // Identifies which MMIO range is being modified. This is the PCI BAR index.
+  uint32 range_id = 2;
 
-  // The length of the range being accepted, in bytes.
-  uint64 range_len_bytes = 3;
+  // The guest physical base address of the range.
+  uint64 gpa_base = 3;
+
+  // The length of the range, in bytes.
+  uint64 range_len_bytes = 4;
 }
 
 // ----------------------------------------------------------------------------
@@ -248,8 +264,8 @@ message TdispCommandResponseStartTdi {}
 // Response to TdispCommandRequestUnbind. Carries no payload.
 message TdispCommandResponseUnbind {}
 
-// Response to TdispCommandRequestAcceptPrivateMmioRange. Carries no payload.
-message TdispCommandResponseAcceptPrivateMmioRange {}
+// Response to TdispCommandRequestModifyMmioRange. Carries no payload.
+message TdispCommandResponseModifyMmioRange {}
 
 // ----------------------------------------------------------------------------
 // Shared info structs

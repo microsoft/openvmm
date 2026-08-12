@@ -17,15 +17,16 @@ use crate::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use crate::tests::mocks::LastCall;
 use crate::tests::mocks::new_emulator;
 use tdisp_proto::GuestToHostCommand;
-use tdisp_proto::TdispCommandRequestAcceptPrivateMmioRange;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
+use tdisp_proto::TdispCommandRequestModifyMmioRange;
 use tdisp_proto::TdispCommandRequestStartTdi;
 use tdisp_proto::TdispCommandRequestUnbind;
 use tdisp_proto::TdispGuestOperationErrorCode;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispMmioRangeAction;
 use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
@@ -111,16 +112,18 @@ fn get_tdi_report_cmd(device_id: u64, report_type: TdispReportType) -> GuestToHo
     }
 }
 
-fn accept_private_mmio_range_cmd(
+fn modify_mmio_range_cmd(
     device_id: u64,
+    action: TdispMmioRangeAction,
     range_id: u32,
     gpa_base: u64,
     range_len_bytes: u64,
 ) -> GuestToHostCommand {
     GuestToHostCommand {
         device_id,
-        command: Some(Command::AcceptPrivateMmioRange(
-            TdispCommandRequestAcceptPrivateMmioRange {
+        command: Some(Command::ModifyMmioRange(
+            TdispCommandRequestModifyMmioRange {
+                action: action as i32,
                 range_id,
                 gpa_base,
                 range_len_bytes,
@@ -392,12 +395,12 @@ fn test_rebind_after_full_lifecycle() {
     assert_eq!(*mock.last_call.lock(), Some(LastCall::StartDevice));
 }
 
-// ── AcceptPrivateMmioRange ────────────────────────────────────────────────────
+// ── ModifyMmioRange ────────────────────────────────────────────────────
 
 /// The command is accepted in Locked, forwards the guest's values to the host
 /// interface unchanged, and does not transition the TDI.
 #[test]
-fn test_accept_private_mmio_range_succeeds_in_locked() {
+fn test_modify_mmio_range_succeeds_in_locked() {
     let mut mock = new_emulator();
     const DEVICE_ID: u64 = 3;
 
@@ -406,18 +409,22 @@ fn test_accept_private_mmio_range_succeeds_in_locked() {
 
     let resp = dispatch_roundtrip(
         &mut mock.emulator,
-        accept_private_mmio_range_cmd(DEVICE_ID, 2, 0xe000_0000, 0x10_0000),
+        modify_mmio_range_cmd(
+            DEVICE_ID,
+            TdispMmioRangeAction::UnblockMmioRange,
+            2,
+            0xe000_0000,
+            0x10_0000,
+        ),
     );
     assert_eq!(resp.result, TdispGuestOperationErrorCode::Success as i32);
     assert_eq!(resp.tdi_state_before, TdispTdiState::Locked as i32);
     assert_eq!(resp.tdi_state_after, TdispTdiState::Locked as i32);
-    assert!(matches!(
-        resp.response,
-        Some(Response::AcceptPrivateMmioRange(_))
-    ));
+    assert!(matches!(resp.response, Some(Response::ModifyMmioRange(_))));
     assert_eq!(
         *mock.last_call.lock(),
-        Some(LastCall::AcceptPrivateMmioRange {
+        Some(LastCall::ModifyMmioRange {
+            action: TdispMmioRangeAction::UnblockMmioRange,
             range_id: 2,
             gpa_base: 0xe000_0000,
             range_len_bytes: 0x10_0000,
@@ -427,7 +434,7 @@ fn test_accept_private_mmio_range_succeeds_in_locked() {
 
 /// The command is equally valid in Run, and again leaves the state alone.
 #[test]
-fn test_accept_private_mmio_range_succeeds_in_run() {
+fn test_modify_mmio_range_succeeds_in_run() {
     let mut mock = new_emulator();
     const DEVICE_ID: u64 = 3;
 
@@ -437,14 +444,21 @@ fn test_accept_private_mmio_range_succeeds_in_run() {
 
     let resp = dispatch_roundtrip(
         &mut mock.emulator,
-        accept_private_mmio_range_cmd(DEVICE_ID, 0, 0xf000_0000, 0x2_0000_0000),
+        modify_mmio_range_cmd(
+            DEVICE_ID,
+            TdispMmioRangeAction::BlockMmioRange,
+            0,
+            0xf000_0000,
+            0x2_0000_0000,
+        ),
     );
     assert_eq!(resp.result, TdispGuestOperationErrorCode::Success as i32);
     assert_eq!(resp.tdi_state_before, TdispTdiState::Run as i32);
     assert_eq!(resp.tdi_state_after, TdispTdiState::Run as i32);
     assert_eq!(
         *mock.last_call.lock(),
-        Some(LastCall::AcceptPrivateMmioRange {
+        Some(LastCall::ModifyMmioRange {
+            action: TdispMmioRangeAction::BlockMmioRange,
             range_id: 0,
             gpa_base: 0xf000_0000,
             // Larger than u32::MAX, confirming the 64-bit length survives the
@@ -458,7 +472,7 @@ fn test_accept_private_mmio_range_succeeds_in_run() {
 /// StartTdi and GetTdiReport, this must NOT tear the TDI down: the state is
 /// still Unlocked afterwards and the host interface was never called.
 #[test]
-fn test_accept_private_mmio_range_fails_in_unlocked_without_teardown() {
+fn test_modify_mmio_range_fails_in_unlocked_without_teardown() {
     let mut mock = new_emulator();
     const DEVICE_ID: u64 = 3;
 
@@ -467,7 +481,13 @@ fn test_accept_private_mmio_range_fails_in_unlocked_without_teardown() {
 
     let resp = dispatch_roundtrip(
         &mut mock.emulator,
-        accept_private_mmio_range_cmd(DEVICE_ID, 1, 0xd000_0000, 0x1000),
+        modify_mmio_range_cmd(
+            DEVICE_ID,
+            TdispMmioRangeAction::UnblockMmioRange,
+            1,
+            0xd000_0000,
+            0x1000,
+        ),
     );
     assert_eq!(
         resp.result,
@@ -479,7 +499,7 @@ fn test_accept_private_mmio_range_fails_in_unlocked_without_teardown() {
     // No unbind was issued and the host never saw the range.
     assert_eq!(*mock.last_call.lock(), Some(LastCall::NegotiateProtocol));
 
-    // The TDI is still usable: a bind right after the rejected accept works.
+    // The TDI is still usable: a bind right after the rejected modify works.
     let resp = dispatch_roundtrip(&mut mock.emulator, bind_cmd(DEVICE_ID));
     assert_eq!(resp.result, TdispGuestOperationErrorCode::Success as i32);
     assert_eq!(resp.tdi_state_after, TdispTdiState::Locked as i32);
@@ -488,7 +508,7 @@ fn test_accept_private_mmio_range_fails_in_unlocked_without_teardown() {
 /// A range_id that does not fit in a u16 is rejected before the state machine
 /// is consulted, since the wire type is wider than the BAR index it carries.
 #[test]
-fn test_accept_private_mmio_range_rejects_oversized_range_id() {
+fn test_modify_mmio_range_rejects_oversized_range_id() {
     let mut mock = new_emulator();
     const DEVICE_ID: u64 = 3;
 
@@ -497,7 +517,41 @@ fn test_accept_private_mmio_range_rejects_oversized_range_id() {
 
     let resp = dispatch_roundtrip(
         &mut mock.emulator,
-        accept_private_mmio_range_cmd(DEVICE_ID, u32::MAX, 0xd000_0000, 0x1000),
+        modify_mmio_range_cmd(
+            DEVICE_ID,
+            TdispMmioRangeAction::UnblockMmioRange,
+            u32::MAX,
+            0xd000_0000,
+            0x1000,
+        ),
+    );
+    assert_eq!(
+        resp.result,
+        TdispGuestOperationErrorCode::InvalidGuestCommandId as i32
+    );
+    assert_eq!(resp.tdi_state_after, TdispTdiState::Locked as i32);
+    assert_eq!(*mock.last_call.lock(), Some(LastCall::BindDevice));
+}
+
+/// The Invalid action is rejected in a valid state, so the guest cannot use a
+/// zero-valued action to reach the host interface.
+#[test]
+fn test_modify_mmio_range_rejects_invalid_action() {
+    let mut mock = new_emulator();
+    const DEVICE_ID: u64 = 3;
+
+    dispatch_roundtrip(&mut mock.emulator, negotiate_cmd(DEVICE_ID));
+    dispatch_roundtrip(&mut mock.emulator, bind_cmd(DEVICE_ID));
+
+    let resp = dispatch_roundtrip(
+        &mut mock.emulator,
+        modify_mmio_range_cmd(
+            DEVICE_ID,
+            TdispMmioRangeAction::Invalid,
+            1,
+            0xd000_0000,
+            0x1000,
+        ),
     );
     assert_eq!(
         resp.result,

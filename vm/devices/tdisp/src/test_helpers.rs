@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tdisp_proto::TdispDeviceInterfaceInfo;
 use tdisp_proto::TdispGuestProtocolType;
+use tdisp_proto::TdispMmioRangeAction;
 use tdisp_proto::TdispReportType;
 
 /// Guest protocol that will be negotiated by the mock device.
@@ -51,8 +52,9 @@ impl TdispHostDeviceInterface for NullTdispHostInterface {
         Ok(vec![])
     }
 
-    fn tdisp_accept_private_mmio_range(
+    fn tdisp_modify_mmio_range(
         &mut self,
+        _action: TdispMmioRangeAction,
         _range_id: u16,
         _gpa_base: u64,
         _range_len_bytes: u64,

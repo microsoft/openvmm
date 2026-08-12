@@ -11,10 +11,10 @@ use openhcl_tdisp::GuestToHostCommand;
 use openhcl_tdisp::GuestToHostCommandExt;
 use openhcl_tdisp::GuestToHostResponse;
 use openhcl_tdisp::GuestToHostResponseExt;
-use openhcl_tdisp::TdispCommandResponseAcceptPrivateMmioRange;
 use openhcl_tdisp::TdispCommandResponseBind;
 use openhcl_tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
 use openhcl_tdisp::TdispCommandResponseGetTdiReport;
+use openhcl_tdisp::TdispCommandResponseModifyMmioRange;
 use openhcl_tdisp::TdispCommandResponseStartTdi;
 use openhcl_tdisp::TdispCommandResponseUnbind;
 use openhcl_tdisp::TdispDeviceInterfaceInfo;
@@ -362,29 +362,59 @@ impl VpciClientTdispState {
         Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
     }
 
-    /// See: [`TdispVirtualDeviceInterface::tdisp_accept_private_mmio_range`]
-    pub async fn tdisp_accept_private_mmio_range(
+    /// See: [`TdispVirtualDeviceInterface::tdisp_unblock_mmio_range`]
+    pub async fn tdisp_unblock_mmio_range(
         &mut self,
         range_id: u16,
         gpa_base: u64,
         range_len_bytes: u64,
     ) -> anyhow::Result<()> {
-        let res = self
-            .send_tdisp_command(openhcl_tdisp::new_accept_private_mmio_range_command(
+        self.send_modify_mmio_range(
+            openhcl_tdisp::new_unblock_mmio_range_command(
                 self.vpci_device_id,
                 range_id,
                 gpa_base,
                 range_len_bytes,
-            ))
-            .await?;
+            ),
+            "tdisp_unblock_mmio_range",
+        )
+        .await
+    }
+
+    /// See: [`TdispVirtualDeviceInterface::tdisp_block_mmio_range`]
+    pub async fn tdisp_block_mmio_range(
+        &mut self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        self.send_modify_mmio_range(
+            openhcl_tdisp::new_block_mmio_range_command(
+                self.vpci_device_id,
+                range_id,
+                gpa_base,
+                range_len_bytes,
+            ),
+            "tdisp_block_mmio_range",
+        )
+        .await
+    }
+
+    /// Shared body of [`Self::tdisp_unblock_mmio_range`] and
+    /// [`Self::tdisp_block_mmio_range`]. `caller` only names the operation in
+    /// the error message.
+    async fn send_modify_mmio_range(
+        &mut self,
+        command: GuestToHostCommand,
+        caller: &str,
+    ) -> anyhow::Result<()> {
+        let res = self.send_tdisp_command(command).await?;
 
         // Unlike bind and start, this command does not transition the TDI, so
         // there is no post-command state to check.
-        match res.response::<TdispCommandResponseAcceptPrivateMmioRange>() {
+        match res.response::<TdispCommandResponseModifyMmioRange>() {
             Ok(_) => Ok(()),
-            Err(err) => Err(anyhow::anyhow!(
-                "error response in tdisp_accept_private_mmio_range: {err}"
-            )),
+            Err(err) => Err(anyhow::anyhow!("error response in {caller}: {err}")),
         }
     }
 
@@ -903,7 +933,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         guard.tdisp_unbind(reason).await
     }
 
-    async fn tdisp_accept_private_mmio_range(
+    async fn tdisp_unblock_mmio_range(
         &self,
         range_id: u16,
         gpa_base: u64,
@@ -911,7 +941,19 @@ impl TdispVirtualDeviceInterface for VpciDevice {
     ) -> anyhow::Result<()> {
         let mut guard = self.tdisp.0.lock().await;
         guard
-            .tdisp_accept_private_mmio_range(range_id, gpa_base, range_len_bytes)
+            .tdisp_unblock_mmio_range(range_id, gpa_base, range_len_bytes)
+            .await
+    }
+
+    async fn tdisp_block_mmio_range(
+        &self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        let mut guard = self.tdisp.0.lock().await;
+        guard
+            .tdisp_block_mmio_range(range_id, gpa_base, range_len_bytes)
             .await
     }
 }
