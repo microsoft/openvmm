@@ -492,6 +492,53 @@ mod tests {
         }
     }
 
+    fn nvswitch() -> HardwareIds {
+        HardwareIds {
+            vendor_id: 0x10DE,
+            device_id: 0x22A3,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_OTHER,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        }
+    }
+
+    fn bridge_rule() -> AllowedDevice {
+        AllowedDevice {
+            vendor_id: Some(0x10DE),
+            device_id: None,
+            revision_id: None,
+            prog_if: None,
+            sub_class: Some(Subclass::BRIDGE_OTHER),
+            base_class: Some(ClassCode::BRIDGE),
+            sub_vendor_id: None,
+            sub_system_id: None,
+        }
+    }
+
+    /// The allow-list entries `underhill_core` installs when the host sets
+    /// `NvidiaVpciRelayAllowed`: NVIDIA GPUs and NVIDIA bridges are admitted,
+    /// and nothing else is. Without them, the same devices are denied.
+    #[test]
+    fn nvidia_allow_list_end_to_end() {
+        // A non-NVIDIA display controller must never be admitted by these rules.
+        let mut other_vendor = nvidia_gpu();
+        other_vendor.vendor_id = 0x1002;
+
+        // Host flag unset: the NVIDIA entries are absent.
+        let baseline: Vec<AllowedDevice> = Vec::new();
+        assert!(!device_allowed(&baseline, &nvidia_gpu()));
+        assert!(!device_allowed(&baseline, &nvswitch()));
+
+        // Host flag set: the two NVIDIA entries are installed.
+        let enabled = vec![gpu_rule(), bridge_rule()];
+        assert!(device_allowed(&enabled, &nvidia_gpu()));
+        assert!(device_allowed(&enabled, &nvswitch()));
+        assert!(!device_allowed(&enabled, &other_vendor));
+    }
+
     /// An empty allow-list must admit nothing. Previously it meant "allow
     /// everything", so failing to populate the list was a silent relay bypass.
     #[test]
