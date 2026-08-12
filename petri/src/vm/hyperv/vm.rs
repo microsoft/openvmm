@@ -354,8 +354,15 @@ impl HyperVVM {
     }
 
     /// Issue a hard reset to the VM
-    pub async fn reset(&self) -> anyhow::Result<()> {
-        hvc::hvc_reset(&self.vmid).await.context("hvc_reset")
+    pub async fn reset(&mut self) -> anyhow::Result<()> {
+        hvc::hvc_reset(&self.vmid).await.context("hvc_reset")?;
+        // `hvc reset` only returns once the reset has been logged, so any
+        // event from here on belongs to the new boot. Advancing the window is
+        // required for correctness: otherwise the boot event from the boot
+        // being abandoned is still reported, and `boot_event` fails with "Got
+        // more than one boot event" as soon as the new boot logs its own.
+        self.last_start_time = Some(Timestamp::now());
+        Ok(())
     }
 
     /// return the named pipe path for the serial port.

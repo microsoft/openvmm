@@ -547,6 +547,9 @@ impl PetriVmInner {
     async fn reset(&mut self) -> anyhow::Result<()> {
         tracing::info!("Resetting VM");
         self.worker.reset().await?;
+        // Discard any firmware events from the boot that was abandoned, so
+        // that they aren't mistaken for the results of the new boot.
+        while self.resources.firmware_event_recv.try_recv().is_ok() {}
         // Guest state is lost on reset, so CIDATA needs to be remounted.
         self.cidata_mounted = false;
         // On linux direct, pipette won't auto-start unless it is the init
