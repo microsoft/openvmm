@@ -582,10 +582,6 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -599,7 +595,6 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 }
 
 /// Verify that secure boot fails with a mismatched template.
-/// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
 #[vmm_test_with(
     noagent,
     configs(
@@ -608,22 +603,6 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
         openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
         openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
         openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-        ignore(
-            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
-            hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64))
-        ),
-        ignore(
-            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
-            hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
-        ),
-        ignore(
-            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
-            hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64))
-        ),
-        ignore(
-            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
-            hyperv_uefi_x64(vhd(ubuntu_2504_server_x64))
-        ),
         hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
         hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
         hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
