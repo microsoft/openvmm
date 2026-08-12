@@ -4308,6 +4308,31 @@ pub struct HvX64VmgexitInterceptMessage {
 
 impl MessagePayload for HvX64VmgexitInterceptMessage {}
 
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvX64GpaAttributeInterceptMessageFlags {
+    #[bits(5)]
+    pub range_count: u32,
+    pub adjust: bool,
+    #[bits(2)]
+    pub host_visibility: u32,
+    #[bits(6)]
+    pub memory_type: u32,
+    #[bits(18)]
+    _reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvX64GpaAttributeInterceptMessage {
+    pub vp_index: u32,
+    pub flags: HvX64GpaAttributeInterceptMessageFlags,
+    pub ranges: [hypercall::HvGpaRange; 29],
+}
+
+impl MessagePayload for HvX64GpaAttributeInterceptMessage {}
+const_assert!(size_of::<HvX64GpaAttributeInterceptMessage>() == HV_MESSAGE_PAYLOAD_SIZE);
+
 #[bitfield(u64)]
 pub struct HvRegisterVpAssistPage {
     pub enabled: bool,
