@@ -3516,6 +3516,25 @@ impl LoadedVmInner {
     }
 }
 
+fn supports_firmware_reload_reset(isolation: Option<openvmm_defs::config::IsolationType>) -> bool {
+    !matches!(isolation, Some(openvmm_defs::config::IsolationType::Snp))
+}
+
+#[cfg(test)]
+mod reset_policy_tests {
+    use super::*;
+    use openvmm_defs::config::IsolationType;
+    use test_with_tracing::test;
+
+    #[test]
+    fn firmware_reload_reset_is_only_rejected_for_snp() {
+        assert!(supports_firmware_reload_reset(None));
+        assert!(supports_firmware_reload_reset(Some(IsolationType::Vbs)));
+        assert!(!supports_firmware_reload_reset(Some(IsolationType::Snp)));
+        assert!(supports_firmware_reload_reset(Some(IsolationType::Cca)));
+    }
+}
+
 impl LoadedVm {
     async fn resume(&mut self) -> bool {
         if self.running {
@@ -4105,6 +4124,13 @@ impl LoadedVm {
     }
 
     async fn reset(&mut self, reload_firmware: bool) -> anyhow::Result<()> {
+        // TODO: Support reset for SNP partitions.
+        if reload_firmware
+            && !supports_firmware_reload_reset(self.inner.hypervisor_cfg.with_isolation)
+        {
+            anyhow::bail!("firmware reload reset is not supported for SNP VMs");
+        }
+
         let resume = self.pause().await;
 
         self.state_units.reset().await?;
