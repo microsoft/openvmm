@@ -30,6 +30,11 @@ the version being released, and merge it. That review *is* the decision
 to release that version; the release workflow only ever publishes what
 the tree already says.
 
+If the committed version has never been released and is already the
+intended value, the pull request may instead state explicitly that it
+selects that existing version. A no-op edit to `Cargo.toml` is not
+required.
+
 ```admonish note
 The version stays at the released value after publication. Commits made
 afterwards report `<VERSION>+g<COMMIT>` and are identifiable as
