@@ -316,6 +316,9 @@ pub struct UnderhillEnvCfg {
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
     pub enable_vpci_relay: Option<bool>,
+    /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the VPCI
+    /// relay's device filter, overriding the host's DPS value
+    pub nvidia_vpci_relay_allowed: Option<bool>,
     /// Disable proxy interrupt redirection
     pub disable_proxy_redirect: bool,
     /// Disable lower VTL timer virtualization
@@ -1736,7 +1739,10 @@ async fn new_underhill_vm(
     // attestation claim that reports them. Do not re-derive either from a
     // different set of conditions: if the two can disagree, the host can widen
     // the filter while attestation reports that it did not.
-    let enable_nvidia_vpci_relay = enable_vpci_relay && dps.general.nvidia_vpci_relay_allowed;
+    let enable_nvidia_vpci_relay = enable_vpci_relay
+        && env_cfg
+            .nvidia_vpci_relay_allowed
+            .unwrap_or(dps.general.nvidia_vpci_relay_allowed);
 
     // Construct chipset MMIO ranges from the positional convention in the
     // device tree: [0] = low (below 4 GiB), [1] = high (above RAM).

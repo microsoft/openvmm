@@ -356,6 +356,7 @@ async fn launch_workers(
         strict_encryption_policy: opt.strict_encryption_policy,
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,
+        nvidia_vpci_relay_allowed: opt.nvidia_vpci_relay_allowed,
         disable_proxy_redirect: opt.disable_proxy_redirect,
         disable_lower_vtl_timer_virt: opt.disable_lower_vtl_timer_virt,
         config_timeout_in_seconds: opt.config_timeout_in_seconds,
