@@ -18,6 +18,7 @@ inspect.workspace = true
 mesh.workspace = true
 mesh_worker.workspace = true
 pal_async.workspace = true
+tracelimit.workspace = true
 tracing_helpers.workspace = true
 vmsocket.workspace = true
 

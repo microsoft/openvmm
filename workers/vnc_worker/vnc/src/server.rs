@@ -7,6 +7,7 @@
 use crate::DirtyRectReceiver;
 use crate::Error;
 use crate::encoder::Encoder;
+use crate::encoder::WireEncoding;
 use crate::encoder::build_cursor;
 use crate::pixel::PixelConversion;
 use crate::rfb;
@@ -23,17 +24,17 @@ use futures::future::OptionFuture;
 use pal_async::socket::PolledSocket;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+use std::time::Instant;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 /// Mutable per-connection state passed between the event loop and message
-/// handler. Groups pixel format, resolution, encoding capabilities, and
-/// update flags into a single struct to avoid long parameter lists.
+/// handler.
 pub(crate) struct ClientState {
     /// Client's negotiated pixel format (bpp, endianness, color shifts).
     fmt: rfb::PixelFormat,
-    /// Pre-computed conversion params from fmt, cached to avoid recomputing
-    /// per pixel in the hot encoding loop.
+    /// Conversion params derived from fmt.
     pixel_conv: PixelConversion,
     /// Current framebuffer width in pixels.
     width: u16,
@@ -43,8 +44,7 @@ pub(crate) struct ClientState {
     ready_for_update: bool,
     /// Forces a full screen refresh on the next update cycle.
     force_full_update: bool,
-    /// Send cursor shape on the next update (set when client first
-    /// advertises cursor encoding support).
+    /// Send cursor shape on the next update.
     send_cursor: bool,
     /// Converts xkeysym key events to scancodes.
     scancode_state: scancode::State,
@@ -52,9 +52,26 @@ pub(crate) struct ClientState {
     supports_desktop_resize: bool,
     /// Client supports zlib-compressed rectangles.
     supports_zlib: bool,
+    /// Client supports the ZRLE encoding.
+    supports_zrle: bool,
     /// Client supports the Cursor pseudo-encoding.
     supports_cursor: bool,
 }
+
+/// How a client's dirty-tracking tile size is chosen.
+#[derive(Copy, Clone, Debug)]
+pub enum TileSizeMode {
+    /// A fixed tile edge length in pixels.
+    Fixed(u16),
+    /// Measurement mode: cycle through 2, 4, 8, 16, 32 every 30 seconds, logging
+    /// the bytes sent at each size.
+    Cycle,
+}
+
+/// The tile sizes `TileSizeMode::Cycle` rotates through.
+const CYCLE_TILE_SIZES: [u16; 5] = [2, 4, 8, 16, 32];
+/// How long `TileSizeMode::Cycle` holds each tile size before advancing.
+const CYCLE_PERIOD: Duration = Duration::from_secs(30);
 
 /// A VNC server handling a single connection.
 pub struct Server<F, I> {
@@ -64,6 +81,9 @@ pub struct Server<F, I> {
     update_recv: async_channel::Receiver<()>,
     update_send: async_channel::Sender<()>,
     name: String,
+    /// Peer address ("ip:port") of the connected client. "unknown" if the
+    /// socket has no peer (e.g. a disconnected test stub).
+    peer_addr: String,
 
     /// Ctrl-Alt-P paste intercept: tracks modifier key state (left or right).
     ctrl_pressed: bool,
@@ -71,33 +91,32 @@ pub struct Server<F, I> {
     /// Clipboard text received from the client via ClientCutText.
     clipboard: String,
 
+    /// How this client's dirty-tracking tile size is chosen (`--vnc-tile-size`).
+    tile_size_mode: TileSizeMode,
+
     dirty_recv: Option<DirtyRectReceiver>,
-    /// Set by the coordinator when a dirty broadcast was dropped because
-    /// the per-client channel was full. The client checks and clears this
-    /// flag during collect_dirty to force a full refresh.
+    /// Flags that a dirty broadcast was dropped because the per-client channel
+    /// was full. Checked and cleared during collect_dirty to force a full
+    /// refresh. None when there is no dirty broadcast.
     missed_dirty: Option<Arc<AtomicBool>>,
 }
 
 /// External handle that nudges the server's main loop to do an update pass.
-/// Cloneable so the caller can hold one per timer or signal source. Drops
-/// silently when the matching `Server` is gone.
 #[derive(Debug, Clone)]
 pub struct Updater(async_channel::Sender<()>);
 
 impl Updater {
     /// Signals the server to look for new dirty regions on its next loop
-    /// iteration. Non-blocking; coalesces multiple signals into one via the
-    /// capacity-1 channel.
+    /// iteration. Non-blocking; coalesces multiple signals into one.
     pub fn update(&mut self) {
         let _ = self.0.try_send(());
     }
 }
 
 impl<F: Framebuffer, I: Input> Server<F, I> {
-    /// Builds a new `Server` bound to one client socket. `dirty_recv` (and
-    /// `missed_dirty`) are produced by the multi-client coordinator when
-    /// the synth video device is forwarding dirty rectangles; pass `None`
-    /// for both to fall back to whole-framebuffer tile-diff detection.
+    /// Builds a new `Server` bound to one client socket. Pass `None` for
+    /// `dirty_recv` and `missed_dirty` to fall back to whole-framebuffer
+    /// tile-diff detection.
     pub fn new(
         name: String,
         socket: PolledSocket<socket2::Socket>,
@@ -105,8 +124,16 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
         input: I,
         dirty_recv: Option<DirtyRectReceiver>,
         missed_dirty: Option<Arc<AtomicBool>>,
+        tile_size_mode: TileSizeMode,
     ) -> Server<F, I> {
         let (update_send, update_recv) = async_channel::bounded(1);
+        let peer_addr = socket
+            .get()
+            .peer_addr()
+            .ok()
+            .and_then(|addr| addr.as_socket())
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         Self {
             socket,
             fb,
@@ -114,11 +141,13 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             update_recv,
             update_send,
             name,
+            peer_addr,
 
             ctrl_pressed: false,
             alt_pressed: false,
             clipboard: String::new(),
 
+            tile_size_mode,
             dirty_recv,
             missed_dirty,
         }
@@ -130,9 +159,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
         Updater(self.update_send.clone())
     }
 
-    /// Consumes the server and returns ownership of the embedder-supplied
-    /// framebuffer and input handles back to the caller. Used by the
-    /// coordinator after a client disconnects to reuse those resources.
+    /// Consumes the server and returns ownership of the framebuffer and input
+    /// handles back to the caller.
     pub fn done(self) -> (F, I) {
         (self.fb, self.input)
     }
@@ -184,6 +212,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
 
                 let mut chosen_type = 0u8;
                 socket.read_exact(chosen_type.as_mut_bytes()).await?;
+                tracing::debug!(security_type = chosen_type, "client selected security type");
 
                 if chosen_type != rfb::SECURITY_TYPE_NONE {
                     if version.0 == rfb::PROTOCOL_VERSION_38 {
@@ -262,11 +291,10 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
 
     /// Paste clipboard contents as keystrokes to the VM.
     ///
-    /// ASCII (32-126): emitted via keysym → scancode mapping.
-    /// Latin-1 (128-255, e.g., ö, ä, ü): emitted via Windows Alt+Numpad
-    /// input method (hold Alt, type decimal codepoint on numpad with leading
-    /// 0 for CP-1252, release Alt). Only works for Windows guests — Linux
-    /// guests need XKB compose sequences which aren't supported yet.
+    /// ASCII (32-126): emitted via keysym to scancode mapping.
+    /// Latin-1 (128-255): emitted via the Windows Alt+Numpad input method
+    /// (hold Alt, type decimal codepoint on numpad with leading 0 for CP-1252,
+    /// release Alt). Windows guests only.
     /// Characters beyond Latin-1 (U+0100+): silently skipped.
     fn paste_clipboard(&mut self, cs: &mut ClientState) {
         // Numpad scancodes for Alt+Numpad input method (digits 0-9).
@@ -288,13 +316,11 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     i.key(sc, down);
                 });
             } else if codepoint < 256 {
-                // Latin-1: Windows Alt+Numpad with leading 0 for CP-1252.
-                // Compute digits arithmetically — no allocation.
-                // "0" prefix tells Windows to use CP-1252 instead of OEM codepage.
+                // Latin-1: Windows Alt+Numpad. The leading "0" selects CP-1252
+                // rather than the OEM codepage.
                 let d2 = (codepoint / 100) as u8;
                 let d1 = ((codepoint / 10) % 10) as u8;
                 let d0 = (codepoint % 10) as u8;
-                // Leading 0 + up to 3 digits (max codepoint is 255).
                 let digits: &[u8] = if codepoint >= 100 {
                     &[0, d2, d1, d0]
                 } else if codepoint >= 10 {
@@ -330,9 +356,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     8 | 16 | 32 => {}
                     bpp => return Err(Error::UnsupportedPixelFormat(bpp)),
                 }
-                // Reject formats where channels don't fit in bits_per_pixel.
-                // A shift of 31 with an 8-bit channel would overflow u32
-                // in the pixel conversion shift operations.
+                // Reject formats where channels don't fit in bits_per_pixel,
+                // which would overflow the pixel conversion shifts.
                 let r_bits = if pf.red_max.get() > 0 {
                     16 - pf.red_max.get().leading_zeros()
                 } else {
@@ -348,9 +373,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 } else {
                     0
                 };
-                // Reject: non-true-color, channels exceeding our 8-bit
-                // internal format (shift_x = 8 - bits would underflow),
-                // or shift + bits overflowing u32.
+                // Reject non-true-color, channels exceeding our 8-bit internal
+                // format, or shift + bits overflowing u32.
                 if pf.true_color_flag == 0
                     || r_bits > 8
                     || g_bits > 8
@@ -361,9 +385,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 {
                     return Err(Error::UnsupportedPixelFormat(pf.bits_per_pixel));
                 }
-                // Warn on non-conforming max values. The RFB spec says max
-                // "should" be 2^N - 1 but uses "should" not "must". We handle
-                // any value via leading_zeros, but log unusual ones.
+                // The RFB spec says max "should" be 2^N - 1 but does not
+                // require it. We accept any value; log unusual ones.
                 for (name, max) in [
                     ("red", pf.red_max.get()),
                     ("green", pf.green_max.get()),
@@ -387,16 +410,34 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     blue_shift = cs.fmt.blue_shift,
                     "client pixel format changed"
                 );
+                // no_convert means the client's layout matches our internal
+                // 0x00RRGGBB and pixels go out as-is; otherwise each pixel is
+                // converted.
+                tracing::debug!(
+                    bpp = cs.fmt.bits_per_pixel,
+                    depth = cs.fmt.depth,
+                    true_color = cs.fmt.true_color_flag != 0,
+                    big_endian = cs.fmt.big_endian_flag != 0,
+                    red_max = cs.fmt.red_max.get(),
+                    green_max = cs.fmt.green_max.get(),
+                    blue_max = cs.fmt.blue_max.get(),
+                    red_shift = cs.fmt.red_shift,
+                    green_shift = cs.fmt.green_shift,
+                    blue_shift = cs.fmt.blue_shift,
+                    no_convert = cs.pixel_conv.no_convert,
+                    "pixel format negotiated"
+                );
                 cs.force_full_update = true;
             }
             rfb::CS_MESSAGE_SET_ENCODINGS => {
                 let mut input = rfb::SetEncodings::new_zeroed();
                 socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
-                // Cap allocation at 4096 to prevent OOM from malicious clients.
-                // If the client advertises more, we still drain the full
-                // message to keep the RFB stream in sync.
+                // Keep at most 255 encodings so a malicious encoding_count
+                // cannot drive a large allocation. If the client advertises
+                // more, drain the rest to keep the RFB stream in sync.
+                const MAX_ENCODINGS: usize = 255;
                 let advertised = input.encoding_count.get() as usize;
-                let capped = advertised.min(4096);
+                let capped = advertised.min(MAX_ENCODINGS);
                 let mut encodings: Vec<zerocopy::U32<zerocopy::BE>> = vec![0.into(); capped];
                 socket.read_exact(encodings.as_mut_bytes()).await?;
                 if advertised > capped {
@@ -413,23 +454,46 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         left -= chunk;
                     }
                 }
-                cs.supports_desktop_resize =
-                    encodings.contains(&rfb::ENCODING_TYPE_DESKTOP_SIZE.into());
-                cs.supports_zlib = encodings.contains(&rfb::ENCODING_TYPE_ZLIB.into());
+                // Each encoding travels as a big-endian unsigned 32-bit value;
+                // the registry numbers themselves are signed.
+                let codes: Vec<rfb::EncodingType> = encodings
+                    .iter()
+                    .map(|e| rfb::EncodingType(e.get() as i32))
+                    .collect();
+                cs.supports_desktop_resize = codes.contains(&rfb::EncodingType::DESKTOP_SIZE);
+                cs.supports_zlib = codes.contains(&rfb::EncodingType::ZLIB);
+                cs.supports_zrle = codes.contains(&rfb::EncodingType::ZRLE);
                 let had_cursor = cs.supports_cursor;
-                cs.supports_cursor = encodings.contains(&rfb::ENCODING_TYPE_CURSOR.into());
+                cs.supports_cursor = codes.contains(&rfb::EncodingType::CURSOR);
+                let supports_qemu_ext_key =
+                    codes.contains(&rfb::EncodingType::QEMU_EXTENDED_KEY_EVENT);
+                // RFB has no client-name field, so the offered set is the only
+                // fingerprint; "unknown" when no signature matches.
+                let client_guess = rfb::guess_client(&codes).unwrap_or("unknown");
                 tracing::info!(
+                    addr = %self.peer_addr,
+                    client_guess,
                     zlib = cs.supports_zlib,
+                    zrle = cs.supports_zrle,
                     desktop_resize = cs.supports_desktop_resize,
                     cursor = cs.supports_cursor,
-                    encoding_count = encodings.len(),
+                    qemu_extended_key = supports_qemu_ext_key,
+                    encoding_count = codes.len(),
                     "client encodings"
+                );
+                // Full offered set, every entry decoded to a name.
+                tracing::debug!(
+                    offered = ?codes
+                        .iter()
+                        .map(|&e| rfb::encoding_name(e))
+                        .collect::<Vec<_>>(),
+                    "client offered encodings"
                 );
                 if cs.supports_cursor && !had_cursor {
                     cs.send_cursor = true;
                 }
 
-                if encodings.contains(&rfb::ENCODING_TYPE_QEMU_EXTENDED_KEY_EVENT.into()) {
+                if supports_qemu_ext_key {
                     let mut msg = rfb::FramebufferUpdate {
                         message_type: rfb::SC_MESSAGE_TYPE_FRAMEBUFFER_UPDATE,
                         padding: 0,
@@ -443,7 +507,9 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                             y: 0.into(),
                             width: 0.into(),
                             height: 0.into(),
-                            encoding_type: rfb::ENCODING_TYPE_QEMU_EXTENDED_KEY_EVENT.into(),
+                            encoding_type: rfb::EncodingType::QEMU_EXTENDED_KEY_EVENT
+                                .wire_u32()
+                                .into(),
                         }
                         .as_bytes(),
                     );
@@ -462,8 +528,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 let mut input = rfb::KeyEvent::new_zeroed();
                 socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
 
-                // Track both left and right modifier keys. Use u32 to
-                // match the full keysym without truncation.
+                // Track both left and right modifier keys.
                 const KEYSYM_CONTROL_LEFT: u32 = 0xffe3;
                 const KEYSYM_CONTROL_RIGHT: u32 = 0xffe4;
                 const KEYSYM_ALT_LEFT: u32 = 0xffe9;
@@ -505,10 +570,10 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     }
                     self.paste_clipboard(cs);
                 } else if key <= u32::from(u16::MAX) {
-                    // Only emit keysyms that fit in u16 — the scancode table
-                    // only has entries for standard X keysyms (0x0000-0xFFFF).
-                    // High-plane Unicode keysyms (0x01000000+) have no scancode
-                    // mapping and would be misinterpreted if truncated.
+                    // Only emit keysyms that fit in u16. The scancode table
+                    // covers standard X keysyms (0x0000-0xFFFF); high-plane
+                    // Unicode keysyms (0x01000000+) would be misinterpreted if
+                    // truncated.
                     let i = &mut self.input;
                     cs.scancode_state
                         .emit(key as u16, input.down_flag != 0, |scancode, down| {
@@ -593,22 +658,15 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                             );
                             self.ctrl_pressed = false;
                             self.alt_pressed = false;
-                            // Release both left and right modifiers via raw
-                            // scancodes. The user may have triggered paste
-                            // with right Ctrl/Alt.
+                            // Release both left and right modifiers.
                             self.input.key(SC_CTRL_LEFT, false);
                             self.input.key(SC_CTRL_RIGHT, false);
                             self.input.key(SC_ALT_LEFT, false);
                             self.input.key(SC_ALT_RIGHT, false);
                             self.paste_clipboard(cs);
                         } else {
-                            // Forward raw scancodes. The scancode represents
-                            // the physical key — the guest OS layout maps it
-                            // to the correct character.
-                            //
-                            // RealVNC sends US-layout scancodes regardless of
-                            // client keyboard — this is a RealVNC client bug
-                            // that cannot be fixed server-side.
+                            // Forward the raw scancode; the guest OS layout
+                            // maps the physical key to a character.
                             self.input.key(scancode, is_down);
                         }
                     }
@@ -638,10 +696,27 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             scancode_state: scancode::State::new(),
             supports_desktop_resize: false,
             supports_zlib: false,
+            supports_zrle: false,
             supports_cursor: false,
         };
         let mut encoder = Encoder::new();
-        let mut update_state = UpdateState::new();
+        // `Cycle` mode starts at the smallest size and advances on a timer; a
+        // fixed mode pins its size for the connection.
+        let cycling = matches!(self.tile_size_mode, TileSizeMode::Cycle);
+        let initial_tile = match self.tile_size_mode {
+            TileSizeMode::Fixed(px) => px,
+            TileSizeMode::Cycle => CYCLE_TILE_SIZES[0],
+        };
+        let mut update_state = UpdateState::new(initial_tile);
+        let mut cycle_idx = 0usize;
+        let mut cycle_started = Instant::now();
+        let mut cycle_bytes: u64 = 0;
+        let mut cycle_frames: u64 = 0;
+        let mut cycle_proc_micros: u64 = 0;
+        // After a size switch (and on the first frame) the next frame is a
+        // forced full refresh; drop it from the period's totals so the numbers
+        // reflect steady state, not the one-off full retransmit.
+        let mut cycle_skip_next = true;
 
         update_state.set_resolution(cs.width, cs.height);
 
@@ -650,10 +725,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             let mut update_ready = false;
             let mut message_type = 0u8;
             let update_recv = &self.update_recv;
-            // async_channel::Receiver is not Unpin, so box the recv() future
-            // and fuse it for futures::select!. A Closed error is unreachable
-            // in practice (this Server owns the matching Sender for its whole
-            // lifetime); the loop body checks pending_dirty regardless.
+            // async_channel::Receiver is not Unpin, so box and fuse the recv()
+            // future for futures::select!.
             let mut update: OptionFuture<_> = cs
                 .ready_for_update
                 .then(|| Box::pin(update_recv.recv()).fuse())
@@ -701,14 +774,39 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                             y: 0.into(),
                             width: cs.width.into(),
                             height: cs.height.into(),
-                            encoding_type: rfb::ENCODING_TYPE_DESKTOP_SIZE.into(),
+                            encoding_type: rfb::EncodingType::DESKTOP_SIZE.wire_u32().into(),
                         }
                         .as_bytes(),
                     );
                     self.socket.write_all(&resize_msg).await?;
                 }
 
-                // Collect dirty rectangles.
+                // Measurement mode: every CYCLE_PERIOD, advance the tile size
+                // and log the bytes sent at the size we are leaving.
+                if cycling && cycle_started.elapsed() >= CYCLE_PERIOD {
+                    let prev_tile = CYCLE_TILE_SIZES[cycle_idx];
+                    cycle_idx = (cycle_idx + 1) % CYCLE_TILE_SIZES.len();
+                    let next_tile = CYCLE_TILE_SIZES[cycle_idx];
+                    update_state.set_tile_size(next_tile);
+                    cs.force_full_update = true;
+                    tracing::info!(
+                        tile_size = prev_tile,
+                        next_tile_size = next_tile,
+                        bytes_sent = cycle_bytes,
+                        frames = cycle_frames,
+                        proc_micros = cycle_proc_micros,
+                        "vnc tile-size cycle"
+                    );
+                    cycle_bytes = 0;
+                    cycle_frames = 0;
+                    cycle_proc_micros = 0;
+                    cycle_skip_next = true;
+                    cycle_started = Instant::now();
+                }
+
+                // Collect dirty rectangles. Time the collect + encode (the
+                // tile-size-sensitive compute), excluding the socket write.
+                let proc_start = Instant::now();
                 let dirty = update_state.collect_dirty(
                     &mut self.fb,
                     &mut self.dirty_recv,
@@ -724,7 +822,10 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         "sending update"
                     );
                     if dirty.source == DirtySource::Full && !update_state.prev_fb.is_empty() {
-                        tracelimit::warn_ratelimited!("full-screen retransmit triggered");
+                        // Plain debug!, not rate-limited: a rate-limited macro
+                        // checks the limit before the level, so it would cost
+                        // work on this per-frame path even when off.
+                        tracing::debug!("full-screen retransmit triggered");
                     }
 
                     // Any FramebufferUpdate (data rects or cursor-only)
@@ -732,14 +833,13 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     cs.ready_for_update = false;
                     cs.force_full_update = false;
 
-                    // Build the entire FramebufferUpdate into a single buffer
-                    // to reduce async write calls from O(rects * 3) to O(1).
+                    // Build the entire FramebufferUpdate into a single buffer,
+                    // written once below.
                     encoder.output_buf.clear();
 
                     let extra_rects = if cs.send_cursor { 1u16 } else { 0 };
-                    // Cap rectangle count to u16::MAX to prevent overflow.
-                    // At 8K+ resolutions with worst-case checkerboard patterns
-                    // the tile count could exceed 65535.
+                    // Cap rectangle count to u16::MAX (the wire field width) to
+                    // prevent overflow.
                     let max_data_rects = (u16::MAX - extra_rects) as usize;
                     let send_rects = dirty.rects.len().min(max_data_rects);
                     encoder.output_buf.extend_from_slice(
@@ -770,7 +870,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                                 y: 0.into(),
                                 width: 18.into(),
                                 height: 18.into(),
-                                encoding_type: rfb::ENCODING_TYPE_CURSOR.into(),
+                                encoding_type: rfb::EncodingType::CURSOR.wire_u32().into(),
                             }
                             .as_bytes(),
                         );
@@ -778,7 +878,14 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         encoder.output_buf.extend_from_slice(&mask);
                     }
 
-                    let use_zlib = cs.supports_zlib;
+                    // Prefer ZRLE, then zlib, then uncompressed raw.
+                    let wire_encoding = if cs.supports_zrle {
+                        WireEncoding::Zrle
+                    } else if cs.supports_zlib {
+                        WireEncoding::Zlib
+                    } else {
+                        WireEncoding::Raw
+                    };
                     let mut bytes_sent: usize = 0;
 
                     for r in dirty.rects.iter().take(send_rects) {
@@ -797,11 +904,12 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                             cs.width,
                             &cs.pixel_conv,
                             r,
-                            use_zlib,
+                            wire_encoding,
                         )?;
                     }
 
                     // Single socket write for the entire update message.
+                    let proc_us = proc_start.elapsed().as_micros() as u64;
                     self.socket.write_all(&encoder.output_buf).await?;
 
                     tracing::debug!(
@@ -810,7 +918,16 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         source = dirty.source.as_str(),
                         "update sent"
                     );
-                    // Return Vec for reuse next cycle.
+                    if cycling {
+                        if cycle_skip_next {
+                            // The forced full-refresh frame after a size switch.
+                            cycle_skip_next = false;
+                        } else {
+                            cycle_bytes += bytes_sent as u64;
+                            cycle_frames += 1;
+                            cycle_proc_micros += proc_us;
+                        }
+                    }
                     update_state.recycle_rects(dirty.rects);
                 }
 
@@ -871,10 +988,10 @@ mod tests {
             (self.width, self.height)
         }
 
-        fn read_line(&mut self, line: u16, data: &mut [u8]) {
-            let start = line as usize * self.width as usize;
-            let end = start + self.width as usize;
-            data.copy_from_slice(self.pixels[start..end].as_bytes());
+        fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]) {
+            let start = line as usize * self.width as usize + x as usize;
+            let pixels = data.len() / 4;
+            data.copy_from_slice(self.pixels[start..start + pixels].as_bytes());
         }
     }
 
@@ -931,8 +1048,8 @@ mod tests {
             self.0.lock().resolution()
         }
 
-        fn read_line(&mut self, line: u16, data: &mut [u8]) {
-            self.0.lock().read_line(line, data)
+        fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]) {
+            self.0.lock().read_line(line, x, data)
         }
     }
 
@@ -1052,7 +1169,7 @@ mod tests {
         stream.write_all(text).unwrap();
     }
 
-    fn send_set_encodings(stream: &mut TcpStream, encodings: &[u32]) {
+    fn send_set_encodings(stream: &mut TcpStream, encodings: &[rfb::EncodingType]) {
         write_message(
             stream,
             &rfb::SetEncodings {
@@ -1062,15 +1179,32 @@ mod tests {
             },
         );
         for &encoding in encodings {
-            let encoding: zerocopy::U32<zerocopy::BE> = encoding.into();
+            let encoding: zerocopy::U32<zerocopy::BE> = encoding.wire_u32().into();
             stream.write_all(encoding.as_bytes()).unwrap();
         }
+    }
+
+    fn send_set_pixel_format(stream: &mut TcpStream, pixel_format: rfb::PixelFormat) {
+        write_message(
+            stream,
+            &rfb::SetPixelFormat {
+                message_type: rfb::CS_MESSAGE_SET_PIXEL_FORMAT,
+                padding: [0; 3],
+                pixel_format,
+            },
+        );
     }
 
     #[derive(Debug)]
     struct ReceivedRect {
         header: rfb::Rectangle,
         payload: Vec<u8>,
+    }
+
+    impl ReceivedRect {
+        fn encoding(&self) -> rfb::EncodingType {
+            rfb::EncodingType(self.header.encoding_type.get() as i32)
+        }
     }
 
     fn read_framebuffer_update(stream: &mut TcpStream) -> Vec<ReceivedRect> {
@@ -1080,15 +1214,18 @@ mod tests {
         let mut rects = Vec::new();
         for _ in 0..update.rectangle_count.get() {
             let header: rfb::Rectangle = read_message(stream);
-            let payload = match header.encoding_type.get() {
-                rfb::ENCODING_TYPE_RAW => {
+            let payload = match rfb::EncodingType(header.encoding_type.get() as i32) {
+                rfb::EncodingType::RAW => {
                     let payload_len =
                         header.width.get() as usize * header.height.get() as usize * 4;
                     let mut payload = vec![0; payload_len];
                     stream.read_exact(&mut payload).unwrap();
                     payload
                 }
-                rfb::ENCODING_TYPE_ZLIB => {
+                // Zlib and ZRLE share the same wire framing: a 4-byte length
+                // then the compressed blob. Keep the raw bytes; decode_zrle
+                // inflates the ZRLE form on demand.
+                rfb::EncodingType::ZLIB | rfb::EncodingType::ZRLE => {
                     let mut len = [0; 4];
                     stream.read_exact(&mut len).unwrap();
                     let compressed_len = u32::from_be_bytes(len) as usize;
@@ -1097,7 +1234,7 @@ mod tests {
                     stream.read_exact(&mut payload[4..]).unwrap();
                     payload
                 }
-                rfb::ENCODING_TYPE_CURSOR => {
+                rfb::EncodingType::CURSOR => {
                     let pixels_len = header.width.get() as usize * header.height.get() as usize * 4;
                     let mask_bytes_per_row = (header.width.get() as usize).div_ceil(8);
                     let mask_len = mask_bytes_per_row * header.height.get() as usize;
@@ -1105,14 +1242,189 @@ mod tests {
                     stream.read_exact(&mut payload).unwrap();
                     payload
                 }
-                rfb::ENCODING_TYPE_DESKTOP_SIZE | rfb::ENCODING_TYPE_QEMU_EXTENDED_KEY_EVENT => {
+                rfb::EncodingType::DESKTOP_SIZE | rfb::EncodingType::QEMU_EXTENDED_KEY_EVENT => {
                     Vec::new()
                 }
-                other => panic!("unsupported test encoding {other:#x}"),
+                other => panic!("unsupported test encoding {:#x}", other.0),
             };
             rects.push(ReceivedRect { header, payload });
         }
         rects
+    }
+
+    /// Reference ZRLE decoder for the e2e tests: inflate a rectangle's
+    /// length-prefixed payload through the persistent ZRLE stream `dec`, parse
+    /// the 64x64 tiles, and reconstruct the pixels as internal 0x00RRGGBB.
+    /// `big_endian` and `cpixel_high` describe the negotiated 3-byte true-colour
+    /// CPIXEL layout, so the byte order read here is the exact inverse of
+    /// `push_cpixel`. Returns the decoded pixels plus the subencoding byte of
+    /// each tile in tile order.
+    fn decode_zrle(
+        dec: &mut flate2::Decompress,
+        payload: &[u8],
+        width: u16,
+        height: u16,
+        big_endian: bool,
+        cpixel_high: bool,
+    ) -> (Vec<u32>, Vec<u8>) {
+        let blob = &payload[4..]; // skip the 4-byte length prefix
+        // Upper bound on a rect's inflated tile bytes: every tile at worst raw
+        // (4 bytes/pixel) plus per-tile subencoding/palette overhead.
+        let mut tiles = vec![0u8; width as usize * height as usize * 4 + 1024];
+        let before_in = dec.total_in();
+        let before_out = dec.total_out();
+        dec.decompress(blob, &mut tiles, flate2::FlushDecompress::Sync)
+            .unwrap();
+        assert_eq!(
+            (dec.total_in() - before_in) as usize,
+            blob.len(),
+            "ZRLE blob not fully consumed"
+        );
+        tiles.truncate((dec.total_out() - before_out) as usize);
+
+        // Reconstruct an internal 0x00RRGGBB pixel from a 3-byte CPIXEL, the
+        // exact inverse of `PixelConversion::push_cpixel` for each byte order.
+        let read_cpixel = |b: &[u8]| -> u32 {
+            match (big_endian, cpixel_high) {
+                (false, false) => b[0] as u32 | (b[1] as u32) << 8 | (b[2] as u32) << 16,
+                (false, true) => (b[0] as u32) << 8 | (b[1] as u32) << 16 | (b[2] as u32) << 24,
+                (true, false) => (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32,
+                (true, true) => (b[0] as u32) << 24 | (b[1] as u32) << 16 | (b[2] as u32) << 8,
+            }
+        };
+        let mut pixels = vec![0u32; width as usize * height as usize];
+        let mut subencodings = Vec::new();
+        let mut pos = 0usize;
+        let mut ty = 0u16;
+        while ty < height {
+            let th = (height - ty).min(rfb::ZRLE_TILE);
+            let mut tx = 0u16;
+            while tx < width {
+                let tw = (width - tx).min(rfb::ZRLE_TILE);
+                // Flat framebuffer offset of a pixel at (row, col) within this tile.
+                let offset = move |row: usize, col: usize| {
+                    (ty as usize + row) * width as usize + tx as usize + col
+                };
+                let sub = tiles[pos];
+                pos += 1;
+                subencodings.push(sub);
+                match sub {
+                    1 => {
+                        // solid: one CPIXEL fills the tile
+                        let c = read_cpixel(&tiles[pos..pos + 3]);
+                        pos += 3;
+                        for row in 0..th as usize {
+                            for col in 0..tw as usize {
+                                pixels[offset(row, col)] = c;
+                            }
+                        }
+                    }
+                    0 => {
+                        // raw: one CPIXEL per pixel, scanline order
+                        for row in 0..th as usize {
+                            for col in 0..tw as usize {
+                                let c = read_cpixel(&tiles[pos..pos + 3]);
+                                pos += 3;
+                                pixels[offset(row, col)] = c;
+                            }
+                        }
+                    }
+                    2..=16 => {
+                        // packed palette: `sub` CPIXELs, then indices packed
+                        // MSB-first at bpp bits each, padded to a byte per row.
+                        let pal_size = sub as usize;
+                        let mut pal = Vec::with_capacity(pal_size);
+                        for _ in 0..pal_size {
+                            pal.push(read_cpixel(&tiles[pos..pos + 3]));
+                            pos += 3;
+                        }
+                        let bpp: u32 = if pal_size <= 2 {
+                            1
+                        } else if pal_size <= 4 {
+                            2
+                        } else {
+                            4
+                        };
+                        for row in 0..th as usize {
+                            let mut acc = 0u32;
+                            let mut nbits = 0u32;
+                            for col in 0..tw as usize {
+                                if nbits < bpp {
+                                    acc = (acc << 8) | tiles[pos] as u32;
+                                    pos += 1;
+                                    nbits += 8;
+                                }
+                                nbits -= bpp;
+                                let idx = ((acc >> nbits) & ((1 << bpp) - 1)) as usize;
+                                pixels[offset(row, col)] = pal[idx];
+                            }
+                            // leftover bits in the row's last byte are padding
+                        }
+                    }
+                    128 => {
+                        // plain RLE: runs of CPIXEL + (run length - 1).
+                        let total = tw as usize * th as usize;
+                        let mut filled = 0usize;
+                        while filled < total {
+                            let c = read_cpixel(&tiles[pos..pos + 3]);
+                            pos += 3;
+                            let mut len = 1usize;
+                            loop {
+                                let b = tiles[pos];
+                                pos += 1;
+                                len += b as usize;
+                                if b != 255 {
+                                    break;
+                                }
+                            }
+                            for _ in 0..len {
+                                pixels[offset(filled / tw as usize, filled % tw as usize)] = c;
+                                filled += 1;
+                            }
+                        }
+                    }
+                    130..=255 => {
+                        // palette RLE: (sub - 128) CPIXELs, then index runs.
+                        let pal_size = (sub - 128) as usize;
+                        let mut pal = Vec::with_capacity(pal_size);
+                        for _ in 0..pal_size {
+                            pal.push(read_cpixel(&tiles[pos..pos + 3]));
+                            pos += 3;
+                        }
+                        let total = tw as usize * th as usize;
+                        let mut filled = 0usize;
+                        while filled < total {
+                            let idx_byte = tiles[pos];
+                            pos += 1;
+                            let c = pal[(idx_byte & 0x7f) as usize];
+                            let len = if idx_byte & 0x80 != 0 {
+                                let mut l = 1usize;
+                                loop {
+                                    let b = tiles[pos];
+                                    pos += 1;
+                                    l += b as usize;
+                                    if b != 255 {
+                                        break;
+                                    }
+                                }
+                                l
+                            } else {
+                                1
+                            };
+                            for _ in 0..len {
+                                pixels[offset(filled / tw as usize, filled % tw as usize)] = c;
+                                filled += 1;
+                            }
+                        }
+                    }
+                    other => panic!("unsupported ZRLE subencoding {other}"),
+                }
+                tx += tw;
+            }
+            ty += th;
+        }
+        assert_eq!(pos, tiles.len(), "trailing ZRLE tile bytes");
+        (pixels, subencodings)
     }
 
     fn run_server_test<F>(
@@ -1154,6 +1466,7 @@ mod tests {
                 input,
                 dirty_recv,
                 missed_dirty,
+                TileSizeMode::Fixed(16),
             );
             let mut updater = server.updater();
             let mut timer = PolledTimer::new(&driver);
@@ -1217,11 +1530,393 @@ mod tests {
             assert_eq!(rect.header.y.get(), 0);
             assert_eq!(rect.header.width.get(), 2);
             assert_eq!(rect.header.height.get(), 1);
-            assert_eq!(rect.header.encoding_type.get(), rfb::ENCODING_TYPE_RAW);
+            assert_eq!(rect.encoding(), rfb::EncodingType::RAW);
             assert_eq!(
                 rect.payload,
                 [pixel(0x12, 0x34, 0x56), pixel(0xab, 0xcd, 0xef)].as_bytes()
             );
+        });
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_zrle_multicolour_round_trips() {
+        // 4x2 framebuffer with a few distinct colours (encoded as a packed
+        // palette); the reference decoder reconstructs every pixel.
+        let fb = SharedFramebuffer::new(4, 2, pixel(0x40, 0x50, 0x60));
+        fb.set(0, 0, pixel(0x11, 0x22, 0x33));
+        fb.set(1, 0, pixel(0xaa, 0xbb, 0xcc));
+        fb.set(3, 1, pixel(0x01, 0x02, 0x03));
+
+        let mut expected = vec![pixel(0x40, 0x50, 0x60); 8];
+        expected[0] = pixel(0x11, 0x22, 0x33);
+        expected[1] = pixel(0xaa, 0xbb, 0xcc);
+        expected[7] = pixel(0x01, 0x02, 0x03);
+
+        let (result, events) = run_server_test(fb, None, None, move |mut stream, _| {
+            let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+            send_set_encodings(&mut stream, &[rfb::EncodingType::ZRLE]);
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            let rect = &rects[0];
+            assert_eq!(rect.encoding(), rfb::EncodingType::ZRLE);
+            assert_eq!(rect.header.width.get(), 4);
+            assert_eq!(rect.header.height.get(), 2);
+
+            let mut dec = flate2::Decompress::new(true);
+            let (pixels, subs) = decode_zrle(
+                &mut dec,
+                &rect.payload,
+                rect.header.width.get(),
+                rect.header.height.get(),
+                false,
+                false,
+            );
+            assert_eq!(pixels, expected);
+            assert_eq!(subs, vec![4], "4-colour tile should pack as a palette");
+        });
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_zrle_solid_tile_round_trips() {
+        // A uniform framebuffer becomes a single solid tile (one CPIXEL).
+        let fb = SharedFramebuffer::new(8, 8, pixel(0x12, 0x34, 0x56));
+        let expected = vec![pixel(0x12, 0x34, 0x56); 64];
+
+        let (result, events) = run_server_test(fb, None, None, move |mut stream, _| {
+            let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+            send_set_encodings(&mut stream, &[rfb::EncodingType::ZRLE]);
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            let rect = &rects[0];
+            assert_eq!(rect.encoding(), rfb::EncodingType::ZRLE);
+
+            let mut dec = flate2::Decompress::new(true);
+            let (pixels, subs) = decode_zrle(
+                &mut dec,
+                &rect.payload,
+                rect.header.width.get(),
+                rect.header.height.get(),
+                false,
+                false,
+            );
+            assert_eq!(pixels, expected);
+            assert_eq!(
+                subs,
+                vec![1],
+                "uniform framebuffer should be one solid tile"
+            );
+        });
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_zrle_palette_rle_round_trips() {
+        // 64x64 of alternating solid rows: two colours in long runs encode as
+        // palette RLE, exercising the run-decode path end to end.
+        let (a, b) = (pixel(0x10, 0x20, 0x30), pixel(0x40, 0x50, 0x60));
+        let fb = SharedFramebuffer::new(64, 64, a);
+        for row in (1..64).step_by(2) {
+            for col in 0..64 {
+                fb.set(col, row, b);
+            }
+        }
+        let expected: Vec<u32> = (0..64 * 64)
+            .map(|i| if (i / 64) % 2 == 0 { a } else { b })
+            .collect();
+
+        let (result, events) = run_server_test(fb, None, None, move |mut stream, _| {
+            let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+            send_set_encodings(&mut stream, &[rfb::EncodingType::ZRLE]);
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            let rect = &rects[0];
+            assert_eq!(rect.encoding(), rfb::EncodingType::ZRLE);
+            let mut dec = flate2::Decompress::new(true);
+            let (pixels, subs) = decode_zrle(
+                &mut dec,
+                &rect.payload,
+                rect.header.width.get(),
+                rect.header.height.get(),
+                false,
+                false,
+            );
+            assert_eq!(pixels, expected);
+            // 128 + palette size (2) = 130: the two-colour long-run path.
+            assert_eq!(subs, vec![130], "alternating rows should be palette RLE");
+        });
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_zrle_plain_rle_round_trips() {
+        // 64x1 with many colours in short runs encodes as plain RLE.
+        let fb = SharedFramebuffer::new(64, 1, 0);
+        for i in 0..64u16 {
+            fb.set(i, 0, (i as u32 / 3) + 1);
+        }
+        let expected: Vec<u32> = (0..64).map(|i| (i as u32 / 3) + 1).collect();
+
+        let (result, events) = run_server_test(fb, None, None, move |mut stream, _| {
+            let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+            send_set_encodings(&mut stream, &[rfb::EncodingType::ZRLE]);
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            let rect = &rects[0];
+            assert_eq!(rect.encoding(), rfb::EncodingType::ZRLE);
+            let mut dec = flate2::Decompress::new(true);
+            let (pixels, subs) = decode_zrle(
+                &mut dec,
+                &rect.payload,
+                rect.header.width.get(),
+                rect.header.height.get(),
+                false,
+                false,
+            );
+            assert_eq!(pixels, expected);
+            // 128 = plain RLE: >16 colours rules out a packed palette.
+            assert_eq!(subs, vec![128], "many short runs should be plain RLE");
+        });
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_zrle_big_endian_round_trips() {
+        // A big-endian 32bpp client (same RGB layout, big_endian_flag set) gets
+        // CPIXELs in big-endian byte order. The decoder inverts push_cpixel for
+        // that layout, so every pixel still round-trips.
+        let fb = SharedFramebuffer::new(4, 2, pixel(0x40, 0x50, 0x60));
+        fb.set(0, 0, pixel(0x11, 0x22, 0x33));
+        fb.set(1, 0, pixel(0xaa, 0xbb, 0xcc));
+        fb.set(3, 1, pixel(0x01, 0x02, 0x03));
+        let mut expected = vec![pixel(0x40, 0x50, 0x60); 8];
+        expected[0] = pixel(0x11, 0x22, 0x33);
+        expected[1] = pixel(0xaa, 0xbb, 0xcc);
+        expected[7] = pixel(0x01, 0x02, 0x03);
+
+        let (result, events) = run_server_test(fb, None, None, move |mut stream, _| {
+            let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+            send_set_pixel_format(
+                &mut stream,
+                rfb::PixelFormat {
+                    bits_per_pixel: 32,
+                    depth: 24,
+                    big_endian_flag: 1,
+                    true_color_flag: 1,
+                    red_max: 255.into(),
+                    green_max: 255.into(),
+                    blue_max: 255.into(),
+                    red_shift: 16,
+                    green_shift: 8,
+                    blue_shift: 0,
+                    padding: [0; 3],
+                },
+            );
+            send_set_encodings(&mut stream, &[rfb::EncodingType::ZRLE]);
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            let rect = &rects[0];
+            assert_eq!(rect.encoding(), rfb::EncodingType::ZRLE);
+            let mut dec = flate2::Decompress::new(true);
+            // big_endian = true, low 3 bytes (cpixel_high = false).
+            let (pixels, _subs) = decode_zrle(
+                &mut dec,
+                &rect.payload,
+                rect.header.width.get(),
+                rect.header.height.get(),
+                true,
+                false,
+            );
+            assert_eq!(pixels, expected);
+        });
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_zrle_packed_multibyte_rows_round_trips() {
+        // A 4-colour tile wider than one byte of packed indices: bpp = 2, tw = 6
+        // gives 12 index bits per row, so each row spans two bytes with 4 padding
+        // bits. Exercises the decoder's multi-byte packed-row refill and padding.
+        let c = [
+            pixel(0x10, 0x10, 0x10),
+            pixel(0x20, 0x20, 0x20),
+            pixel(0x30, 0x30, 0x30),
+            pixel(0x40, 0x40, 0x40),
+        ];
+        let fb = SharedFramebuffer::new(6, 2, 0);
+        let mut expected = vec![0u32; 12];
+        for row in 0..2u16 {
+            for col in 0..6u16 {
+                let v = c[(col % 4) as usize];
+                fb.set(col, row, v);
+                expected[row as usize * 6 + col as usize] = v;
+            }
+        }
+
+        let (result, events) = run_server_test(fb, None, None, move |mut stream, _| {
+            let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+            send_set_encodings(&mut stream, &[rfb::EncodingType::ZRLE]);
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            let rect = &rects[0];
+            assert_eq!(rect.encoding(), rfb::EncodingType::ZRLE);
+            let mut dec = flate2::Decompress::new(true);
+            let (pixels, subs) = decode_zrle(
+                &mut dec,
+                &rect.payload,
+                rect.header.width.get(),
+                rect.header.height.get(),
+                false,
+                false,
+            );
+            assert_eq!(pixels, expected);
+            assert_eq!(subs, vec![4], "four colours, no runs should pack");
+        });
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_zrle_long_run_round_trips() {
+        // A single colour over 64x6 (383 pixels) plus one different pixel forces
+        // an RLE run longer than 255, exercising the decoder's 255-continuation
+        // loop. (A pure single colour would be a solid tile, not RLE.)
+        let (a, b) = (pixel(0x11, 0x22, 0x33), pixel(0x44, 0x55, 0x66));
+        let fb = SharedFramebuffer::new(64, 6, a);
+        fb.set(63, 5, b);
+        let mut expected = vec![a; 64 * 6];
+        expected[64 * 6 - 1] = b;
+
+        let (result, events) = run_server_test(fb, None, None, move |mut stream, _| {
+            let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+            send_set_encodings(&mut stream, &[rfb::EncodingType::ZRLE]);
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            let rect = &rects[0];
+            assert_eq!(rect.encoding(), rfb::EncodingType::ZRLE);
+            let mut dec = flate2::Decompress::new(true);
+            let (pixels, subs) = decode_zrle(
+                &mut dec,
+                &rect.payload,
+                rect.header.width.get(),
+                rect.header.height.get(),
+                false,
+                false,
+            );
+            assert_eq!(pixels, expected);
+            // Two colours in long runs: an RLE path (>= 128), not packed/raw.
+            assert_eq!(subs.len(), 1);
+            assert!(
+                subs[0] >= 128,
+                "long-run tile should be RLE, got {}",
+                subs[0]
+            );
+        });
+
+        assert!(matches!(result, Ok(())), "{result:?}");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_zrle_two_updates_share_stream() {
+        // Two successive ZRLE updates over one connection use the server's single
+        // continuous zrle deflate stream. The second update is only decodable if
+        // the client keeps inflating the same stream, so decode both through one
+        // Decompress to prove the stream stays continuous across messages.
+        let fb = SharedFramebuffer::new(8, 8, pixel(0x11, 0x22, 0x33));
+        let (result, events) = run_server_test(fb, None, None, move |mut stream, fb| {
+            let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+            send_set_encodings(&mut stream, &[rfb::EncodingType::ZRLE]);
+            let mut dec = flate2::Decompress::new(true);
+
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            assert_eq!(rects[0].encoding(), rfb::EncodingType::ZRLE);
+            let (pixels, _) = decode_zrle(&mut dec, &rects[0].payload, 8, 8, false, false);
+            assert_eq!(pixels, vec![pixel(0x11, 0x22, 0x33); 64]);
+
+            // Repaint, then request a second full update; it must decode through
+            // the SAME inflate stream.
+            for i in 0..8u16 {
+                for j in 0..8u16 {
+                    fb.set(i, j, pixel(0x44, 0x55, 0x66));
+                }
+            }
+            send_framebuffer_update_request(
+                &mut stream,
+                false,
+                init.framebuffer_width.get(),
+                init.framebuffer_height.get(),
+            );
+            let rects = read_framebuffer_update(&mut stream);
+            assert_eq!(rects.len(), 1);
+            assert_eq!(rects[0].encoding(), rfb::EncodingType::ZRLE);
+            let (pixels, _) = decode_zrle(&mut dec, &rects[0].payload, 8, 8, false, false);
+            assert_eq!(pixels, vec![pixel(0x44, 0x55, 0x66); 64]);
         });
 
         assert!(matches!(result, Ok(())), "{result:?}");
@@ -1236,7 +1931,7 @@ mod tests {
             assert_eq!(init.framebuffer_width.get(), 64);
             assert_eq!(init.framebuffer_height.get(), 32);
 
-            let encodings = vec![rfb::ENCODING_TYPE_RAW; 4097];
+            let encodings = vec![rfb::EncodingType::RAW; 4097];
             send_set_encodings(&mut stream, &encodings);
             send_pointer_event(&mut stream, 3, u16::MAX, u16::MAX);
         });
@@ -1344,20 +2039,14 @@ mod tests {
                 send_framebuffer_update_request(&mut stream, true, width, height);
                 let device_dirty = read_framebuffer_update(&mut stream);
                 assert_eq!(device_dirty.len(), 1);
-                assert_eq!(
-                    device_dirty[0].header.encoding_type.get(),
-                    rfb::ENCODING_TYPE_RAW
-                );
+                assert_eq!(device_dirty[0].encoding(), rfb::EncodingType::RAW);
 
                 tx.lock().take();
                 fb.set(20, 20, pixel(0x11, 0x22, 0x33));
                 send_framebuffer_update_request(&mut stream, true, width, height);
                 let fallback = read_framebuffer_update(&mut stream);
                 assert_eq!(fallback.len(), 1);
-                assert_eq!(
-                    fallback[0].header.encoding_type.get(),
-                    rfb::ENCODING_TYPE_RAW
-                );
+                assert_eq!(fallback[0].encoding(), rfb::EncodingType::RAW);
                 assert!(fallback[0].header.x.get() <= 20);
                 assert!(fallback[0].header.x.get() + fallback[0].header.width.get() > 20);
                 assert!(fallback[0].header.y.get() <= 20);
@@ -1374,7 +2063,7 @@ mod tests {
         let fb = SharedFramebuffer::new(4, 2, pixel(0x10, 0x20, 0x30));
         let (result, events) = run_server_test(fb, None, None, |mut stream, fb| {
             let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
-            send_set_encodings(&mut stream, &[rfb::ENCODING_TYPE_DESKTOP_SIZE]);
+            send_set_encodings(&mut stream, &[rfb::EncodingType::DESKTOP_SIZE]);
             send_framebuffer_update_request(
                 &mut stream,
                 false,
@@ -1389,10 +2078,7 @@ mod tests {
 
             let resize = read_framebuffer_update(&mut stream);
             assert_eq!(resize.len(), 1);
-            assert_eq!(
-                resize[0].header.encoding_type.get(),
-                rfb::ENCODING_TYPE_DESKTOP_SIZE
-            );
+            assert_eq!(resize[0].encoding(), rfb::EncodingType::DESKTOP_SIZE);
             assert_eq!(resize[0].header.width.get(), 6);
             assert_eq!(resize[0].header.height.get(), 3);
 
@@ -1414,7 +2100,7 @@ mod tests {
             let init = handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
             send_set_encodings(
                 &mut stream,
-                &[rfb::ENCODING_TYPE_CURSOR, rfb::ENCODING_TYPE_ZLIB],
+                &[rfb::EncodingType::CURSOR, rfb::EncodingType::ZLIB],
             );
             send_framebuffer_update_request(
                 &mut stream,
@@ -1425,17 +2111,11 @@ mod tests {
 
             let update = read_framebuffer_update(&mut stream);
             assert_eq!(update.len(), 2);
-            assert_eq!(
-                update[0].header.encoding_type.get(),
-                rfb::ENCODING_TYPE_CURSOR
-            );
+            assert_eq!(update[0].encoding(), rfb::EncodingType::CURSOR);
             assert_eq!(update[0].header.width.get(), 18);
             assert_eq!(update[0].header.height.get(), 18);
             assert!(!update[0].payload.is_empty());
-            assert_eq!(
-                update[1].header.encoding_type.get(),
-                rfb::ENCODING_TYPE_ZLIB
-            );
+            assert_eq!(update[1].encoding(), rfb::EncodingType::ZLIB);
             assert!(!update[1].payload.is_empty());
         });
 
