@@ -526,6 +526,9 @@ impl UhCvmPartitionState {
         )
     }
 
+    /// The access vsm privilege at the time of partition creation. Per VSM
+    /// spec, it is not updated if VTL 1 is later revoked. Used for validating
+    /// register access that depends only on the privilege availability.
     fn access_vsm_privilege(&self) -> bool {
         self.access_vsm_privilege
     }
@@ -548,13 +551,22 @@ struct UhCvmVpInner {
     proxy_redirect_interrupts: Mutex<HashMap<u32, ProxyRedirectVectorInfo>>,
 }
 
+// TODO Guest VSM: cleanup these states for better clarity
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect)]
 #[inspect(tag = "guest_vsm_state")]
 /// Partition-wide state for guest vsm.
 enum GuestVsmState<T: Inspect> {
+    /// Whether VTL 1 is available. If the platform does not support VTL 1, or
+    /// VTL 1 was revoked, then the partition will be in this state. Note: some
+    /// vsm-related functionality may be available even if the state is
+    /// NotPlatformSupported.
     NotPlatformSupported,
+    /// OpenHCL has not yet handled the guest calling EnablePartitionVtl.
     NotGuestEnabled,
+    /// Note: this state is only used for CVMs. For non-CVMs, this is not an
+    /// accurate reflection of whether VTL 1 is enabled since the hypercall
+    /// goes to the hypervisor.
     Enabled {
         #[inspect(flatten)]
         vtl1: T,

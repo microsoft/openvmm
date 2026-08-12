@@ -380,7 +380,9 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
                 }
                 Ok(())
             }
-            HvX64RegisterName::VsmPartitionStatus | HvX64RegisterName::VsmCapabilities => {
+            HvX64RegisterName::VsmPartitionStatus
+            | HvX64RegisterName::VsmVpStatus
+            | HvX64RegisterName::VsmCapabilities => {
                 if self.intercepted_vtl == GuestVtl::Vtl0
                     && !self.vp.cvm_partition().access_vsm_privilege()
                 {
