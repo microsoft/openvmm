@@ -79,46 +79,60 @@ pub(crate) mod win;
 /// operation being performed when the error occurred.
 #[cfg(openssl)]
 #[derive(Clone, Debug, thiserror::Error)]
-#[error("openssl error during {1}")]
+#[error("openssl error while {1}")]
 pub(crate) struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
 #[cfg(all(native, windows))]
 #[derive(Clone, Debug, thiserror::Error)]
-#[error("windows crypto error during {1}")]
-pub(crate) struct BackendError(#[source] windows_result::Error, &'static str);
+pub(crate) enum BackendError {
+    /// An error returned by a CNG or CryptoAPI function.
+    #[error("windows crypto error while {1}")]
+    Windows(#[source] windows_result::Error, &'static str),
+    /// The input decoded successfully but is not valid or supported for the
+    /// operation being attempted.
+    #[error("{0}")]
+    Invalid(&'static str),
+}
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
 #[cfg(symcrypt)]
 #[derive(Clone, Debug, thiserror::Error)]
-#[error("symcrypt backend error during {1}")]
 pub(crate) enum BackendError {
-    /// An error from the SymCrypt library, with the operation being performed when the error occurred.
+    /// An error from the SymCrypt library.
+    #[error("symcrypt error while {1}")]
     SymCrypt(#[source] symcrypt::errors::SymCryptError, &'static str),
-    /// An error from encoding or decoding PKCS#8, with the operation being performed when the error occurred.
-    Pkcs8Encoding(#[source] pkcs8::Error, &'static str),
-    /// An error from DER encoding or decoding, with the operation being performed when the error occurred.
+    /// The input decoded successfully but is not valid or supported for the
+    /// operation being attempted.
+    #[error("{0}")]
+    Invalid(&'static str),
+    /// An error from encoding or decoding DER.
+    #[error("DER error while {1}")]
     Der(#[source] der::Error, &'static str),
 }
 
+/// An error that occurred in the crypto backend, with a description of the
+/// operation being performed when the error occurred.
 #[cfg(all(native, target_os = "macos"))]
 #[derive(Clone, Debug, thiserror::Error)]
 pub(crate) enum BackendError {
     /// An OSStatus error from a Security.framework or CoreFoundation API.
-    #[error("{1} returned a failure status code")]
+    #[error("macOS crypto error while {1}")]
     OsStatus(#[source] mac::OsStatusCode, &'static str),
-    /// A Security.framework or CoreFoundation API returned a null pointer.
-    #[error("{0}: returned null")]
+    /// A Security.framework or CoreFoundation API returned a null pointer
+    /// without reporting an error.
+    #[error("macOS crypto error while {0}: the API returned null")]
     Null(&'static str),
     /// A Security.framework API returned an error via CFErrorRef.
-    #[error("Security.framework error during {1}: {0}")]
+    #[error("macOS crypto error while {1}: {0}")]
     Sec(String, &'static str),
-    /// An error from encoding or decoding PKCS#8.
-    #[error("PKCS#8 error during {1}")]
-    Pkcs8(#[source] pkcs8::Error, &'static str),
-    /// An error from DER encoding or decoding.
-    #[error("DER error during {1}")]
+    /// The input decoded successfully but is not valid or supported for the
+    /// operation being attempted.
+    #[error("{0}")]
+    Invalid(&'static str),
+    /// An error from encoding or decoding DER.
+    #[error("DER error while {1}")]
     Der(#[source] der::Error, &'static str),
 }

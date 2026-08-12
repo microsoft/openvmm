@@ -39,13 +39,13 @@ use thiserror::Error;
 /// An error for X.509 operations.
 #[cfg(not(rust))]
 #[derive(Clone, Debug, Error)]
-#[error("X.509 error")]
+#[error("X.509 operation failed")]
 pub struct X509Error(#[source] pub(crate) super::BackendError);
 
 /// An error for X.509 operations.
 #[cfg(rust)]
 #[derive(Clone, Debug, Error)]
-#[error("X.509 error during {1}")]
+#[error("X.509 operation failed while {1}")]
 pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
 /// A public key extracted from an X.509 certificate.

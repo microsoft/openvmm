@@ -47,14 +47,14 @@ use thiserror::Error;
     all(native, target_os = "macos")
 ))]
 #[derive(Debug, Error)]
-#[error("RSA error")]
+#[error("RSA operation failed")]
 pub struct RsaError(#[source] pub(crate) super::BackendError);
 
 /// An error for RSA operations.
 // TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
 #[cfg(rust)]
 #[derive(Debug, Error)]
-#[error("RSA error during {1}")]
+#[error("RSA operation failed while {1}")]
 pub struct RsaError(
     #[source] pub(crate) rsa::errors::Error,
     pub(crate) &'static str,
