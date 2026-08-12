@@ -707,7 +707,15 @@ impl VpciDevice {
             i = next_i;
         }
 
-        true
+        // BRING-UP SCAFFOLDING: every BAR has been through the unblock path, so
+        // deliberately fail the activation here. This tears the TDI back down
+        // through `tdisp_fail_attestation`, exercising the block path too, and
+        // then halts. Remove this once the accept TDCALLs are implemented.
+        tracing::warn!(
+            "tdisp_on_device_activate: MMIO unblock loop complete; failing activation on purpose"
+        );
+        self.tdisp_fail_attestation().await;
+        false
     }
 
     /// Common teardown for any failure during the MMIO-enable activation

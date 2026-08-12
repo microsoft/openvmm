@@ -367,18 +367,13 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             );
         }
 
-        // TEST SCAFFOLDING: the TDI is running, but deliberately fail the
-        // attestation so no resources are unblocked. Remove this once the
-        // accept TDCALLs are implemented.
-        tracing::warn!(
+        tracing::info!(
             ?target_vtl,
             device_id,
-            "TDX Connect on_post_start: TDI confirmed in TDISP RUN state; failing attestation on purpose"
+            "TDX Connect on_post_start: TDI confirmed in TDISP RUN state"
         );
-        anyhow::bail!(
-            "TDX Connect on_post_start: TDI {device_id:#x} reached TDISP RUN state, but the \
-             attestation is intentionally failed while the accept TDCALLs are unimplemented"
-        );
+
+        Ok(())
     }
 
     #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]

@@ -450,6 +450,23 @@ impl VpciClientTdispState {
                     "tdisp_unbind: failed to re-block MMIO range"
                 );
             } else {
+                // Tell the host only once the platform actually blocked the
+                // range, so the host's view never runs ahead of the platform's.
+                // Best-effort, like the block above.
+                if self.isolation_type == IsolationType::Tdx
+                    && let Err(e) = self
+                        .tdisp_block_mmio_range(bar_id, mmio.base_gpa, mmio.length_in_bytes.into())
+                        .await
+                {
+                    tracing::error!(
+                        bar_id,
+                        base_gpa = format_args!("{:#x}", mmio.base_gpa),
+                        length_in_bytes = mmio.length_in_bytes,
+                        error = &*e as &dyn std::error::Error,
+                        "tdisp_unbind: failed to block MMIO range on the host"
+                    );
+                }
+
                 // Successful re-block, remove the bar from the validated list.
                 self.mutable_state.validated_mmio_bars.remove(&bar_id);
             }
@@ -789,7 +806,7 @@ impl VpciClientTdispState {
     ///   `range_id` of the MMIO ranges reported in the TDI interface report.
     /// * `base_address` - The base guest physical address of the MMIO range.
     /// * `length` - The length in bytes of the MMIO range.
-    pub fn tdisp_on_mmio_reconfigured(
+    pub async fn tdisp_on_mmio_reconfigured(
         &mut self,
         bar_id: u16,
         base_address: u64,
@@ -854,6 +871,24 @@ impl VpciClientTdispState {
         }
 
         let device_id = self.mutable_state.guest_device_id;
+
+        // Tell the host before the platform unblock, so the host regards the
+        // range as guest-private for a superset of the window the platform
+        // does. Best-effort: a failure here must not block the platform
+        // unblock.
+        if self.isolation_type == IsolationType::Tdx
+            && let Err(e) = self
+                .tdisp_unblock_mmio_range(bar_id, base_address, length.into())
+                .await
+        {
+            tracing::error!(
+                bar_id,
+                base_address = format_args!("{base_address:#x}"),
+                length,
+                error = &*e as &dyn std::error::Error,
+                "tdisp_on_mmio_reconfigured: failed to unblock MMIO range on the host"
+            );
+        }
 
         self.resource_validator
             .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
@@ -1040,7 +1075,9 @@ impl TdispVpciAttestationInterface for VpciDevice {
         length: u32,
     ) -> anyhow::Result<()> {
         let mut guard = self.tdisp.0.lock().await;
-        guard.tdisp_on_mmio_reconfigured(bar_id, base_address, length)
+        guard
+            .tdisp_on_mmio_reconfigured(bar_id, base_address, length)
+            .await
     }
 
     async fn tdisp_mark_bar_intercepted(&self, bar_id: u16) {
