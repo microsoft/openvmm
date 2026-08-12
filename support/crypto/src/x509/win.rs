@@ -35,6 +35,7 @@ use windows::Win32::Security::Cryptography::szOID_COMMON_NAME;
 use windows::Win32::Security::Cryptography::szOID_ECC_PUBLIC_KEY;
 use windows::Win32::Security::Cryptography::szOID_KEY_USAGE;
 use windows::Win32::Security::Cryptography::szOID_RSA_RSA;
+#[cfg(any(test, feature = "test_helpers"))]
 use windows::Win32::Security::Cryptography::szOID_RSA_SHA256RSA;
 use windows::Win32::Security::Cryptography::szOID_SUBJECT_KEY_IDENTIFIER;
 use windows::core::PCSTR;
@@ -179,41 +180,16 @@ impl X509CertificateInner {
             .map_err(|e| crate::rsa::RsaError(backend_err(e)))?;
 
         // Hash algorithm from the signature algorithm OID.
-        let oid = signed.value.SignatureAlgorithm.pszObjId;
-        if oid.is_null() {
-            return Err(rsa_err(
-                windows_result::Error::from_hresult(windows::core::HRESULT(
-                    windows::Win32::Foundation::E_NOTIMPL.0,
-                )),
-                "missing signature algorithm OID",
-            ));
-        }
-        // SAFETY: ASN.1-decoded OID strings from crypt32 are null-terminated,
-        // as are the szOID_* constants.
-        let hash = unsafe {
-            let oid_bytes = oid.as_bytes();
-            if oid_bytes == szOID_RSA_SHA256RSA.as_bytes() {
-                crate::HashAlgorithm::Sha256
-            } else if oid_bytes
-                == windows::Win32::Security::Cryptography::szOID_RSA_SHA384RSA.as_bytes()
-            {
-                crate::HashAlgorithm::Sha384
-            } else if oid_bytes
-                == windows::Win32::Security::Cryptography::szOID_RSA_SHA1RSA.as_bytes()
-            {
-                #[expect(deprecated)]
-                {
-                    crate::HashAlgorithm::Sha1
-                }
-            } else {
-                return Err(rsa_err(
-                    windows_result::Error::from_hresult(windows::core::HRESULT(
-                        windows::Win32::Foundation::E_NOTIMPL.0,
-                    )),
-                    "unsupported signature algorithm OID",
-                ));
-            }
-        };
+        let hash =
+            crate::HashAlgorithm::from_rsa_signature_oid(signed.value.SignatureAlgorithm.pszObjId)
+                .ok_or_else(|| {
+                    rsa_err(
+                        windows_result::Error::from_hresult(windows::core::HRESULT(
+                            windows::Win32::Foundation::E_NOTIMPL.0,
+                        )),
+                        "missing or unsupported signature algorithm OID",
+                    )
+                })?;
 
         let tbs = blob_as_slice(&signed.value.ToBeSigned).ok_or_else(|| {
             rsa_err(
