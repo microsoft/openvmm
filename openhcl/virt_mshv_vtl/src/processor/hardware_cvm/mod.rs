@@ -2199,17 +2199,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             .into_cpuid();
                 }
             }
-            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES) => {
-                // Update the VSM access privilege if it's been revoked by UEFI.
-                if matches!(
-                    *self.cvm_partition().guest_vsm.read(),
-                    GuestVsmState::NotPlatformSupported
-                ) {
-                    let mut features = hvdef::HvFeatures::from_cpuid([eax, ebx, ecx, edx]);
-                    features.set_privileges(features.privileges().with_access_vsm(false));
-                    [eax, ebx, ecx, edx] = features.into_cpuid();
-                }
-            }
 
             _ => {}
         }
