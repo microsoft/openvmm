@@ -52,7 +52,8 @@ The workflow:
 2. builds that exact archive the way a Linux distribution would, using
    system dependencies rather than the repository's `.packages/`
    provisioning;
-3. creates or verifies `openvmm-v<VERSION>` at the pinned commit;
+3. creates or verifies `openvmm-v<VERSION>` at the pinned commit, after
+   confirming no release already exists for it;
 4. attests both files and attaches them to a **draft** release that requires
    that existing tag.
 
@@ -61,10 +62,18 @@ distribution cannot build never reaches a draft.
 
 ## Publishing
 
-Review the draft release, write its notes, and click **Publish release**.
-The workflow has already created `openvmm-v<VERSION>` at the commit it pinned,
-so publication cannot bind the validated assets to a tag created later at
-another commit.
+Before publishing, confirm the draft still targets the commit the workflow
+pinned. The workflow logs that commit when it creates `openvmm-v<VERSION>`, and
+`git ls-remote origin refs/tags/openvmm-v<VERSION>` reports where the tag points
+now. They must match.
+
+That check is the one thing publication cannot do for you. A draft release
+tracks a tag *name*, not a commit, and GitHub enforces immutability only after
+publication. Creating the tag up front means publication cannot invent a tag at
+some other commit, but nothing in the workflow prevents someone from moving an
+existing tag while the draft sits in review.
+
+Then review the draft, write its notes, and click **Publish release**.
 
 ```admonish warning
 The tag is publicly visible while the release is still a draft. Do not move or
@@ -74,7 +83,9 @@ pull request that selects a new patch version and running the workflow again.
 ```
 
 The workflow fails rather than overwriting an existing release for the
-same tag, since that release may already have been reviewed or published.
+same tag, since that release may already have been reviewed or published. It
+checks for that release before creating the tag, so a refused run does not
+leave a tag behind.
 If a run must be retried before publication, it reuses the tag only when the
 tag still names the exact pinned commit. A maintainer may delete the draft and
 keep the matching tag. Deleting the tag is reserved for exceptional

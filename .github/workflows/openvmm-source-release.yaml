@@ -255,12 +255,16 @@ jobs:
       run: |-
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 0
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 1
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 3
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 4
+      shell: bash
+    - name: ensure no existing source release
+      run: |-
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 6
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 3
       shell: bash
     - name: pin source release tag
       run: |-
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 6
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 7
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 5
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 2
         flowey e 2 flowey_lib_common::attest_build_provenance 0

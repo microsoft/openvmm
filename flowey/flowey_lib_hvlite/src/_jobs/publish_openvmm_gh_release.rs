@@ -71,15 +71,54 @@ impl SimpleFlowNode for Node {
         let tag = identity.map(ctx, |identity| format!("openvmm-v{}", identity.version));
         let title = identity.map(ctx, |identity| format!("OpenVMM v{}", identity.version));
 
+        // Refuse an existing release before creating the tag. The tag is a
+        // side effect this job cannot take back, and a release that already
+        // exists for this version means a rerun would otherwise pin a tag that
+        // the pre-existing release silently adopts.
+        let gh_cli = ctx.reqv(flowey_lib_common::use_gh_cli::Request::Get);
+        let no_existing_release = ctx.emit_rust_step("ensure no existing source release", |ctx| {
+            let gh_cli = gh_cli.clone().claim(ctx);
+            let tag = tag.clone().claim(ctx);
+            move |rt| {
+                let gh_cli = rt.read(gh_cli);
+                let tag = rt.read(tag);
+
+                let output =
+                    flowey::shell_cmd!(rt, "{gh_cli} release view {tag} --repo microsoft/openvmm")
+                        .ignore_status()
+                        .output()
+                        .context("failed to query the OpenVMM release")?;
+
+                if output.status.success() {
+                    anyhow::bail!(
+                        "a GitHub release already exists for tag {tag}. It may already have \
+                         been reviewed or published, so this run will not pin a tag it could \
+                         adopt. Delete it and rerun if it should be regenerated."
+                    );
+                }
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.contains("release not found") {
+                    anyhow::bail!(
+                        "failed to query the OpenVMM release for tag {tag}: {}",
+                        stderr.trim()
+                    );
+                }
+
+                Ok(())
+            }
+        });
+
         // Create the tag before the draft so a later tag cannot silently rebind
         // the release to a different commit. Reruns reuse it only when it still
         // names the exact archived revision.
-        let gh_cli = ctx.reqv(flowey_lib_common::use_gh_cli::Request::Get);
         let tag_is_pinned = ctx.emit_rust_step("pin source release tag", |ctx| {
+            let no_existing_release = no_existing_release.claim(ctx);
             let gh_cli = gh_cli.claim(ctx);
             let tag = tag.clone().claim(ctx);
             let target = target.clone().claim(ctx);
             move |rt| {
+                rt.read(no_existing_release);
                 let gh_cli = rt.read(gh_cli);
                 let tag = rt.read(tag);
                 let target = rt.read(target);
@@ -117,6 +156,15 @@ impl SimpleFlowNode for Node {
                     .context("failed to parse the existing OpenVMM release tag")?;
                 let tag_type = existing["object"]["type"].as_str();
                 let tag_target = existing["object"]["sha"].as_str();
+                if tag_type == Some("tag") {
+                    // `object.sha` names the annotation, not a commit, so it
+                    // cannot be compared against the archived revision.
+                    anyhow::bail!(
+                        "release tag {tag} already exists as an annotated tag (object {}), but \
+                         this pipeline publishes lightweight tags naming commit {target}",
+                        tag_target.unwrap_or("<unknown>")
+                    );
+                }
                 if tag_type != Some("commit") || tag_target != Some(target.as_str()) {
                     anyhow::bail!(
                         "release tag {tag} already exists at {} ({}) instead of commit {target}",
