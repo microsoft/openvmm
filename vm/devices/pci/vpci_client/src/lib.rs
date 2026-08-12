@@ -722,12 +722,13 @@ impl VpciDevice {
             "tdisp_fail_attestation: unbinding TDI back to Unlocked due to attestation failure"
         );
 
-        if let Err(unbind_err) = self
+        let unbind_result = self
             .tdisp_unbind(TdispGuestUnbindReason::ResourceSetupFailure)
-            .await
-        {
+            .await;
+
+        if let Err(unbind_err) = &unbind_result {
             tracing::warn!(
-                error = &*unbind_err as &dyn std::error::Error,
+                error = unbind_err.as_ref() as &dyn std::error::Error,
                 "tdisp_fail_attestation: unbind failed"
             );
         }
@@ -735,6 +736,12 @@ impl VpciDevice {
         // Always clear the command register so the device is left in the
         // expected off state after a failed activation.
         self.clear_command_register();
+
+        // BRING-UP SCAFFOLDING: halt the VM once the TDI is back to Unlocked so
+        // the failed attestation can be inspected instead of the guest retrying
+        // over it. Remove this along with the deliberate failure in the TDX
+        // Connect validator's `on_post_start`.
+        panic!("tdisp_fail_attestation: halting after unbind: {unbind_result:?}");
     }
 
     /// Notifies TDISP that the guest has disabled MMIO on this device. If the

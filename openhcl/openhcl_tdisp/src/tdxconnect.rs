@@ -223,13 +223,6 @@ impl TdispTdxConnectResourceValidator {
     /// The resource-unblock TDCALLs (TDG.DMAR.ACCEPT, TDG.TDI.MMIO.ACCEPT) land
     /// in a follow-up change.
     fn probe_tdi(&self, mshv_vtl: &MshvVtl, device_id: u16) -> anyhow::Result<()> {
-        // Sleep for 10 seconds to allow debuggers to see what we're about to do.
-        tracing::info!(
-            vtom = self.vtom,
-            device_id,
-            "TDX Connect validator sleeping 10 seconds before issuing TDG.TDI.RD probe"
-        );
-        std::thread::sleep(std::time::Duration::from_secs(10));
         tracing::info!(
             vtom = self.vtom,
             device_id,
