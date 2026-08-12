@@ -28,6 +28,7 @@ pub use tdisp_proto::GuestToHostCommandExt;
 pub use tdisp_proto::GuestToHostResponse;
 pub use tdisp_proto::GuestToHostResponseExt;
 pub use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandResponseAcceptPrivateMmioRange;
 pub use tdisp_proto::TdispCommandResponseBind;
 pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 pub use tdisp_proto::TdispCommandResponseGetTdiReport;
@@ -46,6 +47,7 @@ pub use sevtio::TdispSevTioResourceValidator;
 pub use tdxconnect::TdispTdxConnectResourceValidator;
 
 use hvdef::Vtl;
+use tdisp_proto::TdispCommandRequestAcceptPrivateMmioRange;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
 use tdisp_proto::TdispCommandRequestStartTdi;
@@ -96,6 +98,20 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     fn tdisp_unbind(
         &self,
         reason: TdispGuestUnbindReason,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    /// Tell the host that an MMIO range is being accepted into the guest's
+    /// private context. The TDI must be Locked or Run.
+    ///
+    /// * `range_id` - Identifies which MMIO range is being accepted (the PCI
+    ///   BAR index).
+    /// * `gpa_base` - The guest physical base address of the range.
+    /// * `range_len_bytes` - The length of the range, in bytes.
+    fn tdisp_accept_private_mmio_range(
+        &self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
@@ -236,5 +252,27 @@ pub fn new_unbind_command(device_id: u64, reason: TdispGuestUnbindReason) -> Gue
         command: Some(Command::Unbind(TdispCommandRequestUnbind {
             unbind_reason: reason as i32,
         })),
+    }
+}
+
+/// Creates a [`GuestToHostCommand`] for the `AcceptPrivateMmioRange` command.
+///
+/// `range_id` is widened to a `u32` because protobuf has no 16-bit type; the
+/// host narrows it back before dispatching.
+pub fn new_accept_private_mmio_range_command(
+    device_id: u64,
+    range_id: u16,
+    gpa_base: u64,
+    range_len_bytes: u64,
+) -> GuestToHostCommand {
+    GuestToHostCommand {
+        device_id,
+        command: Some(Command::AcceptPrivateMmioRange(
+            TdispCommandRequestAcceptPrivateMmioRange {
+                range_id: range_id.into(),
+                gpa_base,
+                range_len_bytes,
+            },
+        )),
     }
 }

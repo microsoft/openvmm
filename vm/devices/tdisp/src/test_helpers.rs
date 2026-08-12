@@ -50,6 +50,15 @@ impl TdispHostDeviceInterface for NullTdispHostInterface {
     ) -> anyhow::Result<Vec<u8>> {
         Ok(vec![])
     }
+
+    fn tdisp_accept_private_mmio_range(
+        &mut self,
+        _range_id: u16,
+        _gpa_base: u64,
+        _range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Implements the host side of the TDISP interface for a mock device that does nothing.

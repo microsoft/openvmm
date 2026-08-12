@@ -39,6 +39,7 @@ impl GuestToHostCommandExt for GuestToHostCommand {
             Some(Command::StartTdi(_)) => Some("StartTdi"),
             Some(Command::Unbind(_)) => Some("Unbind"),
             Some(Command::GetTdiReport(_)) => Some("GetTdiReport"),
+            Some(Command::AcceptPrivateMmioRange(_)) => Some("AcceptPrivateMmioRange"),
             None => None,
         }
     }
@@ -95,6 +96,15 @@ impl GuestToHostResponseVariant for TdispCommandResponseUnbind {
     }
 }
 
+impl GuestToHostResponseVariant for TdispCommandResponseAcceptPrivateMmioRange {
+    fn from_response_variant(response: Response) -> Option<Self> {
+        match response {
+            Response::AcceptPrivateMmioRange(r) => Some(r),
+            _ => None,
+        }
+    }
+}
+
 /// Provides helper methods for common operations on [`GuestToHostResponse`].
 pub trait GuestToHostResponseExt {
     /// Returns the error code of the response, if any.
@@ -132,6 +142,7 @@ impl GuestToHostResponseExt for GuestToHostResponse {
             Some(Response::StartTdi(_)) => Some("StartTdi"),
             Some(Response::Unbind(_)) => Some("Unbind"),
             Some(Response::GetTdiReport(_)) => Some("GetTdiReport"),
+            Some(Response::AcceptPrivateMmioRange(_)) => Some("AcceptPrivateMmioRange"),
             None => None,
         }
     }

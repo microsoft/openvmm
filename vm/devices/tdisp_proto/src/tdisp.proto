@@ -147,6 +147,7 @@ message GuestToHostCommand {
     TdispCommandRequestGetTdiReport get_tdi_report = 4;
     TdispCommandRequestStartTdi start_tdi = 5;
     TdispCommandRequestUnbind unbind = 6;
+    TdispCommandRequestAcceptPrivateMmioRange accept_private_mmio_range = 7;
   }
 }
 
@@ -170,6 +171,7 @@ message GuestToHostResponse {
     TdispCommandResponseGetTdiReport get_tdi_report = 6;
     TdispCommandResponseStartTdi start_tdi = 7;
     TdispCommandResponseUnbind unbind = 8;
+    TdispCommandResponseAcceptPrivateMmioRange accept_private_mmio_range = 9;
   }
 }
 
@@ -204,6 +206,20 @@ message TdispCommandRequestUnbind {
   TdispGuestUnbindReason unbind_reason = 1;
 }
 
+// Accept an MMIO range into the guest's private context. The TDI must be in
+// the Locked or Run state; any other state is an error. Does not transition
+// the TDI.
+message TdispCommandRequestAcceptPrivateMmioRange {
+  // Identifies which MMIO range is being accepted. This is the PCI BAR index.
+  uint32 range_id = 1;
+
+  // The guest physical base address of the range being accepted.
+  uint64 gpa_base = 2;
+
+  // The length of the range being accepted, in bytes.
+  uint64 range_len_bytes = 3;
+}
+
 // ----------------------------------------------------------------------------
 // Response messages (one per command)
 // ----------------------------------------------------------------------------
@@ -231,6 +247,9 @@ message TdispCommandResponseStartTdi {}
 
 // Response to TdispCommandRequestUnbind. Carries no payload.
 message TdispCommandResponseUnbind {}
+
+// Response to TdispCommandRequestAcceptPrivateMmioRange. Carries no payload.
+message TdispCommandResponseAcceptPrivateMmioRange {}
 
 // ----------------------------------------------------------------------------
 // Shared info structs

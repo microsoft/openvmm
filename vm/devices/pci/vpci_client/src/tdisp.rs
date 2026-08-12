@@ -11,6 +11,7 @@ use openhcl_tdisp::GuestToHostCommand;
 use openhcl_tdisp::GuestToHostCommandExt;
 use openhcl_tdisp::GuestToHostResponse;
 use openhcl_tdisp::GuestToHostResponseExt;
+use openhcl_tdisp::TdispCommandResponseAcceptPrivateMmioRange;
 use openhcl_tdisp::TdispCommandResponseBind;
 use openhcl_tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
 use openhcl_tdisp::TdispCommandResponseGetTdiReport;
@@ -359,6 +360,32 @@ impl VpciClientTdispState {
         }
 
         Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
+    }
+
+    /// See: [`TdispVirtualDeviceInterface::tdisp_accept_private_mmio_range`]
+    pub async fn tdisp_accept_private_mmio_range(
+        &mut self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        let res = self
+            .send_tdisp_command(openhcl_tdisp::new_accept_private_mmio_range_command(
+                self.vpci_device_id,
+                range_id,
+                gpa_base,
+                range_len_bytes,
+            ))
+            .await?;
+
+        // Unlike bind and start, this command does not transition the TDI, so
+        // there is no post-command state to check.
+        match res.response::<TdispCommandResponseAcceptPrivateMmioRange>() {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow::anyhow!(
+                "error response in tdisp_accept_private_mmio_range: {err}"
+            )),
+        }
     }
 
     /// See: [`TdispVirtualDeviceInterface::tdisp_unbind`]
@@ -874,6 +901,18 @@ impl TdispVirtualDeviceInterface for VpciDevice {
     async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
         let mut guard = self.tdisp.0.lock().await;
         guard.tdisp_unbind(reason).await
+    }
+
+    async fn tdisp_accept_private_mmio_range(
+        &self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        let mut guard = self.tdisp.0.lock().await;
+        guard
+            .tdisp_accept_private_mmio_range(range_id, gpa_base, range_len_bytes)
+            .await
     }
 }
 

@@ -21,6 +21,11 @@ pub enum LastCall {
     StartDevice,
     UnbindDevice,
     GetDeviceReport(TdispReportType),
+    AcceptPrivateMmioRange {
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    },
 }
 
 pub struct TrackingHostInterface {
@@ -41,6 +46,20 @@ impl TdispHostDeviceInterface for TrackingHostInterface {
 
     fn tdisp_unbind_device(&mut self) -> anyhow::Result<()> {
         *self.last_call.lock() = Some(LastCall::UnbindDevice);
+        Ok(())
+    }
+
+    fn tdisp_accept_private_mmio_range(
+        &mut self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        *self.last_call.lock() = Some(LastCall::AcceptPrivateMmioRange {
+            range_id,
+            gpa_base,
+            range_len_bytes,
+        });
         Ok(())
     }
 

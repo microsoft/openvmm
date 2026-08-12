@@ -52,6 +52,7 @@ pub use tdisp_proto::GuestToHostCommand;
 pub use tdisp_proto::GuestToHostCommandExt;
 pub use tdisp_proto::GuestToHostResponse;
 pub use tdisp_proto::GuestToHostResponseExt;
+pub use tdisp_proto::TdispCommandResponseAcceptPrivateMmioRange;
 pub use tdisp_proto::TdispCommandResponseBind;
 pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 pub use tdisp_proto::TdispCommandResponseGetTdiReport;
@@ -96,6 +97,22 @@ pub trait TdispHostDeviceInterface: Send + Sync {
     /// Get a device interface report for the device.
     fn tdisp_get_device_report(&mut self, _report_type: TdispReportType)
     -> anyhow::Result<Vec<u8>>;
+
+    /// Accept an MMIO range into the guest's private context.
+    ///
+    /// Called only while the TDI is Locked or Run; the state machine rejects
+    /// every other state before reaching the host.
+    ///
+    /// * `range_id` - Identifies which MMIO range is being accepted (the PCI
+    ///   BAR index).
+    /// * `gpa_base` - The guest physical base address of the range.
+    /// * `range_len_bytes` - The length of the range, in bytes.
+    fn tdisp_accept_private_mmio_range(
+        &mut self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()>;
 }
 
 /// Trait added to host virtual devices to dispatch TDISP commands from guests.
@@ -287,6 +304,33 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                     }
                     None => {
                         error = TdispGuestOperationError::InvalidGuestAttestationReportType;
+                    }
+                }
+            }
+            Some(Command::AcceptPrivateMmioRange(cmd)) => {
+                // `range_id` is a BAR index; the wire widens it to u32 because
+                // protobuf has no 16-bit type.
+                match u16::try_from(cmd.range_id) {
+                    Ok(range_id) => {
+                        let accept_res = self.machine.request_accept_private_mmio_range(
+                            range_id,
+                            cmd.gpa_base,
+                            cmd.range_len_bytes,
+                        );
+                        if let Err(err) = accept_res {
+                            error = err;
+                        } else {
+                            response = Some(Response::AcceptPrivateMmioRange(
+                                TdispCommandResponseAcceptPrivateMmioRange {},
+                            ));
+                        }
+                    }
+                    Err(_) => {
+                        tracing::error!(
+                            range_id = cmd.range_id,
+                            "AcceptPrivateMmioRange range_id does not fit in a u16"
+                        );
+                        error = TdispGuestOperationError::InvalidGuestCommandId;
                     }
                 }
             }
@@ -554,6 +598,19 @@ pub trait TdispGuestRequestInterface {
     /// `Locked` state will cause an error and unbind the device.
     fn request_start_tdi(&mut self) -> Result<(), TdispGuestOperationError>;
 
+    /// Accept an MMIO range into the guest's private context. The device must
+    /// be in the `Locked` or `Run` state.
+    ///
+    /// Unlike the transitions above, requesting this in the wrong state returns
+    /// an error *without* unbinding the device: the guest may legitimately
+    /// retry as BARs are reprogrammed. This does not transition the device.
+    fn request_accept_private_mmio_range(
+        &mut self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> Result<(), TdispGuestOperationError>;
+
     /// Retrieves the attestation report for the device when the device is in the `Locked` or
     /// `Run` state. The device resources will not be functional until the
     /// resources have been accepted into the guest while the device is in the
@@ -725,6 +782,53 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
                 tracing::error!("Failed to transition to Run state: {e:?}");
                 return Err(TdispGuestOperationError::HostFailedToProcessCommand);
             }
+        }
+
+        Ok(())
+    }
+
+    /// Accept an MMIO range into the guest's private context.
+    ///
+    /// Unlike the other state-gated commands, a request in the wrong state is
+    /// treated as recoverable: it returns an error without unbinding, since the
+    /// guest may legitimately retry as BARs are reprogrammed. Does not
+    /// transition the TDI.
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
+    fn request_accept_private_mmio_range(
+        &mut self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> Result<(), TdispGuestOperationError> {
+        // Ensure the guest protocol is negotiated.
+        self.ensure_negotiated_protocol()
+            .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
+
+        if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
+            tracing::error!(
+                current_state = %self.current_state,
+                "AcceptPrivateMmioRange called while device was not in the Locked or Run state."
+            );
+
+            return Err(TdispGuestOperationError::InvalidDeviceState);
+        }
+
+        tracing::info!(
+            range_id,
+            gpa_base,
+            range_len_bytes,
+            "Accepting private MMIO range into the guest context"
+        );
+
+        let res = self
+            .host_interface
+            .lock()
+            .tdisp_accept_private_mmio_range(range_id, gpa_base, range_len_bytes)
+            .context("failed to call to accept private MMIO range");
+
+        if let Err(e) = res {
+            tracing::error!("Failed to accept private MMIO range: {e:?}");
+            return Err(TdispGuestOperationError::HostFailedToProcessCommand);
         }
 
         Ok(())

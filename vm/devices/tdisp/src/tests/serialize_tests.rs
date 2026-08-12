@@ -12,11 +12,13 @@ use crate::serialize_proto::serialize_response;
 use crate::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use tdisp_proto::GuestToHostCommand;
 use tdisp_proto::GuestToHostResponse;
+use tdisp_proto::TdispCommandRequestAcceptPrivateMmioRange;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
 use tdisp_proto::TdispCommandRequestStartTdi;
 use tdisp_proto::TdispCommandRequestUnbind;
+use tdisp_proto::TdispCommandResponseAcceptPrivateMmioRange;
 use tdisp_proto::TdispCommandResponseBind;
 use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 use tdisp_proto::TdispCommandResponseGetTdiReport;
@@ -119,8 +121,31 @@ fn test_command_unbind_roundtrip() {
     assert_eq!(req.unbind_reason, TdispGuestUnbindReason::Graceful as i32);
 }
 
-// ── Command validation-failure tests ─────────────────────────────────────────
+#[test]
+fn test_command_accept_private_mmio_range_roundtrip() {
+    let cmd = GuestToHostCommand {
+        device_id: 42,
+        command: Some(Command::AcceptPrivateMmioRange(
+            TdispCommandRequestAcceptPrivateMmioRange {
+                range_id: 3,
+                gpa_base: 0xf000_0000,
+                range_len_bytes: 0x2_0000_0000,
+            },
+        )),
+    };
+    let bytes = serialize_command(&cmd);
+    let got = deserialize_command(&bytes).unwrap();
+    assert_eq!(got.device_id, 42);
+    let Some(Command::AcceptPrivateMmioRange(req)) = got.command else {
+        panic!("expected AcceptPrivateMmioRange command");
+    };
+    assert_eq!(req.range_id, 3);
+    assert_eq!(req.gpa_base, 0xf000_0000);
+    // Deliberately larger than u32::MAX to pin the 64-bit length on the wire.
+    assert_eq!(req.range_len_bytes, 0x2_0000_0000);
+}
 
+// ── Command validation-failure tests ─────────────────────────────────────────
 #[test]
 fn test_deserialize_command_rejects_missing_command_field() {
     // A GuestToHostCommand with no oneof variant set must be rejected.
@@ -165,6 +190,19 @@ fn test_response_unbind_roundtrip() {
     let bytes = serialize_response(&resp);
     let got = deserialize_response(&bytes).unwrap();
     assert!(matches!(got.response, Some(Response::Unbind(_))));
+}
+
+#[test]
+fn test_response_accept_private_mmio_range_roundtrip() {
+    let resp = make_response(Response::AcceptPrivateMmioRange(
+        TdispCommandResponseAcceptPrivateMmioRange {},
+    ));
+    let bytes = serialize_response(&resp);
+    let got = deserialize_response(&bytes).unwrap();
+    assert!(matches!(
+        got.response,
+        Some(Response::AcceptPrivateMmioRange(_))
+    ));
 }
 
 #[test]
