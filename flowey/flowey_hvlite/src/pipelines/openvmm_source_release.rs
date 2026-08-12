@@ -6,7 +6,6 @@
 use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::node::prelude::GhPermission;
 use flowey::node::prelude::GhPermissionValue;
-use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
 
@@ -16,41 +15,38 @@ use flowey_lib_common::git_checkout::RepoSource;
 /// commit whose `[workspace.package] version` a reviewed pull request has
 /// already set to the version being released.
 ///
-/// It ends at a *draft* release. Publishing that draft is what creates the
-/// `openvmm-v<VERSION>` tag, and that step stays with a human.
+/// It ends at an `openvmm-v<VERSION>` tag and a *draft* release.
+/// Publishing the reviewed draft stays with a human.
+///
+/// Only the GitHub backend is supported. The pipeline creates a tag and a
+/// release in the upstream repository, so there is nothing meaningful for a
+/// local run to do.
 #[derive(clap::Args)]
-pub struct OpenvmmSourceReleaseCli {
-    #[clap(flatten)]
-    local_run_args: Option<crate::pipelines_shared::cfg_common_params::LocalRunArgs>,
-}
+pub struct OpenvmmSourceReleaseCli {}
 
 impl IntoPipeline for OpenvmmSourceReleaseCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
-        let Self { local_run_args } = self;
+        let Self {} = self;
+
+        if !matches!(backend_hint, PipelineBackendHint::Github) {
+            anyhow::bail!(
+                "Unsupported backend: the source release pipeline only supports the GitHub backend"
+            );
+        }
 
         let mut pipeline = Pipeline::new();
         pipeline.gh_set_name("OpenVMM Source Release");
 
-        let openvmm_repo_source = if matches!(backend_hint, PipelineBackendHint::Local) {
-            RepoSource::ExistingClone(ReadVar::from_static(crate::repo_root()))
-        } else if matches!(backend_hint, PipelineBackendHint::Github) {
-            RepoSource::GithubSelf
-        } else {
-            anyhow::bail!(
-                "Unsupported backend: the source release pipeline only supports Local and GitHub backends"
-            );
-        };
+        let openvmm_repo_source = RepoSource::GithubSelf;
 
-        if let RepoSource::GithubSelf = &openvmm_repo_source {
-            pipeline.gh_set_flowey_bootstrap_template(
-                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
-            );
-        }
+        pipeline.gh_set_flowey_bootstrap_template(
+            crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
+        );
 
         let cfg_common_params = crate::pipelines_shared::cfg_common_params::get_cfg_common_params(
             &mut pipeline,
             backend_hint,
-            local_run_args,
+            None,
         )?;
 
         pipeline.inject_all_jobs_with(move |job| {

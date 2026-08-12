@@ -18,17 +18,16 @@ Both files also get a GitHub build provenance attestation.
 A release publishes source. Prebuilt binaries, and any commitment to
 service a published version, are outside this process.
 
-`<VERSION>` is the `[workspace.package] version` in the root
-`Cargo.toml`. Nothing is stamped into the archive and the tree is never
-rewritten, so the version a release publishes is the version that was
-already reviewed and merged.
+`<VERSION>` is the `version` field under `[workspace.package]` in the
+OpenVMM repository's root `Cargo.toml`. Nothing is stamped into the archive
+and the tree is never rewritten, so the version a release publishes is the
+version that was already reviewed and merged.
 
 ## Selecting the version
 
-Open an ordinary pull request that sets `[workspace.package] version` to
-the version being released, and merge it. That review *is* the decision
-to release that version; the release workflow only ever publishes what
-the tree already says.
+Open an ordinary pull request that sets that field to the version being
+released, and merge it. That review *is* the decision to release that version;
+the release workflow only ever publishes what the tree already says.
 
 If the committed version has never been released and is already the
 intended value, the pull request may instead state explicitly that it
@@ -53,7 +52,9 @@ The workflow:
 2. builds that exact archive the way a Linux distribution would, using
    system dependencies rather than the repository's `.packages/`
    provisioning;
-3. attests both files and attaches them to a **draft** release.
+3. creates or verifies `openvmm-v<VERSION>` at the pinned commit;
+4. attests both files and attaches them to a **draft** release that requires
+   that existing tag.
 
 Validation runs before anything is attached, so a source tree that a
 distribution cannot build never reaches a draft.
@@ -61,17 +62,23 @@ distribution cannot build never reaches a draft.
 ## Publishing
 
 Review the draft release, write its notes, and click **Publish release**.
-GitHub creates the `openvmm-v<VERSION>` tag at the commit the workflow
-pinned.
+The workflow has already created `openvmm-v<VERSION>` at the commit it pinned,
+so publication cannot bind the validated assets to a tag created later at
+another commit.
 
 ```admonish warning
-Publishing is the irreversible step. A published tag and its assets are
-not moved or replaced. Correcting a release means merging a pull request
-that selects a new patch version and running the workflow again.
+The tag is publicly visible while the release is still a draft. Do not move or
+delete it during review. Publishing is the irreversible step: a published tag
+and its assets are not moved or replaced. Correcting a release means merging a
+pull request that selects a new patch version and running the workflow again.
 ```
 
 The workflow fails rather than overwriting an existing release for the
 same tag, since that release may already have been reviewed or published.
+If a run must be retried before publication, it reuses the tag only when the
+tag still names the exact pinned commit. A maintainer may delete the draft and
+keep the matching tag. Deleting the tag is reserved for exceptional
+pre-publication cleanup.
 
 ## Limitations
 

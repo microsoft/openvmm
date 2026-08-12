@@ -3,11 +3,10 @@
 
 //! Publish the assembled OpenVMM source archive as a draft GitHub release.
 //!
-//! Publication is deliberately two-stage: this job only ever creates a
-//! *draft*. A maintainer reviews the draft and clicks Publish, and GitHub
-//! creates the `openvmm-v<VERSION>` tag at the commit this job pinned. The tag
-//! therefore never exists for a release nobody approved, and the irreversible
-//! step stays a human one.
+//! Publication is deliberately two-stage: this job only ever creates the tag
+//! and a *draft*. A maintainer reviews the draft and clicks Publish. The
+//! irreversible release step therefore stays with a human, while the release
+//! cannot be rebound to another commit during review.
 
 use crate::assemble_openvmm_source_release::CHECKSUM_FILE;
 use crate::assemble_openvmm_source_release::SourceReleaseOutput;
@@ -72,39 +71,61 @@ impl SimpleFlowNode for Node {
         let tag = identity.map(ctx, |identity| format!("openvmm-v{}", identity.version));
         let title = identity.map(ctx, |identity| format!("OpenVMM v{}", identity.version));
 
-        // `gh release create --target` uses an existing tag as-is. Refuse a
-        // stray tag so the release cannot silently point at a different commit
-        // than the archive identity.
+        // Create the tag before the draft so a later tag cannot silently rebind
+        // the release to a different commit. Reruns reuse it only when it still
+        // names the exact archived revision.
         let gh_cli = ctx.reqv(flowey_lib_common::use_gh_cli::Request::Get);
-        let tag_is_unused = ctx.emit_rust_step("ensure source release tag is unused", |ctx| {
+        let tag_is_pinned = ctx.emit_rust_step("pin source release tag", |ctx| {
             let gh_cli = gh_cli.claim(ctx);
             let tag = tag.clone().claim(ctx);
+            let target = target.clone().claim(ctx);
             move |rt| {
                 let gh_cli = rt.read(gh_cli);
                 let tag = rt.read(tag);
-                let output = flowey::shell_cmd!(
+                let target = rt.read(target);
+
+                let ref_name = format!("refs/tags/{tag}");
+                let create = flowey::shell_cmd!(
+                    rt,
+                    "{gh_cli} api --method POST repos/microsoft/openvmm/git/refs -f ref={ref_name} -f sha={target}"
+                )
+                .ignore_status()
+                .output()
+                .context("failed to create the OpenVMM release tag")?;
+                if create.status.success() {
+                    log::info!("created release tag {tag} at {target}");
+                    return Ok(());
+                }
+
+                let existing = flowey::shell_cmd!(
                     rt,
                     "{gh_cli} api repos/microsoft/openvmm/git/ref/tags/{tag}"
                 )
                 .ignore_status()
                 .output()
-                .context("failed to query the OpenVMM release tag")?;
-
-                if output.status.success() {
+                .context("failed to query the existing OpenVMM release tag")?;
+                if !existing.status.success() {
                     anyhow::bail!(
-                        "tag {tag} already exists; refusing to create a release whose target \
-                         may differ from the assembled source revision"
+                        "failed to create release tag {tag}: {}; querying the existing tag also \
+                         failed: {}",
+                        String::from_utf8_lossy(&create.stderr).trim(),
+                        String::from_utf8_lossy(&existing.stderr).trim()
                     );
                 }
 
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.contains("HTTP 404") {
+                let existing: serde_json::Value = serde_json::from_slice(&existing.stdout)
+                    .context("failed to parse the existing OpenVMM release tag")?;
+                let tag_type = existing["object"]["type"].as_str();
+                let tag_target = existing["object"]["sha"].as_str();
+                if tag_type != Some("commit") || tag_target != Some(target.as_str()) {
                     anyhow::bail!(
-                        "failed to query OpenVMM release tag {tag}: {}",
-                        stderr.trim()
+                        "release tag {tag} already exists at {} ({}) instead of commit {target}",
+                        tag_target.unwrap_or("<unknown>"),
+                        tag_type.unwrap_or("unknown object type")
                     );
                 }
 
+                log::info!("reusing release tag {tag} at {target}");
                 Ok(())
             }
         });
@@ -122,11 +143,12 @@ impl SimpleFlowNode for Node {
                 // the first release has no previous tag to compare against.
                 notes: flowey_lib_common::publish_gh_release::GhReleaseNotes::Empty,
                 draft: true,
+                verify_tag: true,
                 // Unlike a release that tracks every push, this pipeline only
                 // runs because someone asked for this version. Quietly doing
                 // nothing would look like it worked.
                 on_existing: flowey_lib_common::publish_gh_release::OnExistingRelease::Fail,
-                prerequisites: vec![attested, tag_is_unused],
+                prerequisites: vec![attested, tag_is_pinned],
                 done,
             },
         ));

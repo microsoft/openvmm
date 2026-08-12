@@ -55,6 +55,8 @@ pub struct GhReleaseParams<C = VarNotClaimed> {
     pub notes: GhReleaseNotes,
     /// Whether the release should be created as a draft
     pub draft: bool,
+    /// Require the tag to exist before creating the release.
+    pub verify_tag: bool,
     /// What to do when a release already exists for this tag.
     pub on_existing: OnExistingRelease,
     /// Side effects that must complete before the release is published.
@@ -74,6 +76,7 @@ impl GhReleaseParams {
             files,
             notes,
             draft,
+            verify_tag,
             on_existing,
             prerequisites,
             done,
@@ -88,6 +91,7 @@ impl GhReleaseParams {
             files: files.claim(ctx),
             notes,
             draft,
+            verify_tag,
             on_existing,
             prerequisites: prerequisites.claim(ctx),
             done: done.claim(ctx),
@@ -132,6 +136,7 @@ impl FlowNode for Node {
                         files,
                         notes,
                         draft,
+                        verify_tag,
                         on_existing,
                         prerequisites,
                         done: _,
@@ -212,7 +217,8 @@ impl FlowNode for Node {
                         GhReleaseNotes::Text(notes) => vec!["--notes".to_owned(), notes],
                     };
                     let draft = draft.then_some("--draft");
-                    flowey::shell_cmd!(rt, "{gh_cli} release create {tag} {files...} --repo {repo} --target {target} --title {title} {notes...} {draft...}").run()?;
+                    let verify_tag = verify_tag.then_some("--verify-tag");
+                    flowey::shell_cmd!(rt, "{gh_cli} release create {tag} {files...} --repo {repo} --target {target} --title {title} {notes...} {draft...} {verify_tag...}").run()?;
                 }
 
                 Ok(())
