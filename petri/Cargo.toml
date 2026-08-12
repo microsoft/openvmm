@@ -14,6 +14,7 @@ openvmm_hypervisors = { workspace = true, features = ["virt_kvm", "virt_mshv", "
 petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
+opentmk_disk.workspace = true
 initrd_cpio.workspace = true
 chipset_device_worker_defs.workspace = true
 chipset_resources.workspace = true

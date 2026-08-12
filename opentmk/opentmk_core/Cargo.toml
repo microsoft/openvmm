@@ -2,26 +2,31 @@
 # Licensed under the MIT License.
 
 [package]
-name = "opentmk"
+name = "opentmk_core"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+acpi_spec = { workspace = true, features = ["alloc"] }
+bitfield-struct.workspace = true
+cfg-if.workspace = true
 hvdef.workspace = true
 log.workspace = true
-opentmk_protocol.workspace = true
-opentmk_core.workspace = true
+memory_range.workspace = true
+minimal_rt.workspace = true
 spin.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["alloc"] }
+thiserror.workspace = true
+zerocopy.workspace = true
 nostd_spin_channel.workspace = true
 
 [target.'cfg(target_os = "uefi")'.dependencies]
+linked_list_allocator.workspace = true
 uefi = { workspace = true, features = ["alloc"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_64 = { workspace = true, features = ["instructions"] }
 
 [lints]
 workspace = true
-
-[build-dependencies]

@@ -5617,6 +5617,21 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
+ "hvdef",
+ "log",
+ "nostd_spin_channel",
+ "opentmk_core",
+ "opentmk_protocol",
+ "serde",
+ "serde_json",
+ "spin",
+ "uefi",
+]
+
+[[package]]
+name = "opentmk_core"
+version = "0.0.0"
+dependencies = [
  "acpi_spec",
  "bitfield-struct 0.11.0",
  "cfg-if",
@@ -5626,7 +5641,6 @@ dependencies = [
  "memory_range",
  "minimal_rt",
  "nostd_spin_channel",
- "opentmk_protocol",
  "serde",
  "serde_json",
  "spin",
@@ -6465,6 +6479,7 @@ dependencies = [
  "net_backend_resources",
  "netvsp_resources",
  "nvme_resources",
+ "opentmk_disk",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_hypervisors",

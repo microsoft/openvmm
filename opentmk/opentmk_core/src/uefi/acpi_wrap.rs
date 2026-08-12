@@ -63,7 +63,7 @@ impl RsdpParser {
 
     // Retrieves the XSDT pointer from the RSDP structure.
     fn get_xsdt_ptr(&self) -> TmkResult<NonNull<Header>> {
-        NonNull::new(self.rsdp.xsdt as *mut Header).ok_or(AcpiWrapError::InvalidXsdt.into())
+        NonNull::new(self.rsdp.xsdt as *mut Header).ok_or_else(|| AcpiWrapError::InvalidXsdt.into())
     }
 
     // Finds the RSDP pointer from the UEFI system table.
@@ -98,7 +98,7 @@ impl RsdpParser {
             .map(|entry| entry.vendor_table);
 
         if let Some(rsdp) = rsdp {
-            Ok(NonNull::new(rsdp as *mut Rsdp).ok_or(AcpiWrapError::InvalidRsdp)?)
+            Ok(NonNull::new(rsdp.cast::<Rsdp>()).ok_or(AcpiWrapError::InvalidRsdp)?)
         } else {
             log::error!("ACPI2 RSDP not found");
             Err(AcpiWrapError::RsdpNotFound.into())
@@ -125,11 +125,11 @@ impl XSdtParser {
             return Err(AcpiWrapError::InvalidXsdtStructure.into());
         }
 
-        let sdt_address = xsdt as *const Header as usize;
+        let sdt_address = core::ptr::from_ref::<Header>(xsdt) as usize;
 
         let entries_region_size = sdt_length - sdt_header_size;
 
-        if entries_region_size % size_of::<u64>() != 0 {
+        if !entries_region_size.is_multiple_of(size_of::<u64>()) {
             return Err(AcpiWrapError::InvalidXsdtStructure.into());
         }
 
