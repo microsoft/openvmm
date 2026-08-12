@@ -4000,6 +4000,11 @@ impl LoadedVm {
     }
 
     async fn reset(&mut self, reload_firmware: bool) -> anyhow::Result<()> {
+        // TODO: Support reset in isolated partitions.
+        if reload_firmware && self.inner.hypervisor_cfg.with_isolation.is_some() {
+            anyhow::bail!("firmware reload reset is not supported for isolated VMs");
+        }
+
         let resume = self.pause().await;
 
         self.state_units.reset().await?;

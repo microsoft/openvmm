@@ -609,9 +609,9 @@ impl MshvPartitionInner {
             match *state {
                 SnpLaunchState::NotStarted => *state = SnpLaunchState::Started,
                 SnpLaunchState::Started => return Err(ErrorInner::SnpLaunchInProgress.into()),
-                // The partition is sealed after completion, so repeated
-                // acceptance is an idempotent no-op.
-                SnpLaunchState::Finished => return Ok(()),
+                SnpLaunchState::Finished => {
+                    return Err(ErrorInner::SnpLaunchAlreadyFinished.into());
+                }
                 SnpLaunchState::Failed => return Err(ErrorInner::SnpLaunchFailed.into()),
             }
         }

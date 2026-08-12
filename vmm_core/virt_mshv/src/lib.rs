@@ -683,6 +683,9 @@ enum ErrorInner {
     #[error("SNP launch is already in progress")]
     SnpLaunchInProgress,
     #[cfg(guest_arch = "x86_64")]
+    #[error("SNP launch is already complete")]
+    SnpLaunchAlreadyFinished,
+    #[cfg(guest_arch = "x86_64")]
     #[error("SNP launch previously failed")]
     SnpLaunchFailed,
     #[cfg(guest_arch = "x86_64")]
