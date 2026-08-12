@@ -250,6 +250,19 @@ impl FlowNodeWithConfig for Node {
                             }
 
                             let rust_toolchain = rust_toolchain.clone();
+
+                            // `rustup {target,component} add` act on rustup's
+                            // *default* toolchain, whereas the checks above
+                            // inspect the configured one (`rustup +{ver} ...`).
+                            // Without this selector, a pinned toolchain would
+                            // have its targets installed somewhere else, and
+                            // the later `cargo +{ver}` build would still fail
+                            // on a missing target. Computed here because the
+                            // platform match below consumes `rust_toolchain`.
+                            let toolchain_flag =
+                                rust_toolchain.as_ref().map(|s| format!("+{s}"));
+                            let toolchain_flag = toolchain_flag.as_ref();
+
                             if check_rust_install(rt, false).is_ok() {
                                 return Ok(());
                             }
@@ -331,11 +344,11 @@ impl FlowNodeWithConfig for Node {
                             }
 
                             if !additional_target_triples.is_empty() {
-                                flowey::shell_cmd!(rt, "rustup target add {additional_target_triples...}")
+                                flowey::shell_cmd!(rt, "rustup {toolchain_flag...} target add {additional_target_triples...}")
                                     .run()?;
                             }
                             if !additional_components.is_empty() {
-                                flowey::shell_cmd!(rt, "rustup component add {additional_components...}")
+                                flowey::shell_cmd!(rt, "rustup {toolchain_flag...} component add {additional_components...}")
                                     .run()?;
                             }
 
