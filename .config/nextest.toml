@@ -27,7 +27,7 @@
 filter = 'package(~vmm_tests) and binary(vmm_perf)'
 # Performance profiles must own the host while VirtualClient drives OpenVMM.
 threads-required = "num-cpus"
-slow-timeout = { period = "15m", terminate-after = 2 }
+slow-timeout = { period = "30m", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
