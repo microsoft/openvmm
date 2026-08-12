@@ -563,6 +563,10 @@ impl VpciClientTdispState {
             .await
             .context("tdisp_attest_device: failed to start device")?;
 
+        self.resource_validator
+            .on_post_start(self.target_vtl, guest_device_id_u16)
+            .context("tdisp_attest_device: post-start validation failed")?;
+
         // Fetch and save the TDI interface report so callers can inspect the
         // attested device's reported capabilities and MMIO ranges.
         let tdi_report = self.tdisp_get_tdi_report().await.context(

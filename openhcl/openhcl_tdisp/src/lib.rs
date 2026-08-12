@@ -128,6 +128,18 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 
+    /// Called after the host has started the device and reports it running.
+    ///
+    /// This is the last point at which a platform can refuse the device, and
+    /// the first at which it can confirm the started TDI against its own view
+    /// of the interface rather than the host's. Returning an error fails the
+    /// attestation; the device is left running and the caller unbinds it as
+    /// part of clearing the failed attestation.
+    ///
+    /// * `target_vtl` - The VTL the device is being attested for.
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
+
     /// Unblock MMIO access for a specific resource on the device.
     ///
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).

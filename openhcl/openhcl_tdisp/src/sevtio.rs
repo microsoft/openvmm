@@ -181,6 +181,13 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(device_id))]
+    fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        // See `on_pre_bind`.
+        tracing::info!(?target_vtl, device_id, "SEV-TIO on_post_start: no-op");
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     fn tdisp_unblock_mmio(
         &self,

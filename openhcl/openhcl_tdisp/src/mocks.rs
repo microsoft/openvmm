@@ -77,6 +77,15 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         Ok(())
     }
 
+    fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        tracing::info!(
+            ?target_vtl,
+            ?device_id,
+            "mock resource validator on_post_start"
+        );
+        Ok(())
+    }
+
     fn tdisp_unblock_mmio(
         &self,
         target_vtl: Vtl,

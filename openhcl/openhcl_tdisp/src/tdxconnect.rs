@@ -5,12 +5,11 @@
 //!
 //! Boilerplate scaffolding: the resource-unblock methods are no-op stubs today.
 //! The real implementation will issue guest-side TDCALLs (TDG.DMAR.ACCEPT,
-//! TDG.TDI.MMIO.ACCEPT, TDG.TDI.START) via the `hcl` `MshvVtl` handle to
-//! unblock MMIO and DMA for an attested TDI. What is wired up is
-//! [`TdispTdxConnectResourceValidator::probe_tdi`], which issues TDG.TDI.RD
-//! against the TDI so a bring-up run can confirm the Connect TDCALLs reach a
-//! real interface before the accept paths are implemented, including the two
-//! hash field codes that write into a private page the validator owns.
+//! TDG.TDI.MMIO.ACCEPT) via the `hcl` `MshvVtl` handle to unblock MMIO and DMA
+//! for an attested TDI. What is wired up is the attestation gate: TDG.TDI.RD
+//! probes the TDI (including the two hash field codes that write into a private
+//! page the validator owns), TDG.TDI.START authorizes the host to start it, and
+//! a post-start TDG.TDI.RD confirms the TDX Module sees it in TDISP RUN.
 
 use crate::TdispResourceValidationInterface;
 use hcl::ioctl::Mshv;
@@ -143,7 +142,9 @@ impl TdispTdxConnectResourceValidator {
             TdCallResultCode::TDI_NOT_PRESENT | TdCallResultCode::TDI_INVALID_METADATA => {
                 " (TDI is unbound; its control structure was removed or reassigned)"
             }
-            TdCallResultCode::TDI_INVALID_STATE => " (TDI is unbound or in the TDISP error state)",
+            TdCallResultCode::TDI_INVALID_STATE => {
+                " (TDI is unbound, in the TDISP error state, or not in the state the leaf requires)"
+            }
             TdCallResultCode::OPERAND_INVALID => {
                 " (FUNCTION_ID is not valid or the TDI is not assigned to this TD)"
             }
@@ -221,9 +222,7 @@ impl TdispTdxConnectResourceValidator {
     ///
     /// The resource-unblock TDCALLs (TDG.DMAR.ACCEPT, TDG.TDI.MMIO.ACCEPT) land
     /// in a follow-up change.
-    fn probe_tdi(&self, device_id: u16) -> anyhow::Result<()> {
-        let mshv_vtl = Self::open_mshv_vtl()?;
-
+    fn probe_tdi(&self, mshv_vtl: &MshvVtl, device_id: u16) -> anyhow::Result<()> {
         // Sleep for 10 seconds to allow debuggers to see what we're about to do.
         tracing::info!(
             vtom = self.vtom,
@@ -271,13 +270,14 @@ impl TdispTdxConnectResourceValidator {
             })?;
 
         tracing::info!(
-            "TDX Connect validator reached TDI via TDG.TDI.RD: requester id {device_id:#x}, TDISP version {version}, TDISP state {state:#x}"
+            "TDX Connect validator reached TDI via TDG.TDI.RD: requester id {device_id:#x}, TDISP version {version}, TDISP state {:?}",
+            TdispInterfaceState(state)
         );
 
         let report_hash =
-            self.read_hash(&mshv_vtl, function_id, TdiRdField::GET_TDISP_REPORT_HASH)?;
+            self.read_hash(mshv_vtl, function_id, TdiRdField::GET_TDISP_REPORT_HASH)?;
         let attestation_info_hash = self.read_hash(
-            &mshv_vtl,
+            mshv_vtl,
             function_id,
             TdiRdField::GET_DEVICE_ATTESTATION_INFO_HASH,
         )?;
@@ -308,22 +308,83 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
     #[tracing::instrument(skip(self), fields(device_id))]
     fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        let mshv_vtl = Self::open_mshv_vtl()?;
+
         // The TDI is bound but not yet running, which is the first point in the
         // flow where TDG.TDI.RD should succeed. Probe it to confirm the Connect
         // TDCALLs reach this TDI.
-        self.probe_tdi(device_id)?;
+        self.probe_tdi(&mshv_vtl, device_id)?;
 
-        // TEST SCAFFOLDING: the probe succeeded, but deliberately fail the
-        // attestation so the device is not started. Remove this once the accept
-        // TDCALLs are implemented and starting is safe.
+        let function_id = Self::function_id(device_id);
+
+        // TDG.TDI.START checks EXP_BIND_SESSION against TDI_CS.BIND_SESSION_ID,
+        // so read the session the TDX Module currently has for this TDI.
+        let bind_session = mshv_vtl
+            .tdx_tdi_rd(function_id, TdiRdField::GET_BIND_SESSION_ID, 0)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "TDG.TDI.RD(GET_BIND_SESSION_ID) failed for requester id {device_id:#x}: {}",
+                    Self::describe_status(e)
+                )
+            })?;
+
+        // This only authorizes the start; the TDISP transition to RUN happens
+        // on the host's subsequent TDH.TDI.START, which `on_post_start`
+        // confirms.
+        mshv_vtl
+            .tdx_tdi_start(function_id, bind_session)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "TDG.TDI.START failed for requester id {device_id:#x} at bind session {bind_session:#x}: {}",
+                    Self::describe_status(e)
+                )
+            })?;
+
+        tracing::info!(
+            ?target_vtl,
+            device_id,
+            bind_session,
+            "TDX Connect on_pre_start: authorized the TDI start with TDG.TDI.START"
+        );
+
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), fields(device_id))]
+    fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        let mshv_vtl = Self::open_mshv_vtl()?;
+        let function_id = Self::function_id(device_id);
+
+        // The host says the TDI is running. Per the TDX Connect ABI EAS, the
+        // Known RUN state is reliable after TDG.TDI.START, so this is the TDX
+        // Module's own view rather than the host's claim.
+        let state = mshv_vtl
+            .tdx_tdi_rd(function_id, TdiRdField::GET_TDISP_STATE, 0)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "TDG.TDI.RD(GET_TDISP_STATE) failed for requester id {device_id:#x} after the host start: {}",
+                    Self::describe_status(e)
+                )
+            })?;
+
+        let state = TdispInterfaceState(state);
+        if state != TdispInterfaceState::RUN {
+            anyhow::bail!(
+                "TDI {device_id:#x} is in TDISP state {state:?} after the host start, expected RUN"
+            );
+        }
+
+        // TEST SCAFFOLDING: the TDI is running, but deliberately fail the
+        // attestation so no resources are unblocked. Remove this once the
+        // accept TDCALLs are implemented.
         tracing::warn!(
             ?target_vtl,
             device_id,
-            "TDX Connect on_pre_start: TDG.TDI.RD probe succeeded; failing attestation on purpose so the TDI is not started"
+            "TDX Connect on_post_start: TDI confirmed in TDISP RUN state; failing attestation on purpose"
         );
         anyhow::bail!(
-            "TDX Connect on_pre_start: TDG.TDI.RD probe succeeded for requester id {device_id:#x}, \
-             but start is intentionally blocked while the accept TDCALLs are unimplemented"
+            "TDX Connect on_post_start: TDI {device_id:#x} reached TDISP RUN state, but the \
+             attestation is intentionally failed while the accept TDCALLs are unimplemented"
         );
     }
 
@@ -337,7 +398,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         length_in_bytes: u32,
         range_id: u16,
     ) -> anyhow::Result<()> {
-        self.probe_tdi(device_id)?;
+        self.probe_tdi(&Self::open_mshv_vtl()?, device_id)?;
         tracing::info!(
             vtom = self.vtom,
             ?target_vtl,
@@ -353,7 +414,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
     #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
-        self.probe_tdi(device_id)?;
+        self.probe_tdi(&Self::open_mshv_vtl()?, device_id)?;
         tracing::info!(
             vtom = self.vtom,
             ?target_vtl,
