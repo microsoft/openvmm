@@ -25,6 +25,9 @@ use openhcl_tdisp::TdispReportType;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
 use tdisp::TdispTdiState;
 use tdisp::devicereport::TdiReportStruct;
+use tdisp::devicereport::TdispTdiReportInterfaceInfo;
+use tdisp::devicereport::TdispTdiReportMmioFlags;
+use tdisp::devicereport::TdispTdiReportMmioInterfaceInfo;
 use virt::IsolationType;
 use vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE;
 use vpci_protocol::ResourceIsolation;
@@ -35,6 +38,35 @@ use super::WorkerRequest;
 use openhcl_tdisp::TdispResourceValidationInterface;
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// TEMPORARY WORKAROUND: builds the static TDI interface report used for TDX
+/// Connect in place of one fetched from the host. Two TEE MMIO ranges, BAR 0 at
+/// 64MB and BAR 4 at 64K, so both classify as `PRIVATE` and go through the
+/// unblock path. Remove along with its caller in
+/// [`VpciClientTdispState::tdisp_get_tdi_report`].
+fn static_tdx_tdi_report() -> TdiReportStruct {
+    /// 64MB expressed in 4K pages.
+    const RANGE_0_PAGES: u32 = (64 * 1024 * 1024) / 4096;
+    /// 64K expressed in 4K pages.
+    const RANGE_4_PAGES: u32 = (64 * 1024) / 4096;
+
+    let range = |range_id: u16, num_4k_pages: u32| TdispTdiReportMmioInterfaceInfo {
+        first_4k_page_offset: 0,
+        num_4k_pages,
+        // TEE memory and not an MSI-X table/PBA range, so the BAR classifies
+        // PRIVATE and is not auto-marked intercepted.
+        flags: TdispTdiReportMmioFlags::new(),
+        range_id,
+    };
+
+    TdiReportStruct {
+        interface_info: TdispTdiReportInterfaceInfo::new(),
+        msi_x_message_control: 0,
+        lnr_control: 0,
+        tph_control: 0,
+        mmio_interface_info: vec![range(0, RANGE_0_PAGES), range(4, RANGE_4_PAGES)],
+    }
+}
 
 /// Point-in-time classification of a device's BAR and DMA isolation.
 ///
@@ -338,6 +370,19 @@ impl VpciClientTdispState {
 
     /// See: [`TdispVirtualDeviceInterface::tdisp_get_tdi_report`]
     pub async fn tdisp_get_tdi_report(&mut self) -> anyhow::Result<TdiReportStruct> {
+        // TEMPORARY WORKAROUND: the TDX Connect host does not return a usable
+        // interface report yet, so synthesize one instead of asking for it.
+        // Remove this once the host serves a real report.
+        if self.isolation_type == IsolationType::Tdx {
+            let report = static_tdx_tdi_report();
+            tracing::warn!(
+                ?report,
+                "tdisp_get_tdi_report: using a static TDI report for TDX Connect \
+                 instead of requesting one from the host"
+            );
+            return Ok(report);
+        }
+
         let buffer = self
             .tdisp_get_device_report(&TdispReportType::InterfaceReport)
             .await
@@ -377,6 +422,9 @@ impl VpciClientTdispState {
                 range_len_bytes,
             ),
             "tdisp_unblock_mmio_range",
+            range_id,
+            gpa_base,
+            range_len_bytes,
         )
         .await
     }
@@ -396,25 +444,52 @@ impl VpciClientTdispState {
                 range_len_bytes,
             ),
             "tdisp_block_mmio_range",
+            range_id,
+            gpa_base,
+            range_len_bytes,
         )
         .await
     }
 
     /// Shared body of [`Self::tdisp_unblock_mmio_range`] and
-    /// [`Self::tdisp_block_mmio_range`]. `caller` only names the operation in
-    /// the error message.
+    /// [`Self::tdisp_block_mmio_range`]. `caller` names the operation in the
+    /// trace and error output; the range values are passed separately so they
+    /// can be logged without decoding the built command.
     async fn send_modify_mmio_range(
         &mut self,
         command: GuestToHostCommand,
         caller: &str,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
     ) -> anyhow::Result<()> {
+        tracing::info!(
+            "sending ModifyMmioRange to the host: range_id={range_id}, gpa_base={gpa_base:#x}, range_len_bytes={range_len_bytes:#x}"
+        );
+
         let res = self.send_tdisp_command(command).await?;
+
+        // The command requires the TDI to be Locked or Run, so record what the
+        // host thought the state was: an InvalidDeviceState response is most
+        // easily explained by this pair.
+        let tdi_state_before = res.tdi_state_before_enum();
+        let tdi_state_after = res.tdi_state_after_enum();
 
         // Unlike bind and start, this command does not transition the TDI, so
         // there is no post-command state to check.
         match res.response::<TdispCommandResponseModifyMmioRange>() {
-            Ok(_) => Ok(()),
-            Err(err) => Err(anyhow::anyhow!("error response in {caller}: {err}")),
+            Ok(_) => {
+                tracing::info!(
+                    "host accepted ModifyMmioRange: caller={caller}, range_id={range_id}, gpa_base={gpa_base:#x}, range_len_bytes={range_len_bytes:#x}, tdi_state_before={tdi_state_before:?}, tdi_state_after={tdi_state_after:?}",
+                );
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!(
+                    "host rejected ModifyMmioRange: caller={caller}, range_id={range_id}, gpa_base={gpa_base:#x}, range_len_bytes={range_len_bytes:#x}, tdi_state_before={tdi_state_before:?}, tdi_state_after={tdi_state_after:?}, error={err}",
+                );
+                Err(anyhow::anyhow!("error response in {caller}: {err}"))
+            }
         }
     }
 
