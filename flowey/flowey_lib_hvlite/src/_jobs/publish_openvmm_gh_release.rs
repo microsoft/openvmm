@@ -30,6 +30,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::publish_gh_release::Node>();
         ctx.import::<flowey_lib_common::attest_build_provenance::Node>();
+        ctx.import::<flowey_lib_common::use_gh_cli::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -71,6 +72,43 @@ impl SimpleFlowNode for Node {
         let tag = identity.map(ctx, |identity| format!("openvmm-v{}", identity.version));
         let title = identity.map(ctx, |identity| format!("OpenVMM v{}", identity.version));
 
+        // `gh release create --target` uses an existing tag as-is. Refuse a
+        // stray tag so the release cannot silently point at a different commit
+        // than the archive identity.
+        let gh_cli = ctx.reqv(flowey_lib_common::use_gh_cli::Request::Get);
+        let tag_is_unused = ctx.emit_rust_step("ensure source release tag is unused", |ctx| {
+            let gh_cli = gh_cli.claim(ctx);
+            let tag = tag.clone().claim(ctx);
+            move |rt| {
+                let gh_cli = rt.read(gh_cli);
+                let tag = rt.read(tag);
+                let output = flowey::shell_cmd!(
+                    rt,
+                    "{gh_cli} api repos/microsoft/openvmm/git/ref/tags/{tag}"
+                )
+                .ignore_status()
+                .output()
+                .context("failed to query the OpenVMM release tag")?;
+
+                if output.status.success() {
+                    anyhow::bail!(
+                        "tag {tag} already exists; refusing to create a release whose target \
+                         may differ from the assembled source revision"
+                    );
+                }
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.contains("HTTP 404") {
+                    anyhow::bail!(
+                        "failed to query OpenVMM release tag {tag}: {}",
+                        stderr.trim()
+                    );
+                }
+
+                Ok(())
+            }
+        });
+
         ctx.req(flowey_lib_common::publish_gh_release::Request(
             flowey_lib_common::publish_gh_release::GhReleaseParams {
                 repo_owner: "microsoft".into(),
@@ -88,7 +126,7 @@ impl SimpleFlowNode for Node {
                 // runs because someone asked for this version. Quietly doing
                 // nothing would look like it worked.
                 on_existing: flowey_lib_common::publish_gh_release::OnExistingRelease::Fail,
-                prerequisites: vec![attested],
+                prerequisites: vec![attested, tag_is_unused],
                 done,
             },
         ));

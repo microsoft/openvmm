@@ -255,20 +255,24 @@ jobs:
       run: |-
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 0
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 1
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 4
+      shell: bash
+    - name: ensure source release tag is unused
+      run: |-
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 6
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 5
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 2
         flowey e 2 flowey_lib_common::attest_build_provenance 0
         flowey v 2 'flowey_lib_common::attest_build_provenance:0:flowey_lib_common/src/attest_build_provenance.rs' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_common__attest_build_provenance__1
-      uses: actions/attest@v4
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
       with:
         subject-path: ${{ env.floweyvar1 }}
       name: Attest release artifacts
     - name: publish github releases
       run: |-
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 3
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 4
         flowey e 2 flowey_lib_common::publish_gh_release 0
       shell: bash
     - name: 'validate cache entry: gh-cli'
