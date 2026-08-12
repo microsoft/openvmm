@@ -54,31 +54,38 @@ impl<'a> VirtualClientRun<'a> {
     }
 
     fn prepare(request: VirtualClientRunRequest<'a>) -> anyhow::Result<Self> {
-        let directories =
-            RunDirectories::prepare(request.profile, &request.config.name, request.output_dir)?;
+        let mut custom_parameters = request.config.parameters;
+        let work_dir_base = custom_parameters.remove("WorkDir");
+        let directories = RunDirectories::prepare(
+            request.profile,
+            &request.config.name,
+            request.output_dir,
+            request.runtime.root(),
+            work_dir_base.as_deref(),
+        )?;
         request.runtime.reset_logs()?;
 
-        let default_backend = if request.config.parameters.contains_key("HypervisorBackend") {
+        let default_backend = if custom_parameters.contains_key("HypervisorBackend") {
             None
         } else {
             Some(request.host.default_hypervisor_backend()?)
         };
         let parameters = resolve_parameters(
-            request.config.parameters,
-            &directories.data_dir,
+            custom_parameters,
+            &directories.profile_work_dir,
             request.openvmm,
             request.firmware,
             default_backend,
         );
         request.host.validate_parameters(&parameters)?;
-        let profile_work_dir = resolve_profile_work_dir(&parameters, request.runtime.root())?;
-        fs_err::create_dir_all(&profile_work_dir).with_context(|| {
-            format!(
-                "failed to create VMM.Perf WorkDir {}",
-                profile_work_dir.display()
-            )
-        })?;
-        request.host.validate_work_dir(&profile_work_dir)?;
+        request
+            .host
+            .validate_work_dir(&directories.profile_work_dir)?;
+        tracing::info!(
+            work_dir = %directories.profile_work_dir.display(),
+            explicit_base = work_dir_base.is_some(),
+            "selected VMM.Perf work directory"
+        );
 
         let experiment_id = experiment_id(request.profile, &request.config.name)?;
         let mut command_builder =
@@ -103,10 +110,7 @@ impl<'a> VirtualClientRun<'a> {
             name: request.config.name,
             profile: request.profile,
             runtime: request.runtime,
-            directories: RunDirectories {
-                profile_work_dir,
-                ..directories
-            },
+            directories,
             logger: request.logger,
             host: request.host,
             command,
@@ -147,13 +151,10 @@ impl<'a> VirtualClientRun<'a> {
         };
 
         let directories = &self.directories;
-        if let Err(err) = self.host.restore_ownership(&[
-            self.runtime.root(),
-            &directories.data_dir,
-            &directories.temp_dir,
-            &directories.config_output_dir,
-            &directories.profile_work_dir,
-        ]) {
+        if let Err(err) = self
+            .host
+            .restore_ownership(&directories.ownership_paths(self.runtime.root()))
+        {
             errors.push(format!("failed to restore file ownership: {err:#}"));
         }
         errors.extend(
@@ -220,6 +221,7 @@ struct RunDirectories {
     profile_work_dir: PathBuf,
     temp_dir: PathBuf,
     _temporary_root: tempfile::TempDir,
+    _profile_work_root: Option<tempfile::TempDir>,
 }
 
 impl RunDirectories {
@@ -227,6 +229,8 @@ impl RunDirectories {
         profile: VmmPerfProfile,
         config_name: &str,
         output_dir: &Path,
+        runtime_dir: &Path,
+        requested_work_dir_base: Option<&str>,
     ) -> anyhow::Result<Self> {
         let config_output_dir = output_dir.join(config_name);
         if config_output_dir.exists() {
@@ -247,26 +251,60 @@ impl RunDirectories {
         fs_err::create_dir_all(&data_dir)?;
         fs_err::create_dir_all(&temp_dir)?;
 
+        let (profile_work_dir, profile_work_root) = match requested_work_dir_base {
+            Some(base) => {
+                let base = resolve_work_dir_base(base, runtime_dir)?;
+                let profile_work_root = tempfile::Builder::new()
+                    .prefix(&format!("vmm-perf-{}-{config_name}-", profile.name()))
+                    .tempdir_in(&base)
+                    .with_context(|| {
+                        format!(
+                            "failed to create a VMM.Perf work directory under {}",
+                            base.display()
+                        )
+                    })?;
+                (profile_work_root.path().to_owned(), Some(profile_work_root))
+            }
+            None => (data_dir.clone(), None),
+        };
+
         Ok(Self {
             config_output_dir,
             virtual_client_logs,
-            profile_work_dir: data_dir.clone(),
+            profile_work_dir,
             data_dir,
             temp_dir,
             _temporary_root: work,
+            _profile_work_root: profile_work_root,
         })
+    }
+
+    fn ownership_paths<'a>(&'a self, runtime_dir: &'a Path) -> Vec<&'a Path> {
+        let mut paths = Vec::new();
+        for path in [
+            runtime_dir,
+            self.data_dir.as_path(),
+            self.temp_dir.as_path(),
+            self.config_output_dir.as_path(),
+            self.profile_work_dir.as_path(),
+        ] {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        paths
     }
 }
 
-pub(crate) fn resolve_parameters(
+fn resolve_parameters(
     custom: BTreeMap<String, String>,
-    data_dir: &Path,
+    profile_work_dir: &Path,
     openvmm: &Path,
     firmware: &Path,
     default_backend: Option<&str>,
 ) -> BTreeMap<String, String> {
     let mut parameters = BTreeMap::from([
-        ("WorkDir".into(), data_dir.display().to_string()),
+        ("WorkDir".into(), profile_work_dir.display().to_string()),
         ("OpenVmmBinary".into(), openvmm.display().to_string()),
         ("MsvmFirmware".into(), firmware.display().to_string()),
     ]);
@@ -277,20 +315,26 @@ pub(crate) fn resolve_parameters(
     parameters
 }
 
-fn resolve_profile_work_dir(
-    parameters: &BTreeMap<String, String>,
-    runtime_dir: &Path,
-) -> anyhow::Result<PathBuf> {
-    let work_dir = PathBuf::from(
-        parameters
-            .get("WorkDir")
-            .context("VMM.Perf WorkDir parameter was not set")?,
+fn resolve_work_dir_base(base: &str, runtime_dir: &Path) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(
+        !base.trim().is_empty(),
+        "VMM.Perf WorkDir base cannot be empty"
     );
-    Ok(if work_dir.is_absolute() {
-        work_dir
+    let base = PathBuf::from(base);
+    let base = if base.is_absolute() {
+        base
     } else {
-        runtime_dir.join(work_dir)
-    })
+        runtime_dir.join(base)
+    };
+    let metadata = fs_err::metadata(&base)
+        .with_context(|| format!("VMM.Perf WorkDir base does not exist: {}", base.display()))?;
+    anyhow::ensure!(
+        metadata.is_dir(),
+        "VMM.Perf WorkDir base is not a directory: {}",
+        base.display()
+    );
+    fs_err::canonicalize(&base)
+        .with_context(|| format!("failed to resolve VMM.Perf WorkDir base {}", base.display()))
 }
 
 fn experiment_id(profile: VmmPerfProfile, config_name: &str) -> anyhow::Result<String> {

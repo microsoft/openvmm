@@ -1580,7 +1580,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 incubator_profile: None,
-                nextest_filter_expr: exclude_vmm_perf(standard_filter.clone()),
+                nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1594,10 +1594,8 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_mi_secure_x86,
                 incubator_profile: None,
-                nextest_filter_expr: exclude_vmm_perf(
-                    "test(openhcl) & !test(servicing) & !test(cvm) & !test(memory_validation) & !test(very_heavy) & !test(hyperv_openhcl_pcat) & !test(prepped_vbs) & !test(256mb)"
-                        .to_string(),
-                ),
+                nextest_filter_expr: "test(openhcl) & !test(servicing) & !test(cvm) & !test(memory_validation) & !test(very_heavy) & !test(hyperv_openhcl_pcat) & !test(prepped_vbs) & !test(256mb)"
+                    .to_string(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: Vec::new(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1611,7 +1609,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
                 incubator_profile: None,
-                nextest_filter_expr: exclude_vmm_perf(cvm_filter("tdx")),
+                nextest_filter_expr: cvm_filter("tdx"),
                 test_artifacts: cvm_x64_test_artifacts.clone(),
                 prep_steps_variants: vec!["standard".into()],
                 hugetlb_2mb_overcommit_pages: None,
@@ -1627,7 +1625,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 incubator_profile: None,
-                nextest_filter_expr: exclude_vmm_perf(standard_filter.clone()),
+                nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
@@ -1641,7 +1639,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
                 incubator_profile: None,
-                nextest_filter_expr: exclude_vmm_perf(cvm_filter("snp")),
+                nextest_filter_expr: cvm_filter("snp"),
                 test_artifacts: cvm_x64_test_artifacts,
                 prep_steps_variants: vec!["standard".into()],
                 hugetlb_2mb_overcommit_pages: None,
@@ -1690,7 +1688,7 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::AARCH64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
                 incubator_profile: None,
-                nextest_filter_expr: exclude_vmm_perf("all()".to_string()),
+                nextest_filter_expr: "all()".to_string(),
                 test_artifacts: vec![
                     KnownTestArtifacts::Alpine323Aarch64Vhd,
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
@@ -1712,7 +1710,7 @@ impl IntoPipeline for CheckinGatesCli {
                 // aarch64-linux tests have no native CI hardware, so they run
                 // inside the QEMU TCG incubator rather than directly on the host.
                 incubator_profile: Some("aarch64-tcg-pcie"),
-                nextest_filter_expr: exclude_vmm_perf("test(aarch64_tcg)".to_string()),
+                nextest_filter_expr: "test(aarch64_tcg)".to_string(),
                 test_artifacts: vec![
                     KnownTestArtifacts::Alpine323Aarch64Vhd,
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
