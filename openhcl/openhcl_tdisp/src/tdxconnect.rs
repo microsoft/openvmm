@@ -9,17 +9,26 @@
 //! unblock MMIO and DMA for an attested TDI. What is wired up is
 //! [`TdispTdxConnectResourceValidator::probe_tdi`], which issues TDG.TDI.RD
 //! against the TDI so a bring-up run can confirm the Connect TDCALLs reach a
-//! real interface before the accept paths are implemented.
+//! real interface before the accept paths are implemented, including the two
+//! hash field codes that write into a private page the validator owns.
 
 use crate::TdispResourceValidationInterface;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvVtl;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
+use parking_lot::Mutex;
+use user_driver::DmaClient;
+use user_driver::lockmem::LockedMemorySpawner;
+use user_driver::memory::MemoryBlock;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdiRdField;
 use x86defs::tdx::TdispInterfaceState;
 use x86defs::tdx::TdxFunctionId;
+
+/// The TDG.TDI.RD output buffer is a single 4K private page.
+const TDI_HASH_BUF_SIZE: usize = HV_PAGE_SIZE as usize;
 
 /// Intel TDX Connect implementation of [`TdispResourceValidationInterface`].
 ///
@@ -33,6 +42,12 @@ pub struct TdispTdxConnectResourceValidator {
     /// start in the CVM. Retained for the forthcoming TDCALL work (shared-GPA
     /// boundary masking) and referenced in the stub trace output.
     vtom: u64,
+    /// Private VTL2 page handed to TDG.TDI.RD in R8 as the output buffer for
+    /// the hash field codes. The mutex serializes the write-then-read against
+    /// concurrent probes on other TDIs.
+    hash_buf: Mutex<MemoryBlock>,
+    /// GPA of `hash_buf`'s single page, resolved once at construction.
+    hash_buf_gpa: u64,
 }
 
 impl TdispTdxConnectResourceValidator {
@@ -41,10 +56,56 @@ impl TdispTdxConnectResourceValidator {
     /// The signature mirrors `TdispSevTioResourceValidator::new` so the
     /// selection site in `underhill_core` is identical in shape.
     ///
+    /// Allocates the TDG.TDI.RD hash output page, so a TD without TDX Connect
+    /// enabled also pays for it.
+    ///
     /// * `vtom` - The address mask with the VTOM bit set to signify where VTOM
     ///   addresses start in the CVM.
     pub fn new(vtom: u64) -> anyhow::Result<Self> {
-        Ok(Self { vtom })
+        use anyhow::Context;
+
+        // Ordinary VTL2 RAM is what TDG.TDI.RD wants for its output buffer: on
+        // a TD it is private, below VTOM, and accepted at boot, and the
+        // paravisor kernel's PFNs are TD GPA PFNs.
+        let hash_buf = LockedMemorySpawner
+            .allocate_dma_buffer(TDI_HASH_BUF_SIZE)
+            .context("failed to allocate the TDG.TDI.RD hash output page")?;
+
+        // Handing the TDX Module a shared or misaligned GPA fails the TDCALL
+        // with a status that is hard to attribute back to the buffer.
+        anyhow::ensure!(
+            hash_buf.pfn_bias() == 0,
+            "TDG.TDI.RD hash output page has a nonzero pfn bias {:#x}, so it is shared, not private",
+            hash_buf.pfn_bias()
+        );
+        anyhow::ensure!(
+            hash_buf.offset_in_page() == 0,
+            "TDG.TDI.RD hash output page is not page aligned: offset {:#x}",
+            hash_buf.offset_in_page()
+        );
+        let &[pfn] = hash_buf.pfns() else {
+            anyhow::bail!(
+                "TDG.TDI.RD hash output page resolved to {} pfns, expected exactly one",
+                hash_buf.pfns().len()
+            );
+        };
+        let hash_buf_gpa = pfn * HV_PAGE_SIZE;
+        if vtom != 0 {
+            anyhow::ensure!(
+                hash_buf_gpa < vtom,
+                "TDG.TDI.RD hash output page gpa {hash_buf_gpa:#x} is at or above vtom {vtom:#x}"
+            );
+        }
+
+        // Trace the GPA once: it is what a debugger needs to watch the page
+        // while the probe runs.
+        tracing::info!(vtom, hash_buf_gpa, "allocated TDG.TDI.RD hash output page");
+
+        Ok(Self {
+            vtom,
+            hash_buf: Mutex::new(hash_buf),
+            hash_buf_gpa,
+        })
     }
 
     /// Open a fresh `MshvVtl` handle for a single request. Mirrors
@@ -86,11 +147,59 @@ impl TdispTdxConnectResourceValidator {
             TdCallResultCode::OPERAND_INVALID => {
                 " (FUNCTION_ID is not valid or the TDI is not assigned to this TD)"
             }
+            TdCallResultCode::OPERAND_ADDR_RANGE_ERROR => {
+                " (the output buffer gpa is outside this TD's private gpa range)"
+            }
+            TdCallResultCode::PAGE_METADATA_INCORRECT | TdCallResultCode::PAGE_NOT_OWNED_BY_TD => {
+                " (the output buffer is not an accepted private page owned by this TD)"
+            }
             TdCallResultCode::OPERAND_BUSY => " (retryable)",
             _ => "",
         };
 
         format!("{code:?}{meaning}, raw rax {:#x}", u64::from(result))
+    }
+
+    /// Issue TDG.TDI.RD for one of the hash field codes, which write their
+    /// result into a private page instead of returning it in RCX. `field` must
+    /// be `GET_TDISP_REPORT_HASH` or `GET_DEVICE_ATTESTATION_INFO_HASH`, the
+    /// only two codes that take a nonzero output buffer gpa.
+    fn read_hash(
+        &self,
+        mshv_vtl: &MshvVtl,
+        function_id: TdxFunctionId,
+        field: TdiRdField,
+    ) -> anyhow::Result<Vec<u8>> {
+        use anyhow::Context;
+
+        let hash_buf = self.hash_buf.lock();
+
+        // The page is reused across TDIs and both field codes, and the TDX
+        // Module writes only the hash bytes, so zero it first.
+        hash_buf.write_zeros(0, TDI_HASH_BUF_SIZE);
+
+        let hash_len = mshv_vtl
+            .tdx_tdi_rd(function_id, field, self.hash_buf_gpa)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "TDG.TDI.RD({field:?}) failed for requester id {:#x}: {}",
+                    function_id.requester_id(),
+                    Self::describe_status(e)
+                )
+            })?;
+
+        // RCX is the hash length for these field codes. Bound it before it
+        // becomes a slice length.
+        let hash_len = usize::try_from(hash_len)
+            .ok()
+            .filter(|&len| len != 0 && len <= TDI_HASH_BUF_SIZE)
+            .with_context(|| {
+                format!("TDG.TDI.RD({field:?}) returned out of range hash length {hash_len}")
+            })?;
+
+        let mut hash = vec![0; hash_len];
+        hash_buf.read_at(0, &mut hash);
+        Ok(hash)
     }
 
     /// Issue TDG.TDI.RD against `device_id` to confirm the TDX Connect TDCALLs
@@ -106,8 +215,9 @@ impl TdispTdxConnectResourceValidator {
     /// * `GET_TDISP_STATE` - success means the TDI is bound, and the value
     ///   decodes to the TDISP interface state the TDX Module last observed.
     ///
-    /// `GET_TDISP_REPORT_HASH` and `GET_DEVICE_ATTESTATION_INFO_HASH` need a 4K
-    /// private page for their output and are deliberately not probed here.
+    /// It then reads `GET_TDISP_REPORT_HASH` and
+    /// `GET_DEVICE_ATTESTATION_INFO_HASH`, which exercise the buffer-carrying
+    /// form of the leaf where the TD supplies a private gpa in R8.
     ///
     /// The resource-unblock TDCALLs (TDG.DMAR.ACCEPT, TDG.TDI.MMIO.ACCEPT) land
     /// in a follow-up change.
@@ -162,6 +272,24 @@ impl TdispTdxConnectResourceValidator {
 
         tracing::info!(
             "TDX Connect validator reached TDI via TDG.TDI.RD: requester id {device_id:#x}, TDISP version {version}, TDISP state {state:#x}"
+        );
+
+        let report_hash =
+            self.read_hash(&mshv_vtl, function_id, TdiRdField::GET_TDISP_REPORT_HASH)?;
+        let attestation_info_hash = self.read_hash(
+            &mshv_vtl,
+            function_id,
+            TdiRdField::GET_DEVICE_ATTESTATION_INFO_HASH,
+        )?;
+
+        tracing::info!(
+            hash_buf_gpa = self.hash_buf_gpa,
+            report_hash_len = report_hash.len(),
+            attestation_info_hash_len = attestation_info_hash.len(),
+            "TDX Connect validator read TDI hashes via TDG.TDI.RD: requester id {device_id:#x}, \
+             TDISP report hash {:02x?}, device attestation info hash {:02x?}",
+            report_hash.as_slice(),
+            attestation_info_hash.as_slice()
         );
 
         Ok(())
