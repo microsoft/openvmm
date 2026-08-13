@@ -300,7 +300,7 @@ pub struct snp_vp_context {
     pub stimer0_count: u64,
     pub stimer0_programmed_ref_time: u64,
     pub stimer0_flags: u32,
-    pub reserved: [u8; 928],
+    pub reserved: [u8; 932],
 }
 
 const _: () = assert!(size_of::<snp_vp_context>() == 1024);
