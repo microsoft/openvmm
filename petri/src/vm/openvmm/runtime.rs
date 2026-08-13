@@ -119,8 +119,18 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         })
     }
 
-    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        Self::wait_for_boot_event(self).await
+    async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>> {
+        // The event arrives on a channel, so cancelling the wait can't discard
+        // one that has already been delivered.
+        CancelContext::new()
+            .with_timeout(timeout.unwrap_or(Duration::MAX))
+            .until_cancelled(Self::wait_for_boot_event(self))
+            .await
+            .ok()
+            .transpose()
     }
 
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
