@@ -287,6 +287,7 @@ impl Vtl2SettingsWorker {
         let old_settings = Vtl2Settings {
             fixed: Default::default(),
             dynamic: self.old_settings.clone(),
+            device_policy: None,
         };
         let vtl2_settings = Vtl2Settings::read_from(buf, old_settings).map_err(|err| match err {
             underhill_config::schema::ParseError::Json(err) => {
