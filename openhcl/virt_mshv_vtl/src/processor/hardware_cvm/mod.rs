@@ -1822,6 +1822,8 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
             GuestVtl::Vtl1,
             hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
             &mut self.vp.tlb_flush_lock_access(),
+            // 1,
+            std::cmp::max(1, (self.vp.partition.vps.len().saturating_sub(1)) as u32),
         )?;
 
         tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
@@ -2261,18 +2263,19 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         let targeted_vtl = GuestVtl::Vtl0;
 
         // Don't allow changing existing protections once vtl protection is enabled
-        if protector.vtl1_protections_enabled() {
-            let current_protections = protector.default_vtl0_protections();
-            if protections != current_protections {
+        let current_protections = protector.default_vtl0_protections();
+        if protections != current_protections {
+            if protector.vtl1_protections_enabled() {
                 return Err(HvError::InvalidRegisterValue);
+            } else {
+                protector.change_default_vtl_protections(
+                    targeted_vtl,
+                    protections,
+                    &mut self.tlb_flush_lock_access(),
+                    std::cmp::max(1, (self.partition.vps.len().saturating_sub(1)) as u32),
+                )?;
             }
         }
-
-        protector.change_default_vtl_protections(
-            targeted_vtl,
-            protections,
-            &mut self.tlb_flush_lock_access(),
-        )?;
 
         // TODO GUEST VSM: should only be set if enable_vtl_protection is true?
         // We're not to spec but match the HCL, so good enough for now?

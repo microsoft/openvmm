@@ -1581,6 +1581,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         target_vtl: GuestVtl,
         protections: HvMapGpaFlags,
         tlb_access: &mut dyn TlbFlushLockAccess,
+        thread_count: u32,
     ) -> Result<(), HvError>;
 
     /// Changes the vtl protections on a range of guest memory.

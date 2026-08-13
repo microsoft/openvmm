@@ -17,6 +17,7 @@ use hvdef::HvMapGpaFlags;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
+use parking_lot::MutexGuard;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -444,20 +445,35 @@ impl GuestMemoryBitmap {
 
     /// Panics if the range is outside of guest RAM.
     fn update(&self, range: MemoryRange, state: bool) {
-        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
-            // TODO: use `fill_at` for the aligned part of the range.
-            let mut b = 0;
+        let aligned_range = range.aligned_subrange(PAGE_SIZE as u64 * 8);
+        if !aligned_range.is_empty() {
             self.bitmap
-                .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
+                .fill_at(
+                    aligned_range.start() as usize / PAGE_SIZE / 8,
+                    if state { u8::MAX } else { 0u8 },
+                    aligned_range.len() as usize / PAGE_SIZE / 8,
+                )
                 .unwrap();
-            if state {
-                b |= 1 << (gpn % 8);
-            } else {
-                b &= !(1 << (gpn % 8));
+        }
+
+        for unaligned_range in memory_range::subtract_ranges([range], [aligned_range]) {
+            for gpn in
+                unaligned_range.start() / PAGE_SIZE as u64..unaligned_range.end() / PAGE_SIZE as u64
+            {
+                // TODO: use `fill_at` for the aligned part of the range.
+                let mut b = 0;
+                self.bitmap
+                    .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
+                    .unwrap();
+                if state {
+                    b |= 1 << (gpn % 8);
+                } else {
+                    b &= !(1 << (gpn % 8));
+                }
+                self.bitmap
+                    .write_at(gpn as usize / 8, std::slice::from_ref(&b))
+                    .unwrap();
             }
-            self.bitmap
-                .write_at(gpn as usize / 8, std::slice::from_ref(&b))
-                .unwrap();
         }
     }
 
@@ -718,8 +734,26 @@ impl GuestMemoryMapping {
     /// Update the permission bitmaps to reflect the given flags.
     /// Panics if the range is outside of guest RAM.
     pub fn update_permission_bitmaps(&self, range: MemoryRange, flags: HvMapGpaFlags) {
+        if let Some(_lock) = self.lock_permission_bitmaps() {
+            self.update_permission_bitmaps_locked(range, flags);
+        }
+    }
+
+    pub(crate) fn lock_permission_bitmaps(&self) -> Option<MutexGuard<'_, ()>> {
+        self.permission_bitmaps
+            .as_ref()
+            .map(|bitmaps| bitmaps.permission_update_lock.lock())
+    }
+
+    /// Update the permission bitmaps to reflect the given flags.
+    ///
+    /// The caller must hold the permission bitmap update lock.
+    pub(crate) fn update_permission_bitmaps_locked(
+        &self,
+        range: MemoryRange,
+        flags: HvMapGpaFlags,
+    ) {
         if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
-            let _lock = bitmaps.permission_update_lock.lock();
             bitmaps.read_bitmap.update(range, flags.readable());
             bitmaps.write_bitmap.update(range, flags.writable());
             bitmaps

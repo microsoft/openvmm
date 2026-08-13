@@ -9,6 +9,7 @@ use crate::mapping::GuestMemoryMapping;
 use crate::mapping::GuestMemoryView;
 use crate::mapping::GuestMemoryViewReadType;
 use crate::mapping::GuestPartitionMemoryView;
+use crate::parallelize_mem_op;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
 use futures::future::try_join_all;
@@ -159,34 +160,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
                     validated_ranges.push(source_range);
 
-                    // Chunks must be 2mb aligned
-                    let two_mb = 2 * 1024 * 1024;
-                    let mut range = source_range.aligned_subrange(two_mb);
-                    if !range.is_empty() {
-                        let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
-                        let chunk_count = range.len().div_ceil(chunk_size);
-
-                        for _ in 0..chunk_count {
-                            let subrange;
-                            (subrange, range) = if range.len() >= chunk_size {
-                                range.split_at_offset(chunk_size)
-                            } else {
-                                (range, MemoryRange::EMPTY)
-                            };
-                            scope.spawn(move || accept_subrange(subrange));
-                        }
-                        assert!(range.is_empty());
-                    }
-
-                    // Now accept whatever wasn't aligned on the edges
-                    scope.spawn(move || {
-                        for unaligned_subrange in memory_range::subtract_ranges(
-                            [source_range],
-                            [source_range.aligned_subrange(two_mb)],
-                        ) {
-                            accept_subrange(unaligned_subrange);
-                        }
-                    });
+                    parallelize_mem_op(source_range, vp_count, scope, accept_subrange);
                 }
             });
         }
