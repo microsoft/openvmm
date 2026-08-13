@@ -77,7 +77,7 @@ async fn create_uefi_vmgs(
 /// Wait for and validate the Secure Boot variable reports.
 async fn verify_secure_boot_variable_reports<T: PetriVmmBackend>(
     vm: &PetriVm<T>,
-    custom_uefi_present: bool,
+    has_custom_uefi: bool,
 ) -> Result<(), anyhow::Error> {
     const EXPECTED_VARIABLES: [&str; 4] = ["PK", "KEK", "db", "dbx"];
 
@@ -100,11 +100,11 @@ async fn verify_secure_boot_variable_reports<T: PetriVmmBackend>(
         };
 
         assert!(
-            raw.contains("present_in_nvram: true"),
+            raw.contains("in_nvram: true"),
             "Secure Boot variable is unexpectedly absent from NVRAM: {raw}"
         );
         assert!(
-            raw.contains(&format!("custom_uefi_present: {custom_uefi_present}")),
+            raw.contains(&format!("has_custom_uefi: {has_custom_uefi}")),
             "unexpected custom UEFI presence in variable report: {raw}"
         );
         assert!(
@@ -127,7 +127,7 @@ async fn verify_secure_boot_variable_reports<T: PetriVmmBackend>(
 async fn verify_secure_boot_variable_presence<T: PetriVmmBackend>(
     vm: &PetriVm<T>,
     variable_name: &str,
-    present_in_nvram: bool,
+    in_nvram: bool,
 ) -> Result<(), anyhow::Error> {
     let mut kmsg = vm.kmsg().await?;
 
@@ -138,11 +138,11 @@ async fn verify_secure_boot_variable_presence<T: PetriVmmBackend>(
 
         if raw.contains("SecureBootVariable") && raw.contains(&format!("name: {variable_name:?}")) {
             anyhow::ensure!(
-                raw.contains(&format!("present_in_nvram: {present_in_nvram}")),
+                raw.contains(&format!("in_nvram: {in_nvram}")),
                 "unexpected Secure Boot variable presence: {raw}"
             );
             anyhow::ensure!(
-                raw.contains("custom_uefi_present: true"),
+                raw.contains("has_custom_uefi: true"),
                 "custom UEFI configuration not reported: {raw}"
             );
             return Ok(());

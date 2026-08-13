@@ -69,8 +69,8 @@ type SignatureSet = BTreeSet<SignatureValue>;
 /// Secure Boot telemetry schema mirrored by legacy HCL's `UefiNvramStore.cpp`.
 struct SecureBootVariableReport<'a> {
     name: &'a ucs2::Ucs2LeSlice,
-    present_in_nvram: bool,
-    custom_uefi_present: bool,
+    in_nvram: bool,
+    has_custom_uefi: bool,
     loaded_bytes: usize,
     loaded_entries: usize,
     template_entries: usize,
@@ -81,8 +81,8 @@ impl Debug for SecureBootVariableReport<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             name,
-            present_in_nvram,
-            custom_uefi_present,
+            in_nvram,
+            has_custom_uefi,
             loaded_bytes,
             loaded_entries,
             template_entries,
@@ -92,8 +92,8 @@ impl Debug for SecureBootVariableReport<'_> {
         formatter
             .debug_struct("SecureBootVariable")
             .field("name", name)
-            .field("present_in_nvram", present_in_nvram)
-            .field("custom_uefi_present", custom_uefi_present)
+            .field("in_nvram", in_nvram)
+            .field("has_custom_uefi", has_custom_uefi)
             .field("loaded_bytes", &format_args!("{loaded_bytes:#x}"))
             .field("loaded_entries", &format_args!("{loaded_entries:#x}"))
             .field("template_entries", &format_args!("{template_entries:#x}"))
@@ -186,7 +186,7 @@ impl NvramServices {
             // Top-level configuration reads the VMGS CUSTOM_UEFI entry on every boot and
             // populates this value when the entry is non-empty, matching legacy HCL. The delta
             // itself is only applied below when NVRAM is empty.
-            let custom_uefi_present = custom_uefi_json
+            let has_custom_uefi = custom_uefi_json
                 .as_ref()
                 .is_some_and(|json| !json.as_bytes().is_empty());
 
@@ -200,7 +200,7 @@ impl NvramServices {
 
             if secure_boot_enabled {
                 nvram
-                    .report_secure_boot_configuration(base_template.as_ref(), custom_uefi_present)
+                    .report_secure_boot_configuration(base_template.as_ref(), has_custom_uefi)
                     .await;
             }
         }
@@ -282,7 +282,7 @@ impl NvramServices {
         &mut self,
         (vendor, name): (Guid, &'a ucs2::Ucs2LeSlice),
         template_signatures: &[Signature],
-        custom_uefi_present: bool,
+        has_custom_uefi: bool,
     ) -> Option<SecureBootVariableReport<'a>> {
         let base_signatures = base_signature_set(template_signatures);
         if base_signatures.is_empty() {
@@ -298,8 +298,8 @@ impl NvramServices {
             // The variable exists in NVRAM but is empty
             Ok((_, data)) if data.is_empty() => Some(SecureBootVariableReport {
                 name,
-                present_in_nvram: true,
-                custom_uefi_present,
+                in_nvram: true,
+                has_custom_uefi,
                 loaded_bytes: 0,
                 loaded_entries: 0,
                 template_entries: base_signatures.len(),
@@ -310,8 +310,8 @@ impl NvramServices {
                 // The data is valid
                 Ok(loaded_signatures) => Some(SecureBootVariableReport {
                     name,
-                    present_in_nvram: true,
-                    custom_uefi_present,
+                    in_nvram: true,
+                    has_custom_uefi,
                     loaded_bytes: data.len(),
                     loaded_entries: loaded_signatures.len(),
                     template_entries: base_signatures.len(),
@@ -331,8 +331,8 @@ impl NvramServices {
             // The variable does not exist in NVRAM
             Err((EfiStatus::NOT_FOUND, _)) => Some(SecureBootVariableReport {
                 name,
-                present_in_nvram: false,
-                custom_uefi_present,
+                in_nvram: false,
+                has_custom_uefi,
                 loaded_bytes: 0,
                 loaded_entries: 0,
                 template_entries: base_signatures.len(),
@@ -356,7 +356,7 @@ impl NvramServices {
     async fn report_secure_boot_configuration(
         &mut self,
         base_template: Option<&BaseTemplateVars>,
-        custom_uefi_present: bool,
+        has_custom_uefi: bool,
     ) {
         let Some(signatures) = base_template.and_then(BaseTemplateVars::signatures) else {
             tracing::warn!(
@@ -374,7 +374,7 @@ impl NvramServices {
             (vars::DBX(), signatures.dbx.as_slice()),
         ] {
             if let Some(variable_report) = self
-                .get_secure_boot_variable_report(variable, template_signatures, custom_uefi_present)
+                .get_secure_boot_variable_report(variable, template_signatures, has_custom_uefi)
                 .await
             {
                 tracing::info!(CVM_ALLOWED, "{variable_report:?}");
@@ -777,8 +777,8 @@ mod tests {
 
         let report = SecureBootVariableReport {
             name: vars::KEK().1,
-            present_in_nvram: false,
-            custom_uefi_present: false,
+            in_nvram: false,
+            has_custom_uefi: false,
             loaded_bytes: usize::MAX,
             loaded_entries: usize::MAX,
             template_entries: usize::MAX,
@@ -805,8 +805,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!report.present_in_nvram);
-        assert!(report.custom_uefi_present);
+        assert!(!report.in_nvram);
+        assert!(report.has_custom_uefi);
         assert_eq!(report.loaded_bytes, 0);
         assert_eq!(report.loaded_entries, 0);
         assert_eq!(report.template_entries, 1);
@@ -832,8 +832,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(report.present_in_nvram);
-        assert!(!report.custom_uefi_present);
+        assert!(report.in_nvram);
+        assert!(!report.has_custom_uefi);
         assert_eq!(report.loaded_bytes, 0);
         assert_eq!(report.loaded_entries, 0);
         assert_eq!(report.template_entries, 2);
