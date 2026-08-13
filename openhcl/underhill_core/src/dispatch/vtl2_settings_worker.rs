@@ -315,6 +315,19 @@ impl Vtl2SettingsWorker {
 
         let vtl2_settings = vtl2_settings?;
 
+        // The device policy is consumed once, during VM startup, to build the
+        // VPCI relay's allow-list. Applying it later would let the reported
+        // device posture drift from the attestation claim, which is computed at
+        // the same time, so a runtime update is ignored. Say so rather than
+        // silently dropping it.
+        if vtl2_settings.device_policy.is_some() {
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                "ignoring DevicePolicy in a runtime VTL2 settings update; \
+                 it is only honored at VM startup"
+            );
+        }
+
         let new_settings = vtl2_settings.dynamic;
 
         tracing::info!(CVM_ALLOWED, ?new_settings, "Received VTL2 settings");
