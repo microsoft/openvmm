@@ -3678,19 +3678,19 @@ async fn new_underhill_vm(
             servicing_state
                 .hibernate
                 .flatten()
-                .map_or(hibernate::HibernateToken::UNKNOWN, |h| h.token.into()),
+                .map_or(hibernate::Token::UNKNOWN, |h| h.token.into()),
         )
     } else if let Some(vmgs_client) = vmgs_client.as_ref() {
-        if let Some(token @ hibernate::HibernateToken::Hibernated { .. }) =
+        if let Some(token @ hibernate::Token::Hibernated { .. }) =
             hibernate::read_token(vmgs_client).await
         {
             // A resume under a different firmware version; warn but don't honor
             // it yet.
-            if token != hibernate::HibernateToken::CURRENT {
+            if token != hibernate::Token::CURRENT {
                 tracing::warn!(
                     CVM_ALLOWED,
                     resume = %token,
-                    current = %hibernate::HibernateToken::CURRENT,
+                    current = %hibernate::Token::CURRENT,
                     "hibernation resume token does not match the current firmware version"
                 );
             }
@@ -3698,8 +3698,14 @@ async fn new_underhill_vm(
         // Consume any token, valid or corrupt, so it is not re-read next boot.
         hibernate::delete_token(vmgs_client).await;
         // No overload support yet; always use the current firmware version.
-        Some(hibernate::HibernateToken::CURRENT)
+        Some(hibernate::Token::CURRENT)
     } else {
+        // Hibernation was requested but there is no VMGS to persist the token,
+        // so it cannot survive a power transition.
+        tracing::warn!(
+            CVM_ALLOWED,
+            "hibernation enabled but no VMGS is available; hibernate token will not be persisted"
+        );
         None
     };
 
@@ -4030,7 +4036,7 @@ async fn halt_task(
                     if let Some(hibernate_halt) = &hibernate_halt {
                         hibernate::write_token(
                             &hibernate_halt.vmgs_client,
-                            hibernate::HibernateToken::NotHibernated,
+                            hibernate::Token::NotHibernated,
                         )
                         .await;
                     }
@@ -4041,7 +4047,7 @@ async fn halt_task(
                     if let Some(hibernate_halt) = &hibernate_halt {
                         hibernate::write_token(
                             &hibernate_halt.vmgs_client,
-                            hibernate::HibernateToken::NotHibernated,
+                            hibernate::Token::NotHibernated,
                         )
                         .await;
                     }
