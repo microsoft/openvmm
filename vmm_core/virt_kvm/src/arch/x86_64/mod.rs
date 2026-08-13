@@ -377,7 +377,7 @@ impl virt::Hypervisor for Kvm {
                     .read(true)
                     .write(true)
                     .open("/dev/sev")
-                    .map_err(KvmError::OpenSev)?,
+                    .map_err(crate::snp::SnpError::OpenSev)?,
             ),
             virt::IsolationType::None => None,
             virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {

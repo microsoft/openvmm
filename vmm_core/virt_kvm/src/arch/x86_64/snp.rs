@@ -3,7 +3,7 @@
 
 //! x86-specific translation of loader imports to KVM SNP page types.
 
-use crate::KvmError;
+use crate::snp::SnpError;
 use virt::InitialPageImportType;
 
 /// Returns the KVM SNP launch page type for a loader import.
@@ -12,7 +12,7 @@ use virt::InitialPageImportType;
 /// than being measured with an unintended page type.
 pub fn snp_launch_page_type(
     import_type: InitialPageImportType,
-) -> Result<kvm::SevSnpPageType, KvmError> {
+) -> Result<kvm::SevSnpPageType, SnpError> {
     match import_type {
         // KVM owns its runtime VMSA and has no SNP launch-update VMSA page
         // type. This reserved guest page carries loader state to OpenVMM only;
@@ -24,7 +24,7 @@ pub fn snp_launch_page_type(
         InitialPageImportType::Secrets => Ok(kvm::SevSnpPageType::Secrets),
         InitialPageImportType::Cpuid => Ok(kvm::SevSnpPageType::Cpuid),
         InitialPageImportType::Shared | InitialPageImportType::CpuidExtendedState => {
-            Err(KvmError::UnsupportedSnpPageImportType(import_type))
+            Err(SnpError::UnsupportedPageImportType(import_type))
         }
     }
 }
@@ -66,7 +66,7 @@ mod tests {
         ] {
             assert!(matches!(
                 snp_launch_page_type(import_type),
-                Err(KvmError::UnsupportedSnpPageImportType(actual)) if actual == import_type
+                Err(SnpError::UnsupportedPageImportType(actual)) if actual == import_type
             ));
         }
     }
