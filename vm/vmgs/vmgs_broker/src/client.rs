@@ -87,6 +87,16 @@ impl VmgsClient {
         Ok(())
     }
 
+    /// Deletes the specified `file_id`.
+    #[instrument(skip_all, fields(file_id))]
+    pub async fn delete_file(&self, file_id: FileId) -> Result<(), VmgsClientError> {
+        self.control
+            .call_failable(VmgsBrokerRpc::DeleteFile, file_id.into())
+            .await?;
+
+        Ok(())
+    }
+
     /// If VMGS has been configured with encryption, encrypt + write `buf` to
     /// the specified `file_id`. Otherwise, perform a regular plaintext write
     /// instead.

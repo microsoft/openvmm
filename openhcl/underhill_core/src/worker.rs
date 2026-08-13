@@ -38,6 +38,7 @@ use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
 use crate::emuplat::watchdog::UnderhillWatchdogPlatform;
+use crate::hibernate;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
@@ -3665,6 +3666,50 @@ async fn new_underhill_vm(
             .await
             .context("failed to relay initial vpci channels")?;
     }
+    // The hibernate token pins the firmware version across a hibernate/resume
+    // cycle. On a servicing restore the VMGS token was already consumed at the
+    // original cold boot, so recover it from saved state; otherwise read (and
+    // consume) it from VMGS.
+    let current_hibernate_token: Option<u64> = if !dps.general.hibernation_enabled {
+        None
+    } else if is_restoring {
+        // Older saved state may not carry hibernation state; treat as unknown.
+        Some(
+            servicing_state
+                .hibernate
+                .flatten()
+                .map_or(hibernate::token::HIBERNATED_UNKNOWN, |h| h.token),
+        )
+    } else if let Some(vmgs_client) = vmgs_client.as_ref() {
+        if let Some(read) = hibernate::read_token(vmgs_client).await {
+            // A non-NONE token that differs from the current version is a resume
+            // under different firmware; warn but don't honor it yet.
+            if read != hibernate::token::NONE && read != hibernate::token::DEFAULT {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    token = format_args!("{read:#x}"),
+                    default = format_args!("{:#x}", hibernate::token::DEFAULT),
+                    "hibernation resume token does not match the current firmware version"
+                );
+            }
+            hibernate::delete_token(vmgs_client).await;
+        }
+        // No overload support yet; always use the current firmware version.
+        Some(hibernate::token::DEFAULT)
+    } else {
+        None
+    };
+
+    // A Some token means hibernation is enabled and populated; pair it with a
+    // VMGS client to drive token persistence at halt time.
+    let hibernate_halt =
+        current_hibernate_token
+            .zip(vmgs_client.clone())
+            .map(|(current_token, vmgs_client)| hibernate::HaltState {
+                vmgs_client,
+                current_token,
+            });
+
     let (halt_notify_send, halt_notify_recv) = mesh::channel();
     let halt_task = tp.spawn(
         "halt",
@@ -3673,6 +3718,7 @@ async fn new_underhill_vm(
             fatal_error_recv,
             control_send.clone(),
             get_client.clone(),
+            hibernate_halt,
             env_cfg.halt_on_guest_halt,
         ),
     );
@@ -3732,6 +3778,7 @@ async fn new_underhill_vm(
         partition_unit,
         memory: gm,
         firmware_type,
+        hibernate_token: current_hibernate_token,
         isolation,
         chipset_devices: devices,
         _vmtime: vmtime,
@@ -3924,6 +3971,7 @@ async fn halt_task(
     mut _fatal_error_recv: mesh::Receiver<Box<dyn std::error::Error + Send + Sync>>,
     control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
     get_client: GuestEmulationTransportClient,
+    hibernate_halt: Option<hibernate::HaltState>,
     halt_on_guest_halt: bool,
 ) {
     #[derive(Debug)]
@@ -3974,9 +4022,33 @@ async fn halt_task(
 
             // Now we can notify the host about the halt.
             match halt_request {
-                HaltRequest::PowerOff => get_client.send_power_off(),
-                HaltRequest::Reset => get_client.send_reset(),
-                HaltRequest::Hibernate => get_client.send_hibernate(),
+                HaltRequest::PowerOff => {
+                    // Record the powered-off state so a later boot is not a resume.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(&hibernate_halt.vmgs_client, hibernate::token::NONE)
+                            .await;
+                    }
+                    get_client.send_power_off()
+                }
+                HaltRequest::Reset => {
+                    // Record the powered-off state so a later boot is not a resume.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(&hibernate_halt.vmgs_client, hibernate::token::NONE)
+                            .await;
+                    }
+                    get_client.send_reset()
+                }
+                HaltRequest::Hibernate => {
+                    // Write the hibernate token before signaling the host, mirroring legacy HCL.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate_halt.current_token,
+                        )
+                        .await;
+                    }
+                    get_client.send_hibernate()
+                }
                 HaltRequest::TripleFault { vp, regs } => {
                     get_client.triple_fault(vp, TripleFaultType::UNRECOVERABLE_EXCEPTION, regs)
                 }
