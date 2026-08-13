@@ -113,12 +113,14 @@ impl SimpleFlowNode for Node {
         // the release to a different commit. Reruns reuse it only when it still
         // names the exact archived revision.
         let tag_is_pinned = ctx.emit_rust_step("pin source release tag", |ctx| {
-            let no_existing_release = no_existing_release.claim(ctx);
+            // Claiming without reading is what orders this step after the
+            // check. The side effect a rust step hands back is never written to
+            // the var db, so reading it at runtime would panic.
+            no_existing_release.claim(ctx);
             let gh_cli = gh_cli.claim(ctx);
             let tag = tag.clone().claim(ctx);
             let target = target.clone().claim(ctx);
             move |rt| {
-                rt.read(no_existing_release);
                 let gh_cli = rt.read(gh_cli);
                 let tag = rt.read(tag);
                 let target = rt.read(target);
