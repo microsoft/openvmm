@@ -1637,6 +1637,10 @@ const HYPERV_WORKER_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Ana
 const HYPERV_WORKER_VDEV_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-VDev-Analytic";
 const HYPERV_VMMS_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Analytic";
 
+const HYPERV_WORKER_PROVIDER: &str = "Microsoft-Windows-Hyper-V-Worker";
+const HYPERV_VMMS_PROVIDER: &str = "Microsoft-Windows-Hyper-V-VMMS";
+const HYPERV_CHIPSET_PROVIDER: &str = "Microsoft-Windows-Hyper-V-Chipset";
+
 /// Providers that report a process fault to Windows Error Reporting and the
 /// Azure Watson agent.
 ///
@@ -1652,91 +1656,177 @@ const WATSON_PROVIDERS: &[&str] = &[
     "Microsoft-Windows Azure-AzureWatsonAgent",
 ];
 
+/// A Windows event, identified by both the provider that defines it and its ID.
+///
+/// Event IDs are only unique within a provider. Several Hyper-V providers write
+/// to the same log and reuse each other's IDs for completely unrelated events,
+/// so an ID on its own is not enough to identify an event.
+#[derive(Copy, Clone)]
+struct WinEventId {
+    provider: &'static str,
+    id: u32,
+}
+
+impl WinEventId {
+    fn matches(&self, event: &WinEvent) -> bool {
+        event.provider_name == self.provider && event.id == self.id
+    }
+}
+
 macro_rules! define_winevents {
     (
         $($collection_name:ident(
-            $(
-                $(#[doc = $doc:literal])*
-                $vis:vis const $name:ident: u32 = $id:literal;
-            )*
+            $($provider:ident {
+                $(
+                    $(#[doc = $doc:literal])*
+                    $vis:vis const $name:ident: u32 = $id:literal;
+                )*
+            })*
         )),*
     ) => {
-        $($(
+        $($($(
             $(#[doc = $doc])*
             $vis const $name: u32 = $id;
-        )*)*
+        )*)*)*
 
-        /// Get the name of a Windows event ID
-        pub fn winevent_name(id: u32) -> Option<&'static str> {
-            match id {
-                $($(
-                    $name => Some(stringify!($name)),
-                )*)*
+        /// Get the name of a Windows event
+        pub fn winevent_name(provider: &str, id: u32) -> Option<&'static str> {
+            match (provider, id) {
+                $($($(
+                    ($provider, $name) => Some(stringify!($name)),
+                )*)*)*
                 _ => None
             }
         }
 
         $(
-            const $collection_name: &[u32] = &[
-                $($name,)*
+            const $collection_name: &[WinEventId] = &[
+                $($(WinEventId { provider: $provider, id: $name },)*)*
             ];
         )*
     };
 }
 
 define_winevents!(
-    BOOT_EVENT_IDS(
-        /// The vm successfully booted an operating system.
-        pub const MSVM_BOOT_RESULTS_SUCCESS: u32 = 18601;
-        /// The vm successfully booted an operating system, but at least one boot source failed secure boot validation.
-        pub const MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES: u32 = 18602;
-        /// The vm failed to boot an operating system.
-        pub const MSVM_BOOT_RESULTS_FAILURE: u32 = 18603;
-        /// The vm failed to boot an operating system. At least one boot source failed secure boot validation.
-        pub const MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES: u32 = 18604;
-        /// The vm failed to boot an operating system. No bootable devices are configured.
-        pub const MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES: u32 = 18605;
-        /// The vm is attempting to boot an operating system. (PCAT only)
-        pub const MSVM_BOOT_RESULTS_ATTEMPT: u32 = 18606;
+    BOOT_EVENTS(
+        HYPERV_CHIPSET_PROVIDER {
+            /// The vm successfully booted an operating system.
+            pub const MSVM_BOOT_RESULTS_SUCCESS: u32 = 18601;
+            /// The vm successfully booted an operating system, but at least one boot source failed secure boot validation.
+            pub const MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES: u32 = 18602;
+            /// The vm failed to boot an operating system.
+            pub const MSVM_BOOT_RESULTS_FAILURE: u32 = 18603;
+            /// The vm failed to boot an operating system. At least one boot source failed secure boot validation.
+            pub const MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES: u32 = 18604;
+            /// The vm failed to boot an operating system. No bootable devices are configured.
+            pub const MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES: u32 = 18605;
+            /// The vm is attempting to boot an operating system. (PCAT only)
+            pub const MSVM_BOOT_RESULTS_ATTEMPT: u32 = 18606;
+        }
     ),
-    HALT_EVENT_IDS(
-        /// The vm was turned off.
-        pub const MSVM_HOST_STOP_SUCCESS: u32 = 18502;
-        /// The vm was shut down using the Shutdown Integration Component.
-        pub const MSVM_HOST_SHUTDOWN_SUCCESS: u32 = 18504;
-        /// The vm was shut down by the guest operating system.
-        pub const MSVM_GUEST_SHUTDOWN_SUCCESS: u32 = 18508;
-        /// The vm was shut down using the Shutdown Integration Component.
-        pub const MSVM_HOST_RESET_SUCCESS: u32 = 18512;
-        /// The vm was shut down by the guest operating system.
-        pub const MSVM_GUEST_RESET_SUCCESS: u32 = 18514;
-        /// The vm was shut down for a reset initiated by the guest operating system.
-        pub const MSVM_STOP_FOR_GUEST_RESET_SUCCESS: u32 = 18515;
-        /// The vm was turned off as it could not recover from a critical error.
-        pub const MSVM_STOP_CRITICAL_SUCCESS: u32 = 18528;
-        /// The vm was reset because the guest operating system requested an operation
-        /// that is not supported by Hyper-V or an unrecoverable error occurred.
-        /// This caused a triple fault.
-        pub const MSVM_TRIPLE_FAULT_GENERAL_ERROR: u32 = 18539;
-        /// The vm was reset because the guest operating system requested an operation
-        /// that is not supported by Hyper-V. This request caused a triple fault.
-        pub const MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR: u32 = 18540;
-        /// The vm was reset because an unrecoverable error occurred while accessing a
-        /// virtual processor register which caused a triple fault.
-        pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
-        /// The vm was reset because an unrecoverable error occurred on a virtual
-        /// processor that caused a triple fault.
-        pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
-        /// The vm was hibernated successfully.
-        pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
-        /// The vm has quit unexpectedly (the worker process terminated).
-        pub const MSVM_VMMS_VM_TERMINATE_ERROR: u32 = 14070;
-        /// The vm has encountered a fatal error. The guest operating system reported that it failed.
-        pub const MSVM_GUEST_CRASH_REPORT: u32 = 18590;
-        /// The vm failed in the management VTL before starting guest VTL0.
-        pub const MSVM_START_VTL0_REQUEST_ERROR: u32 = 18620;
+    HALT_EVENTS(
+        HYPERV_WORKER_PROVIDER {
+            /// The vm was turned off.
+            pub const MSVM_HOST_STOP_SUCCESS: u32 = 18502;
+            /// The vm was shut down using the Shutdown Integration Component.
+            pub const MSVM_HOST_SHUTDOWN_SUCCESS: u32 = 18504;
+            /// The vm was shut down by the guest operating system.
+            pub const MSVM_GUEST_SHUTDOWN_SUCCESS: u32 = 18508;
+            /// The vm was reset.
+            pub const MSVM_HOST_RESET_SUCCESS: u32 = 18512;
+            /// The vm was reset by the guest operating system.
+            pub const MSVM_GUEST_RESET_SUCCESS: u32 = 18514;
+            /// The vm was shut down for a reset initiated by the guest operating system.
+            pub const MSVM_STOP_FOR_GUEST_RESET_SUCCESS: u32 = 18515;
+            /// The vm was turned off as it could not recover from a critical error.
+            pub const MSVM_STOP_CRITICAL_SUCCESS: u32 = 18528;
+            /// The vm was reset because the guest operating system requested an operation
+            /// that is not supported by Hyper-V or an unrecoverable error occurred.
+            /// This caused a triple fault.
+            pub const MSVM_TRIPLE_FAULT_GENERAL_ERROR: u32 = 18539;
+            /// The vm was reset because the guest operating system requested an operation
+            /// that is not supported by Hyper-V. This request caused a triple fault.
+            pub const MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR: u32 = 18540;
+            /// The vm was reset because an unrecoverable error occurred while accessing a
+            /// virtual processor register which caused a triple fault.
+            pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
+            /// The vm was reset because an unrecoverable error occurred on a virtual
+            /// processor that caused a triple fault.
+            pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
+            /// The vm has encountered a fatal error. The guest operating system reported that it failed.
+            pub const MSVM_GUEST_CRASH_REPORT: u32 = 18590;
+            /// The vm was hibernated successfully.
+            pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
+        }
+        HYPERV_VMMS_PROVIDER {
+            /// The vm has quit unexpectedly (the worker process terminated).
+            pub const MSVM_VMMS_VM_TERMINATE_ERROR: u32 = 14070;
+        }
+        HYPERV_CHIPSET_PROVIDER {
+            /// The vm failed in the management VTL before starting guest VTL0.
+            pub const MSVM_START_VTL0_REQUEST_ERROR: u32 = 18620;
+        }
     )
 );
+
+/// Query a VM's Windows event logs for the given events.
+///
+/// Event IDs are not unique across providers, so the results are filtered by
+/// provider and ID here rather than trusting the ID filter alone.
+///
+/// `query_providers` additionally narrows what `Get-WinEvent` itself scans.
+/// Only providers whose channels are all guaranteed to exist belong here:
+/// naming a provider makes `Get-WinEvent` enumerate every channel the provider
+/// declares and report an error for any that is missing, which is why
+/// `Microsoft-Windows-Hyper-V-VMMS` (which declares the failover clustering
+/// channels) can't be listed.
+async fn hyperv_events(
+    logs: &[&str],
+    query_providers: &[&str],
+    events: &[WinEventId],
+    vmid: &Guid,
+    start_time: &Timestamp,
+) -> anyhow::Result<Vec<WinEvent>> {
+    let mut ids: Vec<_> = events.iter().map(|e| e.id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+
+    let vmid = vmid.to_string();
+    let mut found =
+        run_get_winevent(logs, query_providers, Some(start_time), Some(&vmid), &ids).await?;
+    found.retain(|e| events.iter().any(|w| w.matches(e)));
+    Ok(found)
+}
+
+/// Get Hyper-V boot event logs for a VM
+pub async fn hyperv_boot_events(
+    vmid: &Guid,
+    start_time: &Timestamp,
+) -> anyhow::Result<Vec<WinEvent>> {
+    hyperv_events(
+        &[HYPERV_WORKER_TABLE],
+        &[HYPERV_CHIPSET_PROVIDER],
+        BOOT_EVENTS,
+        vmid,
+        start_time,
+    )
+    .await
+}
+
+/// Get Hyper-V halt event logs for a VM
+pub async fn hyperv_halt_events(
+    vmid: &Guid,
+    start_time: &Timestamp,
+) -> anyhow::Result<Vec<WinEvent>> {
+    hyperv_events(
+        &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
+        &[],
+        HALT_EVENTS,
+        vmid,
+        start_time,
+    )
+    .await
+}
 
 /// Get Hyper-V event logs for a VM
 pub async fn hyperv_event_logs(vmid: Option<&Guid>, start_time: &Timestamp) -> Vec<WinEvent> {
@@ -1796,38 +1886,6 @@ pub async fn watson_events(start_time: &Timestamp) -> Vec<WinEvent> {
     }
     events.sort_by_key(|e| e.time_created);
     events
-}
-
-/// Get Hyper-V boot event logs for a VM
-pub async fn hyperv_boot_events(
-    vmid: &Guid,
-    start_time: &Timestamp,
-) -> anyhow::Result<Vec<WinEvent>> {
-    let vmid = vmid.to_string();
-    run_get_winevent(
-        &[HYPERV_WORKER_TABLE],
-        &[],
-        Some(start_time),
-        Some(&vmid),
-        BOOT_EVENT_IDS,
-    )
-    .await
-}
-
-/// Get Hyper-V halt event logs for a VM
-pub async fn hyperv_halt_events(
-    vmid: &Guid,
-    start_time: &Timestamp,
-) -> anyhow::Result<Vec<WinEvent>> {
-    let vmid = vmid.to_string();
-    run_get_winevent(
-        &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
-        &[],
-        Some(start_time),
-        Some(&vmid),
-        HALT_EVENT_IDS,
-    )
-    .await
 }
 
 /// Get the IDs of the VM(s) with the specified name

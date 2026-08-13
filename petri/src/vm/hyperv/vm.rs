@@ -431,7 +431,7 @@ impl HyperVVM {
         let detail = events
             .iter()
             .map(|e| {
-                powershell::winevent_name(e.id)
+                powershell::winevent_name(&e.provider_name, e.id)
                     .map(|n| n.to_string())
                     .unwrap_or(e.id.to_string())
             })
