@@ -17,8 +17,10 @@ pub mod token {
     /// Written when the firmware version is unknown (e.g. after servicing).
     pub const HIBERNATED_UNKNOWN: u64 = 0x0100;
     /// Written on hibernate under firmware version 1.7.
+    #[expect(dead_code, reason = "reserved firmware version, not yet written")]
     pub const HIBERNATED_1_7: u64 = (1 << 8) | 7;
     /// Written on hibernate under firmware version 1.8.
+    #[expect(dead_code, reason = "reserved firmware version, not yet written")]
     pub const HIBERNATED_1_8: u64 = (1 << 8) | 8;
     /// Written on hibernate under firmware version 1.9.
     pub const HIBERNATED_1_9: u64 = (1 << 8) | 9;
@@ -48,7 +50,7 @@ pub async fn write_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
         tracing::error!(
             CVM_ALLOWED,
             error = &err as &dyn std::error::Error,
-            token,
+            token = format_args!("{token:#x}"),
             "failed to write hibernate token"
         );
     }
@@ -77,9 +79,9 @@ pub async fn delete_token(vmgs_client: &vmgs_broker::VmgsClient) {
 /// behind.
 pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
     match vmgs_client.read_file(vmgs::FileId::HIBERNATION_TOKEN).await {
-        Ok(buf) => match buf.first_chunk::<8>() {
-            Some(bytes) => {
-                let token = u64::from_le_bytes(*bytes);
+        Ok(buf) => match <[u8; 8]>::try_from(buf.as_slice()) {
+            Ok(bytes) => {
+                let token = u64::from_le_bytes(bytes);
                 tracing::info!(
                     CVM_ALLOWED,
                     token = format_args!("{token:#x}"),
@@ -87,7 +89,7 @@ pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
                 );
                 Some(token)
             }
-            None => {
+            Err(_) => {
                 tracing::warn!(
                     CVM_ALLOWED,
                     "hibernation enabled: corrupt hibernation token found"
@@ -155,9 +157,20 @@ mod tests {
     #[async_test]
     async fn read_corrupt_is_none(driver: DefaultDriver) {
         let (client, _task) = new_client(&driver).await;
-        // A token that is not exactly 8 bytes is treated as corrupt.
+        // A token shorter than 8 bytes is treated as corrupt.
         client
             .write_file(vmgs::FileId::HIBERNATION_TOKEN, vec![1, 2, 3])
+            .await
+            .unwrap();
+        assert_eq!(read_token(&client).await, None);
+    }
+
+    #[async_test]
+    async fn read_oversized_is_none(driver: DefaultDriver) {
+        let (client, _task) = new_client(&driver).await;
+        // A token longer than 8 bytes is also treated as corrupt.
+        client
+            .write_file(vmgs::FileId::HIBERNATION_TOKEN, vec![0; 16])
             .await
             .unwrap();
         assert_eq!(read_token(&client).await, None);
