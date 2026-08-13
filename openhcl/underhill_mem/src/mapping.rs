@@ -460,7 +460,6 @@ impl GuestMemoryBitmap {
             for gpn in
                 unaligned_range.start() / PAGE_SIZE as u64..unaligned_range.end() / PAGE_SIZE as u64
             {
-                // TODO: use `fill_at` for the aligned part of the range.
                 let mut b = 0;
                 self.bitmap
                     .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
@@ -734,26 +733,8 @@ impl GuestMemoryMapping {
     /// Update the permission bitmaps to reflect the given flags.
     /// Panics if the range is outside of guest RAM.
     pub fn update_permission_bitmaps(&self, range: MemoryRange, flags: HvMapGpaFlags) {
-        if let Some(_lock) = self.lock_permission_bitmaps() {
-            self.update_permission_bitmaps_locked(range, flags);
-        }
-    }
-
-    pub(crate) fn lock_permission_bitmaps(&self) -> Option<MutexGuard<'_, ()>> {
-        self.permission_bitmaps
-            .as_ref()
-            .map(|bitmaps| bitmaps.permission_update_lock.lock())
-    }
-
-    /// Update the permission bitmaps to reflect the given flags.
-    ///
-    /// The caller must hold the permission bitmap update lock.
-    pub(crate) fn update_permission_bitmaps_locked(
-        &self,
-        range: MemoryRange,
-        flags: HvMapGpaFlags,
-    ) {
         if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
+            let _lock = bitmaps.permission_update_lock.lock();
             bitmaps.read_bitmap.update(range, flags.readable());
             bitmaps.write_bitmap.update(range, flags.writable());
             bitmaps

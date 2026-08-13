@@ -45,7 +45,6 @@ use registrar::RegisterMemory;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Instant;
 use thiserror::Error;
 use virt::IsolationType;
 use virt_mshv_vtl::GpnSource;
@@ -468,25 +467,12 @@ impl HardwareIsolatedMemoryProtector {
             // Only permissions imposed on VTL 0 guest memory are explicitly tracked
             // let start = Instant::now();
             self.vtl0.update_permission_bitmaps(range, protections);
-            // tracing::info!(
-            //     CVM_ALLOWED,
-            //     ?range,
-            //     ?target_vtl,
-            //     elapsed = ?start.elapsed(),
-            //     "updated VTL permission bitmaps"
-            // );
         }
-        // let start = Instant::now();
+
         let result = self
             .acceptor
             .apply_protections(range, target_vtl, protections);
-        // tracing::info!(
-        //     CVM_ALLOWED,
-        //     ?range,
-        //     ?target_vtl,
-        //     elapsed = ?start.elapsed(),
-        //     "applied VTL protections"
-        // );
+
         result
     }
 
@@ -863,128 +849,53 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             }
         }
 
-        // Apply default protections to overlay pages first
-        {
-            const BITMAP_BYTE_GRANULARITY: u64 = PAGE_SIZE as u64 * 8; // TODO: don't magic number this
+        tracing::trace!("Applying default vtl protections.");
 
-            let _span =
-                tracing::info_span!("applying default vtl protections", CVM_ALLOWED).entered();
-            tracing::info!("logging applying default vtl protections");
-            let mut aligned_ranges = Vec::new();
+        let protect_subrange = move |subrange: MemoryRange| {
+            self.apply_protections(
+                subrange,
+                target_vtl,
+                vtl_protections,
+                GpnSource::GuestMemory,
+            )
+            .unwrap();
+        };
 
-            let _permission_bitmap_lock = (target_vtl == GuestVtl::Vtl0)
-                .then(|| self.vtl0.lock_permission_bitmaps())
-                .flatten();
+        // Handle overlay pages first
+        for source_range in ranges {
+            let mut range_queue = VecDeque::new();
+            range_queue.push_back(source_range);
 
-            let protect_subrange = move |subrange: MemoryRange| {
-                ////////
-                // self.apply_protections(
-                //     subrange,
-                //     target_vtl,
-                //     vtl_protections,
-                //     GpnSource::GuestMemory,
-                // )
-                // .unwrap();
-                ////////
-
-                if target_vtl == GuestVtl::Vtl0 {
-                    // let start = Instant::now();
-                    self.vtl0
-                        .update_permission_bitmaps_locked(subrange, vtl_protections);
-                    // tracing::info!(
-                    //     CVM_ALLOWED,
-                    //     range = ?subrange,
-                    //     ?target_vtl,
-                    //     elapsed = ?start.elapsed(),
-                    //     "updated VTL permission bitmaps"
-                    // );
+            'outer: while let Some(range) = range_queue.pop_front() {
+                for overlay_page in inner.overlay_pages[target_vtl].iter_mut() {
+                    let overlay_addr = overlay_page.gpn * HV_PAGE_SIZE;
+                    if range.contains_addr(overlay_addr) {
+                        // If the overlay page is within the range, update the
+                        // permissions that will be restored when it is unlocked.
+                        overlay_page.previous_permissions = vtl_protections;
+                        // And split the range around it.
+                        let (left, right_with_overlay) =
+                            range.split_at_offset(range.offset_of(overlay_addr).unwrap());
+                        let (overlay, right) = right_with_overlay.split_at_offset(HV_PAGE_SIZE);
+                        debug_assert_eq!(overlay.start_4k_gpn(), overlay_page.gpn);
+                        debug_assert_eq!(overlay.len(), HV_PAGE_SIZE);
+                        if !left.is_empty() {
+                            range_queue.push_back(left);
+                        }
+                        if !right.is_empty() {
+                            range_queue.push_back(right);
+                        }
+                        continue 'outer;
+                    }
                 }
 
-                // let start = Instant::now();
-                let result = self
-                    .acceptor
-                    .apply_protections(subrange, target_vtl, vtl_protections);
-                // tracing::info!(
-                //     CVM_ALLOWED,
-                //     range = ?subrange,
-                //     ?target_vtl,
-                //     elapsed = ?start.elapsed(),
-                //     "applied VTL protections"
-                // );
-                result.unwrap();
-            };
-
-            // tracing::info!("handling overlay pages for default vtl protections");
-            for source_range in ranges {
-                let mut range_queue = VecDeque::new();
-                range_queue.push_back(source_range);
-
-                'outer: while let Some(range) = range_queue.pop_front() {
-                    for overlay_page in inner.overlay_pages[target_vtl].iter_mut() {
-                        let overlay_addr = overlay_page.gpn * HV_PAGE_SIZE;
-                        if range.contains_addr(overlay_addr) {
-                            // If the overlay page is within the range, update the
-                            // permissions that will be restored when it is unlocked.
-                            overlay_page.previous_permissions = vtl_protections;
-                            // And split the range around it.
-                            let (left, right_with_overlay) =
-                                range.split_at_offset(range.offset_of(overlay_addr).unwrap());
-                            let (overlay, right) = right_with_overlay.split_at_offset(HV_PAGE_SIZE);
-                            debug_assert_eq!(overlay.start_4k_gpn(), overlay_page.gpn);
-                            debug_assert_eq!(overlay.len(), HV_PAGE_SIZE);
-                            if !left.is_empty() {
-                                range_queue.push_back(left);
-                            }
-                            if !right.is_empty() {
-                                range_queue.push_back(right);
-                            }
-                            continue 'outer;
-                        }
-                    }
-
-                    ///////////////
-                    // std::thread::scope(|scope| {
-                    //     parallelize_mem_op(range, thread_count, scope, protect_subrange);
-                    // });
-                    ///////////////
-
-                    let aligned = range.aligned_subrange(BITMAP_BYTE_GRANULARITY);
-                    for unaligned in memory_range::subtract_ranges([range], [aligned]) {
-                        if unaligned.is_empty() {
-                            continue;
-                        }
-
-                        // tracing::info!(
-                        //     "applying default vtl protections to unaligned range: {:?}",
-                        //     unaligned
-                        // );
-                        protect_subrange(unaligned);
-                        // tracing::info!(
-                        //     "finished applying default vtl protections to unaligned range: {:?}",
-                        //     unaligned
-                        // );
-                    }
-
-                    if !aligned.is_empty() {
-                        aligned_ranges.push(aligned);
-                    }
-                }
-            }
-            // tracing::info!("finished handling overlay pages for default vtl protections");
-
-            // tracing::info!("applying default vtl protections to aligned ranges in parallel");
-            std::thread::scope(|scope| {
-                for range in aligned_ranges {
+                std::thread::scope(|scope| {
                     parallelize_mem_op(range, thread_count, scope, protect_subrange);
-                }
-            });
-            // tracing::info!(
-            //     "finished applying default vtl protections to aligned ranges in parallel"
-            // );
-
-            tracing::info!("logging finished applying default vtl protections");
+                });
+            }
         }
-        // tracing::debug!("Finished applying default vtl protections");
+
+        tracing::debug!("Finished applying default vtl protections.");
 
         // Flush any threads accessing pages that had their VTL protections
         // changed.
