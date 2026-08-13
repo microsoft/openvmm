@@ -31,18 +31,13 @@ impl From<Vec<u8>> for BaseTemplateJson {
     }
 }
 
-/// Identity of a built-in Secure Boot template.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Protobuf)]
-pub struct BaseTemplateIdentity {
-    pub guid: Guid,
-    pub version: u16,
-}
-
-/// A complete base template deferred as raw JSON with its identity.
+/// A complete base template deferred as raw JSON.
+///
+/// This envelope leaves room for adding reliably sourced template metadata
+/// without changing the UEFI configuration interface.
 #[derive(Debug, Clone, Protobuf)]
 pub struct BaseTemplate {
     pub json: BaseTemplateJson,
-    pub identity: BaseTemplateIdentity,
 }
 
 /// A customer-provided UEFI variable delta deferred as raw JSON.

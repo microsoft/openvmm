@@ -3679,7 +3679,6 @@ name = "hyperv_secure_boot_templates"
 version = "0.0.0"
 dependencies = [
  "firmware_uefi_custom_vars",
- "guid",
  "hyperv_uefi_custom_vars_json",
  "serde_json",
 ]
@@ -10667,7 +10666,6 @@ dependencies = [
  "guid",
  "hvs_file",
  "hyperv_ic_resources",
- "hyperv_secure_boot_templates",
  "initrd_cpio",
  "inspect",
  "jiff",

@@ -74,45 +74,20 @@ async fn create_uefi_vmgs(
     Ok((temp_dir, vmgs_path))
 }
 
-/// Wait for and validate the Secure Boot configuration and per-variable reports.
-async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
+/// Wait for and validate the Secure Boot variable reports.
+async fn verify_secure_boot_variable_reports<T: PetriVmmBackend>(
     vm: &PetriVm<T>,
-    custom_uefi_config_present: bool,
+    custom_uefi_present: bool,
 ) -> Result<(), anyhow::Error> {
     const EXPECTED_VARIABLES: [&str; 4] = ["PK", "KEK", "db", "dbx"];
 
-    let template_identity = hyperv_secure_boot_templates::MICROSOFT_UEFI_CA_IDENTITY;
     let mut kmsg = vm.kmsg().await?;
-    let mut template_identity_reported = false;
     let mut reported_variables = BTreeSet::new();
 
     while let Some(data) = kmsg.next().await {
         let data = data.context("reading kmsg")?;
         let message = kmsg::KmsgParsedEntry::new(&data).unwrap();
         let raw = message.message.as_raw();
-
-        if raw.contains("SecureBootConfig") {
-            assert!(
-                raw.contains(&format!("template_guid: {}", template_identity.guid)),
-                "unexpected Secure Boot template GUID: {raw}"
-            );
-            assert!(
-                raw.contains(&format!("template_version: {}", template_identity.version)),
-                "unexpected Secure Boot template version: {raw}"
-            );
-            assert!(
-                raw.contains(&format!(
-                    "custom_template_present: {custom_uefi_config_present}"
-                )),
-                "unexpected custom UEFI presence in config report: {raw}"
-            );
-            template_identity_reported = true;
-
-            if reported_variables.len() == EXPECTED_VARIABLES.len() {
-                return Ok(());
-            }
-            continue;
-        }
 
         if !raw.contains("SecureBootVar") {
             continue;
@@ -129,21 +104,23 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
             "Secure Boot variable is unexpectedly absent from NVRAM: {raw}"
         );
         assert!(
+            raw.contains(&format!("custom_uefi_present: {custom_uefi_present}")),
+            "unexpected custom UEFI presence in variable report: {raw}"
+        );
+        assert!(
             raw.contains("missing_entries: 0x0"),
             "baseline entries missing from report: {raw}"
         );
         reported_variables.insert(variable_name);
 
-        if template_identity_reported && reported_variables.len() == EXPECTED_VARIABLES.len() {
+        if reported_variables.len() == EXPECTED_VARIABLES.len() {
             return Ok(());
         }
     }
 
     let expected_variables = BTreeSet::from(EXPECTED_VARIABLES);
     let missing_variables: Vec<_> = expected_variables.difference(&reported_variables).collect();
-    anyhow::bail!(
-        "Secure Boot template identity reported: {template_identity_reported}; missing variable reports: {missing_variables:?}"
-    )
+    anyhow::bail!("missing Secure Boot variable reports: {missing_variables:?}")
 }
 
 /// Wait for a Secure Boot variable report and validate its NVRAM presence.
@@ -164,6 +141,10 @@ async fn verify_secure_boot_variable_presence<T: PetriVmmBackend>(
                 raw.contains(&format!("present_in_nvram: {present_in_nvram}")),
                 "unexpected Secure Boot variable presence: {raw}"
             );
+            anyhow::ensure!(
+                raw.contains("custom_uefi_present: true"),
+                "custom UEFI configuration not reported: {raw}"
+            );
             return Ok(());
         }
     }
@@ -171,8 +152,8 @@ async fn verify_secure_boot_variable_presence<T: PetriVmmBackend>(
     anyhow::bail!("Secure Boot variable report for {variable_name} was not observed")
 }
 
-/// Boot with optional custom UEFI configuration and verify its Secure Boot reports.
-async fn secure_boot_config_report_test<T: PetriVmmBackend>(
+/// Boot with optional custom UEFI configuration and verify its Secure Boot variable reports.
+async fn secure_boot_variable_report_test<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     vmgstool: &Path,
     custom_uefi_json: Option<&[u8]>,
@@ -189,7 +170,7 @@ async fn secure_boot_config_report_test<T: PetriVmmBackend>(
     let (vm, agent) = config.run().await?;
     CancelContext::new()
         .with_timeout(Duration::from_secs(60))
-        .until_cancelled(verify_secure_boot_config_reports(
+        .until_cancelled(verify_secure_boot_variable_reports(
             &vm,
             custom_uefi_json.is_some(),
         ))
@@ -209,11 +190,11 @@ async fn secure_boot_config_report_test<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE]
 )]
-async fn secure_boot_config_report_without_custom_uefi<T: PetriVmmBackend>(
+async fn secure_boot_variable_reports_without_custom_uefi<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
 ) -> Result<(), anyhow::Error> {
-    secure_boot_config_report_test(config, vmgstool.get(), None).await
+    secure_boot_variable_report_test(config, vmgstool.get(), None).await
 }
 
 #[vmm_test(
@@ -222,11 +203,11 @@ async fn secure_boot_config_report_without_custom_uefi<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE]
 )]
-async fn secure_boot_config_report_with_custom_uefi<T: PetriVmmBackend>(
+async fn secure_boot_variable_reports_with_custom_uefi<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
 ) -> Result<(), anyhow::Error> {
-    secure_boot_config_report_test(config, vmgstool.get(), Some(APPEND_NON_SIGNATURE_VAR_JSON))
+    secure_boot_variable_report_test(config, vmgstool.get(), Some(APPEND_NON_SIGNATURE_VAR_JSON))
         .await
 }
 

@@ -11,24 +11,9 @@
 //! gates! Unused templates should be stripped from the final binary by the
 //! linker.
 
-use firmware_uefi_custom_vars::BaseTemplateIdentity;
-
-// Keep these synchronized with the corresponding OS `TemplateRecipes.xml`
-// entries. `ConvertVariables.ps1 -TemplateName ...` prints the GUID and version
-// declarations when template data is regenerated.
-pub const MICROSOFT_WINDOWS_IDENTITY: BaseTemplateIdentity = BaseTemplateIdentity {
-    guid: guid::guid!("1734c6e8-3154-4dda-ba5f-a874cc483422"),
-    version: 4,
-};
-
-pub const MICROSOFT_UEFI_CA_IDENTITY: BaseTemplateIdentity = BaseTemplateIdentity {
-    guid: guid::guid!("272e7447-90a4-4563-a4b9-8e4ab00526ce"),
-    version: 4,
-};
-
 macro_rules! include_templates {
     (
-        $(($fn_name:ident, $path:literal, $identity:expr),)*
+        $(($fn_name:ident, $path:literal),)*
     ) => {
         $(
             pub fn $fn_name() -> firmware_uefi_custom_vars::BaseTemplate {
@@ -44,7 +29,6 @@ macro_rules! include_templates {
                 // JSON files), it may result in a nice .rodata size decrease.
                 firmware_uefi_custom_vars::BaseTemplate {
                     json: include_bytes!(concat!(env!("OUT_DIR"), "/", $path)).to_vec().into(),
-                    identity: $identity,
                 }
             }
         )*
@@ -55,7 +39,6 @@ macro_rules! include_templates {
                 #[test]
                 fn $fn_name() {
                     let template = super::$fn_name();
-                    assert_eq!(template.identity, $identity);
                     hyperv_uefi_custom_vars_json::parse_template_json(
                         template.json.as_bytes()
                     ).unwrap();
@@ -68,14 +51,14 @@ macro_rules! include_templates {
 
 pub mod aarch64 {
     include_templates! {
-        (microsoft_windows, "aarch64/MicrosoftWindows_Template.json", crate::MICROSOFT_WINDOWS_IDENTITY),
-        (microsoft_uefi_ca, "aarch64/MicrosoftUEFI_Template.json", crate::MICROSOFT_UEFI_CA_IDENTITY),
+        (microsoft_windows, "aarch64/MicrosoftWindows_Template.json"),
+        (microsoft_uefi_ca, "aarch64/MicrosoftUEFI_Template.json"),
     }
 }
 
 pub mod x64 {
     include_templates! {
-        (microsoft_windows, "x64/MicrosoftWindows_Template.json", crate::MICROSOFT_WINDOWS_IDENTITY),
-        (microsoft_uefi_ca, "x64/MicrosoftUEFI_Template.json", crate::MICROSOFT_UEFI_CA_IDENTITY),
+        (microsoft_windows, "x64/MicrosoftWindows_Template.json"),
+        (microsoft_uefi_ca, "x64/MicrosoftUEFI_Template.json"),
     }
 }

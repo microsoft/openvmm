@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 firmware_uefi_custom_vars.workspace = true
-guid.workspace = true
 
 [build-dependencies]
 serde_json = { workspace = true, features = ["std"] }
