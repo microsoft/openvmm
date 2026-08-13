@@ -70,6 +70,7 @@ type SignatureSet = BTreeSet<SignatureValue>;
 /// Secure Boot telemetry schema mirrored by legacy HCL's `UefiNvramStore.cpp`.
 struct SecureBootVariableReport<'a> {
     name: &'a ucs2::Ucs2LeSlice,
+    present_in_nvram: bool,
     loaded_bytes: usize,
     loaded_entries: usize,
     template_entries: usize,
@@ -80,6 +81,7 @@ impl Debug for SecureBootVariableReport<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             name,
+            present_in_nvram,
             loaded_bytes,
             loaded_entries,
             template_entries,
@@ -89,6 +91,7 @@ impl Debug for SecureBootVariableReport<'_> {
         formatter
             .debug_struct("SecureBootVariable")
             .field("name", name)
+            .field("present_in_nvram", present_in_nvram)
             .field("loaded_bytes", &format_args!("{loaded_bytes:#x}"))
             .field("loaded_entries", &format_args!("{loaded_entries:#x}"))
             .field("template_entries", &format_args!("{template_entries:#x}"))
@@ -331,6 +334,7 @@ impl NvramServices {
             // The variable exists in NVRAM but is empty
             Ok((_, data)) if data.is_empty() => Some(SecureBootVariableReport {
                 name,
+                present_in_nvram: true,
                 loaded_bytes: 0,
                 loaded_entries: 0,
                 template_entries: base_signatures.len(),
@@ -341,6 +345,7 @@ impl NvramServices {
                 // The data is valid
                 Ok(loaded_signatures) => Some(SecureBootVariableReport {
                     name,
+                    present_in_nvram: true,
                     loaded_bytes: data.len(),
                     loaded_entries: loaded_signatures.len(),
                     template_entries: base_signatures.len(),
@@ -358,7 +363,14 @@ impl NvramServices {
                 }
             },
             // The variable does not exist in NVRAM
-            Err((EfiStatus::NOT_FOUND, _)) => None,
+            Err((EfiStatus::NOT_FOUND, _)) => Some(SecureBootVariableReport {
+                name,
+                present_in_nvram: false,
+                loaded_bytes: 0,
+                loaded_entries: 0,
+                template_entries: base_signatures.len(),
+                missing_entries: base_signatures.len(),
+            }),
             // The variable exists in NVRAM but cannot be read for some other reason
             Err((status, error)) => {
                 tracing::warn!(
@@ -816,6 +828,7 @@ mod tests {
 
         let report = SecureBootVariableReport {
             name: vars::KEK().1,
+            present_in_nvram: false,
             loaded_bytes: usize::MAX,
             loaded_entries: usize::MAX,
             template_entries: usize::MAX,
@@ -849,18 +862,22 @@ mod tests {
     }
 
     #[async_test]
-    async fn missing_secure_boot_variable_has_no_report() {
+    async fn missing_secure_boot_variable_is_reported_as_not_present() {
         let mut nvram = nvram_services(InMemoryNvram::new());
         let template_signatures = [Signature::X509(vec![firmware_uefi_custom_vars::X509Cert(
             b"cert1".to_vec(),
         )])];
 
-        assert!(
-            nvram
-                .get_secure_boot_variable_report(vars::DB(), &template_signatures)
-                .await
-                .is_none()
-        );
+        let report = nvram
+            .get_secure_boot_variable_report(vars::DB(), &template_signatures)
+            .await
+            .unwrap();
+
+        assert!(!report.present_in_nvram);
+        assert_eq!(report.loaded_bytes, 0);
+        assert_eq!(report.loaded_entries, 0);
+        assert_eq!(report.template_entries, 1);
+        assert_eq!(report.missing_entries, 1);
     }
 
     #[async_test]
@@ -882,6 +899,7 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(report.present_in_nvram);
         assert_eq!(report.loaded_bytes, 0);
         assert_eq!(report.loaded_entries, 0);
         assert_eq!(report.template_entries, 2);

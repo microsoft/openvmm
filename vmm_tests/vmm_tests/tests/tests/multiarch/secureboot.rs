@@ -125,6 +125,10 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
         };
 
         assert!(
+            raw.contains("present_in_nvram: true"),
+            "Secure Boot variable is unexpectedly absent from NVRAM: {raw}"
+        );
+        assert!(
             raw.contains("missing_entries: 0x0"),
             "baseline entries missing from report: {raw}"
         );
@@ -140,6 +144,31 @@ async fn verify_secure_boot_config_reports<T: PetriVmmBackend>(
     anyhow::bail!(
         "Secure Boot template identity reported: {template_identity_reported}; missing variable reports: {missing_variables:?}"
     )
+}
+
+/// Wait for a Secure Boot variable report and validate its NVRAM presence.
+async fn verify_secure_boot_variable_presence<T: PetriVmmBackend>(
+    vm: &PetriVm<T>,
+    variable_name: &str,
+    present_in_nvram: bool,
+) -> Result<(), anyhow::Error> {
+    let mut kmsg = vm.kmsg().await?;
+
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let message = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        let raw = message.message.as_raw();
+
+        if raw.contains("SecureBootVariable") && raw.contains(&format!("name: {variable_name:?}")) {
+            anyhow::ensure!(
+                raw.contains(&format!("present_in_nvram: {present_in_nvram}")),
+                "unexpected Secure Boot variable presence: {raw}"
+            );
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Secure Boot variable report for {variable_name} was not observed")
 }
 
 /// Boot with optional custom UEFI configuration and verify its Secure Boot reports.
@@ -311,7 +340,7 @@ async fn custom_uefi_replace_defaults<T: PetriVmmBackend>(
     Ok(())
 }
 
-/// Verify that replacing PK, KEK, and db while omitting dbx is accepted.
+/// Verify that retaining the default PK, KEK, and db while emptying dbx is reported.
 #[vmm_test(
     // TODO: Re-enable once direct OpenVMM x64 CI jobs provide vmgstool.
     // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
@@ -331,6 +360,7 @@ async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_persistent_vmgs(&vmgs_path)
+        .with_secure_boot()
         .with_custom_uefi_json(REPLACE_WITHOUT_DBX_JSON)
         .run()
         .await?;
@@ -342,6 +372,19 @@ async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
         .output()
         .await?;
     assert!(pk_exists.status.success(), "replacement PK should exist");
+
+    let dbx_path = format!("/sys/firmware/efi/efivars/dbx-{IMAGE_SECURITY_DATABASE_GUID}");
+    let dbx_exists = cmd!(shell, "sudo")
+        .args(["test", "-e", &dbx_path])
+        .output()
+        .await?;
+    assert!(!dbx_exists.status.success(), "dbx should not exist");
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(verify_secure_boot_variable_presence(&vm, "dbx", false))
+        .await
+        .context("absent dbx report was not observed within 60 seconds")??;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
