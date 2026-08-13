@@ -29,7 +29,7 @@ pub const NEXTEST: &str = "0.9.133";
 pub const NODEJS: &str = "24.x";
 // None disables hcl-dev builds and tests; Some(version) enables them.
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.2";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.3";
 pub const OPENVMM_DEPS: &str = "0.3.0-116";
 pub const PROTOC: &str = "27.1";
 
