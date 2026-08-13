@@ -144,7 +144,7 @@ pub(crate) struct LoadedVm {
     /// The various guest memory objects.
     pub memory: underhill_mem::MemoryMappings,
     pub firmware_type: FirmwareType,
-    pub hibernate_token: Option<u64>,
+    pub hibernate_token: Option<crate::hibernate::HibernateToken>,
     pub isolation: IsolationType,
     // contain task handles which must be kept live
     pub chipset_devices: ChipsetDevices,
@@ -989,7 +989,9 @@ impl LoadedVm {
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 hibernate: self
                     .hibernate_token
-                    .map(|token| servicing::HibernateSavedState { token }),
+                    .map(|token| servicing::HibernateSavedState {
+                        token: token.into(),
+                    }),
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,

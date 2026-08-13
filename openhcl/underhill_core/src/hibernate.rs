@@ -1,31 +1,72 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! OpenHCL hibernate token handling: the values written to
+//! OpenHCL hibernate token handling: the [`HibernateToken`] recorded in
 //! [`vmgs::FileId::HIBERNATION_TOKEN`] and helpers to read, write, and delete
-//! it. Tokens encode the firmware version in 16 bits: the high 8 bits are the
-//! major version and the low 8 bits are the minor version.
+//! it.
 
 use cvm_tracing::CVM_ALLOWED;
+use std::fmt;
 use vmgs_broker::VmgsBrokerError;
 use vmgs_broker::VmgsClientError;
 
-/// Hibernate token values written to [`vmgs::FileId::HIBERNATION_TOKEN`].
-pub mod token {
-    /// Written on a clean power off / reset; the guest is not hibernated.
-    pub const NONE: u64 = 0x0;
+/// The hibernate marker recorded in [`vmgs::FileId::HIBERNATION_TOKEN`],
+/// decoupled from its on-disk encoding.
+///
+/// Stored as an 8-byte little-endian value. `0` is [`Self::NotHibernated`];
+/// `1..=0xFFFF` is a firmware version (major in the high byte, minor in the low
+/// byte); any other value is kept verbatim as [`Self::Other`] so the full `u64`
+/// round-trips.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum HibernateToken {
+    /// Not hibernated; written on a clean power off / reset.
+    NotHibernated,
+    /// Hibernated under firmware version `major.minor`.
+    Hibernated { major: u8, minor: u8 },
+    /// An unrecognized value, preserved verbatim.
+    Other(u64),
+}
+
+impl HibernateToken {
+    /// Written when the current firmware hibernates; bump per release.
+    pub const CURRENT: Self = Self::Hibernated { major: 1, minor: 9 };
     /// Written when the firmware version is unknown (e.g. after servicing).
-    pub const HIBERNATED_UNKNOWN: u64 = 0x0100;
-    /// Written on hibernate under firmware version 1.7.
-    #[expect(dead_code, reason = "reserved firmware version, not yet written")]
-    pub const HIBERNATED_1_7: u64 = (1 << 8) | 7;
-    /// Written on hibernate under firmware version 1.8.
-    #[expect(dead_code, reason = "reserved firmware version, not yet written")]
-    pub const HIBERNATED_1_8: u64 = (1 << 8) | 8;
-    /// Written on hibernate under firmware version 1.9.
-    pub const HIBERNATED_1_9: u64 = (1 << 8) | 9;
-    /// The current firmware version's token, written on hibernate.
-    pub const DEFAULT: u64 = HIBERNATED_1_9;
+    pub const UNKNOWN: Self = Self::Hibernated { major: 1, minor: 0 };
+}
+
+impl From<HibernateToken> for u64 {
+    fn from(token: HibernateToken) -> Self {
+        match token {
+            HibernateToken::NotHibernated => 0,
+            HibernateToken::Hibernated { major, minor } => {
+                (u64::from(major) << 8) | u64::from(minor)
+            }
+            HibernateToken::Other(raw) => raw,
+        }
+    }
+}
+
+impl From<u64> for HibernateToken {
+    fn from(raw: u64) -> Self {
+        match raw {
+            0 => Self::NotHibernated,
+            1..=0xFFFF => Self::Hibernated {
+                major: (raw >> 8) as u8,
+                minor: raw as u8,
+            },
+            raw => Self::Other(raw),
+        }
+    }
+}
+
+impl fmt::Display for HibernateToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotHibernated => f.write_str("not-hibernated"),
+            Self::Hibernated { major, minor } => write!(f, "{major}.{minor}"),
+            Self::Other(raw) => write!(f, "{raw:#x}"),
+        }
+    }
 }
 
 /// Hibernation state the halt task needs to persist the token across a power
@@ -34,23 +75,23 @@ pub struct HaltState {
     /// VMGS client used to persist the hibernate token.
     pub vmgs_client: vmgs_broker::VmgsClient,
     /// Token to write on hibernate.
-    pub current_token: u64,
+    pub current_token: HibernateToken,
 }
 
 /// Best-effort write of an 8-byte hibernate token to the VMGS. Failures are
 /// logged but never block the power transition.
-pub async fn write_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
+pub async fn write_token(vmgs_client: &vmgs_broker::VmgsClient, token: HibernateToken) {
     if let Err(err) = vmgs_client
         .write_file(
             vmgs::FileId::HIBERNATION_TOKEN,
-            token.to_le_bytes().to_vec(),
+            u64::from(token).to_le_bytes().to_vec(),
         )
         .await
     {
         tracing::error!(
             CVM_ALLOWED,
             error = &err as &dyn std::error::Error,
-            token = format_args!("{token:#x}"),
+            %token,
             "failed to write hibernate token"
         );
     }
@@ -77,14 +118,14 @@ pub async fn delete_token(vmgs_client: &vmgs_broker::VmgsClient) {
 
 /// At boot, record which hibernate token (if any) the previous session left
 /// behind.
-pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
+pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<HibernateToken> {
     match vmgs_client.read_file(vmgs::FileId::HIBERNATION_TOKEN).await {
         Ok(buf) => match <[u8; 8]>::try_from(buf.as_slice()) {
             Ok(bytes) => {
-                let token = u64::from_le_bytes(bytes);
+                let token = HibernateToken::from(u64::from_le_bytes(bytes));
                 tracing::info!(
                     CVM_ALLOWED,
-                    token = format_args!("{token:#x}"),
+                    %token,
                     "hibernation enabled: hibernation token found"
                 );
                 Some(token)
@@ -141,17 +182,79 @@ mod tests {
     #[async_test]
     async fn write_read_delete(driver: DefaultDriver) {
         let (client, _task) = new_client(&driver).await;
-        write_token(&client, token::DEFAULT).await;
-        assert_eq!(read_token(&client).await, Some(token::DEFAULT));
+        write_token(&client, HibernateToken::CURRENT).await;
+        assert_eq!(read_token(&client).await, Some(HibernateToken::CURRENT));
         delete_token(&client).await;
         assert_eq!(read_token(&client).await, None);
     }
 
     #[async_test]
-    async fn read_none_value(driver: DefaultDriver) {
+    async fn write_not_hibernated(driver: DefaultDriver) {
         let (client, _task) = new_client(&driver).await;
-        write_token(&client, token::NONE).await;
-        assert_eq!(read_token(&client).await, Some(token::NONE));
+        write_token(&client, HibernateToken::NotHibernated).await;
+        assert_eq!(
+            read_token(&client).await,
+            Some(HibernateToken::NotHibernated)
+        );
+    }
+
+    #[test]
+    fn constants_encode_as_expected() {
+        assert_eq!(u64::from(HibernateToken::NotHibernated), 0);
+        assert_eq!(u64::from(HibernateToken::CURRENT), 0x0109);
+        assert_eq!(u64::from(HibernateToken::UNKNOWN), 0x0100);
+    }
+
+    #[test]
+    fn classification_boundaries() {
+        // 0 is the not-hibernated marker.
+        assert_eq!(HibernateToken::from(0), HibernateToken::NotHibernated);
+        // 1..=0xFFFF decode as firmware versions.
+        assert_eq!(
+            HibernateToken::from(1),
+            HibernateToken::Hibernated { major: 0, minor: 1 }
+        );
+        assert_eq!(
+            HibernateToken::from(0xFFFF),
+            HibernateToken::Hibernated {
+                major: 0xFF,
+                minor: 0xFF
+            }
+        );
+        // The first value past the version range falls through to Other.
+        assert_eq!(
+            HibernateToken::from(0x1_0000),
+            HibernateToken::Other(0x1_0000)
+        );
+        assert_eq!(
+            HibernateToken::from(u64::MAX),
+            HibernateToken::Other(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn all_versions_round_trip() {
+        // Exhaustively cover the entire firmware-version range.
+        for raw in 1..=0xFFFFu64 {
+            let token = HibernateToken::from(raw);
+            assert!(matches!(token, HibernateToken::Hibernated { .. }));
+            assert_eq!(u64::from(token), raw);
+        }
+    }
+
+    #[test]
+    fn other_values_round_trip() {
+        // Spot-check a spread of values above the version range, including the
+        // boundary, powers of two, and the maximum.
+        let mut cases = vec![0x1_0000u64, 0x1_0001, u64::MAX, u64::MAX - 1];
+        for shift in 16..64 {
+            cases.push(1u64 << shift);
+        }
+        for raw in cases {
+            let token = HibernateToken::from(raw);
+            assert_eq!(token, HibernateToken::Other(raw));
+            assert_eq!(u64::from(token), raw);
+        }
     }
 
     #[async_test]

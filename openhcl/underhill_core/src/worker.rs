@@ -3670,7 +3670,7 @@ async fn new_underhill_vm(
     // cycle. On a servicing restore the VMGS token was already consumed at the
     // original cold boot, so recover it from saved state; otherwise read (and
     // consume) it from VMGS.
-    let current_hibernate_token: Option<u64> = if !dps.general.hibernation_enabled {
+    let current_hibernate_token = if !dps.general.hibernation_enabled {
         None
     } else if is_restoring {
         // Older saved state may not carry hibernation state; treat as unknown.
@@ -3678,17 +3678,19 @@ async fn new_underhill_vm(
             servicing_state
                 .hibernate
                 .flatten()
-                .map_or(hibernate::token::HIBERNATED_UNKNOWN, |h| h.token),
+                .map_or(hibernate::HibernateToken::UNKNOWN, |h| h.token.into()),
         )
     } else if let Some(vmgs_client) = vmgs_client.as_ref() {
-        if let Some(read) = hibernate::read_token(vmgs_client).await {
-            // A non-NONE token that differs from the current version is a resume
-            // under different firmware; warn but don't honor it yet.
-            if read != hibernate::token::NONE && read != hibernate::token::DEFAULT {
+        if let Some(token @ hibernate::HibernateToken::Hibernated { .. }) =
+            hibernate::read_token(vmgs_client).await
+        {
+            // A resume under a different firmware version; warn but don't honor
+            // it yet.
+            if token != hibernate::HibernateToken::CURRENT {
                 tracing::warn!(
                     CVM_ALLOWED,
-                    token = format_args!("{read:#x}"),
-                    default = format_args!("{:#x}", hibernate::token::DEFAULT),
+                    resume = %token,
+                    current = %hibernate::HibernateToken::CURRENT,
                     "hibernation resume token does not match the current firmware version"
                 );
             }
@@ -3696,7 +3698,7 @@ async fn new_underhill_vm(
         // Consume any token, valid or corrupt, so it is not re-read next boot.
         hibernate::delete_token(vmgs_client).await;
         // No overload support yet; always use the current firmware version.
-        Some(hibernate::token::DEFAULT)
+        Some(hibernate::HibernateToken::CURRENT)
     } else {
         None
     };
@@ -4026,16 +4028,22 @@ async fn halt_task(
                 HaltRequest::PowerOff => {
                     // Record the powered-off state so a later boot is not a resume.
                     if let Some(hibernate_halt) = &hibernate_halt {
-                        hibernate::write_token(&hibernate_halt.vmgs_client, hibernate::token::NONE)
-                            .await;
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate::HibernateToken::NotHibernated,
+                        )
+                        .await;
                     }
                     get_client.send_power_off()
                 }
                 HaltRequest::Reset => {
                     // Record the powered-off state so a later boot is not a resume.
                     if let Some(hibernate_halt) = &hibernate_halt {
-                        hibernate::write_token(&hibernate_halt.vmgs_client, hibernate::token::NONE)
-                            .await;
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate::HibernateToken::NotHibernated,
+                        )
+                        .await;
                     }
                     get_client.send_reset()
                 }
