@@ -146,7 +146,6 @@ blobtypes! {
 pub enum BlobStructureType {
     StructureCount = 0x00,
     BiosInformation = 0x01,
-    #[deprecated(note = "use AcpiTable")]
     Srat = 0x02,
     MemoryMap = 0x03,
     Entropy = 0x04,
@@ -169,7 +168,6 @@ pub enum BlobStructureType {
     Aarch64Mpidr = 0x15,
     AcpiTable = 0x16,
     NvdimmCount = 0x17,
-    #[deprecated(note = "use AcpiTable")]
     Madt = 0x18,
     VpciInstanceFilter = 0x19,
     SmbiosSystemManufacturer = 0x1A,
@@ -178,20 +176,13 @@ pub enum BlobStructureType {
     SmbiosSystemSkuNumber = 0x1D,
     SmbiosSystemFamily = 0x1E,
     SmbiosMemoryDeviceSerialNumber = 0x1F,
-    #[deprecated(note = "use AcpiTable")]
     Slit = 0x20,
-    #[deprecated(note = "use AcpiTable")]
     Aspt = 0x21,
-    #[deprecated(note = "use AcpiTable")]
     Pptt = 0x22,
     Gic = 0x23,
-    #[deprecated(note = "use AcpiTable")]
     Mcfg = 0x24,
-    #[deprecated(note = "use AcpiTable")]
     Ssdt = 0x25,
-    #[deprecated(note = "use AcpiTable")]
     Hmat = 0x26,
-    #[deprecated(note = "use AcpiTable")]
     Iort = 0x27,
     PcieBarApertures = 0x28,
 }
@@ -469,7 +460,7 @@ mod tests {
 
         let data = {
             let mut blob = Blob::new();
-            blob.add_raw(BlobStructureType::AcpiTable, &madt);
+            blob.add_raw(BlobStructureType::Madt, &madt);
             blob.complete()
         };
 
@@ -504,7 +495,7 @@ mod tests {
         let structure = &data[2 * size_of::<Header>() + size_of::<StructureCount>()..][..length];
 
         let header_exp = Header {
-            structure_type: 0x16,
+            structure_type: 0x18,
             length: (size_of::<Header>() + padded_length) as u32,
         };
         let structure_exp = &madt[..];
@@ -629,8 +620,7 @@ mod tests {
 
         let data = {
             let mut blob = Blob::new();
-            blob.add_raw(BlobStructureType::AcpiTable, &madt)
-                .add(&procinfo);
+            blob.add_raw(BlobStructureType::Madt, &madt).add(&procinfo);
             blob.complete()
         };
 
@@ -668,7 +658,7 @@ mod tests {
             [..PADDED_LENGTH - LENGTH];
 
         let header_exp = Header {
-            structure_type: 0x16,
+            structure_type: 0x18,
             length: (size_of::<Header>() + PADDED_LENGTH) as u32,
         };
         let structure_exp = &madt[..];

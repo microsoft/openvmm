@@ -3226,27 +3226,13 @@ impl LoadedVmInner {
                 enable_vmbus,
                 force_dma_bounce,
             } => {
-                let acpi_tables = [
-                    // MADT
-                    Some(acpi_builder.build_madt()),
-                    // SRAT
-                    Some(acpi_builder.build_srat()),
-                    // SLIT
-                    acpi_builder.build_slit(),
-                    // MCFG
-                    (!self.pcie_host_bridges.is_empty()).then(|| acpi_builder.build_mcfg()),
-                    // PPTT
-                    cache_topology.is_some().then(|| acpi_builder.build_pptt()),
-                    // IORT
-                    acpi_builder.build_iort(),
-                    // IVRS (AMD IOMMU)
-                    acpi_builder.build_ivrs(),
-                    // DMAR (Intel VT-d)
-                    acpi_builder.build_dmar(),
-                ];
-                let acpi_tables: Vec<_> =
-                    acpi_tables.iter().flatten().map(|t| t.as_ref()).collect();
-
+                let madt = acpi_builder.build_madt();
+                let srat = acpi_builder.build_srat();
+                let slit = acpi_builder.build_slit();
+                let mcfg = (!self.pcie_host_bridges.is_empty()).then(|| acpi_builder.build_mcfg());
+                let pptt = cache_topology.is_some().then(|| acpi_builder.build_pptt());
+                let ivrs = acpi_builder.build_ivrs();
+                let dmar = acpi_builder.build_dmar();
                 let load_settings = super::vm_loaders::uefi::UefiLoadSettings {
                     debugging: enable_debugging,
                     memory_protections: enable_memory_protections,
@@ -3271,7 +3257,13 @@ impl LoadedVmInner {
                         pcie_host_bridges: &self.pcie_host_bridges,
                         settings: load_settings,
                         chipset_mmio: &self.chipset_mmio,
-                        acpi_tables: &acpi_tables,
+                        madt: &madt,
+                        srat: &srat,
+                        slit: slit.as_deref(),
+                        mcfg: mcfg.as_deref(),
+                        pptt: pptt.as_deref(),
+                        ivrs: ivrs.as_deref(),
+                        dmar: dmar.as_deref(),
                     })?;
 
                 (regs, Vec::new())
