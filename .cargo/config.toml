@@ -3,6 +3,7 @@
 
 [alias]
 xflowey = "run -p flowey_hvlite --profile light -- pipeline run"
+xflowey-cache = "run -p flowey_hvlite --profile light -- cache"
 xtask = "run -p xtask --profile light --"
 
 [env]

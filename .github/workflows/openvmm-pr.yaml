@@ -190,6 +190,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 0 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 0 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 0 flowey_lib_hvlite::run_cargo_build 3
         flowey e 0 flowey_lib_hvlite::build_xtask 1
       shell: bash
@@ -210,7 +211,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 0 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 0 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 0 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 0 flowey_lib_hvlite::run_cargo_build 1
         flowey e 0 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -540,6 +542,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 10 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 2
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
@@ -561,7 +564,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 10 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 10 flowey_lib_hvlite::run_cargo_build 5
         flowey e 10 flowey_lib_hvlite::build_openhcl_boot 0
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
@@ -579,7 +583,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 10 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 10 flowey_lib_hvlite::run_cargo_build 1
         flowey e 10 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7
@@ -736,6 +741,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 11 flowey_lib_hvlite::run_cargo_build 3
         flowey e 11 flowey_lib_hvlite::build_openvmm_hcl 0
         flowey e 11 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0
@@ -759,7 +765,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 11 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 11 flowey_lib_hvlite::run_cargo_build 5
         flowey e 11 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -962,6 +969,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 12 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 2
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
@@ -983,7 +991,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 12 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 8
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 9
         flowey e 12 flowey_lib_hvlite::run_cargo_build 12
         flowey e 12 flowey_lib_hvlite::build_sidecar 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
@@ -998,7 +1007,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 12 flowey_lib_hvlite::run_split_debug_info 3
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 7
         flowey e 12 flowey_lib_hvlite::run_cargo_build 5
         flowey e 12 flowey_lib_hvlite::build_openhcl_boot 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
@@ -1016,7 +1026,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 12 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 11
         flowey e 12 flowey_lib_hvlite::run_cargo_build 1
         flowey e 12 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
@@ -1044,7 +1055,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 12 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 27
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
@@ -1073,7 +1085,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 12 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 15
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
@@ -1260,7 +1273,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 13 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 13 flowey_lib_hvlite::run_cargo_build 3
         flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
         flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0
@@ -1285,6 +1299,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 13 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 13 flowey_lib_hvlite::run_cargo_build 5
         flowey e 13 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -1487,6 +1502,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 14 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 2
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
@@ -1508,7 +1524,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 14 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 8
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 9
         flowey e 14 flowey_lib_hvlite::run_cargo_build 12
         flowey e 14 flowey_lib_hvlite::build_sidecar 0
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
@@ -1523,7 +1540,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 14 flowey_lib_hvlite::run_split_debug_info 3
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 7
         flowey e 14 flowey_lib_hvlite::run_cargo_build 5
         flowey e 14 flowey_lib_hvlite::build_openhcl_boot 0
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
@@ -1541,7 +1559,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 14 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 11
         flowey e 14 flowey_lib_hvlite::run_cargo_build 1
         flowey e 14 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
@@ -1569,7 +1588,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 14 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 27
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
@@ -1598,7 +1618,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 14 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 14 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 15
         flowey e 14 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
@@ -2076,7 +2097,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 16 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 16 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 16 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 16 flowey_lib_hvlite::run_cargo_build 1
         flowey e 16 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -2197,6 +2219,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 16 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 16 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 16 flowey_lib_hvlite::run_cargo_build 3
         flowey e 16 flowey_lib_hvlite::build_xtask 1
       shell: bash
@@ -2402,7 +2425,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 17 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 17 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 17 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 17 flowey_lib_hvlite::run_cargo_build 1
         flowey e 17 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -2543,6 +2567,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 17 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 17 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 17 flowey_lib_hvlite::run_cargo_build 3
         flowey e 17 flowey_lib_hvlite::build_xtask 1
       shell: bash
@@ -3069,7 +3094,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 19 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 19 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 19 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 19 flowey_lib_hvlite::run_cargo_build 1
         flowey e 19 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -3193,6 +3219,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 19 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 19 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 19 flowey_lib_hvlite::run_cargo_build 3
         flowey e 19 flowey_lib_hvlite::build_xtask 1
       shell: bash
@@ -3630,7 +3657,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 20 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 20 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 20 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 20 flowey_lib_hvlite::run_cargo_build 1
         flowey e 20 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -3771,6 +3799,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 20 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 20 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 20 flowey_lib_hvlite::run_cargo_build 3
         flowey e 20 flowey_lib_hvlite::build_xtask 1
       shell: bash
@@ -3986,7 +4015,9 @@ jobs:
         flowey.exe e 21 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey.exe e 21 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey.exe e 21 flowey_lib_common::download_azcopy 0
+        flowey.exe e 21 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -4221,7 +4252,9 @@ jobs:
         flowey.exe e 22 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey.exe e 22 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey.exe e 22 flowey_lib_common::download_azcopy 0
+        flowey.exe e 22 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -4558,7 +4591,9 @@ jobs:
         flowey.exe e 23 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey.exe e 23 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey.exe e 23 flowey_lib_common::download_azcopy 0
+        flowey.exe e 23 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey.exe e 23 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -4846,7 +4881,9 @@ jobs:
         flowey.exe e 24 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey.exe e 24 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey.exe e 24 flowey_lib_common::download_azcopy 0
+        flowey.exe e 24 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey.exe e 24 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -5134,7 +5171,9 @@ jobs:
         flowey.exe e 25 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey.exe e 25 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey.exe e 25 flowey_lib_common::download_azcopy 0
+        flowey.exe e 25 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey.exe e 25 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -5358,7 +5397,9 @@ jobs:
         flowey e 26 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey e 26 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey e 26 flowey_lib_common::download_azcopy 0
+        flowey e 26 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey e 26 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -5685,7 +5726,9 @@ jobs:
         flowey e 27 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey e 27 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey e 27 flowey_lib_common::download_azcopy 0
+        flowey e 27 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey e 27 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -6009,7 +6052,9 @@ jobs:
         flowey.exe e 28 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey.exe e 28 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey.exe e 28 flowey_lib_common::download_azcopy 0
+        flowey.exe e 28 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey.exe e 28 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -6341,7 +6386,9 @@ jobs:
       run: flowey e 29 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: extract azcopy from archive
-      run: flowey e 29 flowey_lib_common::download_azcopy 0
+      run: |-
+        flowey e 29 flowey_lib_common::download_azcopy 0
+        flowey e 29 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
       run: flowey e 29 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -6616,7 +6663,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 3 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 3 flowey_lib_hvlite::run_cargo_build 17
         flowey e 3 flowey_lib_hvlite::build_tmk_vmm 0
         flowey e 3 flowey_core::pipeline::artifact::publish 7
@@ -6642,7 +6690,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 3 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 12
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 13
         flowey e 3 flowey_lib_hvlite::run_cargo_build 15
         flowey e 3 flowey_lib_hvlite::build_tmks 0
         flowey e 3 flowey_core::pipeline::artifact::publish 9
@@ -6655,7 +6704,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 3 flowey_lib_hvlite::run_split_debug_info 8
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 16
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 17
         flowey e 3 flowey_lib_hvlite::run_cargo_build 23
         flowey e 3 flowey_lib_hvlite::build_tpm_guest_tests 1
         flowey e 3 flowey_core::pipeline::artifact::publish 10
@@ -6672,7 +6722,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 3 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 11
         flowey e 3 flowey_lib_hvlite::run_cargo_build 7
         flowey e 3 flowey_lib_hvlite::build_pipette 1
         flowey e 3 flowey_core::pipeline::artifact::publish 0
@@ -6685,7 +6736,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 3 flowey_lib_hvlite::run_split_debug_info 7
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 14
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 15
         flowey e 3 flowey_lib_hvlite::run_cargo_build 19
         flowey e 3 flowey_lib_hvlite::build_tmk_vmm 1
         flowey e 3 flowey_core::pipeline::artifact::publish 1
@@ -6698,7 +6750,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 3 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 8
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 9
         flowey e 3 flowey_lib_hvlite::run_cargo_build 3
         flowey e 3 flowey_lib_hvlite::build_incubator 0
         flowey e 3 flowey_core::pipeline::artifact::publish 2
@@ -6724,7 +6777,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 3 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 3 flowey_lib_hvlite::run_cargo_build 11
         flowey e 3 flowey_lib_hvlite::build_tmks 1
         flowey e 3 flowey_core::pipeline::artifact::publish 4
@@ -6737,7 +6791,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 3 flowey_lib_hvlite::run_split_debug_info 3
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 7
         flowey e 3 flowey_lib_hvlite::run_cargo_build 21
         flowey e 3 flowey_lib_hvlite::build_tpm_guest_tests 0
         flowey e 3 flowey_core::pipeline::artifact::publish 5
@@ -6751,6 +6806,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 3 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 3 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 3 flowey_lib_hvlite::run_cargo_build 5
         flowey e 3 flowey_lib_hvlite::build_pipette 0
         flowey e 3 flowey_core::pipeline::artifact::publish 6
@@ -8291,7 +8347,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 8 flowey_lib_hvlite::run_cargo_build 5
         flowey e 8 flowey_lib_hvlite::build_openvmm 0
         flowey e 8 flowey_core::pipeline::artifact::publish 0
@@ -8304,7 +8361,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_split_debug_info 3
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 7
         flowey e 8 flowey_lib_hvlite::run_cargo_build 9
         flowey e 8 flowey_lib_hvlite::build_openvmm_vhost 0
         flowey e 8 flowey_core::pipeline::artifact::publish 1
@@ -8317,7 +8375,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_split_debug_info 8
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 16
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 17
         flowey e 8 flowey_lib_hvlite::run_cargo_build 18
         flowey e 8 flowey_lib_hvlite::build_vmgstool 0
         flowey e 8 flowey_core::pipeline::artifact::publish 2
@@ -8330,7 +8389,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_split_debug_info 7
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 14
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 15
         flowey e 8 flowey_lib_hvlite::run_cargo_build 16
         flowey e 8 flowey_lib_hvlite::build_vmgstool 1
         flowey e 8 flowey_core::pipeline::artifact::publish 3
@@ -8352,7 +8412,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 12
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 13
         flowey e 8 flowey_lib_hvlite::run_cargo_build 1
         flowey e 8 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 8 flowey_core::pipeline::artifact::publish 5
@@ -8366,6 +8427,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 8 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 8 flowey_lib_hvlite::run_cargo_build 3
         flowey e 8 flowey_lib_hvlite::build_ohcldiag_dev 0
         flowey e 8 flowey_core::pipeline::artifact::publish 6
@@ -8385,7 +8447,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 8 flowey_lib_hvlite::run_cargo_build 7
         flowey e 8 flowey_lib_hvlite::build_openvmm 1
         flowey e 8 flowey_core::pipeline::artifact::publish 7
@@ -8398,7 +8461,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 8
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 9
         flowey e 8 flowey_lib_hvlite::run_cargo_build 11
         flowey e 8 flowey_lib_hvlite::build_openvmm_vhost 1
         flowey e 8 flowey_core::pipeline::artifact::publish 8
@@ -8411,7 +8475,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 11
         flowey e 8 flowey_lib_hvlite::run_cargo_build 13
         flowey e 8 flowey_lib_hvlite::build_prep_steps 0
         flowey e 8 flowey_core::pipeline::artifact::publish 9
@@ -8676,7 +8741,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 9 flowey_lib_hvlite::run_cargo_build 5
         flowey e 9 flowey_lib_hvlite::build_openvmm 0
         flowey e 9 flowey_core::pipeline::artifact::publish 0
@@ -8689,7 +8755,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 3
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 7
         flowey e 9 flowey_lib_hvlite::run_cargo_build 9
         flowey e 9 flowey_lib_hvlite::build_openvmm_vhost 0
         flowey e 9 flowey_core::pipeline::artifact::publish 1
@@ -8702,7 +8769,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 8
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 16
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 17
         flowey e 9 flowey_lib_hvlite::run_cargo_build 18
         flowey e 9 flowey_lib_hvlite::build_vmgstool 0
         flowey e 9 flowey_core::pipeline::artifact::publish 2
@@ -8715,7 +8783,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 7
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 14
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 15
         flowey e 9 flowey_lib_hvlite::run_cargo_build 16
         flowey e 9 flowey_lib_hvlite::build_vmgstool 1
         flowey e 9 flowey_core::pipeline::artifact::publish 3
@@ -8741,7 +8810,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 12
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 13
         flowey e 9 flowey_lib_hvlite::run_cargo_build 1
         flowey e 9 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 9 flowey_core::pipeline::artifact::publish 5
@@ -8755,6 +8825,7 @@ jobs:
     - name: split debug symbols
       run: |-
         flowey e 9 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 9 flowey_lib_hvlite::run_cargo_build 3
         flowey e 9 flowey_lib_hvlite::build_ohcldiag_dev 0
         flowey e 9 flowey_core::pipeline::artifact::publish 6
@@ -8774,7 +8845,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 9 flowey_lib_hvlite::run_cargo_build 7
         flowey e 9 flowey_lib_hvlite::build_openvmm 1
         flowey e 9 flowey_core::pipeline::artifact::publish 7
@@ -8787,7 +8859,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 8
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 9
         flowey e 9 flowey_lib_hvlite::run_cargo_build 11
         flowey e 9 flowey_lib_hvlite::build_openvmm_vhost 1
         flowey e 9 flowey_core::pipeline::artifact::publish 8
@@ -8800,7 +8873,8 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 11
         flowey e 9 flowey_lib_hvlite::run_cargo_build 13
         flowey e 9 flowey_lib_hvlite::build_prep_steps 0
         flowey e 9 flowey_core::pipeline::artifact::publish 9

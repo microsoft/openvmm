@@ -76,8 +76,8 @@ impl FlowNode for Node {
 
         let gh_cli = use_gh_cli.then(|| ctx.reqv(crate::use_gh_cli::Request::Get));
 
-        match ctx.persistent_dir() {
-            Some(dir) => Self::with_local_cache(ctx, dir, download_reqs, gh_cli),
+        match ctx.memo_store() {
+            Some(store) => Self::with_local_cache(ctx, store, download_reqs, gh_cli),
             None => Self::with_ci_cache(ctx, download_reqs, gh_cli),
         }
 
@@ -86,59 +86,86 @@ impl FlowNode for Node {
 }
 
 impl Node {
-    // Have a single folder which caches downloaded artifacts
+    // Each (repo, tag, file) gets its own entry in flowey's shared memoization
+    // store, which gives us atomic installs (an interrupted download can't
+    // leave a truncated file behind that later runs mistake for a cache hit)
+    // and central GC.
+    //
+    // Entries are created via the batch API, so that a cold miss can still
+    // fetch several assets in a single `gh release download` invocation.
     fn with_local_cache(
         ctx: &mut NodeCtx<'_>,
-        persistent_dir: ReadVar<PathBuf>,
+        memo_store: ReadVar<MemoStore>,
         download_reqs: BTreeMap<(String, String, String), BTreeMap<String, Vec<WriteVar<PathBuf>>>>,
         gh_cli: Option<ReadVar<PathBuf>>,
     ) {
         ctx.emit_rust_step("download artifacts from github releases", |ctx| {
             let gh_cli = gh_cli.claim(ctx);
-            let persistent_dir = persistent_dir.claim(ctx);
+            let memo_store = memo_store.claim(ctx);
             let download_reqs = download_reqs.claim(ctx);
             move |rt| {
-                let persistent_dir = rt.read(persistent_dir);
+                let store = rt.read(memo_store);
 
-                // first - check what reqs are already present in the local cache
-                let mut remaining_download_reqs: BTreeMap<
-                    (String, String, String),
-                    BTreeMap<String, Vec<ClaimedWriteVar<PathBuf>>>,
-                > = BTreeMap::new();
+                // one memo entry per file, keyed by the identity of the remote
+                // asset. there are no local inputs to fingerprint here - the
+                // store is being used for atomicity and GC, not content
+                // addressing.
+                let mut misses = Vec::new();
+                let mut resolved = Vec::new();
                 for ((repo_owner, repo_name, tag), files) in download_reqs {
                     for (file, vars) in files {
-                        let cached_file =
-                            persistent_dir.join(format!("{repo_owner}/{repo_name}/{tag}/{file}"));
+                        let key = MemoKey::new("flowey_lib_common::download_gh_release", 1)
+                            .with_str("repo", format!("{repo_owner}/{repo_name}"))
+                            .with_str("tag", &tag)
+                            .with_str("file", &file);
 
-                        if cached_file.exists() {
-                            for var in vars {
-                                rt.write(var, &cached_file)
+                        let id = (repo_owner.clone(), repo_name.clone(), tag.clone(), file);
+                        match store.lookup(&key)? {
+                            Some(entry) => {
+                                log::info!("memo hit: {} ({id:?})", key.hash());
+                                resolved.push((entry.dir.join(&id.3), vars));
                             }
-                        } else {
-                            let existing = remaining_download_reqs
-                                .entry((repo_owner.clone(), repo_name.clone(), tag.clone()))
-                                .or_default()
-                                .insert(file, vars);
-                            assert!(existing.is_none());
+                            None => {
+                                log::info!("memo miss: {} ({id:?})", key.hash());
+                                misses.push((id, key, vars));
+                            }
                         }
                     }
                 }
 
-                if remaining_download_reqs.is_empty() {
-                    log::info!("100% local cache hit!");
-                    return Ok(());
+                if !misses.is_empty() {
+                    // fetch everything that missed into one scratch dir, so the
+                    // gh cli can batch its `--pattern` args into as few
+                    // invocations as possible...
+                    let bulk = store.stage()?;
+                    let mut regrouped: BTreeMap<(String, String, String), Vec<String>> =
+                        BTreeMap::new();
+                    for ((repo_owner, repo_name, tag, file), _, _) in &misses {
+                        regrouped
+                            .entry((repo_owner.clone(), repo_name.clone(), tag.clone()))
+                            .or_default()
+                            .push(file.clone());
+                    }
+                    download_all_reqs(rt, &regrouped, bulk.dir(), gh_cli)?;
+
+                    // ...then split it up, so that a later run needing a
+                    // different subset still gets per-file hits.
+                    for (id, key, vars) in misses {
+                        let (repo_owner, repo_name, tag, file) = &id;
+                        let staging = store.stage()?;
+                        fs_err::rename(
+                            bulk.dir()
+                                .join(format!("{repo_owner}/{repo_name}/{tag}/{file}")),
+                            staging.dir().join(file),
+                        )?;
+                        let entry = store.commit(&key, staging)?;
+                        resolved.push((entry.dir.join(file), vars));
+                    }
                 }
 
-                download_all_reqs(rt, &remaining_download_reqs, &persistent_dir, gh_cli)?;
-
-                for ((repo_owner, repo_name, tag), files) in remaining_download_reqs {
-                    for (file, vars) in files {
-                        let file =
-                            persistent_dir.join(format!("{repo_owner}/{repo_name}/{tag}/{file}"));
-                        assert!(file.exists());
-                        for var in vars {
-                            rt.write(var, &file)
-                        }
+                for (path, vars) in resolved {
+                    for var in vars {
+                        rt.write(var, &path)
                     }
                 }
 
@@ -205,7 +232,13 @@ impl Node {
                 let hitvar = rt.read(hitvar);
 
                 if !matches!(hitvar, crate::cache::CacheHit::Hit) {
-                    download_all_reqs(rt, &download_reqs, &cache_dir, gh_cli)?;
+                    let to_download = download_reqs
+                        .iter()
+                        .map(|(repo_tag, files)| {
+                            (repo_tag.clone(), files.keys().cloned().collect())
+                        })
+                        .collect();
+                    download_all_reqs(rt, &to_download, &cache_dir, gh_cli)?;
                 }
 
                 for ((repo_owner, repo_name, tag), files) in download_reqs {
@@ -226,10 +259,7 @@ impl Node {
 
 fn download_all_reqs(
     rt: &mut RustRuntimeServices<'_>,
-    download_reqs: &BTreeMap<
-        (String, String, String),
-        BTreeMap<String, Vec<WriteVar<PathBuf, VarClaimed>>>,
-    >,
+    download_reqs: &BTreeMap<(String, String, String), Vec<String>>,
     cache_dir: &Path,
     gh_cli: Option<ReadVar<PathBuf, VarClaimed>>,
 ) -> anyhow::Result<()> {
@@ -247,7 +277,7 @@ fn download_all_reqs(
             // the context of a single (repo, tag), we might want to have flowey spawn
             // multiple processes to saturate the network connection in cases where
             // multiple (repo, tag) pairs are being pulled at the same time.
-            let patterns = files.keys().flat_map(|k| ["--pattern".into(), k.clone()]);
+            let patterns = files.iter().flat_map(|k| ["--pattern".into(), k.clone()]);
             flowey::shell_cmd!(
                 rt,
                 "{gh_cli} release download -R {repo} {tag} {patterns...} --skip-existing"
@@ -255,7 +285,7 @@ fn download_all_reqs(
             .run()?;
         } else {
             // FUTURE: parallelize curl invocations across all download_reqs
-            for file in files.keys() {
+            for file in files {
                 let mut cmd = flowey::shell_cmd!(
                     rt,
                     "curl --fail -L https://github.com/{repo_owner}/{repo_name}/releases/download/{tag}/{file} -o {file}"

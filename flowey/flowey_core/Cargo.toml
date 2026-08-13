@@ -10,9 +10,12 @@ rust-version.workspace = true
 anyhow.workspace = true
 fs-err.workspace = true
 linkme.workspace = true
+log.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 serde_yaml.workspace = true
+sha2.workspace = true
+which.workspace = true
 xshell.workspace = true
 
 [dev-dependencies]
