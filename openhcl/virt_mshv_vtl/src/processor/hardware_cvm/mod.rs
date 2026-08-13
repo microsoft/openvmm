@@ -26,6 +26,7 @@ use hv1_emulator::RequestInterrupt;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
+use hv1_structs::VtlSet;
 use hvdef::HvCacheType;
 use hvdef::HvError;
 use hvdef::HvInterceptAccessType;
@@ -368,6 +369,28 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
                 }
                 Ok(())
             }
+            HvX64RegisterName::VsmPartitionConfig => {
+                if target_vtl != GuestVtl::Vtl1 {
+                    return Err(HvError::InvalidParameter);
+                }
+                if self.intercepted_vtl == GuestVtl::Vtl0
+                    && !self.vp.cvm_partition().access_vsm_privilege()
+                {
+                    return Err(HvError::AccessDenied);
+                }
+                Ok(())
+            }
+            HvX64RegisterName::VsmPartitionStatus
+            | HvX64RegisterName::VsmVpStatus
+            | HvX64RegisterName::VsmCapabilities => {
+                if self.intercepted_vtl == GuestVtl::Vtl0
+                    && !self.vp.cvm_partition().access_vsm_privilege()
+                {
+                    return Err(HvError::AccessDenied);
+                }
+                Ok(())
+            }
+
             _ => Ok(()),
         }
     }
@@ -394,6 +417,99 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
         // clean this up.
 
         match name.into() {
+            HvX64RegisterName::VsmPartitionConfig => {
+                let guest_vsm = self.vp.cvm_partition().guest_vsm.read();
+                let GuestVsmState::Enabled { vtl1, .. } = &*guest_vsm else {
+                    return Ok(HvRegisterValue::from(0u64));
+                };
+
+                let protector = &self.vp.cvm_partition().isolated_memory_protector;
+                let default_protections = protector.default_vtl0_protections();
+                Ok(u64::from(
+                    HvRegisterVsmPartitionConfig::new()
+                        .with_enable_vtl_protection(protector.vtl1_protections_enabled())
+                        .with_default_vtl_protection_mask(u32::from(default_protections) as u8)
+                        .with_zero_memory_on_reset(vtl1.zero_memory_on_reset)
+                        .with_deny_lower_vtl_startup(vtl1.deny_lower_vtl_startup),
+                )
+                .into())
+            }
+            HvX64RegisterName::VsmPartitionStatus => {
+                let guest_vsm = self.vp.cvm_partition().guest_vsm.read();
+                let (enabled_vtl_set, maximum_vtl, mbec_enabled_vtl_set, sss_enabled_vtl_set) =
+                    match &*guest_vsm {
+                        GuestVsmState::Enabled { vtl1, .. } => {
+                            let enabled_vtls =
+                                VtlSet::new().with_vtl(Vtl::Vtl0).with_vtl(Vtl::Vtl1);
+
+                            let mbec_enabled_vtls = if vtl1.mbec_enabled {
+                                enabled_vtls
+                            } else {
+                                VtlSet::new()
+                            };
+
+                            let sss_enabled_vtls = if vtl1.shadow_supervisor_stack_enabled {
+                                enabled_vtls
+                            } else {
+                                VtlSet::new()
+                            };
+
+                            (
+                                u16::from(enabled_vtls),
+                                1u8,
+                                u16::from(mbec_enabled_vtls),
+                                u16::from(sss_enabled_vtls) as u8,
+                            )
+                        }
+                        GuestVsmState::NotGuestEnabled => {
+                            let enabled_vtls = VtlSet::new().with_vtl(Vtl::Vtl0);
+                            (u16::from(enabled_vtls), 1u8, 0u16, 0u8)
+                        }
+                        GuestVsmState::NotPlatformSupported => {
+                            let enabled_vtls = VtlSet::new().with_vtl(Vtl::Vtl0);
+                            (u16::from(enabled_vtls), 0u8, 0u16, 0u8)
+                        }
+                    };
+
+                Ok(u64::from(
+                    hvdef::HvRegisterVsmPartitionStatus::new()
+                        .with_enabled_vtl_set(enabled_vtl_set)
+                        .with_maximum_vtl(maximum_vtl)
+                        .with_mbec_enabled_vtl_set(mbec_enabled_vtl_set)
+                        .with_supervisor_shadow_stack_enabled_vtl_set(sss_enabled_vtl_set),
+                )
+                .into())
+            }
+            HvX64RegisterName::VsmVpStatus => {
+                let active_vtl = self.intercepted_vtl;
+                let active_mbec_enabled = self
+                    .vp
+                    .backing
+                    .cvm_state()
+                    .vtl1
+                    .as_ref()
+                    .is_some_and(|s| s.vp_mbec_enabled);
+                let mut enabled_vtls = VtlSet::new();
+                enabled_vtls.set(Vtl::Vtl0);
+                if *self
+                    .vp
+                    .cvm_partition()
+                    .vp_inner(self.vp.vp_index().index())
+                    .vtl1_enable_called
+                    .lock()
+                {
+                    enabled_vtls.set(Vtl::Vtl1);
+                }
+                let enabled_vtl_set = u16::from(enabled_vtls);
+
+                Ok(u64::from(
+                    hvdef::HvRegisterVsmVpStatus::new()
+                        .with_active_vtl(active_vtl as u8)
+                        .with_active_mbec_enabled(active_mbec_enabled)
+                        .with_enabled_vtl_set(enabled_vtl_set),
+                )
+                .into())
+            }
             HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
                 self.vp.backing.cvm_state_mut().hv[vtl].vsm_code_page_offsets(true),
             )
@@ -401,7 +517,8 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
             HvX64RegisterName::VsmCapabilities => Ok(u64::from(
                 hvdef::HvRegisterVsmCapabilities::new()
                     .with_deny_lower_vtl_startup(true)
-                    .with_dr6_shared(self.vp.partition.hcl.dr6_shared()),
+                    .with_dr6_shared(self.vp.partition.hcl.dr6_shared())
+                    .with_mbec_vtl_mask(VtlSet::new().with_vtl(Vtl::Vtl0).into()),
             )
             .into()),
             HvX64RegisterName::VsmVpSecureConfigVtl0 => {
@@ -1725,9 +1842,15 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
         vtl: Vtl,
         vp_context: &hvdef::hypercall::InitialVpContextX64,
     ) -> HvResult<()> {
+        let target_vp = if vp_index == hvdef::HV_VP_INDEX_SELF {
+            self.vp.vp_index().index()
+        } else {
+            vp_index
+        };
+
         tracing::debug!(
             vp_index = self.vp.vp_index().index(),
-            target_vp = vp_index,
+            target_vp,
             ?vtl,
             "HvEnableVpVtl"
         );
@@ -1735,7 +1858,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
             return Err(HvError::InvalidPartitionId);
         }
 
-        if vp_index as usize >= self.vp.partition.vps.len() {
+        if target_vp as usize >= self.vp.partition.vps.len() {
             return Err(HvError::InvalidVpIndex);
         }
 
@@ -1766,7 +1889,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
             // the higher VTL has not been enabled on any other VP because at that
             // point, the higher VTL should be orchestrating its own enablement.
             if self.intercepted_vtl < GuestVtl::Vtl1 {
-                if vtl1.enabled_on_any_vp || vp_index != current_vp_index {
+                if vtl1.enabled_on_any_vp || target_vp != current_vp_index {
                     return Err(HvError::AccessDenied);
                 }
 
@@ -1785,7 +1908,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
         let mut vtl1_enabled = self
             .vp
             .cvm_partition()
-            .vp_inner(vp_index)
+            .vp_inner(target_vp)
             .vtl1_enable_called
             .lock();
 
@@ -1798,7 +1921,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
             virt::IsolationType::Snp => {
                 // For VTL 1, user mode needs to explicitly register the VMSA
                 // with the hypervisor via the EnableVpVtl hypercall.
-                let target_cpu_index = self.vp.partition.vps[vp_index as usize].cpu_index;
+                let target_cpu_index = self.vp.partition.vps[target_vp as usize].cpu_index;
                 let vmsa_pfn = self.vp.partition.hcl.vtl1_vmsa_pfn(target_cpu_index);
                 let sev_control = hvdef::HvX64RegisterSevControl::new()
                     .with_enable_encrypted_state(true)
@@ -1817,7 +1940,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
         self.vp
             .partition
             .hcl
-            .enable_vp_vtl(vp_index, vtl, hv_vp_context)?;
+            .enable_vp_vtl(target_vp, vtl, hv_vp_context)?;
 
         // Cannot fail from here
         if let Some(mut vtl1) = gvsm_state {
@@ -1837,12 +1960,12 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
         *self
             .vp
             .cvm_partition()
-            .vp_inner(vp_index)
+            .vp_inner(target_vp)
             .hv_start_enable_vtl_vp[vtl]
             .lock() = Some(Box::new(enable_vp_vtl_state));
-        self.vp.partition.vps[vp_index as usize].wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
+        self.vp.partition.vps[target_vp as usize].wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
-        tracing::debug!(vp_index, "enabled vtl 1 on vp");
+        tracing::debug!(target_vp, "enabled vtl 1 on vp");
 
         Ok(())
     }
@@ -2063,17 +2186,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         hvdef::HvEnlightenmentInformation::from_cpuid([eax, ebx, ecx, edx])
                             .with_use_hypercall_for_remote_flush_and_local_flush_entire(false)
                             .into_cpuid();
-                }
-            }
-            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES) => {
-                // Update the VSM access privilege if it's been revoked by UEFI.
-                if matches!(
-                    *self.cvm_partition().guest_vsm.read(),
-                    GuestVsmState::NotPlatformSupported
-                ) {
-                    let mut features = hvdef::HvFeatures::from_cpuid([eax, ebx, ecx, edx]);
-                    features.set_privileges(features.privileges().with_access_vsm(false));
-                    [eax, ebx, ecx, edx] = features.into_cpuid();
                 }
             }
 
@@ -2656,6 +2768,14 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             (false, true) => self.set_tlb_lock(requesting_vtl, target_vtl),
             _ => (), // Nothing to do
         };
+
+        // Setting this on any VTL will enable it for all VTLs. This matches
+        // the hypervisor behavior, but for all intents and purposes only VTL 1
+        // will be able to set this on VTL 0, so only a single VTL can have
+        // this configured anyway.
+        if let Some(vtl1_state) = self.backing.cvm_state_mut().vtl1.as_mut() {
+            vtl1_state.vp_mbec_enabled = config.mbec_enabled();
+        }
 
         Ok(())
     }
