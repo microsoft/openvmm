@@ -7,7 +7,10 @@ use parking_lot::Mutex;
 
 use hvdef::Vtl;
 
+use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
+use std::future::Future;
+use std::pin::Pin;
 
 /// Recorded call to [`TdispNoopResourceValidator::tdisp_unblock_mmio`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,33 +89,36 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         Ok(())
     }
 
-    fn tdisp_unblock_mmio(
-        &self,
+    fn tdisp_unblock_mmio<'a>(
+        &'a self,
         target_vtl: Vtl,
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
         length_in_bytes: u32,
         range_id: u16,
-    ) -> anyhow::Result<()> {
-        tracing::info!(
-            ?target_vtl,
-            ?device_id,
-            ?base_gpa,
-            ?base_offset,
-            ?length_in_bytes,
-            ?range_id,
-            "mock resource validator recording MMIO unblock"
-        );
-        self.unblocked_mmio_ranges.lock().push(UnblockedMmioRange {
-            target_vtl,
-            device_id,
-            range_id,
-            base_gpa,
-            base_offset,
-            length_in_bytes,
-        });
-        Ok(())
+        _host: &'a dyn TdispHostCommandSender,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
+        Box::pin(async move {
+            tracing::info!(
+                ?target_vtl,
+                ?device_id,
+                ?base_gpa,
+                ?base_offset,
+                ?length_in_bytes,
+                ?range_id,
+                "mock resource validator recording MMIO unblock"
+            );
+            self.unblocked_mmio_ranges.lock().push(UnblockedMmioRange {
+                target_vtl,
+                device_id,
+                range_id,
+                base_gpa,
+                base_offset,
+                length_in_bytes,
+            });
+            Ok(())
+        })
     }
 
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
@@ -125,28 +131,30 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         Ok(())
     }
 
-    fn tdisp_block_mmio(
-        &self,
+    fn tdisp_block_mmio<'a>(
+        &'a self,
         target_vtl: Vtl,
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
         length_in_bytes: u32,
         range_id: u16,
-    ) -> anyhow::Result<()> {
-        tracing::info!(
-            ?target_vtl,
-            ?device_id,
-            ?base_gpa,
-            ?base_offset,
-            ?length_in_bytes,
-            ?range_id,
-            "mock resource validator recording MMIO block"
-        );
-        self.unblocked_mmio_ranges
-            .lock()
-            .retain(|r| r.range_id != range_id);
-        Ok(())
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
+        Box::pin(async move {
+            tracing::info!(
+                ?target_vtl,
+                ?device_id,
+                ?base_gpa,
+                ?base_offset,
+                ?length_in_bytes,
+                ?range_id,
+                "mock resource validator recording MMIO block"
+            );
+            self.unblocked_mmio_ranges
+                .lock()
+                .retain(|r| r.range_id != range_id);
+            Ok(())
+        })
     }
 
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {

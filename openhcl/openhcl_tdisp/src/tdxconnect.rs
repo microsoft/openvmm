@@ -11,12 +11,19 @@
 //! page the validator owns), TDG.TDI.START authorizes the host to start it, and
 //! a post-start TDG.TDI.RD confirms the TDX Module sees it in TDISP RUN.
 
+use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
+use crate::new_unblock_mmio_range_command;
+use anyhow::Context as _;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvVtl;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use parking_lot::Mutex;
+use std::future::Future;
+use std::pin::Pin;
+use tdisp_proto::GuestToHostResponseExt as _;
+use tdisp_proto::TdispCommandResponseModifyMmioRange;
 use user_driver::DmaClient;
 use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::memory::MemoryBlock;
@@ -376,28 +383,68 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
-    fn tdisp_unblock_mmio(
-        &self,
+    #[tracing::instrument(
+        skip(self, host),
+        fields(device_id, range_id, base_offset, length_in_bytes)
+    )]
+    fn tdisp_unblock_mmio<'a>(
+        &'a self,
         target_vtl: Vtl,
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
         length_in_bytes: u32,
         range_id: u16,
-    ) -> anyhow::Result<()> {
-        self.probe_tdi(&Self::open_mshv_vtl()?, device_id)?;
-        tracing::info!(
-            vtom = self.vtom,
-            ?target_vtl,
-            device_id,
-            base_gpa,
-            base_offset,
-            length_in_bytes,
-            range_id,
-            "TDX Connect tdisp_unblock_mmio: no-op stub"
-        );
-        Ok(())
+        host: &'a dyn TdispHostCommandSender,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
+        Box::pin(async move {
+            // TDISP TODO: This needs to be refactored a lot more.
+            self.probe_tdi(&Self::open_mshv_vtl()?, device_id)?;
+
+            tracing::info!(
+                vtom = self.vtom,
+                ?target_vtl,
+                device_id,
+                base_gpa = format_args!("{base_gpa:#x}"),
+                base_offset,
+                length_in_bytes = format_args!("{length_in_bytes:#x}"),
+                range_id,
+                "TDX Connect tdisp_unblock_mmio: telling the host to unblock the MMIO range"
+            );
+
+            // The host command is addressed by VPCI slot, which `host` supplies.
+            let res = host
+                .send_tdisp_command(new_unblock_mmio_range_command(
+                    0,
+                    range_id,
+                    base_gpa,
+                    length_in_bytes.into(),
+                ))
+                .await
+                .context("failed to send the ModifyMmioRange unblock command")?;
+
+            let tdi_state_before = res.tdi_state_before_enum();
+            let tdi_state_after = res.tdi_state_after_enum();
+
+            res.response::<TdispCommandResponseModifyMmioRange>()
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "host rejected the ModifyMmioRange unblock command for range {range_id} \
+                         at {base_gpa:#x} (tdi state {tdi_state_before:?} -> {tdi_state_after:?}): \
+                         {err}"
+                    )
+                })?;
+
+            tracing::info!(
+                device_id,
+                range_id,
+                base_gpa = format_args!("{base_gpa:#x}"),
+                length_in_bytes = format_args!("{length_in_bytes:#x}"),
+                "TDX Connect tdisp_unblock_mmio: host accepted the MMIO range unblock"
+            );
+
+            Ok(())
+        })
     }
 
     #[tracing::instrument(skip(self), fields(device_id))]
@@ -413,26 +460,28 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     }
 
     #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
-    fn tdisp_block_mmio(
-        &self,
+    fn tdisp_block_mmio<'a>(
+        &'a self,
         target_vtl: Vtl,
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
         length_in_bytes: u32,
         range_id: u16,
-    ) -> anyhow::Result<()> {
-        tracing::info!(
-            vtom = self.vtom,
-            ?target_vtl,
-            device_id,
-            base_gpa,
-            base_offset,
-            length_in_bytes,
-            range_id,
-            "TDX Connect tdisp_block_mmio: no-op stub"
-        );
-        Ok(())
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
+        Box::pin(async move {
+            tracing::info!(
+                vtom = self.vtom,
+                ?target_vtl,
+                device_id,
+                base_gpa,
+                base_offset,
+                length_in_bytes,
+                range_id,
+                "TDX Connect tdisp_block_mmio: no-op stub"
+            );
+            Ok(())
+        })
     }
 
     #[tracing::instrument(skip(self), fields(device_id))]

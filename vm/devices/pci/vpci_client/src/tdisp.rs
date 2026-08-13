@@ -21,8 +21,11 @@ use openhcl_tdisp::TdispDeviceInterfaceInfo;
 use openhcl_tdisp::TdispGuestOperationErrorCode;
 use openhcl_tdisp::TdispGuestProtocolType;
 use openhcl_tdisp::TdispGuestUnbindReason;
+use openhcl_tdisp::TdispHostCommandSender;
 use openhcl_tdisp::TdispReportType;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
+use std::future::Future;
+use std::pin::Pin;
 use tdisp::TdispTdiState;
 use tdisp::devicereport::TdiReportStruct;
 use virt::IsolationType;
@@ -90,6 +93,59 @@ struct ValidatedMmio {
     base_gpa: u64,
     #[inspect(hex)]
     length_in_bytes: u32,
+}
+
+/// Sends guest-to-host TDISP commands for one device, handed to the resource
+/// validator so platform code can issue commands without owning the channel.
+///
+/// Unlike [`VpciClientTdispState::send_tdisp_command`] this does not update the
+/// cached TDI state, so it suits only commands that do not transition the TDI.
+struct VpciTdispHostSender {
+    worker_req: mesh::Sender<WorkerRequest>,
+    vpci_device_id: u64,
+}
+
+impl TdispHostCommandSender for VpciTdispHostSender {
+    fn send_tdisp_command<'a>(
+        &'a self,
+        mut command: GuestToHostCommand,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<GuestToHostResponse>> + Send + Sync + 'a>> {
+        Box::pin(async move {
+            // The validator does not know the VPCI slot, so address the command
+            // here rather than requiring every caller to supply it.
+            command.device_id = self.vpci_device_id;
+
+            let serialized = openhcl_tdisp::serialize_command(&command);
+            if serialized.len() > MAX_VPCI_TDISP_COMMAND_SIZE {
+                anyhow::bail!(
+                    "serialized TDISP command exceeds VMBUS maximum packet size ({} > {})",
+                    serialized.len(),
+                    MAX_VPCI_TDISP_COMMAND_SIZE
+                );
+            }
+
+            self.worker_req
+                .call_failable(
+                    WorkerRequest::TdispCommand,
+                    vpci_protocol::VpciTdispCommand {
+                        header: vpci_protocol::VpciTdispCommandHeader {
+                            message_type: vpci_protocol::MessageType::VPCI_TDISP_COMMAND,
+                            slot: SlotNumber::from_bits(self.vpci_device_id as u32),
+                            data_length: serialized.len() as u64,
+                        },
+                        data: serialized,
+                    },
+                )
+                .await
+                .map_err(|err: mesh::rpc::RpcError<mesh::error::RemoteError>| {
+                    tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to send tdisp command"
+                    );
+                    anyhow::anyhow!("failed to send tdisp command")
+                })
+        })
+    }
 }
 
 impl VpciClientTdispMutableState {
@@ -398,28 +454,6 @@ impl VpciClientTdispState {
         Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
     }
 
-    /// See: [`TdispVirtualDeviceInterface::tdisp_unblock_mmio_range`]
-    pub async fn tdisp_unblock_mmio_range(
-        &mut self,
-        range_id: u16,
-        gpa_base: u64,
-        range_len_bytes: u64,
-    ) -> anyhow::Result<()> {
-        self.send_modify_mmio_range(
-            openhcl_tdisp::new_unblock_mmio_range_command(
-                self.vpci_device_id,
-                range_id,
-                gpa_base,
-                range_len_bytes,
-            ),
-            "tdisp_unblock_mmio_range",
-            range_id,
-            gpa_base,
-            range_len_bytes,
-        )
-        .await
-    }
-
     /// See: [`TdispVirtualDeviceInterface::tdisp_block_mmio_range`]
     pub async fn tdisp_block_mmio_range(
         &mut self,
@@ -442,10 +476,9 @@ impl VpciClientTdispState {
         .await
     }
 
-    /// Shared body of [`Self::tdisp_unblock_mmio_range`] and
-    /// [`Self::tdisp_block_mmio_range`]. `caller` names the operation in the
-    /// trace and error output; the range values are passed separately so they
-    /// can be logged without decoding the built command.
+    /// Shared body of the ModifyMmioRange sends. `caller` names the operation
+    /// in the trace and error output; the range values are passed separately so
+    /// they can be logged without decoding the built command.
     async fn send_modify_mmio_range(
         &mut self,
         command: GuestToHostCommand,
@@ -500,14 +533,17 @@ impl VpciClientTdispState {
                 self.mutable_state.validated_mmio_bars.remove(&bar_id);
                 continue;
             }
-            if let Err(e) = validator.tdisp_block_mmio(
-                Vtl::Vtl2,
-                device_id,
-                mmio.base_gpa,
-                0,
-                mmio.length_in_bytes,
-                bar_id,
-            ) {
+            if let Err(e) = validator
+                .tdisp_block_mmio(
+                    Vtl::Vtl2,
+                    device_id,
+                    mmio.base_gpa,
+                    0,
+                    mmio.length_in_bytes,
+                    bar_id,
+                )
+                .await
+            {
                 tracing::error!(
                     bar_id,
                     base_gpa = format_args!("{:#x}", mmio.base_gpa),
@@ -937,27 +973,21 @@ impl VpciClientTdispState {
         }
 
         let device_id = self.mutable_state.guest_device_id;
-
-        // Tell the host before the platform unblock, so the host regards the
-        // range as guest-private for a superset of the window the platform
-        // does. Best-effort: a failure here must not block the platform
-        // unblock.
-        if self.isolation_type == IsolationType::Tdx
-            && let Err(e) = self
-                .tdisp_unblock_mmio_range(bar_id, base_address, length.into())
-                .await
-        {
-            tracing::error!(
-                bar_id,
-                base_address = format_args!("{base_address:#x}"),
-                length,
-                error = &*e as &dyn std::error::Error,
-                "tdisp_on_mmio_reconfigured: failed to unblock MMIO range on the host"
-            );
-        }
-
+        let host = VpciTdispHostSender {
+            worker_req: self.worker_req.clone(),
+            vpci_device_id: self.vpci_device_id,
+        };
         self.resource_validator
-            .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
+            .tdisp_unblock_mmio(
+                self.target_vtl,
+                device_id,
+                base_address,
+                0,
+                length,
+                bar_id,
+                &host,
+            )
+            .await
             .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO")?;
 
         self.mutable_state.validated_mmio_bars.insert(
@@ -1032,18 +1062,6 @@ impl TdispVirtualDeviceInterface for VpciDevice {
     async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
         let mut guard = self.tdisp.0.lock().await;
         guard.tdisp_unbind(reason).await
-    }
-
-    async fn tdisp_unblock_mmio_range(
-        &self,
-        range_id: u16,
-        gpa_base: u64,
-        range_len_bytes: u64,
-    ) -> anyhow::Result<()> {
-        let mut guard = self.tdisp.0.lock().await;
-        guard
-            .tdisp_unblock_mmio_range(range_id, gpa_base, range_len_bytes)
-            .await
     }
 
     async fn tdisp_block_mmio_range(
