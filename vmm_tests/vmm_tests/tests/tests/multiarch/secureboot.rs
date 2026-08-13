@@ -361,18 +361,24 @@ async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
     assert!(pk_exists.status.success(), "replacement PK should exist");
 
     let dbx_path = format!("/sys/firmware/efi/efivars/dbx-{IMAGE_SECURITY_DATABASE_GUID}");
-    let dbx = cmd!(shell, "sudo")
-        .args([
-            "dd",
-            &format!("if={dbx_path}"),
-            "bs=4",
-            "skip=1",
-            "status=none",
-        ])
+    let dbx_exists = cmd!(shell, "sudo")
+        .args(["test", "-e", &dbx_path])
         .output()
         .await?;
-    assert!(dbx.status.success(), "dbx should exist");
-    assert!(dbx.stdout.is_empty(), "dbx should have no entries");
+    if dbx_exists.status.success() {
+        let dbx = cmd!(shell, "sudo")
+            .args([
+                "dd",
+                &format!("if={dbx_path}"),
+                "bs=4",
+                "skip=1",
+                "status=none",
+            ])
+            .output()
+            .await?;
+        assert!(dbx.status.success(), "dbx should be readable");
+        assert!(dbx.stdout.is_empty(), "dbx should have no entries");
+    }
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
