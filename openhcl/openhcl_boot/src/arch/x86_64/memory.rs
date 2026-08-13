@@ -64,8 +64,7 @@ struct DiagChunkHash {
 static DIAG_CHUNK_HASHES: SingleThreaded<RefCell<ArrayVec<DiagChunkHash, DIAG_MAX_CHUNKS>>> =
     SingleThreaded(RefCell::new(ArrayVec::new_const()));
 
-static DIAG_RUNNING_A: SingleThreaded<RefCell<Option<Sha384>>> =
-    SingleThreaded(RefCell::new(None));
+static DIAG_RUNNING_A: SingleThreaded<RefCell<Option<Sha384>>> = SingleThreaded(RefCell::new(None));
 
 /// `core::fmt::Display` adapter that prints a byte slice as lowercase hex,
 /// no separators. Convenient for hashes in log lines.
@@ -162,7 +161,11 @@ fn diag_dump_first_diffs(tag: &str, gpa: u64, pre: &[u8], post: &[u8]) {
     let mut diff_lines: usize = 0;
     let mut reported: usize = 0;
 
-    for (idx, (a, b)) in pre.chunks(CACHE_LINE).zip(post.chunks(CACHE_LINE)).enumerate() {
+    for (idx, (a, b)) in pre
+        .chunks(CACHE_LINE)
+        .zip(post.chunks(CACHE_LINE))
+        .enumerate()
+    {
         if a == b {
             continue;
         }
