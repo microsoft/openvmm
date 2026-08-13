@@ -15,7 +15,9 @@ use crate::hypercall::hvcall;
 use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
 use crate::off_stack;
+use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
+use core::cell::RefCell;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use page_table::x64::MappedRange;
@@ -29,6 +31,263 @@ use static_assertions::const_assert;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use zerocopy::FromZeros;
+
+// ============================================================================
+// Diagnostic instrumentation for the "Imported regions hash mismatch" panic.
+// ============================================================================
+//
+// This is a temporary debugging aid intended for local investigation of a rare
+// mismatch seen on SNP boots. It computes SHA-384 of every 2 MB accept chunk
+// at three points to isolate which phase corruption occurs in:
+//   Phase A: bytes as read from the shared (host-visible) page, before the
+//            shared -> private transition.
+//   Phase C: bytes as read from the same GPA immediately after the transition
+//            (via the C=1 identity map), i.e. after accept + copy-back.
+//   Phase D: bytes as read from the same GPA at final verify time.
+// A running combined Phase-A hash is also accumulated to compare against
+// `imported_regions_hash()` to distinguish "host loaded bad data" from
+// "shim mangled it".
+//
+// Not intended for check-in.
+
+/// Maximum number of 2 MB chunks we track. Debug builds hash roughly
+/// kernel + initrd (~80 MB), giving ~40 chunks; leave generous headroom.
+const DIAG_MAX_CHUNKS: usize = 256;
+
+#[derive(Copy, Clone)]
+struct DiagChunkHash {
+    gpa: u64,
+    len: u32,
+    phase_a_hash: [u8; 48],
+}
+
+static DIAG_CHUNK_HASHES: SingleThreaded<RefCell<ArrayVec<DiagChunkHash, DIAG_MAX_CHUNKS>>> =
+    SingleThreaded(RefCell::new(ArrayVec::new_const()));
+
+static DIAG_RUNNING_A: SingleThreaded<RefCell<Option<Sha384>>> =
+    SingleThreaded(RefCell::new(None));
+
+/// `core::fmt::Display` adapter that prints a byte slice as lowercase hex,
+/// no separators. Convenient for hashes in log lines.
+struct HexBytes<'a>(&'a [u8]);
+impl core::fmt::Display for HexBytes<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for b in self.0 {
+            write!(f, "{:02x}", b)?;
+        }
+        Ok(())
+    }
+}
+
+/// Record the Phase-A hash of a chunk that was just copied out of a shared
+/// page into `ram_buffer`. Also feeds the bytes into a running combined
+/// Phase-A hasher so it can be compared against `imported_regions_hash()`
+/// on final mismatch.
+fn diag_record_phase_a(gpa: u64, data: &[u8]) {
+    {
+        let mut running = DIAG_RUNNING_A.0.borrow_mut();
+        if running.is_none() {
+            *running = Some(Sha384::new());
+        }
+        running.as_mut().unwrap().update(data);
+    }
+
+    let mut h = Sha384::new();
+    h.update(data);
+    let hash: [u8; 48] = h.finalize().into();
+
+    let mut chunks = DIAG_CHUNK_HASHES.0.borrow_mut();
+    if chunks
+        .try_push(DiagChunkHash {
+            gpa,
+            len: data.len() as u32,
+            phase_a_hash: hash,
+        })
+        .is_err()
+    {
+        log::error!(
+            "DIAG_CHUNK_OVERFLOW gpa={:#x} len={:#x} (increase DIAG_MAX_CHUNKS)",
+            gpa,
+            data.len(),
+        );
+    }
+}
+
+/// Immediately after the shared -> private transition and copy-back, compare
+/// the same chunk (via the identity map) against the Phase-A bytes we captured
+/// before the transition. Logs eagerly on mismatch, including hex diffs of the
+/// first few differing 64-byte cache lines, so we know acceptance corrupted
+/// this chunk right when it happened and what the corruption looks like.
+fn diag_verify_phase_c(gpa: u64, pre: &[u8], post: &[u8]) {
+    if pre.len() != post.len() {
+        log::error!(
+            "DIAG_TRANSITION_LEN_MISMATCH gpa={:#x} pre_len={:#x} post_len={:#x}",
+            gpa,
+            pre.len(),
+            post.len(),
+        );
+        return;
+    }
+    if pre == post {
+        return;
+    }
+
+    let mut ha = Sha384::new();
+    ha.update(pre);
+    let hash_a: [u8; 48] = ha.finalize().into();
+    let mut hc = Sha384::new();
+    hc.update(post);
+    let hash_c: [u8; 48] = hc.finalize().into();
+
+    log::error!(
+        "DIAG_TRANSITION_MISMATCH gpa={:#x} len={:#x} phase_a={} phase_c={}",
+        gpa,
+        pre.len(),
+        HexBytes(&hash_a),
+        HexBytes(&hash_c),
+    );
+    diag_dump_first_diffs("DIAG_TRANSITION_DIFF", gpa, pre, post);
+}
+
+/// Log the first `MAX_DIFF_LINES` 64-byte cache lines that differ between
+/// `pre` and `post`, along with byte counts. Keeps log volume bounded even
+/// when the whole chunk differs.
+fn diag_dump_first_diffs(tag: &str, gpa: u64, pre: &[u8], post: &[u8]) {
+    const CACHE_LINE: usize = 64;
+    const MAX_DIFF_LINES: usize = 8;
+
+    debug_assert_eq!(pre.len(), post.len());
+
+    let mut total_diff_bytes: usize = 0;
+    let mut diff_lines: usize = 0;
+    let mut reported: usize = 0;
+
+    for (idx, (a, b)) in pre.chunks(CACHE_LINE).zip(post.chunks(CACHE_LINE)).enumerate() {
+        if a == b {
+            continue;
+        }
+        diff_lines += 1;
+        total_diff_bytes += a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
+
+        if reported < MAX_DIFF_LINES {
+            let offset = idx * CACHE_LINE;
+            log::error!(
+                "{} gpa={:#x} offset={:#x} pre={} post={}",
+                tag,
+                gpa,
+                offset,
+                HexBytes(a),
+                HexBytes(b),
+            );
+            reported += 1;
+        }
+    }
+
+    log::error!(
+        "{}_SUMMARY gpa={:#x} len={:#x} diff_cache_lines={} diff_bytes={} reported={}",
+        tag,
+        gpa,
+        pre.len(),
+        diff_lines,
+        total_diff_bytes,
+        reported,
+    );
+}
+
+/// Log the first `HEAD_BYTES` of the chunk at `gpa` as hex. Useful when only
+/// the current (Phase D) content is available, since it lets us see whether
+/// the offending chunk is all zeros, all 0xff, or otherwise recognisable
+/// (initrd cpio header, ELF magic, etc.) without exposing the whole chunk.
+fn diag_dump_head(tag: &str, gpa: u64, data: &[u8]) {
+    const HEAD_BYTES: usize = 128;
+    let head = &data[..data.len().min(HEAD_BYTES)];
+    log::error!(
+        "{} gpa={:#x} head_len={:#x} head={}",
+        tag,
+        gpa,
+        head.len(),
+        HexBytes(head),
+    );
+}
+
+/// Called from `verify_imported_regions_hash` when the combined Phase-D hash
+/// does not match the expected measured value. Reports:
+/// - Whether the running combined Phase-A hash matches expected. If it does,
+///   the host supplied correct bytes and something in the shim corrupted them.
+///   If it doesn't, the host loaded bad data.
+/// - Per-chunk Phase-D vs Phase-A comparison to identify which chunk(s) drifted
+///   between the shared read and the final verify.
+fn diag_report_phase_d(expected_combined: &[u8]) {
+    let combined_a = DIAG_RUNNING_A.0.borrow_mut().take().map(|h| {
+        let out: [u8; 48] = h.finalize().into();
+        out
+    });
+
+    match combined_a {
+        Some(combined_a) => {
+            if combined_a.as_slice() == expected_combined {
+                log::error!(
+                    "DIAG_VERDICT combined_phase_a matches expected: {} \
+                     (host-supplied shared data was correct; corruption occurred at or after acceptance)",
+                    HexBytes(&combined_a),
+                );
+            } else {
+                log::error!(
+                    "DIAG_VERDICT combined_phase_a differs from expected: \
+                     phase_a={} expected={} \
+                     (host loaded incorrect data into shared pages)",
+                    HexBytes(&combined_a),
+                    HexBytes(expected_combined),
+                );
+            }
+        }
+        None => {
+            log::error!("DIAG_VERDICT combined_phase_a not captured (no chunks recorded)");
+        }
+    }
+
+    let chunks = DIAG_CHUNK_HASHES.0.borrow();
+    let total = chunks.len();
+    let mut mismatches: usize = 0;
+    for (idx, c) in chunks.iter().enumerate() {
+        // SAFETY: The GPA and length were recorded from a range that the shim
+        // itself just accepted as private VTL2 RAM, and remain identity-mapped
+        // for the duration of the shim.
+        let data = unsafe { core::slice::from_raw_parts(c.gpa as *const u8, c.len as usize) };
+        let mut h = Sha384::new();
+        h.update(data);
+        let hash_d: [u8; 48] = h.finalize().into();
+        if hash_d != c.phase_a_hash {
+            mismatches += 1;
+            log::error!(
+                "DIAG_POST_ACCEPT_MISMATCH idx={} gpa={:#x} len={:#x} phase_a={} phase_d={}",
+                idx,
+                c.gpa,
+                c.len,
+                HexBytes(&c.phase_a_hash),
+                HexBytes(&hash_d),
+            );
+            // We no longer have the Phase-A bytes (they lived in `ram_buffer`
+            // which has been reused). Log the head of the current (Phase D)
+            // content so we can eyeball whether the chunk was zeroed,
+            // substituted, or contains plausible data.
+            diag_dump_head("DIAG_POST_ACCEPT_HEAD", c.gpa, data);
+        }
+    }
+    if mismatches == 0 {
+        log::error!(
+            "DIAG_VERDICT all {} tracked chunks unchanged phase_a -> phase_d \
+             (combined mismatch is likely a layout/order/hashing disagreement)",
+            total,
+        );
+    } else {
+        log::error!(
+            "DIAG_VERDICT {} of {} tracked chunks changed between phase_a and phase_d",
+            mismatches,
+            total,
+        );
+    }
+}
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
 /// VTL permissions applied.
@@ -318,6 +577,12 @@ fn accept_pending_vtl2_memory(
                     }
                 }
 
+                // DIAG: record the SHA-384 of this chunk while it's still the
+                // shared/host-loaded content, and feed it into a running
+                // combined Phase-A hash for later comparison against the
+                // measured expected hash.
+                diag_record_phase_a(range.start(), &ram_buffer[..]);
+
                 // Change visibility on the pages for this iteration.
                 match isolation_type {
                     IsolationType::Snp => {
@@ -353,6 +618,22 @@ fn accept_pending_vtl2_memory(
                     };
 
                     mapping.copy_from_slice(ram_buffer);
+                }
+
+                // DIAG: re-hash the chunk from the freshly written private
+                // page (Phase C) and compare against the Phase-A bytes still
+                // sitting in `ram_buffer`. A mismatch here means the accept/
+                // copy-back path corrupted this chunk; hex diffs of the first
+                // few differing cache lines are logged.
+                {
+                    // SAFETY: Same memory just written above; identity mapped.
+                    let post = unsafe {
+                        core::slice::from_raw_parts(
+                            range.start() as *const u8,
+                            range.len() as usize,
+                        )
+                    };
+                    diag_verify_phase_c(range.start(), &ram_buffer[..post.len()], post);
                 }
             }
         }
@@ -390,7 +671,15 @@ pub fn verify_imported_regions_hash(shim_params: &ShimParams) {
             hasher.update(mapping);
         });
 
-    if hasher.finalize().as_slice() != shim_params.imported_regions_hash() {
+    let final_hash: [u8; 48] = hasher.finalize().into();
+    let expected = shim_params.imported_regions_hash();
+    if final_hash.as_slice() != expected {
+        log::error!(
+            "DIAG_COMBINED_PHASE_D combined_phase_d={} expected={}",
+            HexBytes(&final_hash),
+            HexBytes(expected),
+        );
+        diag_report_phase_d(expected);
         panic!("Imported regions hash mismatch");
     }
 }
