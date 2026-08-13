@@ -478,6 +478,8 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
         state.update_deadline = 0;
     }
 
+    fn begin_vtl_transition(&self, _vp: &mut UhProcessor<'_, TdxBacked>, _vtl: GuestVtl) {}
+
     fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, TdxBacked>, _vtl: GuestVtl) {
         let vp_state = vp
             .backing

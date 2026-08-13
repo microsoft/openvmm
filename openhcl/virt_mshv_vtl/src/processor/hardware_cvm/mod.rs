@@ -3203,11 +3203,11 @@ pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>);
 
     /// Publish timer state before running a lower VTL.
-    fn begin_vtl_transition(&self, _vp: &mut UhProcessor<'_, T>, _vtl: GuestVtl) {}
+    fn begin_vtl_transition(&self, vp: &mut UhProcessor<'_, T>, vtl: GuestVtl);
 
     /// Synchronize timer state after returning from a lower VTL. Implementations
     /// must not assume that backend-private register readback has completed.
-    fn end_vtl_transition(&self, _vp: &mut UhProcessor<'_, T>, _vtl: GuestVtl) {}
+    fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, T>, vtl: GuestVtl);
 }
 
 /// Interface for managing lower VTL timer deadlines via [`VmTime`].
@@ -3250,6 +3250,10 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>) {
         vp.vmtime.cancel_timeout();
     }
+
+    fn begin_vtl_transition(&self, _vp: &mut UhProcessor<'_, T>, _vtl: GuestVtl) {}
+
+    fn end_vtl_transition(&self, _vp: &mut UhProcessor<'_, T>, _vtl: GuestVtl) {}
 }
 
 #[cfg(test)]

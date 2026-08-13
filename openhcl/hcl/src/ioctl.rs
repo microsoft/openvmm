@@ -1482,13 +1482,6 @@ impl HclVp {
             // (`HclVp` creation), so we know we have exclusive access.
             unsafe {
                 (*run.as_ptr()).proxy_irr_blocked.fill(!0);
-                if isolation_type == IsolationType::Snp {
-                    let context: &mut protocol::snp_vp_context =
-                        &mut *(&raw mut (*run.as_ptr()).context).cast();
-                    context
-                        .vmsa_tweak_bitmap
-                        .copy_from_slice(&hcl.snp_register_bitmap);
-                }
             }
         }
 
@@ -1516,6 +1509,15 @@ impl HclVp {
                 },
             },
             IsolationType::Snp => {
+                // SAFETY: The run page is not accessed by any other VPs/kernel at this point
+                // (`HclVp` creation), so we know we have exclusive access.
+                unsafe {
+                    let context: &mut protocol::snp_vp_context =
+                        &mut *(&raw mut (*run.as_ptr()).context).cast();
+                    context
+                        .vmsa_tweak_bitmap
+                        .copy_from_slice(&hcl.snp_register_bitmap);
+                }
                 let vmsa_vtl0 = MappedPage::new(fd, HCL_VMSA_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?;
                 let vmsa_vtl1 = MappedPage::new(fd, HCL_VMSA_GUEST_VSM_PAGE_OFFSET | vp as i64)
