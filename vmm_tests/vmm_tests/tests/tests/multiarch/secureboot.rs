@@ -346,6 +346,12 @@ async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
         .run()
         .await?;
 
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(verify_secure_boot_variable_presence(&vm, "dbx", false))
+        .await
+        .context("absent dbx report was not observed within 60 seconds")??;
+
     let shell = agent.unix_shell();
     let pk_path = format!("/sys/firmware/efi/efivars/PK-{EFI_GLOBAL_VARIABLE_GUID}");
     let pk_exists = cmd!(shell, "sudo")
@@ -355,17 +361,18 @@ async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
     assert!(pk_exists.status.success(), "replacement PK should exist");
 
     let dbx_path = format!("/sys/firmware/efi/efivars/dbx-{IMAGE_SECURITY_DATABASE_GUID}");
-    let dbx_exists = cmd!(shell, "sudo")
-        .args(["test", "-e", &dbx_path])
+    let dbx = cmd!(shell, "sudo")
+        .args([
+            "dd",
+            &format!("if={dbx_path}"),
+            "bs=4",
+            "skip=1",
+            "status=none",
+        ])
         .output()
         .await?;
-    assert!(!dbx_exists.status.success(), "dbx should not exist");
-
-    CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
-        .until_cancelled(verify_secure_boot_variable_presence(&vm, "dbx", false))
-        .await
-        .context("absent dbx report was not observed within 60 seconds")??;
+    assert!(dbx.status.success(), "dbx should exist");
+    assert!(dbx.stdout.is_empty(), "dbx should have no entries");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
