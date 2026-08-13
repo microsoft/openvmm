@@ -478,8 +478,9 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
         state.update_deadline = 0;
     }
 
-    /// Synchronize armed deadline state in the processor context.
-    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
+    fn begin_vtl_transition(&self, _vp: &mut UhProcessor<'_, TdxBacked>, _vtl: GuestVtl) {}
+
+    fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, TdxBacked>, _vtl: GuestVtl) {
         let vp_state = vp
             .backing
             .tsc_deadline_state
@@ -1733,6 +1734,8 @@ impl UhProcessor<'_, TdxBacked> {
 
         *self.runner.offload_flags_mut() = offload_flags;
 
+        self.shared.guest_timer.begin_vtl_transition(self, next_vtl);
+
         self.runner
             .write_private_regs(&self.backing.vtls[next_vtl].private_regs);
 
@@ -1750,8 +1753,9 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
 
-        // Synchronize timer deadline state
-        self.shared.guest_timer.sync_deadline_state(self);
+        self.shared
+            .guest_timer
+            .end_vtl_transition(self, entered_from_vtl);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {

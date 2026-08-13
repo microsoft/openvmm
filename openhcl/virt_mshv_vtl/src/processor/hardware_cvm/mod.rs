@@ -3309,8 +3309,12 @@ pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
     /// Clear any pending deadline.
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>);
 
-    /// Synchronize armed deadline state for hardware virtualized timers.
-    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, T>);
+    /// Publish timer state before running a lower VTL.
+    fn begin_vtl_transition(&self, vp: &mut UhProcessor<'_, T>, vtl: GuestVtl);
+
+    /// Synchronize timer state after returning from a lower VTL. Implementations
+    /// must not assume that backend-private register readback has completed.
+    fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, T>, vtl: GuestVtl);
 }
 
 /// Interface for managing lower VTL timer deadlines via [`VmTime`].
@@ -3354,9 +3358,9 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
         vp.vmtime.cancel_timeout();
     }
 
-    fn sync_deadline_state(&self, _vp: &mut UhProcessor<'_, T>) {
-        // No-op for software timers
-    }
+    fn begin_vtl_transition(&self, _vp: &mut UhProcessor<'_, T>, _vtl: GuestVtl) {}
+
+    fn end_vtl_transition(&self, _vp: &mut UhProcessor<'_, T>, _vtl: GuestVtl) {}
 }
 
 #[cfg(test)]
