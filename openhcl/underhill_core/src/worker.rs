@@ -3692,8 +3692,9 @@ async fn new_underhill_vm(
                     "hibernation resume token does not match the current firmware version"
                 );
             }
-            hibernate::delete_token(vmgs_client).await;
         }
+        // Consume any token, valid or corrupt, so it is not re-read next boot.
+        hibernate::delete_token(vmgs_client).await;
         // No overload support yet; always use the current firmware version.
         Some(hibernate::token::DEFAULT)
     } else {

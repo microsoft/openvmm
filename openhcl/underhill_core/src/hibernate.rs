@@ -7,6 +7,8 @@
 //! major version and the low 8 bits are the minor version.
 
 use cvm_tracing::CVM_ALLOWED;
+use vmgs_broker::VmgsBrokerError;
+use vmgs_broker::VmgsClientError;
 
 /// Hibernate token values written to [`vmgs::FileId::HIBERNATION_TOKEN`].
 pub mod token {
@@ -55,40 +57,25 @@ pub async fn write_token(vmgs_client: &vmgs_broker::VmgsClient, token: u64) {
 /// Best-effort deletion of the hibernate token, clearing any prior hibernate
 /// marker. Never blocks the power transition.
 pub async fn delete_token(vmgs_client: &vmgs_broker::VmgsClient) {
-    // delete_file errors when the token is absent, the common no-hibernate case.
-    if vmgs_client
-        .get_file_info(vmgs::FileId::HIBERNATION_TOKEN)
-        .await
-        .is_err()
-    {
-        return;
-    }
-    if let Err(err) = vmgs_client
+    match vmgs_client
         .delete_file(vmgs::FileId::HIBERNATION_TOKEN)
         .await
     {
-        tracing::error!(
-            CVM_ALLOWED,
-            error = &err as &dyn std::error::Error,
-            "failed to delete hibernate token"
-        );
+        // An absent token is the common no-hibernate case.
+        Ok(()) | Err(VmgsClientError::Vmgs(VmgsBrokerError::FileInfoNotAllocated)) => {}
+        Err(err) => {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = &err as &dyn std::error::Error,
+                "failed to delete hibernate token"
+            );
+        }
     }
 }
 
 /// At boot, record which hibernate token (if any) the previous session left
 /// behind.
 pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
-    if vmgs_client
-        .get_file_info(vmgs::FileId::HIBERNATION_TOKEN)
-        .await
-        .is_err()
-    {
-        tracing::info!(
-            CVM_ALLOWED,
-            "hibernation enabled: no hibernation token found"
-        );
-        return None;
-    }
     match vmgs_client.read_file(vmgs::FileId::HIBERNATION_TOKEN).await {
         Ok(buf) => match buf.first_chunk::<8>() {
             Some(bytes) => {
@@ -108,6 +95,13 @@ pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
                 None
             }
         },
+        Err(VmgsClientError::Vmgs(VmgsBrokerError::FileInfoNotAllocated)) => {
+            tracing::info!(
+                CVM_ALLOWED,
+                "hibernation enabled: no hibernation token found"
+            );
+            None
+        }
         Err(err) => {
             tracing::error!(
                 CVM_ALLOWED,

@@ -11,10 +11,13 @@ use vmgs::Vmgs;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
 
+/// An error returned by a VMGS broker operation.
 #[derive(Protobuf, Error, Debug)]
 pub enum VmgsBrokerError {
+    /// The requested file has no allocated bytes (i.e. does not exist).
     #[error("no allocated bytes for file id being read")]
     FileInfoNotAllocated,
+    /// Another VMGS error.
     #[error(transparent)]
     Other(RemoteError),
 }
