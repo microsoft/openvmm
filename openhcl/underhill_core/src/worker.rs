@@ -4039,7 +4039,7 @@ async fn halt_task(
                     get_client.send_reset()
                 }
                 HaltRequest::Hibernate => {
-                    // Write the hibernate token before signaling the host, mirroring legacy HCL.
+                    // Write the hibernate token before signaling the host.
                     if let Some(hibernate_halt) = &hibernate_halt {
                         hibernate::write_token(
                             &hibernate_halt.vmgs_client,

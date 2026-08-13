@@ -3,9 +3,8 @@
 
 //! OpenHCL hibernate token handling: the values written to
 //! [`vmgs::FileId::HIBERNATION_TOKEN`] and helpers to read, write, and delete
-//! it, mirroring the legacy HCL `HclPowerServices` behavior. Tokens encode the
-//! firmware version in 16 bits: the high 8 bits are the major version and the
-//! low 8 bits are the minor version.
+//! it. Tokens encode the firmware version in 16 bits: the high 8 bits are the
+//! major version and the low 8 bits are the minor version.
 
 use cvm_tracing::CVM_ALLOWED;
 
@@ -77,7 +76,7 @@ pub async fn delete_token(vmgs_client: &vmgs_broker::VmgsClient) {
 }
 
 /// At boot, record which hibernate token (if any) the previous session left
-/// behind. Mirrors the legacy HCL `WriteUefiConfigBlob` telemetry.
+/// behind.
 pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<u64> {
     if vmgs_client
         .get_file_info(vmgs::FileId::HIBERNATION_TOKEN)
