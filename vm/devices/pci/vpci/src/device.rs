@@ -1040,7 +1040,7 @@ impl ReadyState {
                                 bar_isolation: [
                                     protocol::ResourceIsolation::PRIVATE,
                                     protocol::ResourceIsolation::INVALID,
-                                    protocol::ResourceIsolation::PRIVATE,
+                                    protocol::ResourceIsolation::INVALID,
                                     protocol::ResourceIsolation::INVALID,
                                     protocol::ResourceIsolation::SHARED,
                                     protocol::ResourceIsolation::INVALID,
@@ -1052,7 +1052,7 @@ impl ReadyState {
                                 status = ?reply.status,
                                 bar_isolation = ?reply.bar_isolation,
                                 dma_isolation = ?reply.dma_isolation,
-                                "VPCI_QUERY_ISOLATED_RESOURCES static bringup reply"
+                                "VPCI_QUERY_ISOLATED_RESOURCES static bringup reply (for MANA)"
                             );
                             reply
                         };
@@ -2875,7 +2875,12 @@ mod tests {
             guest_driver.start_device(0x1000000).await;
 
             let reply = guest_driver.send_query_isolated_resources().await;
-            assert_eq!(reply.status, protocol::Status::SUCCESS, "report {:?}", report);
+            assert_eq!(
+                reply.status,
+                protocol::Status::SUCCESS,
+                "report {:?}",
+                report
+            );
             assert_eq!(
                 reply.bar_isolation, expected_static_bars,
                 "report {:?}",
