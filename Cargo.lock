@@ -8789,6 +8789,7 @@ dependencies = [
  "disk_blockdevice",
  "disk_get_vmgs",
  "disk_nvme",
+ "disklayer_ram",
  "firmware_pcat",
  "firmware_uefi_custom_vars",
  "firmware_uefi_resources",
