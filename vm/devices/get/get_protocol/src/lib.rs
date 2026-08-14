@@ -55,6 +55,11 @@ open_enum! {
         RS5 = make_version(1, 0),
         IRON = make_version(3, 0),
         NICKEL_REV2 = make_version(4, 2),
+        /// Adds the `LOAD_FIRMWARE` host request, allowing the guest/paravisor to
+        /// ask the host to (re)load a firmware image into VTL0 guest RAM at
+        /// runtime (e.g. to overload the cold-boot firmware on hibernation
+        /// resume).
+        NICKEL_REV3 = make_version(4, 3),
     }
 }
 
@@ -158,6 +163,8 @@ open_enum! {
         DEVICE_PLATFORM_SETTINGS_V2_REV1 = 27, // wart: only sent back in *response* to DEVICE_PLATFORM_SETTINGS
         CREATE_RAM_GPA_RANGE             = 28,
         RESET_RAM_GPA_RANGE              = 29,
+        // --- NI_REV3 ---
+        LOAD_FIRMWARE                    = 30,
 
         // --- Experimental (not yet in Hyper-V) ---
         MAP_FRAMEBUFFER              = 0xFFFF,
@@ -1894,6 +1901,63 @@ impl ResetRamGpaRangeResponse {
     pub fn new() -> Self {
         Self {
             message_header: HeaderGeneric::new(HostRequests::RESET_RAM_GPA_RANGE),
+        }
+    }
+}
+
+/// Requests that the host load a firmware image into VTL0 guest RAM (memory
+/// only; the guest/paravisor remains responsible for VP state). Introduced in
+/// [`ProtocolVersion::NICKEL_REV3`].
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct LoadFirmwareRequest {
+    pub message_header: HeaderHostRequest,
+    /// Opaque token identifying the firmware resource to load.
+    pub firmware_token: u64,
+}
+
+const_assert_eq!(12, size_of::<LoadFirmwareRequest>());
+
+impl LoadFirmwareRequest {
+    pub fn new(firmware_token: u64) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(HostRequests::LOAD_FIRMWARE),
+            firmware_token,
+        }
+    }
+}
+
+open_enum! {
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    pub enum LoadFirmwareStatus: u32 {
+        SUCCESS = 0,
+        /// The supplied firmware token did not map to a known resource.
+        INVALID_TOKEN = 1,
+        /// The firmware image could not be loaded or written into guest RAM.
+        FAILED = 2,
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct LoadFirmwareResponse {
+    pub message_header: HeaderHostResponse,
+    pub status: LoadFirmwareStatus,
+    /// Offset from the firmware image base to the firmware entry point (SEC
+    /// entry on x64), computed by the host. Valid only when `status` is
+    /// [`LoadFirmwareStatus::SUCCESS`]; the guest/paravisor programs VTL0's RIP
+    /// to `image_base + entry_point_image_offset`.
+    pub entry_point_image_offset: u64,
+}
+
+const_assert_eq!(16, size_of::<LoadFirmwareResponse>());
+
+impl LoadFirmwareResponse {
+    pub fn new(status: LoadFirmwareStatus, entry_point_image_offset: u64) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(HostRequests::LOAD_FIRMWARE),
+            status,
+            entry_point_image_offset,
         }
     }
 }
