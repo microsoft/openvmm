@@ -4130,6 +4130,21 @@ async fn overload_vtl0_firmware(
     token: u64,
     measured_vtl0_info: &mut Option<MeasuredVtl0Info>,
 ) -> bool {
+    // The LoadFirmware host request requires NICKEL_REV3. On older hosts we
+    // can't overload the firmware, so skip the request; warn, since the caller
+    // only reaches here when the resume token doesn't match the current version.
+    if get_client.version() < get_protocol::ProtocolVersion::NICKEL_REV3 {
+        tracing::warn!(
+            CVM_ALLOWED,
+            token,
+            version = ?get_client.version(),
+            "host does not support firmware overload (requires NICKEL_REV3); \
+             resuming with the current firmware version despite a hibernation \
+             token mismatch"
+        );
+        return false;
+    }
+
     let offset = match get_client.load_firmware(token).await {
         Ok(offset) => offset,
         Err(err) => {

@@ -778,8 +778,12 @@ impl<T: RingMem> ProcessLoop<T> {
         // self.run() isn't running yet to take requests, so we must send requests
         // manually.
 
-        // Negotiate the protocol.
-        for protocol in [get_protocol::ProtocolVersion::NICKEL_REV2] {
+        // Negotiate the protocol, preferring the newest version and falling
+        // back to older ones the host may support.
+        for protocol in [
+            get_protocol::ProtocolVersion::NICKEL_REV3,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+        ] {
             let version_request = get_protocol::VersionRequest::new(protocol);
 
             self.pipe

@@ -140,7 +140,7 @@ mod tests {
             vmbus_async::pipe::connected_message_pipes(get_protocol::MAX_MESSAGE_SIZE);
 
         let host_task = driver.spawn("host task", async move {
-            for protocol in [ProtocolVersion::NICKEL_REV2] {
+            for protocol in [ProtocolVersion::NICKEL_REV3, ProtocolVersion::NICKEL_REV2] {
                 let mut version_request = get_protocol::VersionRequest::new_zeroed();
                 let len = version_request.as_bytes().len();
                 assert_eq!(
@@ -776,5 +776,38 @@ mod tests {
             new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
 
         get.test_ged_client.test_save_guest_vtl2_state().await;
+    }
+
+    #[async_test]
+    async fn test_load_firmware_nickel_rev3(driver: DefaultDriver) {
+        // The plain GED accepts the guest's highest proposed version, so this
+        // negotiates NICKEL_REV3 and the LoadFirmware host request is allowed.
+        let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV3, None, None).await;
+        assert_eq!(get.client.version(), ProtocolVersion::NICKEL_REV3);
+
+        let entry_offset = get.client.load_firmware(0x0107).await.unwrap();
+        assert_eq!(entry_offset, 0);
+    }
+
+    #[async_test]
+    async fn test_load_firmware_unsupported_on_rev2(driver: DefaultDriver) {
+        // Force a NICKEL_REV2 negotiation via the exact-match TestGedChannel;
+        // the client must refuse to send LoadFirmware on the older version.
+        let get = new_transport_pair(
+            driver,
+            Some(Vec::new()),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(get.client.version(), ProtocolVersion::NICKEL_REV2);
+
+        assert!(matches!(
+            get.client.load_firmware(0x0107).await,
+            Err(crate::error::LoadFirmwareError::Unsupported(
+                ProtocolVersion::NICKEL_REV2
+            ))
+        ));
     }
 }

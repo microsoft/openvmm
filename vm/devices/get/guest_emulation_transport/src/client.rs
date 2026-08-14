@@ -767,13 +767,18 @@ impl GuestEmulationTransportClient {
         &self,
         firmware_token: u64,
     ) -> Result<u64, crate::error::LoadFirmwareError> {
+        // The LoadFirmware host request was introduced in NICKEL_REV3; don't
+        // send it to hosts that negotiated an older protocol version.
+        if self.version < get_protocol::ProtocolVersion::NICKEL_REV3 {
+            return Err(crate::error::LoadFirmwareError::Unsupported(self.version));
+        }
         let response = self
             .control
             .call(msg::Msg::LoadFirmware, firmware_token)
             .await
             .0;
         if response.status != get_protocol::LoadFirmwareStatus::SUCCESS {
-            Err(crate::error::LoadFirmwareError(response.status))
+            Err(crate::error::LoadFirmwareError::Status(response.status))
         } else {
             Ok(response.entry_point_image_offset)
         }

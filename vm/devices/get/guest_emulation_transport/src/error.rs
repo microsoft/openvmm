@@ -56,8 +56,15 @@ pub struct CreateRamGpaRangeError(pub(crate) get_protocol::CreateRamGpaRangeStat
 
 /// Error while invoking a LoadFirmwareRequest
 #[derive(Debug, Error)]
-#[error("load firmware error: {0:?}")]
-pub struct LoadFirmwareError(pub(crate) get_protocol::LoadFirmwareStatus);
+pub enum LoadFirmwareError {
+    /// The negotiated protocol version does not support the `LoadFirmware` host
+    /// request, which requires [`get_protocol::ProtocolVersion::NICKEL_REV3`].
+    #[error("load firmware not supported by negotiated protocol version {0:?}")]
+    Unsupported(get_protocol::ProtocolVersion),
+    /// The host rejected the request with a non-success status.
+    #[error("load firmware error: {0:?}")]
+    Status(get_protocol::LoadFirmwareStatus),
+}
 
 /// Error while invoking a GuestStateProtectionByIdRequest
 #[derive(Debug, Error)]
