@@ -29,7 +29,10 @@ pub enum Token {
 
 impl Token {
     /// Written when the current firmware hibernates; bump per release.
-    pub const CURRENT: Self = Self::Hibernated { major: 1, minor: 9 };
+    // TODO: The 1.8 branch will start with the 1.7-era uefi firmware (in
+    // internal builds) to maintain hibernation compat. This will be changed
+    // later in servicing.
+    pub const CURRENT: Self = Self::Hibernated { major: 1, minor: 7 };
     /// Written when the firmware version is unknown (e.g. after servicing).
     pub const UNKNOWN: Self = Self::Hibernated { major: 1, minor: 0 };
 }
