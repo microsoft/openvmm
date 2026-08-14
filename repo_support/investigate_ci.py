@@ -265,6 +265,23 @@ def get_run_status(run_id: str) -> None:
     print(f"  {run['name']}: {run['status']} ({conclusion})")
 
 
+def log_viewer_url(run_id: str) -> str:
+    """Build the petri log viewer URL for a run.
+
+    Logs are uploaded per re-run attempt, under "<run id>_<attempt>", so the
+    viewer is keyed on that rather than on the run ID alone. Fall back to the
+    first attempt if the attempt number can't be determined.
+    """
+    attempt = gh(
+        "api", f"repos/{REPO}/actions/runs/{run_id}",
+        "--jq", ".run_attempt",
+        check=False, quiet=True,
+    )
+    if not attempt.isdigit():
+        attempt = "1"
+    return f"https://openvmm.dev/test-results/#/runs/{run_id}_{attempt}"
+
+
 def get_failed_jobs(run_id: str) -> list[dict]:
     """Return list of failed job dicts with 'name' and 'databaseId'."""
     print()
@@ -701,7 +718,8 @@ def investigate_run(run_id: str) -> bool:
     print("  SUMMARY")
     print("==========================================")
     print(f"  Run ID:       {run_id}")
-    print(f"  Logview URL:  https://openvmm.dev/test-results/#/runs/{run_id}")
+    logview_url = log_viewer_url(run_id)
+    print(f"  Logview URL:  {logview_url}")
     if junit_failure_count > 0:
         print(f"  Unit test failures: {junit_failure_count}")
     if failed_markers:
@@ -719,7 +737,7 @@ def investigate_run(run_id: str) -> bool:
     print("    guest.log    - Guest OS serial output")
     print("    uefi.log     - UEFI serial output")
     print()
-    print(f"  To view in browser: https://openvmm.dev/test-results/#/runs/{run_id}")
+    print(f"  To view in browser: {logview_url}")
     return True
 
 
