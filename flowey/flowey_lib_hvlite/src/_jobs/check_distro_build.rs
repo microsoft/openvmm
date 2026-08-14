@@ -8,6 +8,10 @@
 //! provisioning. Every native dependency comes from a distribution package,
 //! and the uploaded vendor archive is consumed exactly the way a packager would
 //! consume it.
+//!
+//! The build runs against a `git archive` export of HEAD rather than the
+//! checkout, both because that is the tree a packager gets from the tag source
+//! archive and because the checkout may be a developer's working tree.
 
 use crate::assemble_openvmm_vendor_release::{
     CARGO_CONFIG_FILE, VendorReleaseOutput, read_vendor_identity, resolve_identity,
@@ -112,23 +116,30 @@ impl SimpleFlowNode for Node {
 
                 let archive = release.assets.join(identity.archive_name());
 
-                // A reused workspace could leave a stale tree behind, and tar
-                // would merge into it rather than replace it. That would let
-                // leftover crates satisfy the offline build and weaken the
-                // proof that the archive is self-sufficient.
-                let vendor_dir = openvmm_repo_path.join("vendor");
-                let cargo_config = openvmm_repo_path.join(CARGO_CONFIG_FILE);
-                for path in [&vendor_dir, &cargo_config] {
-                    if path.exists() {
-                        anyhow::bail!(
-                            "{} already exists in the checkout; refusing to extract the vendor \
-                             archive over existing state",
-                            path.display()
-                        );
-                    }
-                }
+                let build_root = std::env::current_dir()?;
 
-                flowey::shell_cmd!(rt, "tar -xzf {archive} -C {openvmm_repo_path}").run()?;
+                // Build an export of the commit rather than the checkout
+                // itself. This is the tree a packager actually gets from the
+                // tag source archive, and on the local backend the checkout is
+                // the developer's working tree, which this job would otherwise
+                // fill with a vendored crate tree and a modified tracked
+                // `.cargo/config.toml`.
+                let source_dir = build_root.join("distro-build-source");
+                if source_dir.exists() {
+                    fs_err::remove_dir_all(&source_dir)?;
+                }
+                fs_err::create_dir_all(&source_dir)?;
+
+                let source_tar = build_root.join("distro-build-source.tar");
+                rt.sh.change_dir(&openvmm_repo_path);
+                flowey::shell_cmd!(rt, "git archive --format=tar -o {source_tar} HEAD").run()?;
+                flowey::shell_cmd!(rt, "tar -xf {source_tar} -C {source_dir}").run()?;
+                fs_err::remove_file(&source_tar)?;
+
+                flowey::shell_cmd!(rt, "tar -xzf {archive} -C {source_dir}").run()?;
+
+                let vendor_dir = source_dir.join("vendor");
+                let cargo_config = source_dir.join(CARGO_CONFIG_FILE);
 
                 if !vendor_dir.is_dir() {
                     anyhow::bail!("vendor archive did not extract {}", vendor_dir.display());
@@ -138,10 +149,9 @@ impl SimpleFlowNode for Node {
                     anyhow::bail!("vendor archive did not extract {}", cargo_config.display());
                 }
 
-                let cargo_config_toml = openvmm_repo_path.join(".cargo").join("config.toml");
+                let cargo_config_toml = source_dir.join(".cargo").join("config.toml");
                 append_vendor_config(&cargo_config_toml, &cargo_config)?;
 
-                let build_root = std::env::current_dir()?;
                 let cargo_home = build_root.join("distro-cargo-home");
                 if cargo_home.exists() {
                     fs_err::remove_dir_all(&cargo_home)?;
@@ -174,7 +184,7 @@ impl SimpleFlowNode for Node {
                     ],
                 );
 
-                rt.sh.change_dir(&openvmm_repo_path);
+                rt.sh.change_dir(&source_dir);
                 flowey::shell_cmd!(rt, "{argv0} {params...}")
                     .env("PROTOC", protoc)
                     .env("OPENSSL_NO_VENDOR", "1")
