@@ -78,6 +78,14 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --hypervisor whp:user_mode_apic,no_enlightenments
   --hypervisor kvm
   ```
+* `--isolation <MODE>`: Enable a confidential or isolated VM mode.
+  Supported modes include `vbs` and, for `x86_64` guests on KVM, `snp`.
+
+  SNP support is currently limited to Linux direct boot and is intended for
+  bring-up. It does not support UEFI, Hyper-V enlightenments, VTL2, VMBus,
+  or hugetlb-backed memory. In addition to the minimal emulated chipset and
+  serial console, optional devices are limited to virtio devices attached
+  through PCIe.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and
@@ -309,6 +317,13 @@ complex name:
 - `node=<N>`: NUMA node affinity for this root complex. The guest sees
   this via the ACPI `_PXM` object. When omitted, no `_PXM` is emitted
   and the guest uses its default allocation policy.
+
+By default, PCIe ECAM is placed above 4 GiB to preserve low MMIO space for
+device BARs. Use `--pcie-ecam-below-4gb` to place every PCI segment's ECAM in
+32-bit MMIO instead. This compatibility workaround is intended for direct-boot
+guest kernels that cannot discover high ECAM without firmware interfaces
+available during a conventional boot. The flag defaults to off and requires
+`--pcie-root-complex`.
 
 ### Root port and switch options
 

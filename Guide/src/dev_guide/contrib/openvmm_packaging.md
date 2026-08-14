@@ -39,17 +39,21 @@ assembly is therefore unnecessary; it would not change the output.
 
 ## Verifying the archive
 
-Assembly writes `SHA256SUMS` next to the archive, covering it under the
-archive's own name:
+Releases are published on GitHub under the tag `openvmm-v<VERSION>`. Each
+one carries the archive, `SHA256SUMS`, and a GitHub build provenance
+attestation for both files.
+
+`SHA256SUMS` covers the archive under the archive's own name:
 
 ```bash
 sha256sum --check SHA256SUMS
 ```
 
-```admonish warning
-OpenVMM does not yet upload the archive and `SHA256SUMS` as release
-assets; assembly currently runs only as a CI gate. Until publication
-lands, there is no upstream URL for a packaging recipe to point at.
+The attestation ties those bytes back to the workflow run that produced
+them, and can be checked independently of the checksum:
+
+```bash
+gh attestation verify openvmm-<VERSION>.tar.gz --repo microsoft/openvmm
 ```
 
 Pin that digest in the distribution package rather than re-downloading
@@ -141,9 +145,9 @@ sufficient on its own; see the distribution-specific requirements below.
 
 ## Distribution integration
 
-OpenVMM's assembly produces an upstream source archive and its checksum.
-Mapping those onto a distribution's own conventions is the packager's
-job, but the points below are the ones OpenVMM's layout affects directly.
+OpenVMM publishes an upstream source archive and its checksum. Mapping
+those onto a distribution's own conventions is the packager's job, but
+the points below are the ones OpenVMM's layout affects directly.
 
 ### RPM
 

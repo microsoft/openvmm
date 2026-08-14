@@ -200,6 +200,62 @@ impl SnpSynicTimerDeadline {
     }
 }
 
+struct SnpKernelGuestTimer {
+    fallback: hardware_cvm::VmTimeGuestTimer,
+}
+
+impl SnpKernelGuestTimer {
+    fn timeout(&self, vmtime: &VmTimeAccess, ref_time_now: u64, ref_time_next: u64) -> VmTime {
+        self.fallback.timeout(vmtime, ref_time_now, ref_time_next)
+    }
+}
+
+impl HardwareIsolatedGuestTimer<SnpBacked> for SnpKernelGuestTimer {
+    fn is_hardware_virtualized(&self) -> bool {
+        false
+    }
+
+    fn update_deadline(
+        &self,
+        vp: &mut UhProcessor<'_, SnpBacked>,
+        ref_time_now: u64,
+        ref_time_next: u64,
+    ) {
+        self.fallback
+            .update_deadline(vp, ref_time_now, ref_time_next);
+    }
+
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, SnpBacked>) {
+        self.fallback.clear_deadline(vp);
+    }
+
+    fn begin_vtl_transition(&self, vp: &mut UhProcessor<'_, SnpBacked>, vtl: GuestVtl) {
+        vp.runner.set_stimer0_config(
+            (vtl == GuestVtl::Vtl0)
+                .then(|| vp.backing.cvm.hv[GuestVtl::Vtl0].synic.stimer_config(0)),
+        );
+    }
+
+    fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, SnpBacked>, _vtl: GuestVtl) {
+        if let Some(update) = vp.runner.take_stimer0_update() {
+            assert_eq!(_vtl, GuestVtl::Vtl0);
+            tracing::trace!(
+                count = update.count,
+                programmed_ref_time = update.programmed_ref_time,
+                expired = update.expired,
+                "synchronizing kernel STIMER0 update"
+            );
+            // Kernel expiry only wakes VTL2. Reconstructing the original due
+            // time lets the normal SynIC scan perform the sole delivery.
+            vp.backing.cvm.hv[GuestVtl::Vtl0].synic.set_stimer_count_at(
+                0,
+                update.count,
+                update.programmed_ref_time,
+            );
+        }
+    }
+}
+
 enum UhDirectOverlay {
     Sipp,
     Sifp,
@@ -504,7 +560,7 @@ pub struct SnpBackedShared {
     sev_status: SevStatusMsr,
     /// Accessor for managing lower VTL timer deadlines.
     #[inspect(skip)]
-    guest_timer: hardware_cvm::VmTimeGuestTimer,
+    guest_timer: SnpKernelGuestTimer,
     secure_avic: bool,
     /// Whether virtual NMI (V_NMI) is supported by the host CPU.
     pub(crate) vnmi: bool,
@@ -553,7 +609,9 @@ impl SnpBackedShared {
         tracing::info!(CVM_ALLOWED, ?secure_avic, "Secure AVIC status");
 
         // Configure timer interface for lower VTLs.
-        let guest_timer = hardware_cvm::VmTimeGuestTimer;
+        let guest_timer = SnpKernelGuestTimer {
+            fallback: hardware_cvm::VmTimeGuestTimer,
+        };
 
         Ok(Self {
             sev_status,
@@ -1609,12 +1667,18 @@ impl UhProcessor<'_, SnpBacked> {
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
+        self.shared.guest_timer.begin_vtl_transition(self, next_vtl);
+
         let mut has_intercept = self
             .runner
             .run()
             .map_err(|e| dev.fatal_error(SnpRunVpError::RunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
+
+        self.shared
+            .guest_timer
+            .end_vtl_transition(self, entered_from_vtl);
 
         // Kernel offload may have set or cleared the halt/idle states while
         // handling VTL0 exits internally. Keep the userspace activity state in

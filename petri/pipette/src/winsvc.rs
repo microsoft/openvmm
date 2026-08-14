@@ -81,11 +81,16 @@ async fn service_main_inner(
             .context("failed to set service status")
     };
 
-    set_status(service::ServiceState::StartPending)?;
+    // Report the service as running before connecting to the host.
+    //
+    // The SCM locks the service control database for as long as a service is
+    // initializing, which blocks every other `StartService` call in the guest.
+    // Connecting to the host is unbounded and host-paced, so treating it as
+    // initialization stalls unrelated guest service startup.
+    set_status(service::ServiceState::Running)?;
 
     let run = async {
         let agent = Agent::new(driver, transport).await?;
-        set_status(service::ServiceState::Running)?;
         agent.run().await
     };
 

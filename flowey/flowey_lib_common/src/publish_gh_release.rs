@@ -55,9 +55,15 @@ pub struct GhReleaseParams<C = VarNotClaimed> {
     pub notes: GhReleaseNotes,
     /// Whether the release should be created as a draft
     pub draft: bool,
+    /// Require the tag to exist before creating the release.
+    pub verify_tag: bool,
     /// What to do when a release already exists for this tag.
     pub on_existing: OnExistingRelease,
     /// Side effects that must complete before the release is published.
+    ///
+    /// These are only claimed, never read: claiming is what orders the publish
+    /// step after them, and side effects handed back by a rust step are never
+    /// written to the var db, so reading one would panic at runtime.
     pub prerequisites: Vec<ReadVar<SideEffect, C>>,
 
     pub done: WriteVar<SideEffect, C>,
@@ -74,6 +80,7 @@ impl GhReleaseParams {
             files,
             notes,
             draft,
+            verify_tag,
             on_existing,
             prerequisites,
             done,
@@ -88,6 +95,7 @@ impl GhReleaseParams {
             files: files.claim(ctx),
             notes,
             draft,
+            verify_tag,
             on_existing,
             prerequisites: prerequisites.claim(ctx),
             done: done.claim(ctx),
@@ -132,14 +140,11 @@ impl FlowNode for Node {
                         files,
                         notes,
                         draft,
+                        verify_tag,
                         on_existing,
-                        prerequisites,
+                        prerequisites: _,
                         done: _,
                     } = req;
-
-                    for prerequisite in prerequisites {
-                        rt.read(prerequisite);
-                    }
 
                     let repo = format!("{repo_owner}/{repo_name}");
                     let target = rt.read(target);
@@ -212,7 +217,8 @@ impl FlowNode for Node {
                         GhReleaseNotes::Text(notes) => vec!["--notes".to_owned(), notes],
                     };
                     let draft = draft.then_some("--draft");
-                    flowey::shell_cmd!(rt, "{gh_cli} release create {tag} {files...} --repo {repo} --target {target} --title {title} {notes...} {draft...}").run()?;
+                    let verify_tag = verify_tag.then_some("--verify-tag");
+                    flowey::shell_cmd!(rt, "{gh_cli} release create {tag} {files...} --repo {repo} --target {target} --title {title} {notes...} {draft...} {verify_tag...}").run()?;
                 }
 
                 Ok(())

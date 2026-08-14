@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
+use std::time::Instant;
 use tempfile::TempDir;
 
 /// A Hyper-V VM
@@ -176,9 +177,13 @@ impl HyperVVM {
     }
 
     /// Waits for an event emitted by the firmware about its boot status, and
-    /// returns that status.
-    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.wait_for_off_or_internal(Self::boot_event).await
+    /// returns that status. Returns `None` if `timeout` elapsed first.
+    pub async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>> {
+        self.poll_until_off_or_timeout(timeout, Self::boot_event)
+            .await
     }
 
     async fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
@@ -497,6 +502,24 @@ impl HyperVVM {
         &mut self,
         f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
     ) -> anyhow::Result<T> {
+        let output = self.poll_until_off_or_timeout(None, f).await?;
+        Ok(output.expect("polling only gives up early when a timeout is set"))
+    }
+
+    /// Poll `f` until it produces a value, failing if the VM turns off first
+    /// and giving up once `timeout` has elapsed.
+    ///
+    /// A poll of `f` is always run to completion before the timeout is
+    /// considered, since a single poll can take longer than the timeout when
+    /// the host is loaded (`f` typically shells out to PowerShell). Cancelling
+    /// one would throw away the answer it was about to produce.
+    async fn poll_until_off_or_timeout<T>(
+        &mut self,
+        timeout: Option<Duration>,
+        f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
+    ) -> anyhow::Result<Option<T>> {
+        let start = Instant::now();
+
         // flush the logs every time we start waiting for something in case
         // they don't get flushed when the VM is destroyed.
         // TODO: run this periodically in a task.
@@ -512,7 +535,11 @@ impl HyperVVM {
         let mut timer = PolledTimer::new(&self.driver);
         loop {
             if let Some(output) = f(self).await? {
-                return Ok(output);
+                return Ok(Some(output));
+            }
+
+            if timeout.is_some_and(|timeout| start.elapsed() >= timeout) {
+                return Ok(None);
             }
 
             let off = self.state().await? == VmState::Off;

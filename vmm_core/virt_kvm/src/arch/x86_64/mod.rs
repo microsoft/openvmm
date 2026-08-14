@@ -6,14 +6,19 @@
 #![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
 mod regs;
+pub(crate) mod snp;
 mod vm_state;
 mod vp_state;
+
+pub(crate) use vp_state::seg_reg;
+pub(crate) use vp_state::table_reg;
 
 use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
+use crate::SnpLaunchState;
 use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
 use crate::gsi::MsiRouteBuilder;
@@ -42,6 +47,7 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
+use std::fs::OpenOptions;
 use std::future::poll_fn;
 use std::io;
 use std::os::unix::prelude::*;
@@ -75,6 +81,7 @@ use virt::vm::AccessVmState;
 use virt::x86::HardwareBreakpoint;
 use virt::x86::max_physical_address_size_from_cpuid;
 use virt::x86::vp::AccessVpState;
+use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86VpInfo;
 use vmcore::interrupt::Interrupt;
@@ -143,8 +150,18 @@ impl virt::Hypervisor for Kvm {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
-        if config.isolation.is_isolated() {
-            return Err(KvmError::IsolationNotSupported);
+        match config.isolation {
+            virt::IsolationType::None => {}
+            virt::IsolationType::Snp => {
+                if config.hv_config.is_some() {
+                    return Err(KvmError::UnsupportedIsolationConfiguration(
+                        "SNP does not support Hyper-V enlightenments or VTL2",
+                    ));
+                }
+            }
+            virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
+                return Err(KvmError::IsolationNotSupported);
+            }
         }
 
         let nested_virt = config.nested_virt;
@@ -354,13 +371,41 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let vm = self.kvm.new_vm(kvm::VmType::Default)?;
+        let sev = match config.isolation {
+            virt::IsolationType::Snp => Some(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/sev")
+                    .map_err(KvmError::OpenSev)?,
+            ),
+            virt::IsolationType::None => None,
+            virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
+                unreachable!()
+            }
+        };
+
+        let vm = match config.isolation {
+            virt::IsolationType::None => self.kvm.new_vm(kvm::VmType::Default)?,
+            virt::IsolationType::Snp => {
+                let vm = self.kvm.new_vm(kvm::VmType::Snp)?;
+                vm.enable_hypercall_exits(1 << kvm::KVM_HC_MAP_GPA_RANGE_UAPI)?;
+                vm
+            }
+            virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
+                unreachable!()
+            }
+        };
+        if let Some(sev) = &sev {
+            vm.sev_snp_init(sev.as_fd())?;
+        }
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
 
         Ok(KvmProtoPartition {
             vm,
+            sev,
             config,
             cpuid: cpuid_entries,
             nested_virt,
@@ -372,6 +417,7 @@ impl virt::Hypervisor for Kvm {
 /// A prototype partition.
 pub struct KvmProtoPartition<'a> {
     vm: kvm::Partition,
+    sev: Option<std::fs::File>,
     config: ProtoPartitionConfig<'a>,
     cpuid: CpuidLeafSet,
     nested_virt: bool,
@@ -462,19 +508,37 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         gsi_routing.update_routes(&self.vm);
 
+        let ram_ranges: Vec<_> = config
+            .mem_layout
+            .ram()
+            .iter()
+            .map(|range| range.range)
+            .chain(config.mem_layout.vtl2_range())
+            .collect();
+        let memory_backing_mode = match self.config.isolation {
+            virt::IsolationType::None => KvmMemoryBackingMode::Userspace,
+            virt::IsolationType::Snp => {
+                KvmMemoryBackingMode::guest_memfd(&self.vm, ram_ranges.iter().copied(), true)?
+            }
+            virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
+                unreachable!()
+            }
+        };
+
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
+            sev: self.sev,
+            snp_launch_state: Mutex::new(SnpLaunchState::NotStarted),
             memory: Default::default(),
-            memory_backing_mode: KvmMemoryBackingMode::Userspace,
-            ram_ranges: config
-                .mem_layout
-                .ram()
-                .iter()
-                .map(|range| range.range)
-                .chain(config.mem_layout.vtl2_range())
-                .collect(),
+            memory_backing_mode,
+            ram_ranges,
             hv1_enabled: self.config.hv_config.is_some(),
             gm: config.guest_memory.clone(),
+            bsp_cpuid: kvm_cpuid_entries(
+                &cpuid,
+                &self.config.processor_topology.vp_arch(VpIndex::BSP),
+                self.config.processor_topology,
+            ),
             vps: self
                 .config
                 .processor_topology
@@ -515,6 +579,73 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                     .access(format!("vp-{}", vp.vp_index.index())),
             })
             .collect::<Vec<_>>();
+
+        if cfg!(debug_assertions) {
+            (&partition).check_reset_all(&partition.inner.bsp().vp_info);
+        }
+
+        fn kvm_cpuid_entries(
+            cpuid: &CpuidLeafSet,
+            vp_info: &X86VpInfo,
+            processor_topology: &ProcessorTopology,
+        ) -> Vec<kvm::kvm_cpuid_entry2> {
+            cpuid
+                .leaves()
+                .iter()
+                .map(|leaf| {
+                    let mut entry = kvm::kvm_cpuid_entry2 {
+                        function: leaf.function,
+                        index: leaf.index.unwrap_or(0),
+                        flags: if leaf.index.is_some() {
+                            KVM_CPUID_FLAG_SIGNIFCANT_INDEX
+                        } else {
+                            0
+                        },
+                        eax: leaf.result[0],
+                        ebx: leaf.result[1],
+                        ecx: leaf.result[2],
+                        edx: leaf.result[3],
+                        padding: [0; 3],
+                    };
+                    match CpuidFunction(leaf.function) {
+                        CpuidFunction::VersionAndFeatures => {
+                            entry.ebx &= 0x00ffffff;
+                            entry.ebx |= vp_info.apic_id << 24;
+                        }
+                        CpuidFunction::ExtendedTopologyEnumeration => {
+                            entry.edx = vp_info.apic_id;
+                        }
+                        CpuidFunction::V2ExtendedTopologyEnumeration => {
+                            entry.edx = vp_info.apic_id;
+                        }
+                        CpuidFunction::ProcessorTopologyDefinition => {
+                            let eax =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEax::from(entry.eax);
+                            entry.eax = eax.with_extended_apic_id(vp_info.apic_id).into();
+                            let ebx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(entry.ebx);
+                            entry.ebx = ebx
+                                .with_compute_unit_id(
+                                    (vp_info.apic_id % processor_topology.reserved_vps_per_socket()
+                                        / (ebx.threads_per_compute_unit() as u32 + 1))
+                                        as u8,
+                                )
+                                .into();
+                            let ecx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(entry.ecx);
+                            entry.ecx = ecx
+                                .with_node_id(
+                                    (vp_info.apic_id / processor_topology.reserved_vps_per_socket())
+                                        as u8,
+                                )
+                                .into();
+                        }
+                        _ => (),
+                    }
+                    entry
+                })
+                .collect()
+        }
 
         Ok((partition, vps))
     }
@@ -593,6 +724,12 @@ impl ResetPartition for KvmPartition {
 impl Partition for KvmPartition {
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
         Some(self)
+    }
+
+    fn supports_initial_page_acceptance(
+        &self,
+    ) -> Option<&dyn virt::AcceptInitialPages<Error = <Self as Hv1>::Error>> {
+        self.inner.sev.is_some().then_some(self)
     }
 
     fn doorbell_registration(
@@ -857,6 +994,21 @@ impl virt::BindProcessor for KvmProcessorBinder {
 
         if cfg!(debug_assertions) {
             vp.access_state(Vtl::Vtl0).check_reset_all(&vp_info);
+        }
+
+        if self.partition.sev.is_some() && !vp_info.base.is_bsp() {
+            // NOTE: SNP APs are started through the guest's GHCB AP creation
+            // request. Keep them halted so KVM can wake them to install the
+            // guest-provided VMSA instead of blocking in the uninitialized/APIC
+            // startup path, which would return -EAGAIN from kvm_run to usermode
+            // instead of making forward progress.
+            //
+            // The flow on KVM + QEMU + OVMF is that QEMU first programs a VMSA
+            // for each AP pointing to QEMU's reset vector, then OVMF sends an
+            // INIT_SIPI to each AP to then place it into the halted state. We
+            // may need to change this depending on the contract with what we
+            // expect to load (UEFI vs direct boot).
+            vp.kvm.set_mp_state(kvm::KVM_MP_STATE_HALTED)?;
         }
 
         Ok(vp)
@@ -1527,17 +1679,53 @@ impl<'p> Processor for KvmProcessor<'p> {
                     }
                     kvm::Exit::Hypercall {
                         nr,
-                        args: _,
+                        args,
                         result,
                         flags,
                     } => {
-                        // This is only reachable for hypercall exits explicitly
-                        // enabled on the VM. Later SNP support enables
-                        // KVM_HC_MAP_GPA_RANGE and handles it here.
-                        *result = 1;
-                        return Err(
-                            dev.fatal_error(KvmRunVpError::UnhandledHypercall { nr, flags }.into())
-                        );
+                        if nr == kvm::KVM_HC_MAP_GPA_RANGE_UAPI {
+                            let gpa = args[0];
+                            let page_count = args[1];
+                            let map_attributes = args[2];
+
+                            tracing::debug!(
+                                gpa,
+                                page_count,
+                                map_attributes,
+                                flags,
+                                "handling KVM_HC_MAP_GPA_RANGE"
+                            );
+                            match self.partition.set_map_gpa_range_attributes(
+                                gpa,
+                                page_count,
+                                map_attributes,
+                            ) {
+                                Ok(()) => {
+                                    *result = 0;
+                                    tracing::debug!(
+                                        gpa,
+                                        page_count,
+                                        map_attributes,
+                                        "handled KVM_HC_MAP_GPA_RANGE"
+                                    );
+                                }
+                                Err(err) => {
+                                    tracelimit::error_ratelimited!(
+                                        error = &err as &dyn std::error::Error,
+                                        gpa,
+                                        page_count,
+                                        map_attributes,
+                                        "failed KVM_HC_MAP_GPA_RANGE"
+                                    );
+                                    *result = 1;
+                                }
+                            }
+                        } else {
+                            *result = 1;
+                            return Err(dev.fatal_error(
+                                KvmRunVpError::UnhandledHypercall { nr, flags }.into(),
+                            ));
+                        }
                     }
                     kvm::Exit::Debug {
                         exception: _,
@@ -1591,6 +1779,17 @@ impl<'p> Processor for KvmProcessor<'p> {
                             }
                             kvm::KVM_SYSTEM_EVENT_CRASH => {
                                 return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                            }
+                            kvm::KVM_SYSTEM_EVENT_SEV_TERM => {
+                                let ghcb_msr = event_flags;
+                                return Err(dev.fatal_error(
+                                    KvmRunVpError::SevTermination {
+                                        ghcb_msr,
+                                        reason_set: (ghcb_msr >> 12) & 0xf,
+                                        reason: (ghcb_msr >> 16) & 0xff,
+                                    }
+                                    .into(),
+                                ));
                             }
                             _ => {
                                 return Err(dev.fatal_error(

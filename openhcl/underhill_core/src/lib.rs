@@ -330,6 +330,7 @@ async fn launch_workers(
         vmbus_max_version: opt.vmbus_max_version,
         vmbus_enable_mnf: opt.vmbus_enable_mnf,
         vmbus_force_confidential_external_memory: opt.vmbus_force_confidential_external_memory,
+        vmbus_force_gpa_pinning: opt.vmbus_force_gpa_pinning,
         vmbus_channel_unstick_delay: (opt.vmbus_channel_unstick_delay_ms != 0)
             .then(|| Duration::from_millis(opt.vmbus_channel_unstick_delay_ms)),
         cmdline_append: opt.cmdline_append.clone(),
