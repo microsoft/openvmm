@@ -129,6 +129,12 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for ReferenceTime {
     fn can_compare(caps: &X86PartitionCapabilities) -> bool {
         caps.can_freeze_time
     }
+
+    /// The reference time counter increases monotonically for the life of the
+    /// partition, and resetting a VM in place does not create a new partition.
+    fn survives_machine_reset(_caps: &X86PartitionCapabilities) -> bool {
+        true
+    }
 }
 
 state_trait!(

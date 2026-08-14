@@ -26,6 +26,12 @@ pub trait StateElement<C, V>: Sized + Inspect {
     fn can_compare(_caps: &C) -> bool {
         true
     }
+
+    /// Returns whether this state survives a machine reset instead of being
+    /// returned to its reset value.
+    fn survives_machine_reset(_caps: &C) -> bool {
+        false
+    }
 }
 
 pub trait HvRegisterState<T, const COUNT: usize>: Default {
@@ -112,16 +118,18 @@ mod macros {
                     self.commit().map_err(|err| $crate::state::StateError{phase: "commit restore", err})
                 }
 
-                /// Resets all the state elements to their initial state (after machine reset).
+                /// Resets the state elements that a machine reset affects to their initial
+                /// state. An element whose `survives_machine_reset` is set keeps its value.
                 fn reset_all(&mut self, vp_info: &$vp) -> Result<(), $crate::state::StateError<Self::Error>> {
                     $(
-                        if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
+                        if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps())
+                            && !<$ty as $crate::state::StateElement<$caps, $vp>>::survives_machine_reset(self.caps()) {
                             self.$set(&<$ty as $crate::state::StateElement<$caps, $vp>>::at_reset(self.caps(), vp_info)).map_err(|err| $crate::state::StateError{phase: concat!("reset ", stringify!($id)), err})?;
                         }
                     )*
 
                     if cfg!(debug_assertions) {
-                        self.check_reset_all(vp_info);
+                        self.check_machine_reset(vp_info);
                     }
                     Ok(())
                 }
@@ -131,6 +139,22 @@ mod macros {
                 fn check_reset_all(&mut self, vp_info: &$vp) {
                     $(
                         if <$ty as $crate::state::StateElement<$caps, $vp>>::can_compare(self.caps()) && <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
+                            assert_eq!(self.$get().expect($id), <$ty as $crate::state::StateElement<$caps, $vp>>::at_reset(self.caps(), vp_info), "reset state mismatch (actual/expected)");
+                        }
+                    )*
+                }
+
+                /// Validates the state elements that a machine reset affects, ignoring those
+                /// that survive one.
+                ///
+                /// `check_reset_all` stays strict: a caller that reset the partition by some
+                /// other means still gets to assert that every element, including a surviving
+                /// one, came back at its reset value.
+                #[allow(unused_variables)]
+                fn check_machine_reset(&mut self, vp_info: &$vp) {
+                    $(
+                        if <$ty as $crate::state::StateElement<$caps, $vp>>::can_compare(self.caps()) && <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps())
+                            && !<$ty as $crate::state::StateElement<$caps, $vp>>::survives_machine_reset(self.caps()) {
                             assert_eq!(self.$get().expect($id), <$ty as $crate::state::StateElement<$caps, $vp>>::at_reset(self.caps(), vp_info), "reset state mismatch (actual/expected)");
                         }
                     )*
