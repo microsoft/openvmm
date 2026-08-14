@@ -567,50 +567,25 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         // Put list of accepted pages into the config region, if there
         if let Some(page_base) = self.imported_regions_config_page {
-            let mut imported_regions_data: Vec<_> = self.imported_regions();
-
-            // Add this config page as well
-            imported_regions_data.push(loader_defs::paravisor::ImportedRegionDescriptor::new(
-                page_base, 1, true,
-            ));
-
-            // The accepted regions have been guaranteed to not overlap,
-            // so just sort by the base page number
-            imported_regions_data.sort_by_key(|region| region.base_page_number);
-
             // All shared pages have been imported. Generate both the combined
             // cryptographic hash of the unaccepted (shared) imported pages
             // (stored in the header) and the per-page hash array (imported
             // separately below into the expected-page-hashes region).
             let (combined_hash, per_page_hashes) =
                 self.generate_cryptographic_hashes_of_shared_pages();
-            let page_header = loader_defs::paravisor::ImportedRegionsPageHeader {
-                sha384_hash: combined_hash
-                    .as_bytes()
-                    .try_into()
-                    .expect("hash should be correct size"),
-            };
 
-            let mut imported_regions_page = page_header.as_bytes().to_vec();
-
-            // Append the (sorted) imported region data.
-            imported_regions_page.extend_from_slice(imported_regions_data.as_bytes());
-
-            // This list should be measured
-            self.import_pages(
-                page_base,
-                1,
-                "loader-imported-regions",
-                BootPageAcceptance::Exclusive,
-                imported_regions_page.as_bytes(),
-            )
-            .context("failed to import config regions")?;
-
-            // Emit the per-page expected-hashes region if the caller told us
-            // where it goes. This is a separate measured region rather than
-            // an extension of the imported-regions page header so that older
-            // consumers of `ImportedRegionsPageHeader` see the exact same
-            // layout as before.
+            // Emit the per-page expected-hashes region *first* if we have
+            // one, so that when we snapshot `imported_regions_data` below
+            // the descriptor list already covers it. Otherwise the shim
+            // would see this Exclusive region in the RMP (loader-pvalidated)
+            // but not in its imported-regions list, and would try to
+            // PVALIDATE it again -- resulting in `MemorySecurityViolation
+            // { carry_flag: 1 }` at the first page of the region.
+            //
+            // This is a separate measured region rather than an extension
+            // of the imported-regions page header so that older consumers
+            // of `ImportedRegionsPageHeader` see the exact same layout as
+            // before.
             if let Some(hashes_page_base) = self.expected_page_hashes_config_page {
                 use loader_defs::paravisor::{
                     EXPECTED_PAGE_HASH_MAX_COUNT, EXPECTED_PAGE_HASHES_MAGIC,
@@ -655,6 +630,42 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 )
                 .context("failed to import expected-page-hashes region")?;
             }
+
+            // Snapshot accepted_ranges *after* the hashes region (if any)
+            // has been imported so it appears in the descriptor list.
+            let mut imported_regions_data: Vec<_> = self.imported_regions();
+
+            // Add this config page as well (still not in accepted_ranges
+            // until the import_pages below runs).
+            imported_regions_data.push(loader_defs::paravisor::ImportedRegionDescriptor::new(
+                page_base, 1, true,
+            ));
+
+            // The accepted regions have been guaranteed to not overlap,
+            // so just sort by the base page number
+            imported_regions_data.sort_by_key(|region| region.base_page_number);
+
+            let page_header = loader_defs::paravisor::ImportedRegionsPageHeader {
+                sha384_hash: combined_hash
+                    .as_bytes()
+                    .try_into()
+                    .expect("hash should be correct size"),
+            };
+
+            let mut imported_regions_page = page_header.as_bytes().to_vec();
+
+            // Append the (sorted) imported region data.
+            imported_regions_page.extend_from_slice(imported_regions_data.as_bytes());
+
+            // This list should be measured
+            self.import_pages(
+                page_base,
+                1,
+                "loader-imported-regions",
+                BootPageAcceptance::Exclusive,
+                imported_regions_page.as_bytes(),
+            )
+            .context("failed to import config regions")?;
         }
 
         // Finalize parameter pages with insert directives.
