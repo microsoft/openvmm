@@ -388,6 +388,14 @@ pub enum VtlPermissionsError {
     NoPermissionsTracked,
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum RegisterMemoryError {
+    #[error("memory mapping is not configured for kernel registration")]
+    NotConfigured,
+    #[error("failed to register memory starting at {address:#x}")]
+    RegistrationFailed { address: u64 },
+}
+
 #[derive(Debug)]
 struct GuestMemoryBitmap {
     bitmap: SparseMapping,
@@ -744,6 +752,15 @@ impl GuestMemoryMapping {
             dma_base_address: None,
             ignore_registration_failure: false,
         }
+    }
+
+    /// Register all mapped RAM before it is accessed.
+    pub(crate) fn register_all_memory(&self) -> Result<(), RegisterMemoryError> {
+        self.registrar
+            .as_ref()
+            .ok_or(RegisterMemoryError::NotConfigured)?
+            .register_all()
+            .map_err(|address| RegisterMemoryError::RegistrationFailed { address })
     }
 
     /// Update the permission bitmaps to reflect the given flags.

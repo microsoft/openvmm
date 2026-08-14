@@ -198,9 +198,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         // Create the encrypted mapping with just the lower VTL memory.
         //
-        // Do not register this mapping with the kernel. It will not be safe for
-        // use with syscalls that expect virtual addresses to be in
-        // kernel-registered RAM.
+        // Do not register this mapping object with the kernel. SNP registration
+        // is associated with the separate VTL0 mapping below after every lower
+        // VTL mapping has been established.
 
         tracing::debug!("Building valid encrypted memory view");
         let encrypted_memory_view = {
@@ -227,31 +227,25 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // TODO GUEST VSM: with lazy acceptance, it should instead be initialized to no
         // access.
         tracing::debug!("Building VTL0 memory map");
-        let vtl0_mapping = Arc::new({
+        let vtl0_mapping = {
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None)
+                // Configure the registrar now, but do not register until all
+                // aliases have been mapped.
+                .for_kernel_access(params.isolation == IsolationType::Snp)
                 .use_permissions_bitmaps(if use_vtl1 { Some(true) } else { None })
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
-        });
+        };
 
         // Create the shared mapping with the complete memory map, to include
         // the shared pool. This memory is not private to VTL2 and is expected
         // that devices will do DMA to them.
         let shared_offset = match params.isolation {
             IsolationType::Tdx => {
-                // Register memory just once, as shared memory. This
-                // registration will be used both to map pages as shared and as
-                // encrypted. If the kernel remaps a page into a kernel address,
-                // it will be marked as shared, which can cause a fault or,
-                // worse, an information leak.
-                //
-                // This is done this way because in TDX, there is only one
-                // mapping for each page. The distinguishing bit is a reserved
-                // bit, from the kernel's perspective. (You can also just see it
-                // as the high bit of the GPA, but the Linux kernel does not
-                // treat it that way.)
+                // TDX has one mapping for each page. The shared bit is reserved
+                // from the kernel's perspective, so no VA offset is needed.
                 //
                 // TODO CVM: figure out how to prevent passing encrypted pages
                 // to syscalls. Idea: prohibit locking of `GuestMemory` pages
@@ -263,20 +257,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 0
             }
             IsolationType::Snp | IsolationType::Cca => {
-                // SNP and CCA have two mappings for each shared page: one below
-                // and one above VTOM. So, unlike for TDX, we could choose to
-                // register memory twice, allowing the kernel to operate on
-                // either shared or encrypted memory. But, for consistency with
-                // TDX, just register the shared mapping.
-                //
-                // Register the VTOM mapping instead of the low mapping. In
-                // theory it shouldn't matter; we should be able to ignore VTOM.
-                // However, the ioctls to issue pvalidate and rmpadjust
-                // instructions operate on VAs, and they must either be VAs
-                // mapping unregistered pages or pages that were registered as
-                // encrypted. Since we want to avoid registering the pages as
-                // encrypted, the lower alias must remain unregistered, and so
-                // the shared registration must use the high mapping.
+                // SNP and CCA map shared pages above VTOM, separately from the
+                // private mapping below VTOM.
                 vtom
             }
             _ => unreachable!(),
@@ -329,6 +311,16 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .build_with_bitmap(&gpa_fd, &shared_memory_view)
                 .context("failed to map shared memory")?
         });
+
+        if params.isolation == IsolationType::Snp {
+            // The kernel can now create PUD-sized backing for aligned 1-GB
+            // ranges before the zeroing pass faults in the private mapping.
+            let _span = tracing::info_span!("register_vtl0_memory", CVM_ALLOWED).entered();
+            vtl0_mapping
+                .register_all_memory()
+                .context("failed to eagerly register SNP VTL0 memory")?;
+        }
+        let vtl0_mapping = Arc::new(vtl0_mapping);
 
         let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
             encrypted_memory_view.partition_valid_memory().clone(),
