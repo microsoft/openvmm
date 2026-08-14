@@ -104,9 +104,9 @@ Extract the GitHub source archive, then extract the vendor archive into
 that source tree:
 
 ```bash
-tar -xf openvmm-v<VERSION>.tar.gz
+tar -xzf openvmm-v<VERSION>.tar.gz
 cd openvmm-openvmm-v<VERSION>
-tar -xf ../openvmm-<VERSION>-vendor.tar.gz
+tar -xzf ../openvmm-<VERSION>-vendor.tar.gz
 ```
 
 Append the shipped `cargo_config` bytes to `.cargo/config.toml`. Do not

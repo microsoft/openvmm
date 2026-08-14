@@ -111,14 +111,29 @@ impl SimpleFlowNode for Node {
                 }
 
                 let archive = release.assets.join(identity.archive_name());
+
+                // A reused workspace could leave a stale tree behind, and tar
+                // would merge into it rather than replace it. That would let
+                // leftover crates satisfy the offline build and weaken the
+                // proof that the archive is self-sufficient.
+                let vendor_dir = openvmm_repo_path.join("vendor");
+                let cargo_config = openvmm_repo_path.join(CARGO_CONFIG_FILE);
+                for path in [&vendor_dir, &cargo_config] {
+                    if path.exists() {
+                        anyhow::bail!(
+                            "{} already exists in the checkout; refusing to extract the vendor \
+                             archive over existing state",
+                            path.display()
+                        );
+                    }
+                }
+
                 flowey::shell_cmd!(rt, "tar -xzf {archive} -C {openvmm_repo_path}").run()?;
 
-                let vendor_dir = openvmm_repo_path.join("vendor");
                 if !vendor_dir.is_dir() {
                     anyhow::bail!("vendor archive did not extract {}", vendor_dir.display());
                 }
 
-                let cargo_config = openvmm_repo_path.join(CARGO_CONFIG_FILE);
                 if !cargo_config.is_file() {
                     anyhow::bail!("vendor archive did not extract {}", cargo_config.display());
                 }

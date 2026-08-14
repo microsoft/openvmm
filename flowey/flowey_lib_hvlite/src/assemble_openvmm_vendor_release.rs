@@ -113,6 +113,37 @@ fn workspace_version(manifest_path: &Path) -> anyhow::Result<String> {
     Ok(version.to_owned())
 }
 
+/// Confirm `cargo vendor` emitted a source replacement pointing at the relative
+/// `vendor` directory.
+///
+/// The archive ships this config next to the tree it describes, so a packager
+/// extracting both into a source root must end up with
+/// `source.vendored-sources.directory` resolving inside that root. An absolute
+/// path would point at the release machine instead.
+fn validate_vendor_config(cargo_config: &[u8]) -> anyhow::Result<()> {
+    let cargo_config = std::str::from_utf8(cargo_config)
+        .context("cargo vendor emitted a non-UTF-8 source replacement config")?;
+    let cargo_config = cargo_config
+        .parse::<toml_edit::DocumentMut>()
+        .context("failed to parse the source replacement config from cargo vendor")?;
+
+    let directory = cargo_config
+        .get("source")
+        .and_then(|source| source.get("vendored-sources"))
+        .and_then(|vendored| vendored.get("directory"))
+        .and_then(|directory| directory.as_str())
+        .context("cargo vendor did not emit source.vendored-sources.directory")?;
+
+    if directory != "vendor" {
+        anyhow::bail!(
+            "cargo vendor emitted source.vendored-sources.directory = {directory:?}, \
+             expected the relative path \"vendor\""
+        );
+    }
+
+    Ok(())
+}
+
 flowey_request! {
     pub struct Request {
         /// The assembled vendor assets.
@@ -221,14 +252,7 @@ impl SimpleFlowNode for Node {
                 }
 
                 let cargo_config = vendor_output.stdout;
-                if !cargo_config
-                    .windows(b"directory = \"vendor\"".len())
-                    .any(|line| line == b"directory = \"vendor\"")
-                {
-                    anyhow::bail!(
-                        "cargo vendor did not emit a relative source replacement for `vendor`"
-                    );
-                }
+                validate_vendor_config(&cargo_config)?;
 
                 fs_err::write(stage_dir.join(CARGO_CONFIG_FILE), &cargo_config)?;
 
@@ -290,6 +314,28 @@ mod tests {
     fn asset_names_follow_the_version() {
         let identity = identity("0.12.3");
         assert_eq!(identity.archive_name(), "openvmm-0.12.3-vendor.tar.gz");
+    }
+
+    #[test]
+    fn accepts_a_relative_vendor_source_replacement() {
+        // Formatting varies across Cargo versions, so the check must be
+        // structural rather than textual.
+        let config = b"[source.crates-io]\nreplace-with = 'vendored-sources'\n\n\
+            [source.vendored-sources]\ndirectory   =   \"vendor\"\n";
+        validate_vendor_config(config).unwrap();
+    }
+
+    #[test]
+    fn rejects_an_absolute_or_missing_vendor_directory() {
+        // An absolute path would point back at the release machine.
+        let absolute = b"[source.vendored-sources]\ndirectory = \"/build/stage/vendor\"\n";
+        assert!(validate_vendor_config(absolute).is_err());
+
+        let missing = b"[source.crates-io]\nreplace-with = \"vendored-sources\"\n";
+        assert!(validate_vendor_config(missing).is_err());
+
+        assert!(validate_vendor_config(b"not = = toml").is_err());
+        assert!(validate_vendor_config(&[0xff, 0xfe]).is_err());
     }
 
     #[test]
