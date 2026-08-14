@@ -1,25 +1,38 @@
-# Cutting an OpenVMM source release
+# Cutting an OpenVMM release
 
-This page explains how maintainers create an OpenVMM source release on GitHub.
+This page explains how maintainers create an OpenVMM release on GitHub.
 
 For the packager's view of the shipped inputs, see
 [Packaging OpenVMM for Linux](./openvmm_packaging.md).
 
 ## What a release is
 
-An OpenVMM source release is a GitHub release tagged
-`openvmm-v<VERSION>`.
+An OpenVMM release is a GitHub release tagged `openvmm-v<VERSION>`.
 
-GitHub automatically provides the source archive for that tag. OpenVMM
-uploads exactly one additional asset:
-`openvmm-<VERSION>-vendor.tar.gz`.
+The release workflow produces:
+
+- GitHub-generated source archives for the release tag;
+- `openvmm-<VERSION>-vendor.tar.gz` for offline Cargo builds;
+- `openvmm-x86_64-unknown-linux-musl`;
+- `openvmm-aarch64-unknown-linux-musl`;
+- unsigned x64 and ARM64 Windows workflow artifacts.
 
 That vendor archive contains the vendored Cargo dependency tree and the
 exact `cargo vendor` source-replacement snippet needed for offline
 builds. No custom source archive is assembled or uploaded.
 
-A release publishes source. Prebuilt binaries, and any commitment to
-service a published version, are outside this process.
+The Linux executables are raw musl binaries. They are not wrapped in an
+archive, and Linux `.dbg` files are not published.
+
+The Windows artifacts are named
+`openvmm-x86_64-pc-windows-msvc-unsigned` and
+`openvmm-aarch64-pc-windows-msvc-unsigned`. Each contains `openvmm.exe`
+and its PDB when the build naturally produces one.
+
+```admonish warning
+Windows signing is not integrated yet. The unsigned Windows builds remain
+GitHub Actions workflow artifacts and are not uploaded to the GitHub release.
+```
 
 `<VERSION>` is the `version` field under `[workspace.package]` in the
 OpenVMM repository's root `Cargo.toml`. Nothing is stamped into the
@@ -47,9 +60,8 @@ version.
 
 ## Running the workflow
 
-Dispatch the **OpenVMM Source Release** workflow against the commit to
-release. It has no automatic triggers; it only runs when someone asks
-for it.
+Dispatch the **OpenVMM Release** workflow against the commit to release. It
+has no automatic triggers; it only runs when someone asks for it.
 
 The workflow:
 
@@ -59,12 +71,17 @@ The workflow:
 3. checks out the same revision, appends the generated `cargo_config`
    to `.cargo/config.toml`, and builds `openvmm` with
    `--locked --offline`;
-4. creates or verifies `openvmm-v<VERSION>` at that commit, after
+4. builds release-mode OpenVMM binaries for x64 and ARM64 Linux musl and
+   Windows MSVC targets;
+5. uploads both unsigned Windows builds as architecture-specific workflow
+   artifacts;
+6. creates or verifies `openvmm-v<VERSION>` at that commit, after
    confirming no release already exists for it;
-5. creates a **draft** release for that tag, relies on GitHub's
-   automatic source archive, and uploads only the vendor archive.
+7. creates one **draft** release for that tag, relies on GitHub's automatic
+   source archives, and uploads the vendor archive and both Linux binaries.
 
 The workflow does not upload `SHA256SUMS` or a provenance attestation.
+It does not upload unsigned Windows binaries to the release.
 
 ## Publishing
 
@@ -102,14 +119,14 @@ cleanup.
 
 ## Limitations
 
-The workflow validates one Linux `openvmm` build with the uploaded
-vendor archive. Distribution-specific packaging steps still belong to
+The workflow validates one Linux `openvmm` distribution build with the
+uploaded vendor archive. It does not add binary smoke tests or additional
+release validation. Distribution-specific packaging steps still belong to
 the downstream package.
 
 ```admonish note
-OpenVMM does not publish an OpenPGP signature, `SHA256SUMS`, or a
-provenance attestation for either the GitHub-generated source archive or
-the uploaded vendor archive. Consumers can confirm that the release tag
-names the expected commit and retain the exact downloaded bytes they
-package.
+OpenVMM does not publish an OpenPGP signature, `SHA256SUMS`, or a provenance
+attestation for the generated source archives, vendor archive, or Linux
+binaries. Consumers can confirm that the release tag names the expected
+commit and retain the exact downloaded bytes they use.
 ```

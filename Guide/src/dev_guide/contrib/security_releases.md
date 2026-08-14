@@ -54,11 +54,11 @@ The instructions supplied with the incident are authoritative.
 At the agreed disclosure time, the incident team coordinates:
 
 1. Publishing the fix to each affected public branch.
-2. Publishing a new patch-version OpenVMM source release.
+2. Publishing a new patch-version OpenVMM release.
 3. Publishing the security advisory and CVE information.
 4. Notifying coordinated downstreams that the embargo has lifted.
 
-The source release, advisory, and fix should become public in the same release
+The release, advisory, and fix should become public in the same release
 window. Detailed exploit material may be delayed when MSRC determines that
 doing so reduces risk without preventing users from understanding and applying
 the fix.

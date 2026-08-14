@@ -13,8 +13,14 @@ is:
 https://github.com/microsoft/openvmm/archive/refs/tags/openvmm-v<VERSION>.tar.gz
 ```
 
-OpenVMM also uploads one release asset:
-`openvmm-<VERSION>-vendor.tar.gz`.
+OpenVMM also uploads the offline Cargo vendor archive
+`openvmm-<VERSION>-vendor.tar.gz`. The same draft release contains raw x64
+and ARM64 Linux musl executables, but those prebuilt binaries are separate
+deliverables and are not inputs to distribution source packaging.
+
+Unsigned Windows x64 and ARM64 builds are retained as GitHub Actions workflow
+artifacts while signing integration is pending. They are not GitHub release
+assets.
 
 `<VERSION>` is the canonical `[workspace.package] version` in the root
 `Cargo.toml`.
@@ -68,8 +74,8 @@ distribution package, record their digests in the distribution's source
 metadata, and retain those exact bytes in the distribution's lookaside
 cache.
 
-OpenVMM does not upload a checksum file, an OpenPGP signature, or a
-provenance attestation for either archive.
+OpenVMM does not upload a checksum file, an OpenPGP signature, or a provenance
+attestation for the archives or Linux binaries.
 
 ## Build requirements
 
@@ -182,10 +188,10 @@ Record the vendored crate licenses in `debian/copyright` for the same
 reason Fedora may generate a vendor manifest from the extracted tree.
 
 ```admonish note
-OpenVMM does not publish an OpenPGP signature or `SHA256SUMS` alongside
-either archive, so `uscan` signature verification cannot be enabled.
-Confirm the release tag and retain the exact downloaded archives used
-for the package.
+OpenVMM does not publish an OpenPGP signature or `SHA256SUMS` alongside the
+release assets, so `uscan` signature verification cannot be enabled. Confirm
+the release tag and retain the exact downloaded archives used for the
+package.
 ```
 
 ## Package identity
