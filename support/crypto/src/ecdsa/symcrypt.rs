@@ -19,6 +19,11 @@ fn der_err(err: der::Error, op: &'static str) -> EcdsaError {
     EcdsaError(crate::BackendError::Der(err, op))
 }
 
+/// An error for input that decoded but is not valid or supported.
+fn invalid_err(reason: &'static str) -> EcdsaError {
+    EcdsaError(crate::BackendError::Invalid(reason))
+}
+
 #[repr(transparent)] // Needed for the transmute in as_pub.
 pub struct EcdsaKeyPairInner(EcKey);
 
@@ -28,12 +33,14 @@ impl EcdsaKeyPairInner {
             EcdsaCurve::P384 => CurveType::NistP384,
         };
         let key = EcKey::generate_key_pair(curve_type, EcKeyUsage::EcDsa)
-            .map_err(|e| err(e, "generating ECDSA key pair"))?;
+            .map_err(|e| err(e, "generating the ECDSA key pair"))?;
         Ok(Self(key))
     }
 
     pub fn sign_prehash(&self, hash: &[u8]) -> Result<Vec<u8>, EcdsaError> {
-        self.0.ecdsa_sign(hash).map_err(|e| err(e, "ECDSA sign"))
+        self.0
+            .ecdsa_sign(hash)
+            .map_err(|e| err(e, "computing the ECDSA signature"))
     }
 
     pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
@@ -55,7 +62,7 @@ impl EcdsaPublicKeyInner {
         // long inputs with `InvalidArgument`), so no separate length check is
         // needed here.
         let key = EcKey::set_public_key(curve_type, public_key, EcKeyUsage::EcDsa)
-            .map_err(|e| err(e, "importing public key"))?;
+            .map_err(|e| err(e, "importing the EC public key"))?;
         Ok(Self(key))
     }
 
@@ -65,37 +72,28 @@ impl EcdsaPublicKeyInner {
             der::asn1::ObjectIdentifier::new_unwrap("1.3.132.0.34");
 
         let spki = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki_der)
-            .map_err(|e| der_err(e, "parsing SubjectPublicKeyInfo"))?;
+            .map_err(|e| der_err(e, "parsing the SubjectPublicKeyInfo"))?;
 
         // Determine the curve from the algorithm's named-curve parameter rather
         // than requiring the caller to specify it.
         let curve_oid = spki
             .algorithm
             .parameters
-            .ok_or_else(|| {
-                err(
-                    SymCryptError::InvalidArgument,
-                    "missing EC curve parameters",
-                )
-            })?
+            .ok_or_else(|| invalid_err("EC public key has no named curve parameter"))?
             .decode_as::<der::asn1::ObjectIdentifier>()
-            .map_err(|e| der_err(e, "decoding EC curve OID"))?;
+            .map_err(|e| der_err(e, "decoding the EC curve OID"))?;
         let curve = if curve_oid == SECP384R1 {
             EcdsaCurve::P384
         } else {
-            return Err(err(
-                SymCryptError::InvalidArgument,
-                "unsupported or unrecognized EC curve",
-            ));
+            return Err(invalid_err("public key uses an unsupported EC curve"));
         };
 
         // The SubjectPublicKey bit string is the uncompressed EC point
         // `0x04 || Qx || Qy`; strip the `0x04` tag to get `Qx || Qy`.
         let point = spki.subject_public_key.raw_bytes();
         if point.len() != 1 + 2 * curve.key_size() || point[0] != 0x04 {
-            return Err(err(
-                SymCryptError::InvalidArgument,
-                "public key is not an uncompressed EC point (0x04 || Qx || Qy)",
+            return Err(invalid_err(
+                "EC public key is not an uncompressed point (0x04 || Qx || Qy)",
             ));
         }
         Self::from_public_key_bytes(curve, &point[1..])
@@ -111,13 +109,13 @@ impl EcdsaPublicKeyInner {
             Err(SymCryptError::SignatureVerificationFailure | SymCryptError::InvalidArgument) => {
                 Ok(false)
             }
-            Err(e) => Err(err(e, "ECDSA verify")),
+            Err(e) => Err(err(e, "verifying the ECDSA signature")),
         }
     }
 
     pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
         self.0
             .export_public_key()
-            .map_err(|e| err(e, "exporting public key"))
+            .map_err(|e| err(e, "exporting the EC public key"))
     }
 }

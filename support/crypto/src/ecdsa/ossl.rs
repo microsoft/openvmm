@@ -21,12 +21,12 @@ impl EcdsaKeyPairInner {
         let nid = match curve {
             EcdsaCurve::P384 => openssl::nid::Nid::SECP384R1,
         };
-        let ec_group =
-            openssl::ec::EcGroup::from_curve_name(nid).map_err(|e| err(e, "creating EC group"))?;
+        let ec_group = openssl::ec::EcGroup::from_curve_name(nid)
+            .map_err(|e| err(e, "creating the EC group"))?;
         let ec_key =
-            openssl::ec::EcKey::generate(&ec_group).map_err(|e| err(e, "generating EC key"))?;
+            openssl::ec::EcKey::generate(&ec_group).map_err(|e| err(e, "generating the EC key"))?;
         let pkey = openssl::pkey::PKey::from_ec_key(ec_key)
-            .map_err(|e| err(e, "converting EC key to PKey"))?;
+            .map_err(|e| err(e, "wrapping the EC key in a PKey"))?;
         Ok(Self { pkey, curve })
     }
 
@@ -34,19 +34,19 @@ impl EcdsaKeyPairInner {
         let ec_key = self
             .pkey
             .ec_key()
-            .map_err(|e| err(e, "getting EC key from PKey"))?;
-        let sig =
-            openssl::ecdsa::EcdsaSig::sign(hash, &ec_key).map_err(|e| err(e, "ECDSA sign"))?;
+            .map_err(|e| err(e, "extracting the EC key from the PKey"))?;
+        let sig = openssl::ecdsa::EcdsaSig::sign(hash, &ec_key)
+            .map_err(|e| err(e, "computing the ECDSA signature"))?;
 
         let key_size = self.curve.key_size();
         let r_bytes = sig
             .r()
             .to_vec_padded(key_size as i32)
-            .map_err(|e| err(e, "padding r"))?;
+            .map_err(|e| err(e, "encoding the signature r component"))?;
         let s_bytes = sig
             .s()
             .to_vec_padded(key_size as i32)
-            .map_err(|e| err(e, "padding s"))?;
+            .map_err(|e| err(e, "encoding the signature s component"))?;
 
         let mut result = Vec::with_capacity(key_size * 2);
         result.extend_from_slice(&r_bytes);
@@ -73,10 +73,10 @@ impl EcdsaPublicKeyInner {
         let nid = match curve {
             EcdsaCurve::P384 => openssl::nid::Nid::SECP384R1,
         };
-        let group =
-            openssl::ec::EcGroup::from_curve_name(nid).map_err(|e| err(e, "creating EC group"))?;
+        let group = openssl::ec::EcGroup::from_curve_name(nid)
+            .map_err(|e| err(e, "creating the EC group"))?;
         let mut ctx =
-            openssl::bn::BigNumContext::new().map_err(|e| err(e, "creating BigNumContext"))?;
+            openssl::bn::BigNumContext::new().map_err(|e| err(e, "creating the BigNum context"))?;
 
         // `public_key` is the raw `Qx || Qy` affine coordinates. Prepend the
         // `0x04` uncompressed-point tag and let OpenSSL parse the encoding,
@@ -86,21 +86,21 @@ impl EcdsaPublicKeyInner {
         encoded.push(0x04);
         encoded.extend_from_slice(public_key);
         let point = openssl::ec::EcPoint::from_bytes(&group, &encoded, &mut ctx)
-            .map_err(|e| err(e, "parsing EC public key point"))?;
+            .map_err(|e| err(e, "parsing the EC public key point"))?;
         let ec_key = openssl::ec::EcKey::from_public_key(&group, &point)
-            .map_err(|e| err(e, "constructing EC public key"))?;
+            .map_err(|e| err(e, "constructing the EC public key"))?;
         ec_key
             .check_key()
-            .map_err(|e| err(e, "validating EC public key"))?;
+            .map_err(|e| err(e, "validating the EC public key"))?;
         let pkey = openssl::pkey::PKey::from_ec_key(ec_key)
-            .map_err(|e| err(e, "converting EC key to PKey"))?;
+            .map_err(|e| err(e, "wrapping the EC key in a PKey"))?;
 
         Ok(Self { pkey, curve })
     }
 
     pub fn from_public_key_der(spki_der: &[u8]) -> Result<Self, EcdsaError> {
         let pkey = openssl::pkey::PKey::public_key_from_der(spki_der)
-            .map_err(|e| err(e, "parsing SubjectPublicKeyInfo"))?;
+            .map_err(|e| err(e, "parsing the SubjectPublicKeyInfo"))?;
         Self::from_pkey(pkey)
     }
 
@@ -112,7 +112,7 @@ impl EcdsaPublicKeyInner {
     ) -> Result<Self, EcdsaError> {
         let ec_key = pkey
             .ec_key()
-            .map_err(|e| err(e, "public key is not an EC key"))?;
+            .map_err(|e| err(e, "checking that the public key is an EC key"))?;
         // Determine the curve from the key rather than requiring the caller to
         // specify it.
         let curve = match ec_key.group().curve_name() {
@@ -120,13 +120,13 @@ impl EcdsaPublicKeyInner {
             _ => {
                 return Err(err(
                     openssl::error::ErrorStack::get(),
-                    "unsupported or unrecognized EC curve",
+                    "checking that the public key uses a supported EC curve",
                 ));
             }
         };
         ec_key
             .check_key()
-            .map_err(|e| err(e, "validating EC public key"))?;
+            .map_err(|e| err(e, "validating the EC public key"))?;
         Ok(Self { pkey, curve })
     }
 
@@ -141,43 +141,45 @@ impl EcdsaPublicKeyInner {
         let ec_key = self
             .pkey
             .ec_key()
-            .map_err(|e| err(e, "getting EC key from PKey"))?;
+            .map_err(|e| err(e, "extracting the EC key from the PKey"))?;
 
         let r = openssl::bn::BigNum::from_slice(&signature[..key_size])
-            .map_err(|e| err(e, "parsing r"))?;
+            .map_err(|e| err(e, "parsing the signature r component"))?;
         let s = openssl::bn::BigNum::from_slice(&signature[key_size..])
-            .map_err(|e| err(e, "parsing s"))?;
+            .map_err(|e| err(e, "parsing the signature s component"))?;
         let sig = openssl::ecdsa::EcdsaSig::from_private_components(r, s)
-            .map_err(|e| err(e, "constructing signature"))?;
+            .map_err(|e| err(e, "constructing the ECDSA signature"))?;
 
         sig.verify(hash, &ec_key)
-            .map_err(|e| err(e, "ECDSA verify"))
+            .map_err(|e| err(e, "verifying the ECDSA signature"))
     }
 
     pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
         let ec_key = self
             .pkey
             .ec_key()
-            .map_err(|e| err(e, "getting EC key from PKey"))?;
+            .map_err(|e| err(e, "extracting the EC key from the PKey"))?;
         let group = ec_key.group();
         let pub_key = ec_key.public_key();
 
         let mut ctx =
-            openssl::bn::BigNumContext::new().map_err(|e| err(e, "creating BigNumContext"))?;
-        let mut x = openssl::bn::BigNum::new().map_err(|e| err(e, "creating BigNum for x"))?;
-        let mut y = openssl::bn::BigNum::new().map_err(|e| err(e, "creating BigNum for y"))?;
+            openssl::bn::BigNumContext::new().map_err(|e| err(e, "creating the BigNum context"))?;
+        let mut x = openssl::bn::BigNum::new()
+            .map_err(|e| err(e, "creating a BigNum for the x coordinate"))?;
+        let mut y = openssl::bn::BigNum::new()
+            .map_err(|e| err(e, "creating a BigNum for the y coordinate"))?;
 
         pub_key
             .affine_coordinates_gfp(group, &mut x, &mut y, &mut ctx)
-            .map_err(|e| err(e, "getting affine coordinates"))?;
+            .map_err(|e| err(e, "reading the public key affine coordinates"))?;
 
         let key_size = self.curve.key_size();
         let x_bytes = x
             .to_vec_padded(key_size as i32)
-            .map_err(|e| err(e, "padding x coordinate"))?;
+            .map_err(|e| err(e, "encoding the x coordinate"))?;
         let y_bytes = y
             .to_vec_padded(key_size as i32)
-            .map_err(|e| err(e, "padding y coordinate"))?;
+            .map_err(|e| err(e, "encoding the y coordinate"))?;
 
         let mut result = Vec::with_capacity(key_size * 2);
         result.extend_from_slice(&x_bytes);

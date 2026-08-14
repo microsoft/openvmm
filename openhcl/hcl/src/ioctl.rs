@@ -218,30 +218,6 @@ pub enum ApplyVtlProtectionsError {
     InvalidVtl(Vtl),
 }
 
-/// Error setting guest VSM configuration.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum SetGuestVsmConfigError {
-    #[error("hypervisor failed to configure guest vsm to {enable_guest_vsm}")]
-    Hypervisor {
-        enable_guest_vsm: bool,
-        #[source]
-        hv_error: HvError,
-    },
-}
-
-/// Error getting the VP idnex from an APIC ID.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum GetVpIndexFromApicIdError {
-    #[error("hypervisor failed when querying vp index for {apic_id}")]
-    Hypervisor {
-        #[source]
-        hv_error: HvError,
-        apic_id: u32,
-    },
-}
-
 /// Error setting VSM partition configuration.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
@@ -1502,10 +1478,11 @@ impl HclVp {
         // This is only used on CVMs. Skip it otherwise, since run page accesses
         // will fault on VPs that are still in the sidecar kernel.
         if isolation_type.is_hardware_isolated() {
-            // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
-            // so we know we have exclusive access.
-            let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
-            proxy_irr_blocked.fill(!0);
+            // SAFETY: The run page is not accessed by any other VPs/kernel at this point
+            // (`HclVp` creation), so we know we have exclusive access.
+            unsafe {
+                (*run.as_ptr()).proxy_irr_blocked.fill(!0);
+            }
         }
 
         let backing = match isolation_type {
@@ -1532,6 +1509,15 @@ impl HclVp {
                 },
             },
             IsolationType::Snp => {
+                // SAFETY: The run page is not accessed by any other VPs/kernel at this point
+                // (`HclVp` creation), so we know we have exclusive access.
+                unsafe {
+                    let context: &mut protocol::snp_vp_context =
+                        &mut *(&raw mut (*run.as_ptr()).context).cast();
+                    context
+                        .vmsa_tweak_bitmap
+                        .copy_from_slice(&hcl.snp_register_bitmap);
+                }
                 let vmsa_vtl0 = MappedPage::new(fd, HCL_VMSA_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?;
                 let vmsa_vtl1 = MappedPage::new(fd, HCL_VMSA_GUEST_VSM_PAGE_OFFSET | vp as i64)

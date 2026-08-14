@@ -55,11 +55,6 @@ enum ErrorInner {
     InvalidDiskSize(u64),
 }
 
-/// An error when attempting to open a blob in VHD1 format.
-#[derive(Debug, Error)]
-#[error(transparent)]
-pub struct Vhd1Error(#[from] ErrorInner);
-
 impl BlobDisk {
     /// Returns a new blob disk where the blob is the raw disk data.
     pub fn new(blob: impl 'static + Blob + Send + Sync) -> Self {

@@ -23,25 +23,23 @@ pub struct RsaKeyPairInner(pub(crate) RsaKey);
 impl RsaKeyPairInner {
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
         let rsa = RsaKey::generate_key_pair(bits, None, RsaKeyUsage::SignAndEncrypt)
-            .map_err(|e| err(e, "generating RSA key"))?;
+            .map_err(|e| err(e, "generating the RSA key"))?;
         Ok(Self(rsa))
     }
 
     pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self, RsaError> {
         let pki = pkcs8::PrivateKeyInfoRef::from_der(der_bytes)
-            .map_err(|e| der_err(e, "parsing PKCS#8 DER"))?;
+            .map_err(|e| der_err(e, "parsing the PKCS#8 DER private key"))?;
         if pki.algorithm.oid != pkcs1::ALGORITHM_OID {
-            return Err(RsaError(crate::BackendError::Pkcs8Encoding(
-                pkcs8::Error::KeyMalformed(pkcs8::KeyError::Invalid),
-                "PKCS#8 algorithm is not rsaEncryption",
+            return Err(RsaError(crate::BackendError::Invalid(
+                "PKCS#8 private key is not an RSA key",
             )));
         }
         let key = pkcs1::RsaPrivateKey::from_der(pki.private_key.as_bytes())
-            .map_err(|e| der_err(e, "parsing PKCS#1 RSA private key"))?;
+            .map_err(|e| der_err(e, "parsing the PKCS#1 RSA private key"))?;
         if key.other_prime_infos.is_some() {
-            return Err(RsaError(crate::BackendError::Pkcs8Encoding(
-                pkcs8::Error::KeyMalformed(pkcs8::KeyError::Invalid),
-                "multiprime RSA keys not supported",
+            return Err(RsaError(crate::BackendError::Invalid(
+                "multi-prime RSA private keys are not supported",
             )));
         }
         let rsa = RsaKey::set_key_pair(
@@ -51,7 +49,7 @@ impl RsaKeyPairInner {
             key.prime2.as_bytes(),
             RsaKeyUsage::SignAndEncrypt,
         )
-        .map_err(|e| err(e, "setting RSA key pair"))?;
+        .map_err(|e| err(e, "importing the RSA key pair"))?;
         Ok(Self(rsa))
     }
 
@@ -65,25 +63,27 @@ impl RsaKeyPairInner {
         let blob = self
             .0
             .export_key_pair_blob()
-            .map_err(|e| err(e, "exporting RSA key blob"))?;
+            .map_err(|e| err(e, "exporting the RSA key blob"))?;
 
         let pkcs1_key = pkcs1::RsaPrivateKey {
-            modulus: UintRef::new(&blob.modulus).map_err(|e| der_err(e, "encoding modulus"))?,
+            modulus: UintRef::new(&blob.modulus).map_err(|e| der_err(e, "encoding the modulus"))?,
             public_exponent: UintRef::new(&blob.pub_exp)
-                .map_err(|e| der_err(e, "encoding public exponent"))?,
+                .map_err(|e| der_err(e, "encoding the public exponent"))?,
             private_exponent: UintRef::new(&blob.private_exp)
-                .map_err(|e| der_err(e, "encoding private exponent"))?,
-            prime1: UintRef::new(&blob.p).map_err(|e| der_err(e, "encoding prime1"))?,
-            prime2: UintRef::new(&blob.q).map_err(|e| der_err(e, "encoding prime2"))?,
-            exponent1: UintRef::new(&blob.d_p).map_err(|e| der_err(e, "encoding exponent1"))?,
-            exponent2: UintRef::new(&blob.d_q).map_err(|e| der_err(e, "encoding exponent2"))?,
+                .map_err(|e| der_err(e, "encoding the private exponent"))?,
+            prime1: UintRef::new(&blob.p).map_err(|e| der_err(e, "encoding the first prime"))?,
+            prime2: UintRef::new(&blob.q).map_err(|e| der_err(e, "encoding the second prime"))?,
+            exponent1: UintRef::new(&blob.d_p)
+                .map_err(|e| der_err(e, "encoding the first CRT exponent"))?,
+            exponent2: UintRef::new(&blob.d_q)
+                .map_err(|e| der_err(e, "encoding the second CRT exponent"))?,
             coefficient: UintRef::new(&blob.crt_coefficient)
-                .map_err(|e| der_err(e, "encoding coefficient"))?,
+                .map_err(|e| der_err(e, "encoding the CRT coefficient"))?,
             other_prime_infos: None,
         };
         let pkcs1_der = pkcs1_key
             .to_der()
-            .map_err(|e| der_err(e, "encoding PKCS#1 RSA private key"))?;
+            .map_err(|e| der_err(e, "encoding the PKCS#1 RSA private key"))?;
 
         let pki = pkcs8::PrivateKeyInfoOwned {
             algorithm: AlgorithmIdentifierOwned {
@@ -91,11 +91,11 @@ impl RsaKeyPairInner {
                 parameters: Some(der::Any::null()),
             },
             private_key: OctetString::new(pkcs1_der)
-                .map_err(|e| der_err(e, "wrapping PKCS#1 in OCTET STRING"))?,
+                .map_err(|e| der_err(e, "wrapping the PKCS#1 key in an OCTET STRING"))?,
             public_key: None,
         };
         pki.to_der()
-            .map_err(|e| der_err(e, "encoding PKCS#8 PrivateKeyInfo"))
+            .map_err(|e| der_err(e, "encoding the PKCS#8 PrivateKeyInfo"))
     }
 
     pub fn oaep_decrypt(
@@ -105,7 +105,7 @@ impl RsaKeyPairInner {
     ) -> Result<Vec<u8>, RsaError> {
         self.0
             .oaep_decrypt(input, hash_algorithm.into(), &[])
-            .map_err(|e| err(e, "OAEP decryption"))
+            .map_err(|e| err(e, "decrypting with RSA-OAEP"))
     }
 
     pub fn pkcs1_sign(
@@ -119,7 +119,7 @@ impl RsaKeyPairInner {
         let digest = hash_algorithm.hash(data);
         self.0
             .pkcs1_sign(&digest, hash_algorithm.into())
-            .map_err(|e| err(e, "PKCS#1 signing"))
+            .map_err(|e| err(e, "computing the PKCS#1 v1.5 signature"))
     }
 
     pub fn pss_sign(
@@ -134,7 +134,7 @@ impl RsaKeyPairInner {
         let salt_length = digest.len();
         self.0
             .pss_sign(&digest, hash_algorithm.into(), salt_length)
-            .map_err(|e| err(e, "PSS signing"))
+            .map_err(|e| err(e, "computing the PSS signature"))
     }
 
     pub(crate) fn as_pub(&self) -> &RsaPublicKeyInner {
@@ -149,7 +149,7 @@ pub struct RsaPublicKeyInner(pub(crate) RsaKey);
 impl RsaPublicKeyInner {
     pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
         let key = RsaKey::set_public_key(n, e, RsaKeyUsage::SignAndEncrypt)
-            .map_err(|e| err(e, "constructing RSA public key from components"))?;
+            .map_err(|e| err(e, "constructing the RSA public key from its components"))?;
         Ok(Self(key))
     }
 
@@ -160,7 +160,7 @@ impl RsaPublicKeyInner {
     ) -> Result<Vec<u8>, RsaError> {
         self.0
             .oaep_encrypt(input, hash_algorithm.into(), &[])
-            .map_err(|e| err(e, "OAEP encryption"))
+            .map_err(|e| err(e, "encrypting with RSA-OAEP"))
     }
 
     pub fn pkcs1_verify(
@@ -189,7 +189,7 @@ impl RsaPublicKeyInner {
                 symcrypt::errors::SymCryptError::SignatureVerificationFailure
                 | symcrypt::errors::SymCryptError::InvalidArgument,
             ) => Ok(false),
-            Err(e) => Err(err(e, "PKCS#1 signature verification")),
+            Err(e) => Err(err(e, "verifying the PKCS#1 v1.5 signature")),
         }
     }
 
@@ -214,7 +214,7 @@ impl RsaPublicKeyInner {
                 symcrypt::errors::SymCryptError::SignatureVerificationFailure
                 | symcrypt::errors::SymCryptError::InvalidArgument,
             ) => Ok(false),
-            Err(e) => Err(err(e, "PSS signature verification")),
+            Err(e) => Err(err(e, "verifying the PSS signature")),
         }
     }
 

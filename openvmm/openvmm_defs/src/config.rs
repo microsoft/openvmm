@@ -27,6 +27,7 @@ pub struct Config {
     pub floppy_disks: Vec<floppy_resources::FloppyDiskConfig>,
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pub pcie_ecam_below_4gb: bool,
     pub pcie_devices: Vec<PcieDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
     pub pcie_generic_initiators: Vec<PcieGenericInitiatorConfig>,
@@ -141,6 +142,7 @@ pub enum LoadMode {
         bios_guid: Guid,
         enable_vmbus: bool,
         force_dma_bounce: bool,
+        enable_hv: bool,
     },
     Pcat {
         firmware: RomFileLocation,

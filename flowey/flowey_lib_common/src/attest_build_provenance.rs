@@ -30,13 +30,16 @@ impl SimpleFlowNode for Node {
         });
 
         let attested = if matches!(ctx.backend(), FlowBackend::Github) {
-            ctx.emit_gh_step("Attest release artifacts", "actions/attest@v4")
-                .with("subject-path", subject_paths)
-                .requires_permission(GhPermission::Contents, GhPermissionValue::Read)
-                .requires_permission(GhPermission::IdToken, GhPermissionValue::Write)
-                .requires_permission(GhPermission::Attestations, GhPermissionValue::Write)
-                .requires_permission(GhPermission::ArtifactMetadata, GhPermissionValue::Write)
-                .finish(ctx)
+            ctx.emit_gh_step(
+                "Attest release artifacts",
+                "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+            )
+            .with("subject-path", subject_paths)
+            .requires_permission(GhPermission::Contents, GhPermissionValue::Read)
+            .requires_permission(GhPermission::IdToken, GhPermissionValue::Write)
+            .requires_permission(GhPermission::Attestations, GhPermissionValue::Write)
+            .requires_permission(GhPermission::ArtifactMetadata, GhPermissionValue::Write)
+            .finish(ctx)
         } else {
             ctx.emit_rust_step("(stub) attest release artifacts", |ctx| {
                 subject_paths.claim(ctx);

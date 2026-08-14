@@ -672,7 +672,6 @@ impl IntoPipeline for CheckinGatesCli {
                             // FIXME: this relies on openvmm default features
                             features: [].into(),
                         },
-                        version: None,
                         openvmm,
                     }
                 })
@@ -850,7 +849,6 @@ impl IntoPipeline for CheckinGatesCli {
                             features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
                                 .into(),
                         },
-                        version: None,
                         openvmm,
                     }
                 })
@@ -928,7 +926,6 @@ impl IntoPipeline for CheckinGatesCli {
                             features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
                                 .into(),
                         },
-                        version: None,
                         openvmm,
                     }
                 })
@@ -1778,6 +1775,25 @@ impl IntoPipeline for CheckinGatesCli {
                     });
                 all_jobs.push(job.finish());
             }
+        }
+
+        // Build the assembled source archive without the repository's
+        // `.packages/` provisioning, as a Linux distribution would.
+        {
+            let distro_build_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "build openvmm [distribution config, x64-linux-gnu]",
+                )
+                .gh_set_pool(gh_pools::linux_x64_gh())
+                .ado_set_pool(ado_pools::default_linux())
+                .side_effect(|done| {
+                    flowey_lib_hvlite::_jobs::check_distro_build_from_checkout::Request { done }
+                })
+                .finish();
+
+            all_jobs.push(distro_build_job);
         }
 
         // all jobs depend on the quick-check gate

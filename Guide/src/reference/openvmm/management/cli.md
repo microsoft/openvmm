@@ -7,6 +7,7 @@ The most up to date reference is always the [code itself](https://openvmm.dev/ru
 as well as the generated CLI help (via `cargo run -- --help`).
 ```
 
+* `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints the concise identity. `--version` also prints the upstream product version, build kind, full Git revision when available, and build target. An ordinary checkout reports `MAJOR.MINOR.PATCH+g<SHORT_REVISION>`. This includes an exact checkout of an `openvmm-vMAJOR.MINOR.PATCH` release tag. A checkout detected with tracked changes appends `.dirty`; staged changes refresh this reliably, while an unstaged-only transition may remain cached until another build-script input changes. A Git-free source tree reports `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the product version as `MAJOR.MINOR.PATCH.0`.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
@@ -51,6 +52,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
   enlightenments.
+* `--no-hv`: Boots AArch64 UEFI without exposing Hyper-V enlightenments.
+  By default, UEFI exposes the enlightenments. This option requires
+  `--no-vmbus`, is not supported for x86_64 UEFI, and conflicts with `--hv`,
+  `--vtl2`, `--get`, and `--pcat`.
 * `--no-vmbus`: Disables the VMBus server and all VMBus devices, even when
   `--hv` or `--uefi` is active. The guest boots using only standard PCIe
   devices and virtio transports. Incompatible with `--disk`, `--pcat`,
@@ -73,6 +78,14 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --hypervisor whp:user_mode_apic,no_enlightenments
   --hypervisor kvm
   ```
+* `--isolation <MODE>`: Enable a confidential or isolated VM mode.
+  Supported modes include `vbs` and, for `x86_64` guests on KVM, `snp`.
+
+  SNP support is currently limited to Linux direct boot and is intended for
+  bring-up. It does not support UEFI, Hyper-V enlightenments, VTL2, VMBus,
+  or hugetlb-backed memory. In addition to the minimal emulated chipset and
+  serial console, optional devices are limited to virtio devices attached
+  through PCIe.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and
@@ -307,6 +320,13 @@ complex name:
 - `node=<N>`: NUMA node affinity for this root complex. The guest sees
   this via the ACPI `_PXM` object. When omitted, no `_PXM` is emitted
   and the guest uses its default allocation policy.
+
+By default, PCIe ECAM is placed above 4 GiB to preserve low MMIO space for
+device BARs. Use `--pcie-ecam-below-4gb` to place every PCI segment's ECAM in
+32-bit MMIO instead. This compatibility workaround is intended for direct-boot
+guest kernels that cannot discover high ECAM without firmware interfaces
+available during a conventional boot. The flag defaults to off and requires
+`--pcie-root-complex`.
 
 ### Root port and switch options
 

@@ -2380,6 +2380,7 @@ dependencies = [
  "serde_json",
  "target-lexicon",
  "tempfile",
+ "toml_edit",
  "vmm_test_images",
  "which 8.0.0",
 ]
@@ -5651,6 +5652,21 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
+ "hvdef",
+ "log",
+ "nostd_spin_channel",
+ "opentmk_core",
+ "opentmk_protocol",
+ "serde",
+ "serde_json",
+ "spin",
+ "uefi",
+]
+
+[[package]]
+name = "opentmk_core"
+version = "0.0.0"
+dependencies = [
  "acpi_spec",
  "bitfield-struct 0.11.0",
  "cfg-if",
@@ -5660,7 +5676,6 @@ dependencies = [
  "memory_range",
  "minimal_rt",
  "nostd_spin_channel",
- "opentmk_protocol",
  "serde",
  "serde_json",
  "spin",
@@ -5696,13 +5711,20 @@ dependencies = [
 
 [[package]]
 name = "openvmm"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crypto",
  "embed-resource",
  "openvmm_entry",
  "openvmm_hypervisors",
  "openvmm_resources",
+]
+
+[[package]]
+name = "openvmm_build_info"
+version = "0.1.0"
+dependencies = [
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -5773,6 +5795,7 @@ dependencies = [
  "smmu",
  "sparse_mmap",
  "state_unit",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5872,6 +5895,7 @@ dependencies = [
  "net_tap",
  "netvsp_resources",
  "nvme_resources",
+ "openvmm_build_info",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_pcat_locator",
@@ -8942,6 +8966,7 @@ dependencies = [
  "disk_blockdevice",
  "disk_get_vmgs",
  "disk_nvme",
+ "disklayer_ram",
  "firmware_pcat",
  "firmware_uefi_resources",
  "framebuffer",
@@ -9571,12 +9596,14 @@ dependencies = [
  "inspect",
  "jiff",
  "kvm",
+ "libc",
  "memory_range",
  "open_enum",
  "pal_event",
  "parking_lot",
  "pci_core",
  "safe_intrinsics",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",

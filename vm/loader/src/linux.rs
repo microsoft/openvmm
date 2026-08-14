@@ -270,9 +270,12 @@ const KERNEL_BASE: u64 = 0x100000;
 
 /// Enables allocation of the SEV-SNP Linux boot protocol pages.
 #[derive(Debug, Clone, Copy)]
-pub struct SnpBootConfig;
+pub struct SnpBootConfig {
+    /// The page-table bit that marks private memory.
+    pub c_bit: u8,
+}
 
-const SNP_BOOT_PAGE_COUNT: u64 = 4;
+const SNP_BOOT_PAGE_COUNT: u64 = 5;
 
 /// The GPA of the SMBIOS structure table: immediately above the ACPI tables in
 /// the low reserved area. Only the `_SM3_` anchor stays in the F-segment; the
@@ -351,6 +354,7 @@ fn import_snp_boot_pages(
     let cpuid_address = range.start() + HV_PAGE_SIZE;
     let cc_blob_address = range.start() + 2 * HV_PAGE_SIZE;
     let cc_setup_data_address = range.start() + 3 * HV_PAGE_SIZE;
+    let vmsa_address = range.start() + 4 * HV_PAGE_SIZE;
 
     importer
         .import_pages(
@@ -411,6 +415,10 @@ fn import_snp_boot_pages(
             BootPageAcceptance::Exclusive,
             cc_setup_data.as_bytes(),
         )
+        .map_err(Error::Importer)?;
+
+    importer
+        .set_vp_context_page(vmsa_address / HV_PAGE_SIZE)
         .map_err(Error::Importer)?;
 
     Ok(cc_setup_data_address)
@@ -633,12 +641,15 @@ fn import_config(
     let mut page_table_work_buffer: Vec<PageTable> =
         vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
     let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
-    let page_table_builder = IdentityMapBuilder::new(
+    let mut page_table_builder = IdentityMapBuilder::new(
         CR3_BASE,
         IdentityMapSize::Size4Gb,
         page_table_work_buffer.as_mut_slice(),
         page_table.as_mut_slice(),
     )?;
+    if let Some(snp_boot) = snp_boot {
+        page_table_builder = page_table_builder.with_confidential_bit(snp_boot.c_bit.into());
+    }
     let page_table = page_table_builder.build();
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
@@ -1285,6 +1296,7 @@ mod tests {
         /// `(debug_tag, page_base, page_count)` for each imported region.
         pages: Vec<(String, u64, u64)>,
         imports: Vec<ImportRecord>,
+        vp_context_page: Option<u64>,
     }
 
     #[derive(Debug)]
@@ -1375,8 +1387,9 @@ mod tests {
             Ok(())
         }
 
-        fn set_vp_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
-            unimplemented!()
+        fn set_vp_context_page(&mut self, page_base: u64) -> anyhow::Result<()> {
+            self.vp_context_page = Some(page_base);
+            Ok(())
         }
 
         fn relocation_region(
@@ -1502,6 +1515,39 @@ mod tests {
     }
 
     #[test]
+    fn import_config_sets_snp_c_bit_in_page_tables() {
+        const C_BIT: u8 = 51;
+        let acpi = AcpiTables {
+            rsdp: vec![0u8; 0x1000],
+            tables: vec![0u8; 0x1000],
+        };
+        let mut importer = RecordingImporter::default();
+        import_config(
+            &mut importer,
+            &test_load_info(),
+            &CString::new("").unwrap(),
+            &make_layout(256 * MB),
+            &acpi,
+            None,
+            Some(SnpBootConfig { c_bit: C_BIT }),
+        )
+        .unwrap();
+
+        let page_tables = importer
+            .imports
+            .iter()
+            .find(|import| import.tag == "linux-pagetables")
+            .unwrap();
+        for entry in page_tables.data.chunks_exact(8).map(|entry| {
+            u64::from_ne_bytes(entry.try_into().expect("page table entry is eight bytes"))
+        }) {
+            if entry & 1 != 0 {
+                assert_ne!(entry & (1 << C_BIT), 0);
+            }
+        }
+    }
+
+    #[test]
     fn import_config_rejects_empty_acpi_tables() {
         // Empty tables would import zero pages; the loader must reject them
         // rather than feed page_count == 0 into the importer.
@@ -1592,7 +1638,14 @@ mod tests {
             cc_setup_data.cc_blob_address,
             u32::try_from(allocated_range.start() + 2 * HV_PAGE_SIZE).unwrap()
         );
-        assert_eq!(allocated_range.end(), cc_setup_data_address + HV_PAGE_SIZE,);
+        assert_eq!(
+            importer.vp_context_page,
+            Some(allocated_range.start() / HV_PAGE_SIZE + 4)
+        );
+        assert_eq!(
+            allocated_range.end(),
+            cc_setup_data_address + 2 * HV_PAGE_SIZE,
+        );
         assert!(allocated_range.end() <= RSDP_BASE);
 
         let smbios_reserved = &boot_params.e820_map[2];

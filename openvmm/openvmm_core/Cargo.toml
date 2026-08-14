@@ -9,6 +9,9 @@ rust-version.workspace = true
 [features]
 gdb = ["vmm_core/gdb"]
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [dependencies]
 hypervisor_resources.workspace = true
 openvmm_defs.workspace = true

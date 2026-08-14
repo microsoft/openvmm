@@ -197,7 +197,7 @@ async fn try_create_mana_device(
     let vtl2_vfid = vfid_from_guid(vtl2_vf_instance_id);
     // Restore the device if we have saved state from servicing, otherwise create a new one.
     let device = if mana_state.is_some() {
-        tracing::debug!(vtl2_vfid, "Restoring VFIO device from saved state");
+        tracing::debug!(vtl2_vfid, pci_id, "Restoring VFIO device from saved state");
         VfioDevice::restore(driver_source, pci_id, true, dma_clients)
             .instrument(tracing::info_span!(
                 "restore_mana_vfio_device",
@@ -207,6 +207,11 @@ async fn try_create_mana_device(
             .await
             .with_context(|| format!("failed to restore vfio device for {}", pci_id))?
     } else {
+        tracing::debug!(
+            vtl2_vfid,
+            pci_id,
+            "Creating new VFIO device (no saved state)"
+        );
         VfioDevice::new(driver_source, pci_id, dma_clients)
             .instrument(tracing::info_span!(
                 "new_mana_vfio_device",
@@ -982,6 +987,11 @@ impl HclNetworkVFManagerWorker {
                         // Closing the VFIO device handle can take a long time.
                         // Leak the handle by stashing it away.
                         std::mem::forget(device);
+                        tracing::info!(
+                            vtl2_vfid,
+                            pci_id = %self.vtl2_pci_id,
+                            "MANA device state successfully saved for keepalive"
+                        );
                         VfManagerSaveResult::Saved(ManaSavedState {
                             mana_device: saved_state,
                             pci_id: self.vtl2_pci_id.clone(),

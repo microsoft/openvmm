@@ -26,7 +26,7 @@ fn err(e: symcrypt::errors::SymCryptError, op: &'static str) -> XtsAes256Error {
 
 impl XtsAes256Inner {
     pub fn new(key: &[u8; KEY_LEN], data_unit_size: u32) -> Result<Self, XtsAes256Error> {
-        let key = XtsAesKey::new(key).map_err(|e| err(e, "expanding xts key"))?;
+        let key = XtsAesKey::new(key).map_err(|e| err(e, "expanding the XTS-AES key"))?;
         Ok(Self {
             key,
             data_unit_size,
@@ -47,7 +47,7 @@ impl XtsAes256EncCtxInner<'_> {
         self.inner
             .key
             .encrypt_in_place(self.inner.data_unit_size as u64, tweak, data)
-            .map_err(|e| err(e, "xts encrypt"))
+            .map_err(|e| err(e, "encrypting data"))
     }
 }
 
@@ -56,6 +56,6 @@ impl XtsAes256DecCtxInner<'_> {
         self.inner
             .key
             .decrypt_in_place(self.inner.data_unit_size as u64, tweak, data)
-            .map_err(|e| err(e, "xts decrypt"))
+            .map_err(|e| err(e, "decrypting data"))
     }
 }

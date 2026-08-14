@@ -47,14 +47,14 @@ use thiserror::Error;
     all(native, target_os = "macos")
 ))]
 #[derive(Debug, Error)]
-#[error("RSA error")]
+#[error("RSA operation failed")]
 pub struct RsaError(#[source] pub(crate) super::BackendError);
 
 /// An error for RSA operations.
 // TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
 #[cfg(rust)]
 #[derive(Debug, Error)]
-#[error("RSA error during {1}")]
+#[error("RSA operation failed while {1}")]
 pub struct RsaError(
     #[source] pub(crate) rsa::errors::Error,
     pub(crate) &'static str,
@@ -258,13 +258,18 @@ mod tests {
         assert!(valid);
     }
 
-    /// OAEP encrypt/decrypt round-trip with both supported hash algorithms.
+    /// OAEP encrypt/decrypt round-trip with every supported hash algorithm.
     #[test]
     #[expect(deprecated)]
     fn oaep_roundtrip() {
         let key = RsaKeyPair::generate(2048).unwrap();
         let payload = b"a secret message";
-        for alg in [HashAlgorithm::Sha1, HashAlgorithm::Sha256] {
+        for alg in [
+            HashAlgorithm::Sha1,
+            HashAlgorithm::Sha256,
+            HashAlgorithm::Sha384,
+            HashAlgorithm::Sha512,
+        ] {
             let ct = key.oaep_encrypt(payload, alg).unwrap();
             let pt = key.oaep_decrypt(&ct, alg).unwrap();
             assert_eq!(pt, payload);

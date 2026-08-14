@@ -38,6 +38,7 @@ use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
 use crate::emuplat::watchdog::UnderhillWatchdogPlatform;
+use crate::hibernate;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
@@ -260,6 +261,8 @@ pub struct UnderhillEnvCfg {
     pub vmbus_enable_mnf: Option<bool>,
     /// Force the use of confidential external memory for all non-relay vmbus channels.
     pub vmbus_force_confidential_external_memory: bool,
+    /// Force the use of GPA pinning for all vmbus channels.
+    pub vmbus_force_gpa_pinning: bool,
     /// Delay before unsticking a vmbus channel after it has been opened.
     pub vmbus_channel_unstick_delay: Option<Duration>,
     /// Command line to append to VTL0 command line. Only used for linux direct.
@@ -856,6 +859,18 @@ impl UhVmNetworkSettings {
         } else {
             VfioDmaClients::EphemeralOnly(ephemeral_dma_client)
         };
+
+        tracing::info!(
+            CVM_ALLOWED,
+            pci_id = %nic_config.pci_id,
+            %instance_id,
+            keepalive_mode = ?keepalive_mode,
+            keepalive_enabled = keepalive_mode.is_enabled(),
+            has_saved_mana_state = saved_mana_state.is_some(),
+            saved_mana_state_pci_id = saved_mana_state.map(|s| s.pci_id.as_str()),
+            dma_clients_mode = if matches!(dma_clients, VfioDmaClients::Split { .. }) { "Split" } else { "EphemeralOnly" },
+            "checking for MANA VF keepalive prior to creating underhill NIC"
+        );
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
@@ -3212,18 +3227,38 @@ async fn new_underhill_vm(
             .unwrap_or(!controllers.mana.is_empty());
         tracing::info!(CVM_ALLOWED, enable_mnf, "Underhill MNF enabled?");
 
+        // Enable the GPA pinning feature only if the hypercalls are available.
+        #[cfg(not(guest_arch = "x86_64"))]
+        let support_gpa_pinning = false;
+        #[cfg(guest_arch = "x86_64")]
+        let support_gpa_pinning = {
+            let result =
+                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+            hvdef::HvEnlightenmentInformation::from(
+                result.eax as u128
+                    | (result.ebx as u128) << 32
+                    | (result.ecx as u128) << 64
+                    | (result.edx as u128) << 96,
+            )
+            .use_gpa_pinning_hypercall()
+        };
+
         let max_version = env_cfg
             .vmbus_max_version
             .map(vmbus_core::MaxVersionInfo::new)
             .or_else(|| {
-                // For compatibility with rollback, any additional features are currently disabled,
-                // except for isolated guests which do not support servicing.
+                // For compatibility with rollback, the max version should only include feature
+                // flags that are available in all in-service versions of OpenHCL.
+                // N.B. Isolated VMs do not support servicing, so they can use all flags.
+                // N.B. VM SKUs that support GPA pinning are guaranteed to use a compatible
+                //      version of OpenHCL so it can safely be enabled here.
                 (!hardware_isolated).then_some(vmbus_core::MaxVersionInfo {
                     version: vmbus_core::protocol::Version::Copper as u32,
                     feature_flags: vmbus_core::protocol::FeatureFlags::new()
                         .with_guest_specified_signal_parameters(true)
                         .with_channel_interrupt_redirection(true)
-                        .with_modify_connection(true),
+                        .with_modify_connection(true)
+                        .with_gpa_pinning(true),
                 })
             });
 
@@ -3249,6 +3284,8 @@ async fn new_underhill_vm(
                 .force_confidential_external_memory(
                     env_cfg.vmbus_force_confidential_external_memory,
                 )
+                .support_gpa_pinning(support_gpa_pinning)
+                .force_gpa_pinning(support_gpa_pinning && env_cfg.vmbus_force_gpa_pinning)
                 .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
                 // For saved-state compat with release/2411.
                 .send_messages_while_stopped(true)
@@ -3518,6 +3555,20 @@ async fn new_underhill_vm(
                 None
             };
 
+            tracing::info!(
+                CVM_ALLOWED,
+                pci_id = %nic_config.pci_id,
+                instance_id = %nic_config.instance_id,
+                has_servicing_mana_state = servicing_state.mana_state.is_some(),
+                num_mana_devices = servicing_state
+                    .mana_state
+                    .as_ref()
+                    .map(|s| s.len())
+                    .unwrap_or(0),
+                has_nic_servicing_state = nic_servicing_state.is_some(),
+                "MANA keepalive: resolved saved state for NIC"
+            );
+
             let save_state = uh_network_settings
                 .add_network(
                     nic_config.instance_id,
@@ -3644,6 +3695,59 @@ async fn new_underhill_vm(
             .await
             .context("failed to relay initial vpci channels")?;
     }
+    // The hibernate token pins the firmware version across a hibernate/resume
+    // cycle. On a servicing restore the VMGS token was already consumed at the
+    // original cold boot, so recover it from saved state; otherwise read (and
+    // consume) it from VMGS.
+    let current_hibernate_token = if !dps.general.hibernation_enabled {
+        None
+    } else if is_restoring {
+        // Older saved state may not carry hibernation state; treat as unknown.
+        Some(
+            servicing_state
+                .hibernate
+                .flatten()
+                .map_or(hibernate::Token::UNKNOWN, |h| h.token.into()),
+        )
+    } else if let Some(vmgs_client) = vmgs_client.as_ref() {
+        if let Some(token @ hibernate::Token::Hibernated { .. }) =
+            hibernate::read_token(vmgs_client).await
+        {
+            // A resume under a different firmware version; warn but don't honor
+            // it yet.
+            if token != hibernate::Token::CURRENT {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    resume = %token,
+                    current = %hibernate::Token::CURRENT,
+                    "hibernation resume token does not match the current firmware version"
+                );
+            }
+        }
+        // Consume any token, valid or corrupt, so it is not re-read next boot.
+        hibernate::delete_token(vmgs_client).await;
+        // No overload support yet; always use the current firmware version.
+        Some(hibernate::Token::CURRENT)
+    } else {
+        // Hibernation was requested but there is no VMGS to persist the token,
+        // so it cannot survive a power transition.
+        tracing::warn!(
+            CVM_ALLOWED,
+            "hibernation enabled but no VMGS is available; hibernate token will not be persisted"
+        );
+        None
+    };
+
+    // A Some token means hibernation is enabled and populated; pair it with a
+    // VMGS client to drive token persistence at halt time.
+    let hibernate_halt =
+        current_hibernate_token
+            .zip(vmgs_client.clone())
+            .map(|(current_token, vmgs_client)| hibernate::HaltState {
+                vmgs_client,
+                current_token,
+            });
+
     let (halt_notify_send, halt_notify_recv) = mesh::channel();
     let halt_task = tp.spawn(
         "halt",
@@ -3652,6 +3756,7 @@ async fn new_underhill_vm(
             fatal_error_recv,
             control_send.clone(),
             get_client.clone(),
+            hibernate_halt,
             env_cfg.halt_on_guest_halt,
         ),
     );
@@ -3711,6 +3816,7 @@ async fn new_underhill_vm(
         partition_unit,
         memory: gm,
         firmware_type,
+        hibernate_token: current_hibernate_token,
         isolation,
         chipset_devices: devices,
         _vmtime: vmtime,
@@ -3904,6 +4010,7 @@ async fn halt_task(
     mut _fatal_error_recv: mesh::Receiver<Box<dyn std::error::Error + Send + Sync>>,
     control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
     get_client: GuestEmulationTransportClient,
+    hibernate_halt: Option<hibernate::HaltState>,
     halt_on_guest_halt: bool,
 ) {
     #[derive(Debug)]
@@ -3954,9 +4061,39 @@ async fn halt_task(
 
             // Now we can notify the host about the halt.
             match halt_request {
-                HaltRequest::PowerOff => get_client.send_power_off(),
-                HaltRequest::Reset => get_client.send_reset(),
-                HaltRequest::Hibernate => get_client.send_hibernate(),
+                HaltRequest::PowerOff => {
+                    // Record the powered-off state so a later boot is not a resume.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate::Token::NotHibernated,
+                        )
+                        .await;
+                    }
+                    get_client.send_power_off()
+                }
+                HaltRequest::Reset => {
+                    // Record the powered-off state so a later boot is not a resume.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate::Token::NotHibernated,
+                        )
+                        .await;
+                    }
+                    get_client.send_reset()
+                }
+                HaltRequest::Hibernate => {
+                    // Write the hibernate token before signaling the host.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate_halt.current_token,
+                        )
+                        .await;
+                    }
+                    get_client.send_hibernate()
+                }
                 HaltRequest::TripleFault { vp, regs } => {
                     get_client.triple_fault(vp, TripleFaultType::UNRECOVERABLE_EXCEPTION, regs)
                 }

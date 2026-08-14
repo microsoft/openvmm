@@ -148,7 +148,11 @@ impl SimpleVmbusDevice for GuestCrashDevice {
             interface_name: "guest_crash".into(),
             instance_id: CRASHDUMP_GUID,
             interface_id: CRASHDUMP_GUID,
-            channel_type: vmbus_channel::bus::ChannelType::Pipe { message_mode: true },
+            channel_type: vmbus_channel::bus::ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }

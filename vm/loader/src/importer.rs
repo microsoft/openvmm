@@ -377,19 +377,6 @@ impl IsolationConfig {
 }
 
 #[derive(Debug)]
-pub struct ImportRegion {
-    pub page_base: u64,
-    pub page_count: u64,
-    pub acceptance: BootPageAcceptance,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct PageRegion {
-    pub page_base: u64,
-    pub page_count: u64,
-}
-
-#[derive(Debug)]
 pub enum IgvmParameterType {
     VpCount,
     Srat,

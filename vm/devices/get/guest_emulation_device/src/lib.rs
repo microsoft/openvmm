@@ -299,7 +299,11 @@ impl SimpleVmbusDevice for GuestEmulationDevice {
             interface_name: "get".to_owned(),
             interface_id: get_protocol::GUEST_EMULATION_INTERFACE_TYPE,
             instance_id: get_protocol::GUEST_EMULATION_INTERFACE_INSTANCE,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }
