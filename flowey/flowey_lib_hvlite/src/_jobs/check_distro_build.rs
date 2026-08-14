@@ -170,22 +170,24 @@ impl SimpleFlowNode for Node {
                     .context("could not find the distribution-provided protoc")?;
 
                 let target = target.to_string();
-                let (argv0, params) = flowey_lib_common::install_rust::cargo_argv(
-                    &rust_toolchain,
-                    [
-                        "build".to_owned(),
-                        "--release".to_owned(),
-                        "--locked".to_owned(),
-                        "--offline".to_owned(),
-                        "-p".to_owned(),
-                        "openvmm".to_owned(),
-                        "--target".to_owned(),
-                        target,
-                    ],
-                );
+                let cargo = if let Some(rust_toolchain) = &rust_toolchain {
+                    flowey::shell_cmd!(rt, "rustup run {rust_toolchain} cargo")
+                } else {
+                    flowey::shell_cmd!(rt, "cargo")
+                };
 
                 rt.sh.change_dir(&source_dir);
-                flowey::shell_cmd!(rt, "{argv0} {params...}")
+                cargo
+                    .args([
+                        "build",
+                        "--release",
+                        "--locked",
+                        "--offline",
+                        "-p",
+                        "openvmm",
+                        "--target",
+                        &target,
+                    ])
                     .env("PROTOC", protoc)
                     .env("OPENSSL_NO_VENDOR", "1")
                     .env("CARGO_HOME", cargo_home)

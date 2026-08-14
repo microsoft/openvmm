@@ -203,21 +203,23 @@ impl SimpleFlowNode for Node {
                 fs_err::create_dir_all(&stage_dir)?;
 
                 let manifest_path = repo_path.join("Cargo.toml");
-                let (argv0, params) = flowey_lib_common::install_rust::cargo_argv(
-                    &rust_toolchain,
-                    [
-                        "vendor".to_owned(),
-                        "--manifest-path".to_owned(),
-                        manifest_path.to_string_lossy().into_owned(),
-                        "--locked".to_owned(),
-                        "--versioned-dirs".to_owned(),
-                        "vendor".to_owned(),
-                    ],
-                );
+                let cargo = if let Some(rust_toolchain) = &rust_toolchain {
+                    flowey::shell_cmd!(rt, "rustup run {rust_toolchain} cargo")
+                } else {
+                    flowey::shell_cmd!(rt, "cargo")
+                };
 
                 let prior_dir = rt.sh.current_dir();
                 rt.sh.change_dir(&stage_dir);
-                let vendor_output = flowey::shell_cmd!(rt, "{argv0} {params...}")
+                let vendor_output = cargo
+                    .args([
+                        "vendor".as_ref(),
+                        "--manifest-path".as_ref(),
+                        manifest_path.as_os_str(),
+                        "--locked".as_ref(),
+                        "--versioned-dirs".as_ref(),
+                        "vendor".as_ref(),
+                    ])
                     .ignore_status()
                     .output()?;
                 rt.sh.change_dir(prior_dir);
