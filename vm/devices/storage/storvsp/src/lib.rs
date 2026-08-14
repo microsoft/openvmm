@@ -1632,6 +1632,15 @@ struct ScsiControllerState {
     poll_mode_queue_depth: AtomicU32,
 }
 
+impl ScsiControllerState {
+    /// Tells every attached device that the initiator it was talking to is gone.
+    fn clear_nexus_state(&self) {
+        for disk in self.disks.read().values() {
+            disk.disk.clear_nexus_state();
+        }
+    }
+}
+
 pub struct ScsiController {
     state: Arc<ScsiControllerState>,
 }
@@ -1762,6 +1771,19 @@ impl VmbusDevice for StorageDevice {
         }
         if channel_index == 0 {
             *self.protocol.state.write() = ProtocolState::Init(InitState::Begin);
+            // Closing the primary channel ends the initiator-target nexus, so the
+            // state scoped to it goes with the protocol state. A machine reset
+            // arrives here too: the server closes every open channel on the way
+            // down (vmbus_server's client_release_channel notifies Action::Close),
+            // and without this the next boot inherits the previous guest's tray
+            // lock and pending sense.
+            // Correctness here rests on channel 0 being closed last, which vmbus
+            // does in both paths: the teardown loop closes subchannels in reverse
+            // index order, and the close-request path closes 1..len before
+            // channel 0. Each of those closes stops and drains its worker, so
+            // none is left to repopulate the state cleared below. `VmbusDevice`
+            // does not document that order.
+            self.controller.clear_nexus_state();
         }
     }
 
@@ -1821,8 +1843,11 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use scsi::srb::SrbStatus;
+    use scsi_buffers::OwnedRequestBuffers;
     use test_with_tracing::test;
     use vmbus_channel::connected_async_channels;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
 
     // Discourage `Clone` for `ScsiController` outside the crate, but it is
     // necessary for testing. The fuzzer also uses `TestWorker`, which needs
@@ -2464,5 +2489,106 @@ mod tests {
         }
 
         guest.verify_graceful_close(worker).await;
+    }
+    fn make_medium_removal_request(prevent: bool) -> Request {
+        let cdb = scsi::CdbMediaRemoval {
+            operation_code: ScsiOp::MEDIUM_REMOVAL,
+            lun: 0,
+            reserved: [0; 2],
+            flags: scsi::MediaRemovalFlags::new()
+                .with_prevent(prevent)
+                .with_persistent(false),
+        };
+        let mut data = [0u8; 16];
+        data[..size_of::<scsi::CdbMediaRemoval>()].copy_from_slice(cdb.as_bytes());
+        Request {
+            cdb: data,
+            srb_flags: 0,
+        }
+    }
+
+    fn make_eject_request() -> Request {
+        let cdb = scsi::StartStop {
+            operation_code: ScsiOp::START_STOP_UNIT,
+            immediate: 0,
+            reserved2: [0; 2],
+            flag: scsi::StartStopFlags::new()
+                .with_start(false)
+                .with_load_eject(true),
+            control: 0,
+        };
+        let mut data = [0u8; 16];
+        data[..size_of::<scsi::StartStop>()].copy_from_slice(cdb.as_bytes());
+        Request {
+            cdb: data,
+            srb_flags: 0,
+        }
+    }
+
+    /// Closing the primary channel is what ends the nexus, so it is what has to
+    /// be tested.
+    ///
+    /// The scsidisk tests call `clear_nexus_state` on the device directly, which
+    /// says the device clears its own state but nothing about the caller. With
+    /// only those, deleting the `clear_nexus_state` call in `close()` leaves
+    /// both of them green while the reopened-channel and machine-reset behaviour
+    /// comes back. This drives the real `VmbusDevice::close` and observes the
+    /// result the way an initiator would, through a SCSI command, rather than
+    /// through the device's internals.
+    #[async_test]
+    async fn test_close_ends_the_nexus(driver: DefaultDriver) {
+        let controller = ScsiController::new();
+        let dvd = Arc::new(scsidisk::scsidvd::SimpleScsiDvd::new(Some(
+            disklayer_ram::ram_disk(2 * 1024 * 1024, false).unwrap(),
+        )));
+        controller
+            .attach(
+                ScsiPath {
+                    path: 0,
+                    target: 0,
+                    lun: 0,
+                },
+                ScsiControllerDisk::new(dvd.clone()),
+            )
+            .unwrap();
+
+        let mut device = StorageDevice::build_scsi(
+            &VmTaskDriverSource::new(SingleDriverBackend::new(driver)),
+            &controller,
+            Guid::new_random(),
+            0,
+            64,
+        );
+
+        let external_data = OwnedRequestBuffers::new(&[0]);
+        let guest_mem = GuestMemory::allocate(4096);
+        let buffers = external_data.buffer(&guest_mem);
+
+        // The initiator locks the tray. This is the nexus-scoped state that must
+        // not reach whoever opens the channel next.
+        let locked = dvd
+            .execute_scsi(&buffers, &make_medium_removal_request(true))
+            .await;
+        assert_eq!(locked.scsi_status, ScsiStatus::GOOD);
+
+        // Control: while the nexus lives the lock holds, so the eject is refused.
+        // Without this the final assertion would only show that ejecting works.
+        let refused = dvd.execute_scsi(&buffers, &make_eject_request()).await;
+        assert_ne!(
+            refused.scsi_status,
+            ScsiStatus::GOOD,
+            "the tray lock did not take, so the rest of this test proves nothing"
+        );
+
+        device.close(0).await;
+
+        // Same command, same drive, same media: it succeeds only because closing
+        // the primary channel dropped the lock.
+        let allowed = dvd.execute_scsi(&buffers, &make_eject_request()).await;
+        assert_eq!(
+            allowed.scsi_status,
+            ScsiStatus::GOOD,
+            "the tray lock outlived the nexus"
+        );
     }
 }
