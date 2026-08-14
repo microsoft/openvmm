@@ -18,7 +18,6 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 const ITERATIONS: u32 = 1;
-const VIRTUAL_CLIENT_NAME: &str = "VirtualClient";
 
 pub(crate) struct VirtualClientRunRequest<'a> {
     pub(crate) profile: VmmPerfProfile,
@@ -88,19 +87,20 @@ impl<'a> VirtualClientRun<'a> {
         );
 
         let experiment_id = experiment_id(request.profile, &request.config.name)?;
-        let mut command_builder =
-            VirtualClientCommandBuilder::new(request.runtime.root(), VIRTUAL_CLIENT_NAME)
-                .profile(request.profile)
-                .iterations(ITERATIONS)
-                .package_dir(&request.runtime.package_dir())
-                .log_dir(&directories.virtual_client_logs)
-                .experiment_id(&experiment_id)
-                .logger("file")
-                .logger("csv")
-                .logger("summary")
-                .log_to_file(true)
-                .work_dir(&directories.data_dir)
-                .temp_dir(&directories.temp_dir);
+        let mut command_builder = VirtualClientCommandBuilder::new(
+            request.runtime.root(),
+            request.runtime.virtual_client(),
+        )
+        .profile(request.profile)
+        .iterations(ITERATIONS)
+        .package_dir(&request.runtime.package_dir())
+        .log_dir(&directories.virtual_client_logs)
+        .experiment_id(&experiment_id)
+        .logger("file")
+        .logger("csv")
+        .logger("summary")
+        .log_to_file(true)
+        .temp_dir(&directories.temp_dir);
         for (name, value) in parameters {
             command_builder = command_builder.parameter(name, value);
         }

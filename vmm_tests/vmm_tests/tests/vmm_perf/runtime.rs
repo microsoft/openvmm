@@ -8,11 +8,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-const VIRTUAL_CLIENT_NAME: &str = "VirtualClient";
 const ARCHIVE_SIGNATURE_FILE: &str = ".archive-signature";
 
 pub(crate) struct VmmPerfRuntime {
     root: PathBuf,
+    virtual_client: PathBuf,
 }
 
 impl VmmPerfRuntime {
@@ -21,7 +21,11 @@ impl VmmPerfRuntime {
 
         let root = extract_runtime(archive)?;
         ensure_runtime_executables(&root)?;
-        Ok(Self { root })
+        let virtual_client = root.join(virtual_client_name());
+        Ok(Self {
+            root,
+            virtual_client,
+        })
     }
 
     pub(crate) fn validate_profile(&self, profile: VmmPerfProfile) -> anyhow::Result<()> {
@@ -33,6 +37,10 @@ impl VmmPerfRuntime {
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn virtual_client(&self) -> &Path {
+        &self.virtual_client
     }
 
     pub(crate) fn package_dir(&self) -> PathBuf {
@@ -60,7 +68,11 @@ fn extract_runtime(archive: &Path) -> anyhow::Result<PathBuf> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("VMM.Perf archive filename is not valid UTF-8")?;
-    let cache_name = archive_name.strip_suffix(".tar.gz").unwrap_or(archive_name);
+    let cache_name = archive_name
+        .strip_suffix(".tar.gz")
+        .or_else(|| archive_name.strip_suffix(".zip"))
+        .or_else(|| archive_name.strip_suffix(".tar"))
+        .unwrap_or(archive_name);
     let cache_dir = archive_parent.join(format!("{cache_name}-extracted"));
     let archive_signature = archive_signature(archive)?;
 
@@ -132,7 +144,7 @@ pub(crate) fn find_runtime_dir(root: &Path) -> anyhow::Result<PathBuf> {
     let mut pending = VecDeque::from([(root.to_path_buf(), 0_u8)]);
     let mut candidates = Vec::new();
     while let Some((directory, depth)) = pending.pop_front() {
-        if directory.join(VIRTUAL_CLIENT_NAME).is_file() {
+        if directory.join(virtual_client_name()).is_file() {
             candidates.push(directory.clone());
         }
         if depth == 4 {
@@ -148,7 +160,8 @@ pub(crate) fn find_runtime_dir(root: &Path) -> anyhow::Result<PathBuf> {
     match candidates.as_slice() {
         [runtime_dir] => Ok(runtime_dir.clone()),
         [] => anyhow::bail!(
-            "VMM.Perf archive did not contain {VIRTUAL_CLIENT_NAME} within four directory levels"
+            "VMM.Perf archive did not contain {} within four directory levels",
+            virtual_client_name()
         ),
         _ => anyhow::bail!("VMM.Perf archive contained multiple runtime directories"),
     }
@@ -159,7 +172,7 @@ fn ensure_runtime_executables(runtime_dir: &Path) -> anyhow::Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         for path in [
-            runtime_dir.join(VIRTUAL_CLIENT_NAME),
+            runtime_dir.join(virtual_client_name()),
             runtime_dir.join("cidata-inject"),
         ] {
             if path.is_file() {
@@ -172,6 +185,14 @@ fn ensure_runtime_executables(runtime_dir: &Path) -> anyhow::Result<()> {
     #[cfg(not(unix))]
     let _ = runtime_dir;
     Ok(())
+}
+
+const fn virtual_client_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "VirtualClient.exe"
+    } else {
+        "VirtualClient"
+    }
 }
 
 fn ensure_file(path: &Path, description: &str) -> anyhow::Result<()> {

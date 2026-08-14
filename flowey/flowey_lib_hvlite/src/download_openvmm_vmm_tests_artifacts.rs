@@ -123,18 +123,19 @@ impl FlowNodeWithConfig for Node {
                     };
 
                     if let Some(artifact) = KnownTestArtifacts::from_filename(filename) {
-                        let size = e.metadata()?.len();
-                        let expected_size = artifact.file_size();
-                        if size != expected_size {
-                            log::warn!(
-                                "unexpected size for {}: expected {}, found {}",
-                                filename,
-                                expected_size,
-                                size
-                            );
-                            unexpected_artifacts.insert(artifact);
-                        } else {
-                            skip_artifacts.insert(artifact);
+                        if let Some(expected_size) = artifact.expected_file_size() {
+                            let size = e.metadata()?.len();
+                            if size != expected_size {
+                                log::warn!(
+                                    "unexpected size for {}: expected {}, found {}",
+                                    filename,
+                                    expected_size,
+                                    size
+                                );
+                                unexpected_artifacts.insert(artifact);
+                            } else {
+                                skip_artifacts.insert(artifact);
+                            }
                         }
                     } else {
                         continue;
@@ -199,14 +200,27 @@ Detected inconsistencies between expected and cached VMM test images.
                         let disk_image_list = files_to_download
                             .iter()
                             .map(|artifact| {
-                                format!("  - {} ({})", artifact.filename(), artifact.file_size())
+                                let size = artifact
+                                    .expected_file_size()
+                                    .map_or_else(|| "size unknown".into(), |size| size.to_string());
+                                format!("  - {} ({size})", artifact.filename())
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let download_size: u64 = files_to_download
+                        let known_download_size: u64 = files_to_download
                             .iter()
-                            .map(|artifact| artifact.file_size())
+                            .filter_map(|artifact| artifact.expected_file_size())
                             .sum();
+                        let has_unknown_sizes = files_to_download
+                            .iter()
+                            .any(|artifact| artifact.expected_file_size().is_none());
+                        let download_size = if has_unknown_sizes {
+                            format!(
+                                "at least {known_download_size} bytes (excluding artifacts with unknown size)"
+                            )
+                        } else {
+                            format!("{known_download_size} bytes")
+                        };
                         let msg = format!(
                             r#"
 ================================================================================
@@ -217,7 +231,7 @@ to be downloaded from Azure blob storage.
 {disk_image_list}
 
 - Images will be downloaded to: {output_folder}
-- The total download size is: {download_size} bytes
+- The total download size is: {download_size}
 
 If running locally, you can re-run with `--help` for info on how to:
 - tweak the selected download folder (e.g: download images to an external HDD)

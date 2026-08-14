@@ -37,6 +37,10 @@ cargo xflowey vmm-tests-run \
   --vmm-perf-vmsizes 'CpuCount=8,MemoryMB=16384'
 ```
 
+The Windows x64 implementation is compile-validated, including WHP host
+validation and Windows profile/runtime paths, but its tests remain
+unregistered until a Windows VMM.Perf runtime artifact is available.
+
 ## `xflowey` vs `xtask`
 
 In a nutshell:

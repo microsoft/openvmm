@@ -26,7 +26,7 @@ pub(crate) struct HostEnvironment {
 impl HostEnvironment {
     pub(crate) fn detect() -> anyhow::Result<Self> {
         let owner = owner_for_restore()?;
-        validate_host_permissions(owner.is_some())?;
+        validate_host_environment(owner.is_some())?;
         Ok(Self {
             logical_processors: logical_processor_count()?,
             owner,
@@ -114,28 +114,31 @@ fn logical_processor_count() -> anyhow::Result<usize> {
         .get())
 }
 
+#[cfg(target_os = "linux")]
 fn available_memory_bytes() -> anyhow::Result<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        let meminfo =
-            fs_err::read_to_string("/proc/meminfo").context("failed to read /proc/meminfo")?;
-        let available_kib = meminfo
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("MemAvailable:")
-                    .and_then(|value| value.trim().strip_suffix("kB"))
-                    .and_then(|value| value.trim().parse::<u64>().ok())
-            })
-            .context("MemAvailable was missing or invalid in /proc/meminfo")?;
-        available_kib
-            .checked_mul(1024)
-            .context("available host memory size overflowed")
-    }
+    let meminfo =
+        fs_err::read_to_string("/proc/meminfo").context("failed to read /proc/meminfo")?;
+    let available_kib = meminfo
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemAvailable:")
+                .and_then(|value| value.trim().strip_suffix("kB"))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+        })
+        .context("MemAvailable was missing or invalid in /proc/meminfo")?;
+    available_kib
+        .checked_mul(1024)
+        .context("available host memory size overflowed")
+}
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(u64::MAX)
-    }
+#[cfg(target_os = "windows")]
+fn available_memory_bytes() -> anyhow::Result<u64> {
+    let available = sysinfo::System::new_all().available_memory();
+    anyhow::ensure!(
+        available > 0,
+        "failed to determine available Windows host memory"
+    );
+    Ok(available)
 }
 
 pub(crate) fn validate_requested_capacity(
@@ -187,46 +190,61 @@ pub(crate) fn validate_work_dir_capacity(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn available_disk_bytes(path: &Path) -> anyhow::Result<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        let output = Command::new("df")
-            .args(["-Pk", "--"])
-            .arg(path)
-            .output()
-            .with_context(|| {
-                format!(
-                    "failed to query available space for VMM.Perf WorkDir {}",
-                    path.display()
-                )
-            })?;
-        anyhow::ensure!(
-            output.status.success(),
-            "failed to query available space for VMM.Perf WorkDir {}",
-            path.display()
-        );
-        let output = String::from_utf8(output.stdout).context("df output was not valid UTF-8")?;
-        let fields: Vec<_> = output
-            .lines()
-            .last()
-            .context("df produced no output")?
-            .split_whitespace()
-            .collect();
-        let available_kib = fields
-            .get(3)
-            .context("unexpected df output")?
-            .parse::<u64>()
-            .context("failed to parse available disk space from df")?;
-        available_kib
-            .checked_mul(1024)
-            .context("available disk space overflowed")
-    }
+    let output = Command::new("df")
+        .args(["-Pk", "--"])
+        .arg(path)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to query available space for VMM.Perf WorkDir {}",
+                path.display()
+            )
+        })?;
+    anyhow::ensure!(
+        output.status.success(),
+        "failed to query available space for VMM.Perf WorkDir {}",
+        path.display()
+    );
+    let output = String::from_utf8(output.stdout).context("df output was not valid UTF-8")?;
+    let fields: Vec<_> = output
+        .lines()
+        .last()
+        .context("df produced no output")?
+        .split_whitespace()
+        .collect();
+    let available_kib = fields
+        .get(3)
+        .context("unexpected df output")?
+        .parse::<u64>()
+        .context("failed to parse available disk space from df")?;
+    available_kib
+        .checked_mul(1024)
+        .context("available disk space overflowed")
+}
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = path;
-        Ok(u64::MAX)
-    }
+#[cfg(target_os = "windows")]
+fn available_disk_bytes(path: &Path) -> anyhow::Result<u64> {
+    use sysinfo::Disks;
+
+    let normalized_path = normalize_windows_path(path);
+    let disks = Disks::new_with_refreshed_list();
+    let disk = disks
+        .iter()
+        .filter_map(|disk| {
+            let mount = normalize_windows_path(disk.mount_point());
+            path_is_on_mount(&normalized_path, &mount).then_some((mount.len(), disk))
+        })
+        .max_by_key(|(mount_len, _)| *mount_len)
+        .map(|(_, disk)| disk)
+        .with_context(|| {
+            format!(
+                "failed to identify the Windows volume for VMM.Perf WorkDir {}",
+                path.display()
+            )
+        })?;
+    Ok(disk.available_space())
 }
 
 fn native_hypervisor_backend() -> anyhow::Result<&'static str> {
@@ -250,14 +268,9 @@ fn native_hypervisor_backend() -> anyhow::Result<&'static str> {
     {
         Ok("whp")
     }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    {
-        anyhow::bail!("VMM.Perf is unsupported on this host platform")
-    }
 }
 
-fn validate_host_permissions(needs_sudo: bool) -> anyhow::Result<()> {
+fn validate_host_environment(needs_sudo: bool) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         if needs_sudo {
@@ -273,9 +286,42 @@ fn validate_host_permissions(needs_sudo: bool) -> anyhow::Result<()> {
             );
         }
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = needs_sudo;
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = needs_sudo;
+        let hypervisor_present = whp::capabilities::hypervisor_present()
+            .context("failed to query Windows Hypervisor Platform availability")?;
+        anyhow::ensure!(
+            hypervisor_present,
+            "Windows Hypervisor Platform is unavailable; enable the HypervisorPlatform feature and ensure the Windows hypervisor is running"
+        );
+        drop(
+            whp::PartitionConfig::new()
+                .context("failed to create a Windows Hypervisor Platform partition")?,
+        );
+    }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_windows_path(path: &Path) -> String {
+    let mut path = path.to_string_lossy().replace('/', "\\");
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        path = format!(r"\\{rest}");
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        path = rest.to_owned();
+    }
+    path.make_ascii_lowercase();
+    path
+}
+
+#[cfg(target_os = "windows")]
+fn path_is_on_mount(path: &str, mount: &str) -> bool {
+    path.starts_with(mount)
+        && (mount.ends_with('\\')
+            || path.len() == mount.len()
+            || path.as_bytes().get(mount.len()) == Some(&b'\\'))
 }
 
 #[cfg(target_os = "linux")]
@@ -290,7 +336,7 @@ fn owner_for_restore() -> anyhow::Result<Option<(String, String)>> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
 fn owner_for_restore() -> anyhow::Result<Option<(String, String)>> {
     Ok(None)
 }

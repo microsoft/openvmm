@@ -10691,6 +10691,7 @@ dependencies = [
  "serde_json",
  "static_assertions",
  "storvsp_resources",
+ "sysinfo",
  "tempfile",
  "tmk_tests",
  "tracing",
@@ -10701,6 +10702,7 @@ dependencies = [
  "vmgs_resources",
  "vmm_test_igvm_agent",
  "vmm_test_macros",
+ "whp",
  "zerocopy",
 ]
 

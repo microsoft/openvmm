@@ -77,5 +77,9 @@ serde_json = { workspace = true, features = ["std"] }
 pipette_client.workspace = true
 serde = { workspace = true, features = ["std"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+sysinfo.workspace = true
+whp.workspace = true
+
 [lints]
 workspace = true

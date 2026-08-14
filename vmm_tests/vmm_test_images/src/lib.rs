@@ -52,7 +52,7 @@ struct KnownTestArtifactMeta {
     variant: KnownTestArtifacts,
     handle_fn: fn() -> ErasedArtifactHandle,
     filename: &'static str,
-    size: u64,
+    expected_size: Option<u64>,
     download_name: &'static str,
     supports_blob_disk: bool,
     storage_account: &'static str,
@@ -100,7 +100,7 @@ const fn meta<T: ArtifactId + IsHostedOnHvliteAzureBlobStore>(
         variant,
         handle_fn: || petri_artifacts_core::ArtifactHandle::<T>::new().erase(),
         filename: T::FILENAME,
-        size: T::SIZE,
+        expected_size: Some(T::SIZE),
         download_name: T::DOWNLOAD_NAME,
         supports_blob_disk: T::SUPPORTS_BLOB_DISK,
         storage_account: STORAGE_ACCOUNT,
@@ -115,7 +115,7 @@ const fn vmm_perf_meta<T: ArtifactId + IsHostedOnVmmPerfAzureBlobStore>(
         variant,
         handle_fn: || petri_artifacts_core::ArtifactHandle::<T>::new().erase(),
         filename: T::FILENAME,
-        size: T::SIZE,
+        expected_size: None,
         download_name: T::DOWNLOAD_NAME,
         supports_blob_disk: false,
         storage_account: "vmmperfartifactpublic",
@@ -141,9 +141,9 @@ impl KnownTestArtifacts {
         self.meta().filename
     }
 
-    /// Get the expected file size of the image.
-    pub fn file_size(self) -> u64 {
-        self.meta().size
+    /// Get the expected file size when the artifact has a fixed size.
+    pub fn expected_file_size(self) -> Option<u64> {
+        self.meta().expected_size
     }
 
     /// Get the Azure Storage account containing the artifact.

@@ -15,7 +15,7 @@ use std::process::Stdio;
 
 pub(crate) struct VirtualClientCommandBuilder<'a> {
     runtime_dir: &'a Path,
-    virtual_client_name: &'a str,
+    virtual_client: &'a Path,
     profile: Option<VmmPerfProfile>,
     iterations: Option<u32>,
     parameters: BTreeMap<String, String>,
@@ -24,15 +24,14 @@ pub(crate) struct VirtualClientCommandBuilder<'a> {
     experiment_id: Option<String>,
     loggers: Vec<&'a str>,
     log_to_file: bool,
-    work_dir: Option<&'a Path>,
     temp_dir: Option<&'a Path>,
 }
 
 impl<'a> VirtualClientCommandBuilder<'a> {
-    pub(crate) fn new(runtime_dir: &'a Path, virtual_client_name: &'a str) -> Self {
+    pub(crate) fn new(runtime_dir: &'a Path, virtual_client: &'a Path) -> Self {
         Self {
             runtime_dir,
-            virtual_client_name,
+            virtual_client,
             profile: None,
             iterations: None,
             parameters: BTreeMap::new(),
@@ -41,7 +40,6 @@ impl<'a> VirtualClientCommandBuilder<'a> {
             experiment_id: None,
             loggers: Vec::new(),
             log_to_file: false,
-            work_dir: None,
             temp_dir: None,
         }
     }
@@ -86,11 +84,6 @@ impl<'a> VirtualClientCommandBuilder<'a> {
         self
     }
 
-    pub(crate) fn work_dir(mut self, work_dir: &'a Path) -> Self {
-        self.work_dir = Some(work_dir);
-        self
-    }
-
     pub(crate) fn temp_dir(mut self, temp_dir: &'a Path) -> Self {
         self.temp_dir = Some(temp_dir);
         self
@@ -110,9 +103,6 @@ impl<'a> VirtualClientCommandBuilder<'a> {
         let experiment_id = self
             .experiment_id
             .context("VirtualClient experiment ID was not set")?;
-        let work_dir = self
-            .work_dir
-            .context("VirtualClient work directory was not set")?;
         let temp_dir = self
             .temp_dir
             .context("VirtualClient temp directory was not set")?;
@@ -120,15 +110,8 @@ impl<'a> VirtualClientCommandBuilder<'a> {
             !self.loggers.is_empty(),
             "VirtualClient requires at least one logger"
         );
-
-        let virtual_client = self.runtime_dir.join(self.virtual_client_name);
-        let env = [
-            ("VC_VMM_WORK_DIR", work_dir),
-            ("TEMP", temp_dir),
-            ("TMP", temp_dir),
-            ("TMPDIR", temp_dir),
-        ];
-        let mut command = platform_command(&virtual_client, &env)?;
+        let env = [("TEMP", temp_dir), ("TMP", temp_dir), ("TMPDIR", temp_dir)];
+        let mut command = platform_command(self.virtual_client, &env)?;
 
         command
             .current_dir(self.runtime_dir)

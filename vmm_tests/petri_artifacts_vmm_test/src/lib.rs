@@ -42,13 +42,11 @@ pub mod artifacts {
 
         impl IsHostedOnVmmPerfAzureBlobStore for RUNTIME_LINUX_X64 {
             const FILENAME: &'static str = "vmm-perf-linux-x64-1.0.0.tar.gz";
-            const SIZE: u64 = 69_195_134;
             const DOWNLOAD_NAME: &'static str = "VmmPerfRuntimeLinuxX64";
         }
 
         impl IsHostedOnVmmPerfAzureBlobStore for RUNTIME_LINUX_ARM64 {
             const FILENAME: &'static str = "vmm-perf-linux-arm64-1.0.0.tar.gz";
-            const SIZE: u64 = 65_393_120;
             const DOWNLOAD_NAME: &'static str = "VmmPerfRuntimeLinuxArm64";
         }
 
@@ -852,12 +850,10 @@ pub mod tags {
         const DOWNLOAD_NAME: &'static str;
     }
 
-    /// Artifact is an immutable VMM.Perf runtime hosted in public Azure Blob Storage.
+    /// Artifact is a VMM.Perf runtime hosted in public Azure Blob Storage.
     pub trait IsHostedOnVmmPerfAzureBlobStore: ArtifactId {
         /// Local cache filename.
         const FILENAME: &'static str;
-        /// Expected archive size in bytes.
-        const SIZE: u64;
         /// Name used by local artifact-selection tooling.
         const DOWNLOAD_NAME: &'static str;
     }

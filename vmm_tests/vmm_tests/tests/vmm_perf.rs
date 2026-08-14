@@ -5,8 +5,13 @@
 
 #![forbid(unsafe_code)]
 
-// xtask-fmt allow-target-arch oneoff-petri-native-test-deps
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+// Compile the implementation on Windows so it stays validated while runtime
+// artifact registration remains Linux-only.
+#[cfg(all(
+    target_arch = "x86_64", // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+    any(target_os = "linux", target_os = "windows")
+))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 mod vmm_perf {
     mod command;
     mod config;
@@ -16,13 +21,18 @@ mod vmm_perf {
     mod runtime;
     mod virtual_client;
 
+    #[cfg(target_os = "linux")]
     use config::VmmPerfProfile;
-    use petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY;
-    use petri_artifacts_vmm_test::artifacts;
+    #[cfg(target_os = "linux")]
     use runner::VmmPerfArtifacts;
+    #[cfg(target_os = "linux")]
     use runner::VmmPerfRunner;
 
+    #[cfg(target_os = "linux")]
     fn resolve_vmm_perf(resolver: &petri::ArtifactResolver<'_>) -> Option<VmmPerfArtifacts> {
+        use petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY;
+        use petri_artifacts_vmm_test::artifacts;
+
         Some(VmmPerfArtifacts {
             openvmm: resolver.require(artifacts::OPENVMM_NATIVE).erase(),
             firmware: resolver
@@ -35,6 +45,7 @@ mod vmm_perf {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn run_fio(
         params: petri::PetriTestParams<'_>,
         artifacts: VmmPerfArtifacts,
@@ -42,6 +53,7 @@ mod vmm_perf {
         VmmPerfRunner::new(params, artifacts)?.run(VmmPerfProfile::Fio)
     }
 
+    #[cfg(target_os = "linux")]
     fn run_iperf3(
         params: petri::PetriTestParams<'_>,
         artifacts: VmmPerfArtifacts,
@@ -49,6 +61,7 @@ mod vmm_perf {
         VmmPerfRunner::new(params, artifacts)?.run(VmmPerfProfile::Iperf3)
     }
 
+    #[cfg(target_os = "linux")]
     fn run_boot_time(
         params: petri::PetriTestParams<'_>,
         artifacts: VmmPerfArtifacts,
@@ -56,6 +69,7 @@ mod vmm_perf {
         VmmPerfRunner::new(params, artifacts)?.run(VmmPerfProfile::BootTime)
     }
 
+    #[cfg(target_os = "linux")]
     petri::multitest!(vec![
         petri::SimpleTest::new("fio", resolve_vmm_perf, run_fio).into(),
         petri::SimpleTest::new("iperf3", resolve_vmm_perf, run_iperf3).into(),
