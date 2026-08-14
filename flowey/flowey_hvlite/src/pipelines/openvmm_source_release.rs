@@ -15,8 +15,8 @@ use flowey_lib_common::git_checkout::RepoSource;
 /// commit whose `[workspace.package] version` a reviewed pull request has
 /// already set to the version being released.
 ///
-/// It ends at an `openvmm-v<VERSION>` tag and a *draft* release.
-/// Publishing the reviewed draft stays with a human.
+/// It ends at an `openvmm-v<VERSION>` tag, a vendor archive upload, and a
+/// *draft* release. Publishing the reviewed draft stays with a human.
 ///
 /// Only the GitHub backend is supported. The pipeline creates a tag and a
 /// release in the upstream repository, so there is nothing meaningful for a
@@ -36,6 +36,9 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
 
         let mut pipeline = Pipeline::new();
         pipeline.gh_set_name("OpenVMM Source Release");
+        let (publish_release, use_release) = pipeline.new_typed_artifact::<
+            flowey_lib_hvlite::assemble_openvmm_vendor_release::VendorReleaseOutput,
+        >("openvmm-vendor-release");
 
         let openvmm_repo_source = RepoSource::GithubSelf;
 
@@ -63,35 +66,28 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
                 )])
         });
 
-        // Assemble once. The archive travels to the remaining jobs as an
-        // artifact so that what gets validated is what gets published.
-        let (pub_source_release, use_source_release) =
-            pipeline.new_typed_artifact("openvmm-source-release");
-
         let assemble_job = pipeline
             .new_job(
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 FlowArch::X86_64,
-                "assemble openvmm source release",
+                "assemble openvmm vendor artifact",
             )
             .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
-            .publish(pub_source_release, |release| {
-                flowey_lib_hvlite::assemble_openvmm_source_release::Request { release }
+            .publish(publish_release, |release| {
+                flowey_lib_hvlite::assemble_openvmm_vendor_release::Request { release }
             })
             .finish();
 
-        // Build the archive exactly as a distribution would, before anyone is
-        // offered a draft to publish.
         let validate_job = pipeline
             .new_job(
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 FlowArch::X86_64,
-                "build openvmm [distribution config, x64-linux-gnu]",
+                "validate openvmm distribution build",
             )
             .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::check_distro_build::Request {
-                    release: ctx.use_typed_artifact(&use_source_release),
+                    release: ctx.use_typed_artifact(&use_release),
                     done: ctx.new_done_handle(),
                 },
             )
@@ -106,7 +102,7 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
             .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::publish_openvmm_gh_release::Request {
-                    release: ctx.use_typed_artifact(&use_source_release),
+                    release: ctx.use_typed_artifact(&use_release),
                     done: ctx.new_done_handle(),
                 },
             )
@@ -114,16 +110,8 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
                 GhPermission::Contents,
                 GhPermissionValue::Write,
             )])
-            .gh_grant_permissions::<flowey_lib_common::attest_build_provenance::Node>([
-                (GhPermission::Contents, GhPermissionValue::Read),
-                (GhPermission::IdToken, GhPermissionValue::Write),
-                (GhPermission::Attestations, GhPermissionValue::Write),
-                (GhPermission::ArtifactMetadata, GhPermissionValue::Write),
-            ])
             .finish();
 
-        // The draft job consumes the same artifact as the gate, so nothing
-        // orders them by data alone. Publication must wait for validation.
         pipeline.non_artifact_dep(&publish_job, &validate_job);
         pipeline.non_artifact_dep(&validate_job, &assemble_job);
 
