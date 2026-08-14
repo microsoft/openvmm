@@ -100,6 +100,10 @@ impl SimpleFlowNode for Node {
             // check. The side effect a rust step hands back is never written to
             // the var db, so reading it at runtime would panic.
             no_existing_release.claim(ctx);
+            // Order the archive-existence check ahead of the tag as well. The
+            // tag cannot be taken back, so an artifact that arrived without its
+            // vendor archive must fail before the tag exists, not after.
+            let _files = files.clone().claim(ctx);
             let gh_cli = gh_cli.claim(ctx);
             let tag = tag.clone().claim(ctx);
             let target = target.clone().claim(ctx);
