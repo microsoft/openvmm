@@ -516,6 +516,7 @@ fn parse_parameter_set<'a>(
             .split_once('=')
             .ok_or_else(|| anyhow::anyhow!("{context} value {value:?} must use KEY=VALUE"))?;
         let name = name.trim();
+        let value = value.trim();
         anyhow::ensure!(
             !name.is_empty(),
             "{context} contains an empty parameter name"

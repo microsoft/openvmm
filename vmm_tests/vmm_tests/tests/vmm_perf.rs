@@ -11,7 +11,7 @@
     target_arch = "x86_64", // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
     any(target_os = "linux", target_os = "windows")
 ))]
-#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[cfg_attr(target_os = "windows", expect(dead_code))]
 mod vmm_perf {
     mod command;
     mod config;

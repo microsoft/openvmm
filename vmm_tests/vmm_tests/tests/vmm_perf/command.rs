@@ -12,6 +12,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 pub(crate) struct VirtualClientCommandBuilder<'a> {
     runtime_dir: &'a Path,
@@ -155,7 +157,8 @@ pub(crate) fn run_command(
         .stderr
         .take()
         .context("VMM.Perf VirtualClient stderr was not piped")?;
-    let stderr_log = console_log.clone();
+    let console_log = Arc::new(Mutex::new(console_log));
+    let stderr_log = Arc::clone(&console_log);
 
     std::thread::scope(|scope| {
         let stdout_task = scope.spawn(move || log_process_output("stdout", stdout, console_log));
@@ -183,7 +186,7 @@ pub(crate) fn run_command(
 fn log_process_output(
     stream_name: &str,
     stream: impl Read,
-    log_file: petri::PetriLogFile,
+    log_file: Arc<Mutex<petri::PetriLogFile>>,
 ) -> anyhow::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut line = Vec::new();
@@ -198,6 +201,9 @@ fn log_process_output(
         while matches!(line.last(), Some(b'\n' | b'\r')) {
             line.pop();
         }
+        let log_file = log_file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("VMM.Perf console log mutex was poisoned"))?;
         log_file.write_entry(String::from_utf8_lossy(&line));
     }
 }

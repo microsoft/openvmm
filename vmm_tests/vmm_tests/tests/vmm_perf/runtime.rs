@@ -70,9 +70,12 @@ fn extract_runtime(archive: &Path) -> anyhow::Result<PathBuf> {
         .context("VMM.Perf archive filename is not valid UTF-8")?;
     let cache_name = archive_name
         .strip_suffix(".tar.gz")
-        .or_else(|| archive_name.strip_suffix(".zip"))
         .or_else(|| archive_name.strip_suffix(".tar"))
-        .unwrap_or(archive_name);
+        .with_context(|| {
+            format!(
+                "unsupported VMM.Perf archive format for {archive_name}; expected .tar.gz or .tar"
+            )
+        })?;
     let cache_dir = archive_parent.join(format!("{cache_name}-extracted"));
     let archive_signature = archive_signature(archive)?;
 
