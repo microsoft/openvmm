@@ -160,19 +160,9 @@ impl SimpleFlowNode for Node {
                     .context("could not find the distribution-provided protoc")?;
 
                 let target = target.to_string();
-                let argv0 = if rust_toolchain.is_some() {
-                    "rustup"
-                } else {
-                    "cargo"
-                };
-                let params = {
-                    let mut params = Vec::new();
-                    if let Some(toolchain) = &rust_toolchain {
-                        params.push("run".to_owned());
-                        params.push(toolchain.clone());
-                        params.push("cargo".to_owned());
-                    }
-                    params.extend([
+                let (argv0, params) = flowey_lib_common::install_rust::cargo_argv(
+                    &rust_toolchain,
+                    [
                         "build".to_owned(),
                         "--release".to_owned(),
                         "--locked".to_owned(),
@@ -181,9 +171,8 @@ impl SimpleFlowNode for Node {
                         "openvmm".to_owned(),
                         "--target".to_owned(),
                         target,
-                    ]);
-                    params
-                };
+                    ],
+                );
 
                 rt.sh.change_dir(&openvmm_repo_path);
                 flowey::shell_cmd!(rt, "{argv0} {params...}")

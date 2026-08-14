@@ -8,6 +8,26 @@ use flowey::node::prelude::*;
 use std::collections::BTreeSet;
 use std::io::Write;
 
+/// Build the argv for a `cargo` invocation, routed through `rustup run` when
+/// the flow pinned a toolchain via [`Request::GetRustupToolchain`].
+pub fn cargo_argv(
+    toolchain: &Option<String>,
+    args: impl IntoIterator<Item = String>,
+) -> (&'static str, Vec<String>) {
+    let mut params = Vec::new();
+    if let Some(toolchain) = toolchain {
+        params.extend(["run".to_owned(), toolchain.clone(), "cargo".to_owned()]);
+    }
+    params.extend(args);
+
+    let argv0 = if toolchain.is_some() {
+        "rustup"
+    } else {
+        "cargo"
+    };
+    (argv0, params)
+}
+
 new_flow_node_with_config!(struct Node);
 
 flowey_config! {

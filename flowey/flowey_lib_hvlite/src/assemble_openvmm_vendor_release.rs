@@ -14,13 +14,10 @@ pub const CARGO_CONFIG_FILE: &str = "cargo_config";
 
 /// The `tar` flags that make the vendor archive byte-reproducible.
 ///
-/// Shared by the flow step and its tests so the tested argument list is
-/// necessarily the released one.
-///
-/// The format is pinned because a vendored Cargo tree contains many paths
-/// longer than the 100 character ustar limit, and the pax format tar would
-/// otherwise select under `POSIXLY_CORRECT` names its extended headers after
-/// the archiving process's pid.
+/// Shared with the tests so the tested argument list is the released one. The
+/// format is pinned because a vendored Cargo tree has paths past the 100
+/// character ustar limit, and the pax format tar picks under `POSIXLY_CORRECT`
+/// names its extended headers after the archiving process's pid.
 const DETERMINISTIC_TAR_ARGS: &[&str] = &[
     "--sort=name",
     "--mtime=@0",
@@ -33,13 +30,14 @@ const DETERMINISTIC_TAR_ARGS: &[&str] = &[
 
 /// Internal identity stored alongside the assembled assets.
 ///
-/// Flowey includes hidden files when transferring typed artifact directories.
+/// This cannot be a [`VendorReleaseOutput`] field: flowey serializes an
+/// artifact to JSON and copies every string value as a source path, so a
+/// version string would be treated as a file to copy.
 pub(crate) const IDENTITY_FILE: &str = ".openvmm-vendor-identity.json";
 
 /// The private identity of the assembled vendor archive.
 ///
-/// Both fields are read out of the tree rather than out of the environment, so
-/// two jobs at the same commit necessarily agree and cannot drift apart.
+/// Both fields are read out of the tree, so two jobs at the same commit agree.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct VendorReleaseIdentity {
     /// The workspace version, e.g. `0.12.3`.
@@ -114,10 +112,8 @@ fn workspace_version(manifest_path: &Path) -> anyhow::Result<String> {
 /// Confirm `cargo vendor` emitted a source replacement pointing at the relative
 /// `vendor` directory.
 ///
-/// The archive ships this config next to the tree it describes, so a packager
-/// extracting both into a source root must end up with
-/// `source.vendored-sources.directory` resolving inside that root. An absolute
-/// path would point at the release machine instead.
+/// The archive ships this config next to the tree it describes, so an absolute
+/// path would point a packager at the release machine instead.
 fn validate_vendor_config(cargo_config: &[u8]) -> anyhow::Result<()> {
     let cargo_config = std::str::from_utf8(cargo_config)
         .context("cargo vendor emitted a non-UTF-8 source replacement config")?;
@@ -181,8 +177,7 @@ impl SimpleFlowNode for Node {
                 let rust_toolchain = rt.read(rust_toolchain);
 
                 // Assets are named after the version, so a stale archive from a
-                // different version would survive reassembly and ride along
-                // into whatever publishes this directory.
+                // different version would survive reassembly.
                 if output_dir.exists() {
                     fs_err::remove_dir_all(&output_dir)?;
                 }
@@ -190,14 +185,11 @@ impl SimpleFlowNode for Node {
 
                 rt.sh.change_dir(&repo_path);
 
-                // Derived from the checkout being packaged, so the identity
-                // cannot describe a different tree than the one `cargo vendor`
-                // resolved against.
                 let identity = resolve_identity(rt)?;
 
                 // `cargo vendor` resolves against the checkout's manifests and
-                // lock file, so tracked modifications would make the private
-                // identity lie about the bytes in the uploaded archive.
+                // lock file, so tracked modifications would make the identity
+                // lie about the bytes in the uploaded archive.
                 let dirty =
                     flowey::shell_cmd!(rt, "git status --porcelain --untracked-files=no").read()?;
                 if !dirty.trim().is_empty() {
@@ -211,28 +203,17 @@ impl SimpleFlowNode for Node {
                 fs_err::create_dir_all(&stage_dir)?;
 
                 let manifest_path = repo_path.join("Cargo.toml");
-                let argv0 = if rust_toolchain.is_some() {
-                    "rustup"
-                } else {
-                    "cargo"
-                };
-                let params = {
-                    let mut params = Vec::new();
-                    if let Some(toolchain) = &rust_toolchain {
-                        params.push("run".to_owned());
-                        params.push(toolchain.clone());
-                        params.push("cargo".to_owned());
-                    }
-                    params.extend([
+                let (argv0, params) = flowey_lib_common::install_rust::cargo_argv(
+                    &rust_toolchain,
+                    [
                         "vendor".to_owned(),
                         "--manifest-path".to_owned(),
                         manifest_path.to_string_lossy().into_owned(),
                         "--locked".to_owned(),
                         "--versioned-dirs".to_owned(),
                         "vendor".to_owned(),
-                    ]);
-                    params
-                };
+                    ],
+                );
 
                 let prior_dir = rt.sh.current_dir();
                 rt.sh.change_dir(&stage_dir);
@@ -262,8 +243,7 @@ impl SimpleFlowNode for Node {
                     );
                 }
 
-                let archive = output_dir.join(identity.archive_name());
-                let tar_path = archive.with_extension("");
+                let tar_path = output_dir.join(identity.archive_name()).with_extension("");
                 let cargo_config_file = CARGO_CONFIG_FILE;
                 let tar_args = DETERMINISTIC_TAR_ARGS;
                 rt.sh.change_dir(&stage_dir);
@@ -273,12 +253,6 @@ impl SimpleFlowNode for Node {
                 )
                 .run()?;
                 flowey::shell_cmd!(rt, "gzip -n --best -f {tar_path}").run()?;
-                if !archive.is_file() {
-                    anyhow::bail!(
-                        "gzip did not produce the expected archive {}",
-                        archive.display()
-                    );
-                }
 
                 rt.sh.change_dir(&output_dir);
                 fs_err::remove_dir_all(&stage_dir)?;

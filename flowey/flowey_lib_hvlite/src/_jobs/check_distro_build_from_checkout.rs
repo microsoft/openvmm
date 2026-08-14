@@ -4,14 +4,10 @@
 //! Assemble the OpenVMM vendor archive and run the distribution-build gate in
 //! a single job.
 //!
-//! The release pipeline assembles the archive in a dedicated job and passes it
-//! onward as an artifact, so its gate job receives a pre-built archive.
-//! Ordinary pull-request CI has no release preparation job, so it must
-//! assemble its own snapshot of the commit under test. A pipeline job can only
-//! name root nodes, not wire variables between them, so that hand-off lives
-//! here. Both entry points then run the same build via `check_distro_build`,
-//! which keeps PR CI honest: it exercises the code path a release actually
-//! uses.
+//! The release pipeline assembles the archive in a dedicated job and hands it
+//! to the gate as an artifact. PR CI has no such job, so it assembles its own
+//! snapshot of the commit under test. A pipeline job can only name root nodes,
+//! not wire variables between them, so that hand-off lives here.
 
 use flowey::node::prelude::*;
 
