@@ -61,6 +61,7 @@ use zerocopy::IntoBytes;
 // would need to scale this value up in case it is not sufficient.
 const TPM_PAGE_SIZE: usize = 4096;
 const MAX_NV_BUFFER_SIZE: usize = MAX_DIGEST_BUFFER_SIZE;
+const MAX_NV_INDEX_SIZE: u16 = 8500;
 // Scale this with maximum attestation payload
 pub(crate) const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
 
@@ -145,10 +146,6 @@ pub trait TpmEngine: Send {
         command: &mut [u8],
         response: &mut [u8],
     ) -> Result<(), TpmEngineError>;
-
-    /// Returns the largest NV index size (`MAX_NV_INDEX_SIZE`) that the
-    /// underlying TPM implementation supports.
-    fn max_nv_index_size(&self) -> u16;
 }
 
 /// TPM command debug information used by error logs.
@@ -600,8 +597,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
     ///
     /// Owner owned nv index is left as-is.
     fn take_existing_ak_cert(&mut self) -> Result<AkCertType, Error> {
-        let max_nv_index_size = self.tpm_engine.max_nv_index_size();
-        let mut output = vec![0; max_nv_index_size as usize];
+        let mut output = vec![0; MAX_NV_INDEX_SIZE as usize];
 
         // Read the AK cert from the index. If the index is not owner owned, the
         // index will be removed.
@@ -615,7 +611,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
 
                 // Resize the output vector to match exactly what the nv index
                 // size is.
-                assert!(size <= max_nv_index_size);
+                assert!(size <= MAX_NV_INDEX_SIZE);
                 output.resize(size as usize, 0);
 
                 let platform_cert = nv_bits.nv_platformcreate();
@@ -677,7 +673,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
             // VM has a small-vTPM mitigation marker. Don't touch anything, but
             // log whether the AK cert exists, as that previous write might have
             // failed.
-            let mut output = vec![0u8; self.tpm_engine.max_nv_index_size() as usize];
+            let mut output = vec![0u8; MAX_NV_INDEX_SIZE as usize];
             let r = self.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
             tracing::warn!("VM has 16k vTPM mitigation marker");
             match r {

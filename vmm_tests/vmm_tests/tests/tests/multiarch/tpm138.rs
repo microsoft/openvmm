@@ -96,6 +96,9 @@ async fn plat_hier(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Resul
 }
 
 /// 1.38 variant of [`super::tpm::tpm_servicing`].
+///
+/// This variant additionally covers legacy 16k vTPM state, which is only
+/// supported by the 1.38 reference implementation.
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
@@ -108,7 +111,8 @@ async fn servicing<T: PetriVmmBackend>(
         ResolvedArtifact<VMGS_WITH_16K_TPM>,
     ),
 ) -> anyhow::Result<()> {
-    super::tpm::tpm_servicing_impl(config, extra_deps, PetriTpmVersion::V138).await
+    let (igvm_file, vmgs_file) = extra_deps;
+    super::tpm::tpm_servicing_impl(config, igvm_file, Some(vmgs_file), PetriTpmVersion::V138).await
 }
 
 /// 1.38 variant of [`super::tpm::ak_cert_cache`].

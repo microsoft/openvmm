@@ -440,6 +440,14 @@ pub enum TpmErrorKind {
     },
     #[error("failed to set pcr banks")]
     SetPcrBanks(#[source] tpm_lib::Error),
+    #[error(
+        "TPM {version:?} does not support the legacy {nvram_size} byte vTPM state; \
+         only TPM V138 can be used with vTPM state smaller than {STANDARD_VTPM_SIZE} bytes"
+    )]
+    LegacyVtpmStateUnsupported {
+        version: TpmVersion,
+        nvram_size: usize,
+    },
 }
 
 struct TpmPlatformCallbacks {
@@ -509,6 +517,18 @@ impl Tpm {
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
 
         let nvram_size = nvram_size.unwrap_or(DEFAULT_VTPM_SIZE);
+
+        // Legacy (sub-32kB) vTPM state was provisioned by vtpmservice and is
+        // only understood by the 1.38 reference implementation. Reject it up
+        // front rather than handing it to a newer library, which would fail
+        // later with a confusing out-of-range NVRAM access.
+        if version != TpmVersion::V138 && nvram_size < STANDARD_VTPM_SIZE {
+            return Err(TpmErrorKind::LegacyVtpmStateUnsupported {
+                version,
+                nvram_size,
+            }
+            .into());
+        }
 
         let tpm_engine = TpmRefLib::new(
             version,
@@ -630,12 +650,31 @@ impl Tpm {
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
             if let Some(mut blob) = existing_nvmem_blob {
+                // The legacy quirks below only apply to state provisioned by
+                // vtpmservice, which always ran the 1.38 reference
+                // implementation. Newer libraries cannot interpret such a blob,
+                // so reject it instead of letting them read past its end.
+                let is_v138 = self.tpm_engine_helper.tpm_engine.version() == TpmVersion::V138;
+                if !is_v138 && blob.len() < STANDARD_VTPM_SIZE {
+                    self.logger
+                        .log_event_and_flush(TpmLogEvent::InvalidState)
+                        .await;
+
+                    return Err(TpmErrorKind::LegacyVtpmStateUnsupported {
+                        version: self.tpm_engine_helper.tpm_engine.version(),
+                        nvram_size: blob.len(),
+                    }
+                    .into());
+                }
+
                 // Previous versions before this code had a bug where sizes
                 // smaller than 32K would be reported as 32K. Fixup the blob so
                 // that the TPM nvram is consistent - this code can be removed
                 // once the fix for reporting the NVRAM size correctly is
                 // everywhere.
-                recover::recover_blob(&mut blob);
+                if is_v138 {
+                    recover::recover_blob(&mut blob);
+                }
                 if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
                     if e.is_mismatched_blob_size() {
                         self.logger
@@ -655,7 +694,7 @@ impl Tpm {
                         || is_confidential_vm,
 
                     // If this is a small vTPM blob, potentially fixup the AK cert.
-                    fixup_16k_ak_cert: blob.len() == LEGACY_VTPM_SIZE,
+                    fixup_16k_ak_cert: is_v138 && blob.len() == LEGACY_VTPM_SIZE,
 
                     large_vtpm_blob: blob.len() >= STANDARD_VTPM_SIZE,
                 }
@@ -2224,5 +2263,92 @@ mod tests {
             .find_nv_index(TPM_NV_INDEX_MITIGATED)
             .expect("find_nv_index should succeed")
             .expect("mitigation marker NV index present");
+    }
+
+    /// Legacy sub-32kB vTPM state is only supported by the 1.38 reference
+    /// implementation, so a newer TPM must refuse it rather than handing it to
+    /// a library that cannot interpret it.
+    #[async_test]
+    async fn test_legacy_nvram_size_rejected_for_v185() {
+        let Err(err) = new_test_tpm(TpmVersion::V185, Some(LEGACY_VTPM_SIZE), None).await else {
+            panic!("legacy nvram size must be rejected");
+        };
+
+        assert!(
+            matches!(
+                err.0,
+                TpmErrorKind::LegacyVtpmStateUnsupported {
+                    version: TpmVersion::V185,
+                    nvram_size: LEGACY_VTPM_SIZE,
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// A 16kB blob can be present even when the reported NVRAM size is 32kB,
+    /// due to a previous size-reporting bug, so the blob itself is gated too.
+    #[async_test]
+    async fn test_legacy_nvram_blob_rejected_for_v185() {
+        let Err(err) = new_test_tpm(
+            TpmVersion::V185,
+            Some(STANDARD_VTPM_SIZE),
+            Some(vec![0; LEGACY_VTPM_SIZE]),
+        )
+        .await
+        else {
+            panic!("legacy nvram blob must be rejected");
+        };
+
+        assert!(
+            matches!(
+                err.0,
+                TpmErrorKind::LegacyVtpmStateUnsupported {
+                    version: TpmVersion::V185,
+                    nvram_size: LEGACY_VTPM_SIZE,
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// The 1.38 implementation must keep accepting legacy state.
+    #[async_test]
+    async fn test_legacy_nvram_size_allowed_for_v138() {
+        assert!(
+            new_test_tpm(TpmVersion::V138, Some(LEGACY_VTPM_SIZE), None)
+                .await
+                .is_ok(),
+            "legacy nvram size is supported by 1.38"
+        );
+    }
+
+    async fn new_test_tpm(
+        version: TpmVersion,
+        nvram_size: Option<usize>,
+        nvram_blob: Option<Vec<u8>>,
+    ) -> Result<Tpm, TpmError> {
+        let mut nvram_store = EphemeralNonVolatileStore::new_boxed();
+        if let Some(blob) = nvram_blob {
+            nvram_store.persist(blob).await.unwrap();
+        }
+
+        Tpm::new(
+            version,
+            TpmRegisterLayout::IoPort,
+            GuestMemory::allocate(0x10000),
+            EphemeralNonVolatileStore::new_boxed(),
+            nvram_store,
+            nvram_size,
+            Box::new(|| std::time::Duration::new(0, 0)),
+            false,
+            false,
+            TpmAkCertType::None,
+            None,
+            None,
+            false,
+            guid::guid!("00000000-0000-0000-0000-000000000000"),
+        )
+        .await
     }
 }

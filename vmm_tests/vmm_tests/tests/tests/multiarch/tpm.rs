@@ -1239,38 +1239,41 @@ pub(crate) async fn use_hw_unseal_impl<T, S, U: PetriVmmBackend>(
 }
 
 /// Test that TPM NVRAM size persists across servicing.
+///
+/// Unlike the 1.38 variant, this does not start from a legacy 16k vTPM blob:
+/// such state is only supported by the 1.38 reference implementation, so this
+/// test uses a freshly provisioned (32k) VMGS instead.
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, VMGS_WITH_16K_TPM]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
 )]
 async fn tpm_servicing<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    extra_deps: (
-        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-        ResolvedArtifact<VMGS_WITH_16K_TPM>,
-    ),
+    extra_deps: (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
-    tpm_servicing_impl(config, extra_deps, PetriTpmVersion::V185).await
+    let (igvm_file,) = extra_deps;
+    tpm_servicing_impl(config, igvm_file, None, PetriTpmVersion::V185).await
 }
 
 pub(crate) async fn tpm_servicing_impl<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    (igvm_file, vmgs_file): (
-        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-        ResolvedArtifact<VMGS_WITH_16K_TPM>,
-    ),
+    igvm_file: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    vmgs_file: Option<ResolvedArtifact<VMGS_WITH_16K_TPM>>,
     tpm_version: PetriTpmVersion,
 ) -> anyhow::Result<()> {
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
 
-    let config = config
+    let mut config = config
         .with_tpm(true)
         .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_initial_vmgs(vmgs_file);
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
+
+    if let Some(vmgs_file) = vmgs_file {
+        config = config.with_initial_vmgs(vmgs_file);
+    }
 
     let (mut vm, agent) = config.run().await?;
 

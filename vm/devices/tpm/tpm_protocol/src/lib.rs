@@ -72,9 +72,3 @@ pub const TPM_DEFAULT_VERSION: &str = "1.38";
 
 /// Default NVRAM index size provisioned for AKCert.
 pub const TPM_DEFAULT_AKCERT_SIZE: usize = 4096;
-
-/// `MAX_NV_INDEX_SIZE` of the TPM 1.38 reference implementation.
-pub const TPM_V138_MAX_NV_INDEX_SIZE: u16 = 4096;
-
-/// `MAX_NV_INDEX_SIZE` of the TPM 1.85 reference implementation.
-pub const TPM_V185_MAX_NV_INDEX_SIZE: u16 = 8500;
