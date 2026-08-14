@@ -24,6 +24,7 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
+use tdcall::TdgPageAttrRdResult;
 use tdcall::TdgPageReleaseError;
 use tdcall::tdcall_sys_rd;
 use tdcall::tdcall_vm_rd;
@@ -60,6 +61,15 @@ pub struct Tdx<'a> {
 }
 
 impl MshvVtl {
+    /// Issues a tdcall to read the gpa mapping and attributes of a private
+    /// page or a private MMIO page.
+    pub fn tdx_read_page_attributes(
+        &self,
+        gpa: u64,
+    ) -> Result<TdgPageAttrRdResult, TdCallResultCode> {
+        tdcall::tdcall_page_attr_rd(&mut MshvVtlTdcall(self), gpa)
+    }
+
     /// Issues a tdcall to set page attributes.
     pub fn tdx_set_page_attributes(
         &self,

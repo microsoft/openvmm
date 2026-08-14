@@ -163,10 +163,33 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 
+    /// Record the TDI interface report for a device.
+    ///
+    /// Called during attestation once the report has been fetched, and again on
+    /// each re-attest. Platforms that must resolve report-relative identifiers
+    /// keep what they need from it; the rest ignore it.
+    ///
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    /// * `report` - The device's TDI interface report.
+    fn tdisp_set_tdi_report(&self, device_id: u16, report: &TdiReportStruct);
+
+    /// Drop the TDI interface report recorded for a device.
+    ///
+    /// Called during unbind, alongside the caller clearing its own per-attest
+    /// state, so nothing recorded from the old report outlives it.
+    ///
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    fn tdisp_clear_tdi_report(&self, device_id: u16);
+
     /// Unblock MMIO access for a specific resource on the device.
     ///
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
-    /// * `range_id` - Identifies which MMIO range to unblock.
+    /// * `range_id` - Identifies which MMIO range to unblock. This is the
+    ///   device-specific range identifier reported in the TDI interface report
+    ///   (the PCI BAR index for the guest protocols supported here), *not* the
+    ///   range's position in the report's list. A platform that needs the list
+    ///   position resolves it from the report recorded by
+    ///   [`Self::tdisp_set_tdi_report`].
     /// * `base_gpa` - The base guest physical address of the MMIO range to unblock.
     /// * `base_offset` - The offset within the range specified by `range_id` to start
     ///   unblocking from. Necessary for cases where the host splits the MMIO range

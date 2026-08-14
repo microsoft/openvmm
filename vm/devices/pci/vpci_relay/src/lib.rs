@@ -698,31 +698,37 @@ impl PciConfigSpace for RelayedVpciDevice {
         // `merge` honors the byte enables, so a partial write that leaves the
         // command register untouched yields `next` equal to `prev`.
         let next = Command::from((value.merge(current) & 0xffff) as u16).mmio_enabled();
-        let activate = match (prev, next) {
-            (false, true) => true,
-            (true, false) => false,
+        match (prev, next) {
+            (false, true) => {}
+            (true, false) => {
+                // Once MMIO is on the TDI is bound and its ranges have been
+                // unblocked and accepted into the guest. Drop the write rather
+                // than letting the guest walk that back: the disable edge would
+                // unbind the device and re-block every range.
+                tracing::warn!(
+                    ?offset,
+                    ?value,
+                    "dropping a config space write that would disable MMIO; the command \
+                     register does not transition back to off once it is on"
+                );
+                return IoResult::Ok;
+            }
             // No MMIO edge, so there is no TDISP notification to dispatch.
             _ => {
                 self.device.write_cfg(offset, value);
                 return IoResult::Ok;
             }
-        };
+        }
 
         let device = self.device.clone();
         let fut = Box::pin(async move {
-            if activate {
-                // Attest while the command register is still off.
-                // `tdisp_on_device_activate` enables the command register
-                // itself once attestation succeeds, so the BARs are mapped
-                // before it notifies TDISP of the MMIO ranges.
-                if !device.tdisp_on_device_activate(value).await {
-                    // The command register is left off if attestation failed.
-                    tracing::warn!("TDISP attestation failed. Not enabling STATUS_COMMAND.");
-                }
-            } else {
-                // Unbind on any MMIO disable edge. This explicitly disables the
-                // command register.
-                device.tdisp_on_device_deactivate().await;
+            // Attest while the command register is still off.
+            // `tdisp_on_device_activate` enables the command register itself
+            // once attestation succeeds, so the BARs are mapped before it
+            // notifies TDISP of the MMIO ranges.
+            if !device.tdisp_on_device_activate(value).await {
+                // The command register is left off if attestation failed.
+                tracing::warn!("TDISP attestation failed. Not enabling STATUS_COMMAND.");
             }
         });
 

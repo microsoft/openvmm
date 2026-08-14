@@ -11,6 +11,7 @@ use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
 use std::future::Future;
 use std::pin::Pin;
+use tdisp::devicereport::TdiReportStruct;
 
 /// Recorded call to [`TdispNoopResourceValidator::tdisp_unblock_mmio`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +88,14 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
             "mock resource validator on_post_start"
         );
         Ok(())
+    }
+
+    fn tdisp_set_tdi_report(&self, device_id: u16, _report: &TdiReportStruct) {
+        tracing::info!(?device_id, "mock resource validator tdisp_set_tdi_report");
+    }
+
+    fn tdisp_clear_tdi_report(&self, device_id: u16) {
+        tracing::info!(?device_id, "mock resource validator tdisp_clear_tdi_report");
     }
 
     fn tdisp_unblock_mmio<'a>(

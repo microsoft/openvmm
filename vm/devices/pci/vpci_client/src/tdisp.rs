@@ -589,6 +589,7 @@ impl VpciClientTdispState {
 
         // Clear every per-attest field. All of these will be fetched cleanly on
         // the next re-attest cycle.
+        self.resource_validator.tdisp_clear_tdi_report(device_id);
         self.mutable_state.tdi_report = None;
         self.mutable_state.guest_device_id = 0;
         self.mutable_state.intercepted_bars.clear();
@@ -757,6 +758,12 @@ impl VpciClientTdispState {
 
         self.mutable_state
             .update_guest_device_id(guest_device_id_u16);
+
+        // Hand the report to the validator before any resource is unblocked:
+        // platforms that address an MMIO range by its position in the report's
+        // list resolve that from here.
+        self.resource_validator
+            .tdisp_set_tdi_report(guest_device_id_u16, &tdi_report);
 
         // Auto-mark any MMIO range that the device reports as mapping the MSI-X
         // table or PBA as intercepted. Intercepted BARs are not backed by RAM
@@ -977,6 +984,13 @@ impl VpciClientTdispState {
             worker_req: self.worker_req.clone(),
             vpci_device_id: self.vpci_device_id,
         };
+
+        tracing::info!(
+            "tdisp_on_mmio_reconfigured: unblocking MMIO for BAR classified PRIVATE: \
+             device_id={device_id:#x}, bar_id={bar_id}, base_address={base_address:#x}, \
+             length={length:#x}"
+        );
+
         self.resource_validator
             .tdisp_unblock_mmio(
                 self.target_vtl,
@@ -989,6 +1003,11 @@ impl VpciClientTdispState {
             )
             .await
             .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO")?;
+
+        tracing::info!(
+            "tdisp_on_mmio_reconfigured: MMIO unblocked: device_id={device_id:#x}, \
+             bar_id={bar_id}, base_address={base_address:#x}, length={length:#x}"
+        );
 
         self.mutable_state.validated_mmio_bars.insert(
             bar_id,
@@ -1003,11 +1022,18 @@ impl VpciClientTdispState {
         // guest. Guard with `dma_unblocked` so it only fires once per
         // bind/attest cycle (cleared on unbind).
         if !self.mutable_state.dma_unblocked {
+            tracing::info!("tdisp_on_mmio_reconfigured: unblocking DMA: device_id={device_id:#x}");
+
             self.resource_validator
                 .tdisp_unblock_dma(self.target_vtl, device_id)
                 .context("tdisp_on_mmio_reconfigured: failed to unblock DMA")?;
             self.mutable_state.dma_unblocked = true;
-            tracing::info!(device_id, "tdisp_on_mmio_reconfigured: DMA unblocked");
+            tracing::info!("tdisp_on_mmio_reconfigured: DMA unblocked: device_id={device_id:#x}");
+        } else {
+            tracing::info!(
+                "tdisp_on_mmio_reconfigured: skipping DMA unblock, already unblocked this \
+                 bind/attest cycle: device_id={device_id:#x}"
+            );
         }
 
         Ok(())

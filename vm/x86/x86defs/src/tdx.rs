@@ -221,14 +221,19 @@ pub struct TdgMemPageAttrGpaMappingReadRcxResult {
     /// The page number for this accept call.
     #[bits(40)]
     pub gpa_page_number: u64,
-    #[bits(10)]
+    #[bits(9)]
     pub reserved2: u64,
+    /// If this page is a private MMIO page rather than ordinary private
+    /// memory. Only meaningful on a TDX Connect capable module.
+    #[bits(1)]
+    pub mmio: bool,
     /// If this page's attributes are pending, meaning it will be applied when
-    /// the page is accepted.
+    /// the page is accepted. Also covers MMIO_PENDING on a TDX Connect capable
+    /// module.
     #[bits(1)]
-    pub pending: u8,
+    pub pending: bool,
     #[bits(1)]
-    pub reserved3: u64,
+    pub reserved3: u8,
 }
 
 /// RCX input to TDG.MEM.PAGE.ATTR.WR.

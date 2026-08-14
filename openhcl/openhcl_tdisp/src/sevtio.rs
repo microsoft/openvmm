@@ -18,6 +18,7 @@ use sev_guest_device::SevGuestDevice;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
+use tdisp::devicereport::TdiReportStruct;
 use x86defs::snp::SevRmpAdjust;
 
 /// How long to pause before each MMIO-related hypercall. For debug purposes only.
@@ -189,6 +190,19 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         // See `on_pre_bind`.
         tracing::info!(?target_vtl, device_id, "SEV-TIO on_post_start: no-op");
         Ok(())
+    }
+
+    #[tracing::instrument(skip(self, _report), fields(device_id))]
+    fn tdisp_set_tdi_report(&self, device_id: u16, _report: &TdiReportStruct) {
+        // SEV-TIO addresses MMIO ranges by range id, so it has no use for the
+        // report's list ordering.
+        tracing::info!(device_id, "SEV-TIO tdisp_set_tdi_report: no-op");
+    }
+
+    #[tracing::instrument(skip(self), fields(device_id))]
+    fn tdisp_clear_tdi_report(&self, device_id: u16) {
+        // See `tdisp_set_tdi_report`.
+        tracing::info!(device_id, "SEV-TIO tdisp_clear_tdi_report: no-op");
     }
 
     #[tracing::instrument(

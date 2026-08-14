@@ -707,15 +707,11 @@ impl VpciDevice {
             i = next_i;
         }
 
-        // BRING-UP SCAFFOLDING: every BAR has been through the unblock path, so
-        // deliberately fail the activation here. This tears the TDI back down
-        // through `tdisp_fail_attestation`, exercising the block path too, and
-        // then halts. Remove this once the accept TDCALLs are implemented.
-        tracing::warn!(
-            "tdisp_on_device_activate: MMIO unblock loop complete; failing activation on purpose"
+        tracing::info!(
+            "tdisp_on_device_activate: attestation and MMIO unblock complete, device activated"
         );
-        self.tdisp_fail_attestation().await;
-        false
+
+        true
     }
 
     /// Common teardown for any failure during the MMIO-enable activation
@@ -744,12 +740,6 @@ impl VpciDevice {
         // Always clear the command register so the device is left in the
         // expected off state after a failed activation.
         self.clear_command_register();
-
-        // BRING-UP SCAFFOLDING: halt the VM once the TDI is back to Unlocked so
-        // the failed attestation can be inspected instead of the guest retrying
-        // over it. Remove this along with the deliberate failure in the TDX
-        // Connect validator's `on_post_start`.
-        panic!("tdisp_fail_attestation: halting after unbind: {unbind_result:?}");
     }
 
     /// Notifies TDISP that the guest has disabled MMIO on this device. If the
