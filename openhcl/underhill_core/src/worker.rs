@@ -223,6 +223,10 @@ impl DevicePolicySettings {
         if bytes.len() > MAX_LEN {
             anyhow::bail!("device policy too large: {} bytes", bytes.len());
         }
+        // Tolerate a UTF-8 BOM. The payload is authored by host tooling, and
+        // Windows PowerShell writes a BOM by default; it is not valid JSON, so
+        // strip it rather than fail on a very likely integration mistake.
+        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
         let settings: Self =
             serde_json::from_slice(bytes).context("failed to parse device policy")?;
         if settings.version != Self::SUPPORTED_VERSION {
@@ -4312,6 +4316,14 @@ mod device_policy_tests {
         let p = DevicePolicySettings::parse(br#"{"version":1,"nvidia_vpci_relay_allowed":false}"#)
             .unwrap();
         assert!(!p.nvidia_vpci_relay_allowed);
+
+        // A UTF-8 BOM is tolerated: Windows PowerShell writes one by default,
+        // and it is not valid JSON.
+        let p = DevicePolicySettings::parse(
+            b"\xEF\xBB\xBF{\"version\":1,\"nvidia_vpci_relay_allowed\":true}",
+        )
+        .unwrap();
+        assert!(p.nvidia_vpci_relay_allowed);
     }
 
     /// Untrusted host input: every malformed form must error rather than panic,
