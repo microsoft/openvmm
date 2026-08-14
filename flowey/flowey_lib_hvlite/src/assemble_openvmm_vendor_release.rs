@@ -17,11 +17,10 @@ pub const CARGO_CONFIG_FILE: &str = "cargo_config";
 /// Shared by the flow step and its tests so the tested argument list is
 /// necessarily the released one.
 ///
-/// A vendored Cargo tree contains many paths longer than the 100 character
-/// ustar limit, so pax extended headers are always emitted. `exthdr.name` is
-/// pinned because tar's default header name embeds the archiving process's pid
-/// on older tar and under `POSIXLY_CORRECT`, which would otherwise make the
-/// bytes reproducible only within a single tar version and environment.
+/// The format is pinned because a vendored Cargo tree contains many paths
+/// longer than the 100 character ustar limit, and the pax format tar would
+/// otherwise select under `POSIXLY_CORRECT` names its extended headers after
+/// the archiving process's pid.
 const DETERMINISTIC_TAR_ARGS: &[&str] = &[
     "--sort=name",
     "--mtime=@0",
@@ -29,8 +28,7 @@ const DETERMINISTIC_TAR_ARGS: &[&str] = &[
     "--group=0",
     "--numeric-owner",
     "--mode=u=rwX,go=rX",
-    "--format=pax",
-    "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
+    "--format=gnu",
 ];
 
 /// Internal identity stored alongside the assembled assets.
@@ -432,9 +430,10 @@ mod tests {
             )
             .unwrap();
 
-            // Longer than the 100 character ustar path limit, so archiving it
-            // forces a pax extended header. Without this a fixture cannot
-            // detect nondeterministic extended header names.
+            // Longer than the 100 character ustar path limit, so the archive
+            // has to carry the name in a format extension. Without this a
+            // fixture cannot detect a format whose extended headers are named
+            // nondeterministically.
             let long_dir = crate_dir
                 .join("src")
                 .join("a".repeat(60))
