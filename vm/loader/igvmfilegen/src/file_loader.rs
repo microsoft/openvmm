@@ -99,6 +99,7 @@ pub struct IgvmLoader<R: VbsRegister + GuestArch> {
     isolation_type: LoaderIsolationType,
     paravisor_present: bool,
     imported_regions_config_page: Option<u64>,
+    expected_page_hashes_config_page: Option<u64>,
 }
 
 pub struct IgvmVtlLoader<'a, R: VbsRegister + GuestArch> {
@@ -472,19 +473,31 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             isolation_type,
             paravisor_present: with_paravisor,
             imported_regions_config_page: None,
+            expected_page_hashes_config_page: None,
         }
     }
 
-    fn generate_cryptographic_hash_of_shared_pages(&mut self) -> Vec<u8> {
-        // Sort the page data directives by GPA to ensure the hash is consistent.
+    /// Compute both the combined SHA-384 over all shared (unmeasured) pages
+    /// (matching the value stored in `ImportedRegionsPageHeader::sha384_hash`)
+    /// and a per-page array of SHA-384s (one entry per 4 KB shared page, in
+    /// ascending-GPA order) suitable for the expected-page-hashes region.
+    ///
+    /// The per-page array is what the boot shim uses to identify which
+    /// individual pages diverged from the measured baseline on a hash
+    /// mismatch.
+    fn generate_cryptographic_hashes_of_shared_pages(
+        &mut self,
+    ) -> (Vec<u8>, Vec<loader_defs::paravisor::ExpectedPageHash>) {
+        // Sort the page data directives by GPA to ensure the hashes are
+        // consistent and that the per-page array is in ascending-GPA order.
         self.page_data_directives
             .sort_unstable_by_key(|directive| match directive {
                 IgvmDirectiveHeader::PageData { gpa, .. } => *gpa,
                 _ => unreachable!("all directives should be IgvmDirectiveHeader::PageData"),
             });
 
-        // Generate the hash of the unaccepted pages.
-        let mut hasher = Sha384::new();
+        let mut combined = Sha384::new();
+        let mut per_page = Vec::new();
         self.page_data_directives.iter().for_each(|directive| {
             if let IgvmDirectiveHeader::PageData {
                 gpa: _,
@@ -506,11 +519,22 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                         data
                     };
 
-                    hasher.update(data_to_hash);
+                    combined.update(data_to_hash);
+
+                    // Per-page hash: a fresh Sha384 fed the same zero-
+                    // extended page bytes.
+                    let mut per = Sha384::new();
+                    per.update(data_to_hash);
+                    let hash: [u8; 48] = per
+                        .finish()
+                        .as_bytes()
+                        .try_into()
+                        .expect("sha384 output should be 48 bytes");
+                    per_page.push(loader_defs::paravisor::ExpectedPageHash { sha384_hash: hash });
                 }
             }
         });
-        hasher.finish().to_vec()
+        (combined.finish().to_vec(), per_page)
     }
 
     /// Finalize the loader state, returning an IGVM file.
@@ -554,11 +578,14 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             // so just sort by the base page number
             imported_regions_data.sort_by_key(|region| region.base_page_number);
 
-            // All shared pages have been imported. Generate the secure cryptographic hash of the unaccepted
-            // imported pages.
-            let hash = self.generate_cryptographic_hash_of_shared_pages();
+            // All shared pages have been imported. Generate both the combined
+            // cryptographic hash of the unaccepted (shared) imported pages
+            // (stored in the header) and the per-page hash array (imported
+            // separately below into the expected-page-hashes region).
+            let (combined_hash, per_page_hashes) =
+                self.generate_cryptographic_hashes_of_shared_pages();
             let page_header = loader_defs::paravisor::ImportedRegionsPageHeader {
-                sha384_hash: hash
+                sha384_hash: combined_hash
                     .as_bytes()
                     .try_into()
                     .expect("hash should be correct size"),
@@ -578,6 +605,56 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 imported_regions_page.as_bytes(),
             )
             .context("failed to import config regions")?;
+
+            // Emit the per-page expected-hashes region if the caller told us
+            // where it goes. This is a separate measured region rather than
+            // an extension of the imported-regions page header so that older
+            // consumers of `ImportedRegionsPageHeader` see the exact same
+            // layout as before.
+            if let Some(hashes_page_base) = self.expected_page_hashes_config_page {
+                use loader_defs::paravisor::{
+                    EXPECTED_PAGE_HASH_MAX_COUNT, EXPECTED_PAGE_HASHES_MAGIC,
+                    EXPECTED_PAGE_HASHES_VERSION, ExpectedPageHashesHeader,
+                    PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES,
+                };
+
+                let count = per_page_hashes.len();
+                if count > EXPECTED_PAGE_HASH_MAX_COUNT {
+                    anyhow::bail!(
+                        "expected-page-hashes region overflow: {} pages > {} max \
+                         (increase PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES)",
+                        count,
+                        EXPECTED_PAGE_HASH_MAX_COUNT,
+                    );
+                }
+
+                let hashes_header = ExpectedPageHashesHeader {
+                    magic: EXPECTED_PAGE_HASHES_MAGIC,
+                    version: EXPECTED_PAGE_HASHES_VERSION,
+                    page_hash_count: count as u32,
+                    reserved: 0,
+                };
+
+                let region_bytes_capacity = PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES
+                    as usize
+                    * PAGE_SIZE_4K as usize;
+                let mut region = Vec::with_capacity(region_bytes_capacity);
+                region.extend_from_slice(hashes_header.as_bytes());
+                region.extend_from_slice(per_page_hashes.as_bytes());
+                // Zero-pad to fill the whole reserved region so measurement
+                // sees a deterministic image regardless of how many pages
+                // this build ended up with.
+                region.resize(region_bytes_capacity, 0);
+
+                self.import_pages(
+                    hashes_page_base,
+                    PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES,
+                    "loader-expected-page-hashes",
+                    BootPageAcceptance::Exclusive,
+                    &region,
+                )
+                .context("failed to import expected-page-hashes region")?;
+            }
         }
 
         // Finalize parameter pages with insert directives.
@@ -1177,6 +1254,10 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
 
     fn set_imported_regions_config_page(&mut self, page_base: u64) {
         self.loader.imported_regions_config_page = Some(page_base);
+    }
+
+    fn set_expected_page_hashes_config_page(&mut self, page_base: u64) {
+        self.loader.expected_page_hashes_config_page = Some(page_base);
     }
 }
 

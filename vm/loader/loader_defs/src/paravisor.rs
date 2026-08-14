@@ -79,10 +79,23 @@ pub const PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES: u64 = 1;
 /// Size in pages of VTL2 specific measured config
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES: u64 = 1;
 
+/// Size in pages for the per-page expected-hashes region. Holds one
+/// SHA-384 (48 bytes) per unmeasured (shared) 4 KB page in the IGVM, so the
+/// boot shim can identify which individual pages diverged from the
+/// measured baseline rather than only knowing "the combined hash was
+/// wrong". Sized generously: 256 pages = 1 MB / 48 B per hash = 21_845
+/// hashes max, comfortably above the ~16 K unmeasured pages on debug SNP
+/// images. Placed after PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES so that
+/// PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX stays where existing
+/// consumers expect it and only new readers need to know about the new
+/// region.
+pub const PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES: u64 = 256;
+
 /// Count for vtl 2 measured config region size.
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_REGION_PAGE_COUNT: u64 =
     PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES
-        + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES;
+        + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES
+        + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES;
 
 // Measured config comes after the unmeasured config
 /// The page index to the list of accepted pages
@@ -94,6 +107,18 @@ pub const PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX: u64 =
 pub const PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX: u64 =
     PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX
         + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_SIZE_PAGES;
+
+/// The page index for the per-page expected-hashes region.
+///
+/// Deliberately placed AFTER `PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX`
+/// (rather than between it and the accepted-memory page): this keeps
+/// `PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX` at exactly the same offset
+/// as before this region was added, so any consumer that only reads the
+/// existing measured config page continues to work unchanged. Only
+/// consumers that opt in to reading per-page expected hashes need to
+/// know this index exists.
+pub const PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX: u64 =
+    PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX + PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES;
 
 /// The maximum size in pages out of all isolation architectures.
 pub const PARAVISOR_VTL2_CONFIG_REGION_PAGE_COUNT_MAX: u64 =
@@ -273,6 +298,54 @@ impl ImportedRegionDescriptor {
         }
     }
 }
+
+/// Magic identifier at the start of the per-page expected-hashes region.
+/// Chosen so an older tool inspecting the region can recognise it. Bytes
+/// spell `EPHS` in ASCII, little-endian encoded.
+pub const EXPECTED_PAGE_HASHES_MAGIC: u32 = u32::from_le_bytes(*b"EPHS");
+
+/// Current layout version of `ExpectedPageHashesHeader` + its trailing
+/// array. Bumped only on incompatible changes.
+pub const EXPECTED_PAGE_HASHES_VERSION: u32 = 1;
+
+/// Header at page 0 of the measured per-page expected-hashes region
+/// (`PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX`). Followed
+/// immediately by an array of `ExpectedPageHash` entries. Contents are
+/// zero-padded to fill the region.
+///
+/// Entry ordering: matches the shim's walk of
+/// `imported_regions().filter(!already_accepted)`, one entry per 4 KB
+/// page in ascending GPA order.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
+pub struct ExpectedPageHashesHeader {
+    /// `EXPECTED_PAGE_HASHES_MAGIC`.
+    pub magic: u32,
+    /// `EXPECTED_PAGE_HASHES_VERSION`.
+    pub version: u32,
+    /// Number of `ExpectedPageHash` entries that follow.
+    pub page_hash_count: u32,
+    /// Reserved, must be zero.
+    pub reserved: u32,
+}
+
+/// SHA-384 of one 4 KB unmeasured (shared) IGVM page, zero-extended to 4
+/// KB before hashing (matching the combined hash in
+/// `ImportedRegionsPageHeader::sha384_hash`).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
+pub struct ExpectedPageHash {
+    /// SHA-384 of the page contents.
+    pub sha384_hash: [u8; 48],
+}
+
+/// Maximum number of `ExpectedPageHash` entries the region can hold,
+/// given `PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES` pages
+/// minus the header.
+pub const EXPECTED_PAGE_HASH_MAX_COUNT: usize =
+    (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES as usize * HV_PAGE_SIZE as usize
+        - size_of::<ExpectedPageHashesHeader>())
+        / size_of::<ExpectedPageHash>();
 
 /// Measured config about linux loaded into VTL0.
 #[repr(C)]

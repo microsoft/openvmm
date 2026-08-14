@@ -983,6 +983,14 @@ where
         config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX;
 
     importer.set_imported_regions_config_page(imported_region_base);
+
+    // Also announce the per-page expected-hashes region. The IGVM file
+    // loader populates it in finalize alongside the imported-regions page
+    // (both regions are derived from the same set of shared pages). See
+    // `openhcl_boot::verify_imported_regions_hash` diagnostic changes.
+    let expected_page_hashes_base =
+        config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX;
+    importer.set_expected_page_hashes_config_page(expected_page_hashes_base);
     Ok(())
 }
 
@@ -1552,6 +1560,12 @@ where
         config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX;
 
     importer.set_imported_regions_config_page(imported_region_base);
+
+    // Also announce the per-page expected-hashes region (see comments in
+    // the x86 sibling above).
+    let expected_page_hashes_base =
+        config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX;
+    importer.set_expected_page_hashes_config_page(expected_page_hashes_base);
 
     Ok(())
 }

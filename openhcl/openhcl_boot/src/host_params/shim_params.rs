@@ -298,4 +298,43 @@ impl ShimParams {
             &header.sha384_hash
         }
     }
+
+    /// Expected SHA-384 hashes for each 4 KB unmeasured (shared) page in the
+    /// IGVM, in the same order the shim walks
+    /// `imported_regions().filter(!already_accepted)` pages in ascending GPA
+    /// order. Populated by the IGVM file loader and measured; used by the
+    /// boot shim's `verify_imported_regions_hash` diagnostic path to
+    /// identify which specific pages diverged on a hash mismatch.
+    ///
+    /// Returns an empty slice if the region header magic/version don't match
+    /// (older IGVM without the region, or a future incompatible layout);
+    /// callers should treat that as "no per-page baseline available" and
+    /// fall back to the combined-hash check.
+    #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)] // consumed in a follow-up that updates verify_imported_regions_hash
+    pub fn expected_page_hashes(&self) -> &'static [loader_defs::paravisor::ExpectedPageHash] {
+        use loader_defs::paravisor::{
+            EXPECTED_PAGE_HASH_MAX_COUNT, EXPECTED_PAGE_HASHES_MAGIC, EXPECTED_PAGE_HASHES_VERSION,
+            ExpectedPageHash, ExpectedPageHashesHeader,
+            PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX,
+        };
+
+        let header_start = self.parameter_region_start
+            + (PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX * hvdef::HV_PAGE_SIZE);
+
+        // SAFETY: header_start is a measured address inside the parameter
+        // region reserved for this purpose at IGVM build time.
+        let header = unsafe { &*(header_start as *const ExpectedPageHashesHeader) };
+        if header.magic != EXPECTED_PAGE_HASHES_MAGIC
+            || header.version != EXPECTED_PAGE_HASHES_VERSION
+        {
+            return &[];
+        }
+        let count = (header.page_hash_count as usize).min(EXPECTED_PAGE_HASH_MAX_COUNT);
+        let entries_start = header_start + size_of::<ExpectedPageHashesHeader>() as u64;
+
+        // SAFETY: `count` is bounded above by the measured region capacity;
+        // the region is contiguous and identity-mapped.
+        unsafe { slice::from_raw_parts(entries_start as *const ExpectedPageHash, count) }
+    }
 }

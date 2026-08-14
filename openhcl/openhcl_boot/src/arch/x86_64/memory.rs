@@ -37,18 +37,44 @@ use zerocopy::FromZeros;
 // ============================================================================
 //
 // This is a temporary debugging aid intended for local investigation of a rare
-// mismatch seen on SNP boots. It computes SHA-384 of every 2 MB accept chunk
-// at three points to isolate which phase corruption occurs in:
-//   Phase A: bytes as read from the shared (host-visible) page, before the
-//            shared -> private transition.
-//   Phase C: bytes as read from the same GPA immediately after the transition
-//            (via the C=1 identity map), i.e. after accept + copy-back.
-//   Phase D: bytes as read from the same GPA at final verify time.
-// A running combined Phase-A hash is also accumulated to compare against
-// `imported_regions_hash()` to distinguish "host loaded bad data" from
-// "shim mangled it".
+// mismatch seen on SNP boots. It computes SHA-384 hashes at three points to
+// isolate which phase corruption occurs in:
+//   Phase A: bytes captured out of the shared (host-visible) page into
+//            `ram_buffer` just before the shared -> private transition.
+//   Phase B: bytes as read from the same GPA immediately after the
+//            transition (via the C=1 identity map), i.e. after accept +
+//            copy-back.
+//   Phase C: bytes as read from the same GPA at final verify time.
+//
+// Granularity:
+//   - Phase A capture: 2 MB accept-chunk (records one SHA-384 per chunk) plus
+//     a running combined hash for compare against `imported_regions_hash()`.
+//   - Phase A -> B compare: 4 KB PAGE granularity (per Jon's feedback). On
+//     mismatch we emit a bitmap of corrupt pages, RLE ranges, per-page pre/
+//     post SHA-384 (capped), and a full 4 KB hex dump of the first bad page.
+//   - Phase A -> C compare: per-chunk (interim). Once the loader is updated
+//     to emit per-page expected hashes, Phase C can also do per-page.
+//
+// Full-page dumps are strictly one-shot per soak (see DIAG_FULL_PAGE_DUMPED)
+// -- one sample is enough to eyeball whether corruption is a bit flip, a
+// zeroed page, a substituted page, etc., and we don't want to spam COM3 with
+// 64 lines per mismatched chunk.
 //
 // Not intended for check-in.
+
+/// Diagnostic page size == HV page size (4 KB).
+const DIAG_PAGE_SIZE: usize = hvdef::HV_PAGE_SIZE as usize;
+
+/// Max pages we can bitmap in a single 2 MB accept chunk (2 MB / 4 KB = 512).
+const DIAG_MAX_PAGES_PER_CHUNK: usize = X64_LARGE_PAGE_SIZE as usize / DIAG_PAGE_SIZE;
+const _: () = assert!(DIAG_MAX_PAGES_PER_CHUNK <= 512);
+
+/// Bitmap word count (u64s) for one 2 MB chunk.
+const DIAG_BITMAP_WORDS: usize = DIAG_MAX_PAGES_PER_CHUNK / 64;
+
+/// Cap on how many per-bad-page SHA-384 lines we emit per Phase B mismatch,
+/// so a wholly-corrupt chunk doesn't spam thousands of log lines.
+const DIAG_MAX_BAD_PAGE_HASHES: usize = 32;
 
 /// Maximum number of 2 MB chunks we track. Debug builds hash roughly
 /// kernel + initrd (~80 MB), giving ~40 chunks; leave generous headroom.
@@ -66,6 +92,22 @@ static DIAG_CHUNK_HASHES: SingleThreaded<RefCell<ArrayVec<DiagChunkHash, DIAG_MA
 
 static DIAG_RUNNING_A: SingleThreaded<RefCell<Option<Sha384>>> = SingleThreaded(RefCell::new(None));
 
+/// One-shot latch guarding the full 4 KB hex dump of a corrupted page.
+/// Whichever phase (B or C) trips a mismatch first gets to dump; every
+/// subsequent detection just logs the header/bitmap/hashes and skips the
+/// full dump. Keeps COM3 quiet even when many chunks are corrupted.
+static DIAG_FULL_PAGE_DUMPED: SingleThreaded<core::cell::Cell<bool>> =
+    SingleThreaded(core::cell::Cell::new(false));
+
+/// Returns true and latches on the first call; returns false thereafter.
+fn diag_claim_full_page_dump() -> bool {
+    if DIAG_FULL_PAGE_DUMPED.0.get() {
+        return false;
+    }
+    DIAG_FULL_PAGE_DUMPED.0.set(true);
+    true
+}
+
 /// `core::fmt::Display` adapter that prints a byte slice as lowercase hex,
 /// no separators. Convenient for hashes in log lines.
 struct HexBytes<'a>(&'a [u8]);
@@ -73,6 +115,79 @@ impl core::fmt::Display for HexBytes<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         for b in self.0 {
             write!(f, "{:02x}", b)?;
+        }
+        Ok(())
+    }
+}
+
+/// `core::fmt::Display` adapter that prints a page-bitmap (little-endian
+/// per byte within each u64 word) as a compact hex string. One hex char per
+/// 4 pages, so a full 2 MB / 4 KB = 512-page chunk fits in 128 hex chars.
+struct BitmapHex<'a> {
+    bitmap: &'a [u64],
+    total_pages: usize,
+}
+impl core::fmt::Display for BitmapHex<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let bits = self.total_pages.min(self.bitmap.len() * 64);
+        let bytes = bits.div_ceil(8);
+        for byte_idx in 0..bytes {
+            let word = byte_idx / 8;
+            let byte_in_word = byte_idx % 8;
+            let b = ((self.bitmap[word] >> (byte_in_word * 8)) & 0xff) as u8;
+            write!(f, "{:02x}", b)?;
+        }
+        Ok(())
+    }
+}
+
+/// `core::fmt::Display` adapter that walks a page-bitmap and emits corrupt
+/// page-index ranges in the form `0x8-0xa,0x11,0x20-0x21`. Human-readable
+/// alternative to the raw hex bitmap.
+struct RleRanges<'a> {
+    bitmap: &'a [u64],
+    total_pages: usize,
+}
+impl core::fmt::Display for RleRanges<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut first = true;
+        let mut run_start: Option<usize> = None;
+        let mut prev_bit: bool = false;
+        for idx in 0..self.total_pages {
+            let word = idx / 64;
+            let bit = idx % 64;
+            let set = word < self.bitmap.len() && (self.bitmap[word] >> bit) & 1 == 1;
+            if set && !prev_bit {
+                run_start = Some(idx);
+            }
+            if !set && prev_bit {
+                let start = run_start.unwrap();
+                let end = idx - 1;
+                if !first {
+                    write!(f, ",")?;
+                }
+                first = false;
+                if start == end {
+                    write!(f, "{:#x}", start)?;
+                } else {
+                    write!(f, "{:#x}-{:#x}", start, end)?;
+                }
+                run_start = None;
+            }
+            prev_bit = set;
+        }
+        // Handle a run that reaches the last page.
+        if prev_bit {
+            let start = run_start.unwrap();
+            let end = self.total_pages - 1;
+            if !first {
+                write!(f, ",")?;
+            }
+            if start == end {
+                write!(f, "{:#x}", start)?;
+            } else {
+                write!(f, "{:#x}-{:#x}", start, end)?;
+            }
         }
         Ok(())
     }
@@ -112,12 +227,69 @@ fn diag_record_phase_a(gpa: u64, data: &[u8]) {
     }
 }
 
+/// Emit a full 4 KB page as hex, one log line per 64-byte cache line, with
+/// pre and post side by side. Used when we have both Phase-A and Phase-C
+/// bytes for the first corrupted page.
+fn diag_dump_full_page_diff(page_gpa: u64, phase: &str, pre: &[u8], post: &[u8]) {
+    debug_assert_eq!(pre.len(), DIAG_PAGE_SIZE);
+    debug_assert_eq!(post.len(), DIAG_PAGE_SIZE);
+    log::error!(
+        "DIAG_FIRST_BAD_PAGE_BEGIN page_gpa={:#x} phase={} len={:#x}",
+        page_gpa,
+        phase,
+        DIAG_PAGE_SIZE,
+    );
+    for (line_idx, (pre_line, post_line)) in pre.chunks(64).zip(post.chunks(64)).enumerate() {
+        let offset = line_idx * 64;
+        log::error!(
+            "DIAG_FIRST_BAD_PAGE_LINE page_gpa={:#x} offset={:#06x} pre={} post={}",
+            page_gpa,
+            offset,
+            HexBytes(pre_line),
+            HexBytes(post_line),
+        );
+    }
+    log::error!("DIAG_FIRST_BAD_PAGE_END page_gpa={:#x}", page_gpa);
+}
+
+/// Emit a full 4 KB page as hex, one log line per 64-byte cache line. Used
+/// when only the current (Phase-D) bytes are available for the first bad
+/// page and there is no pre-image to compare side by side.
+fn diag_dump_full_page_single(page_gpa: u64, phase: &str, data: &[u8]) {
+    debug_assert!(data.len() >= DIAG_PAGE_SIZE);
+    log::error!(
+        "DIAG_FIRST_BAD_PAGE_BEGIN page_gpa={:#x} phase={} len={:#x}",
+        page_gpa,
+        phase,
+        DIAG_PAGE_SIZE,
+    );
+    for (line_idx, line) in data[..DIAG_PAGE_SIZE].chunks(64).enumerate() {
+        let offset = line_idx * 64;
+        log::error!(
+            "DIAG_FIRST_BAD_PAGE_LINE page_gpa={:#x} offset={:#06x} bytes={}",
+            page_gpa,
+            offset,
+            HexBytes(line),
+        );
+    }
+    log::error!("DIAG_FIRST_BAD_PAGE_END page_gpa={:#x}", page_gpa);
+}
+
 /// Immediately after the shared -> private transition and copy-back, compare
 /// the same chunk (via the identity map) against the Phase-A bytes we captured
-/// before the transition. Logs eagerly on mismatch, including hex diffs of the
-/// first few differing 64-byte cache lines, so we know acceptance corrupted
-/// this chunk right when it happened and what the corruption looks like.
-fn diag_verify_phase_c(gpa: u64, pre: &[u8], post: &[u8]) {
+/// before the transition, at 4 KB PAGE granularity. On mismatch, emits:
+///  - `DIAG_TRANSITION_MISMATCH` header with total/bad page counts and per-
+///    chunk pre/post SHA-384.
+///  - `DIAG_TRANSITION_BITMAP` (hex) and `DIAG_TRANSITION_PAGES` (RLE) so we
+///    can see the distribution of corrupt pages within the chunk.
+///  - `DIAG_BAD_PAGE_HASH` per corrupt page (capped at
+///    DIAG_MAX_BAD_PAGE_HASHES) with SHA-384 of both pre and post.
+///  - Full 4 KB hex dump of the FIRST corrupt page via
+///    `DIAG_FIRST_BAD_PAGE_{BEGIN,LINE,END}` -- but ONLY if no previous
+///    call (from any chunk or from Phase C) has already claimed the
+///    one-shot dump latch. One sample is enough to characterise the
+///    corruption pattern.
+fn diag_verify_phase_b(gpa: u64, pre: &[u8], post: &[u8]) {
     if pre.len() != post.len() {
         log::error!(
             "DIAG_TRANSITION_LEN_MISMATCH gpa={:#x} pre_len={:#x} post_len={:#x}",
@@ -131,96 +303,120 @@ fn diag_verify_phase_c(gpa: u64, pre: &[u8], post: &[u8]) {
         return;
     }
 
-    let mut ha = Sha384::new();
-    ha.update(pre);
-    let hash_a: [u8; 48] = ha.finalize().into();
-    let mut hc = Sha384::new();
-    hc.update(post);
-    let hash_c: [u8; 48] = hc.finalize().into();
+    // Bitmap of mismatched pages within this chunk. Chunks are <= 2 MB
+    // = 512 pages, so DIAG_BITMAP_WORDS u64s suffice.
+    let mut bitmap = [0u64; DIAG_BITMAP_WORDS];
+    let mut bad_count: usize = 0;
+    let mut first_bad_page_idx: Option<usize> = None;
+    let mut bad_hashes: ArrayVec<(u64, [u8; 48], [u8; 48]), DIAG_MAX_BAD_PAGE_HASHES> =
+        ArrayVec::new();
+    let total_pages = pre.len().div_ceil(DIAG_PAGE_SIZE);
 
-    log::error!(
-        "DIAG_TRANSITION_MISMATCH gpa={:#x} len={:#x} phase_a={} phase_c={}",
-        gpa,
-        pre.len(),
-        HexBytes(&hash_a),
-        HexBytes(&hash_c),
-    );
-    diag_dump_first_diffs("DIAG_TRANSITION_DIFF", gpa, pre, post);
-}
-
-/// Log the first `MAX_DIFF_LINES` 64-byte cache lines that differ between
-/// `pre` and `post`, along with byte counts. Keeps log volume bounded even
-/// when the whole chunk differs.
-fn diag_dump_first_diffs(tag: &str, gpa: u64, pre: &[u8], post: &[u8]) {
-    const CACHE_LINE: usize = 64;
-    const MAX_DIFF_LINES: usize = 8;
-
-    debug_assert_eq!(pre.len(), post.len());
-
-    let mut total_diff_bytes: usize = 0;
-    let mut diff_lines: usize = 0;
-    let mut reported: usize = 0;
-
-    for (idx, (a, b)) in pre
-        .chunks(CACHE_LINE)
-        .zip(post.chunks(CACHE_LINE))
+    for (idx, (pre_pg, post_pg)) in pre
+        .chunks(DIAG_PAGE_SIZE)
+        .zip(post.chunks(DIAG_PAGE_SIZE))
         .enumerate()
     {
-        if a == b {
+        if pre_pg == post_pg {
             continue;
         }
-        diff_lines += 1;
-        total_diff_bytes += a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
+        bad_count += 1;
+        if first_bad_page_idx.is_none() {
+            first_bad_page_idx = Some(idx);
+        }
+        let word = idx / 64;
+        let bit = idx % 64;
+        if word < bitmap.len() {
+            bitmap[word] |= 1u64 << bit;
+        }
 
-        if reported < MAX_DIFF_LINES {
-            let offset = idx * CACHE_LINE;
-            log::error!(
-                "{} gpa={:#x} offset={:#x} pre={} post={}",
-                tag,
-                gpa,
-                offset,
-                HexBytes(a),
-                HexBytes(b),
-            );
-            reported += 1;
+        if bad_hashes.len() < DIAG_MAX_BAD_PAGE_HASHES {
+            let mut ha = Sha384::new();
+            ha.update(pre_pg);
+            let hash_a: [u8; 48] = ha.finalize().into();
+            let mut hc = Sha384::new();
+            hc.update(post_pg);
+            let hash_c: [u8; 48] = hc.finalize().into();
+            let _ = bad_hashes.try_push((gpa + (idx * DIAG_PAGE_SIZE) as u64, hash_a, hash_c));
         }
     }
 
+    // Overall pre/post SHA-384 for the whole chunk, for quick fingerprinting.
+    let mut ha = Sha384::new();
+    ha.update(pre);
+    let chunk_hash_a: [u8; 48] = ha.finalize().into();
+    let mut hb = Sha384::new();
+    hb.update(post);
+    let chunk_hash_b: [u8; 48] = hb.finalize().into();
+
     log::error!(
-        "{}_SUMMARY gpa={:#x} len={:#x} diff_cache_lines={} diff_bytes={} reported={}",
-        tag,
+        "DIAG_TRANSITION_MISMATCH gpa={:#x} chunk_len={:#x} total_pages={} bad_pages={} \
+         chunk_phase_a={} chunk_phase_b={}",
         gpa,
         pre.len(),
-        diff_lines,
-        total_diff_bytes,
-        reported,
+        total_pages,
+        bad_count,
+        HexBytes(&chunk_hash_a),
+        HexBytes(&chunk_hash_b),
     );
-}
-
-/// Log the first `HEAD_BYTES` of the chunk at `gpa` as hex. Useful when only
-/// the current (Phase D) content is available, since it lets us see whether
-/// the offending chunk is all zeros, all 0xff, or otherwise recognisable
-/// (initrd cpio header, ELF magic, etc.) without exposing the whole chunk.
-fn diag_dump_head(tag: &str, gpa: u64, data: &[u8]) {
-    const HEAD_BYTES: usize = 128;
-    let head = &data[..data.len().min(HEAD_BYTES)];
     log::error!(
-        "{} gpa={:#x} head_len={:#x} head={}",
-        tag,
+        "DIAG_TRANSITION_BITMAP gpa={:#x} total_pages={} bitmap={}",
         gpa,
-        head.len(),
-        HexBytes(head),
+        total_pages,
+        BitmapHex {
+            bitmap: &bitmap,
+            total_pages,
+        },
     );
+    log::error!(
+        "DIAG_TRANSITION_PAGES gpa={:#x} count={} ranges={}",
+        gpa,
+        bad_count,
+        RleRanges {
+            bitmap: &bitmap,
+            total_pages,
+        },
+    );
+
+    for (page_gpa, ha, hb) in &bad_hashes {
+        log::error!(
+            "DIAG_BAD_PAGE_HASH phase=A_vs_B chunk_gpa={:#x} page_gpa={:#x} phase_a={} phase_b={}",
+            gpa,
+            page_gpa,
+            HexBytes(ha),
+            HexBytes(hb),
+        );
+    }
+    if bad_count > bad_hashes.len() {
+        log::error!(
+            "DIAG_BAD_PAGE_HASH_TRUNCATED chunk_gpa={:#x} shown={} total_bad={}",
+            gpa,
+            bad_hashes.len(),
+            bad_count,
+        );
+    }
+
+    if let Some(idx) = first_bad_page_idx {
+        if diag_claim_full_page_dump() {
+            let offset = idx * DIAG_PAGE_SIZE;
+            let pre_pg = &pre[offset..offset + DIAG_PAGE_SIZE];
+            let post_pg = &post[offset..offset + DIAG_PAGE_SIZE];
+            diag_dump_full_page_diff(gpa + offset as u64, "A_vs_B", pre_pg, post_pg);
+        }
+    }
 }
 
-/// Called from `verify_imported_regions_hash` when the combined Phase-D hash
+/// Called from `verify_imported_regions_hash` when the combined Phase-C hash
 /// does not match the expected measured value. Reports:
 /// - Whether the running combined Phase-A hash matches expected. If it does,
 ///   the host supplied correct bytes and something in the shim corrupted them.
 ///   If it doesn't, the host loaded bad data.
-/// - Per-chunk Phase-D vs Phase-A comparison to identify which chunk(s) drifted
-///   between the shared read and the final verify.
-fn diag_report_phase_d(expected_combined: &[u8]) {
+/// - Per-chunk Phase-C vs Phase-A comparison to identify which chunk(s) drifted
+///   between the shared read and the final verify, plus a full 4 KB hex dump
+///   of the first page of the FIRST mismatched chunk (subject to the same
+///   one-shot latch as Phase B -- one sample is enough). Once the loader is
+///   updated to emit per-page expected hashes we can do per-page here too.
+fn diag_report_phase_c(expected_combined: &[u8]) {
     let combined_a = DIAG_RUNNING_A.0.borrow_mut().take().map(|h| {
         let out: [u8; 48] = h.finalize().into();
         out
@@ -259,33 +455,40 @@ fn diag_report_phase_d(expected_combined: &[u8]) {
         let data = unsafe { core::slice::from_raw_parts(c.gpa as *const u8, c.len as usize) };
         let mut h = Sha384::new();
         h.update(data);
-        let hash_d: [u8; 48] = h.finalize().into();
-        if hash_d != c.phase_a_hash {
+        let hash_c: [u8; 48] = h.finalize().into();
+        if hash_c != c.phase_a_hash {
             mismatches += 1;
             log::error!(
-                "DIAG_POST_ACCEPT_MISMATCH idx={} gpa={:#x} len={:#x} phase_a={} phase_d={}",
+                "DIAG_POST_ACCEPT_MISMATCH idx={} gpa={:#x} len={:#x} phase_a={} phase_c={}",
                 idx,
                 c.gpa,
                 c.len,
                 HexBytes(&c.phase_a_hash),
-                HexBytes(&hash_d),
+                HexBytes(&hash_c),
             );
             // We no longer have the Phase-A bytes (they lived in `ram_buffer`
-            // which has been reused). Log the head of the current (Phase D)
-            // content so we can eyeball whether the chunk was zeroed,
-            // substituted, or contains plausible data.
-            diag_dump_head("DIAG_POST_ACCEPT_HEAD", c.gpa, data);
+            // which has been reused). Full 4 KB dump of the first page of the
+            // first mismatched chunk lets us eyeball whether the chunk was
+            // zeroed, substituted with a different page, or has a subtle bit
+            // flip. One-shot: once we've dumped a page (here or in Phase B),
+            // subsequent mismatches only log the hash lines.
+            // TODO(item 5): once the loader emits per-page expected hashes,
+            // iterate the chunk at 4 KB granularity here and identify exactly
+            // which pages diverged (like diag_verify_phase_b does).
+            if data.len() >= DIAG_PAGE_SIZE && diag_claim_full_page_dump() {
+                diag_dump_full_page_single(c.gpa, "C", data);
+            }
         }
     }
     if mismatches == 0 {
         log::error!(
-            "DIAG_VERDICT all {} tracked chunks unchanged phase_a -> phase_d \
+            "DIAG_VERDICT all {} tracked chunks unchanged phase_a -> phase_c \
              (combined mismatch is likely a layout/order/hashing disagreement)",
             total,
         );
     } else {
         log::error!(
-            "DIAG_VERDICT {} of {} tracked chunks changed between phase_a and phase_d",
+            "DIAG_VERDICT {} of {} tracked chunks changed between phase_a and phase_c",
             mismatches,
             total,
         );
@@ -624,10 +827,11 @@ fn accept_pending_vtl2_memory(
                 }
 
                 // DIAG: re-hash the chunk from the freshly written private
-                // page (Phase C) and compare against the Phase-A bytes still
+                // page (Phase B) and compare against the Phase-A bytes still
                 // sitting in `ram_buffer`. A mismatch here means the accept/
-                // copy-back path corrupted this chunk; hex diffs of the first
-                // few differing cache lines are logged.
+                // copy-back path corrupted this chunk; per-page bitmap, RLE
+                // ranges, per-corrupt-page SHA-384s, and (once, globally) a
+                // full 4 KB dump of the first bad page are logged.
                 {
                     // SAFETY: Same memory just written above; identity mapped.
                     let post = unsafe {
@@ -636,7 +840,7 @@ fn accept_pending_vtl2_memory(
                             range.len() as usize,
                         )
                     };
-                    diag_verify_phase_c(range.start(), &ram_buffer[..post.len()], post);
+                    diag_verify_phase_b(range.start(), &ram_buffer[..post.len()], post);
                 }
             }
         }
@@ -678,11 +882,11 @@ pub fn verify_imported_regions_hash(shim_params: &ShimParams) {
     let expected = shim_params.imported_regions_hash();
     if final_hash.as_slice() != expected {
         log::error!(
-            "DIAG_COMBINED_PHASE_D combined_phase_d={} expected={}",
+            "DIAG_COMBINED_PHASE_C combined_phase_c={} expected={}",
             HexBytes(&final_hash),
             HexBytes(expected),
         );
-        diag_report_phase_d(expected);
+        diag_report_phase_c(expected);
         panic!("Imported regions hash mismatch");
     }
 }
