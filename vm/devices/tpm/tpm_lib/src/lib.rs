@@ -61,7 +61,7 @@ use zerocopy::IntoBytes;
 // would need to scale this value up in case it is not sufficient.
 const TPM_PAGE_SIZE: usize = 4096;
 const MAX_NV_BUFFER_SIZE: usize = MAX_DIGEST_BUFFER_SIZE;
-const MAX_NV_INDEX_SIZE: u16 = 8500;
+pub(crate) const MAX_NV_INDEX_SIZE: u16 = 8500;
 // Scale this with maximum attestation payload
 pub(crate) const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
 

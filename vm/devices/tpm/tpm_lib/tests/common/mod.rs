@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::test_tpm_backend as test_tpm;
-use crate::test_tpm_backend::MAX_NV_INDEX_SIZE;
 use crate::test_tpm_backend::TestTpmPlatform;
 use crate::test_tpm_backend::USE_LEGACY_PREPROVISIONED_STATE;
 use crate::tpm_lib::*;
@@ -44,10 +43,6 @@ impl TpmEngine for TestTpmPlatform {
         TestTpmPlatform::execute_command(self, command, response)
             .map(|_| ())
             .map_err(TpmEngineError::from_error)
-    }
-
-    fn max_nv_index_size(&self) -> u16 {
-        MAX_NV_INDEX_SIZE
     }
 }
 
