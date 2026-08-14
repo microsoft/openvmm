@@ -4,6 +4,7 @@
 use super::config::VmmPerfProfile;
 use super::host::platform_command;
 use anyhow::Context as _;
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::io::BufRead as _;
 use std::io::BufReader;
@@ -13,7 +14,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 pub(crate) struct VirtualClientCommandBuilder<'a> {
     runtime_dir: &'a Path,
@@ -201,9 +201,7 @@ fn log_process_output(
         while matches!(line.last(), Some(b'\n' | b'\r')) {
             line.pop();
         }
-        let log_file = log_file
-            .lock()
-            .map_err(|_| anyhow::anyhow!("VMM.Perf console log mutex was poisoned"))?;
+        let log_file = log_file.lock();
         log_file.write_entry(String::from_utf8_lossy(&line));
     }
 }

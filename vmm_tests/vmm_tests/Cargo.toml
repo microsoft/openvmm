@@ -57,6 +57,7 @@ kmsg.workspace = true
 mesh.workspace = true
 pal.workspace = true
 pal_async.workspace = true
+parking_lot.workspace = true
 unix_socket.workspace = true
 vmgs_resources.workspace = true
 

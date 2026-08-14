@@ -10681,6 +10681,7 @@ dependencies = [
  "openvmm_ttrpc_vmservice",
  "pal",
  "pal_async",
+ "parking_lot",
  "petri",
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
