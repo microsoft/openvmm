@@ -50,7 +50,7 @@ impl<'a> VmmPerfRunner<'a> {
 
     pub(crate) fn run(&self, profile: VmmPerfProfile) -> anyhow::Result<()> {
         self.runtime.validate_profile(profile)?;
-        let outcomes = selected_configs()?
+        let outcomes = selected_configs(self.host.capacity()?)?
             .into_iter()
             .map(|config| {
                 VirtualClientRun::run(VirtualClientRunRequest {

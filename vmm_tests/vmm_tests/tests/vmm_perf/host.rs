@@ -37,17 +37,18 @@ impl HostEnvironment {
         native_hypervisor_backend()
     }
 
+    pub(crate) fn capacity(&self) -> anyhow::Result<HostCapacity> {
+        Ok(HostCapacity {
+            logical_processors: self.logical_processors,
+            available_memory_bytes: available_memory_bytes()?,
+        })
+    }
+
     pub(crate) fn validate_parameters(
         &self,
         parameters: &BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
-        validate_requested_capacity(
-            parameters,
-            HostCapacity {
-                logical_processors: self.logical_processors,
-                available_memory_bytes: available_memory_bytes()?,
-            },
-        )
+        validate_requested_capacity(parameters, self.capacity()?)
     }
 
     pub(crate) fn validate_work_dir(&self, work_dir: &Path) -> anyhow::Result<()> {
