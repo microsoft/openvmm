@@ -565,16 +565,25 @@ impl VpciDevice {
     /// register in the expected off state after the device is unbound.
     ///
     /// This is not safety critical, this is for cleanup purposes only.
-    ///
-    /// TEMPORARY: neutered so that no path can upstream a command register
-    /// write that turns MMIO off, including the attestation failure path in
-    /// [`Self::tdisp_fail_attestation`]. Both the shadow and the host-side
-    /// device are left untouched so the guest and the host keep agreeing that
-    /// MMIO is on; the caller just logs and continues.
     fn clear_command_register(&self) {
-        tracing::warn!(
-            "clear_command_register: NOT clearing command register MMIO and bus-master bits; \
-             upstreaming a command register write that turns MMIO off is temporarily disabled"
+        let mut shadows = self.shadows.lock();
+        let mut cleared = shadows.command;
+        cleared.set_mmio_enabled(false);
+        cleared.set_bus_master(false);
+        shadows.command = cleared;
+        drop(shadows);
+
+        tracing::info!(
+            "clear_command_register: clearing command register MMIO and bus-master bits"
+        );
+
+        // Push the update through so the host observes MMIO and bus-master as
+        // disabled. Avoids re-entering vpci_relay logic.
+        let mut accessor = self.config_space.lock();
+        accessor.write(
+            self.dev.id,
+            HeaderType00::STATUS_COMMAND.0,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(u32::from(u16::from(cleared))),
         );
     }
 
@@ -591,9 +600,8 @@ impl VpciDevice {
     /// must be mapped for the guest before the unblock operations run.
     ///
     /// Returns `true` only if attestation and every BAR notification succeeded
-    /// completely. On `false` the caller must not treat the device as
-    /// activated, though the command register may still be on: see
-    /// [`Self::clear_command_register`].
+    /// completely. On `false` the command register is left off: either it was
+    /// never written, or [`Self::tdisp_fail_attestation`] cleared it.
     pub async fn tdisp_on_device_activate(&self, command_value: ByteEnabledDwordWrite) -> bool {
         use tdisp::TdispVpciAttestationInterface;
 
@@ -613,7 +621,7 @@ impl VpciDevice {
         if let Err(err) = attest_result {
             tracing::error!(
                 error = &*err as &dyn std::error::Error,
-                "tdisp_on_device_activate: attestation failed"
+                "tdisp_on_device_activate: attestation failed, leaving command register off"
             );
             self.tdisp_fail_attestation().await;
             return false;
@@ -729,9 +737,8 @@ impl VpciDevice {
             );
         }
 
-        // Leave the command register alone so the device is not walked back to
-        // the off state after a failed activation. See
-        // `clear_command_register`.
+        // Always clear the command register so the device is left in the
+        // expected off state after a failed activation.
         self.clear_command_register();
     }
 

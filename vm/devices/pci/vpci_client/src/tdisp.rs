@@ -16,8 +16,6 @@ use openhcl_tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
 use openhcl_tdisp::TdispCommandResponseGetTdiReport;
 use openhcl_tdisp::TdispCommandResponseModifyMmioRange;
 use openhcl_tdisp::TdispCommandResponseStartTdi;
-/// TEMPORARY: only used by the host Unbind send, which is disabled for now.
-#[expect(unused_imports)]
 use openhcl_tdisp::TdispCommandResponseUnbind;
 use openhcl_tdisp::TdispDeviceInterfaceInfo;
 use openhcl_tdisp::TdispGuestOperationErrorCode;
@@ -554,16 +552,20 @@ impl VpciClientTdispState {
                     "tdisp_unbind: failed to re-block MMIO range"
                 );
             } else {
-                // TEMPORARY: the host is not told about the re-block. Telling
-                // it would mean issuing a ModifyMmioRange(block) command, and
-                // every host-bound send in this function is disabled for now.
-                if self.isolation_type == IsolationType::Tdx {
-                    tracing::warn!(
+                // Tell the host only once the platform actually blocked the
+                // range, so the host's view never runs ahead of the platform's.
+                // Best-effort, like the block above.
+                if self.isolation_type == IsolationType::Tdx
+                    && let Err(e) = self
+                        .tdisp_block_mmio_range(bar_id, mmio.base_gpa, mmio.length_in_bytes.into())
+                        .await
+                {
+                    tracing::error!(
                         bar_id,
                         base_gpa = format_args!("{:#x}", mmio.base_gpa),
                         length_in_bytes = mmio.length_in_bytes,
-                        "tdisp_unbind: NOT sending ModifyMmioRange(block) to the host; \
-                         host unbind traffic is temporarily disabled"
+                        error = &*e as &dyn std::error::Error,
+                        "tdisp_unbind: failed to block MMIO range on the host"
                     );
                 }
 
@@ -592,18 +594,17 @@ impl VpciClientTdispState {
         self.mutable_state.guest_device_id = 0;
         self.mutable_state.intercepted_bars.clear();
 
-        // TEMPORARY: do not send the Unbind command to the host. Update the
-        // cached TDI state locally to what a successful unbind would have
-        // produced, so the rest of the client state machine (in particular the
-        // re-attest path in `attest`, which refuses to proceed unless the TDI
-        // is back in `Unlocked`) keeps working.
-        tracing::warn!(
-            ?reason,
-            vpci_device_id = self.vpci_device_id,
-            "tdisp_unbind: NOT sending Unbind to the host; host unbind is temporarily disabled"
-        );
-        self.mutable_state.update_tdi_state(TdispTdiState::Unlocked);
-        Ok(())
+        let res = self
+            .send_tdisp_command(openhcl_tdisp::new_unbind_command(
+                self.vpci_device_id,
+                reason,
+            ))
+            .await?;
+
+        match res.response::<TdispCommandResponseUnbind>() {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
+        }
     }
 
     /// Detects TDISP capabilities for the device. If the device supports TDISP
