@@ -4192,14 +4192,18 @@ async fn overload_vtl0_firmware(
         }
     }
     #[cfg(guest_arch = "aarch64")]
-    if offset != 0 {
-        // aarch64 has no entry-point offset; a non-zero value is a host
-        // protocol violation. Don't trust it, just surface it and ignore.
-        tracing::warn!(
-            CVM_ALLOWED,
-            offset,
-            "host returned a non-zero firmware entry-point offset on aarch64; ignoring"
-        );
+    {
+        // `measured_vtl0_info` is only read on x86_64, to rebase VTL0's RIP.
+        let _ = measured_vtl0_info;
+        if offset != 0 {
+            // aarch64 has no entry-point offset; a non-zero value is a host
+            // protocol violation. Don't trust it, just surface it and ignore.
+            tracing::warn!(
+                CVM_ALLOWED,
+                offset,
+                "host returned a non-zero firmware entry-point offset on aarch64; ignoring"
+            );
+        }
     }
 
     true
