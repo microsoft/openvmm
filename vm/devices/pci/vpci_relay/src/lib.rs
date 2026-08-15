@@ -670,13 +670,13 @@ impl PciConfigSpace for RelayedVpciDevice {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
-        // Only a command register write that flips the MMIO-enable bit needs
-        // async TDISP work. Everything else is a synchronous pass-through.
+        // Only a command register write can flip the MMIO-enable bit, so
+        // everything else is a synchronous pass-through.
         //
         // This matters beyond efficiency: `probe_bar_masks` sizes the BARs from
         // a synchronous context with no executor available, so it cannot honor
         // a deferred write.
-        if !self.tdisp_capable || HeaderType00(offset) != HeaderType00::STATUS_COMMAND {
+        if HeaderType00(offset) != HeaderType00::STATUS_COMMAND {
             self.device.write_cfg(offset, value);
             return IoResult::Ok;
         }
@@ -698,22 +698,34 @@ impl PciConfigSpace for RelayedVpciDevice {
         // `merge` honors the byte enables, so a partial write that leaves the
         // command register untouched yields `next` equal to `prev`.
         let next = Command::from((value.merge(current) & 0xffff) as u16).mmio_enabled();
+
+        // TEMPORARY: drop every command register write that would turn MMIO
+        // off, for TDISP capable devices and plain relayed devices alike, so
+        // no such write is ever upstreamed to the host. Once MMIO is on the
+        // TDI is bound and its ranges have been unblocked and accepted into
+        // the guest; the disable edge would unbind the device and re-block
+        // every range.
+        if prev && !next {
+            tracing::warn!(
+                ?offset,
+                ?value,
+                tdisp_capable = self.tdisp_capable,
+                "dropping a config space write that would disable MMIO; the command \
+                 register does not transition back to off once it is on"
+            );
+            return IoResult::Ok;
+        }
+
+        // Non-TDISP devices have no async TDISP work to do on either edge.
+        if !self.tdisp_capable {
+            self.device.write_cfg(offset, value);
+            return IoResult::Ok;
+        }
+
         match (prev, next) {
             (false, true) => {}
-            (true, false) => {
-                // Once MMIO is on the TDI is bound and its ranges have been
-                // unblocked and accepted into the guest. Drop the write rather
-                // than letting the guest walk that back: the disable edge would
-                // unbind the device and re-block every range.
-                tracing::warn!(
-                    ?offset,
-                    ?value,
-                    "dropping a config space write that would disable MMIO; the command \
-                     register does not transition back to off once it is on"
-                );
-                return IoResult::Ok;
-            }
-            // No MMIO edge, so there is no TDISP notification to dispatch.
+            // No MMIO enable edge, so there is no TDISP notification to
+            // dispatch. The disable edge was already dropped above.
             _ => {
                 self.device.write_cfg(offset, value);
                 return IoResult::Ok;
@@ -727,8 +739,9 @@ impl PciConfigSpace for RelayedVpciDevice {
             // once attestation succeeds, so the BARs are mapped before it
             // notifies TDISP of the MMIO ranges.
             if !device.tdisp_on_device_activate(value).await {
-                // The command register is left off if attestation failed.
-                tracing::warn!("TDISP attestation failed. Not enabling STATUS_COMMAND.");
+                // The command register is left as-is if activation failed; no
+                // path here upstreams a write that turns MMIO back off.
+                tracing::warn!("TDISP activation failed. Continuing without disabling MMIO.");
             }
         });
 
