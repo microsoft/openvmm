@@ -80,11 +80,87 @@ const DIAG_MAX_BAD_PAGE_HASHES: usize = 32;
 /// kernel + initrd (~80 MB), giving ~40 chunks; leave generous headroom.
 const DIAG_MAX_CHUNKS: usize = 256;
 
+/// Maximum number of individual 4 KB pages we can track for per-page
+/// expected-hash comparison. Sized with headroom over the current
+/// shared-page count observed in soaks (~20 K pages = 40 x 2 MB chunks).
+const DIAG_MAX_HASH_PAGES: usize = 32 * 1024;
+const DIAG_HASH_BITMAP_WORDS: usize = DIAG_MAX_HASH_PAGES / 64;
+
+/// Number of corrupt pages for which we save the full 4 KB contents so
+/// we can hex-dump them on final report.
+const DIAG_MAX_SAVED_BAD_PAGES: usize = 3;
+
 #[derive(Copy, Clone)]
 struct DiagChunkHash {
     gpa: u64,
     len: u32,
     phase_a_hash: [u8; 48],
+}
+
+/// One corrupt page's full 4 KB contents plus the shim vs loader hashes,
+/// captured during Phase A when we first noticed the mismatch.
+#[derive(Copy, Clone)]
+struct DiagSavedBadPage {
+    /// Global page index in the shim's iteration order.
+    page_idx: u32,
+    /// Guest physical address of the page.
+    gpa: u64,
+    /// SHA-384 the shim computed over the host-loaded bytes.
+    shim_hash: [u8; 48],
+    /// SHA-384 the loader recorded at IGVM build time.
+    expected_hash: [u8; 48],
+    /// Full 4 KB page contents (as the shim saw them at Phase A).
+    contents: [u8; DIAG_PAGE_SIZE],
+}
+
+const DIAG_EMPTY_SAVED_PAGE: DiagSavedBadPage = DiagSavedBadPage {
+    page_idx: 0,
+    gpa: 0,
+    shim_hash: [0; 48],
+    expected_hash: [0; 48],
+    contents: [0; DIAG_PAGE_SIZE],
+};
+
+/// Per-page expected-hash tracking state. Populated during Phase A capture
+/// as each 4 KB shared page is compared against the loader's per-page
+/// SHA-384 baked into the measured expected-page-hashes region.
+struct DiagPerPageState {
+    /// Cached slice from `ShimParams::expected_page_hashes()`. `None` if
+    /// the IGVM has no expected-page-hashes region (older loader) or the
+    /// region magic/version mismatched -- per-page compare is disabled.
+    expected: Option<&'static [loader_defs::paravisor::ExpectedPageHash]>,
+    /// Number of 4 KB pages Phase A has processed so far.
+    seen: u32,
+    /// Number of pages whose Phase A hash did not match `expected[i]`.
+    bad: u32,
+    /// True if the shim hashed more pages than the loader emitted hashes
+    /// for; per-page compare stops for the tail of the walk when this
+    /// flips true.
+    overflow: bool,
+    /// Bitmap of mismatched pages indexed by shim page index (bit i set
+    /// = page i differed from `expected[i]`). Capped at
+    /// `DIAG_MAX_HASH_PAGES` positions -- anything beyond is not
+    /// tracked in the bitmap (still counted in `bad`).
+    bitmap: [u64; DIAG_HASH_BITMAP_WORDS],
+    /// Number of entries populated in `saved`.
+    saved_count: u32,
+    /// Full 4 KB contents of the first `DIAG_MAX_SAVED_BAD_PAGES` bad
+    /// pages, so we can hex-dump them for byte-level inspection.
+    saved: [DiagSavedBadPage; DIAG_MAX_SAVED_BAD_PAGES],
+}
+
+impl DiagPerPageState {
+    const fn new_const() -> Self {
+        Self {
+            expected: None,
+            seen: 0,
+            bad: 0,
+            overflow: false,
+            bitmap: [0; DIAG_HASH_BITMAP_WORDS],
+            saved_count: 0,
+            saved: [DIAG_EMPTY_SAVED_PAGE; DIAG_MAX_SAVED_BAD_PAGES],
+        }
+    }
 }
 
 static DIAG_CHUNK_HASHES: SingleThreaded<RefCell<ArrayVec<DiagChunkHash, DIAG_MAX_CHUNKS>>> =
@@ -98,6 +174,11 @@ static DIAG_RUNNING_A: SingleThreaded<RefCell<Option<Sha384>>> = SingleThreaded(
 /// full dump. Keeps COM3 quiet even when many chunks are corrupted.
 static DIAG_FULL_PAGE_DUMPED: SingleThreaded<core::cell::Cell<bool>> =
     SingleThreaded(core::cell::Cell::new(false));
+
+/// Per-page expected-hash tracking (populated in `diag_record_phase_a` and
+/// reported in `diag_report_per_page_expected`).
+static DIAG_PER_PAGE: SingleThreaded<RefCell<DiagPerPageState>> =
+    SingleThreaded(RefCell::new(DiagPerPageState::new_const()));
 
 /// Returns true and latches on the first call; returns false thereafter.
 fn diag_claim_full_page_dump() -> bool {
@@ -196,7 +277,12 @@ impl core::fmt::Display for RleRanges<'_> {
 /// Record the Phase-A hash of a chunk that was just copied out of a shared
 /// page into `ram_buffer`. Also feeds the bytes into a running combined
 /// Phase-A hasher so it can be compared against `imported_regions_hash()`
-/// on final mismatch.
+/// on final mismatch. Additionally walks the chunk at 4 KB page
+/// granularity and compares each page's SHA-384 against the loader-emitted
+/// per-page expected hash (if `diag_init_expected_hashes` cached one) --
+/// mismatches are recorded in a bitmap plus a small buffer of the first N
+/// bad pages' full contents so `diag_report_per_page_expected` can dump
+/// them on final panic.
 fn diag_record_phase_a(gpa: u64, data: &[u8]) {
     {
         let mut running = DIAG_RUNNING_A.0.borrow_mut();
@@ -224,6 +310,56 @@ fn diag_record_phase_a(gpa: u64, data: &[u8]) {
             gpa,
             data.len(),
         );
+    }
+    drop(chunks);
+
+    // Per-page comparison against the loader-emitted expected hashes.
+    // Each 4 KB page in the chunk gets its own SHA-384; on mismatch we
+    // set a bit in the bitmap and, for the first N cases, snapshot the
+    // full 4 KB of host-loaded bytes so we can hex-dump them at report
+    // time. Skips silently if `diag_init_expected_hashes` did not cache
+    // a slice (older IGVM or region magic/version mismatch).
+    let mut state = DIAG_PER_PAGE.0.borrow_mut();
+    let expected_opt = state.expected;
+    if let Some(expected) = expected_opt {
+        for (page_off, page) in data.chunks(DIAG_PAGE_SIZE).enumerate() {
+            if page.len() < DIAG_PAGE_SIZE {
+                // Runt tail (shouldn't happen for page-aligned shared
+                // regions, but be defensive).
+                break;
+            }
+            let idx = state.seen as usize;
+            let page_gpa = gpa + (page_off * DIAG_PAGE_SIZE) as u64;
+
+            let mut ph = Sha384::new();
+            ph.update(page);
+            let shim_hash: [u8; 48] = ph.finalize().into();
+
+            if idx >= expected.len() {
+                state.overflow = true;
+            } else {
+                let expected_hash = expected[idx].sha384_hash;
+                if shim_hash != expected_hash {
+                    state.bad = state.bad.saturating_add(1);
+                    if idx < DIAG_MAX_HASH_PAGES {
+                        let word = idx / 64;
+                        let bit = idx % 64;
+                        state.bitmap[word] |= 1u64 << bit;
+                    }
+                    let slot_idx = state.saved_count as usize;
+                    if slot_idx < DIAG_MAX_SAVED_BAD_PAGES {
+                        let slot = &mut state.saved[slot_idx];
+                        slot.page_idx = idx as u32;
+                        slot.gpa = page_gpa;
+                        slot.shim_hash = shim_hash;
+                        slot.expected_hash = expected_hash;
+                        slot.contents.copy_from_slice(page);
+                        state.saved_count += 1;
+                    }
+                }
+            }
+            state.seen = state.seen.saturating_add(1);
+        }
     }
 }
 
@@ -273,6 +409,95 @@ fn diag_dump_full_page_single(page_gpa: u64, phase: &str, data: &[u8]) {
         );
     }
     log::error!("DIAG_FIRST_BAD_PAGE_END page_gpa={:#x}", page_gpa);
+}
+
+/// Emit a saved corrupt page (captured in Phase A) as hex, one log line
+/// per 64-byte cache line, along with the shim vs loader hashes.
+fn diag_dump_saved_page(saved: &DiagSavedBadPage) {
+    log::error!(
+        "DIAG_PAGE_HASH_BAD_BEGIN idx={} gpa={:#x} shim_hash={} expected_hash={} len={:#x}",
+        saved.page_idx,
+        saved.gpa,
+        HexBytes(&saved.shim_hash),
+        HexBytes(&saved.expected_hash),
+        DIAG_PAGE_SIZE,
+    );
+    for (line_idx, line) in saved.contents.chunks(64).enumerate() {
+        let offset = line_idx * 64;
+        log::error!(
+            "DIAG_PAGE_HASH_BAD_LINE idx={} gpa={:#x} offset={:#06x} bytes={}",
+            saved.page_idx,
+            saved.gpa,
+            offset,
+            HexBytes(line),
+        );
+    }
+    log::error!(
+        "DIAG_PAGE_HASH_BAD_END idx={} gpa={:#x}",
+        saved.page_idx,
+        saved.gpa,
+    );
+}
+
+/// Cache the loader-emitted per-page expected hashes so `diag_record_phase_a`
+/// can compare each 4 KB page against them. Must be called once, before the
+/// acceptance loop in `setup_vtl2_memory`. If the IGVM doesn't have the
+/// expected-page-hashes region (older loader) or the region magic/version
+/// mismatched, per-page compare is left disabled and `diag_record_phase_a`
+/// silently skips the per-page work.
+fn diag_init_expected_hashes(shim_params: &ShimParams) {
+    let expected = shim_params.expected_page_hashes();
+    if expected.is_empty() {
+        log::info!(
+            "DIAG_EXPECTED_HASHES_META loader_count=0 \
+             (region absent or magic/version mismatch; per-page compare disabled)"
+        );
+        return;
+    }
+    DIAG_PER_PAGE.0.borrow_mut().expected = Some(expected);
+    log::info!("DIAG_EXPECTED_HASHES_META loader_count={}", expected.len(),);
+}
+
+/// Emit the per-page expected-hash comparison summary, corrupt-page bitmap,
+/// RLE ranges, and full 4 KB dumps of the first `DIAG_MAX_SAVED_BAD_PAGES`
+/// corrupt pages. Called from `diag_report_phase_c` (i.e. after the
+/// combined hash mismatch has been detected and just before panic).
+fn diag_report_per_page_expected() {
+    let state = DIAG_PER_PAGE.0.borrow();
+    let loader_count = state.expected.map(|s| s.len()).unwrap_or(0);
+    log::error!(
+        "DIAG_PAGE_HASH_SUMMARY shim_seen={} bad={} loader_count={} overflow={}",
+        state.seen,
+        state.bad,
+        loader_count,
+        state.overflow,
+    );
+    if state.expected.is_none() {
+        // Per-page compare was disabled; nothing more to report.
+        return;
+    }
+    let bitmap_total = (state.seen as usize).min(DIAG_MAX_HASH_PAGES);
+    log::error!(
+        "DIAG_PAGE_HASH_BITMAP total_pages={} bad={} bitmap={}",
+        bitmap_total,
+        state.bad,
+        BitmapHex {
+            bitmap: &state.bitmap,
+            total_pages: bitmap_total,
+        },
+    );
+    log::error!(
+        "DIAG_PAGE_HASH_RANGES total_pages={} bad={} ranges={}",
+        bitmap_total,
+        state.bad,
+        RleRanges {
+            bitmap: &state.bitmap,
+            total_pages: bitmap_total,
+        },
+    );
+    for i in 0..(state.saved_count as usize) {
+        diag_dump_saved_page(&state.saved[i]);
+    }
 }
 
 /// Immediately after the shared -> private transition and copy-back, compare
@@ -493,6 +718,12 @@ fn diag_report_phase_c(expected_combined: &[u8]) {
             total,
         );
     }
+
+    // Per-page comparison against the loader-emitted expected hashes.
+    // Emits the shim-vs-loader page count, the corrupt-page bitmap and
+    // RLE ranges, and full 4 KB dumps of the first
+    // `DIAG_MAX_SAVED_BAD_PAGES` corrupt pages.
+    diag_report_per_page_expected();
 }
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
@@ -511,6 +742,12 @@ pub fn setup_vtl2_memory(
     if let IsolationType::None = shim_params.isolation_type {
         return;
     }
+
+    // DIAG: cache the loader-emitted per-page expected hashes (from the
+    // measured expected-page-hashes region) so that as Phase A captures
+    // each 4 KB shared page we can compare it against the loader's
+    // baseline. Silently no-ops on older IGVMs without the region.
+    diag_init_expected_hashes(shim_params);
 
     if let IsolationType::Vbs = shim_params.isolation_type {
         // Enable VTL protection so that vtl 2 protections can be applied. All other config

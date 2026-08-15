@@ -311,7 +311,6 @@ impl ShimParams {
     /// callers should treat that as "no per-page baseline available" and
     /// fall back to the combined-hash check.
     #[cfg(target_arch = "x86_64")]
-    #[expect(dead_code)] // consumed in a follow-up that updates verify_imported_regions_hash
     pub fn expected_page_hashes(&self) -> &'static [loader_defs::paravisor::ExpectedPageHash] {
         use loader_defs::paravisor::{
             EXPECTED_PAGE_HASH_MAX_COUNT, EXPECTED_PAGE_HASHES_MAGIC, EXPECTED_PAGE_HASHES_VERSION,
