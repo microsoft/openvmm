@@ -245,13 +245,17 @@ impl PackedQueueCompleteWork {
         // notification, so advance first and keep the start.
         let start = self.next_index;
         let start_wrap = self.wrapped_bit;
-        // Wraps at most once (see `advance`); compare-and-subtract avoids a modulo.
-        let raw = start + context.descriptor_count;
-        self.next_index = if raw >= self.queue_size {
+        // The un-wrapped end of the range, computed in u32 because the u16 sum has no
+        // headroom: `start + descriptor_count` reaches `2 * queue_size - 1`, which is
+        // exactly `u16::MAX` at the largest ring the spec allows.
+        let end = u32::from(start) + u32::from(context.descriptor_count);
+        // Wraps at most once (see `advance`); compare-and-subtract avoids a modulo. Both
+        // arms are reduced into the ring, so they fit u16.
+        self.next_index = if end >= u32::from(self.queue_size) {
             self.wrapped_bit = !self.wrapped_bit;
-            raw - self.queue_size
+            (end - u32::from(self.queue_size)) as u16
         } else {
-            raw
+            end as u16
         };
         let send_signal = match driver_event.flags() {
             EventSuppressionFlags::Disabled => false,
@@ -261,7 +265,7 @@ impl PackedQueueCompleteWork {
                     driver_event.wrap(),
                     start,
                     start_wrap,
-                    raw,
+                    end,
                     self.queue_size,
                 )
             }
@@ -297,20 +301,20 @@ fn armed_position_passed(
     event_wrap: bool,
     start: u16,
     start_wrap: bool,
-    end: u16,
+    end: u32,
     queue_size: u16,
 ) -> bool {
     // `end` is deliberately NOT reduced modulo the ring: it is the un-wrapped end of the range,
     // so a completion that crosses the lap boundary stays comparable with a lifted armed
-    // position. Widen to u32 first - `event_offset + queue_size` overflows u16 near the top of
-    // a large ring.
+    // position. That is why it is a u32, along with the armed position below, which is lifted
+    // by a ring and would overflow u16 near the top of a large one.
     let armed = u32::from(event_offset)
         + if event_wrap == start_wrap {
             0
         } else {
             u32::from(queue_size)
         };
-    (u32::from(start)..u32::from(end)).contains(&armed)
+    (u32::from(start)..end).contains(&armed)
 }
 
 #[cfg(test)]
