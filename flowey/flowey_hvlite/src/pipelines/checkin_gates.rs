@@ -1531,19 +1531,19 @@ impl IntoPipeline for CheckinGatesCli {
             format!("({filter}) & !binary(cca)")
         };
         let exclude_vmm_perf = |filter: String| format!("({filter}) & !binary(vmm_perf)");
-        let enable_pr_vmm_perf = matches!(
+        let enable_ci_vmm_perf = matches!(
             (backend_hint, config),
-            (PipelineBackendHint::Github, PipelineConfig::Pr)
+            (PipelineBackendHint::Github, PipelineConfig::Ci)
         );
-        let pr_vmm_perf_filter = |filter: String| {
-            if enable_pr_vmm_perf {
+        let vmm_perf_filter = |filter: String| {
+            if enable_ci_vmm_perf {
                 filter
             } else {
                 exclude_vmm_perf(filter)
             }
         };
-        let pr_vmm_perf_artifacts = |mut artifacts: Vec<KnownTestArtifacts>| {
-            if enable_pr_vmm_perf {
+        let vmm_perf_artifacts = |mut artifacts: Vec<KnownTestArtifacts>| {
+            if enable_ci_vmm_perf {
                 artifacts.push(VmmPerfRuntimeLinuxX64);
             }
             artifacts
@@ -1654,10 +1654,10 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
                 incubator_profile: None,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                nextest_filter_expr: pr_vmm_perf_filter(format!(
+                nextest_filter_expr: vmm_perf_filter(format!(
                     "{standard_filter} & !test(pcat_x64)"
                 )),
-                test_artifacts: pr_vmm_perf_artifacts(standard_x64_test_artifacts.clone()),
+                test_artifacts: vmm_perf_artifacts(standard_x64_test_artifacts.clone()),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
             },
@@ -1672,10 +1672,10 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
                 incubator_profile: None,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                nextest_filter_expr: pr_vmm_perf_filter(format!(
+                nextest_filter_expr: vmm_perf_filter(format!(
                     "{standard_filter} & !test(pcat_x64)"
                 )),
-                test_artifacts: pr_vmm_perf_artifacts(standard_x64_test_artifacts.clone()),
+                test_artifacts: vmm_perf_artifacts(standard_x64_test_artifacts.clone()),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 hugetlb_2mb_overcommit_pages: None,
             },

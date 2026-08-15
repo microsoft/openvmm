@@ -106,39 +106,51 @@ jobs:
           run_id: ${{ github.event.workflow_run.id }}
           run_attempt: ${{ github.event.workflow_run.run_attempt }}
 
-      - name: Upload VMM.Perf metrics to Azure Blob Storage
+      - name: Upload VMM.Perf results to Azure Blob Storage
+        continue-on-error: true
         run: |
           set -uo pipefail
 
-          mapfile -d '' metric_files < <(
+          mapfile -d '' result_files < <(
             find results \
               -type f \
               -path '*vmm_perf__*/*' \
-              \( -name 'metrics.csv' -o -name 'vc.metrics' -o -name 'vc_*.metrics' \) \
+              \( \
+                -name 'metrics.csv' \
+                -o -name 'vc.metrics' \
+                -o -name 'vc_*.metrics' \
+                -o -name 'vc.traces' \
+                -o \( -path '*/openvmm-logs/*' -name '*.log' \) \
+              \) \
               -print0
           )
 
-          if [ "${#metric_files[@]}" -eq 0 ]; then
-            echo "No VMM.Perf metrics found; skipping dedicated metrics publication."
+          if [ "${#result_files[@]}" -eq 0 ]; then
+            echo "No VMM.Perf results found; skipping dedicated results publication."
             exit 0
           fi
 
           prefix="$VMMPERF_METRICS_PREFIX/${run_id}/attempt-${run_attempt}"
           status=0
-          for metric_file in "${metric_files[@]}"; do
-            relative_path="${metric_file#results/}"
+          for result_file in "${result_files[@]}"; do
+            relative_path="${result_file#results/}"
             destination="$prefix/$relative_path"
-            echo "Uploading $metric_file -> $destination"
-            if ! az storage blob upload \
+            echo "Uploading $result_file -> $destination"
+            if upload_output=$(az storage blob upload \
               --account-name "$VMMPERF_STORAGE_ACCOUNT" \
               --container-name "$VMMPERF_STORAGE_CONTAINER" \
               --name "$destination" \
-              --file "$metric_file" \
+              --file "$result_file" \
               --auth-mode login \
               --overwrite false \
               --only-show-errors \
-              --output none; then
-              echo "VMM.Perf metrics upload failed for $metric_file" >&2
+              --output none 2>&1); then
+              :
+            elif grep -q 'BlobAlreadyExists' <<< "$upload_output"; then
+              echo "Already uploaded; skipping $destination"
+            else
+              echo "$upload_output" >&2
+              echo "VMM.Perf results upload failed for $result_file" >&2
               status=1
             fi
           done
