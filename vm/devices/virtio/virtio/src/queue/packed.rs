@@ -241,21 +241,126 @@ impl PackedQueueCompleteWork {
             .driver_event
             .read_plain(0)
             .map_err(QueueError::Memory)?;
-        let send_signal = match driver_event.flags() {
-            EventSuppressionFlags::Disabled => false,
-            EventSuppressionFlags::DescriptorIndex if self.use_event_index => {
-                driver_event.offset() == self.next_index && driver_event.wrap() == self.wrapped_bit
-            }
-            _ => true,
-        };
+        // Both ends of the range this completion covers are needed to decide the
+        // notification, so advance first and keep the start.
+        let start = self.next_index;
+        let start_wrap = self.wrapped_bit;
         // Wraps at most once (see `advance`); compare-and-subtract avoids a modulo.
-        let raw = self.next_index + context.descriptor_count;
+        let raw = start + context.descriptor_count;
         self.next_index = if raw >= self.queue_size {
             self.wrapped_bit = !self.wrapped_bit;
             raw - self.queue_size
         } else {
             raw
         };
+        let send_signal = match driver_event.flags() {
+            EventSuppressionFlags::Disabled => false,
+            EventSuppressionFlags::DescriptorIndex if self.use_event_index => {
+                armed_position_passed(
+                    driver_event.offset(),
+                    driver_event.wrap(),
+                    start,
+                    start_wrap,
+                    raw,
+                    self.queue_size,
+                )
+            }
+            _ => true,
+        };
         Ok(send_signal)
+    }
+}
+
+/// Whether a completion covering the descriptors `[start, end)` reaches or passes the ring
+/// position the driver armed at.
+///
+/// The driver publishes the position it wants to be woken AT OR PAST (VIRTIO 1.3 section
+/// 2.8.10, "Event Suppression Structure Format"), so this is CONTAINMENT of that position in
+/// the completed range, never equality with either endpoint. Equality is right only while every
+/// completion advances by exactly one descriptor - which is why it survived so long: at
+/// `descriptor_count == 1` the two agree on every input. A chained completion (virtio-net
+/// receive, a virtio-blk header/data/status chain) steps OVER the armed position without
+/// landing on it, and the driver is then never woken for a request the device has already
+/// finished. It waits forever while the device reports itself idle.
+///
+/// Linux makes that the common case rather than a corner: `virtqueue_enable_cb_delayed_packed`
+/// arms at `last_used + 3/4 of the in-flight count`, deliberately far ahead of the next
+/// descriptor.
+///
+/// Positions are compared in a lap-extended space anchored at `start`: `end` is
+/// `start + descriptor_count` and may run past `queue_size` when the completion wraps, and an
+/// armed position whose wrap counter belongs to the next lap is lifted by one ring. The
+/// equivalent modular arithmetic over `u16` is harder to read at the wrap boundary, which is
+/// where this is easiest to get wrong.
+fn armed_position_passed(
+    event_offset: u16,
+    event_wrap: bool,
+    start: u16,
+    start_wrap: bool,
+    end: u16,
+    queue_size: u16,
+) -> bool {
+    // `end` is deliberately NOT reduced modulo the ring: it is the un-wrapped end of the range,
+    // so a completion that crosses the lap boundary stays comparable with a lifted armed
+    // position. Widen to u32 first - `event_offset + queue_size` overflows u16 near the top of
+    // a large ring.
+    let armed = u32::from(event_offset)
+        + if event_wrap == start_wrap {
+            0
+        } else {
+            u32::from(queue_size)
+        };
+    (u32::from(start)..u32::from(end)).contains(&armed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::armed_position_passed;
+
+    /// A small ring, so a completion can be placed right at the lap boundary.
+    const RING: u16 = 8;
+
+    /// The case the integration test drives end to end, pinned here at the boundary itself:
+    /// a chain completes 5 and 6 in one step, and a driver armed at 6 must be woken even
+    /// though the used position never equals 6 - it goes from 5 straight to 7.
+    #[test]
+    fn a_chain_that_steps_over_the_armed_position_notifies() {
+        assert!(armed_position_passed(6, true, 5, true, 7, RING));
+        // The landing case still holds: armed exactly where the completion starts.
+        assert!(armed_position_passed(5, true, 5, true, 6, RING));
+    }
+
+    /// A completion that crosses the ring boundary must still wake a driver armed just past
+    /// it, which is only possible if the armed position is lifted by one ring: the driver
+    /// publishes it with the NEXT lap's wrap counter, so raw offset 0 sits AHEAD of start 7,
+    /// not six descriptors behind it. Getting this wrong is invisible until a queue happens
+    /// to wrap mid-chain, and then it hangs the same way.
+    #[test]
+    fn a_completion_crossing_the_ring_boundary_notifies_for_the_next_lap() {
+        // start 7 (wrap true), a 2-descriptor chain -> un-wrapped end 9, covering 7 and 8(=0').
+        assert!(armed_position_passed(0, false, 7, true, 9, RING));
+        // With the armed position one short of being covered, there is nothing to announce
+        // yet - the boundary has to hold from both sides.
+        assert!(!armed_position_passed(1, false, 7, true, 9, RING));
+    }
+
+    /// An armed position the device has ALREADY passed in this lap earns no notification:
+    /// it was announced when it was covered, and re-announcing it would be a spurious
+    /// interrupt on every later completion. This is the branch a naive "armed <= end" test
+    /// would get wrong, and no chained test would catch it.
+    #[test]
+    fn an_armed_position_already_behind_the_device_does_not_notify() {
+        assert!(!armed_position_passed(2, true, 5, true, 6, RING));
+        // Nor when the completion is a long chain that ends well past it.
+        assert!(!armed_position_passed(0, true, 4, true, 8, RING));
+    }
+
+    /// The boundary is half-open at BOTH ends, which is what keeps a wake from firing one
+    /// completion early: the range covers the descriptors completed, not the position the
+    /// device will write next.
+    #[test]
+    fn the_position_the_device_will_write_next_is_not_yet_covered() {
+        assert!(!armed_position_passed(6, true, 5, true, 6, RING));
+        assert!(!armed_position_passed(0, false, 7, true, 8, RING));
     }
 }
