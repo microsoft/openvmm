@@ -578,7 +578,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
         Box::pin(async move {
-            let result = async {
             if length_in_bytes == 0 {
                 anyhow::bail!("length_in_bytes must be greater than 0");
             }
@@ -597,8 +596,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                  target_vtl={target_vtl:?}, vtom={:#x}",
                 self.vtom
             );
-
-            std::thread::sleep(std::time::Duration::from_secs(15));
 
             // The host command is addressed by VPCI slot, which `host` supplies.
             let res = host
@@ -628,8 +625,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                  device_id={device_id:#x}, range_id={range_id}, base_gpa={base_gpa:#x}, \
                  length_in_bytes={length_in_bytes:#x}"
             );
-
-            std::thread::sleep(std::time::Duration::from_secs(15));
 
             let function_id = Self::function_id(device_id);
             // The leaf addresses the range by its position in the interface
@@ -667,8 +662,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                  mmio_range_index={mmio_range_index}, page_count={page_count}, \
                  base_offset_pages={base_offset_pages}, first_pfn={base_pfn:#x}"
             );
-
-            std::thread::sleep(std::time::Duration::from_secs(15));
 
             for i in 0..page_count {
                 let page_gpa = base_gpa + (u64::from(i) << hvdef::HV_PAGE_SHIFT);
@@ -726,8 +719,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 page_count - already_accepted
             );
 
-            std::thread::sleep(std::time::Duration::from_secs(15));
-
             // Grant the range to L2 VM1, which is VTL0, so the guest can
             // actually drive the device. Done page by page, after the pages
             // have been accepted above.
@@ -762,22 +753,13 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 // promote fails here by name instead of as an EPT violation
                 // TD exit inside TDG.MEM.PAGE.ATTR.WR.
                 Self::check_mmio_page_accepted(
-                    &mshv_vtl,
-                    device_id,
-                    range_id,
-                    page_gpa,
-                    i,
-                    page_count,
+                    &mshv_vtl, device_id, range_id, page_gpa, i, page_count,
                 )
                 .inspect_err(|e| {
                     tracing::error!(
                         "TDG.MEM.PAGE.ATTR.RD preflight failed, not issuing \
                          TDG.MEM.PAGE.ATTR.WR: {e:#}"
                     );
-
-                    // Hold here so the failure can be inspected before the
-                    // error propagates and the activation is torn down.
-                    std::thread::sleep(std::time::Duration::from_secs(15));
                 })?;
 
                 if let Err(code) = mshv_vtl.tdx_set_page_attributes(range, attributes, mask) {
@@ -787,10 +769,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                          range_id={range_id}, page_gpa={page_gpa:#x} \
                          (page {i} of {page_count}), status={status}"
                     );
-
-                    // Hold here so the failure can be inspected before the
-                    // error propagates and the activation is torn down.
-                    std::thread::sleep(std::time::Duration::from_secs(15));
 
                     anyhow::bail!(
                         "TDG.MEM.PAGE.ATTR.WR failed for requester id {device_id:#x} range \
@@ -804,22 +782,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                  device_id={device_id:#x}, range_id={range_id}, page_count={page_count}"
             );
 
-            std::thread::sleep(std::time::Duration::from_secs(15));
-
             Ok(())
-            }
-            .await;
-
-            // Hold after every unblock, success or failure, so the resulting
-            // state can be inspected before the caller moves on.
-            tracing::info!(
-                "TDX Connect tdisp_unblock_mmio: sleeping 20 seconds after the unblock: \
-                 device_id={device_id:#x}, range_id={range_id}, succeeded={}",
-                result.is_ok()
-            );
-            std::thread::sleep(std::time::Duration::from_secs(20));
-
-            result
         })
     }
 
