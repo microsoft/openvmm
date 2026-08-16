@@ -278,18 +278,22 @@ impl PackedQueueCompleteWork {
 /// Whether a completion covering the descriptors `[start, end)` reaches or passes the ring
 /// position the driver armed at.
 ///
-/// The driver publishes the position it wants to be woken AT OR PAST (VIRTIO 1.3 section
-/// 2.8.10, "Event Suppression Structure Format"), so this is CONTAINMENT of that position in
-/// the completed range, never equality with either endpoint. Equality is right only while every
-/// completion advances by exactly one descriptor - which is why it survived so long: at
+/// The driver publishes that position in the Driver Event Suppression structure (VIRTIO 1.3
+/// section 2.8.14, "Event Suppression Structure Format"). The spec's literal rule for it is a
+/// position match: "Event will only trigger when this descriptor is made available/used
+/// respectively" (section 2.8.10, "Driver and Device Event Suppression"). This test is a
+/// deliberate superset of that wording, CONTAINMENT of the armed position in the completed
+/// range, never equality with either endpoint. Equality is right only while every completion
+/// advances by exactly one descriptor - which is why it survived so long: at
 /// `descriptor_count == 1` the two agree on every input. A chained completion (virtio-net
 /// receive, a virtio-blk header/data/status chain) steps OVER the armed position without
 /// landing on it, and the driver is then never woken for a request the device has already
 /// finished. It waits forever while the device reports itself idle.
 ///
-/// Linux makes that the common case rather than a corner: `virtqueue_enable_cb_delayed_packed`
-/// arms at `last_used + 3/4 of the in-flight count`, deliberately far ahead of the next
-/// descriptor.
+/// The superset is grounded in the driver this device serves, not in spec prose. Linux makes the
+/// gap the common case rather than a corner: `virtqueue_enable_cb_delayed_packed` arms at
+/// `last_used + 3/4 of the in-flight count`, a position no single completion is obliged to land
+/// on.
 ///
 /// Positions are compared in a lap-extended space anchored at `start`: `end` is
 /// `start + descriptor_count` and may run past `queue_size` when the completion wraps, and an
