@@ -2693,25 +2693,14 @@ async fn verify_split_queue_indirect(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_queue_indirect_inner(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)).await;
 }
-/// A CHAINED completion must wake a driver armed INSIDE the chain, not only one armed at the
-/// exact descriptor the completion starts on.
-///
-/// The regression this pins: the packed ring decided the notification with
-/// `driver_event.offset() == self.next_index`, an equality against the START of the completed
-/// range. Every existing test completed one descriptor at a time, where the range is a single
-/// position and equality and containment agree on every input - so nothing here could fail
-/// while the device silently dropped the wakeup for every multi-descriptor completion, which is
-/// the production shape for virtio-net receive and for a virtio-blk header/data/status chain.
-///
-/// The guest arms at descriptor 1 and the device completes a 2-descriptor chain covering 0 and
-/// 1 in one step, moving the used position from 0 straight to 2. The armed position is passed
-/// but never landed on, so the pre-fix code sends nothing and the driver waits forever on a
-/// request the device has already finished.
-async fn verify_queue_chained_completion_wakes_a_driver_armed_inside_the_chain(
-    mut guest: VirtioTestGuest,
-) {
+
+/// A packed chain must notify when the driver event lies inside the chain.
+#[async_test]
+async fn verify_packed_queue_chained_completion_wakes_for_interior_event(driver: DefaultDriver) {
     const CHAIN_LEN: u16 = 2;
 
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true);
     let (tx, mut rx) = mesh::mpsc_channel();
     let event = Event::new();
     let mut queues = guest.create_direct_queues(|i| {
@@ -2730,7 +2719,7 @@ async fn verify_queue_chained_completion_wakes_a_driver_armed_inside_the_chain(
         }
     });
 
-    // Arm INSIDE the chain the device is about to complete: position 1 of the 0..2 range.
+    // Arm at position 1 of the chain covering positions 0 and 1.
     guest.enable_interrupt(0, Some(1));
     guest.add_linked_to_avail_queue(0, CHAIN_LEN);
     event.signal();
@@ -2739,17 +2728,6 @@ async fn verify_queue_chained_completion_wakes_a_driver_armed_inside_the_chain(
     let (_, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(len, 123);
     queues[0].stop().await;
-}
-
-#[async_test]
-async fn verify_packed_queue_chained_completion_wakes_a_driver_armed_inside_the_chain(
-    driver: DefaultDriver,
-) {
-    let test_mem = VirtioTestMemoryAccess::new();
-    verify_queue_chained_completion_wakes_a_driver_armed_inside_the_chain(
-        VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true),
-    )
-    .await;
 }
 
 #[async_test]
