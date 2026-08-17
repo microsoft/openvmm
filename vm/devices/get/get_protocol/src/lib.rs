@@ -55,11 +55,6 @@ open_enum! {
         RS5 = make_version(1, 0),
         IRON = make_version(3, 0),
         NICKEL_REV2 = make_version(4, 2),
-        /// Adds the `LOAD_FIRMWARE` host request, allowing the guest/paravisor to
-        /// ask the host to (re)load a firmware image into VTL0 guest RAM at
-        /// runtime (e.g. to overload the cold-boot firmware on hibernation
-        /// resume).
-        NICKEL_REV3 = make_version(4, 3),
     }
 }
 
@@ -1906,8 +1901,9 @@ impl ResetRamGpaRangeResponse {
 }
 
 /// Requests that the host load a firmware image into VTL0 guest RAM (memory
-/// only; the guest/paravisor remains responsible for VP state). Introduced in
-/// [`ProtocolVersion::NICKEL_REV3`].
+/// only; the guest/paravisor remains responsible for VP state). Host support is
+/// advertised via the `load_firmware_supported` bit in
+/// [`dps_json::ManagementVtlFeatures`].
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct LoadFirmwareRequest {

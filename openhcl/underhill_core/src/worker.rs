@@ -3717,20 +3717,41 @@ async fn new_underhill_vm(
             Some(token @ hibernate::Token::Hibernated { .. })
                 if token != hibernate::Token::CURRENT =>
             {
-                tracing::info!(
-                    CVM_ALLOWED,
-                    resume = %token,
-                    current = %hibernate::Token::CURRENT,
-                    "hibernation resume under a different firmware version; requesting firmware overload"
-                );
-                // If the overload succeeds VTL0 now runs the hibernated
-                // version, so record it; otherwise fall back to the current one.
-                if overload_vtl0_firmware(&get_client, u64::from(token), &mut measured_vtl0_info)
-                    .await
+                if !dps
+                    .general
+                    .management_vtl_features
+                    .load_firmware_supported()
                 {
-                    Some(token)
-                } else {
+                    // The host must advertise LoadFirmware support; without it
+                    // we can't overload, so resume on the current firmware.
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        resume = %token,
+                        "host does not support firmware overload (LoadFirmware); \
+                         resuming with the current firmware version despite a \
+                         hibernation token mismatch"
+                    );
                     Some(hibernate::Token::CURRENT)
+                } else {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        resume = %token,
+                        current = %hibernate::Token::CURRENT,
+                        "hibernation resume under a different firmware version; requesting firmware overload"
+                    );
+                    // If the overload succeeds VTL0 now runs the hibernated
+                    // version, so record it; otherwise fall back to the current one.
+                    if overload_vtl0_firmware(
+                        &get_client,
+                        u64::from(token),
+                        &mut measured_vtl0_info,
+                    )
+                    .await
+                    {
+                        Some(token)
+                    } else {
+                        Some(hibernate::Token::CURRENT)
+                    }
                 }
             }
             // Not hibernated, same version, or corrupt: use the current version.
@@ -4125,26 +4146,14 @@ async fn wait_for_flush_logs(control_send: &Arc<Mutex<Option<mesh::Sender<Contro
 /// version). On success, updates the measured UEFI context so VTL0 starts at the
 /// overloaded image's entry point and returns `true`. Best-effort: on failure
 /// the cold-boot image is left in place and `false` is returned.
+///
+/// The caller must only invoke this when the host has advertised the
+/// `load_firmware_supported` bit in `ManagementVtlFeatures`.
 async fn overload_vtl0_firmware(
     get_client: &GuestEmulationTransportClient,
     token: u64,
     measured_vtl0_info: &mut Option<MeasuredVtl0Info>,
 ) -> bool {
-    // The LoadFirmware host request requires NICKEL_REV3. On older hosts we
-    // can't overload the firmware, so skip the request; warn, since the caller
-    // only reaches here when the resume token doesn't match the current version.
-    if get_client.version() < get_protocol::ProtocolVersion::NICKEL_REV3 {
-        tracing::warn!(
-            CVM_ALLOWED,
-            token,
-            version = ?get_client.version(),
-            "host does not support firmware overload (requires NICKEL_REV3); \
-             resuming with the current firmware version despite a hibernation \
-             token mismatch"
-        );
-        return false;
-    }
-
     let offset = match get_client.load_firmware(token).await {
         Ok(offset) => offset,
         Err(err) => {

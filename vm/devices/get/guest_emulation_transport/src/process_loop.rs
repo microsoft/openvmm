@@ -300,8 +300,6 @@ pub(crate) mod msg {
         HostTime(Rpc<(), Protocol<get_protocol::TimeResponse>>),
         /// Ask the host to (re)load a firmware image into VTL0 guest RAM,
         /// keyed by an opaque firmware token.
-        ///
-        /// Introduced in [`get_protocol::ProtocolVersion::NICKEL_REV3`].
         LoadFirmware(Rpc<u64, Protocol<get_protocol::LoadFirmwareResponse>>),
         /// Send an attestation request.
         IgvmAttest(Rpc<Box<IgvmAttestRequestData>, Result<Vec<u8>, crate::error::IgvmAttestError>>),
@@ -778,12 +776,7 @@ impl<T: RingMem> ProcessLoop<T> {
         // self.run() isn't running yet to take requests, so we must send requests
         // manually.
 
-        // Negotiate the protocol, preferring the newest version and falling
-        // back to older ones the host may support.
-        for protocol in [
-            get_protocol::ProtocolVersion::NICKEL_REV3,
-            get_protocol::ProtocolVersion::NICKEL_REV2,
-        ] {
+        for protocol in [get_protocol::ProtocolVersion::NICKEL_REV2] {
             let version_request = get_protocol::VersionRequest::new(protocol);
 
             self.pipe

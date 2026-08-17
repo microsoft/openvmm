@@ -761,17 +761,12 @@ impl GuestEmulationTransportClient {
     /// firmware entry point, which the caller programs into VTL0's RIP (RIP =
     /// `image_base + offset`).
     ///
-    /// Requires the host to have negotiated
-    /// [`get_protocol::ProtocolVersion::NICKEL_REV3`].
+    /// Only call this when the host has advertised support via the
+    /// `load_firmware_supported` bit in `ManagementVtlFeatures`.
     pub async fn load_firmware(
         &self,
         firmware_token: u64,
     ) -> Result<u64, crate::error::LoadFirmwareError> {
-        // The LoadFirmware host request was introduced in NICKEL_REV3; don't
-        // send it to hosts that negotiated an older protocol version.
-        if self.version < get_protocol::ProtocolVersion::NICKEL_REV3 {
-            return Err(crate::error::LoadFirmwareError::Unsupported(self.version));
-        }
         let response = self
             .control
             .call(msg::Msg::LoadFirmware, firmware_token)
