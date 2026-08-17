@@ -17,24 +17,13 @@ impl<T: X64RegisterState> X64RegisterIo<T> {
     /// Returns a register accessor backed by `t`.
     ///
     /// Uses the 64-bit calling convention if `is_64bit`, otherwise the 32-bit
-    /// one.
-    pub fn new(t: T, is_64bit: bool) -> Self {
+    /// one. If `advance_ip` is false, the transport is responsible for resuming
+    /// execution after the hypercall.
+    pub fn new(t: T, is_64bit: bool, advance_ip: bool) -> Self {
         Self {
             inner: t,
             is_64bit,
-            advance_ip: true,
-        }
-    }
-
-    /// Returns a register accessor that does not advance the instruction pointer.
-    ///
-    /// This is for hypercall transports where returning from the transport,
-    /// rather than this dispatcher, resumes execution after the hypercall.
-    pub fn new_without_ip_advance(t: T, is_64bit: bool) -> Self {
-        Self {
-            inner: t,
-            is_64bit,
-            advance_ip: false,
+            advance_ip,
         }
     }
 
@@ -285,7 +274,7 @@ mod tests {
 
     #[test]
     fn no_ip_advance_does_not_access_rip() {
-        let mut io = X64RegisterIo::new_without_ip_advance(NoRipState { gp: [0; 9] }, true);
+        let mut io = X64RegisterIo::new(NoRipState { gp: [0; 9] }, true, false);
 
         io.advance_ip();
         io.retry(0x1234);

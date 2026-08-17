@@ -978,18 +978,23 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
 
     fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let unmap_start = addr >> HV_PAGE_SHIFT;
-        let unmap_end = (addr + size) >> HV_PAGE_SHIFT;
+        let unmap_end = addr
+            .checked_add(size)
+            .ok_or_else(|| anyhow::anyhow!("unmap range overflows the guest address space"))?
+            >> HV_PAGE_SHIFT;
         let mut state = self.memory.lock();
-        anyhow::ensure!(
-            state.ranges.iter().flatten().all(|range| {
-                let region_start = range.region.guest_pfn;
-                let region_end = region_start + (range.region.size >> HV_PAGE_SHIFT);
+        for range in state.ranges.iter().flatten() {
+            let region_start = range.region.guest_pfn;
+            let region_end = region_start
+                .checked_add(range.region.size >> HV_PAGE_SHIFT)
+                .ok_or_else(|| anyhow::anyhow!("tracked memory region overflows GPA space"))?;
+            anyhow::ensure!(
                 (unmap_start <= region_start && region_end <= unmap_end)
                     || region_end <= unmap_start
-                    || unmap_end <= region_start
-            }),
-            "unmap range partially overlaps a tracked memory region"
-        );
+                    || unmap_end <= region_start,
+                "unmap range partially overlaps a tracked memory region"
+            );
+        }
 
         for entry in &mut state.ranges {
             let Some(range) = entry.as_ref() else {
@@ -997,7 +1002,9 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             };
             let region = &range.region;
             let region_start = region.guest_pfn;
-            let region_end = region.guest_pfn + (region.size >> HV_PAGE_SHIFT);
+            let region_end = region_start
+                .checked_add(region.size >> HV_PAGE_SHIFT)
+                .ok_or_else(|| anyhow::anyhow!("tracked memory region overflows GPA space"))?;
             if unmap_start <= region_start && region_end <= unmap_end {
                 // Region is fully contained in the unmap range.
                 let _span = tracing::info_span!(

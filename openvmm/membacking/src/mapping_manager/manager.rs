@@ -131,6 +131,12 @@ pub struct MappingManagerClient {
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
 
 impl MappingManagerClient {
+    /// Installs or removes the host-access callback for the process-local
+    /// cached mapper.
+    ///
+    /// The callback grants userspace permission to access already-backed guest
+    /// pages after an eager-mapper fault. Installing it does not itself change
+    /// guest visibility or acquire access to any pages.
     pub async fn set_host_access(
         &self,
         host_access: Option<Arc<dyn virt::PartitionMemoryMap>>,

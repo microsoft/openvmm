@@ -240,6 +240,17 @@ fn snp_vmgexit_offloads(disable_cpuid: bool) -> mshv_bindings::hv_sev_vmgexit_of
     offloads
 }
 
+fn hv1_reference_tsc_page_supported(
+    hv1_enabled: bool,
+    isolation: virt::IsolationType,
+    advertised: bool,
+) -> bool {
+    // TODO: Reinvestigate advertising the reference TSC page for MSHV SNP
+    // when a newer guest kernel with fixed shared reference-TSC-page handling
+    // is available.
+    hv1_enabled && isolation != virt::IsolationType::Snp && advertised
+}
+
 impl MshvProtoPartition<'_> {
     /// Build partition capabilities from partition properties instead of
     /// CPUID.
@@ -291,10 +302,15 @@ impl MshvProtoPartition<'_> {
             vm_topology::processor::x86::ApicMode::X2ApicEnabled
         );
 
+        let hv1 = self.config.hv_config.is_some();
         Ok(X86PartitionCapabilities {
             vendor,
-            hv1: self.config.hv_config.is_some(),
-            hv1_reference_tsc_page: self.config.hv_config.is_some(),
+            hv1,
+            hv1_reference_tsc_page: hv1_reference_tsc_page_supported(
+                hv1,
+                self.config.isolation,
+                true,
+            ),
             xsave: XsaveCapabilities {
                 features: xsave_states,
                 supervisor_features: 0,
@@ -426,7 +442,11 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 }
             };
             caps.hv1 = self.config.hv_config.is_some();
-            caps.hv1_reference_tsc_page = self.config.hv_config.is_some();
+            caps.hv1_reference_tsc_page = hv1_reference_tsc_page_supported(
+                caps.hv1,
+                self.config.isolation,
+                caps.hv1_reference_tsc_page,
+            );
             caps.xsaves_state_bv_broken = true;
             caps.can_freeze_time = true;
             caps
@@ -927,11 +947,7 @@ impl MshvProcessor<'_> {
             } else {
                 MshvHypercallHandler::DISPATCHER.dispatch(
                     &self.partition.gm,
-                    if isolated {
-                        X64RegisterIo::new_without_ip_advance(&mut handler, is_64bit)
-                    } else {
-                        X64RegisterIo::new(&mut handler, is_64bit)
-                    },
+                    X64RegisterIo::new(&mut handler, is_64bit, !isolated),
                 );
             }
             (handler.modified_gp, handler.modified_xmm)
@@ -1513,6 +1529,30 @@ mod tests {
                 enabled.__bindgen_anon_1.nae_rdmsr()
             );
         }
+    }
+
+    #[test]
+    fn snp_does_not_report_reference_tsc_page_support() {
+        assert!(!hv1_reference_tsc_page_supported(
+            true,
+            virt::IsolationType::Snp,
+            true
+        ));
+        assert!(hv1_reference_tsc_page_supported(
+            true,
+            virt::IsolationType::None,
+            true
+        ));
+        assert!(!hv1_reference_tsc_page_supported(
+            false,
+            virt::IsolationType::None,
+            true
+        ));
+        assert!(!hv1_reference_tsc_page_supported(
+            true,
+            virt::IsolationType::None,
+            false
+        ));
     }
 
     #[test]

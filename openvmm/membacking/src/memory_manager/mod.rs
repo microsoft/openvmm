@@ -710,6 +710,10 @@ pub struct GuestMemoryClient {
 
 impl GuestMemoryClient {
     /// Installs a handler used to acquire host access after a guest-memory fault.
+    ///
+    /// Some hypervisors require the host to request access after the guest
+    /// marks a page shared. Host access is that permission for userspace to
+    /// touch the shared page.
     pub async fn set_host_access(
         &self,
         host_access: Option<Arc<dyn virt::PartitionMemoryMap>>,
