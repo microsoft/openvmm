@@ -86,6 +86,7 @@ impl IntoPipeline for BuildDocsCli {
             &mut pipeline,
             backend_hint,
             local_run_args,
+            crate::pipelines_shared::cfg_common_params::DenyWarnings::Enabled,
         )?;
 
         pipeline.inject_all_jobs_with(move |job| {

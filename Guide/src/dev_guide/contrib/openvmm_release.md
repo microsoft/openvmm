@@ -39,6 +39,14 @@ OpenVMM repository's root `Cargo.toml`. Nothing is stamped into the
 source archive, and the tree is never rewritten, so the version a
 release publishes is the version that was already reviewed and merged.
 
+```admonish note
+The published binaries are built from a Git checkout, so `openvmm -V`
+reports `<VERSION>+g<COMMIT>` rather than plain `<VERSION>`. A locally
+rebuilt checkout of the release commit reports the same identity. See the
+[CLI reference](../../reference/openvmm/management/cli.md) for the full
+`--version` behavior.
+```
+
 ## Selecting the version
 
 Open an ordinary pull request that sets that field to the version being

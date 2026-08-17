@@ -70,6 +70,7 @@ impl IntoPipeline for OpenvmmReleaseCli {
             &mut pipeline,
             backend_hint,
             None,
+            crate::pipelines_shared::cfg_common_params::DenyWarnings::Disabled,
         )?;
 
         pipeline.inject_all_jobs_with(move |job| {
