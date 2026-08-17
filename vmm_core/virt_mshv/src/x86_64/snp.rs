@@ -519,7 +519,7 @@ impl virt::AcceptInitialPages for MshvPartition {
 
 impl MshvPartitionInner {
     fn snp_launch_initial_pages(&self, pages: &[virt::InitialPageImport]) -> Result<(), Error> {
-        let Some(snp) = self.snp.as_ref() else {
+        let Some(snp) = self.isolation.snp() else {
             return Err(ErrorInner::IsolationNotSupported.into());
         };
         {
@@ -1016,8 +1016,8 @@ impl MshvProcessor<'_> {
                 let register = ((info.ghcb_msr >> 30) & 3) as usize;
                 Self::ensure_cpuid_intercept_expected(
                     self.partition
-                        .snp
-                        .as_ref()
+                        .isolation
+                        .snp()
                         .is_some_and(|snp| snp.cpuid_offloads_enabled),
                     "MSR",
                     function,
@@ -1145,8 +1145,8 @@ impl MshvProcessor<'_> {
             SVM_EXITCODE_CPUID => {
                 let cpuid_offloads_enabled = self
                     .partition
-                    .snp
-                    .as_ref()
+                    .isolation
+                    .snp()
                     .is_some_and(|snp| snp.cpuid_offloads_enabled);
                 let ghcb = self
                     .runner
@@ -1371,7 +1371,7 @@ impl MshvProcessor<'_> {
                 }
             }
         };
-        let Some(snp) = self.partition.snp.as_ref() else {
+        let Some(snp) = self.partition.isolation.snp() else {
             return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
         };
         let launch_sev_features = *snp.sev_features.lock();

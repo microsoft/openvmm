@@ -5987,6 +5987,7 @@ dependencies = [
  "build_rs_guest_arch",
  "fs-err",
  "hypervisor_resources",
+ "test_with_tracing",
  "virt_mshv",
  "virt_whp",
  "vm_resource",

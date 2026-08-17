@@ -9,6 +9,7 @@ mod vp_state;
 use crate::Error;
 use crate::ErrorInner;
 use crate::LinuxMshv;
+use crate::MshvIsolationState;
 use crate::MshvPartition;
 use crate::MshvPartitionInner;
 use crate::MshvProcessor;
@@ -93,6 +94,7 @@ impl virt::Hypervisor for LinuxMshv {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
+        validate_snp_cpuid_offload_config(config.isolation, self.snp_disable_cpuid_offload)?;
         let snp = match config.isolation {
             virt::IsolationType::None => false,
             virt::IsolationType::Snp => true,
@@ -134,7 +136,7 @@ impl virt::Hypervisor for LinuxMshv {
 
         if snp {
             let snp_policy = mshv_bindings::snp::get_default_snp_guest_policy();
-            let vmgexit_offloads = snp_vmgexit_offloads(config.snp_disable_cpuid_offload);
+            let vmgexit_offloads = snp_vmgexit_offloads(self.snp_disable_cpuid_offload);
             // SAFETY: These generated C unions always contain a valid u64 view.
             let (snp_policy, vmgexit_offloads) =
                 unsafe { (snp_policy.as_uint64, vmgexit_offloads.as_uint64) };
@@ -164,7 +166,8 @@ impl virt::Hypervisor for LinuxMshv {
         )
         .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
-        MshvProtoPartition::new(config, vmfd)
+        Ok(MshvProtoPartition::new(config, vmfd)?
+            .with_snp_cpuid_offload_disabled(self.snp_disable_cpuid_offload))
     }
 }
 
@@ -249,6 +252,19 @@ fn hv1_reference_tsc_page_supported(
     // when a newer guest kernel with fixed shared reference-TSC-page handling
     // is available.
     hv1_enabled && isolation != virt::IsolationType::Snp && advertised
+}
+
+fn validate_snp_cpuid_offload_config(
+    isolation: virt::IsolationType,
+    disabled: bool,
+) -> Result<(), Error> {
+    if disabled && isolation != virt::IsolationType::Snp {
+        return Err(ErrorInner::InvalidConfiguration(
+            "snp_disable_cpuid_offload requires SNP isolation",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 impl MshvProtoPartition<'_> {
@@ -458,6 +474,14 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             .map(|vp| vp.apic_id)
             .collect();
 
+        let isolation = match self.config.isolation {
+            virt::IsolationType::None => MshvIsolationState::None,
+            virt::IsolationType::Snp => {
+                MshvIsolationState::Snp(SnpPartitionState::new(self.snp_disable_cpuid_offload))
+            }
+            _ => return Err(ErrorInner::IsolationNotSupported.into()),
+        };
+        let time_frozen = isolation.is_isolated();
         let inner = Arc::new(MshvPartitionInner {
             vmfd: self.vmfd,
             bsp_vcpufd: self.bsp,
@@ -472,11 +496,9 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             caps,
             synic_ports: Default::default(),
             software_devices: ApicSoftwareDevices::new(apic_id_map),
-            snp: (self.config.isolation == virt::IsolationType::Snp)
-                .then(|| SnpPartitionState::new(self.config.snp_disable_cpuid_offload)),
-            isolation: self.config.isolation,
+            isolation,
             // SNP partition creation set TimeFreeze=1 before this object was built.
-            time_frozen: Mutex::new(self.config.isolation.is_isolated()),
+            time_frozen: Mutex::new(time_frozen),
         });
 
         let partition = MshvPartition {
@@ -501,10 +523,14 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 }
 
 impl virt::Partition for MshvPartition {
+    fn initial_regs_are_imported(&self) -> bool {
+        self.inner.isolation.initial_regs_are_imported()
+    }
+
     fn supports_initial_page_acceptance(
         &self,
     ) -> Option<&dyn virt::AcceptInitialPages<Error = Error>> {
-        self.inner.snp.is_some().then_some(self)
+        self.inner.isolation.snp().is_some().then_some(self)
     }
 
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
@@ -684,7 +710,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
             self.vcpufd.as_ref().unwrap()
         };
 
-        let reg_page_ptr = if self.partition.snp.is_some() {
+        let reg_page_ptr = if self.partition.isolation.snp().is_some() {
             None
         } else {
             Some(
@@ -699,7 +725,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
         let runner = MshvVpRunner {
             vcpufd,
             reg_page: reg_page_ptr,
-            ghcb_page: if self.partition.snp.is_some() {
+            ghcb_page: if self.partition.isolation.snp().is_some() {
                 if self.snp.is_none() {
                     self.snp = Some(SnpVpState::new(vcpufd)?);
                 }
@@ -717,7 +743,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
             deliverability_notifications: HvDeliverabilityNotificationsRegister::new(),
         };
 
-        if this.partition.snp.is_none() {
+        if this.partition.isolation.snp().is_none() {
             // Set the APIC state.
             let apic_base =
                 virt::vp::Apic::at_reset(&this.partition.caps, &this.inner.vp_info).apic_base;
@@ -774,7 +800,7 @@ impl MshvProcessor<'_> {
         exit: &HvMessage,
         dev: &impl CpuIo,
     ) -> Result<(), VpHaltReason> {
-        if self.partition.snp.is_some() {
+        if self.partition.isolation.snp().is_some() {
             return self.handle_snp_exit(exit, dev).await;
         }
 
@@ -859,7 +885,7 @@ impl MshvProcessor<'_> {
         _devices: &impl CpuIo,
     ) -> Result<(), VpHaltReason> {
         let info = message.as_message::<hvdef::HvX64HypercallInterceptMessage>();
-        let isolated = self.partition.snp.is_some();
+        let isolated = self.partition.isolation.snp().is_some();
         // SEV-SNP guests use the 64-bit direct VMMCALL ABI. MSHV redacts the
         // execution-state bits in the isolated hypercall intercept.
         let is_64bit = isolated
@@ -1279,7 +1305,7 @@ impl hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
         target_vtl: Vtl,
         vp_context: &hvdef::hypercall::InitialVpContextX64,
     ) -> hvdef::HvResult<()> {
-        if self.partition.snp.is_none() || partition_id != hvdef::HV_PARTITION_ID_SELF {
+        if self.partition.isolation.snp().is_none() || partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err(hvdef::HvError::InvalidPartitionId);
         }
         if target_vtl != Vtl::Vtl0 {
@@ -1528,6 +1554,18 @@ mod tests {
                 enabled.__bindgen_anon_1.nae_rdmsr()
             );
         }
+    }
+
+    #[test]
+    fn disabling_snp_cpuid_offloads_requires_snp_isolation() {
+        validate_snp_cpuid_offload_config(virt::IsolationType::Snp, true).unwrap();
+        validate_snp_cpuid_offload_config(virt::IsolationType::None, false).unwrap();
+        assert_eq!(
+            validate_snp_cpuid_offload_config(virt::IsolationType::None, true)
+                .unwrap_err()
+                .to_string(),
+            "invalid MSHV configuration: snp_disable_cpuid_offload requires SNP isolation"
+        );
     }
 
     #[test]

@@ -344,10 +344,6 @@ Examples:
     #[clap(long)]
     pub snp_restricted_injection: bool,
 
-    /// disable MSHV handling of SNP GHCB CPUID requests
-    #[clap(long)]
-    pub snp_disable_cpuid_offload: bool,
-
     /// the hybrid vsock listener path
     #[clap(long, value_name = "PATH", alias = "vsock-path")]
     pub vmbus_vsock_path: Option<String>,
@@ -1408,18 +1404,6 @@ impl Options {
             && (self.uefi || self.pcat || self.igvm.is_some() || self.restore_snapshot.is_some())
         {
             anyhow::bail!("--snp-restricted-injection requires Linux direct boot");
-        }
-        if self.snp_disable_cpuid_offload && !matches!(self.isolation, Some(IsolationCli::Snp)) {
-            anyhow::bail!("--snp-disable-cpuid-offload requires --isolation snp");
-        }
-        if self.snp_disable_cpuid_offload
-            && self
-                .hypervisor
-                .as_deref()
-                .and_then(|value| value.split(':').next())
-                != Some("mshv")
-        {
-            anyhow::bail!("--snp-disable-cpuid-offload requires --hypervisor mshv");
         }
         if matches!(self.isolation, Some(IsolationCli::Snp)) {
             if self.uefi {
@@ -5066,38 +5050,6 @@ mod tests {
             opt.validate_isolation_options().unwrap_err().to_string(),
             "--snp-restricted-injection requires Linux direct boot"
         );
-    }
-
-    #[test]
-    fn test_disable_cpuid_offload_requires_mshv_snp() {
-        let opt = Options::try_parse_from(["openvmm", "--snp-disable-cpuid-offload"]).unwrap();
-        assert_eq!(
-            opt.validate_isolation_options().unwrap_err().to_string(),
-            "--snp-disable-cpuid-offload requires --isolation snp"
-        );
-
-        let opt = Options::try_parse_from([
-            "openvmm",
-            "--isolation",
-            "snp",
-            "--snp-disable-cpuid-offload",
-        ])
-        .unwrap();
-        assert_eq!(
-            opt.validate_isolation_options().unwrap_err().to_string(),
-            "--snp-disable-cpuid-offload requires --hypervisor mshv"
-        );
-
-        let opt = Options::try_parse_from([
-            "openvmm",
-            "--hypervisor",
-            "mshv",
-            "--isolation",
-            "snp",
-            "--snp-disable-cpuid-offload",
-        ])
-        .unwrap();
-        opt.validate_isolation_options().unwrap();
     }
 
     #[test]

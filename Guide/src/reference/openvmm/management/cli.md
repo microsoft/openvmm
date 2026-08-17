@@ -92,9 +92,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
   loader-generated SNP VMSA. This bring-up option has no default and requires
   `--hypervisor mshv --isolation snp` with Linux direct boot. Do not enable it
   for the KVM SNP repro.
-* `--snp-disable-cpuid-offload`: Disable MSHV handling of SNP GHCB CPUID
-  requests so they are forwarded to OpenVMM. The default is offloading enabled.
-  This diagnostic option requires `--hypervisor mshv --isolation snp`.
+* `--hypervisor mshv:snp_disable_cpuid_offload=true`: Disable MSHV handling of
+  SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
+  offloading enabled. This diagnostic parameter is meaningful only with
+  `--isolation snp`.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and

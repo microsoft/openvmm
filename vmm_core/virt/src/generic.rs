@@ -227,8 +227,6 @@ pub struct ProtoPartitionConfig<'a> {
     pub vmtime: &'a VmTimeSource,
     /// Isolation type for this partition.
     pub isolation: IsolationType,
-    /// Disable hypervisor handling of SNP GHCB CPUID requests.
-    pub snp_disable_cpuid_offload: bool,
     /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
     /// its own hypervisor.
     ///
@@ -394,6 +392,12 @@ pub struct HvConfig {
 
 /// Methods for manipulating a VM partition.
 pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
+    /// Returns whether initial VP state is supplied through an imported
+    /// isolation context instead of register writes.
+    fn initial_regs_are_imported(&self) -> bool {
+        false
+    }
+
     /// Returns a trait object for initial page imports during the initial start
     /// flow.
     fn supports_initial_page_acceptance(
