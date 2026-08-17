@@ -479,7 +479,7 @@ impl<'a> Decoder<'a> {
         } else if hdr.prog_size == 0 {
             bail!("prog size is 0");
         } else if hdr.prog_size
-            > ((SUPPORTED_INPUT_SIZE as u64) - (core::mem::size_of::<wire::ProgramHeader>() as u64))
+            > ((SUPPORTED_INPUT_SIZE as u64) - (size_of::<wire::ProgramHeader>() as u64))
         {
             bail!("input size too large! InputSz:{:#?}", hdr.prog_size);
         }
@@ -806,21 +806,21 @@ fn copyout<M: SafeMemoryMap + ?Sized>(mem: &mut M, addr: u64, size: u64, res: &m
     *res = u64::from_le_bytes(buf);
 }
 
-// Takes a syz_in buffer containing raw syzkaller data from TKO, parses
-// individual test cases from it into the provided addr buffer, and calls the
-// provided exec function with a single test case; then continues from the
-// beginning until all provided testcases have completed.
-//
-// It is expected that addr_size is minimum 0x1000000 bytes (or 4mb).
-// syz_exec_mem must be at least EXEC_INPUT_REQ_SIZE in size.
-// syz_input_buffer must be at least SUPPORTED_INPUT_SIZE in size.
+/// Takes a syz_in buffer containing raw syzkaller data from TKO, parses
+/// individual test cases from it into the provided addr buffer, and calls the
+/// provided exec function with a single test case; then continues from the
+/// beginning until all provided testcases have completed.
+///
+/// It is expected that addr_size is minimum 0x1000000 bytes (or 4mb).
+/// syz_exec_mem must be at least [`EXEC_INPUT_REQ_SIZE`] in size.
+/// syz_input_buffer must be at least [`SUPPORTED_INPUT_SIZE`] in size.
 pub fn exec_testcases_safe<M: SafeMemoryMap, F>(
     syz_exec_mem: M,
     syz_input_buffer: &mut [u8],
     exec: F,
 ) -> Result<TestcaseResults>
 where
-    F: Fn(&DecodedProgram, InputCase) -> InputResult + Send + Sync,
+    F: Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + Send + Sync,
 {
     let decoded = DecodedProgram::new(syz_exec_mem, syz_input_buffer, exec)?;
     decoded.exec_instrs()?;
