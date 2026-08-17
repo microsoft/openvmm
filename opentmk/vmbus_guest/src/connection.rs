@@ -92,7 +92,8 @@ use crate::protocol::VersionResponse3;
 use crate::synic::VMBUS_SINT;
 use alloc::vec::Vec;
 use core::mem::size_of;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use spin::Mutex;
 use zerocopy::IntoBytes;
 
@@ -279,7 +280,7 @@ pub trait MessagePump {
     ///
     /// `ctx` is passed through so the pump can issue further
     /// hypercalls (notably `HvCallSetVpRegisters` to write EOM).
-    fn poll_until<C: HypercallTrait>(
+    fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         handle: &CompletionHandle,
@@ -309,7 +310,7 @@ pub fn negotiate_version<C, P>(
     ladder: &[Version],
 ) -> Result<ConnectionState>
 where
-    C: HypercallTrait,
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: MessagePump,
 {
     let advertised_flags = FeatureFlags::supported();
@@ -380,7 +381,7 @@ pub fn request_offers_with<C, P>(
     connection_id: u32,
 ) -> Result<()>
 where
-    C: HypercallTrait,
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: MessagePump,
 {
     let handle = table.register(CompletionKey::AllOffersDelivered);
@@ -412,7 +413,9 @@ pub const CLIENT_ID: Guid = Guid {
 /// Requires [`crate::synic::init_synic`] to have already programmed
 /// the SIMP page. Uses [`crate::message::completion_table`] and a
 /// [`crate::interrupt::SimpPump`] internally.
-pub fn initiate<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
+pub fn initiate<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+) -> Result<()> {
     let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
     let table = crate::message::completion_table();
     let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
@@ -429,7 +432,9 @@ pub fn initiate<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
 
 /// UEFI entry point: post `RequestOffers`, drain until
 /// `AllOffersDelivered`, and collect offers.
-pub fn request_offers<C: HypercallTrait>(ctx: &mut C) -> Result<Vec<OfferChannel>> {
+pub fn request_offers<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+) -> Result<Vec<OfferChannel>> {
     let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
     let state = connection().clone().ok_or(Error::VersionMismatch)?;
     let table = crate::message::completion_table();
@@ -456,7 +461,7 @@ pub fn unload_with<C, P>(
     sink: &mut OfferCollector,
 ) -> Result<()>
 where
-    C: HypercallTrait,
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: MessagePump,
 {
     let state = connection().clone().ok_or(Error::VersionMismatch)?;
@@ -472,7 +477,9 @@ where
 }
 
 /// UEFI entry point for `Unload`.
-pub fn unload<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
+pub fn unload<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+) -> Result<()> {
     let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
     let table = crate::message::completion_table();
     let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);

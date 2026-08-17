@@ -8,7 +8,7 @@
 //! and never causes a panic; every failing path returns [`Error`] instead.
 
 use crate::protocol::MessageType;
-use opentmk::tmkdefs::TmkError;
+use opentmk_core::tmkdefs::TmkError;
 
 /// Convenience alias.
 pub type Result<T> = core::result::Result<T, Error>;

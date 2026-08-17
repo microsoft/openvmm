@@ -12,7 +12,7 @@
 //!    `masked = false`.
 //! 4. Enable `SCONTROL`.
 //!
-//! Register writes go through [`HypercallTrait`]; we never touch
+//! Register writes go through [`HypercallPlatformTrait`]; we never touch
 //! the raw hypercall page ourselves. Page allocation is UEFI-specific
 //! and gated behind `cfg(target_os = "uefi")`.
 //!
@@ -32,7 +32,7 @@
 //! * [`init_synic_with_pages`] — program the registers over a caller-
 //!   supplied [`SynicPages`]. Pair with `preallocate_synic_pages`.
 //! * [`program_synic_registers`] — the raw four-register write, used
-//!   by unit tests against a mock [`HypercallTrait`].
+//!   by unit tests against a mock [`HypercallPlatformTrait`].
 //!
 //! ```ignore
 //! use vmbus_guest::synic;
@@ -60,7 +60,8 @@ use hvdef::HvRegisterValue;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HvSynicSint;
 use hvdef::hypercall::HvInputVtl;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use spin::Mutex;
 
 /// Standard SINT index reserved for VMBus (matches
@@ -108,14 +109,14 @@ pub fn synic_pages() -> Option<SynicPages> {
 ///
 /// This is the platform-agnostic half of [`init_synic`] — it doesn't
 /// allocate anything and can be unit-tested against a mock
-/// [`HypercallTrait`] implementation.
+/// [`HypercallPlatformTrait`] implementation.
 ///
 /// * `simp_gpa` must be page-aligned; only the top 52 bits go into
 ///   the register.
 /// * `siefp_gpa` same.
 /// * `vector` is the vector the hypervisor injects when SINT2 fires;
 ///   use [`VMBUS_INTERRUPT_VECTOR`].
-pub fn program_synic_registers<C: HypercallTrait>(
+pub fn program_synic_registers<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     simp_gpa: u64,
     siefp_gpa: u64,
@@ -209,7 +210,9 @@ pub fn program_synic_registers<C: HypercallTrait>(
 /// * Under any other target: returns [`Error::NotImplemented`] because
 ///   there's no way to obtain guest-physical memory. Host tests
 ///   exercise [`program_synic_registers`] instead.
-pub fn init_synic<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
+pub fn init_synic<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+) -> Result<()> {
     log::debug!("init_synic: allocating pages");
     let pages = allocate_synic_pages()?;
     init_synic_with_pages(ctx, pages)
@@ -218,7 +221,10 @@ pub fn init_synic<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
 /// Program the SynIC using pre-allocated pages. Useful when the
 /// caller wants to allocate before `exit_boot_services` and defer
 /// the hypercalls until after.
-pub fn init_synic_with_pages<C: HypercallTrait>(ctx: &mut C, pages: SynicPages) -> Result<()> {
+pub fn init_synic_with_pages<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+    pages: SynicPages,
+) -> Result<()> {
     log::info!(
         "init_synic_with_pages: simp={:#x} siefp={:#x}",
         pages.simp_gpa,
@@ -257,7 +263,7 @@ fn allocate_synic_pages() -> Result<SynicPages> {
     use core::alloc::Layout;
 
     let layout = Layout::from_size_align(hvdef::HV_PAGE_SIZE_USIZE, hvdef::HV_PAGE_SIZE_USIZE)
-        .map_err(|_| Error::Hypercall(opentmk::tmkdefs::TmkError::AllocationFailed))?;
+        .map_err(|_| Error::Hypercall(opentmk_core::tmkdefs::TmkError::AllocationFailed))?;
 
     // SAFETY: `layout` is non-zero-size and validly aligned; the
     // returned pointers must be checked against null. We zero via
@@ -267,14 +273,14 @@ fn allocate_synic_pages() -> Result<SynicPages> {
     let simp_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
     if simp_ptr.is_null() {
         return Err(Error::Hypercall(
-            opentmk::tmkdefs::TmkError::AllocationFailed,
+            opentmk_core::tmkdefs::TmkError::AllocationFailed,
         ));
     }
     #[expect(unsafe_code, reason = "raw page allocation for hypervisor pages")]
     let siefp_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
     if siefp_ptr.is_null() {
         return Err(Error::Hypercall(
-            opentmk::tmkdefs::TmkError::AllocationFailed,
+            opentmk_core::tmkdefs::TmkError::AllocationFailed,
         ));
     }
 

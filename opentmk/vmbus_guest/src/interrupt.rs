@@ -76,7 +76,8 @@ use hvdef::HV_MESSAGE_SIZE;
 use hvdef::HvMessageType;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 
 /// End-of-message register index used to ack a pending message.
 ///
@@ -170,7 +171,9 @@ pub fn clear_slot(slot: &mut [u8]) {
 /// Called when the previous message had `message_pending` set — the
 /// hypervisor is waiting for us to acknowledge before delivering the
 /// next message.
-pub fn write_eom<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
+pub fn write_eom<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+) -> Result<()> {
     set_vp_register(
         ctx,
         HvRegisterName(HV_REGISTER_EOM),
@@ -186,7 +189,10 @@ pub fn write_eom<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
 ///
 /// Returns `true` if a message was processed, `false` if the slot was
 /// empty.
-pub fn drain_once<C: HypercallTrait, S: MessageSink + ?Sized>(
+pub fn drain_once<
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
+    S: MessageSink + ?Sized,
+>(
     ctx: &mut C,
     slot: &mut [u8],
     table: &CompletionTable,
@@ -285,7 +291,7 @@ impl SimpPump {
 
 #[cfg(target_os = "uefi")]
 impl crate::connection::MessagePump for SimpPump {
-    fn poll_until<C: HypercallTrait>(
+    fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         handle: &CompletionHandle,
@@ -329,7 +335,7 @@ impl crate::connection::MessagePump for SimpPump {
 
 #[cfg(not(target_os = "uefi"))]
 impl crate::connection::MessagePump for SimpPump {
-    fn poll_until<C: HypercallTrait>(
+    fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         _ctx: &mut C,
         _handle: &CompletionHandle,

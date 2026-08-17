@@ -85,7 +85,8 @@ use crate::protocol::UserDefinedData;
 pub use crate::ring::PacketFlags;
 pub use crate::ring::RecvPacket;
 use alloc::vec::Vec;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::IntoBytes;
 
 /// Whether the channel is usable.
@@ -158,7 +159,10 @@ impl Channel {
     /// **host→guest** direction (bit position in the SIEFP page).
     /// This matches `vmbus_client::guest_to_host_interrupt` in
     /// openvmm which calls `signal_event(connection_id, 0)`.
-    pub fn signal<C: HypercallTrait>(&self, ctx: &mut C) -> Result<()> {
+    pub fn signal<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &self,
+        ctx: &mut C,
+    ) -> Result<()> {
         if self.state != ChannelState::Open {
             return Err(Error::Rescinded);
         }
@@ -249,7 +253,7 @@ pub fn open_channel_with<C, P>(
     event_flag: u16,
 ) -> Result<Channel>
 where
-    C: HypercallTrait,
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: crate::connection::MessagePump,
 {
     let state = crate::connection::connection()
@@ -302,7 +306,7 @@ where
 /// completion — the host tears the channel down synchronously.
 pub fn close_channel_with<C>(ctx: &mut C, channel: Channel) -> Result<()>
 where
-    C: HypercallTrait,
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
 {
     use crate::protocol::CloseChannel;
     let state = crate::connection::connection()
@@ -337,7 +341,7 @@ where
 /// * `send_data_pages` — power-of-two data pages for the send ring.
 /// * `connection_id` / `event_flag` — populated only when Copper's
 ///   `GUEST_SPECIFIED_SIGNAL_PARAMETERS` feature was negotiated.
-pub fn open_channel<C: HypercallTrait>(
+pub fn open_channel<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     offer: &OfferChannel,
     ring_gpadl: GpadlHandle,
@@ -363,6 +367,9 @@ pub fn open_channel<C: HypercallTrait>(
 }
 
 /// UEFI entry point: [`close_channel_with`].
-pub fn close_channel<C: HypercallTrait>(ctx: &mut C, channel: Channel) -> Result<()> {
+pub fn close_channel<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+    channel: Channel,
+) -> Result<()> {
     close_channel_with(ctx, channel)
 }

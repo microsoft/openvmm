@@ -28,7 +28,8 @@ use crate::protocol::TlConnectResult;
 use crate::protocol::Version;
 use alloc::vec::Vec;
 use core::mem::size_of;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use spin::Mutex;
 use zerocopy::IntoBytes;
 
@@ -108,7 +109,7 @@ pub fn encode_tl_connect_request(
 ///
 /// Requires a negotiated connection ([`crate::connection::initiate`])
 /// to have completed.
-pub fn send_hvsock_connect<C: HypercallTrait>(
+pub fn send_hvsock_connect<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     endpoint: Guid,
     service: Guid,

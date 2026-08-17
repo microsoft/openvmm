@@ -35,7 +35,8 @@ use crate::channel::ChannelState;
 use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
 use crate::ring::SendRing;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -51,18 +52,24 @@ pub const INTERFACE_GUID: crate::protocol::Guid = crate::protocol::Guid {
 };
 
 /// Protocol version — `major << 16 | minor`.
-pub const VERSION_WIN8: u32 = (1u32 << 16) | 0;
+pub const VERSION_WIN8: u32 = 1u32 << 16;
 
-// Message types.
+/// Guest request to negotiate a keyboard protocol version.
 pub const MESSAGE_PROTOCOL_REQUEST: u32 = 1;
+/// Host response to a keyboard protocol version request.
 pub const MESSAGE_PROTOCOL_RESPONSE: u32 = 2;
+/// Host notification containing a keyboard event.
 pub const MESSAGE_EVENT: u32 = 3;
+/// Guest request to update the keyboard LED state.
 pub const MESSAGE_SET_LED_INDICATORS: u32 = 4;
 
-// Keystroke flags.
+/// The make code contains a Unicode character rather than a scan code.
 pub const KEYSTROKE_IS_UNICODE: u32 = 1 << 0;
+/// The event releases a key rather than pressing it.
 pub const KEYSTROKE_IS_BREAK: u32 = 1 << 1;
+/// The scan code has an `E0` prefix.
 pub const KEYSTROKE_IS_E0: u32 = 1 << 2;
+/// The scan code has an `E1` prefix.
 pub const KEYSTROKE_IS_E1: u32 = 1 << 3;
 
 /// Maximum bytes we expect any keyboard message to occupy (see
@@ -73,6 +80,7 @@ pub const MAXIMUM_MESSAGE_SIZE: usize = 256;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct MessageHeader {
+    /// Identifies the body layout that follows this header.
     pub message_type: u32,
 }
 
@@ -80,6 +88,7 @@ pub struct MessageHeader {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct MessageProtocolRequest {
+    /// Requested protocol version encoded as `major << 16 | minor`.
     pub version: u32,
 }
 
@@ -90,6 +99,7 @@ pub struct MessageProtocolRequest {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct MessageProtocolResponse {
+    /// Nonzero when the host accepts the requested protocol version.
     pub accepted: u32,
 }
 
@@ -98,8 +108,11 @@ pub struct MessageProtocolResponse {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct MessageKeystroke {
+    /// PS/2 make code, or a Unicode character when flagged as Unicode.
     pub make_code: u16,
+    /// Reserved padding; must be zero.
     pub padding: u16,
+    /// Bitwise combination of the `KEYSTROKE_*` flags.
     pub flags: u32,
 }
 
@@ -108,7 +121,9 @@ pub struct MessageKeystroke {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct MessageLedIndicatorsState {
+    /// Bit mask describing which keyboard LEDs should be lit.
     pub led_flags: u16,
+    /// Reserved padding; must be zero.
     pub padding: u16,
 }
 
@@ -121,7 +136,9 @@ pub enum InboundPacket {
     Event(MessageKeystroke),
     /// Any other message type — recorded but not interpreted.
     Other {
+        /// Unrecognized wire message type.
         message_type: u32,
+        /// Number of bytes following the message header.
         payload_len: usize,
     },
 }
@@ -163,7 +180,7 @@ impl Keyboard {
     /// live host is ~10M (a few seconds of spinning). Returns
     /// `Ok(true)` if the host accepted the version, `Ok(false)` if
     /// it rejected, `Err(Error::Timeout)` otherwise.
-    pub fn negotiate_version<C: HypercallTrait>(
+    pub fn negotiate_version<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         version: u32,
@@ -198,7 +215,11 @@ impl Keyboard {
     /// Send a `MESSAGE_SET_LED_INDICATORS` packet. The openvmm host
     /// keyboard accepts (and discards) this — a good round-trip
     /// smoke test that the send / signal path works.
-    pub fn set_leds<C: HypercallTrait>(&mut self, ctx: &mut C, led_flags: u16) -> Result<()> {
+    pub fn set_leds<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        led_flags: u16,
+    ) -> Result<()> {
         let mut payload = [0u8; 8];
         payload[..4].copy_from_slice(
             MessageHeader {
@@ -252,7 +273,11 @@ impl Keyboard {
 
     // ---- internals ----
 
-    fn write_and_signal<C: HypercallTrait>(&mut self, ctx: &mut C, payload: &[u8]) -> Result<()> {
+    fn write_and_signal<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        payload: &[u8],
+    ) -> Result<()> {
         if self.channel.state() != ChannelState::Open {
             return Err(Error::Rescinded);
         }
@@ -285,7 +310,7 @@ impl Keyboard {
                         ty: None,
                         reason: "keyboard header parse failed",
                     })?;
-                let body = &pkt.payload[core::mem::size_of::<MessageHeader>()..];
+                let body = &pkt.payload[size_of::<MessageHeader>()..];
                 match hdr.message_type {
                     MESSAGE_PROTOCOL_RESPONSE => {
                         let (resp, _) =

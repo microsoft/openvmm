@@ -5,8 +5,8 @@
 //! `HvCallPostMessage` (0x5C), `HvCallSignalEvent` (0x5D), and
 //! `HvCallSetVpRegisters` (0x51).
 //!
-//! Callers construct a [`HvTestCtx`](opentmk::platform::hyperv::ctx::HvTestCtx)
-//! and pass it here through the [`HypercallTrait`] abstraction so
+//! Callers construct a [`HvTestCtx`](opentmk_core::platform::hyperv::ctx::HvTestCtx)
+//! and pass it here through the [`HypercallPlatformTrait`] abstraction so
 //! ownership of the hypercall input/output page stays inside the
 //! ctx — the ctx owns the aligned pages and the calling convention;
 //! this crate contributes only the payload encoders.
@@ -25,8 +25,8 @@ use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::hypercall::PostMessage;
 use hvdef::hypercall::SignalEvent;
-use opentmk::context::HypercallConfig;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::IntoBytes;
 
 /// Post a message to the specified VMBus connection.
@@ -44,7 +44,7 @@ use zerocopy::IntoBytes;
 /// ~147 back-to-back posts) will otherwise trip it. Matches Linux's
 /// `vmbus_post_msg` (drivers/hv/connection.c) which uses the same
 /// bounded retry approach.
-pub fn post_message<C: HypercallTrait>(
+pub fn post_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     connection_id: u32,
     payload: &[u8],
@@ -75,7 +75,7 @@ pub fn post_message<C: HypercallTrait>(
             HypercallCode::HvCallPostMessage.0 as u64,
             msg.as_bytes(),
             &mut [],
-            HypercallConfig::default(),
+            HyperVHypercallConfig::default(),
         );
         match r {
             Ok(()) => {
@@ -85,8 +85,8 @@ pub fn post_message<C: HypercallTrait>(
                 return Ok(());
             }
             Err(
-                e @ (opentmk::tmkdefs::TmkError::InsufficientBuffers
-                | opentmk::tmkdefs::TmkError::InsufficientMemory),
+                e @ (opentmk_core::tmkdefs::TmkError::InsufficientBuffers
+                | opentmk_core::tmkdefs::TmkError::InsufficientMemory),
             ) => {
                 // Transient — the per-VP message queue is full or the
                 // hypervisor is under memory pressure. Both are the
@@ -116,7 +116,7 @@ pub fn post_message<C: HypercallTrait>(
         }
     }
     Err(Error::Hypercall(
-        opentmk::tmkdefs::TmkError::InsufficientBuffers,
+        opentmk_core::tmkdefs::TmkError::InsufficientBuffers,
     ))
 }
 
@@ -143,7 +143,7 @@ pub const POST_MESSAGE_BACKOFF_MAX_SHIFT: usize = 12;
 /// per Hyper-V convention (matches `vmbus_client::guest_to_host_interrupt`
 /// in openvmm); the per-channel `event_flag` field is for the
 /// **host→guest** direction only (bit position in the SIEFP page).
-pub fn signal_event<C: HypercallTrait>(
+pub fn signal_event<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     connection_id: u32,
     flag_number: u16,
@@ -157,9 +157,9 @@ pub fn signal_event<C: HypercallTrait>(
         HypercallCode::HvCallSignalEvent.0 as u64,
         msg.as_bytes(),
         &mut [],
-        HypercallConfig {
-            pass_by_register_hint: true,
-            ..HypercallConfig::default()
+        HyperVHypercallConfig {
+            fast_call: true,
+            ..HyperVHypercallConfig::default()
         },
     )?;
     Ok(())
@@ -171,7 +171,7 @@ pub fn signal_event<C: HypercallTrait>(
 /// Convenience wrapper used by [`crate::synic::init_synic`] to program
 /// SIMP / SIEFP / SCONTROL / SINT2. The rep-hypercall is issued with
 /// `rep_count = 1`.
-pub fn set_vp_register<C: HypercallTrait>(
+pub fn set_vp_register<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     name: HvRegisterName,
     value: HvRegisterValue,
@@ -183,7 +183,7 @@ pub fn set_vp_register<C: HypercallTrait>(
 ///
 /// `assocs` is a slice of `(name, value)` pairs; the hypercall is issued
 /// with `rep_count = assocs.len()`.
-pub fn set_vp_registers<C: HypercallTrait>(
+pub fn set_vp_registers<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     target_vtl: HvInputVtl,
     assocs: &[(HvRegisterName, HvRegisterValue)],
@@ -216,9 +216,9 @@ pub fn set_vp_registers<C: HypercallTrait>(
         HypercallCode::HvCallSetVpRegisters.0 as u64,
         &input,
         &mut [],
-        HypercallConfig {
+        HyperVHypercallConfig {
             rep_count: Some(assocs.len()),
-            ..HypercallConfig::default()
+            ..HyperVHypercallConfig::default()
         },
     )?;
     Ok(())
@@ -229,13 +229,13 @@ pub fn set_vp_registers<C: HypercallTrait>(
 /// Returns their values in the same order as the input `names`.
 /// Only the low 64 bits are returned per register — enough for the
 /// SynIC registers we use to confirm state.
-pub fn get_vp_registers<C: HypercallTrait>(
+pub fn get_vp_registers<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     target_vtl: HvInputVtl,
     names: &[HvRegisterName],
-) -> Result<alloc::vec::Vec<u64>> {
+) -> Result<Vec<u64>> {
     if names.is_empty() {
-        return Ok(alloc::vec::Vec::new());
+        return Ok(Vec::new());
     }
 
     let header = GetSetVpRegisters {
@@ -245,30 +245,28 @@ pub fn get_vp_registers<C: HypercallTrait>(
         rsvd: [0; 3],
     };
 
-    let mut input = Vec::with_capacity(
-        size_of::<GetSetVpRegisters>() + names.len() * size_of::<HvRegisterName>(),
-    );
+    let mut input = Vec::with_capacity(size_of::<GetSetVpRegisters>() + size_of_val(names));
     input.extend_from_slice(header.as_bytes());
     for &n in names {
         input.extend_from_slice(n.as_bytes());
     }
 
     // Output layout: one `HvRegisterValue` (16 bytes) per register.
-    let mut output = alloc::vec![0u8; names.len() * size_of::<hvdef::HvRegisterValue>()];
+    let mut output = alloc::vec![0u8; names.len() * size_of::<HvRegisterValue>()];
 
     ctx.hypercall(
         HypercallCode::HvCallGetVpRegisters.0 as u64,
         &input,
         &mut output,
-        HypercallConfig {
+        HyperVHypercallConfig {
             rep_count: Some(names.len()),
-            ..HypercallConfig::default()
+            ..HyperVHypercallConfig::default()
         },
     )?;
 
-    let mut values = alloc::vec::Vec::with_capacity(names.len());
+    let mut values = Vec::with_capacity(names.len());
     for i in 0..names.len() {
-        let base = i * size_of::<hvdef::HvRegisterValue>();
+        let base = i * size_of::<HvRegisterValue>();
         let low = u64::from_le_bytes(output[base..base + 8].try_into().unwrap());
         values.push(low);
     }

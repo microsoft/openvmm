@@ -68,7 +68,8 @@ use crate::protocol::MessageType;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::mem::size_of_val;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::IntoBytes;
 
 /// Bytes of range payload that fit inside a single [`GpadlHeader`]
@@ -226,7 +227,7 @@ pub fn encode_gpadl_messages(
 /// This posts every message in the encoded exchange but does **not**
 /// wait for `GpadlCreated`. The full flow (post + await completion)
 /// lands with [`crate::connection`]'s message-queue integration.
-pub fn establish_gpadl_partial<C: HypercallTrait>(
+pub fn establish_gpadl_partial<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     channel_id: ChannelId,
     gpadl_id: GpadlId,
@@ -276,7 +277,7 @@ pub fn establish_gpadl_with<C, P>(
     pfns: &[u64],
 ) -> Result<GpadlHandle>
 where
-    C: HypercallTrait,
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: crate::connection::MessagePump,
 {
     if !(total_bytes as u64).is_multiple_of(hvdef::HV_PAGE_SIZE) {
@@ -326,7 +327,7 @@ pub fn teardown_gpadl_with<C, P>(
     handle: GpadlHandle,
 ) -> Result<()>
 where
-    C: HypercallTrait,
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: crate::connection::MessagePump,
 {
     use crate::protocol::GpadlTeardown;
@@ -352,7 +353,7 @@ where
 
 /// UEFI entry point: [`establish_gpadl_with`] using the process-wide
 /// completion table and SIMP pump.
-pub fn establish_gpadl<C: HypercallTrait>(
+pub fn establish_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     channel_id: ChannelId,
     total_bytes: u32,
@@ -377,7 +378,10 @@ pub fn establish_gpadl<C: HypercallTrait>(
 
 /// UEFI entry point: [`teardown_gpadl_with`] using the process-wide
 /// completion table and SIMP pump.
-pub fn teardown_gpadl<C: HypercallTrait>(ctx: &mut C, handle: GpadlHandle) -> Result<()> {
+pub fn teardown_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+    handle: GpadlHandle,
+) -> Result<()> {
     let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
     let table = crate::message::completion_table();
     let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);

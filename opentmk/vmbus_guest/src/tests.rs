@@ -478,9 +478,9 @@ mod connection_tests {
     use alloc::vec::Vec;
     use core::mem::size_of;
     use hvdef::HvError;
-    use opentmk::context::HypercallConfig;
-    use opentmk::context::HypercallTrait;
-    use opentmk::tmkdefs::TmkResult;
+    use opentmk_core::context::HypercallPlatformTrait;
+    use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
+    use opentmk_core::tmkdefs::TmkResult;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -491,13 +491,15 @@ mod connection_tests {
         fail_next: bool,
     }
 
-    impl HypercallTrait for RecordingCtx {
+    impl HypercallPlatformTrait for RecordingCtx {
+        type Config = HyperVHypercallConfig;
+
         fn hypercall(
             &mut self,
             code: u64,
             input: &[u8],
             _output: &mut [u8],
-            _cfg: HypercallConfig,
+            _cfg: HyperVHypercallConfig,
         ) -> TmkResult<()> {
             self.calls.push((code, input.to_vec()));
             if self.fail_next {
@@ -517,7 +519,7 @@ mod connection_tests {
     }
 
     impl MessagePump for ScriptedPump {
-        fn poll_until<C: HypercallTrait>(
+        fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
             &mut self,
             _ctx: &mut C,
             handle: &CompletionHandle,
@@ -860,17 +862,19 @@ mod hvsock_tests {
     #[test]
     fn send_hvsock_connect_requires_connection() {
         *crate::connection::connection() = None;
-        use opentmk::context::HypercallConfig;
-        use opentmk::context::HypercallTrait;
-        use opentmk::tmkdefs::TmkResult;
+        use opentmk_core::context::HypercallPlatformTrait;
+        use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
+        use opentmk_core::tmkdefs::TmkResult;
         struct C;
-        impl HypercallTrait for C {
+        impl HypercallPlatformTrait for C {
+            type Config = HyperVHypercallConfig;
+
             fn hypercall(
                 &mut self,
                 _c: u64,
                 _i: &[u8],
                 _o: &mut [u8],
-                _cfg: HypercallConfig,
+                _cfg: HyperVHypercallConfig,
             ) -> TmkResult<()> {
                 Ok(())
             }
@@ -928,9 +932,9 @@ mod channel_tests {
     use crate::protocol::Version;
     use alloc::vec::Vec;
     use core::mem::size_of;
-    use opentmk::context::HypercallConfig;
-    use opentmk::context::HypercallTrait;
-    use opentmk::tmkdefs::TmkResult;
+    use opentmk_core::context::HypercallPlatformTrait;
+    use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
+    use opentmk_core::tmkdefs::TmkResult;
     use spin::Mutex;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
@@ -939,13 +943,15 @@ mod channel_tests {
     struct RecordingCtx {
         calls: Vec<(u64, Vec<u8>)>,
     }
-    impl HypercallTrait for RecordingCtx {
+    impl HypercallPlatformTrait for RecordingCtx {
+        type Config = HyperVHypercallConfig;
+
         fn hypercall(
             &mut self,
             code: u64,
             input: &[u8],
             _out: &mut [u8],
-            _cfg: HypercallConfig,
+            _cfg: HyperVHypercallConfig,
         ) -> TmkResult<()> {
             self.calls.push((code, input.to_vec()));
             Ok(())
@@ -957,7 +963,7 @@ mod channel_tests {
         script: Mutex<Vec<(CompletionKey, Vec<u8>)>>,
     }
     impl MessagePump for ScriptedPump {
-        fn poll_until<C: HypercallTrait>(
+        fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
             &mut self,
             _ctx: &mut C,
             handle: &CompletionHandle,
@@ -1283,9 +1289,9 @@ mod interrupt_tests {
     use hvdef::HV_MESSAGE_SIZE;
     use hvdef::HvMessageType;
     use hvdef::HypercallCode;
-    use opentmk::context::HypercallConfig;
-    use opentmk::context::HypercallTrait;
-    use opentmk::tmkdefs::TmkResult;
+    use opentmk_core::context::HypercallPlatformTrait;
+    use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
+    use opentmk_core::tmkdefs::TmkResult;
     use zerocopy::FromZeros;
 
     #[derive(Default)]
@@ -1299,13 +1305,15 @@ mod interrupt_tests {
     struct RecordingCtx {
         calls: Vec<u64>,
     }
-    impl HypercallTrait for RecordingCtx {
+    impl HypercallPlatformTrait for RecordingCtx {
+        type Config = HyperVHypercallConfig;
+
         fn hypercall(
             &mut self,
             code: u64,
             _input: &[u8],
             _output: &mut [u8],
-            _cfg: HypercallConfig,
+            _cfg: HyperVHypercallConfig,
         ) -> TmkResult<()> {
             self.calls.push(code);
             Ok(())
@@ -1477,9 +1485,9 @@ mod synic_tests {
     use hvdef::HypercallCode;
     use hvdef::hypercall::GetSetVpRegisters;
     use hvdef::hypercall::HvRegisterAssoc;
-    use opentmk::context::HypercallConfig;
-    use opentmk::context::HypercallTrait;
-    use opentmk::tmkdefs::TmkResult;
+    use opentmk_core::context::HypercallPlatformTrait;
+    use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
+    use opentmk_core::tmkdefs::TmkResult;
     use zerocopy::FromBytes;
 
     /// Mock context that records every hypercall.
@@ -1488,13 +1496,15 @@ mod synic_tests {
         calls: Vec<(u64, Vec<u8>, Option<usize>)>,
     }
 
-    impl HypercallTrait for MockCtx {
+    impl HypercallPlatformTrait for MockCtx {
+        type Config = HyperVHypercallConfig;
+
         fn hypercall(
             &mut self,
             code: u64,
             input: &[u8],
             _output: &mut [u8],
-            cfg: HypercallConfig,
+            cfg: HyperVHypercallConfig,
         ) -> TmkResult<()> {
             self.calls.push((code, input.to_vec(), cfg.rep_count));
             Ok(())
@@ -1561,13 +1571,15 @@ mod synic_tests {
     #[test]
     fn program_synic_registers_propagates_hypercall_error() {
         struct FailCtx;
-        impl HypercallTrait for FailCtx {
+        impl HypercallPlatformTrait for FailCtx {
+            type Config = HyperVHypercallConfig;
+
             fn hypercall(
                 &mut self,
                 _code: u64,
                 _input: &[u8],
                 _output: &mut [u8],
-                _cfg: HypercallConfig,
+                _cfg: HyperVHypercallConfig,
             ) -> TmkResult<()> {
                 Err(HvError::AccessDenied.into())
             }
@@ -1732,7 +1744,6 @@ mod ring_tests {
     }
 
     #[test]
-    #[test]
     fn pending_send_size_hint_persists() {
         // The pending_send_sz hint is now owned by the SendRing
         // (writer). Verify it round-trips through the control page.
@@ -1762,8 +1773,7 @@ mod ring_tests {
     #[test]
     fn recv_signal_decision_no_pending() {
         let (send, recv) = pair(4096);
-        send.write_inband(b"x", crate::protocol::PacketFlags::new(), 0)
-            .unwrap();
+        send.write_inband(b"x", PacketFlags::new(), 0).unwrap();
         let mut buf = [0u8; 32];
         recv.read(&mut buf).unwrap();
         // pending_send_sz is 0 (writer hasn't stored anything).
@@ -1868,7 +1878,7 @@ mod ring_tests {
 
         // Read the descriptor bytes directly from the ring at offset 0.
         let mem = send.mem();
-        let mut desc_bytes = [0u8; core::mem::size_of::<PacketDescriptor>()];
+        let mut desc_bytes = [0u8; size_of::<PacketDescriptor>()];
         mem.read_at(0, &mut desc_bytes);
         let (desc, _) = PacketDescriptor::read_from_prefix(&desc_bytes).unwrap();
 
@@ -1891,7 +1901,6 @@ mod ring_tests {
     #[test]
     fn write_gpa_direct_layout() {
         use crate::protocol::{GpaDirectHeader, GpaRange};
-        use crate::ring::RingMem;
 
         let (send, recv) = pair(4096);
         let pfns = [0x1000u64, 0x1001, 0x1002];
@@ -1974,7 +1983,6 @@ mod netvsp_tests {
     use crate::devices::netvsp;
     use core::mem::size_of;
     use zerocopy::FromBytes;
-    use zerocopy::IntoBytes;
 
     #[test]
     fn version_ladder_ordered_high_to_low() {

@@ -46,9 +46,9 @@
 //!                     └────►  unload(ctx)
 //! ```
 //!
-//! All hypercalls flow through a caller-supplied [`HypercallTrait`]
+//! All hypercalls flow through a caller-supplied [`HypercallPlatformTrait`]
 //! implementation (typically
-//! [`HvTestCtx`](opentmk::platform::hyperv::ctx::HvTestCtx)); this crate
+//! [`HvTestCtx`](opentmk_core::platform::hyperv::ctx::HvTestCtx)); this crate
 //! never touches the raw hypercall page itself.
 //!
 //! ## 1. Initialize the stack
@@ -57,7 +57,7 @@
 //! version handshake. Call it exactly once per session:
 //!
 //! ```ignore
-//! use opentmk::platform::hyperv::ctx::HvTestCtx;
+//! use opentmk_core::platform::hyperv::ctx::HvTestCtx;
 //!
 //! let mut ctx = HvTestCtx::new();
 //! // ...caller-specific ctx setup (hypercall page, etc.)...
@@ -283,7 +283,8 @@ pub use error::Error;
 pub use error::Result;
 
 use alloc::vec::Vec;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 
 /// Initialise the guest-side VMBus stack: bring up SynIC on the current VP,
 /// negotiate a protocol version with the host, and prime the message
@@ -305,7 +306,7 @@ use opentmk::context::HypercallTrait;
 /// vmbus_guest::unload(&mut ctx)?;
 /// # Ok::<_, vmbus_guest::Error>(())
 /// ```
-pub fn init<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
+pub fn init<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(ctx: &mut C) -> Result<()> {
     synic::init_synic(ctx)?;
     connection::initiate(ctx)?;
     Ok(())
@@ -319,7 +320,9 @@ pub fn init<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
 /// against a known device GUID (e.g.
 /// [`devices::keyboard::INTERFACE_GUID`] or
 /// [`devices::netvsp::INTERFACE_GUID`]) to pick the offer you want.
-pub fn request_offers<C: HypercallTrait>(ctx: &mut C) -> Result<Vec<protocol::OfferChannel>> {
+pub fn request_offers<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+) -> Result<Vec<protocol::OfferChannel>> {
     connection::request_offers(ctx)
 }
 
@@ -328,6 +331,8 @@ pub fn request_offers<C: HypercallTrait>(ctx: &mut C) -> Result<Vec<protocol::Of
 ///
 /// After this returns, any subsequent VMBus operation must go through
 /// [`init`] again.
-pub fn unload<C: HypercallTrait>(ctx: &mut C) -> Result<()> {
+pub fn unload<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+) -> Result<()> {
     connection::unload(ctx)
 }

@@ -118,7 +118,8 @@ use crate::ring::SendRing;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
-use opentmk::context::HypercallTrait;
+use opentmk_core::context::HypercallPlatformTrait;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -148,11 +149,17 @@ const fn make_version(major: u16, minor: u16) -> u32 {
 #[repr(u32)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum Version {
+    /// NVSP 0.2, the original protocol version.
     V1 = make_version(0, 2),
+    /// NVSP 3.2, conventionally called version 2.
     V2 = make_version(3, 2),
+    /// NVSP 4.0.
     V4 = make_version(4, 0),
+    /// NVSP 5.0.
     V5 = make_version(5, 0),
+    /// NVSP 6.0.
     V6 = make_version(6, 0),
+    /// NVSP 6.1.
     V61 = make_version(6, 1),
 }
 
@@ -833,7 +840,7 @@ impl Netvsp {
     ///
     /// After this call succeeds, [`Self::negotiate_version`] must be
     /// called before any other message is sent.
-    pub fn open<C: HypercallTrait>(
+    pub fn open<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         ctx: &mut C,
         offer: &crate::protocol::OfferChannel,
     ) -> Result<Self> {
@@ -940,7 +947,10 @@ impl Netvsp {
     /// the negotiated version; otherwise fall through to the next
     /// ladder entry. Matches Linux's `netvsc_connect_vsp` and
     /// puppet's `negotiate_versions`.
-    pub fn negotiate_version<C: HypercallTrait>(&mut self, ctx: &mut C) -> Result<Version> {
+    pub fn negotiate_version<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+    ) -> Result<Version> {
         for &v in &NEGOTIATION_LADDER {
             match self.try_init(ctx, v) {
                 Ok(true) => {
@@ -965,7 +975,11 @@ impl Netvsp {
     /// Send `NvspMsgInit` for `version` and await `InitComplete`.
     /// Returns `Ok(true)` if the host accepted, `Ok(false)` if the
     /// host returned a non-success status.
-    fn try_init<C: HypercallTrait>(&mut self, ctx: &mut C, version: Version) -> Result<bool> {
+    fn try_init<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        version: Version,
+    ) -> Result<bool> {
         // NvspMsgInit is 8 bytes. `INIT` messages **always** go out
         // as `NVSP_LEGACY_MESSAGE_SIZE (28)` regardless of the
         // requested version — Windows: "Init message has always size
@@ -1013,7 +1027,11 @@ impl Netvsp {
     ///
     /// Ignored if the current negotiated version is V1 (which does not
     /// use NDIS config).
-    pub fn send_ndis_config<C: HypercallTrait>(&mut self, ctx: &mut C, mtu: u32) -> Result<()> {
+    pub fn send_ndis_config<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        mtu: u32,
+    ) -> Result<()> {
         let version = self.version_typed()?;
         if version == Version::V1 {
             return Ok(());
@@ -1041,7 +1059,10 @@ impl Netvsp {
     ///
     /// `major = 6`, `minor = 30` for V5+ or `minor = 1` otherwise —
     /// matches Linux `negotiate_nvsp_ver` and puppet.
-    pub fn send_ndis_version<C: HypercallTrait>(&mut self, ctx: &mut C) -> Result<()> {
+    pub fn send_ndis_version<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+    ) -> Result<()> {
         let version = self.version_typed()?;
         let ndis_minor = if version <= Version::V4 { 1 } else { 0x1e };
         let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
@@ -1075,7 +1096,7 @@ impl Netvsp {
     /// A 16 MiB buffer produces ~147 `GpadlBody` messages posted
     /// back-to-back — this is the first real exercise of the
     /// `hypercalls::post_message` retry loop added in a prior commit.
-    pub fn establish_recv_buffer<C: HypercallTrait>(
+    pub fn establish_recv_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         size: usize,
@@ -1192,7 +1213,7 @@ impl Netvsp {
     /// * `status == SUCCESS`
     /// * `section_size >= NETVSC_MTU_MIN`
     /// * `send_section_count = size / section_size > 0`
-    pub fn establish_send_buffer<C: HypercallTrait>(
+    pub fn establish_send_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         size: usize,
@@ -1320,7 +1341,10 @@ impl Netvsp {
     ///
     /// Requires [`Self::establish_recv_buffer`] to have succeeded
     /// (we need the recv buffer to receive the completion into).
-    pub fn rndis_init<C: HypercallTrait>(&mut self, ctx: &mut C) -> Result<()> {
+    pub fn rndis_init<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+    ) -> Result<()> {
         let recv_buf = self.recv_buf.as_ref().ok_or(Error::Parse {
             ty: None,
             reason: "rndis_init requires establish_recv_buffer first",
@@ -1351,8 +1375,7 @@ impl Netvsp {
         let request_id: u32 = 1;
         let hdr = RndisMessageHeader {
             message_type: rndis::MESSAGE_TYPE_INITIALIZE_MSG,
-            message_length: (core::mem::size_of::<RndisMessageHeader>()
-                + core::mem::size_of::<RndisInitializeRequest>())
+            message_length: (size_of::<RndisMessageHeader>() + size_of::<RndisInitializeRequest>())
                 as u32,
         };
         let req = RndisInitializeRequest {
@@ -1620,7 +1643,11 @@ impl Netvsp {
     /// 5. Send `VM_PKT_COMP` back to release the transfer pages.
     ///
     /// Requires [`Self::rndis_init`] to have already succeeded.
-    pub fn set_packet_filter<C: HypercallTrait>(&mut self, ctx: &mut C, filter: u32) -> Result<()> {
+    pub fn set_packet_filter<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        filter: u32,
+    ) -> Result<()> {
         let recv_buf = self.recv_buf.as_ref().ok_or(Error::Parse {
             ty: None,
             reason: "set_packet_filter requires recv buffer",
@@ -1643,9 +1670,9 @@ impl Netvsp {
             });
         }
 
-        let hdr_size = core::mem::size_of::<RndisMessageHeader>();
-        let req_size = core::mem::size_of::<RndisSetRequest>();
-        let info_size = core::mem::size_of::<u32>();
+        let hdr_size = size_of::<RndisMessageHeader>();
+        let req_size = size_of::<RndisSetRequest>();
+        let info_size = size_of::<u32>();
         let total_len = (hdr_size + req_size + info_size) as u32;
 
         let request_id: u32 = 2;
@@ -1875,7 +1902,7 @@ impl Netvsp {
     ///   send_buf_section_size = 0,
     /// }
     /// ```
-    pub fn send_ethernet<C: HypercallTrait>(
+    pub fn send_ethernet<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         frame: &[u8],
@@ -1912,8 +1939,8 @@ impl Netvsp {
                 reason: "rndis buffer alloc failed",
             });
         }
-        let hdr_size = core::mem::size_of::<RndisMessageHeader>();
-        let pkt_size = core::mem::size_of::<RndisPacket>();
+        let hdr_size = size_of::<RndisMessageHeader>();
+        let pkt_size = size_of::<RndisPacket>();
         let total_len = (hdr_size + pkt_size + frame.len()) as u32;
 
         let rndis_hdr = RndisMessageHeader {
@@ -2109,7 +2136,7 @@ impl Netvsp {
     /// Returns the number of frames drained. `max_polls` bounds the
     /// spin — 0 means "one non-blocking pass; return whatever's
     /// currently on the ring".
-    pub fn drain_inbound<C: HypercallTrait>(
+    pub fn drain_inbound<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         max_polls: usize,
@@ -2240,7 +2267,7 @@ impl Netvsp {
     /// spin until we receive a matching `VM_PKT_COMP`. Returns the
     /// completion frame's payload bytes (owned copy — the ring's
     /// bytes are consumed by then).
-    fn send_and_await<C: HypercallTrait>(
+    fn send_and_await<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         frame: &[u8],
@@ -2292,7 +2319,11 @@ impl Netvsp {
     /// Post an NVSP frame **without** the completion flag. Used for
     /// `SEND_NDIS_CONFIG` and `SEND_NDIS_VERSION` which have no
     /// reply per protocol.
-    fn send_no_completion<C: HypercallTrait>(&mut self, ctx: &mut C, frame: &[u8]) -> Result<()> {
+    fn send_no_completion<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        frame: &[u8],
+    ) -> Result<()> {
         if self.channel.state() != ChannelState::Open {
             return Err(Error::Rescinded);
         }
@@ -2316,7 +2347,11 @@ impl Netvsp {
     /// so the host can reclaim its transfer pages; without this ack
     /// the host will eventually stall as its transfer-page pool
     /// drains.
-    fn ack_xfer_page<C: HypercallTrait>(&mut self, ctx: &mut C, host_tid: u64) -> Result<()> {
+    fn ack_xfer_page<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        host_tid: u64,
+    ) -> Result<()> {
         let mut cf = [0u8; NVSP_V61_MESSAGE_SIZE];
         let m = encode_message(
             msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
@@ -2362,7 +2397,7 @@ impl Netvsp {
     /// are handed to `on_frame`).
     ///
     /// Returns [`Error::Timeout`] if the drain didn't complete.
-    pub fn flush_tx<C: HypercallTrait>(
+    pub fn flush_tx<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         max_polls: usize,
@@ -2392,12 +2427,12 @@ impl Netvsp {
 ///
 /// `size` must be a multiple of 4096. Uses opentmk's static heap via
 /// `alloc::alloc::alloc_zeroed`.
-fn allocate_gpadl_buffer<C: HypercallTrait>(
+fn allocate_gpadl_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     channel_id: crate::protocol::ChannelId,
     size: usize,
 ) -> Result<OwnedBuf> {
-    if size % 4096 != 0 || size == 0 {
+    if !size.is_multiple_of(4096) || size == 0 {
         return Err(Error::Parse {
             ty: None,
             reason: "GPADL buffer size must be a positive multiple of 4096",

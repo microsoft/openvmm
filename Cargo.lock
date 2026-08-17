@@ -10367,7 +10367,7 @@ dependencies = [
  "hvdef",
  "log",
  "open_enum",
- "opentmk",
+ "opentmk_core",
  "spin",
  "thiserror 2.0.16",
  "zerocopy",
