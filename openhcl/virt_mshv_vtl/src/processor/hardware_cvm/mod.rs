@@ -1822,7 +1822,6 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
             GuestVtl::Vtl1,
             hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
             &mut self.vp.tlb_flush_lock_access(),
-            self.vp.partition.vps.len() as u32,
         )?;
 
         tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
@@ -2272,7 +2271,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     targeted_vtl,
                     protections,
                     &mut self.tlb_flush_lock_access(),
-                    self.partition.vps.len() as u32,
                 )?;
             }
         }

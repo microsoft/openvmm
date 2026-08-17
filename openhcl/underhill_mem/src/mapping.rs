@@ -834,7 +834,9 @@ mod tests {
     fn test_bitmap_update() {
         const PAGE_COUNT: u64 = 24;
 
-        for gpn_range in [8..16, 3..21] {
+        // Cover fully-aligned, single-edge, both-edge, sub-byte, and
+        // full-coverage ranges.
+        for gpn_range in [8..16, 3..21, 5..6, 8..13, 3..8, 0..24, 7..17] {
             let mut bitmap = GuestMemoryBitmap::new(PAGE_COUNT as usize * PAGE_SIZE).unwrap();
             bitmap
                 .init(MemoryRange::from_4k_gpn_range(0..PAGE_COUNT), false)
@@ -849,6 +851,41 @@ mod tests {
             bitmap.update(range, false);
             for gpn in 0..PAGE_COUNT {
                 assert!(!bitmap.page_state(gpn), "{gpn}");
+            }
+        }
+    }
+
+    // Apply a sequence of overlapping and partially-overlapping updates and
+    // check the running state after each one.
+    #[test]
+    fn test_bitmap_update_overlapping() {
+        const PAGE_COUNT: u64 = 24;
+
+        let mut bitmap = GuestMemoryBitmap::new(PAGE_COUNT as usize * PAGE_SIZE).unwrap();
+        bitmap
+            .init(MemoryRange::from_4k_gpn_range(0..PAGE_COUNT), false)
+            .unwrap();
+
+        let mut expected = [false; PAGE_COUNT as usize];
+        let ops = [
+            (3..21, true),   // unaligned on both edges
+            (0..4, false),   // clears the left chunk, shares an edge
+            (6..10, true),   // partial overlap, re-sets some pages
+            (9..24, true),   // shares the right edge
+            (20..22, false), // clears an interior sub-byte span
+        ];
+
+        for (gpn_range, state) in ops {
+            bitmap.update(MemoryRange::from_4k_gpn_range(gpn_range.clone()), state);
+            for gpn in gpn_range.clone() {
+                expected[gpn as usize] = state;
+            }
+            for gpn in 0..PAGE_COUNT {
+                assert_eq!(
+                    bitmap.page_state(gpn),
+                    expected[gpn as usize],
+                    "gpn {gpn} after updating {gpn_range:?} to {state}"
+                );
             }
         }
     }

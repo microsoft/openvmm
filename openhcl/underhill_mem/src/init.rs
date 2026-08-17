@@ -141,7 +141,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 let accepted_ram: Vec<_> =
                     memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
                         .collect();
-                parallelize_mem_op(accepted_ram.as_slice(), vp_count, |range| {
+                parallelize_mem_op(accepted_ram.iter().copied(), vp_count, |range| {
                     acceptor.apply_initial_lower_vtl_protections(range)
                 })?;
             }
@@ -165,7 +165,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 memory_range::subtract_ranges(ram, accepted_ranges).collect::<Vec<_>>();
             validated_ranges.extend_from_slice(&source_ranges);
 
-            parallelize_mem_op(&source_ranges, vp_count, accept_subrange).unwrap();
+            parallelize_mem_op(source_ranges.iter().copied(), vp_count, accept_subrange)
+                .unwrap_or_else(|err| panic!("accepting VTL0 memory failed: {err}"));
         }
     }
 
@@ -355,6 +356,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             vtl0_mapping.clone(),
             params.mem_layout.clone(),
             acceptor.as_ref().unwrap().clone(),
+            params.processor_topology.vp_count(),
         )) as Arc<dyn ProtectIsolatedMemory>;
 
         tracing::debug!("Creating VTL0 guest memory");
@@ -422,10 +424,10 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 tracing::info_span!("zeroing lower vtl memory for SNP", CVM_ALLOWED).entered();
 
             tracing::debug!("zeroing lower vtl memory for SNP");
-            parallelize_mem_op(&validated_ranges, vp_count, |range| {
+            parallelize_mem_op(validated_ranges.iter().copied(), vp_count, |range| {
                 vtl0_gm.fill_at(range.start(), 0, range.len() as usize)
             })
-            .expect("private memory should be valid at this stage");
+            .unwrap_or_else(|err| panic!("private memory should be valid at this stage: {err}"));
         }
 
         // Untrusted devices can only access shared memory, but they can do so

@@ -291,4 +291,60 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_register_all_multiple_ranges_with_gap() {
+        // A mix of RAM ranges with unbacked gaps between them: one spanning a
+        // chunk boundary, one contained in a single chunk, one spanning
+        // several whole chunks, and one crossing a boundary with unaligned ends.
+        let layout = MemoryLayout::new_from_ranges(
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0x10000..GRANULARITY + 0x20000),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(3 * GRANULARITY + 0x10000..3 * GRANULARITY + 0x30000),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(4 * GRANULARITY + 0x40000..4 * GRANULARITY + 0x50000),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(5 * GRANULARITY..8 * GRANULARITY),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(9 * GRANULARITY + 0x30000..10 * GRANULARITY + 0x10000),
+                    vnode: 0,
+                },
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let ranges = RefCell::new(Vec::new());
+        let registrar = MemoryRegistrar::new(&layout, 0, |range| {
+            ranges.borrow_mut().push(range);
+            Ok::<_, Infallible>(())
+        });
+
+        registrar.register_all().unwrap();
+
+        assert_eq!(
+            ranges.take(),
+            [
+                MemoryRange::new(0x10000..GRANULARITY),
+                MemoryRange::new(GRANULARITY..GRANULARITY + 0x20000),
+                MemoryRange::new(3 * GRANULARITY + 0x10000..3 * GRANULARITY + 0x30000),
+                MemoryRange::new(4 * GRANULARITY + 0x40000..4 * GRANULARITY + 0x50000),
+                MemoryRange::new(5 * GRANULARITY..6 * GRANULARITY),
+                MemoryRange::new(6 * GRANULARITY..7 * GRANULARITY),
+                MemoryRange::new(7 * GRANULARITY..8 * GRANULARITY),
+                MemoryRange::new(9 * GRANULARITY + 0x30000..10 * GRANULARITY),
+                MemoryRange::new(10 * GRANULARITY..10 * GRANULARITY + 0x10000),
+            ]
+        );
+    }
 }
