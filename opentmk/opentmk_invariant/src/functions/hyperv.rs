@@ -21,24 +21,24 @@ static CALLS: Mutex<(HvTestCtx, bool)> = Mutex::new((HvTestCtx::new(), false));
 ///   [`HvcallMeta`](crate::functions::hvcall_meta::HvcallMeta) with the
 ///   static (`code`, `header_size`, `element_size`) triple for this
 ///   hypercall.
-/// * `in_page`     — pointer to the syzkaller-generated input buffer.
-/// * `in_page_len` — the byte size of `*in_page`
+/// * `input`       — pointer to the syzkaller-generated input buffer.
+/// * `input_len`   — the byte size of `*input`
 ///   (`BYTE_SIZE("../in")` in the grammar).
 ///
 /// `rep` is computed at call-time as
-/// `(in_page_len − header_size) / element_size`.
+/// `(input_len − header_size) / element_size`.
 pub fn hvcall(
     mem: &mut dyn SafeMemoryMap,
     vars: Vec<FuzzFunctionVariable>,
 ) -> Result<FuzzFunctionVariable, String> {
     // Verify and parse parameters.
-    let [meta, in_page, in_page_len] = vars.verify_num_params()?;
+    let [meta, input, input_len] = vars.verify_num_params()?;
     let meta = unpack_hvcall_meta(meta.expect_int("meta")?);
-    let in_page = in_page.expect_int("in_page")? as usize;
-    let in_page_len = in_page_len.expect_int("in_page_len")? as usize;
+    let input = input.expect_int("input")? as usize;
+    let input_len = input_len.expect_int("input_len")? as usize;
 
-    // Read in the input page from `in_page` (only if any input is
-    // expected — `void`-input hypercalls send `in_page_len == 0`).
+    // Read in the input page from `input` (only if any input is
+    // expected — `void`-input hypercalls send `input_len == 0`).
     let mut hvc_lock = CALLS.lock();
     let (hvc, init) = &mut *hvc_lock;
     if !*init {
@@ -47,8 +47,8 @@ pub fn hvcall(
         *init = true;
     }
 
-    let mut in_args = vec![0; in_page_len];
-    match mem.try_read_mem(in_page, &mut in_args) {
+    let mut in_args = vec![0; input_len];
+    match mem.try_read_mem(input, &mut in_args) {
         Ok(_) => (),
         Err(e) => log::info!("hvcall: Failed to read input: {e}"),
     }
@@ -57,10 +57,10 @@ pub fn hvcall(
     // grammar-supplied buffer size.
     let header_size = meta.header_size as usize;
     let element_size = meta.element_size as usize;
-    let rep_count = if element_size == 0 || in_page_len <= header_size {
+    let rep_count = if element_size == 0 || input_len <= header_size {
         None
     } else {
-        Some((in_page_len - header_size) / element_size)
+        Some((input_len - header_size) / element_size)
     };
 
     let cfg = HyperVHypercallConfig {

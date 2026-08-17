@@ -1,5 +1,5 @@
 [package]
-name = "tmk_invariant"
+name = "opentmk_invariant"
 version = "0.1.0"
 edition = "2024"
 

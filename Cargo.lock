@@ -5703,6 +5703,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentmk_invariant"
+version = "0.1.0"
+dependencies = [
+ "hvdef",
+ "inv_decoder",
+ "inv_packet",
+ "log",
+ "opentmk_core",
+ "postcard",
+ "serde",
+ "spin",
+ "uefi",
+ "zerocopy",
+]
+
+[[package]]
 name = "opentmk_protocol"
 version = "0.0.0"
 dependencies = [
@@ -8380,22 +8396,6 @@ dependencies = [
  "minimal_rt_build",
  "tmk_protocol",
  "x86defs",
-]
-
-[[package]]
-name = "tmk_invariant"
-version = "0.1.0"
-dependencies = [
- "hvdef",
- "inv_decoder",
- "inv_packet",
- "log",
- "opentmk_core",
- "postcard",
- "serde",
- "spin",
- "uefi",
- "zerocopy",
 ]
 
 [[package]]
