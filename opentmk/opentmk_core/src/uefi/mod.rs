@@ -5,6 +5,6 @@
 //! the boot-time initialization sequence.
 
 pub(crate) mod acpi_wrap;
-mod alloc;
+pub mod alloc;
 /// Boot-time initialization: heap, logger, ACPI tables, and VTL protection.
 pub mod init;

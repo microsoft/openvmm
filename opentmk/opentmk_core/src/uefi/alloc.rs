@@ -68,7 +68,7 @@ impl MemoryAllocator {
     pub fn switch_to_capped_heap(&self, size: usize) -> bool {
         let pages = ((SIZE_1MB * size) / 4096) + 1;
         let size = pages * 4096;
-        let mem: Result<core::ptr::NonNull<u8>, uefi::Error> = boot::allocate_pages(
+        let mem: Result<NonNull<u8>, uefi::Error> = boot::allocate_pages(
             AllocateType::AnyPages,
             MemoryType::BOOT_SERVICES_DATA,
             pages,
@@ -85,7 +85,7 @@ impl MemoryAllocator {
 
     pub fn get_page_aligned_memory(&self, size: usize) -> *mut u8 {
         let pages = ((SIZE_1MB * size) / PAGE_SIZE) + 1;
-        let mem: Result<core::ptr::NonNull<u8>, uefi::Error> = boot::allocate_pages(
+        let mem: Result<NonNull<u8>, uefi::Error> = boot::allocate_pages(
             AllocateType::AnyPages,
             MemoryType::BOOT_SERVICES_DATA,
             pages,
