@@ -25,12 +25,6 @@ impl MshvProcessor<'_> {
     where
         T: HvRegisterState<HvX64RegisterName, N>,
     {
-        // SNP initial VP state is supplied by the imported VMSA rather than
-        // through host register writes.
-        if self.partition.snp.is_some() {
-            return Ok(());
-        }
-
         let mut assoc = regs.names().map(|name| HvRegisterAssoc {
             name: name.into(),
             pad: [0; 3],

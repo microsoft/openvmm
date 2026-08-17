@@ -1118,7 +1118,6 @@ impl InitializedVm {
                 hv_config,
                 vmtime: &vmtime_source,
                 isolation: proto_partition_isolation,
-                snp_disable_cpuid_offload: cfg.hypervisor.snp_disable_cpuid_offload,
                 nested_virt: cfg.hypervisor.nested_virt,
                 #[cfg(guest_arch = "aarch64")]
                 device_assignment_msi_iova_range,

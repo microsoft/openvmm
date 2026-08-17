@@ -6,6 +6,7 @@
 use crate::Error;
 use crate::ErrorInner;
 use crate::LinuxMshv;
+use crate::MshvIsolationState;
 use crate::MshvPartition;
 use crate::MshvPartitionInner;
 use crate::MshvProcessor;
@@ -67,6 +68,9 @@ impl virt::Hypervisor for LinuxMshv {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
+        if self.snp_disable_cpuid_offload {
+            return Err(ErrorInner::IsolationNotSupported.into());
+        }
         if config.isolation.is_isolated() {
             return Err(ErrorInner::IsolationNotSupported.into());
         }
@@ -180,7 +184,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             vps: self.vps,
             caps,
             synic_ports: Default::default(),
-            isolation: self.config.isolation,
+            isolation: MshvIsolationState::None,
             time_frozen: false.into(),
             gic_msi: self.config.processor_topology.gic_msi(),
             gsi_states: parking_lot::Mutex::new(Box::new(

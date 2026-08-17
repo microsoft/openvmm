@@ -111,6 +111,7 @@ impl VcpuFdExt for VcpuFd {
 #[derive(Debug)]
 pub struct LinuxMshv {
     mshv: Mshv,
+    snp_disable_cpuid_offload: bool,
 }
 
 impl LinuxMshv {
@@ -118,6 +119,12 @@ impl LinuxMshv {
     pub fn new() -> io::Result<Self> {
         let file = fs_err::File::open("/dev/mshv")?;
         Ok(Self::from(std::fs::File::from(file)))
+    }
+
+    /// Configures whether MSHV SNP CPUID offloads are disabled.
+    pub fn with_snp_cpuid_offload_disabled(mut self, disabled: bool) -> Self {
+        self.snp_disable_cpuid_offload = disabled;
+        self
     }
 }
 
@@ -127,6 +134,7 @@ impl From<std::fs::File> for LinuxMshv {
             // SAFETY: We take ownership of the file descriptor and pass it to Mshv.
             // TODO: fix mshv_bindings to not need this unsafe code.
             mshv: unsafe { Mshv::new_with_fd_number(file.into_raw_fd()) },
+            snp_disable_cpuid_offload: false,
         }
     }
 }
@@ -202,6 +210,8 @@ impl<'a> MshvProtoPartition<'a> {
 
         Ok(MshvProtoPartition {
             config,
+            #[cfg(guest_arch = "x86_64")]
+            snp_disable_cpuid_offload: false,
             vmfd,
             vps,
             bsp,
@@ -221,9 +231,19 @@ pub fn is_available() -> Result<bool, Error> {
 /// Prototype partition.
 pub struct MshvProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
+    #[cfg(guest_arch = "x86_64")]
+    snp_disable_cpuid_offload: bool,
     vmfd: VmFd,
     vps: Vec<MshvVpInner>,
     bsp: VcpuFd,
+}
+
+#[cfg(guest_arch = "x86_64")]
+impl MshvProtoPartition<'_> {
+    fn with_snp_cpuid_offload_disabled(mut self, disabled: bool) -> Self {
+        self.snp_disable_cpuid_offload = disabled;
+        self
+    }
 }
 
 /// A partition running on the /dev/mshv hypervisor.
@@ -233,6 +253,60 @@ pub struct MshvPartition {
     inner: Arc<MshvPartitionInner>,
     #[inspect(skip)]
     synic_ports: Arc<virt::synic::SynicPorts<MshvPartitionInner>>,
+}
+
+enum MshvIsolationState {
+    None,
+    #[cfg(guest_arch = "x86_64")]
+    Snp(arch::SnpPartitionState),
+}
+
+impl MshvIsolationState {
+    #[cfg(guest_arch = "x86_64")]
+    fn is_isolated(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn initial_regs_are_imported(&self) -> bool {
+        if matches!(self, Self::Snp(_)) {
+            return true;
+        }
+        false
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn snp(&self) -> Option<&arch::SnpPartitionState> {
+        match self {
+            Self::None => None,
+            Self::Snp(snp) => Some(snp),
+        }
+    }
+
+    fn map_user_memory(&self, vmfd: &VmFd, region: mshv_user_mem_region) -> anyhow::Result<bool> {
+        match self {
+            Self::None => {
+                vmfd.map_user_memory(region)?;
+                Ok(true)
+            }
+            #[cfg(guest_arch = "x86_64")]
+            Self::Snp(snp) => match *snp.launch_state.lock() {
+                // Record pre-launch mappings without exposing them to MSHV.
+                // SNP launch flushes them after loader writes are complete.
+                arch::SnpLaunchState::NotStarted => Ok(false),
+                arch::SnpLaunchState::Started => {
+                    anyhow::bail!("cannot add a memory mapping while SNP launch is in progress")
+                }
+                arch::SnpLaunchState::Finished => {
+                    vmfd.map_user_memory(region)?;
+                    Ok(true)
+                }
+                arch::SnpLaunchState::Failed => {
+                    anyhow::bail!("cannot add a memory mapping after SNP launch failed")
+                }
+            },
+        }
+    }
 }
 
 #[derive(Inspect)]
@@ -257,9 +331,8 @@ struct MshvPartitionInner {
     synic_ports: virt::synic::SynicPortMap,
     #[cfg(guest_arch = "x86_64")]
     software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
-    #[cfg(guest_arch = "x86_64")]
-    snp: Option<arch::SnpPartitionState>,
-    isolation: virt::IsolationType,
+    #[inspect(skip)]
+    isolation: MshvIsolationState,
     /// Set to `true` when partition time is frozen (e.g. during reset).
     /// The first VP to enter `run_vp` after a freeze will thaw time.
     time_frozen: Mutex<bool>,
@@ -684,6 +757,9 @@ enum ErrorInner {
     Vtl2NotSupported,
     #[error("isolation not supported")]
     IsolationNotSupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("invalid MSHV configuration: {0}")]
+    InvalidConfiguration(&'static str),
     #[error("failed to stat /dev/mshv")]
     AvailableCheck(#[source] io::Error),
     #[cfg(guest_arch = "x86_64")]
@@ -881,7 +957,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         // intercept revocation path must share serialized state with
         // acquire_snp_host_access before concurrent use is safe.
         #[cfg(guest_arch = "x86_64")]
-        if self.snp.is_some() {
+        if self.isolation.snp().is_some() {
             return arch::acquire_snp_host_access(self, _addr, _size);
         }
         anyhow::bail!("acquiring host access is not supported")
@@ -895,8 +971,6 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         writable: bool,
         exec: bool,
     ) -> anyhow::Result<()> {
-        #[cfg(guest_arch = "x86_64")]
-        let snp_launch_state = self.snp.as_ref().map(|snp| snp.launch_state.lock());
         let mut state = self.memory.lock();
 
         // Memory slots cannot be resized but can be moved within the guest
@@ -941,34 +1015,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             exec,
         )
         .entered();
-        #[cfg(guest_arch = "x86_64")]
-        let mapped = match snp_launch_state.as_deref() {
-            Some(arch::SnpLaunchState::NotStarted) => {
-                // SNP mappings release host access, so record them now and
-                // flush them only after all loader writes and the secure
-                // transition.
-                false
-            }
-            Some(arch::SnpLaunchState::Started) => {
-                anyhow::bail!("cannot add a memory mapping while SNP launch is in progress")
-            }
-            Some(arch::SnpLaunchState::Finished) => {
-                self.vmfd.map_user_memory(mem_region)?;
-                true
-            }
-            Some(arch::SnpLaunchState::Failed) => {
-                anyhow::bail!("cannot add a memory mapping after SNP launch failed")
-            }
-            None => {
-                self.vmfd.map_user_memory(mem_region)?;
-                true
-            }
-        };
-        #[cfg(guest_arch = "aarch64")]
-        let mapped = {
-            self.vmfd.map_user_memory(mem_region)?;
-            true
-        };
+        let mapped = self.isolation.map_user_memory(&self.vmfd, mem_region)?;
         state.ranges[slot_to_use] = Some(MshvMemoryRange {
             region: mem_region,
             mapped,

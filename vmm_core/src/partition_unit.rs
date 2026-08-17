@@ -55,6 +55,12 @@ pub struct PartitionUnit {
 /// Trait with the minimal methods needed to run the partition.
 #[async_trait]
 pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore {
+    /// Returns whether initial VP state is supplied through an imported
+    /// isolation context instead of register writes.
+    fn initial_regs_are_imported(&self) -> bool {
+        false
+    }
+
     /// Resets the partition.
     fn reset(&mut self) -> anyhow::Result<()>;
 
@@ -479,10 +485,12 @@ impl PartitionUnitRunner {
             self.needs_reset = false;
         }
 
-        self.vp_set
-            .set_initial_regs(vtl, state.clone(), vp_set::RegistersToSet::All)
-            .await
-            .map_err(InitialRegError::RegisterSet)?;
+        if !self.partition.initial_regs_are_imported() {
+            self.vp_set
+                .set_initial_regs(vtl, state.clone(), vp_set::RegistersToSet::All)
+                .await
+                .map_err(InitialRegError::RegisterSet)?;
+        }
 
         self.initial_regs = Some(state);
         Ok(())

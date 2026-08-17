@@ -118,6 +118,7 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
 }
 
 pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
+    fn initial_regs_are_imported(&self) -> bool;
     fn save(&self) -> anyhow::Result<VmSavedState>;
     fn restore(&self, state: VmSavedState) -> anyhow::Result<()>;
     fn reset(&self) -> anyhow::Result<()>;
@@ -127,6 +128,10 @@ pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
 }
 
 impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
+    fn initial_regs_are_imported(&self) -> bool {
+        Partition::initial_regs_are_imported(self)
+    }
+
     fn save(&self) -> anyhow::Result<VmSavedState> {
         let vm = self
             .access_state(Vtl::Vtl0)
@@ -268,6 +273,10 @@ pub struct WrappedPartition(Arc<dyn BasicPartitionStateAccess>);
 
 #[async_trait]
 impl VmPartition for WrappedPartition {
+    fn initial_regs_are_imported(&self) -> bool {
+        self.0.initial_regs_are_imported()
+    }
+
     fn reset(&mut self) -> anyhow::Result<()> {
         self.0.reset()
     }
