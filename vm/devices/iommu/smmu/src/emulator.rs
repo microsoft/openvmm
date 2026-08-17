@@ -66,7 +66,7 @@ pub struct HostSmmuCaps {
     /// Host SMMUv3 output address size (IDR5.OAS field). Resolved to a bit
     /// width (and validated) in [`SmmuSharedState::bind_accel_viommu`], since
     /// the encoding may be one the architecture reserves.
-    pub(crate) oas: crate::spec::cd::Ips,
+    pub(crate) oas: crate::spec::AddrSize,
     /// Host translation table format support (IDR0.TTF).
     pub(crate) ttf: registers::Idr0Ttf,
     /// Host translation table endianness support (IDR0.TTENDIAN).
@@ -82,14 +82,14 @@ impl HostSmmuCaps {
     /// The caller (the VFIO layer) supplies the raw register array; this
     /// crate owns the register layout, so decoding lives here rather than in
     /// the iommufd bindings. This decode is total — the only field whose value
-    /// may be unrecognized is OAS, whose `Ips` encoding is interpreted in
+    /// may be unrecognized is OAS, whose `AddrSize` encoding is interpreted in
     /// [`SmmuSharedState::bind_accel_viommu`].
     pub fn from_idr(idr: [u32; 6]) -> Self {
         let idr0 = registers::Idr0::from(idr[0]);
         let idr5 = registers::Idr5::from(idr[5]);
 
         Self {
-            oas: crate::spec::cd::Ips(idr5.oas()),
+            oas: idr5.oas(),
             ttf: registers::Idr0Ttf::from(idr0.ttf()),
             ttendian: registers::Idr0TtEndian(idr0.ttendian()),
             gran4k: idr5.gran4k(),
@@ -279,7 +279,7 @@ impl SmmuDevice {
         };
 
         let idr5 = registers::Idr5::new()
-            .with_oas(crate::spec::cd::Ips::from_bits(oas_bits).0)
+            .with_oas(crate::spec::AddrSize::from_addr_bits(oas_bits))
             .with_gran4k(true)
             // TODO: support 16K/64K translation granules. When advertised, the
             // accel path must validate the host SMMU's GRAN16K/GRAN64K bits in
@@ -369,7 +369,7 @@ impl SmmuDevice {
                 // the device starts; start freezes it. Granule bits are fixed.
                 let oas = self.shared_state.oas_bits();
                 self.idr5
-                    .with_oas(crate::spec::cd::Ips::from_bits(oas).0)
+                    .with_oas(crate::spec::AddrSize::from_addr_bits(oas))
                     .into()
             }
             registers::IIDR => self.iidr,
@@ -1498,7 +1498,7 @@ mod tests {
         assert!(idr5.gran4k());
         assert!(!idr5.gran16k());
         assert!(!idr5.gran64k());
-        assert_eq!(idr5.oas(), 0b010);
+        assert_eq!(idr5.oas(), crate::spec::AddrSize::BITS_40);
 
         // IIDR = 0
         assert_eq!(read32(&mut dev, IIDR), 0);
@@ -2301,7 +2301,7 @@ mod tests {
     /// Host caps compatible with everything the emulator advertises.
     fn test_host_caps() -> HostSmmuCaps {
         HostSmmuCaps {
-            oas: crate::spec::cd::Ips::IPS_48,
+            oas: crate::spec::AddrSize::BITS_48,
             ttf: Idr0Ttf::new().with_aarch64(true),
             ttendian: Idr0TtEndian::LE,
             gran4k: true,
@@ -2325,7 +2325,7 @@ mod tests {
         dev.start();
 
         let caps = HostSmmuCaps {
-            oas: crate::spec::cd::Ips::IPS_36,
+            oas: crate::spec::AddrSize::BITS_36,
             ..test_host_caps()
         };
         let err = dev
@@ -2337,7 +2337,7 @@ mod tests {
         assert!(err.contains("advertised SMMU OAS 40 exceeds host SMMU OAS 36"));
         assert_eq!(
             Idr5::from(read32(&mut dev, IDR5)).oas(),
-            crate::spec::cd::Ips::IPS_40.0
+            crate::spec::AddrSize::BITS_40
         );
     }
 
@@ -3581,7 +3581,6 @@ mod tests {
         use crate::spec::cd::Cd;
         use crate::spec::cd::CdDw0;
         use crate::spec::cd::CdDw1;
-        use crate::spec::cd::Ips;
         use crate::spec::cd::Tg0;
         use crate::spec::commands::CmdCfgiCd;
         use crate::spec::commands::CmdCfgiSte;
@@ -3859,7 +3858,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(Tg0::GRAN_4K.0)
-                .with_ips(Ips::IPS_40.0)
+                .with_ips(crate::spec::AddrSize::BITS_40)
                 .with_aa64(true)
                 .with_a(true)
                 .with_asid(1),
@@ -4097,7 +4096,6 @@ mod tests {
         use crate::spec::cd::Cd;
         use crate::spec::cd::CdDw0;
         use crate::spec::cd::CdDw1;
-        use crate::spec::cd::Ips;
         use crate::spec::cd::Tg0;
         use crate::spec::pt::ApBits;
         use crate::spec::pt::PtDesc;
@@ -4141,7 +4139,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(Tg0::GRAN_4K.0)
-                .with_ips(Ips::IPS_40.0)
+                .with_ips(crate::spec::AddrSize::BITS_40)
                 .with_aa64(true)
                 .with_a(true)
                 .with_asid(1),

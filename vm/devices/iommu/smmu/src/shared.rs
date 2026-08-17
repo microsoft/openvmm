@@ -595,7 +595,7 @@ impl SmmuSharedState {
         // Before the device starts, `auto` adopts the host value. Once
         // capabilities are guest-visible, both policies only validate the
         // already-advertised value.
-        let host_oas_bits = caps.oas.bits().ok_or_else(|| {
+        let host_oas_bits = caps.oas.addr_bits().ok_or_else(|| {
             anyhow::anyhow!(
                 "host SMMU reported an unknown OAS encoding ({})",
                 caps.oas.0
@@ -1507,10 +1507,10 @@ impl IrqFdRoute for SmmuIrqFdRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::AddrSize;
     use crate::spec::cd::CD_SIZE;
     use crate::spec::cd::CdDw0;
     use crate::spec::cd::CdDw1;
-    use crate::spec::cd::Ips;
     use crate::spec::cd::Tg0;
     use crate::spec::events::EventId;
     use crate::spec::pt::ApBits;
@@ -1714,7 +1714,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(Tg0::GRAN_4K.0)
-                .with_ips(Ips::IPS_40.0)
+                .with_ips(AddrSize::BITS_40)
                 .with_aa64(true)
                 .with_a(true)
                 .with_asid(1),
@@ -2271,7 +2271,7 @@ mod tests {
     /// advertises (AArch64, little-endian, 4K granule, ample OAS).
     fn compatible_host_caps() -> crate::HostSmmuCaps {
         crate::HostSmmuCaps {
-            oas: Ips::IPS_48,
+            oas: AddrSize::BITS_48,
             ttf: registers::Idr0Ttf::new().with_aarch64(true),
             ttendian: registers::Idr0TtEndian::LE,
             gran4k: true,
@@ -2298,7 +2298,7 @@ mod tests {
     fn resolve_host_caps_auto_adopts_host_oas() {
         let state = make_accel_state(crate::SmmuOasPolicy::Auto { provisional: 40 });
         let caps = crate::HostSmmuCaps {
-            oas: Ips::IPS_48,
+            oas: AddrSize::BITS_48,
             ..compatible_host_caps()
         };
         state.resolve_host_caps(caps).unwrap();
@@ -2324,7 +2324,7 @@ mod tests {
         let state = make_accel_state(crate::SmmuOasPolicy::Auto { provisional: 40 });
         state.freeze_capabilities();
         let caps = crate::HostSmmuCaps {
-            oas: Ips::IPS_36,
+            oas: AddrSize::BITS_36,
             ..compatible_host_caps()
         };
 
@@ -2337,7 +2337,7 @@ mod tests {
     fn resolve_host_caps_rejects_fixed_oas_above_host() {
         let state = make_accel_state(crate::SmmuOasPolicy::Fixed(52));
         let caps = crate::HostSmmuCaps {
-            oas: Ips::IPS_44,
+            oas: AddrSize::BITS_44,
             ..compatible_host_caps()
         };
         let err = state.resolve_host_caps(caps).unwrap_err().to_string();
@@ -2408,7 +2408,7 @@ mod tests {
         state.resolve_host_caps(compatible_host_caps()).unwrap();
         // A second device backed by a different physical SMMU (different OAS).
         let other = crate::HostSmmuCaps {
-            oas: Ips::IPS_44,
+            oas: AddrSize::BITS_44,
             ..compatible_host_caps()
         };
         let err = state.resolve_host_caps(other).unwrap_err().to_string();

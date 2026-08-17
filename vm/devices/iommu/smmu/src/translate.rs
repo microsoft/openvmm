@@ -232,7 +232,7 @@ pub fn translation_context(
     }
 
     // Validate IPS and cap to device OAS per SMMUv3 §3.4.
-    let cd_oas_bits = ips.bits().ok_or_else(|| SmmuFault::bad_cd(sid))?;
+    let cd_oas_bits = ips.addr_bits().ok_or_else(|| SmmuFault::bad_cd(sid))?;
     let cd_oas_mask = (1u64 << cd_oas_bits) - 1;
     // The effective OAS is the minimum of CD.IPS and the device OAS.
     let oas_mask = cd_oas_mask.min(device_oas_mask);
@@ -445,10 +445,10 @@ fn check_permissions(desc: &PtDesc, iova: u64, write: bool, sid: u32) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::AddrSize;
     use crate::spec::cd::CD_SIZE;
     use crate::spec::cd::CdDw0;
     use crate::spec::cd::CdDw1;
-    use crate::spec::cd::Ips;
     use crate::spec::ste::SteDw0;
     use crate::spec::ste::SteDw1;
 
@@ -489,13 +489,13 @@ mod tests {
     }
 
     /// Build a valid CD.
-    fn make_cd(ttb0: u64, t0sz: u8, tg0: Tg0, ips: Ips) -> Cd {
+    fn make_cd(ttb0: u64, t0sz: u8, tg0: Tg0, ips: AddrSize) -> Cd {
         Cd {
             qw0: CdDw0::new()
                 .with_v(true)
                 .with_t0sz(t0sz)
                 .with_tg0(tg0.0)
-                .with_ips(ips.0)
+                .with_ips(ips)
                 .with_aa64(true)
                 .with_a(true)
                 .with_asid(1),
@@ -618,7 +618,7 @@ mod tests {
     fn test_cd_lookup_valid() {
         let gm = GuestMemory::allocate(0x40_0000);
         let ste = make_s1_ste(CD_BASE);
-        let cd = make_cd(0x3000_0000, 32, Tg0::GRAN_4K, Ips::IPS_40);
+        let cd = make_cd(0x3000_0000, 32, Tg0::GRAN_4K, AddrSize::BITS_40);
         write_cd(&gm, CD_BASE, 0, &cd);
 
         let result = lookup_cd(&gm, &ste, 5, 0, OAS_MASK);
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_translation_context_4k() {
-        let cd = make_cd(0x4000_0000, 32, Tg0::GRAN_4K, Ips::IPS_40);
+        let cd = make_cd(0x4000_0000, 32, Tg0::GRAN_4K, AddrSize::BITS_40);
         let ctx = translation_context(&cd, 0, OAS_MASK).expect("should succeed");
         assert_eq!(ctx.ttb0, 0x4000_0000);
         assert_eq!(ctx.t0sz, 32);
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_translation_context_16k() {
-        let cd = make_cd(0x8000_0000, 28, Tg0::GRAN_16K, Ips::IPS_48);
+        let cd = make_cd(0x8000_0000, 28, Tg0::GRAN_16K, AddrSize::BITS_48);
         let ctx = translation_context(&cd, 0, (1u64 << 48) - 1).expect("should succeed");
         assert_eq!(ctx.tg0, Tg0::GRAN_16K);
         assert_eq!(ctx.oas_mask, (1 << 48) - 1);
@@ -701,7 +701,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(0b11) // invalid
-                .with_ips(Ips::IPS_40.0)
+                .with_ips(AddrSize::BITS_40)
                 .with_aa64(true),
             qw1: CdDw1::new(),
             _qw2: 0,
@@ -721,7 +721,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(Tg0::GRAN_4K.0)
-                .with_ips(0b111) // invalid
+                .with_ips(AddrSize(0b111)) // invalid
                 .with_aa64(true),
             qw1: CdDw1::new(),
             _qw2: 0,
@@ -741,7 +741,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(Tg0::GRAN_4K.0)
-                .with_ips(Ips::IPS_40.0)
+                .with_ips(AddrSize::BITS_40)
                 .with_aa64(true)
                 .with_epd0(true),
             qw1: CdDw1::new(),

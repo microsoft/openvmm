@@ -244,7 +244,7 @@ pub struct Idr1 {
 pub struct Idr5 {
     /// Output address size.
     #[bits(3)]
-    pub oas: u8,
+    pub oas: super::AddrSize,
     #[bits(1)]
     _reserved0: u32,
     /// 4KB granule supported.
