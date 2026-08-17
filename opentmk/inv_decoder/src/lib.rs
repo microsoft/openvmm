@@ -21,7 +21,7 @@ use core::{
 };
 
 use alloc::{string::String, sync::Arc, vec::Vec};
-use anyhow::{Context, bail};
+use anyhow::{Context, Result, bail};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::atomicrefqueue::AtomicRefQueue;
@@ -30,19 +30,17 @@ const K_MAX_COMMANDS: usize = 1000;
 
 pub const EXEC_INPUT_REQ_SIZE: usize = 0x1000000;
 
-// Supported (min) input size (kMaxInput in executor.cc).
+/// Supported (min) input size (kMaxInput in executor.cc).
 pub const SUPPORTED_INPUT_SIZE: usize = 8 << 20;
 
-// Max supported args
+/// Max supported args
 pub const MAX_ARGS: usize = 30;
 
-// All syzkaller pointers are offsets from this presumed base address
+/// All syzkaller pointers are offsets from this presumed base address
 pub const ADDR_SYZ_BEGIN: u64 = 0x20000000;
 
-// Call failed
+/// Call failed
 const _SYZKALLER_CALL_END_FAILED: u64 = 3;
-
-pub type Result<T> = anyhow::Result<T, anyhow::Error>;
 
 pub type TestcaseResults = [ResT; K_MAX_COMMANDS];
 
@@ -89,7 +87,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
     /// buffer and exec callback.
     fn new<
         M: SafeMemoryMap + 'm,
-        F: Fn(&DecodedProgram, InputCase) -> InputResult + Send + Sync + 'f,
+        F: Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + Send + Sync + 'f,
     >(
         mem: M,
         syz_input_buffer: &[u8],

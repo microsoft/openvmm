@@ -16,11 +16,6 @@ pub(crate) struct AtomicRefQueue<T> {
     start_idx: AtomicUsize,
 }
 
-// AtomicRefQueue is safe to send between threads, as long as the entries are also Send.
-// Same goes for sync.
-unsafe impl<T> Send for AtomicRefQueue<T> where T: Send {}
-unsafe impl<T> Sync for AtomicRefQueue<T> where T: Sync {}
-
 impl<T> AtomicRefQueue<T> {
     /// Create a new AtomicRefQueue from a list of entries.
     pub(crate) fn new(list: Vec<T>) -> Self {
