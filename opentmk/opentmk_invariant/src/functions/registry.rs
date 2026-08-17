@@ -44,8 +44,7 @@ impl FunctionRegistry {
         let func = match func {
             None => {
                 return FuzzFunctionVariable::Error(format!(
-                    "Invalid function name: {}",
-                    &function_name
+                    "Invalid function name: {function_name}",
                 ));
             }
             Some(f) => f,

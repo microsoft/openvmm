@@ -128,7 +128,7 @@ impl<T: SerialIo> Executor<T> {
 
         log::info!(
             "Setting active deserializer to {:?}",
-            &self.deserializer_type
+            self.deserializer_type
         );
         Ok(Some(OpenTMKPacket::Ack(OpenTMKAckPacket { code: 0 })))
     }
