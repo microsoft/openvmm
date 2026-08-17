@@ -3,7 +3,7 @@
 
 use crate::functions::hvcall_meta::unpack_hvcall_meta;
 use crate::functions::{FuzzFunctionVariable, VerifyFuzzVariables};
-#[allow(unused)]
+#[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 use hvdef::Vtl;
 use inv_decoder::SafeMemoryMap;

@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#[allow(unused_imports)]
 use crate::prelude::*;
 use crate::{
     comms::{OpenTmkSerialIo, SerialCommsServer, SerialIo},
@@ -30,7 +29,6 @@ pub(crate) enum ExecutorError {
     PacketPayloadSerializeFailed,
     UnexpectedPacketReceived,
     NoDeserializerEnabled,
-    #[allow(dead_code)]
     SyzlangDeserializerFailed(String),
     DecoderMappingsDeserializeFailed,
     DeserializerUnset,

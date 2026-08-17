@@ -5,7 +5,7 @@ use inv_decoder::SafeMemoryMap;
 
 use crate::functions::{FuzzFunction, FuzzFunctionVariable};
 
-#[allow(unused_imports)]
+#[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 
 struct RegisteredFn {

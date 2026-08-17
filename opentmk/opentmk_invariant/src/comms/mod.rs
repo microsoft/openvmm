@@ -10,7 +10,7 @@ use inv_packet::{
     COMMS_SYN_MAGIC, OpenTMKPacket,
 };
 
-#[allow(unused_imports)]
+#[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 
 use opentmk_core::arch::serial::{InstrIoAccess, Serial, SerialPort};

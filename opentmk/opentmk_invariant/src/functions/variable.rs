@@ -3,7 +3,7 @@
 
 use inv_decoder::SafeMemoryMap;
 
-#[allow(unused_imports)]
+#[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 
 #[derive(Debug, Clone)]

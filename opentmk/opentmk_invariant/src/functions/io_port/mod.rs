@@ -6,7 +6,7 @@
 #![expect(unsafe_code)]
 
 use crate::functions::{FuzzFunctionVariable, VerifyFuzzVariables};
-#[allow(unused_imports)]
+#[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 
 use inv_decoder::SafeMemoryMap;
