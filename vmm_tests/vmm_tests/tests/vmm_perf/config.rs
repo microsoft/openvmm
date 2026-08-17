@@ -12,7 +12,7 @@ const CONFIGS_ENV: &str = "VMM_PERF_VM_SIZES";
 const PARAMETERS_ENV: &str = "VMM_PERF_PARAMETERS";
 const MIB: u64 = 1024 * 1024;
 const MIB_PER_GIB: u64 = 1024;
-const HIGH_CAPACITY_PERCENT: u64 = 80;
+const DEFAULT_CAPACITY_PERCENT: u64 = 80;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum VmmPerfProfile {
@@ -159,35 +159,28 @@ fn stringify_parameters(
 }
 
 fn default_configs(capacity: HostCapacity) -> anyhow::Result<Vec<VmmPerfConfig>> {
-    let high_cpu_count = capacity
+    let cpu_count = capacity
         .logical_processors
-        .saturating_mul(HIGH_CAPACITY_PERCENT as usize)
+        .saturating_mul(DEFAULT_CAPACITY_PERCENT as usize)
         / 100;
-    let high_cpu_count =
-        u64::try_from(high_cpu_count.max(1)).context("host processor count is too large")?;
-    let high_memory_mb = capacity
+    let cpu_count = u64::try_from(cpu_count.max(1)).context("host processor count is too large")?;
+    let memory_mb = capacity
         .available_memory_bytes
-        .saturating_mul(HIGH_CAPACITY_PERCENT)
+        .saturating_mul(DEFAULT_CAPACITY_PERCENT)
         / 100
         / MIB
         / MIB_PER_GIB
         * MIB_PER_GIB;
+    let memory_mb = memory_mb.max(MIB_PER_GIB);
 
-    Ok([
-        (4, 8 * MIB_PER_GIB),
-        (8, 16 * MIB_PER_GIB),
-        (high_cpu_count, high_memory_mb.max(MIB_PER_GIB)),
-    ]
-    .into_iter()
-    .map(|(cpu_count, memory_mb)| VmmPerfConfig {
+    Ok(vec![VmmPerfConfig {
         name: shape_name(cpu_count, memory_mb),
         parameters: BTreeMap::from([
             ("CpuCount".into(), cpu_count.to_string()),
             ("MemoryMB".into(), memory_mb.to_string()),
         ]),
         name_is_explicit: false,
-    })
-    .collect())
+    }])
 }
 
 fn generated_config_name(parameters: &BTreeMap<String, String>, index: usize) -> String {
