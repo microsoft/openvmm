@@ -12,13 +12,6 @@ pub struct VersionInfo {
 }
 
 /// Resolves the reported build identity.
-///
-/// This reports facts about the source a binary was built from and draws no
-/// conclusion about whether that binary is official. A build cannot prove its
-/// own provenance: any source tree without Git metadata could be arbitrarily
-/// modified, and a checkout of a published release commit may be identical to
-/// what was released. Callers who need to establish that a binary came from a
-/// particular build must verify it out of band.
 pub fn resolve_version(product_version: &str, git: Option<GitSource>) -> VersionInfo {
     let Some(git) = git else {
         return VersionInfo {
