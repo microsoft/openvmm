@@ -2123,7 +2123,7 @@ impl UhProcessor<'_, TdxBacked> {
 
                     UhHypercallHandler::TDX_DISPATCHER.dispatch(
                         guest_memory,
-                        hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
+                        hv1_hypercall::X64RegisterIo::new(handler, is_64bit, true),
                     );
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.vmcall
@@ -4368,7 +4368,7 @@ impl HypercallIo for TdHypercall<'_, '_> {
 impl hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, TdxBacked> {
     fn advance_ip(&mut self) {
         let long_mode = self.vp.long_mode(self.intercepted_vtl);
-        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode);
+        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode, true);
         io.advance_ip();
     }
 

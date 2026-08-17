@@ -848,7 +848,7 @@ mod x86 {
 
             WhpHypercallExit::DISPATCHER.dispatch(
                 &vpref.partition.gm,
-                hv1_hypercall::X64RegisterIo::new(&mut this, is_64bit),
+                hv1_hypercall::X64RegisterIo::new(&mut this, is_64bit, true),
             );
             this.flush()
         }
@@ -1037,7 +1037,7 @@ mod x86 {
             let exit_context = self.registers.exit_context;
             let is_64bit =
                 exit_context.ExecutionState.Cr0Pe() && exit_context.ExecutionState.EferLma();
-            hv1_hypercall::X64RegisterIo::new(self, is_64bit).advance_ip();
+            hv1_hypercall::X64RegisterIo::new(self, is_64bit, true).advance_ip();
         }
 
         fn inject_invalid_opcode_fault(&mut self) {

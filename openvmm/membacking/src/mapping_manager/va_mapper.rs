@@ -248,6 +248,7 @@ struct MapperInner {
     /// this is set.
     supports_memory_fault_resolution: bool,
     req_send: mesh::Sender<MappingRequest>,
+    /// Maintains a weak reference to avoid a reference cycle with the partition.
     host_access: Mutex<Option<HostAccess>>,
 }
 
@@ -822,6 +823,8 @@ impl VaMapper {
         self.inner.mapping.as_ptr().cast()
     }
 
+    /// Installs or removes the callback used to recover eager-mapper faults
+    /// caused by missing host permission.
     pub(crate) fn set_host_access(&self, host_access: Option<Arc<dyn virt::PartitionMemoryMap>>) {
         *self.inner.host_access.lock() =
             host_access.map(|host_access| HostAccess(Arc::downgrade(&host_access)));
@@ -898,6 +901,9 @@ unsafe impl GuestMemoryAccess for VaMapper {
         }
 
         if self.inner.eager.load(Ordering::Relaxed) {
+            // The guest-memory VA is already mapped for an eager mapper. For
+            // isolated guests, a fault can instead mean that the hypervisor has
+            // not granted userspace access to a shared page.
             if let Some(host_access) = self
                 .inner
                 .host_access

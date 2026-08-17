@@ -45,8 +45,11 @@ pub trait PartitionMemoryMap: Send + Sync {
 
     /// Acquires host access to a guest-memory range.
     ///
-    /// This is used by isolated partitions whose userspace mapping may fault
-    /// until the hypervisor grants current host access.
+    /// Some isolated hypervisors do not make a guest page accessible to
+    /// userspace merely because the guest marked it shared. The VMM must also
+    /// ask the hypervisor to grant the host permission to touch the existing
+    /// backing. This method grants that permission without changing guest
+    /// visibility.
     ///
     /// TODO: This trait is sufficient for MSHV bring-up, but a redesign is
     /// required to safely lower host access and track that pages are not
