@@ -144,25 +144,23 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
             // Accept the memory that was not accepted by the boot loader.
             // FUTURE: do this lazily.
-            let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
-            let accept_subrange = move |subrange| {
-                acceptor.accept_lower_vtl_pages(subrange).unwrap();
+            let vp_count = params.processor_topology.vp_count();
+            let accept_subrange = move |subrange| -> anyhow::Result<()> {
+                acceptor.accept_lower_vtl_pages(subrange)?;
                 if hardware_isolated {
                     // For VBS-isolated VMs, the VTL protections are set as
                     // part of the accept call.
-                    acceptor
-                        .apply_initial_lower_vtl_protections(subrange)
-                        .unwrap();
+                    acceptor.apply_initial_lower_vtl_protections(subrange)?;
                 }
+                Ok(())
             };
             tracing::debug!("Accepting VTL0 memory");
-            std::thread::scope(|scope| {
-                for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
-                    validated_ranges.push(source_range);
 
-                    parallelize_mem_op(source_range, vp_count, scope, accept_subrange);
-                }
-            });
+            let source_ranges =
+                memory_range::subtract_ranges(ram, accepted_ranges).collect::<Vec<_>>();
+            validated_ranges.extend_from_slice(&source_ranges);
+
+            parallelize_mem_op(&source_ranges, vp_count, accept_subrange).unwrap();
         }
     }
 

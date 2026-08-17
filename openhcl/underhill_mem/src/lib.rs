@@ -465,15 +465,11 @@ impl HardwareIsolatedMemoryProtector {
     ) -> Result<(), ApplyVtlProtectionsError> {
         if gpn_source == GpnSource::GuestMemory && target_vtl == GuestVtl::Vtl0 {
             // Only permissions imposed on VTL 0 guest memory are explicitly tracked
-            // let start = Instant::now();
             self.vtl0.update_permission_bitmaps(range, protections);
         }
 
-        let result = self
-            .acceptor
-            .apply_protections(range, target_vtl, protections);
-
-        result
+        self.acceptor
+            .apply_protections(range, target_vtl, protections)
     }
 
     /// Get the permissions that the given VTL has to the given GPN.
@@ -803,7 +799,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         target_vtl: GuestVtl,
         vtl_protections: HvMapGpaFlags,
         tlb_access: &mut dyn TlbFlushLockAccess,
-        thread_count: u32,
+        vp_count: u32,
     ) -> Result<(), HvError> {
         // Prevent visibility changes while VTL protections are being
         // applied.
@@ -858,10 +854,11 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 vtl_protections,
                 GpnSource::GuestMemory,
             )
-            .unwrap();
         };
 
-        // Handle overlay pages first
+        // Handle overlay pages first, collecting the ranges that don't contain
+        // any so they can be protected in parallel below.
+        let mut protect_ranges = Vec::new();
         for source_range in ranges {
             let mut range_queue = VecDeque::new();
             range_queue.push_back(source_range);
@@ -889,13 +886,15 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                     }
                 }
 
-                std::thread::scope(|scope| {
-                    parallelize_mem_op(range, thread_count, scope, protect_subrange);
-                });
+                // We can only reach here if the range does not contain any overlay
+                // pages, so it can be protected in parallel.
+                protect_ranges.push(range);
             }
         }
 
-        tracing::debug!("Finished applying default vtl protections.");
+        parallelize_mem_op(&protect_ranges, vp_count, protect_subrange).unwrap();
+
+        tracing::trace!("Finished applying default vtl protections.");
 
         // Flush any threads accessing pages that had their VTL protections
         // changed.
@@ -1153,41 +1152,51 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     }
 }
 
-pub(crate) fn parallelize_mem_op<'a>(
-    source_range: MemoryRange,
-    thread_count: u32,
-    scope: &'a std::thread::Scope<'a, '_>,
-    op: impl Fn(MemoryRange) + Send + Sync + Copy + 'a,
-) {
-    assert_ne!(thread_count, 0, "thread_count must be non-zero");
+pub(crate) fn parallelize_mem_op<E>(
+    source_ranges: &[MemoryRange],
+    vp_count: u32,
+    op: impl Fn(MemoryRange) -> Result<(), E> + Send + Sync + Copy,
+) -> Result<(), E>
+where
+    E: Send,
+{
+    std::thread::scope(|scope| -> Result<(), E> {
+        let thread_count = vp_count.saturating_sub(1).max(1);
+        let mut workers = Vec::new();
 
-    // Chunks must be 2mb aligned
-    let two_mb = 2 * 1024 * 1024;
-    let mut range = source_range.aligned_subrange(two_mb);
-    if !range.is_empty() {
-        let chunk_size = (range.page_count_2m().div_ceil(thread_count as u64)) * two_mb;
-        let chunk_count = range.len().div_ceil(chunk_size);
+        for &source_range in source_ranges {
+            let two_mb = 2 * 1024 * 1024;
+            let aligned_range = source_range.aligned_subrange(two_mb);
+            let mut range = aligned_range;
 
-        for _ in 0..chunk_count {
-            let subrange;
-            (subrange, range) = if range.len() >= chunk_size {
-                range.split_at_offset(chunk_size)
-            } else {
-                (range, MemoryRange::EMPTY)
-            };
-            scope.spawn(move || {
-                op(subrange);
-            });
+            if !range.is_empty() {
+                let chunk_size = range.page_count_2m().div_ceil(thread_count as u64) * two_mb;
+
+                while !range.is_empty() {
+                    let (subrange, remainder) = if range.len() > chunk_size {
+                        range.split_at_offset(chunk_size)
+                    } else {
+                        (range, MemoryRange::EMPTY)
+                    };
+                    range = remainder;
+                    workers.push(scope.spawn(move || op(subrange)));
+                }
+            }
+
+            if aligned_range != source_range {
+                workers.push(scope.spawn(move || {
+                    for subrange in memory_range::subtract_ranges([source_range], [aligned_range]) {
+                        op(subrange)?;
+                    }
+                    Ok(())
+                }));
+            }
         }
-        assert!(range.is_empty());
-    }
 
-    // Now accept whatever wasn't aligned on the edges
-    scope.spawn(move || {
-        for unaligned_subrange in
-            memory_range::subtract_ranges([source_range], [source_range.aligned_subrange(two_mb)])
-        {
-            op(unaligned_subrange);
+        for handle in workers {
+            handle.join().expect("memory operation thread panicked")?;
         }
-    });
+
+        Ok(())
+    })
 }
