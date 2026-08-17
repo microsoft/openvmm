@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Decodes and executes syzkaller programs against a caller-provided memory map.
+
 #![no_std]
 
 #[macro_use]
@@ -28,6 +30,7 @@ use crate::atomicrefqueue::AtomicRefQueue;
 
 const K_MAX_COMMANDS: usize = 1000;
 
+/// Required size, in bytes, of the syzkaller executor memory region.
 pub const EXEC_INPUT_REQ_SIZE: usize = 0x1000000;
 
 /// Supported (min) input size (kMaxInput in executor.cc).
@@ -42,8 +45,10 @@ pub const ADDR_SYZ_BEGIN: u64 = 0x20000000;
 /// Call failed
 const _SYZKALLER_CALL_END_FAILED: u64 = 3;
 
+/// Results produced by executing the calls in a syzkaller program.
 pub type TestcaseResults = [ResT; K_MAX_COMMANDS];
 
+/// Callback used to execute a decoded syzkaller input.
 pub type Executor<'f> =
     dyn Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + 'f + Send + Sync;
 
@@ -552,10 +557,11 @@ impl<'a> Decoder<'a> {
 
 /// Represents a parsed syzkaller input.
 pub struct InputCase {
+    /// Syzkaller call number to execute.
     pub call_num: u64,
     /// argument array
     pub args: [u64; MAX_ARGS],
-    // Number of args set in args
+    /// Number of args set in `args`.
     pub num_args: u64,
     /// Prevent construction by our callers so we can ensure maximum SemVer flexibility.
     #[doc(hidden)]
@@ -565,11 +571,15 @@ pub struct InputCase {
 /// Result of an executed syzkaller input
 #[derive(Default)]
 pub struct InputResult {
+    /// Value returned by the executed call.
     pub code: u64,
+    /// Name of the executed call.
     pub name: String,
+    /// Whether the call completed successfully.
     pub is_success: bool,
 }
 
+/// Thread-safe result storage for a single executed call.
 pub struct ResT {
     executed: AtomicBool,
     val: AtomicU64,
