@@ -38,6 +38,7 @@ use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvInputVtl;
 use mapping::GuestMemoryMapping;
 use mapping::GuestValidMemory;
+use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
@@ -45,6 +46,8 @@ use registrar::RegisterMemory;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 use virt::IsolationType;
 use virt_mshv_vtl::GpnSource;
@@ -1142,13 +1145,11 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     }
 
     fn set_vtl1_protections_enabled(&self) {
-        self.vtl1_protections_enabled
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.vtl1_protections_enabled.store(true, Ordering::Relaxed);
     }
 
     fn vtl1_protections_enabled(&self) -> bool {
-        self.vtl1_protections_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.vtl1_protections_enabled.load(Ordering::Relaxed)
     }
 }
 
@@ -1160,43 +1161,49 @@ pub(crate) fn parallelize_mem_op<E>(
 where
     E: Send,
 {
-    std::thread::scope(|scope| -> Result<(), E> {
-        let thread_count = vp_count.saturating_sub(1).max(1);
-        let mut workers = Vec::new();
+    const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
+    const MAX_RANGE_LEN: u64 = 2 << 30;
 
-        for &source_range in source_ranges {
-            let two_mb = 2 * 1024 * 1024;
-            let aligned_range = source_range.aligned_subrange(two_mb);
-            let mut range = aligned_range;
+    let worker_count = vp_count.saturating_sub(1).max(1);
 
-            if !range.is_empty() {
-                let chunk_size = range.page_count_2m().div_ceil(thread_count as u64) * two_mb;
+    assert_ne!(worker_count, 0);
+    let ranges: Vec<_> = source_ranges.into_iter().collect();
+    let total_len = ranges
+        .iter()
+        .fold(0_u64, |len, range| len.saturating_add(range.len()));
+    let target_range_len = total_len
+        .div_ceil(u64::from(worker_count))
+        .clamp(LARGE_PAGE_SIZE, MAX_RANGE_LEN)
+        .next_multiple_of(LARGE_PAGE_SIZE)
+        .min(MAX_RANGE_LEN);
 
-                while !range.is_empty() {
-                    let (subrange, remainder) = if range.len() > chunk_size {
-                        range.split_at_offset(chunk_size)
-                    } else {
-                        (range, MemoryRange::EMPTY)
-                    };
-                    range = remainder;
-                    workers.push(scope.spawn(move || op(subrange)));
-                }
-            }
+    // Preserve large-page alignment while creating enough work to keep all
+    // workers busy, with a ceiling to balance very large memory ranges.
+    let ranges: Vec<_> = ranges
+        .into_iter()
+        .flat_map(|range| AlignedSubranges::new(*range).with_max_range_len(target_range_len))
+        .collect();
+    let worker_count = usize::min(worker_count as usize, ranges.len());
+    let next_range = AtomicUsize::new(0);
 
-            if aligned_range != source_range {
-                workers.push(scope.spawn(move || {
-                    for subrange in memory_range::subtract_ranges([source_range], [aligned_range]) {
-                        op(subrange)?;
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..worker_count)
+            .map(|_| {
+                scope.spawn(|| {
+                    loop {
+                        let index = next_range.fetch_add(1, Ordering::Relaxed);
+                        let Some(&range) = ranges.get(index) else {
+                            return Ok::<(), E>(());
+                        };
+                        op(range)?;
                     }
-                    Ok(())
-                }));
-            }
-        }
+                })
+            })
+            .collect();
 
-        for handle in workers {
-            handle.join().expect("memory operation thread panicked")?;
+        for worker in workers {
+            worker.join().expect("memory range worker panicked")?;
         }
-
         Ok(())
     })
 }

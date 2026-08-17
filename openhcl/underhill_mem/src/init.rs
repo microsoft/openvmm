@@ -113,6 +113,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         None
     };
 
+    let vp_count = params.processor_topology.vp_count();
+
     let hardware_isolated = params.isolation.is_hardware_isolated();
 
     if let Some(boot_init) = &params.boot_init {
@@ -136,21 +138,24 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             // VTL2 only permissions. Provide VTL0 access here.
             tracing::debug!("Applying VTL0 protections");
             if hardware_isolated {
-                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
-                {
-                    acceptor.apply_initial_lower_vtl_protections(range)?;
-                }
+                let accepted_ram: Vec<_> =
+                    memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
+                        .collect();
+                parallelize_mem_op(accepted_ram.as_slice(), vp_count, |range| {
+                    acceptor.apply_initial_lower_vtl_protections(range)
+                })?;
             }
 
             // Accept the memory that was not accepted by the boot loader.
             // FUTURE: do this lazily.
-            let vp_count = params.processor_topology.vp_count();
-            let accept_subrange = move |subrange| -> anyhow::Result<()> {
-                acceptor.accept_lower_vtl_pages(subrange)?;
+            let accept_subrange = move |subrange| -> Result<(), std::convert::Infallible> {
+                acceptor.accept_lower_vtl_pages(subrange).unwrap();
                 if hardware_isolated {
                     // For VBS-isolated VMs, the VTL protections are set as
                     // part of the accept call.
-                    acceptor.apply_initial_lower_vtl_protections(subrange)?;
+                    acceptor
+                        .apply_initial_lower_vtl_protections(subrange)
+                        .unwrap();
                 }
                 Ok(())
             };
@@ -244,8 +249,17 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // that devices will do DMA to them.
         let shared_offset = match params.isolation {
             IsolationType::Tdx => {
-                // TDX has one mapping for each page. The shared bit is reserved
-                // from the kernel's perspective, so no VA offset is needed.
+                // Register memory just once, as shared memory. This
+                // registration will be used both to map pages as shared and as
+                // encrypted. If the kernel remaps a page into a kernel address,
+                // it will be marked as shared, which can cause a fault or,
+                // worse, an information leak.
+                //
+                // This is done this way because in TDX, there is only one
+                // mapping for each page. The distinguishing bit is a reserved
+                // bit, from the kernel's perspective. (You can also just see it
+                // as the high bit of the GPA, but the Linux kernel does not
+                // treat it that way.)
                 //
                 // TODO CVM: figure out how to prevent passing encrypted pages
                 // to syscalls. Idea: prohibit locking of `GuestMemory` pages
@@ -257,8 +271,20 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 0
             }
             IsolationType::Snp | IsolationType::Cca => {
-                // SNP and CCA map shared pages above VTOM, separately from the
-                // private mapping below VTOM.
+                // SNP and CCA have two mappings for each shared page: one below
+                // and one above VTOM. So, unlike for TDX, we could choose to
+                // register memory twice, allowing the kernel to operate on
+                // either shared or encrypted memory. But, for consistency with
+                // TDX, just register the shared mapping.
+                //
+                // Register the VTOM mapping instead of the low mapping. In
+                // theory it shouldn't matter; we should be able to ignore VTOM.
+                // However, the ioctls to issue pvalidate and rmpadjust
+                // instructions operate on VAs, and they must either be VAs
+                // mapping unregistered pages or pages that were registered as
+                // encrypted. Since we want to avoid registering the pages as
+                // encrypted, the lower alias must remain unregistered, and so
+                // the shared registration must use the high mapping.
                 vtom
             }
             _ => unreachable!(),
@@ -396,11 +422,10 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 tracing::info_span!("zeroing lower vtl memory for SNP", CVM_ALLOWED).entered();
 
             tracing::debug!("zeroing lower vtl memory for SNP");
-            for range in validated_ranges {
-                vtl0_gm
-                    .fill_at(range.start(), 0, range.len() as usize)
-                    .expect("private memory should be valid at this stage");
-            }
+            parallelize_mem_op(&validated_ranges, vp_count, |range| {
+                vtl0_gm.fill_at(range.start(), 0, range.len() as usize)
+            })
+            .expect("private memory should be valid at this stage");
         }
 
         // Untrusted devices can only access shared memory, but they can do so
