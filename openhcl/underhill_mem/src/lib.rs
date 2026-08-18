@@ -897,12 +897,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             }
         }
 
-        parallelize_mem_op(
-            protect_ranges.iter().copied(),
-            self.vp_count,
-            protect_subrange,
-        )
-        .unwrap_or_else(|err| panic!("applying default VTL protections failed: {err}"));
+        parallelize_mem_op(&protect_ranges, self.vp_count, protect_subrange)
+            .expect("applying default VTL protections should not fail");
 
         tracing::trace!("Finished applying default vtl protections.");
 
@@ -1161,7 +1157,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 }
 
 pub(crate) fn parallelize_mem_op<E>(
-    source_ranges: impl Iterator<Item = MemoryRange> + Clone,
+    source_ranges: &[MemoryRange],
     vp_count: u32,
     op: impl Fn(MemoryRange) -> Result<(), E> + Send + Sync + Copy,
 ) -> Result<(), E>
@@ -1176,7 +1172,7 @@ where
     let worker_count = vp_count.saturating_sub(1).max(1);
 
     let total_len = source_ranges
-        .clone()
+        .iter()
         .fold(0_u64, |len, range| len.saturating_add(range.len()));
     let target_range_len = total_len
         .div_ceil(u64::from(worker_count))
@@ -1187,7 +1183,8 @@ where
     // Preserve large-page alignment while creating enough work to keep all
     // workers busy, with a ceiling to balance very large memory ranges.
     let ranges: Vec<_> = source_ranges
-        .flat_map(|range| AlignedSubranges::new(range).with_max_range_len(target_range_len))
+        .iter()
+        .flat_map(|range| AlignedSubranges::new(*range).with_max_range_len(target_range_len))
         .collect();
     if ranges.is_empty() {
         return Ok(());
@@ -1232,7 +1229,7 @@ mod tests {
         ];
         let completed = Mutex::new(Vec::new());
 
-        parallelize_mem_op(source_ranges.iter().copied(), 5, |range| {
+        parallelize_mem_op(&source_ranges, 5, |range| {
             completed.lock().push(range);
             Ok::<_, Infallible>(())
         })
@@ -1250,7 +1247,7 @@ mod tests {
 
     #[test]
     fn parallelize_mem_op_handles_empty_input() {
-        parallelize_mem_op(std::iter::empty(), 0, |_| Ok::<_, Infallible>(())).unwrap();
+        parallelize_mem_op(&[], 0, |_| Ok::<_, Infallible>(())).unwrap();
     }
 
     #[test]
@@ -1277,7 +1274,7 @@ mod tests {
         let completed = Mutex::new(Vec::new());
 
         // Fewer workers than ranges, so each worker processes multiple ranges.
-        parallelize_mem_op(source_ranges.iter().copied(), 4, |range| {
+        parallelize_mem_op(&source_ranges, 4, |range| {
             completed.lock().push(range);
             Ok::<_, Infallible>(())
         })
@@ -1293,9 +1290,7 @@ mod tests {
 
     #[test]
     fn parallelize_mem_op_propagates_worker_error() {
-        let error = parallelize_mem_op([MemoryRange::new(0..0x1000)].into_iter(), 2, |_| {
-            Err("failed")
-        });
+        let error = parallelize_mem_op(&[MemoryRange::new(0..0x1000)], 2, |_| Err("failed"));
 
         assert_eq!(error, Err("failed"));
     }
