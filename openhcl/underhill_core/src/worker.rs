@@ -3699,7 +3699,12 @@ async fn new_underhill_vm(
     // firmware is overloaded (via the GET `LoadFirmware` host request) with the
     // hibernated version before it runs; on success that version becomes the
     // recorded token.
-    let current_hibernate_token = if !dps.general.hibernation_enabled {
+    let current_hibernate_token = if !dps.general.hibernation_enabled
+        || !matches!(firmware_type, FirmwareType::Uefi)
+    {
+        // Hibernation is disabled, or this isn't a UEFI guest. Firmware overload
+        // is UEFI-only (gen-1/PCAT can hibernate but can't reload firmware), so
+        // there's no firmware version to pin — don't track a token.
         None
     } else if is_restoring {
         // Older saved state may not carry hibernation state; treat as unknown.
@@ -3717,17 +3722,7 @@ async fn new_underhill_vm(
             Some(token @ hibernate::Token::Hibernated { .. })
                 if token != hibernate::Token::CURRENT =>
             {
-                if !matches!(load_kind, LoadKind::Uefi) {
-                    // Firmware overload is UEFI-only; a gen-1/PCAT guest can
-                    // hibernate but can't reload firmware, so resume as-is.
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        resume = %token,
-                        "firmware overload is only supported for UEFI; resuming \
-                         with the current firmware despite a hibernation token mismatch"
-                    );
-                    Some(hibernate::Token::CURRENT)
-                } else if !dps
+                if !dps
                     .general
                     .management_vtl_features
                     .load_firmware_supported()
