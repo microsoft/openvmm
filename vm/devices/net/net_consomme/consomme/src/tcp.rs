@@ -16,6 +16,7 @@ use crate::IpAddresses;
 use crate::IpVersion;
 use crate::PortForwardKey;
 use crate::dns_resolver::DnsResolver;
+use crate::dns_resolver::dns_tcp::DnsTcpFrameAssembler;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
 use futures::AsyncWrite;
@@ -178,9 +179,70 @@ enum LoopbackPortInfo {
 enum TcpBackend {
     /// A real host socket. The socket may be `None` while the connection is
     /// being constructed, or after both ends have closed.
-    Socket(Option<PolledSocket<Socket>>),
+    Socket {
+        socket: Option<PolledSocket<Socket>>,
+        static_dns: Option<StaticDnsTcpInspection>,
+    },
     /// A virtual DNS TCP handler (no real socket).
     Dns(DnsTcpHandler),
+}
+
+#[derive(Default)]
+struct StaticDnsTcpInspection {
+    frame_assembler: DnsTcpFrameAssembler,
+    forwarding: Option<ForwardingDnsTcpFrame>,
+    host_response_frames: DnsTcpFrameBoundaryTracker,
+}
+
+struct ForwardingDnsTcpFrame {
+    frame: Vec<u8>,
+    offset: usize,
+}
+
+enum StaticDnsTcpDisposition {
+    Hold,
+    Forward,
+}
+
+#[derive(Default)]
+struct DnsTcpFrameBoundaryTracker {
+    prefix: [u8; 2],
+    prefix_len: usize,
+    payload_remaining: usize,
+}
+
+impl DnsTcpFrameBoundaryTracker {
+    fn ingest(&mut self, mut data: &[u8]) {
+        while !data.is_empty() {
+            if self.payload_remaining != 0 {
+                let consumed = data.len().min(self.payload_remaining);
+                self.payload_remaining -= consumed;
+                data = &data[consumed..];
+                continue;
+            }
+
+            let consumed = data.len().min(self.prefix.len() - self.prefix_len);
+            self.prefix[self.prefix_len..self.prefix_len + consumed]
+                .copy_from_slice(&data[..consumed]);
+            self.prefix_len += consumed;
+            data = &data[consumed..];
+
+            if self.prefix_len == self.prefix.len() {
+                self.payload_remaining = u16::from_be_bytes(self.prefix) as usize;
+                self.prefix_len = 0;
+            }
+        }
+    }
+
+    fn at_frame_boundary(&self) -> bool {
+        self.prefix_len == 0 && self.payload_remaining == 0
+    }
+}
+
+impl StaticDnsTcpInspection {
+    fn is_empty(&self) -> bool {
+        self.frame_assembler.is_empty() && self.forwarding.is_none()
+    }
 }
 
 #[derive(Inspect)]
@@ -245,7 +307,6 @@ struct TcpConnectionInner {
     tx_mss: usize,
     #[inspect(skip)]
     last_close_reason: ConnectionCloseReason,
-
     stats: TcpConnStats,
 }
 
@@ -484,18 +545,28 @@ impl<T: Client> Access<'_, T> {
                 client: self.client,
             };
             let keep = match &mut conn.backend {
-                TcpBackend::Dns(dns_handler) => match &mut self.inner.primary.dns {
-                    Some(dns) => conn
-                        .inner
-                        .poll_dns_backend(cx, &mut sender, dns_handler, dns),
-                    None => {
-                        tracing::warn!("DNS TCP connection without DNS resolver, dropping");
+                TcpBackend::Dns(dns_handler) => {
+                    if self.inner.primary.dns.can_answer_queries() {
+                        conn.inner.poll_dns_backend(
+                            cx,
+                            &mut sender,
+                            dns_handler,
+                            &mut self.inner.primary.dns,
+                        )
+                    } else {
+                        tracelimit::warn_ratelimited!(
+                            "DNS TCP connection without an answer source, dropping"
+                        );
                         false
                     }
-                },
-                TcpBackend::Socket(opt_socket) => {
-                    conn.inner.poll_socket_backend(cx, &mut sender, opt_socket)
                 }
+                TcpBackend::Socket { socket, static_dns } => conn.inner.poll_socket_backend(
+                    cx,
+                    &mut sender,
+                    socket,
+                    static_dns,
+                    &self.inner.primary.dns,
+                ),
             };
             if !keep {
                 self.inner
@@ -510,7 +581,10 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.shard.tcp.connections.retain(|ft, conn| {
-            let TcpBackend::Socket(opt_socket) = &mut conn.backend else {
+            let TcpBackend::Socket {
+                socket: opt_socket, ..
+            } = &mut conn.backend
+            else {
                 // DNS connections have no real socket to refresh.
                 return true;
             };
@@ -565,8 +639,10 @@ impl<T: Client> Access<'_, T> {
         let is_dns_tcp = is_gateway_dns_tcp(
             &ft,
             &self.inner.primary.config.immutable,
-            self.inner.primary.dns.is_some(),
+            self.inner.primary.dns.can_answer_queries(),
         );
+        let inspect_static_dns = ft.dst.port() == crate::DNS_PORT
+            && self.inner.primary.dns.should_intercept_static_queries();
 
         let mut sender = Sender {
             ft: &ft,
@@ -604,9 +680,7 @@ impl<T: Client> Access<'_, T> {
                     );
                     e.remove();
                     if dns_in_flight {
-                        if let Some(dns) = &mut self.inner.primary.dns {
-                            dns.complete_tcp_query();
-                        }
+                        self.inner.primary.dns.complete_tcp_query();
                     }
                 }
             }
@@ -661,6 +735,7 @@ impl<T: Client> Access<'_, T> {
                             &tcp,
                             &self.inner.shard.tcp.connection_params,
                             is_local_address,
+                            inspect_static_dns,
                         )?
                     };
                     e.insert(conn);
@@ -908,6 +983,7 @@ impl TcpConnection {
         tcp: &TcpRepr<'_>,
         params: &ConnectionParams,
         is_local_address: bool,
+        inspect_static_dns: bool,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
         inner.initialize_from_first_client_packet(tcp)?;
@@ -963,7 +1039,10 @@ impl TcpConnection {
             }
         }
         Ok(Self {
-            backend: TcpBackend::Socket(Some(socket)),
+            backend: TcpBackend::Socket {
+                socket: Some(socket),
+                static_dns: inspect_static_dns.then(StaticDnsTcpInspection::default),
+            },
             inner,
         })
     }
@@ -983,9 +1062,12 @@ impl TcpConnection {
         };
         inner.send_syn(sender, None);
         Ok(Self {
-            backend: TcpBackend::Socket(Some(
-                PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
-            )),
+            backend: TcpBackend::Socket {
+                socket: Some(
+                    PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
+                ),
+                static_dns: None,
+            },
             inner,
         })
     }
@@ -1071,8 +1153,25 @@ impl TcpConnectionInner {
             dns_handler.set_guest_fin();
         }
 
-        // tx path first: drain DNS responses into tx_buffer.
-        // This frees up backpressure so that ingest can make progress.
+        // rx path: feed guest data into the DNS handler for query extraction.
+        // Done before the tx path so that a query answered locally from static
+        // records is drained into tx_buffer within the same poll.
+        let view = self.rx_buffer.view(0..self.rx_buffer.len());
+        let (a, b) = view.as_slices();
+        match dns_handler.ingest(&[a, b], dns) {
+            Ok(consumed) if consumed > 0 => {
+                self.rx_buffer.consume(consumed);
+            }
+            Ok(_) => {}
+            Err(_) => {
+                // The DNS TCP query could not be processed; reset the connection.
+                sender.rst(self.tx_send, Some(self.rx_seq));
+                self.stats.rsts_tx.increment();
+                return false;
+            }
+        }
+
+        // tx path: drain DNS responses into tx_buffer.
         while !self.tx_buffer.is_full() {
             let (a, b) = self.tx_buffer.unwritten_slices_mut();
             let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
@@ -1104,22 +1203,6 @@ impl TcpConnectionInner {
             }
         }
 
-        // rx path: feed guest data into the DNS handler for query extraction.
-        let view = self.rx_buffer.view(0..self.rx_buffer.len());
-        let (a, b) = view.as_slices();
-        match dns_handler.ingest(&[a, b], dns) {
-            Ok(consumed) if consumed > 0 => {
-                self.rx_buffer.consume(consumed);
-            }
-            Ok(_) => {}
-            Err(_) => {
-                // Invalid DNS TCP framing; reset the connection.
-                sender.rst(self.tx_send, Some(self.rx_seq));
-                self.stats.rsts_tx.increment();
-                return false;
-            }
-        }
-
         // Flush any deferred pure-ACK from per-packet `handle_tcp` calls.
         self.send_next(sender, AckPolicy::Flush);
         let closing = self.state == TcpState::TimeWait
@@ -1140,6 +1223,8 @@ impl TcpConnectionInner {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         opt_socket: &mut Option<PolledSocket<Socket>>,
+        static_dns: &mut Option<StaticDnsTcpInspection>,
+        dns: &DnsResolver,
     ) -> bool {
         // Wait for the outbound connection to complete.
         if self.state == TcpState::Connecting {
@@ -1207,6 +1292,13 @@ impl TcpConnectionInner {
                                     self.close();
                                     break 'read;
                                 }
+                                if let Some(static_dns) = static_dns.as_mut() {
+                                    let first = n.min(bufs[0].len());
+                                    static_dns.host_response_frames.ingest(&bufs[0][..first]);
+                                    static_dns
+                                        .host_response_frames
+                                        .ingest(&bufs[1][..n - first]);
+                                }
                                 self.tx_buffer.extend_by(n);
                             }
                             Poll::Ready(Err(err)) => {
@@ -1248,75 +1340,9 @@ impl TcpConnectionInner {
             }
         }
 
-        // Handle the rx path.
         if let Some(socket) = opt_socket.as_mut() {
-            let rx_high_water = self.rx_buffer.len();
-            while !self.rx_buffer.is_empty() {
-                let view = self.rx_buffer.view(0..self.rx_buffer.len());
-                let (a, b) = view.as_slices();
-                let bufs = [IoSlice::new(a), IoSlice::new(b)];
-                match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
-                    Poll::Ready(Ok(n)) => {
-                        self.rx_buffer.consume(n);
-                    }
-                    Poll::Ready(Err(err)) => {
-                        match err.kind() {
-                            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
-                            _ => {
-                                tracelimit::warn_ratelimited!(
-                                    error = &err as &dyn std::error::Error,
-                                    src = %sender.ft.src,
-                                    dst = %sender.ft.dst,
-                                    "socket write error"
-                                );
-                            }
-                        }
-                        sender.rst(self.tx_send, Some(self.rx_seq));
-                        self.stats.rsts_tx.increment();
-                        return false;
-                    }
-                    Poll::Pending => break,
-                }
-            }
-            // Draining to the host may have reopened the window; re-advertise it
-            // so the guest resumes without waiting on its persist timer.
-            if self.should_reopen_window() {
-                self.needs_ack = true;
-            }
-            // Autotune: if the host kept up (drained to empty) and the buffer
-            // was at least 75% full this cycle, the guest is rx-bound. Grow
-            // both the ring and the advertised window ceiling so the next ACK
-            // tells the guest it can send more. Gated on the assembler being
-            // empty because `Ring::resize` only preserves contiguous bytes
-            // in `[head, tail)` — any out-of-order data staged past `tail`
-            // via `write_at` would be lost.
-            if self.rx_buffer.is_empty()
-                && self.rx_assembler.is_empty()
-                && self.rx_window_cap < self.rx_buffer_max
-                && rx_high_water * 4 >= self.rx_window_cap * 3
-            {
-                let new_cap = (self.rx_window_cap * 2).min(self.rx_buffer_max);
-                let new_ring_cap = new_cap.next_power_of_two();
-                if new_ring_cap > self.rx_buffer.capacity() {
-                    self.rx_buffer.resize(new_ring_cap);
-                }
-                self.rx_window_cap = new_cap;
-                self.needs_ack = true;
-                self.stats.rx_buffer_grows.increment();
-            }
-            if self.rx_buffer.is_empty() && self.state.rx_fin() && !self.is_shutdown {
-                if let Err(err) = socket.get().shutdown(Shutdown::Write) {
-                    tracelimit::warn_ratelimited!(
-                        error = &err as &dyn std::error::Error,
-                        src = %sender.ft.src,
-                        dst = %sender.ft.dst,
-                        "shutdown error"
-                    );
-                    sender.rst(self.tx_send, Some(self.rx_seq));
-                    self.stats.rsts_tx.increment();
-                    return false;
-                }
-                self.is_shutdown = true;
+            if !self.poll_socket_write(cx, sender, socket, static_dns, dns) {
+                return false;
             }
         }
 
@@ -1325,6 +1351,197 @@ impl TcpConnectionInner {
         // nothing to do anyway.
         self.send_next(sender, AckPolicy::Flush);
         true
+    }
+
+    /// Writes guest data to the host socket, optionally inspecting DNS frames.
+    fn poll_socket_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        sender: &mut Sender<'_, impl Client>,
+        socket: &mut PolledSocket<Socket>,
+        static_dns: &mut Option<StaticDnsTcpInspection>,
+        dns: &DnsResolver,
+    ) -> bool {
+        let rx_high_water = self.rx_buffer.len();
+        loop {
+            let write = if let Some(static_dns) = static_dns.as_mut() {
+                if matches!(
+                    self.poll_static_dns(static_dns, dns),
+                    StaticDnsTcpDisposition::Hold
+                ) {
+                    break;
+                }
+                let Some(forwarding) = static_dns.forwarding.as_ref() else {
+                    break;
+                };
+                Pin::new(&mut *socket).poll_write(cx, &forwarding.frame[forwarding.offset..])
+            } else {
+                if self.rx_buffer.is_empty() {
+                    break;
+                }
+                let view = self.rx_buffer.view(0..self.rx_buffer.len());
+                let (a, b) = view.as_slices();
+                let bufs = [IoSlice::new(a), IoSlice::new(b)];
+                Pin::new(&mut *socket).poll_write_vectored(cx, &bufs)
+            };
+
+            match write {
+                Poll::Ready(Ok(0)) | Poll::Pending => break,
+                Poll::Ready(Ok(n)) => {
+                    if let Some(static_dns) = static_dns {
+                        let Some(forwarding) = static_dns.forwarding.as_mut() else {
+                            break;
+                        };
+                        forwarding.offset += n;
+                        let complete = forwarding.offset == forwarding.frame.len();
+                        if complete && let Some(forwarding) = static_dns.forwarding.take() {
+                            static_dns.frame_assembler.recycle_buffer(forwarding.frame);
+                        }
+                    } else {
+                        self.rx_buffer.consume(n);
+                    }
+                }
+                Poll::Ready(Err(err)) => {
+                    match err.kind() {
+                        ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
+                        _ => {
+                            tracelimit::warn_ratelimited!(
+                                error = &err as &dyn std::error::Error,
+                                src = %sender.ft.src,
+                                dst = %sender.ft.dst,
+                                "socket write error"
+                            );
+                        }
+                    }
+                    sender.rst(self.tx_send, Some(self.rx_seq));
+                    self.stats.rsts_tx.increment();
+                    return false;
+                }
+            }
+        }
+
+        // Draining to the host may have reopened the window; re-advertise it
+        // so the guest resumes without waiting on its persist timer.
+        if self.should_reopen_window() {
+            self.needs_ack = true;
+        }
+        // Autotune: if the host kept up (drained to empty) and the buffer
+        // was at least 75% full this cycle, the guest is rx-bound. Grow
+        // both the ring and the advertised window ceiling so the next ACK
+        // tells the guest it can send more. Gated on the assembler being
+        // empty because `Ring::resize` only preserves contiguous bytes
+        // in `[head, tail)` — any out-of-order data staged past `tail`
+        // via `write_at` would be lost.
+        if self.rx_buffer.is_empty()
+            && self.rx_assembler.is_empty()
+            && self.rx_window_cap < self.rx_buffer_max
+            && rx_high_water * 4 >= self.rx_window_cap * 3
+        {
+            let new_cap = (self.rx_window_cap * 2).min(self.rx_buffer_max);
+            let new_ring_cap = new_cap.next_power_of_two();
+            if new_ring_cap > self.rx_buffer.capacity() {
+                self.rx_buffer.resize(new_ring_cap);
+            }
+            self.rx_window_cap = new_cap;
+            self.needs_ack = true;
+            self.stats.rx_buffer_grows.increment();
+        }
+
+        let static_dns_empty = static_dns
+            .as_ref()
+            .is_none_or(StaticDnsTcpInspection::is_empty);
+        if self.rx_buffer.is_empty() && static_dns_empty && self.state.rx_fin() && !self.is_shutdown
+        {
+            if let Err(err) = socket.get().shutdown(Shutdown::Write) {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    src = %sender.ft.src,
+                    dst = %sender.ft.dst,
+                    "shutdown error"
+                );
+                sender.rst(self.tx_send, Some(self.rx_seq));
+                self.stats.rsts_tx.increment();
+                return false;
+            }
+            self.is_shutdown = true;
+        }
+
+        true
+    }
+
+    /// Answers complete DNS-over-TCP messages from static records.
+    fn poll_static_dns(
+        &mut self,
+        static_dns: &mut StaticDnsTcpInspection,
+        dns: &DnsResolver,
+    ) -> StaticDnsTcpDisposition {
+        if static_dns.forwarding.is_some() {
+            return StaticDnsTcpDisposition::Forward;
+        }
+
+        loop {
+            if static_dns.frame_assembler.frame().is_none() {
+                let view = self.rx_buffer.view(0..self.rx_buffer.len());
+                let (a, b) = view.as_slices();
+                let consumed = static_dns.frame_assembler.ingest(&[a, b]);
+                self.rx_buffer.consume(consumed);
+            }
+
+            let Some(frame) = static_dns.frame_assembler.frame() else {
+                if self.state.rx_fin()
+                    && self.rx_buffer.is_empty()
+                    && !static_dns.frame_assembler.is_empty()
+                {
+                    static_dns.forwarding = Some(ForwardingDnsTcpFrame {
+                        frame: static_dns.frame_assembler.take_buffered(),
+                        offset: 0,
+                    });
+                    return StaticDnsTcpDisposition::Forward;
+                }
+                return StaticDnsTcpDisposition::Hold;
+            };
+
+            let max_response_len = self.tx_buffer_max.saturating_sub(2).min(u16::MAX as usize);
+            let Some(response) = dns.build_static_response(&frame[2..], max_response_len) else {
+                let Some(frame) = static_dns.frame_assembler.take_frame() else {
+                    return StaticDnsTcpDisposition::Hold;
+                };
+                static_dns.forwarding = Some(ForwardingDnsTcpFrame { frame, offset: 0 });
+                return StaticDnsTcpDisposition::Forward;
+            };
+
+            if !static_dns.host_response_frames.at_frame_boundary() {
+                return StaticDnsTcpDisposition::Hold;
+            }
+
+            let response_len = response.len() + 2;
+            if self.tx_buffer.len() + response_len > self.tx_buffer_max {
+                return StaticDnsTcpDisposition::Hold;
+            }
+
+            let required_capacity = self.tx_buffer.len() + response_len;
+            if required_capacity > self.tx_buffer.capacity() {
+                self.tx_buffer.resize(
+                    required_capacity
+                        .next_power_of_two()
+                        .min(self.tx_buffer_max),
+                );
+                self.stats.tx_buffer_grows.increment();
+            }
+
+            let (a, b) = self.tx_buffer.unwritten_slices_mut();
+            let prefix = (response.len() as u16).to_be_bytes();
+            let mut framed_response = Vec::with_capacity(response_len);
+            framed_response.extend_from_slice(&prefix);
+            framed_response.extend_from_slice(&response);
+            let first = a.len().min(framed_response.len());
+            a[..first].copy_from_slice(&framed_response[..first]);
+            b[..framed_response.len() - first].copy_from_slice(&framed_response[first..]);
+            self.tx_buffer.extend_by(framed_response.len());
+            if let Some(frame) = static_dns.frame_assembler.take_frame() {
+                static_dns.frame_assembler.recycle_buffer(frame);
+            }
+        }
     }
 
     fn handle_connect_error(
@@ -2088,8 +2305,8 @@ fn seq_min<const N: usize>(seqs: [TcpSeqNumber; N]) -> TcpSeqNumber {
 }
 
 /// Check if a TCP connection targets the gateway's DNS port.
-fn is_gateway_dns_tcp(ft: &FourTuple, config: &ConsommeConfig, dns_available: bool) -> bool {
-    if !dns_available || ft.dst.port() != crate::DNS_PORT {
+fn is_gateway_dns_tcp(ft: &FourTuple, config: &ConsommeConfig, can_answer_queries: bool) -> bool {
+    if !can_answer_queries || ft.dst.port() != crate::DNS_PORT {
         return false;
     }
     match ft.dst.ip() {

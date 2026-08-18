@@ -9,6 +9,11 @@ to hold these release branches to the highest quality standards. The OpenVMM
 maintainers will gradually slow the rate of churn into these branches as we get
 closer to a close date.
 
+```admonish note title="See also"
+[Security Releases](security_releases.md) describes private reporting and
+coordinated disclosure for fixes that cannot be developed publicly.
+```
+
 > **Note:** Some older release branches use the format `release/<YYMM>` without
 > the major and minor version numbers (e.g., `release/2411`, `release/2505`).
 
@@ -74,7 +79,7 @@ When creating a backport PR to a release branch:
 | release/2411     | Out of service     |                                                                                      |
 | release/2505     | Out of service     | Supports runtime servicing from release/2411.                                        |
 | release/1.7.2511 | Servicing          | Supports runtime servicing from release/2411 and release/2505.                       |
-| release/1.8.2607 | Stabilization      | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511.    |
+| release/1.8.2607 | Ask Mode           | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511.    |
 | _tbd, in main_   | Active Development | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511.    |
 
 ## Taking a Dependency on a Release

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
+//! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to the PR's base branch.
 
 use crate::build_openhcl_igvm_from_recipe;
 use crate::build_openvmm_hcl;
@@ -73,10 +73,18 @@ impl SimpleFlowNode for Node {
 
         let file_name = artifact_name_openhcl_baseline(target.common_arch().unwrap());
 
+        // Compare against the PR's target branch, which is not always `main`
+        // (e.g. backports target a `release/*` branch).
+        let base_branch = if ctx.backend() == FlowBackend::Github {
+            ctx.get_gh_context_var().global().base_ref()
+        } else {
+            ReadVar::from_static("main".into())
+        };
+
         let merge_commit = ctx.reqv(|v| git_merge_commit::Request {
             repo_path: openvmm_repo_path.clone(),
             merge_commit: v,
-            base_branch: "main".into(),
+            base_branch,
         });
 
         let merge_run = ctx.reqv(|v| {
@@ -125,9 +133,10 @@ impl SimpleFlowNode for Node {
                 }
             });
             Some(
+                // actions/upload-artifact v7.0.1
                 ctx.emit_gh_step(
                     "publish openvmm_hcl for analysis",
-                    "actions/upload-artifact@v7",
+                    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
                 )
                 .with("name", file_name)
                 .with("path", dir)

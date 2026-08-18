@@ -315,7 +315,12 @@ impl IndexMut<Vtl> for RunStateVtls {
 }
 
 impl RunState {
-    fn reset(&mut self, vtl2_scrub: bool, is_bsp: bool) {
+    fn reset(
+        &mut self,
+        vtl2_scrub: bool,
+        is_bsp: bool,
+        prot_access: &mut dyn hv1_emulator::VtlProtectAccess,
+    ) {
         let &mut Self {
             ref mut active_vtl,
             ref mut runnable_vtls,
@@ -336,17 +341,17 @@ impl RunState {
         *crash_msg_address = None;
         *crash_msg_len = None;
         if !vtl2_scrub {
-            vtls.vtl0.reset(is_bsp);
+            vtls.vtl0.reset(is_bsp, prot_access);
         }
         if let Some(vtl) = &mut vtls.vtl2 {
-            vtl.reset(is_bsp);
+            vtl.reset(is_bsp, prot_access);
         }
         *halted = false;
     }
 }
 
 impl PerVtlRunState {
-    fn reset(&mut self, is_bsp: bool) {
+    fn reset(&mut self, is_bsp: bool, prot_access: &mut dyn hv1_emulator::VtlProtectAccess) {
         let Self {
             #[cfg(guest_arch = "x86_64")]
             lapic,
@@ -361,7 +366,7 @@ impl PerVtlRunState {
         }
 
         if let Some(hv) = hv {
-            hv.reset();
+            hv.reset(prot_access);
         }
 
         #[cfg(guest_arch = "aarch64")]
@@ -857,6 +862,7 @@ impl virt::Hypervisor for Whp {
                 platform_gsiv: Some(WHP_PMU_GSIV),
                 supports_gic_v3: true,
                 supports_its: false,
+                device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
             }
         }
     }
@@ -966,10 +972,11 @@ impl ProtoPartition for WhpProtoPartition<'_> {
     }
 
     fn supports_memory_fault_resolution(&self) -> bool {
-        // WHP forwards guest memory-access faults back to the VMM, so the
-        // memory backing can resolve them on demand (soft large pages, lazy
-        // commit).
-        true
+        // On x86-64, WHP forwards guest memory-access faults back to the VMM, so
+        // the memory backing can resolve them on demand (soft large pages, lazy
+        // commit). WHP on aarch64 does not deliver these faults, so the backing
+        // must not defer any commit or protection to a fault.
+        cfg!(guest_arch = "x86_64")
     }
 
     fn build(
@@ -1835,7 +1842,9 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         let is_bsp = self.inner.vp_info.base.is_bsp();
-        self.state.reset(false, is_bsp);
+        let partition = self.vp.partition;
+        self.state
+            .reset(false, is_bsp, &mut WhpNoVtlProtections(&partition.gm));
 
         // For each enabled VTL: apply arch fixups that WHP doesn't handle (via
         // `finish_reset`), then clear stale pending per-VTL VP signal flags,
@@ -1866,7 +1875,9 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         // VTL2 stays enabled across a scrub. `enabled_vtls` and `vtl2_enable`
         // are both left set, so `state.reset` keeps `active_vtl` at VTL2 and
         // each AP idles in VTL2 (in startup suspend) during the servicing window.
-        self.state.reset(true, is_bsp);
+        let partition = self.vp.partition;
+        self.state
+            .reset(true, is_bsp, &mut WhpNoVtlProtections(&partition.gm));
 
         // Re-apply arch register fixups that WHP doesn't handle (`finish_reset`
         // must run after the partition-level WHP reset), then clear stale

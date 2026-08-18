@@ -8,6 +8,7 @@
 
 pub mod _jobs;
 pub mod artifact_openvmm_hcl_sizecheck;
+pub mod assemble_openvmm_vendor_release;
 pub mod build_and_test_vmgs_lib;
 pub mod build_guest_test_uefi;
 pub mod build_guide;
@@ -20,6 +21,7 @@ pub mod build_ohcldiag_dev;
 pub mod build_openhcl_boot;
 pub mod build_openhcl_igvm_from_recipe;
 pub mod build_openhcl_initrd;
+pub mod build_opentmk;
 pub mod build_openvmm;
 pub mod build_openvmm_hcl;
 pub mod build_openvmm_vhost;

@@ -210,6 +210,7 @@ impl MshvProtoPartition<'_> {
             tsc_aux: false,
             vtom: None,
             physical_address_width: self.max_physical_address_size(),
+            snp_c_bit: None,
             can_freeze_time: false,
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,

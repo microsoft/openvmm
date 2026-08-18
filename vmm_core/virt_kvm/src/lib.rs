@@ -12,8 +12,13 @@
 mod arch;
 mod gsi;
 mod memory;
+#[cfg(guest_arch = "x86_64")]
+mod snp;
 
 pub use arch::Kvm;
+pub use memory::MemoryError;
+#[cfg(guest_arch = "x86_64")]
+pub use snp::SnpError;
 
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -35,6 +40,8 @@ pub fn is_available() -> Result<bool, KvmError> {
 }
 
 use arch::KvmVpInner;
+#[cfg(guest_arch = "x86_64")]
+use snp::SnpLaunchState;
 use std::sync::atomic::Ordering;
 use virt::VpIndex;
 use vmcore::vmtime::VmTimeAccess;
@@ -49,6 +56,11 @@ pub enum KvmError {
     IsolationNotSupported,
     #[error("kvm error")]
     Kvm(#[from] kvm::Error),
+    #[error(transparent)]
+    Memory(#[from] MemoryError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    Snp(#[from] SnpError),
     #[error("failed to stat /dev/kvm")]
     AvailableCheck(#[source] std::io::Error),
     #[error(transparent)]
@@ -57,10 +69,6 @@ pub enum KvmError {
     InvalidState(&'static str),
     #[error("unsupported isolation configuration: {0}")]
     UnsupportedIsolationConfiguration(&'static str),
-    #[error("cannot resize KVM guest_memfd memory slot")]
-    CannotResizeGuestMemfdSlot,
-    #[error("private memory range is not contained in guest_memfd private memory")]
-    InvalidPrivateMemoryRange,
     #[error("misaligned gic base address")]
     Misaligned,
     #[error("host does not support GICv2 or GICv3")]
@@ -93,12 +101,21 @@ pub struct KvmPartition {
 struct KvmPartitionInner {
     #[inspect(skip)]
     kvm: kvm::Partition,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    sev: Option<std::fs::File>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    snp_launch_state: Mutex<SnpLaunchState>,
     memory: Mutex<KvmMemoryRangeState>,
     memory_backing_mode: KvmMemoryBackingMode,
     #[inspect(iter_by_index)]
     ram_ranges: Vec<MemoryRange>,
     hv1_enabled: bool,
     gm: GuestMemory,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    bsp_cpuid: Vec<kvm::kvm_cpuid_entry2>,
     #[inspect(skip)]
     vps: Vec<KvmVpInner>,
     #[inspect(skip)]
@@ -150,6 +167,15 @@ enum KvmRunVpError {
     #[cfg(guest_arch = "x86_64")]
     #[error("unhandled KVM hypercall: nr={nr:#x}, flags={flags:#x}")]
     UnhandledHypercall { nr: u64, flags: u64 },
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "SEV guest requested termination: ghcb_msr={ghcb_msr:#x} reason_set={reason_set:#x} reason={reason:#x}"
+    )]
+    SevTermination {
+        ghcb_msr: u64,
+        reason_set: u64,
+        reason: u64,
+    },
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),

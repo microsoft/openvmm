@@ -406,9 +406,6 @@ enum PacketData {
     ResetLun,
 }
 
-#[derive(Debug)]
-pub struct RangeError;
-
 fn parse_packet<T: RingMem>(
     packet: &IncomingPacket<'_, T>,
     pool: &mut Vec<Arc<ScsiRequestAndRange>>,
@@ -2363,7 +2360,7 @@ mod tests {
     }
 
     #[async_test]
-    pub async fn test_async_disk(driver: DefaultDriver) {
+    async fn test_async_disk(driver: DefaultDriver) {
         let device = disklayer_ram::ram_disk(64 * 1024, false).unwrap();
         let controller = ScsiController::new();
         let disk = ScsiControllerDisk::new(Arc::new(scsidisk::SimpleScsiDisk::new(

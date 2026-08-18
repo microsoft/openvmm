@@ -15,14 +15,14 @@ impl Pkcs7SignedDataInner {
     pub fn from_der(data: &[u8]) -> Result<Self, Pkcs7Error> {
         openssl::pkcs7::Pkcs7::from_der(data)
             .map(Self)
-            .map_err(|e| err(e, "decoding pkcs#7 from DER"))
+            .map_err(|e| err(e, "decoding the PKCS#7 message from DER"))
     }
 
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
         self.0
             .to_der()
-            .map_err(|e| err(e, "encoding pkcs#7 as DER"))
+            .map_err(|e| err(e, "encoding the PKCS#7 message as DER"))
     }
 
     #[cfg(any(test, feature = "test_helpers"))]
@@ -35,7 +35,7 @@ impl Pkcs7SignedDataInner {
             crate::rsa::RsaError(crate::BackendError(err, op))
         }
         let certs = openssl::stack::Stack::new()
-            .map_err(|e| rsa_err(e, "creating empty certificate stack"))?;
+            .map_err(|e| rsa_err(e, "creating the certificate stack"))?;
         let pkcs7 = openssl::pkcs7::Pkcs7::sign(
             &cert.0.0,
             &key_pair.0.0,
@@ -49,7 +49,7 @@ impl Pkcs7SignedDataInner {
                 | openssl::pkcs7::Pkcs7Flags::BINARY
                 | openssl::pkcs7::Pkcs7Flags::NOATTR,
         )
-        .map_err(|e| rsa_err(e, "pkcs7 signing"))?;
+        .map_err(|e| rsa_err(e, "signing the PKCS#7 message"))?;
         Ok(Self(pkcs7))
     }
 
@@ -59,11 +59,11 @@ impl Pkcs7SignedDataInner {
         signed_content: &[u8],
     ) -> Result<bool, Pkcs7VerifyError> {
         let mut store = openssl::x509::store::X509StoreBuilder::new()
-            .map_err(|e| err(e, "creating x509 store builder"))?;
+            .map_err(|e| err(e, "creating the X.509 trust store"))?;
         for trusted_cert in trusted_certs {
             store
                 .add_cert(trusted_cert.0.0.clone())
-                .map_err(|e| err(e, "adding certificate to store"))?;
+                .map_err(|e| err(e, "adding a certificate to the trust store"))?;
         }
 
         // - `PARTIAL_CHAIN`: accept any cert in the store as a trust
@@ -76,7 +76,7 @@ impl Pkcs7SignedDataInner {
             | openssl::x509::verify::X509VerifyFlags::NO_CHECK_TIME;
         store
             .set_flags(store_flags)
-            .map_err(|e| err(e, "setting x509 verify flags"))?;
+            .map_err(|e| err(e, "setting the trust store verify flags"))?;
 
         // `X509Purpose::ANY`: accept any key-usage / extended-key-usage.
         // Without this, OpenSSL rejects UEFI signature-list certs with
@@ -84,14 +84,14 @@ impl Pkcs7SignedDataInner {
         // with the usages a verifier expects for the default purpose.
         store
             .set_purpose(openssl::x509::X509PurposeId::ANY)
-            .map_err(|e| err(e, "setting x509 purpose"))?;
+            .map_err(|e| err(e, "setting the trust store certificate purpose"))?;
 
         let store = store.build();
 
         // openssl-rs requires an explicit certificate stack here even though
         // PKCS#7 verification supports omitting it.
-        let cert_stack = openssl::stack::Stack::new()
-            .map_err(|e| err(e, "allocating empty certificate stack"))?;
+        let cert_stack =
+            openssl::stack::Stack::new().map_err(|e| err(e, "creating the certificate stack"))?;
 
         match self.0.verify(
             &cert_stack,

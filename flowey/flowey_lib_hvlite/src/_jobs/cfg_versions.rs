@@ -24,13 +24,13 @@ pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const MU_MSVM: &str = "26.0.19";
+pub const MU_MSVM: &str = "26.0.22";
 pub const NEXTEST: &str = "0.9.133";
 pub const NODEJS: &str = "24.x";
 // None disables hcl-dev builds and tests; Some(version) enables them.
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.2";
-pub const OPENVMM_DEPS: &str = "0.3.0-110";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.3";
+pub const OPENVMM_DEPS: &str = "0.3.0-116";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {

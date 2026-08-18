@@ -31,7 +31,6 @@ use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
-use cli_args::GuestPowerAction;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
@@ -231,6 +230,8 @@ async fn vm_config_from_command_line(
     mesh: &VmmMesh,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
+    opt.validate_isolation_options()?;
+
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
 
     let openhcl_vtl = if opt.vtl2 {
@@ -1059,7 +1060,7 @@ async fn vm_config_from_command_line(
                             cdev,
                             iommufd,
                             iommu_id: iommu_id.clone(),
-                            bar_pt: cli_cfg.bar_pt,
+                            bar_addresses: cli_cfg.bar_addresses,
                         }
                         .into_resource(),
                     })
@@ -1086,7 +1087,7 @@ async fn vm_config_from_command_line(
                         resource: vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
-                            bar_pt: cli_cfg.bar_pt,
+                            bar_addresses: cli_cfg.bar_addresses,
                         }
                         .into_resource(),
                     })
@@ -1140,7 +1141,9 @@ async fn vm_config_from_command_line(
     let has_com3 = serial2_cfg.is_some();
 
     let mut chipset = VmManifestBuilder::new(
-        if opt.igvm.is_some() {
+        if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
+            BaseChipsetType::EnlightenedLinuxDirect
+        } else if opt.igvm.is_some() {
             BaseChipsetType::HclHost
         } else if opt.pcat {
             BaseChipsetType::HypervGen1
@@ -1179,47 +1182,31 @@ async fn vm_config_from_command_line(
         );
     }
 
-    let custom_uefi_vars = {
-        use firmware_uefi_custom_vars::CustomVars;
-
-        // load base vars from specified template, or use an empty set of base
-        // vars if none was specified.
-        let base_vars = match opt.secure_boot_template {
-            Some(template) => match (arch, template) {
-                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::x64::microsoft_windows()
-                }
-                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                }
-            },
-            None => CustomVars::default(),
-        };
+    let (base_template_json, custom_uefi_json) = {
+        #[cfg(guest_arch = "aarch64")]
+        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
+        #[cfg(guest_arch = "x86_64")]
+        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
+        let base_template_json = opt.secure_boot_template.map(|template| match template {
+            SecureBootTemplateCli::Windows => secure_boot_templates::microsoft_windows(),
+            SecureBootTemplateCli::UefiCa => secure_boot_templates::microsoft_uefi_ca(),
+        });
 
         // TODO: fallback to VMGS read if no command line flag was given
 
-        let custom_uefi_json_data = match &opt.custom_uefi_json {
-            Some(file) => Some(fs_err::read(file).context("opening custom uefi json file")?),
+        let custom_uefi_json = match &opt.custom_uefi_json {
+            Some(file) => Some(
+                fs_err::read(file)
+                    .context("opening custom uefi json file")?
+                    .into(),
+            ),
             None => None,
         };
 
-        // obtain the final custom uefi vars by applying the delta onto the base vars
-        match custom_uefi_json_data {
-            Some(data) => {
-                let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                base_vars.apply_delta(delta)?
-            }
-            None => base_vars,
-        }
+        (base_template_json, custom_uefi_json)
     };
 
-    if opt.uefi {
+    if opt.uefi && opt.igvm.is_none() && !opt.pcat {
         let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
@@ -1232,7 +1219,8 @@ async fn vm_config_from_command_line(
         };
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
-            custom_uefi_vars,
+            base_template_json,
+            custom_uefi_json,
             opt.secure_boot,
             log_level,
             None,
@@ -1294,7 +1282,11 @@ async fn vm_config_from_command_line(
     } else if opt.uefi {
         use openvmm_defs::config::UefiConsoleMode;
 
-        with_hv = true;
+        if opt.no_hv && cfg!(guest_arch = "x86_64") {
+            anyhow::bail!("--no-hv is not supported on x86_64");
+        }
+
+        with_hv = !opt.no_hv;
 
         let firmware = fs_err::File::open(
             (opt.uefi_firmware.0)
@@ -1324,6 +1316,7 @@ async fn vm_config_from_command_line(
             bios_guid,
             enable_vmbus: !opt.no_vmbus,
             force_dma_bounce: opt.uefi_force_dma_bounce,
+            enable_hv: !opt.no_hv,
         };
     } else {
         // Linux Direct
@@ -1627,18 +1620,21 @@ async fn vm_config_from_command_line(
         });
 
     let with_isolation = if let Some(isolation) = &opt.isolation {
-        // TODO: For now, isolation is only supported with VTL2.
-        if !opt.vtl2 {
-            anyhow::bail!("isolation is only currently supported with vtl2");
-        }
-
-        // TODO: Alias map support is not yet implement with isolation.
-        if !opt.no_alias_map {
-            anyhow::bail!("alias map not supported with isolation");
-        }
-
         match isolation {
-            cli_args::IsolationCli::Vbs => Some(openvmm_defs::config::IsolationType::Vbs),
+            cli_args::IsolationCli::Vbs => {
+                // TODO: For now, VBS isolation is only supported with VTL2.
+                if !opt.vtl2 {
+                    anyhow::bail!("VBS isolation is only currently supported with vtl2");
+                }
+
+                // TODO: Alias map support is not yet implemented with isolation.
+                if !opt.no_alias_map {
+                    anyhow::bail!("alias map not supported with isolation");
+                }
+
+                Some(openvmm_defs::config::IsolationType::Vbs)
+            }
+            cli_args::IsolationCli::Snp => Some(openvmm_defs::config::IsolationType::Snp),
         }
     } else {
         None
@@ -1867,10 +1863,12 @@ async fn vm_config_from_command_line(
         }
     }
 
+    let virtio_vsock_bus = opt.virtio_vsock_bus.unwrap_or(VirtioBusCli::Auto);
+
     if let Some(vsock_path) = &opt.virtio_vsock_path {
         let listener = vsock_listener(Some(vsock_path))?.unwrap();
         add_virtio_device(
-            VirtioBusCli::Auto,
+            virtio_vsock_bus,
             virtio_resources::vsock::VirtioVsockHandle {
                 // The guest CID does not matter since the UDS relay does not use it. It just needs
                 // to be some non-reserved value for the guest to use.
@@ -1882,11 +1880,26 @@ async fn vm_config_from_command_line(
         );
     }
 
+    #[cfg(target_os = "linux")]
+    if let Some(guest_cid) = opt.virtio_vsock_vhost_cid {
+        let vhost = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/vhost-vsock")
+            .context("failed to open /dev/vhost-vsock")?
+            .into();
+        add_virtio_device(
+            virtio_vsock_bus,
+            virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource(),
+        );
+    }
+
     let mut cfg = Config {
         chipset,
         load_mode,
         floppy_disks,
         pcie_root_complexes,
+        pcie_ecam_below_4gb: opt.pcie_ecam_below_4gb,
         #[cfg(target_os = "linux")]
         pcie_devices: {
             let mut devs = pcie_devices;
@@ -2023,15 +2036,62 @@ async fn vm_config_from_command_line(
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,
-        // Only let the partition auto-reset when the reset action is `reset`.
-        // For `halt` or `exit`, the guest reset must surface as a halt event so
-        // the controller can hold the VM or exit instead of rebooting in place.
-        automatic_guest_reset: matches!(opt.guest_reset_action, GuestPowerAction::Reset),
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
     resources.serial_driver = Some(serial_driver);
+    validate_snp_config(&cfg)?;
     Ok((cfg, resources))
+}
+
+fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
+    if cfg.hypervisor.with_isolation != Some(openvmm_defs::config::IsolationType::Snp) {
+        return Ok(());
+    }
+
+    if !matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+        anyhow::bail!("SNP isolation currently only supports Linux direct boot");
+    }
+    if cfg.hypervisor.with_hv {
+        anyhow::bail!("SNP isolation currently does not support Hyper-V enlightenments");
+    }
+    if cfg.hypervisor.with_vtl2.is_some() {
+        anyhow::bail!("SNP isolation currently does not support VTL2");
+    }
+    if cfg.vmbus.is_some() || cfg.vtl2_vmbus.is_some() || !cfg.vmbus_devices.is_empty() {
+        anyhow::bail!("SNP isolation currently does not support VMBus devices");
+    }
+
+    let only_supported_chipset_devices = cfg.chipset_devices.iter().all(|device| {
+        matches!(
+            device.resource.id(),
+            "serial_16550"
+                | "pic"
+                | "pit"
+                | "generic-ioapic"
+                | "hyperv_power_management"
+                | "missing-dev"
+        )
+    });
+    let only_virtio_pcie_devices = cfg
+        .pcie_devices
+        .iter()
+        .all(|device| device.resource.id() == "virtio");
+    if !cfg.floppy_disks.is_empty()
+        || !cfg.ide_disks.is_empty()
+        || !cfg.virtio_devices.is_empty()
+        || !only_virtio_pcie_devices
+        || !cfg.vpci_devices.is_empty()
+        || !only_supported_chipset_devices
+        || !cfg.pci_chipset_devices.is_empty()
+    {
+        anyhow::bail!("SNP isolation currently only supports virtio devices");
+    }
+    if cfg.framebuffer.is_some() || cfg.vga_firmware.is_some() || cfg.debugger_rpc.is_some() {
+        anyhow::bail!("SNP isolation currently does not support this VM configuration");
+    }
+
+    Ok(())
 }
 
 /// Gets the terminal to use for externally launched console windows.

@@ -7,6 +7,7 @@ use crate::run_cargo_build::CargoBuildProfile;
 use crate::run_cargo_nextest_run::build_params;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 
 flowey_request! {
@@ -484,40 +485,48 @@ impl RunKindDeps {
     }
 }
 
+impl CommandShell {
+    /// Quote a value as a literal for this shell. Single quotes suppress all
+    /// expansion, so `'` is the only character that needs escaping.
+    fn quote(&self, s: &OsStr) -> String {
+        match self {
+            CommandShell::Powershell => powershell_builder::quote_str(s)
+                .to_string_lossy()
+                .into_owned(),
+            CommandShell::Bash => format!("'{}'", s.to_string_lossy().replace('\'', r"'\''")),
+        }
+    }
+}
+
 impl std::fmt::Display for Script {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let quote_char = match self.shell {
-            CommandShell::Powershell => "\"",
-            CommandShell::Bash => "'",
-        };
-
         let env_string = match self.shell {
             CommandShell::Powershell => self
                 .env
                 .iter()
-                .map(|(k, v)| format!("$env:{k}=\"{v}\""))
+                .map(|(k, v)| format!("$env:{k}={}", self.shell.quote(OsStr::new(v))))
                 .collect::<Vec<_>>()
                 .join("\n"),
             CommandShell::Bash => self
                 .env
                 .iter()
-                .map(|(k, v)| format!("export {k}=\"{v}\""))
+                .map(|(k, v)| format!("export {k}={}", self.shell.quote(OsStr::new(v))))
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
         writeln!(f, "{env_string}")?;
 
         for cmd in &self.commands {
-            let argv0_string = cmd.0.to_string_lossy();
+            let argv0_string = self.shell.quote(&cmd.0);
             let argv0_string = match self.shell {
-                CommandShell::Powershell => format!("&\"{argv0_string}\""),
-                CommandShell::Bash => format!("\"{argv0_string}\""),
+                CommandShell::Powershell => format!("&{argv0_string}"),
+                CommandShell::Bash => argv0_string,
             };
 
             let arg_string = {
                 cmd.1
                     .iter()
-                    .map(|v| format!("{quote_char}{}{quote_char}", v.to_string_lossy()))
+                    .map(|v| self.shell.quote(v))
                     .collect::<Vec<_>>()
                     .join(" ")
             };

@@ -189,6 +189,7 @@ impl Manifest {
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
+            pcie_ecam_below_4gb: config.pcie_ecam_below_4gb,
             pcie_devices: config.pcie_devices,
             pcie_switches: config.pcie_switches,
             pcie_generic_initiators: config.pcie_generic_initiators,
@@ -218,7 +219,6 @@ impl Manifest {
             chipset_capabilities: config.chipset_capabilities,
             layout: config.layout,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
-            automatic_guest_reset: config.automatic_guest_reset,
         }
     }
 }
@@ -233,6 +233,7 @@ pub struct Manifest {
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pcie_ecam_below_4gb: bool,
     pcie_devices: Vec<PcieDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
     pcie_generic_initiators: Vec<openvmm_defs::config::PcieGenericInitiatorConfig>,
@@ -262,7 +263,6 @@ pub struct Manifest {
     chipset_capabilities: VmChipsetCapabilities,
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
-    automatic_guest_reset: bool,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -408,7 +408,7 @@ enum ResolvedIommu {
     None,
     /// Arm SMMUv3 resources, one per instance.
     #[cfg(guest_arch = "aarch64")]
-    Smmu(Vec<smmu_wiring::ResolvedSmmuResources>),
+    Smmu(smmu_wiring::ResolvedSmmu),
     /// AMD IOMMU resources, one per instance.
     #[cfg(guest_arch = "x86_64")]
     AmdVi(Vec<amd_iommu_wiring::ResolvedIommuResources>),
@@ -673,7 +673,6 @@ fn build_aarch64_topology(
     let gic_msi = if let Some(count) = v2m_spi_count {
         GicMsiController::V2m(GicV2mInfo {
             frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-            doorbell_base: openvmm_defs::config::DEFAULT_GIC_V2M_DOORBELL_BASE,
             spi_base: spi_layout
                 .v2m_spi_base
                 .expect("v2m base must be allocated when v2m_spi_count is Some"),
@@ -707,6 +706,49 @@ fn build_aarch64_topology(
         processor_topology: builder.build(config.proc_count)?,
         spi_layout,
     })
+}
+
+#[cfg(guest_arch = "aarch64")]
+fn resolve_device_assignment_msi_iova_range(
+    policy: virt::DeviceAssignmentMsiIova,
+) -> Option<MemoryRange> {
+    match policy {
+        virt::DeviceAssignmentMsiIova::Unsupported => None,
+        virt::DeviceAssignmentMsiIova::Fixed(range) => Some(range),
+        virt::DeviceAssignmentMsiIova::Configurable => {
+            Some(openvmm_defs::config::DEFAULT_DEVICE_ASSIGNMENT_MSI_IOVA_RANGE)
+        }
+    }
+}
+
+#[cfg(all(test, guest_arch = "aarch64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_device_assignment_msi_iova_range_is_preserved() {
+        let range = MemoryRange::new(0x0800_0000..0x0810_0000);
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Fixed(range)),
+            Some(range)
+        );
+    }
+
+    #[test]
+    fn configurable_device_assignment_msi_iova_range_uses_openvmm_default() {
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Configurable),
+            Some(openvmm_defs::config::DEFAULT_DEVICE_ASSIGNMENT_MSI_IOVA_RANGE)
+        );
+    }
+
+    #[test]
+    fn unsupported_device_assignment_msi_iova_has_no_range() {
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Unsupported),
+            None
+        );
+    }
 }
 
 /// A VM that has been loaded and can be run.
@@ -773,11 +815,9 @@ struct LoadedVmInner {
     #[cfg(target_os = "linux")]
     vfio_cdev_inspect: Option<vfio_assigned_device::manager::VfioCdevManagerClient>,
 
-    // relay halt messages, intercepting reset if configured.
+    // relay halt messages to the client, which decides what to do about them.
     halt_recv: mesh::Receiver<HaltReason>,
     client_notify_send: mesh::Sender<HaltReason>,
-    /// allow the guest to reset without notifying the client
-    automatic_guest_reset: bool,
     chipset: Arc<vmotherboard::Chipset>,
     /// Instantiated IOMMU devices (ACPI configs + per-RC shared state),
     /// keyed by IOMMU type. `IommuDevices::None` when no IOMMU is configured.
@@ -1048,6 +1088,10 @@ impl InitializedVm {
             anyhow::bail!("the selected hypervisor does not support nested virtualization");
         }
 
+        #[cfg(guest_arch = "aarch64")]
+        let device_assignment_msi_iova_range =
+            resolve_device_assignment_msi_iova_range(platform_info.device_assignment_msi_iova);
+
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
@@ -1059,6 +1103,8 @@ impl InitializedVm {
                     .map(|typ| typ.into())
                     .unwrap_or(virt::IsolationType::None),
                 nested_virt: cfg.hypervisor.nested_virt,
+                #[cfg(guest_arch = "aarch64")]
+                device_assignment_msi_iova_range,
             })
             .context("failed to create the prototype partition")?;
 
@@ -1133,6 +1179,7 @@ impl InitializedVm {
             layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
+            pcie_ecam_below_4gb: cfg.pcie_ecam_below_4gb,
             vtl2_layout,
             ram_start_address,
             vtl2_framebuffer_size,
@@ -1160,7 +1207,11 @@ impl InitializedVm {
         #[cfg(guest_arch = "aarch64")]
         let resolved_iommu = match &resolved_layout.iommu_ranges {
             ResolvedIommuRanges::Smmu(ranges) => {
-                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(ranges, &spi_layout))
+                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
+                    ranges,
+                    &spi_layout,
+                    device_assignment_msi_iova_range,
+                ))
             }
             _ => ResolvedIommu::None,
         };
@@ -1173,6 +1224,43 @@ impl InitializedVm {
             cfg.vtl0_alias_map
                 .then_some(1 << (physical_address_size - 1))
         });
+
+        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
+            if !matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+                anyhow::bail!("KVM SNP guest_memfd currently only supports direct Linux load mode");
+            }
+            if cfg.hypervisor.with_hv {
+                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V enlightenments");
+            }
+            if cfg.hypervisor.with_vtl2.is_some() {
+                anyhow::bail!("KVM SNP guest_memfd does not support VTL2");
+            }
+            if cfg.chipset.with_hyperv_vga {
+                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V VGA");
+            }
+            if cfg.chipset_capabilities.with_i440bx_host_pci_bridge {
+                anyhow::bail!("KVM SNP guest_memfd does not support the i440BX host PCI bridge");
+            }
+            if cfg.vmbus.is_some() || cfg.vtl2_vmbus.is_some() || !cfg.vmbus_devices.is_empty() {
+                anyhow::bail!("KVM SNP guest_memfd does not support VMBus");
+            }
+            if !cfg.floppy_disks.is_empty()
+                || !cfg.ide_disks.is_empty()
+                || !cfg.virtio_devices.is_empty()
+            {
+                anyhow::bail!("KVM SNP guest_memfd does not support disks");
+            }
+            if matches!(
+                cfg.vmgs,
+                Some(
+                    VmgsResource::Disk(_)
+                        | VmgsResource::ReprovisionOnFailure(_)
+                        | VmgsResource::Reprovision(_)
+                )
+            ) {
+                anyhow::bail!("KVM SNP guest_memfd does not support VMGS disks");
+            }
+        }
 
         // Build per-node RAM backing requests. Each NUMA node with memory
         // gets its own backing (memfd), enabling per-node hugepage settings
@@ -1379,12 +1467,6 @@ impl InitializedVm {
 
         let mut resolver = ResourceResolver::new();
 
-        resolver.add_async_resolver(
-            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
-                OpenVmmRemoteDynamicResolvers {},
-            ),
-        );
-
         // Expose the partition reference time source, if available.
         if cfg.hypervisor.with_hv {
             if let Some(ref_time) = partition.reference_time_source() {
@@ -1442,6 +1524,14 @@ impl InitializedVm {
         } else {
             (None, None)
         };
+
+        resolver.add_async_resolver(
+            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
+                OpenVmmRemoteDynamicResolvers {
+                    vmgs: vmgs_client.clone(),
+                },
+            ),
+        );
 
         // For sanity: we immediately restrict `vmgs_client` to the
         // `HvLiteVmgsNonVolatileStore` API, since we don't want code past this
@@ -2138,9 +2228,12 @@ impl InitializedVm {
                     cxl,
                     vnode: rc.vnode,
                     preserve_bars: rc.preserve_bars,
-                    // A request to pin BARs (GPA = HPA) also requires the guest
-                    // to leave the firmware's boot configuration alone.
-                    preserve_boot_config: rc.preserve_bars,
+                    // Pinned BARs require the guest to preserve their assigned
+                    // addresses. UEFI also consumes OpenVMM's preassigned PCI
+                    // configuration, so tell the guest OS not to reallocate it
+                    // and transiently overlap BAR mappings.
+                    preserve_boot_config: rc.preserve_bars
+                        || matches!(&cfg.load_mode, LoadMode::Uefi { .. }),
                 });
 
                 pcie_root_complexes.push(root_complex.clone());
@@ -2308,6 +2401,9 @@ impl InitializedVm {
             // Register the VFIO cdev + iommufd resolver for devices opened
             // via the cdev interface. Spawns a VfioCdevManager task that
             // shares IOAS contexts across devices with the same --iommu ID.
+            // Devices behind an accel-capable SMMU carry their nesting
+            // context in the per-device DmaTarget, so no separate side-channel
+            // is needed.
             let cdev_resolver = vfio_assigned_device::resolver::VfioCdevDeviceResolver::new(
                 driver_source.builder().build("vfio-cdev-mgr"),
                 dma_mapper_client,
@@ -2329,17 +2425,31 @@ impl InitializedVm {
         // and MSI writes through the emulated SMMUv3.
         #[cfg(guest_arch = "aarch64")]
         let smmu_devices = {
-            let resolved: &[smmu_wiring::ResolvedSmmuResources] = match &resolved_iommu {
-                ResolvedIommu::Smmu(resources) => resources,
-                _ => &[],
+            let acpi_available = match &cfg.load_mode {
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                    ..
+                } => false,
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    ..
+                }
+                | LoadMode::Uefi { .. }
+                | LoadMode::Pcat { .. }
+                | LoadMode::Igvm { .. }
+                | LoadMode::None => true,
             };
-            smmu_wiring::setup_smmu(
-                &cfg.pcie_root_complexes,
-                resolved,
-                &pcie_host_bridges,
-                &chipset_builder,
-                &gm,
-            )?
+            match &resolved_iommu {
+                ResolvedIommu::Smmu(resolved) => smmu_wiring::setup_smmu(
+                    &cfg.pcie_root_complexes,
+                    resolved,
+                    &mut pcie_host_bridges,
+                    &chipset_builder,
+                    &gm,
+                    acpi_available,
+                )?,
+                _ => smmu_wiring::SmmuDevicesResult::default(),
+            }
         };
 
         // Instantiate an AMD IOMMU on each root complex listed in
@@ -2972,7 +3082,6 @@ impl InitializedVm {
                 vfio_cdev_inspect,
                 halt_recv,
                 client_notify_send,
-                automatic_guest_reset: cfg.automatic_guest_reset,
                 chipset: chipset.chipset.clone(),
                 iommu_devices,
                 #[cfg(guest_arch = "x86_64")]
@@ -3129,27 +3238,34 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: self.hypervisor_cfg.with_isolation,
+                    snp_c_bit: self.partition.caps().snp_c_bit,
                 };
-                super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
-                    let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                        add_devices_to_dsdt_x64(
-                            dsdt,
-                            &self.chipset_cfg,
-                            &self.chipset_capabilities,
-                            enable_serial,
-                            self.vmbus_server.is_some(),
-                            &self.chipset_mmio,
-                            self.virtio_mmio_region,
-                            self.virtio_mmio_irq,
-                            &self.pci_legacy_interrupts,
-                        )
-                    });
+                super::vm_loaders::linux::load_linux_x86(
+                    &kernel_config,
+                    &self.gm,
+                    self.partition.caps(),
+                    &self.processor_topology.vp_arch(VpIndex::BSP),
+                    |gpa| {
+                        let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                            add_devices_to_dsdt_x64(
+                                dsdt,
+                                &self.chipset_cfg,
+                                &self.chipset_capabilities,
+                                enable_serial,
+                                self.vmbus_server.is_some(),
+                                &self.chipset_mmio,
+                                self.virtio_mmio_region,
+                                self.virtio_mmio_irq,
+                                &self.pci_legacy_interrupts,
+                            )
+                        });
 
-                    loader::linux::AcpiTables {
-                        rsdp: tables.rsdp,
-                        tables: tables.tables,
-                    }
-                })?
+                        loader::linux::AcpiTables {
+                            rsdp: tables.rsdp,
+                            tables: tables.tables,
+                        }
+                    },
+                )?
             }
             #[cfg(guest_arch = "aarch64")]
             &LoadMode::Linux {
@@ -3167,6 +3283,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: self.hypervisor_cfg.with_isolation,
+                    snp_c_bit: None,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -3215,6 +3332,7 @@ impl LoadedVmInner {
                 bios_guid,
                 enable_vmbus,
                 force_dma_bounce,
+                enable_hv,
             } => {
                 let acpi_tables = [
                     // MADT
@@ -3251,6 +3369,7 @@ impl LoadedVmInner {
                     bios_guid,
                     vmbus: enable_vmbus,
                     force_dma_bounce,
+                    hv: enable_hv,
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
@@ -3774,15 +3893,7 @@ impl LoadedVm {
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
-                    if matches!(reason, HaltReason::Reset) && self.inner.automatic_guest_reset {
-                        tracing::info!("guest-initiated reset");
-                        if let Err(err) = self.reset(true).await {
-                            tracing::error!(?err, "failed to reset VM");
-                            break;
-                        }
-                    } else {
-                        self.inner.client_notify_send.send(reason);
-                    }
+                    self.inner.client_notify_send.send(reason);
                 }
             }
         }
@@ -3910,6 +4021,7 @@ impl LoadedVm {
             floppy_disks: vec![],            // TODO
             ide_disks: vec![],               // TODO
             pcie_root_complexes: vec![],     // TODO
+            pcie_ecam_below_4gb: false,      // TODO
             pcie_devices: vec![],            // TODO
             pcie_switches: vec![],           // TODO
             pcie_generic_initiators: vec![], // TODO
@@ -3943,7 +4055,6 @@ impl LoadedVm {
                 vtl2_chipset_mmio_size: 0,
             }, // TODO
             rtc_delta_milliseconds: 0, // TODO
-            automatic_guest_reset: self.inner.automatic_guest_reset,
         };
         #[expect(unreachable_code, reason = "TODO")]
         RestartState {
@@ -4109,15 +4220,20 @@ impl WatchdogCallback for WatchdogTimeout {
 }
 
 #[derive(MeshPayload, Clone)]
-struct OpenVmmRemoteDynamicResolvers {}
+struct OpenVmmRemoteDynamicResolvers {
+    vmgs: Option<vmgs_broker::VmgsClient>,
+}
 
 impl chipset_device_worker::RemoteDynamicResolvers for OpenVmmRemoteDynamicResolvers {
     const WORKER_ID_STR: &str = "openvmm_remote_chipset_worker";
 
     async fn register_remote_dynamic_resolvers(
         self,
-        _resolver: &mut ResourceResolver,
+        resolver: &mut ResourceResolver,
     ) -> anyhow::Result<()> {
+        if let Some(vmgs) = self.vmgs {
+            resolver.add_resolver(vmgs);
+        }
         Ok(())
     }
 }

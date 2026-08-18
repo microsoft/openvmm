@@ -14,8 +14,8 @@ pub struct X509CertificateInner(pub(crate) openssl::x509::X509);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
-        let cert =
-            openssl::x509::X509::from_der(data).map_err(|e| err(e, "parsing DER certificate"))?;
+        let cert = openssl::x509::X509::from_der(data)
+            .map_err(|e| err(e, "parsing the DER certificate"))?;
         Ok(Self(cert))
     }
 
@@ -23,7 +23,7 @@ impl X509CertificateInner {
         let pkey = self
             .0
             .public_key()
-            .map_err(|e| err(e, "extracting public key"))?;
+            .map_err(|e| err(e, "extracting the certificate public key"))?;
         if pkey.rsa().is_ok() {
             Ok(X509PublicKey::Rsa(crate::rsa::RsaPublicKey(
                 crate::rsa::ossl::RsaPublicKeyInner(pkey),
@@ -37,7 +37,7 @@ impl X509CertificateInner {
         } else {
             Err(err(
                 openssl::error::ErrorStack::get(),
-                "unsupported certificate public key type",
+                "checking that the certificate public key algorithm is supported",
             ))
         }
     }
@@ -47,7 +47,10 @@ impl X509CertificateInner {
         issuer_public_key: &crate::rsa::RsaPublicKey,
     ) -> Result<bool, crate::rsa::RsaError> {
         self.0.verify(&issuer_public_key.0.0).map_err(|e| {
-            crate::rsa::RsaError(crate::BackendError(e, "verifying certificate signature"))
+            crate::rsa::RsaError(crate::BackendError(
+                e,
+                "verifying the certificate signature",
+            ))
         })
     }
 
@@ -63,7 +66,7 @@ impl X509CertificateInner {
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0
             .to_der()
-            .map_err(|e| err(e, "encoding certificate as DER"))
+            .map_err(|e| err(e, "encoding the certificate as DER"))
     }
 
     pub fn issuer_dn(&self) -> Result<String, X509Error> {
@@ -73,7 +76,7 @@ impl X509CertificateInner {
             let value = entry
                 .data()
                 .as_utf8()
-                .map_err(|e| err(e, "decoding issuer name entry"))?
+                .map_err(|e| err(e, "decoding an issuer name entry"))?
                 .to_string();
             parts.push(format!("{oid}={value}"));
         }
@@ -85,7 +88,7 @@ impl X509CertificateInner {
             .0
             .serial_number()
             .to_bn()
-            .map_err(|e| err(e, "converting serial number"))?;
+            .map_err(|e| err(e, "converting the serial number"))?;
         Ok(bn.to_vec())
     }
 
@@ -132,7 +135,7 @@ impl X509CertificateInner {
                 .data()
                 .as_utf8()
                 .map(|u| Some(u.to_string()))
-                .map_err(|e| err(e, "decoding subject name")),
+                .map_err(|e| err(e, "decoding the subject common name")),
         }
     }
 }

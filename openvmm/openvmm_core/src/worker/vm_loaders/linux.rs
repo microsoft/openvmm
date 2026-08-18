@@ -34,6 +34,10 @@ pub enum Error {
     Dt(#[source] DtError),
     #[error("failed to write EFI/ACPI tables to guest memory")]
     Efi(#[source] guestmem::GuestMemoryError),
+    #[error("missing SNP C-bit CPUID information")]
+    MissingSnpCBit,
+    #[error("failed to finalize SNP VMSA")]
+    SnpVmsa(#[source] anyhow::Error),
 }
 
 struct Aarch64EfiInfo {
@@ -51,6 +55,46 @@ pub struct KernelConfig<'a> {
     pub cmdline: &'a str,
     pub mem_layout: &'a MemoryLayout,
     pub isolation: Option<IsolationType>,
+    pub snp_c_bit: Option<u8>,
+}
+
+// Bring-up hack for SNP Linux direct boot. Without a bootshim or firmware to
+// accept memory after launch, every RAM page must be added to the initial SNP
+// launch context. This makes launch extremely slow and should be removed once
+// SNP boots exclusively through IGVM, or direct boot can accept the remaining
+// RAM after launch instead of pre-accepting it here.
+fn complete_snp_direct_ram_imports(
+    page_imports: &mut Vec<virt::InitialPageImport>,
+    ram_ranges: impl IntoIterator<Item = MemoryRange>,
+) {
+    let mut imported_ranges: Vec<_> = page_imports.iter().map(|page| page.range).collect();
+    imported_ranges.sort_by_key(|range| (range.start(), range.end()));
+
+    for ram_range in ram_ranges {
+        let mut cursor = ram_range.start();
+        for imported_range in &imported_ranges {
+            let start = imported_range.start().max(ram_range.start());
+            let end = imported_range.end().min(ram_range.end());
+            if start >= end {
+                continue;
+            }
+            if cursor < start {
+                page_imports.push(virt::InitialPageImport {
+                    range: MemoryRange::new(cursor..start),
+                    import_type: virt::InitialPageImportType::Normal,
+                    tag: "linux-snp-direct-ram",
+                });
+            }
+            cursor = cursor.max(end);
+        }
+        if cursor < ram_range.end() {
+            page_imports.push(virt::InitialPageImport {
+                range: MemoryRange::new(cursor..ram_range.end()),
+                import_type: virt::InitialPageImportType::Normal,
+                tag: "linux-snp-direct-ram",
+            });
+        }
+    }
 }
 
 /// The default SMBIOS identity for firmware-less Linux direct boot.
@@ -84,6 +128,8 @@ fn default_smbios_tables() -> loader::smbios::SmbiosTables<'static> {
 pub fn load_linux_x86(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
+    caps: &virt::x86::X86PartitionCapabilities,
+    bsp: &vm_topology::processor::x86::X86VpInfo,
     acpi_at_gpa: impl FnOnce(u64) -> loader::linux::AcpiTables,
 ) -> Result<InitialLoad<X86Register>, Error> {
     let mut kernel_file = cfg.kernel;
@@ -104,8 +150,13 @@ pub fn load_linux_x86(
     });
 
     let cmdline = CString::new(cfg.cmdline).unwrap();
-    let snp_boot =
-        (cfg.isolation == Some(IsolationType::Snp)).then_some(loader::linux::SnpBootConfig);
+    let snp_boot = if cfg.isolation == Some(IsolationType::Snp) {
+        Some(loader::linux::SnpBootConfig {
+            c_bit: cfg.snp_c_bit.ok_or(Error::MissingSnpCBit)?,
+        })
+    } else {
+        None
+    };
 
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
 
@@ -123,7 +174,24 @@ pub fn load_linux_x86(
     )
     .map_err(Error::Loader)?;
 
-    Ok(loader.initial_regs_and_page_imports())
+    if cfg.isolation == Some(IsolationType::Snp) {
+        loader
+            .finalize_snp_vmsa(caps, bsp)
+            .map_err(Error::SnpVmsa)?;
+    }
+
+    let InitialLoad {
+        regs,
+        mut page_imports,
+    } = loader.initial_regs_and_page_imports();
+    if cfg.isolation == Some(IsolationType::Snp) {
+        complete_snp_direct_ram_imports(
+            &mut page_imports,
+            cfg.mem_layout.ram().iter().map(|range| range.range),
+        );
+    }
+
+    Ok(InitialLoad { regs, page_imports })
 }
 
 /// Returns the device tree blob.
@@ -818,6 +886,7 @@ fn build_stub_dt(
     let p_uefi_mmap_size = builder.add_string("linux,uefi-mmap-size")?;
     let p_uefi_mmap_desc_size = builder.add_string("linux,uefi-mmap-desc-size")?;
     let p_uefi_mmap_desc_ver = builder.add_string("linux,uefi-mmap-desc-ver")?;
+    let p_uefi_secure_boot = builder.add_string("linux,uefi-secure-boot")?;
 
     let root_builder = builder
         .start_node("")?
@@ -833,7 +902,16 @@ fn build_stub_dt(
         .add_u64(p_uefi_mmap_start, efi_info.mmap_addr)?
         .add_u32(p_uefi_mmap_size, efi_info.mmap_size)?
         .add_u32(p_uefi_mmap_desc_size, efi_info.mmap_desc_size)?
-        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?;
+        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?
+        // The Ubuntu kernel's EFI stub sets `linux,uefi-secure-boot` in the
+        // handoff FDT, and `efi_get_fdt_params()` then treats it as a required
+        // property. If it is absent, the kernel aborts the entire EFI handoff
+        // and never installs the memory map; because this stub DT has no
+        // `/memory` node, memblock ends up empty and the kernel panics with
+        // "Failed to allocate page table page" during paging_init. Emit it
+        // (0 = secure boot disabled) so those kernels boot. Mainline kernels
+        // ignore this property.
+        .add_u32(p_uefi_secure_boot, 0)?;
 
     let root_builder = chosen.end_node()?;
 
@@ -943,4 +1021,45 @@ pub fn load_linux_arm64(
         .map_err(Error::Loader)?;
 
     Ok(loader.initial_regs_and_page_imports())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn completes_snp_direct_ram_imports() {
+        let mut page_imports = vec![virt::InitialPageImport {
+            range: MemoryRange::new(0x2000..0x4000),
+            import_type: virt::InitialPageImportType::Secrets,
+            tag: "loader",
+        }];
+
+        complete_snp_direct_ram_imports(
+            &mut page_imports,
+            [
+                MemoryRange::new(0x1000..0x5000),
+                MemoryRange::new(0x8000..0xa000),
+            ],
+        );
+
+        let completed_ranges: Vec<_> = page_imports
+            .iter()
+            .filter(|page| page.tag == "linux-snp-direct-ram")
+            .map(|page| page.range)
+            .collect();
+        assert_eq!(
+            completed_ranges,
+            [
+                MemoryRange::new(0x1000..0x2000),
+                MemoryRange::new(0x4000..0x5000),
+                MemoryRange::new(0x8000..0xa000),
+            ]
+        );
+        assert_eq!(
+            page_imports[0].import_type,
+            virt::InitialPageImportType::Secrets
+        );
+    }
 }

@@ -63,6 +63,22 @@ pub struct PlatformInfo {
     /// MSI delivery via LPIs. When `true`, the topology can include
     /// a `GicItsInfo` and the backend will create/manage the ITS device.
     pub supports_its: bool,
+    /// How the physical SMMU implementation selects the IOVA range reserved
+    /// for device-assignment MSI writes.
+    pub device_assignment_msi_iova: DeviceAssignmentMsiIova,
+}
+
+/// Selection policy for the device-assignment MSI IOVA reservation.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Debug, Clone, Copy)]
+pub enum DeviceAssignmentMsiIova {
+    /// Device assignment does not expose an MSI IOVA reservation contract.
+    Unsupported,
+    /// The physical SMMU driver requires this exact range.
+    Fixed(MemoryRange),
+    /// The VMM selects the range and passes its base to the physical SMMU
+    /// implementation during partition creation.
+    Configurable,
 }
 
 /// A hypervisor backend capable of creating partitions.
@@ -234,6 +250,9 @@ pub struct ProtoPartitionConfig<'a> {
     /// backend recognizes it via [`Hypervisor::recognizes_nested_virt`]; a
     /// backend that receives an unrecognized request may silently ignore it.
     pub nested_virt: bool,
+    /// Device-assignment MSI IOVA reservation selected for this partition.
+    #[cfg(guest_arch = "aarch64")]
+    pub device_assignment_msi_iova_range: Option<MemoryRange>,
 }
 
 /// Partition creation configuration.

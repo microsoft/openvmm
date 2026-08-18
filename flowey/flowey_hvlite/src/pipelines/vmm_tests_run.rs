@@ -17,6 +17,7 @@ use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSele
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
+use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelectionsLinux;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
 use petri_artifacts_core::ArtifactId;
 use petri_artifacts_core::ArtifactListOutput;
@@ -729,7 +730,12 @@ fn selections_from_resolved(
                     hardware_isolation: resolved.needs_hardware_isolation,
                 })
             }
-            target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
+            target_lexicon::OperatingSystem::Linux => {
+                VmmTestsDepSelections::Linux(VmmTestsDepSelectionsLinux {
+                    hugetlb_2mb_overcommit_pages: None, // TODO
+                    prepare_vhost_vsock: false,         // TODO
+                })
+            }
             _ => unreachable!(),
         },
         needs_release_igvm: resolved.needs_release_igvm,

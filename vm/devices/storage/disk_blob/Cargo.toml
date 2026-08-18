@@ -32,5 +32,11 @@ zerocopy.workspace = true
 # FUTURE: replace this with our own executor
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
+[dev-dependencies]
+disk_vhd1.workspace = true
+pal_async.workspace = true
+storage_tests.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

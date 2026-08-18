@@ -143,6 +143,11 @@ pub struct NumaDistanceCli {
 /// This is not yet a stable interface and may change radically between
 /// versions.
 #[derive(Parser)]
+#[command(
+    name = "openvmm",
+    version = openvmm_build_info::get().version(),
+    long_version = openvmm_build_info::get().long_version(),
+)]
 pub struct Options {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
@@ -279,6 +284,15 @@ Examples:
     #[clap(long)]
     pub hv: bool,
 
+    /// Boot UEFI without exposing hypervisor (HV#1) enlightenments. Requires
+    /// `--no-vmbus` since VMBus depends on the hypervisor.
+    #[clap(
+        long,
+        requires_all = ["uefi", "no_vmbus"],
+        conflicts_with_all = ["hv", "vtl2", "get", "pcat", "igvm"]
+    )]
+    pub no_hv: bool,
+
     /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
     /// boot. By default, ARM64 uses ACPI mode (stub DT + EFI + ACPI tables).
     /// This flag selects the legacy DT-only path. Rejected on x86.
@@ -322,8 +336,8 @@ Examples:
     #[clap(long, requires("vtl2"))]
     pub no_alias_map: bool,
 
-    /// enable isolation emulation
-    #[clap(long, requires("vtl2"))]
+    /// enable isolation
+    #[clap(long)]
     pub isolation: Option<IsolationCli>,
 
     /// the hybrid vsock listener path
@@ -761,9 +775,24 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
 
+    /// select the bus for virtio vsock devices (pci | mmio)
+    #[clap(long, value_name = "BUS", value_parser = parse_virtio_vsock_bus)]
+    pub virtio_vsock_bus: Option<VirtioBusCli>,
+
     /// add a virtio vsock device with the given Unix socket base path
     #[clap(long, value_name = "PATH")]
     pub virtio_vsock_path: Option<String>,
+
+    /// expose the guest in the host AF_VSOCK namespace using the Linux
+    /// vhost_vsock kernel backend
+    #[cfg(target_os = "linux")]
+    #[clap(
+        long,
+        value_name = "CID",
+        conflicts_with = "virtio_vsock_path",
+        value_parser = parse_vhost_vsock_cid
+    )]
+    pub virtio_vsock_vhost_cid: Option<u32>,
 
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
@@ -1136,6 +1165,10 @@ Options:
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
 
+    /// Place PCIe ECAM below 4 GiB for guest kernels that cannot discover high ECAM
+    #[clap(long, requires("pcie_root_complex"), conflicts_with("pcat"))]
+    pub pcie_ecam_below_4gb: bool,
+
     /// Attach a PCI Express root port to the VM
     #[clap(long_help = r#"
 Attach root ports to root complexes.
@@ -1348,6 +1381,24 @@ impl Options {
         }
         Ok(())
     }
+
+    /// Validates isolation-specific command-line option combinations.
+    pub fn validate_isolation_options(&self) -> anyhow::Result<()> {
+        if matches!(self.isolation, Some(IsolationCli::Snp)) {
+            if self.uefi {
+                anyhow::bail!("SNP isolation currently only supports Linux direct boot");
+            }
+            if self.memory.hugepages
+                || self
+                    .numa
+                    .as_ref()
+                    .is_some_and(|nodes| nodes.iter().any(|node| node.memory.hugepages))
+            {
+                anyhow::bail!("SNP isolation currently does not support hugetlb memory");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1444,6 +1495,24 @@ pub enum VirtioBusCli {
     Mmio,
     Pci,
     Vpci,
+}
+
+fn parse_virtio_vsock_bus(value: &str) -> Result<VirtioBusCli, String> {
+    match VirtioBusCli::from_str(value, true) {
+        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci)) => Ok(bus),
+        _ => Err("expected mmio or pci".to_string()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_vhost_vsock_cid(value: &str) -> Result<u32, String> {
+    let cid = value
+        .parse::<u32>()
+        .map_err(|error| format!("invalid CID '{value}': {error}"))?;
+    if !(3..u32::MAX).contains(&cid) {
+        return Err(format!("CID must be between 3 and {}", u32::MAX - 1));
+    }
+    Ok(cid)
 }
 
 /// Parse an optional `pcie_port=<name>:` prefix from a CLI argument string.
@@ -2727,6 +2796,7 @@ pub enum GicMsiCli {
 #[derive(Debug, Copy, Clone, ValueEnum)]
 pub enum IsolationCli {
     Vbs,
+    Snp,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -3082,7 +3152,7 @@ pub struct PcieRemoteCli {
 
 /// CLI configuration for a VFIO-assigned PCI device.
 ///
-/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>][,bar0=pt..bar5=pt]`
+/// Syntax: `host=<bdf>,port=<name>[,iommu=<id>][,barN=host|barN=0x<addr>]`
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug)]
 pub struct VfioDeviceCli {
@@ -3093,36 +3163,43 @@ pub struct VfioDeviceCli {
     /// Optional iommufd context ID. When set, uses VFIO cdev + iommufd
     /// instead of the legacy group/container path.
     pub iommu: Option<String>,
-    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
-    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
-    pub bar_pt: [bool; 6],
+    /// Per-BAR pre-programming configuration.
+    pub bar_addresses: [vfio_assigned_device_resources::BarAddressConfig; 6],
 }
 
-/// Marker for a BAR passthrough value; only `pt` is accepted.
+/// Per-BAR address configuration parsed from the CLI.
 #[cfg(target_os = "linux")]
-struct Pt;
+struct BarAddressCli(vfio_assigned_device_resources::BarAddressConfig);
 
 #[cfg(target_os = "linux")]
-impl FromStr for Pt {
+impl FromStr for BarAddressCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
-        anyhow::ensure!(s == "pt", "expected 'pt'");
-        Ok(Pt)
+        let config = if s == "host" {
+            vfio_assigned_device_resources::BarAddressConfig::HostAssigned
+        } else if let Some(value) = s.strip_prefix("0x") {
+            let address = u64::from_str_radix(value, 16).context("invalid BAR address")?;
+            anyhow::ensure!(address != 0, "BAR address must be nonzero");
+            vfio_assigned_device_resources::BarAddressConfig::Fixed(address)
+        } else {
+            anyhow::bail!("expected 'host' or a hexadecimal address starting with '0x'");
+        };
+        Ok(Self(config))
     }
 }
 
-/// Per-BAR passthrough flags (`bar0=pt` .. `bar5=pt`), flattened into
+/// Per-BAR address configuration, flattened into
 /// [`VfioArgs`].
 #[cfg(target_os = "linux")]
 #[derive(vmm_cli::KeyValueArgs)]
 struct BarFlags {
-    bar0: Option<Pt>,
-    bar1: Option<Pt>,
-    bar2: Option<Pt>,
-    bar3: Option<Pt>,
-    bar4: Option<Pt>,
-    bar5: Option<Pt>,
+    bar0: Option<BarAddressCli>,
+    bar1: Option<BarAddressCli>,
+    bar2: Option<BarAddressCli>,
+    bar3: Option<BarAddressCli>,
+    bar4: Option<BarAddressCli>,
+    bar5: Option<BarAddressCli>,
 }
 
 /// Raw `--vfio` options, resolved and validated into a [`VfioDeviceCli`].
@@ -3149,20 +3226,20 @@ impl FromStr for VfioDeviceCli {
         }
 
         let bars = args.bars;
-        let bar_pt = [
-            bars.bar0.is_some(),
-            bars.bar1.is_some(),
-            bars.bar2.is_some(),
-            bars.bar3.is_some(),
-            bars.bar4.is_some(),
-            bars.bar5.is_some(),
+        let bar_addresses = [
+            bars.bar0.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar1.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar2.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar3.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar4.map(|bar| bar.0).unwrap_or_default(),
+            bars.bar5.map(|bar| bar.0).unwrap_or_default(),
         ];
 
         Ok(VfioDeviceCli {
             port_name: args.port,
             pci_id: args.host,
             iommu: args.iommu,
-            bar_pt,
+            bar_addresses,
         })
     }
 }
@@ -3362,6 +3439,31 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    /// `--version` reports the resolved build identity rather than clap's
+    /// default, which would be the parser crate's own name and version.
+    #[test]
+    fn version_reports_build_info() {
+        let short = version_output(["openvmm", "-V"]);
+        assert_eq!(
+            short,
+            format!("openvmm {}\n", openvmm_build_info::get().version())
+        );
+
+        let long = version_output(["openvmm", "--version"]);
+        assert_eq!(
+            long,
+            format!("openvmm {}\n", openvmm_build_info::get().long_version())
+        );
+    }
+
+    fn version_output(args: [&str; 2]) -> String {
+        let Err(error) = Options::try_parse_from(args) else {
+            panic!("{args:?} unexpectedly parsed as runtime options");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        error.to_string()
+    }
 
     #[test]
     fn test_parse_rpc() {
@@ -4801,6 +4903,20 @@ mod tests {
     }
 
     #[test]
+    fn test_no_hv_requires_no_vmbus() {
+        assert!(Options::try_parse_from(["openvmm", "--no-hv"]).is_err());
+
+        let opt = Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus"]).unwrap();
+        assert!(opt.no_hv);
+        assert!(opt.no_vmbus);
+
+        assert!(
+            Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus", "--hv"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn test_memory_options_allow_legacy_thp_with_new_private_memory() {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
         opt.validate_memory_options().unwrap();
@@ -4813,6 +4929,63 @@ mod tests {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=on", "--private-memory"])
             .unwrap();
         assert!(opt.validate_memory_options().is_err());
+    }
+
+    #[test]
+    fn test_isolation_options_reject_snp_uefi() {
+        let opt = Options::try_parse_from(["openvmm", "--isolation", "snp", "--uefi"]).unwrap();
+
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "SNP isolation currently only supports Linux direct boot"
+        );
+    }
+
+    #[test]
+    fn test_isolation_options_reject_snp_hugepages() {
+        for args in [
+            vec![
+                "openvmm",
+                "--isolation",
+                "snp",
+                "--memory",
+                "size=1G,hugepages=on",
+            ],
+            vec![
+                "openvmm",
+                "--isolation",
+                "snp",
+                "--numa",
+                "size=1G,hugepages=on",
+            ],
+        ] {
+            let opt = Options::try_parse_from(args).unwrap();
+            assert_eq!(
+                opt.validate_isolation_options().unwrap_err().to_string(),
+                "SNP isolation currently does not support hugetlb memory"
+            );
+        }
+    }
+
+    #[test]
+    fn test_isolation_options_allow_vbs_uefi() {
+        let opt = Options::try_parse_from(["openvmm", "--isolation", "vbs", "--uefi"]).unwrap();
+
+        opt.validate_isolation_options().unwrap();
+    }
+
+    #[test]
+    fn test_isolation_options_allow_vbs_hugepages() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--isolation",
+            "vbs",
+            "--memory",
+            "size=1G,hugepages=on",
+        ])
+        .unwrap();
+
+        opt.validate_isolation_options().unwrap();
     }
 
     #[test]
@@ -4873,6 +5046,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_vfio_device_cli_parse() {
+        use vfio_assigned_device_resources::BarAddressConfig;
+
         // Required keys only.
         let v = VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0").unwrap();
         assert_eq!(v.pci_id, "0000:01:00.0");
@@ -4885,13 +5060,14 @@ mod tests {
         assert_eq!(v.port_name, "rp1");
         assert_eq!(v.iommu.as_deref(), Some("iommu0"));
 
-        // BAR passthrough flags set the corresponding indices.
-        let v = VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=pt,bar2=pt").unwrap();
-        assert_eq!(v.bar_pt, [true, false, true, false, false, false]);
-
-        // A BAR flag only accepts `pt`, and requires a value.
-        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=x").is_err());
-        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0").is_err());
+        let v = VfioDeviceCli::from_str(
+            "host=0000:03:00.0,port=rp2,bar0=host,bar2=0x80000000,bar4=0x110000000000",
+        )
+        .unwrap();
+        assert_eq!(v.bar_addresses[0], BarAddressConfig::HostAssigned);
+        assert_eq!(v.bar_addresses[1], BarAddressConfig::GuestAssigned);
+        assert_eq!(v.bar_addresses[2], BarAddressConfig::Fixed(0x80000000));
+        assert_eq!(v.bar_addresses[4], BarAddressConfig::Fixed(0x110000000000));
     }
 
     #[cfg(target_os = "linux")]
@@ -4921,6 +5097,15 @@ mod tests {
         // Path-traversal characters in the host BDF are rejected.
         assert!(VfioDeviceCli::from_str("host=../../etc/passwd,port=rp0").is_err());
         assert!(VfioDeviceCli::from_str("host=foo/bar,port=rp0").is_err());
+
+        // Invalid and duplicate BAR configurations are rejected.
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=0x0").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=0xnope").is_err());
+        assert!(VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=pt").is_err());
+        assert!(
+            VfioDeviceCli::from_str("host=0000:01:00.0,port=rp0,bar0=0x1000,bar0=host").is_err()
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -4979,6 +5164,37 @@ mod tests {
         assert!(VhostUserCli::from_str("/run/x.sock,device_id=1,num_queues=2").is_err()); // num_queues on device_id
         assert!(VhostUserCli::from_str("/run/x.sock,device_id=1,queue_sizes=[]").is_err()); // empty list
         assert!(VhostUserCli::from_str("/run/x.sock,device_id=1").is_err()); // device_id without queue_sizes
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_vhost_vsock_cli() {
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-vhost-cid", "3"]).unwrap();
+        assert_eq!(opt.virtio_vsock_vhost_cid, Some(3));
+
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-vhost-cid", "2"]).is_err());
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--virtio-vsock-vhost-cid",
+                "3",
+                "--virtio-vsock-path",
+                "/tmp/vsock",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_virtio_vsock_bus_cli() {
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "mmio"]).unwrap();
+        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio)));
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pci"]).unwrap();
+        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci)));
+
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "auto"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "vpci"]).is_err());
     }
 
     #[test]

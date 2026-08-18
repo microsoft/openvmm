@@ -139,9 +139,13 @@ impl FlowNodeWithConfig for Node {
                     anyhow::bail!("AutoInstall must be `true` when running on Github")
                 }
 
-                ctx.emit_gh_step("Install nodejs", "actions/setup-node@v4")
-                    .with("node-version", version)
-                    .finish(ctx)
+                // actions/setup-node v4.4.0
+                ctx.emit_gh_step(
+                    "Install nodejs",
+                    "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+                )
+                .with("node-version", version)
+                .finish(ctx)
             }
         };
 

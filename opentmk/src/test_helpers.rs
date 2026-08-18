@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Helpers for authoring OpenTMK tests.
+
 #[macro_export]
 /// Generates a function that calls the given symbol saving and restoring general purpose registers around the call.
 macro_rules! create_function_with_restore {
@@ -10,7 +12,7 @@ macro_rules! create_function_with_restore {
         fn $func_name() {
             // SAFETY: we are calling a function pointer and restoring general purpose registers.
             unsafe {
-                asm!("
+                ::core::arch::asm!("
                     push rax
                     push rbx
                     push rcx

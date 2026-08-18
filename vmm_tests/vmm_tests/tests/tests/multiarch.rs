@@ -19,6 +19,8 @@ use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 #[cfg(target_os = "linux")]
 use petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_NATIVE;
+#[cfg(target_os = "linux")]
+use std::mem::size_of;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -40,6 +42,8 @@ mod numa;
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
+/// Tests involving UEFI Secure Boot functionality.
+mod secureboot;
 /// Tests involving TPM functionality
 mod tpm;
 /// Tests for VLAN (802.1Q) support on virtual NICs.
@@ -120,6 +124,30 @@ async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
+/// Basic boot test using the Linux kernel vhost-vsock backend.
+///
+/// Petri connects to the guest directly through the host AF_VSOCK namespace,
+/// so successfully establishing the pipette session validates the full
+/// host-kernel-to-guest virtio-vsock path.
+#[cfg(target_os = "linux")]
+#[openvmm_test(linux_direct_x64)]
+async fn boot_vhost_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    // Avoid collisions with other vhost-vsock devices on a shared test host.
+    let guest_cid = 0x4000_0000 | (std::process::id() & 0x3fff_ffff);
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            private_memory: Some(false),
+            ..Default::default()
+        })
+        .with_vhost_vsock(guest_cid)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot Linux direct with VMBus entirely disabled.
 ///
 /// Virtio-vsock provides the pipette transport. No VMBus server, no VMBus
@@ -131,6 +159,60 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
         .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot a small aarch64 Linux guest via UEFI without Hyper-V enlightenments.
+///
+/// The loader must pass the generic SEC platform type in `x2`, allowing the
+/// firmware to avoid Hyper-V-specific facilities. PCIe NVMe provides the boot
+/// and CIDATA disks on separate controllers, and virtio-vsock provides the
+/// pipette transport because VMBus is off. Keeping separate controllers also
+/// verifies that the guest preserves OpenVMM's preassigned PCI resources.
+/// The `_aarch64_tcg` suffix opts the test into the QEMU incubator CI pass.
+#[cfg(target_os = "linux")]
+#[openvmm_test(uefi_aarch64(vhd(alpine_3_23_aarch64)))]
+#[openvmm_test(uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
+async fn boot_no_hv_uefi_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_hv()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    let shell = agent.unix_shell();
+    let dmesg = cmd!(shell, "dmesg").read().await?;
+    let hyperv_detection_lines: Vec<_> = dmesg
+        .lines()
+        .filter(|line| line.contains("Hyper-V:") || line.contains("Microsoft Hyper-V"))
+        .collect();
+    assert!(
+        hyperv_detection_lines.is_empty(),
+        "guest detected Hyper-V despite no-hv configuration:\n{}",
+        hyperv_detection_lines.join("\n")
+    );
+
+    let facp = shell
+        .read_file_raw("/sys/firmware/acpi/tables/FACP")
+        .await?;
+    let vendor_id_offset = facp
+        .len()
+        .checked_sub(size_of::<u64>())
+        .context("FADT is too short to contain the hypervisor vendor identity")?;
+    let vendor_id = u64::from_le_bytes(
+        facp.get(vendor_id_offset..)
+            .context("FADT is missing the hypervisor vendor identity")?
+            .try_into()
+            .context("invalid FADT hypervisor vendor identity length")?,
+    );
+    assert_eq!(vendor_id, 0, "guest FADT advertised a hypervisor vendor");
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -500,10 +582,6 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -517,7 +595,6 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 }
 
 /// Verify that secure boot fails with a mismatched template.
-/// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
 #[vmm_test_with(
     noagent,
     configs(
@@ -526,22 +603,6 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
         openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
         openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
         openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-        ignore(
-            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
-            hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64))
-        ),
-        ignore(
-            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
-            hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
-        ),
-        ignore(
-            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
-            hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64))
-        ),
-        ignore(
-            reason = "Hyper-V cannot load a per-VM UEFI firmware (system-wide only)",
-            hyperv_uefi_x64(vhd(ubuntu_2504_server_x64))
-        ),
         hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
         hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
         hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),

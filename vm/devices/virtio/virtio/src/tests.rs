@@ -136,6 +136,27 @@ async fn yield_and_poll_device(dev: &mut impl PollDevice) {
 struct VirtioTestMemoryAccess {
     memory_map: Mutex<MemoryMap>,
     doorbell_count: AtomicUsize,
+    /// The doorbells that are currently INSTALLED, i.e. whose registration
+    /// object is still alive.
+    ///
+    /// Kept alongside `doorbell_count` because a count of registration calls
+    /// cannot answer the question a restore poses: it says a registration
+    /// happened, not that a doorbell exists NOW at the address the guest kicks.
+    /// Behind an `Arc` so each handed-out registration can remove its own entry
+    /// when it is dropped.
+    live_doorbells: Arc<Mutex<Vec<DoorbellSpec>>>,
+}
+
+/// A doorbell registration as the transport asked for it.
+///
+/// All queues of one virtio PCI device register at the SAME address (BAR0's
+/// notify register) and are told apart by `value`, the datamatch. So an
+/// assertion on addresses alone cannot see a missing queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DoorbellSpec {
+    address: u64,
+    value: Option<u64>,
+    length: Option<u32>,
 }
 
 #[derive(Default)]
@@ -197,6 +218,13 @@ impl MemoryMap {
 impl VirtioTestMemoryAccess {
     fn new() -> Arc<Self> {
         Default::default()
+    }
+
+    /// The doorbells installed right now, in a stable order for comparison.
+    fn installed_doorbells(&self) -> Vec<DoorbellSpec> {
+        let mut specs = self.live_doorbells.lock().clone();
+        specs.sort_unstable();
+        specs
     }
 
     fn modify_memory_map(&self, address: u64, data: &[u8], writeable: bool) {
@@ -284,18 +312,41 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
     }
 }
 
-struct DoorbellEntry;
+/// The handle a doorbell registration hands back. Dropping it is what
+/// UNINSTALLS the doorbell, so it de-registers itself from `live_doorbells`.
+struct DoorbellEntry {
+    live: Arc<Mutex<Vec<DoorbellSpec>>>,
+    spec: DoorbellSpec,
+}
+
+impl Drop for DoorbellEntry {
+    fn drop(&mut self) {
+        let mut live = self.live.lock();
+        if let Some(i) = live.iter().position(|s| *s == self.spec) {
+            live.remove(i);
+        }
+    }
+}
 
 impl DoorbellRegistration for VirtioTestMemoryAccess {
     fn register_doorbell(
         &self,
-        _: u64,
-        _: Option<u64>,
-        _: Option<u32>,
+        address: u64,
+        value: Option<u64>,
+        length: Option<u32>,
         _: &Event,
     ) -> io::Result<Box<dyn Send + Sync>> {
         self.doorbell_count.fetch_add(1, Ordering::Relaxed);
-        Ok(Box::new(DoorbellEntry))
+        let spec = DoorbellSpec {
+            address,
+            value,
+            length,
+        };
+        self.live_doorbells.lock().push(spec);
+        Ok(Box::new(DoorbellEntry {
+            live: self.live_doorbells.clone(),
+            spec,
+        }))
     }
 }
 
@@ -523,7 +574,12 @@ impl VirtioTestGuest {
         }
         dev.write_u32(112, VIRTIO_DRIVER_OK);
         yield_and_poll_device(dev).await;
-        assert_eq!(dev.read_u32(0xfc), 2);
+        assert_eq!(dev.read_u32(0xfc), 1);
+        assert_eq!(
+            dev.read_u32(96) & 0x2,
+            0,
+            "DRIVER_OK must not signal a config-change interrupt"
+        );
     }
 
     async fn setup_pci_device(
@@ -652,7 +708,12 @@ impl VirtioTestGuest {
             .write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
         yield_and_poll_device(&mut dev.pci_device).await;
         let config_generation = (dev.pci_device.read_u32(20) >> 8) & 0xff;
-        assert_eq!(config_generation, 2);
+        assert_eq!(config_generation, 1);
+        assert_eq!(
+            dev.pci_device.read_u32(60) & 0x2,
+            0,
+            "DRIVER_OK must not signal a config-change interrupt"
+        );
     }
 
     fn get_queue_descriptor(&self, queue_index: u16, descriptor_index: u16) -> u64 {
@@ -3113,13 +3174,7 @@ async fn verify_device_queue_simple_inner(
     .unwrap();
 
     guest.setup_chipset_device(&mut dev, features).await;
-    expect_mmio_interrupt(
-        &mut dev,
-        &target,
-        VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE,
-        false,
-    )
-    .await;
+
     guest.add_to_avail_queue(0);
     // notify device
     dev.write_u32(80, 0);
@@ -3201,13 +3256,7 @@ async fn verify_device_multi_queue_inner(
     )
     .unwrap();
     guest.setup_chipset_device(&mut dev, features).await;
-    expect_mmio_interrupt(
-        &mut dev,
-        &target,
-        VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE,
-        false,
-    )
-    .await;
+
     for i in 0..num_queues {
         guest.add_to_avail_queue(i);
         // notify device
@@ -3286,10 +3335,7 @@ async fn verify_device_multi_queue_pci_inner(
 
     let mut timer = PolledTimer::new(&driver);
 
-    // expect a config generation interrupt
-    timer.sleep(Duration::from_millis(100)).await;
-    let delivered = dev.test_intc.get_next_interrupt().unwrap();
-    assert_eq!(delivered.0, 0);
+    // verify no spurious interrupts were delivered during setup
     assert!(dev.test_intc.get_next_interrupt().is_none());
 
     for i in 0..num_queues {
@@ -4896,63 +4942,67 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
 async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     use vmcore::save_restore::SaveRestore;
 
+    const QUEUE_COUNT: u16 = 2;
+    // What `setup_pci_device` programs BAR0 to.
+    const BAR0_BASE: u64 = 0x10000000000;
+    // BAR0's base plus its notify offset. Every queue's doorbell lands on this one
+    // address; the queue index is the datamatch value.
+    let notify_address: u64 = BAR0_BASE + VIRTIO_PCI_COMMON_CFG_SIZE as u64;
+
     let test_mem = VirtioTestMemoryAccess::new();
 
-    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, QUEUE_COUNT, 4, true);
 
-    let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    let mut dev = VirtioPciTestDevice::new(&driver, QUEUE_COUNT, &test_mem, None);
     guest
         .setup_pci_device(&mut dev, guest.queue_features())
         .await;
 
-    // After setup, doorbells should be registered.
-    let doorbells_after_setup = test_mem.doorbell_count.load(Ordering::Relaxed);
-    assert!(
-        doorbells_after_setup > 0,
-        "doorbells should be registered after setup"
+    // What the running device serves, and what the restore has to come back
+    // with. Spelled out rather than just counted so a doorbell installed at the
+    // wrong address, or one queue short, cannot pass.
+    let expected: Vec<DoorbellSpec> = (0..QUEUE_COUNT)
+        .map(|i| DoorbellSpec {
+            address: notify_address,
+            value: Some(i as u64),
+            length: Some(2),
+        })
+        .collect();
+    assert_eq!(
+        test_mem.installed_doorbells(),
+        expected,
+        "the live device should serve one doorbell per queue at BAR0's notify register"
     );
 
-    // Stop, save, restore into a new device.
     dev.pci_device.stop().await;
     let saved = dev.pci_device.save().expect("save should succeed");
 
-    let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
-    // Configure BARs on the target device so doorbells can be registered.
-    let bar_address1: u64 = 0x10000000000;
-    dev2.pci_device
-        .pci_cfg_write(
-            0x14,
-            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
-        )
-        .unwrap();
-    dev2.pci_device
-        .pci_cfg_write(
-            0x10,
-            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
-        )
-        .unwrap();
-    dev2.pci_device
-        .pci_cfg_write(
-            0x4,
-            ByteEnabledDwordWrite::new(
-                cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32,
-                PciConfigByteEnable::LOW_WORD,
-            ),
-        )
-        .unwrap();
-    // Reset counter to isolate restore behavior.
-    test_mem.doorbell_count.store(0, Ordering::Relaxed);
+    // Drop the saved device before restoring, so what the assertions below see
+    // can only be the RESTORED device's doorbells and not the original's.
+    drop(dev);
+    assert!(
+        test_mem.installed_doorbells().is_empty(),
+        "dropping the saved device should uninstall its doorbells"
+    );
+
+    // Restore into a device that is FRESH, with nothing having programmed its
+    // BARs - which is the real restore: the guest is resumed mid-flight and never
+    // writes its BARs or DRIVER_OK again, so the config space can only come back
+    // from the saved state. This test used to program the BARs here by hand
+    // before restoring, and that is precisely what hid #159: the doorbells were
+    // installed from an address the production path does not have yet at that
+    // point, so the assertion held while every restored VM ran without a single
+    // doorbell.
+    let mut dev2 = VirtioPciTestDevice::new(&driver, QUEUE_COUNT, &test_mem, None);
     dev2.pci_device
         .restore(saved)
         .expect("restore should succeed");
 
-    // Doorbells must be reinstalled during restore.
-    let doorbells_after_restore = test_mem.doorbell_count.load(Ordering::Relaxed);
-    assert!(
-        doorbells_after_restore > 0,
-        "doorbells should be reinstalled after restore, got {doorbells_after_restore}"
+    assert_eq!(
+        test_mem.installed_doorbells(),
+        expected,
+        "restore must reinstall every queue's doorbell at BAR0's notify register; \
+         without them each kick is an MMIO exit to userspace instead of the ioeventfd"
     );
 
     dev2.pci_device.stop().await;
@@ -5578,18 +5628,46 @@ fn new_bound_test_queue_result(
     Ok((mem, queue))
 }
 
-fn assert_in_flight_error(error: io::Error, in_flight: u16, requested: u16) {
-    let error = error
+fn queue_error(error: &io::Error) -> Option<&QueueError> {
+    error
         .get_ref()
-        .and_then(|error| error.downcast_ref::<QueueError>());
+        .and_then(|error| error.downcast_ref::<QueueError>())
+}
+
+fn assert_in_flight_error(error: io::Error, in_flight: u16, requested: u16) {
     assert!(matches!(
-        error,
+        queue_error(&error),
         Some(QueueError::TooManyInFlightDescriptors {
             in_flight: actual_in_flight,
             requested: actual_requested,
             queue_size: BOUND_TEST_QUEUE_SIZE,
         }) if *actual_in_flight == in_flight && *actual_requested == requested
     ));
+}
+
+/// Points descriptor 0 at itself and makes it available. The chain never
+/// terminates, so the queue rejects it with [`QueueError::TooLong`].
+fn make_split_cyclic_chain(mem: &GuestMemory) {
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    write_descriptor(
+        mem,
+        BOUND_TEST_DESC_ADDR,
+        0,
+        BOUND_TEST_DATA_ADDR,
+        0x100,
+        DescriptorFlags::new().with_write(true).with_next(true),
+        0,
+    );
+    let mut avail_idx = 0;
+    make_available(
+        mem,
+        BOUND_TEST_AVAIL_ADDR,
+        BOUND_TEST_QUEUE_SIZE,
+        0,
+        &mut avail_idx,
+    );
 }
 
 fn next_error(queue: &mut VirtioQueue) -> io::Error {
@@ -5704,8 +5782,12 @@ async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) 
     assert_in_flight_error(next_error(&mut queue), 2, 3);
 }
 
+/// Oversubscribing the ring retires the queue like any other protocol
+/// violation. Completing outstanding work frees ring capacity but does not
+/// revive it: the rejected chain was never consumed, so the queue would hand
+/// out a descriptor the guest had already oversubscribed.
 #[async_test]
-async fn split_queue_capacity_recovers_after_completion(driver: DefaultDriver) {
+async fn split_queue_stays_retired_after_capacity_error(driver: DefaultDriver) {
     let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
     make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
 
@@ -5714,8 +5796,14 @@ async fn split_queue_capacity_recovers_after_completion(driver: DefaultDriver) {
         works.push(queue.try_next().unwrap().expect("within queue size"));
     }
     assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+
+    // Completions still publish to the used ring, so a device can drain its
+    // in-flight work after the failure.
     queue.complete(works.remove(0), 1);
-    let _ = queue.try_next().unwrap().unwrap();
+    assert!(
+        matches!(queue.try_next(), Ok(None)),
+        "freeing capacity must not revive a retired queue"
+    );
 }
 
 #[async_test]
@@ -5787,4 +5875,51 @@ async fn queue_new_rejects_corrupt_saved_state(driver: DefaultDriver) {
             }) if actual_avail == avail_index && actual_used == used_index
         ));
     }
+}
+
+/// A rejected descriptor chain is never consumed, so the available index does
+/// not move and the same chain would be re-read on the next call. Report the
+/// failure once and then report the queue as empty, so that a device worker
+/// which logs the error and keeps polling makes no further progress instead of
+/// spinning on the same bad chain forever.
+#[async_test]
+async fn queue_reports_failure_only_once(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_cyclic_chain(&mem);
+
+    let Err(error) = queue.try_next() else {
+        panic!("a cyclic descriptor chain must be rejected");
+    };
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+
+    assert!(
+        matches!(queue.try_next(), Ok(None)),
+        "failed queue must report no work rather than repeat the error"
+    );
+    assert!(
+        matches!(queue.try_peek(), Ok(None)),
+        "failed queue must report no work rather than repeat the error"
+    );
+}
+
+/// Driven as a stream, a failed queue must park rather than yield the same
+/// error on every poll. It must not end the stream either: `None` would be
+/// ready synchronously on every poll, so a caller looping over the stream
+/// would spin on it exactly as it would on the repeated error.
+#[async_test]
+async fn queue_stream_parks_after_failure(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_cyclic_chain(&mem);
+
+    let Some(Err(error)) = queue.next().await else {
+        panic!("the stream must yield the failure");
+    };
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+
+    assert!(
+        poll_fn(|cx| std::task::Poll::Ready(queue.poll_next_unpin(cx)))
+            .await
+            .is_pending(),
+        "failed queue must park rather than repeat the error or end the stream"
+    );
 }

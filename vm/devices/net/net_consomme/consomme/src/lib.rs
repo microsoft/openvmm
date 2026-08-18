@@ -40,6 +40,8 @@ const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
     max: 4 * 1024 * 1024,
 };
 
+pub use dns_resolver::StaticDnsRecord;
+pub use dns_resolver::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -60,6 +62,7 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
@@ -130,7 +133,7 @@ pub struct Consomme {
 struct ConsommePrimary {
     config: ConsommePrimaryConfig,
     runtime: ConsommePrimaryRuntime,
-    dns: Option<dns_resolver::DnsResolver>,
+    dns: dns_resolver::DnsResolver,
     icmp: icmp::Icmp,
 }
 
@@ -834,13 +837,15 @@ impl Consomme {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
                     params.nameservers = config.internal_nameservers(ipv6_enabled);
-                    Some(dns)
+                    dns
                 }
                 Err(_) => {
                     tracelimit::warn_ratelimited!(
                         "failed to initialize DNS resolver, falling back to using host DNS settings"
                     );
-                    None
+                    dns_resolver::DnsResolver::without_backend(
+                        dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
+                    )
                 }
             };
         let timeout = params.udp_timeout;
@@ -926,6 +931,45 @@ impl Consomme {
     /// acceptable.
     pub fn clear_local_addr_map(&mut self) {
         self.primary.runtime.local_addr_map.clear();
+    }
+
+    /// Adds a static DNS record that will be returned directly
+    /// if the guest sends a matching query.
+    pub fn add_dns_record(
+        &mut self,
+        record: StaticDnsRecord,
+        name: &str,
+    ) -> Result<(), StaticDnsRecordError> {
+        self.primary.dns.add_static_record(record, name)
+    }
+
+    /// Allocates a virtual address within this endpoint's subnet and routes
+    /// guest traffic sent to it to `destination` on the host.
+    /// Returns `None` if the subnet's virtual address pool is exhausted.
+    pub fn create_virtual_address(&mut self, destination: IpAddr) -> Option<IpAddr> {
+        match destination {
+            IpAddr::V4(destination) => {
+                let net_mask = self.primary.config.immutable.net_mask;
+                let gateway_ip = self.primary.config.immutable.gateway_ip;
+                let client_ip = self.primary.config.immutable.client_ip;
+                let subnet_base = Ipv4Addr::from(u32::from(gateway_ip) & u32::from(net_mask));
+                self.primary
+                    .runtime
+                    .local_addr_map
+                    .get_or_allocate_v4(destination, subnet_base, net_mask, gateway_ip, client_ip)
+                    .map(IpAddr::V4)
+            }
+            IpAddr::V6(destination) => {
+                let gateway_ll = self.primary.config.immutable.gateway_link_local_ipv6;
+                let client_ll = self.primary.runtime.client_ip_ipv6;
+                let client_routable = self.primary.runtime.client_ip_ipv6_routable;
+                self.primary
+                    .runtime
+                    .local_addr_map
+                    .get_or_allocate_v6(destination, gateway_ll, client_ll, client_routable)
+                    .map(IpAddr::V6)
+            }
+        }
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.
@@ -1173,6 +1217,17 @@ impl<T: Client> Access<'_, T> {
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
+    }
+    /// Updates the DNS nameservers based on the current consomme parameters.
+    pub fn update_dns_nameservers(&mut self) {
+        if self.inner.primary.dns.is_available() {
+            self.inner.primary.config.params.nameservers = self
+                .inner
+                .primary
+                .config
+                .immutable
+                .internal_nameservers(self.inner.primary.config.ipv6_enabled);
+        }
     }
 }
 

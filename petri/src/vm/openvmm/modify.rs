@@ -358,7 +358,6 @@ impl PetriVmConfigOpenVmm {
         for node in &mut self.config.numa.nodes {
             if let Some(mem) = &mut node.mem {
                 mem.private_memory = false;
-                mem.transparent_hugepages = false;
             }
         }
         self
@@ -383,7 +382,6 @@ impl PetriVmConfigOpenVmm {
                 mem.hugepages = true;
                 mem.hugepage_size = hugepage_size;
                 mem.private_memory = false;
-                mem.transparent_hugepages = false;
             }
         }
         self
@@ -506,6 +504,27 @@ impl PetriVmConfigOpenVmm {
                 name.to_string(),
                 PcieIommuConfig::Smmu {
                     accel: false,
+                    oas: openvmm_defs::config::SmmuOas::Auto,
+                },
+            ));
+        }
+        self
+    }
+
+    /// Enable an accelerated (iommufd-nested) SMMUv3 on the specified root
+    /// complexes (aarch64 only).
+    ///
+    /// Like [`with_smmu`](Self::with_smmu), but the SMMU programs the host
+    /// IOMMU for hardware nested stage-1 translation, so VFIO devices behind
+    /// these root complexes are permitted (and their guest-programmed stage-1
+    /// tables are honored via a host nested HWPT). Requires a host SMMU that
+    /// supports iommufd nesting.
+    pub fn with_smmu_accel(mut self, rc_names: &[&str]) -> Self {
+        for name in rc_names {
+            self.pending_iommu.push((
+                name.to_string(),
+                PcieIommuConfig::Smmu {
+                    accel: true,
                     oas: openvmm_defs::config::SmmuOas::Auto,
                 },
             ));

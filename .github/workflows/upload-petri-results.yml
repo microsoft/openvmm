@@ -30,13 +30,13 @@ jobs:
 
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
           # Azure CLI is considered a large package
           large-packages: false
 
       - name: Authenticate to Azure
-        uses: azure/login@v1
+        uses: azure/login@cb79c773a3cfa27f31f25eb3f677781210c9ce3d # v1.6.1
         with:
           client-id: ${{ secrets.OPENVMM_TEST_RESULT_CLIENT_ID }}
           tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
@@ -82,28 +82,6 @@ jobs:
 
       - name: Upload to Azure Blob Storage
         run: |
-          az storage blob upload-batch \
-            --destination "$BASE_URL/results" \
-            --destination-path "$run_id" \
-            --source results \
-            --auth-mode login
-
-          # Store a metadata blob in a separate portion of the hierarchy so that
-          # it can be cheaply queried.
-          az storage blob upload \
-            --blob-url "$BASE_URL/results/runs/$run_id" \
-            --file /dev/null \
-            --metadata \
-              "petrifailed=$FAIL_COUNT" \
-              "petripassed=$PASS_COUNT" \
-              "ghbranch=$SOURCE_BRANCH" \
-              "ghpr=$SOURCE_PR" \
-            --auth-mode login
-
-          # Run-and-attempt-keyed runs and details. For now, these will live alongside
-          # the legacy run-keyed uploads above, but the site will be switched to
-          # read from the attempt-keyed uploads once a full 30-day retention
-          # window has elapsed.
           run_key="${run_id}_${run_attempt}"
 
           az storage blob upload-batch \
@@ -159,10 +137,9 @@ jobs:
           gh pr comment \
             -R "$repo" \
             "$SOURCE_PR" \
-            -F - <<EOF
-          [$FAIL_COUNT Petri tests failed ($FAIL_UNSTABLE_COUNT unstable)](https://openvmm.dev/test-results/#/runs/$run_id)
-          EOF
+            -b "[$FAIL_COUNT Petri tests failed ($FAIL_UNSTABLE_COUNT unstable)](https://openvmm.dev/test-results/#/runs/${run_id}_${run_attempt})"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           repo: ${{ github.event.workflow_run.repository.full_name }}
           run_id: ${{ github.event.workflow_run.id }}
+          run_attempt: ${{ github.event.workflow_run.run_attempt }}

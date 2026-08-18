@@ -25,7 +25,6 @@ use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvHvcall;
 use hcl::ioctl::MshvVtl;
-use hcl::ioctl::snp::SnpPageError;
 use hv1_structs::VtlArray;
 use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
 use hvdef::HV_MAP_GPA_PERMISSIONS_NONE;
@@ -57,14 +56,6 @@ use x86defs::tdx::GpaVmAttributes;
 use x86defs::tdx::GpaVmAttributesMask;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
-
-/// Error querying vtl permissions on a page
-#[derive(Debug, Error)]
-pub enum QueryVtlPermissionsError {
-    /// An SNP-specific error
-    #[error("failed to query rmp permissions")]
-    Snp(#[source] SnpPageError),
-}
 
 #[derive(Debug)]
 struct MshvVtlWithPolicy {
