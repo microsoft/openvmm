@@ -904,19 +904,25 @@ impl Consomme {
     ///
     /// Changes take effect for subsequent packet processing. TCP buffer bounds
     /// apply only to connections created after the update. UDP timeout changes
-    /// affect existing mappings on their next poll.
+    /// affect existing mappings on their next poll. Disabling host-local access
+    /// clears cached virtual address translations.
     pub fn update_params(&mut self, update: impl FnOnce(&mut ConsommeParams)) {
+        let host_local_access_was_allowed = self.primary.config.params.allow_host_local_access;
         update(&mut self.primary.config.params);
 
-        let (udp_timeout, tcp_rx_buffer, tcp_tx_buffer) = {
+        let (udp_timeout, tcp_rx_buffer, tcp_tx_buffer, clear_local_addr_map) = {
             let params = &self.primary.config.params;
             (
                 params.udp_timeout,
                 params.tcp_rx_buffer,
                 params.tcp_tx_buffer,
+                host_local_access_was_allowed && !params.allow_host_local_access,
             )
         };
 
+        if clear_local_addr_map {
+            self.primary.runtime.local_addr_map.clear();
+        }
         self.shard.udp.update_timeout(udp_timeout);
         self.shard
             .tcp

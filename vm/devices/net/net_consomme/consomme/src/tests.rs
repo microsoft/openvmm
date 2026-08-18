@@ -567,6 +567,27 @@ fn update_params_preserves_runtime_state_for_unrelated_changes() {
 }
 
 #[test]
+fn update_params_clears_local_addr_map_when_disabling_host_local_access() {
+    let mut params = ConsommeParams::new().unwrap();
+    params.allow_host_local_access = true;
+    let mut consomme = Consomme::new(ConsommeConfig::new(), params);
+    let virtual_address = consomme
+        .create_virtual_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .unwrap();
+
+    consomme.update_params(|params| params.allow_host_local_access = false);
+
+    assert_eq!(
+        consomme
+            .primary
+            .runtime
+            .local_addr_map
+            .resolve_virtual(&virtual_address),
+        None
+    );
+}
+
+#[test]
 fn update_params_preserves_nameserver_update() {
     let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let nameserver = IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, 1));
