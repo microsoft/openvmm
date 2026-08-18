@@ -60,7 +60,7 @@ pub trait MsrPlatformTrait {
     unsafe fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()>;
 }
 
-/// Trait for platforms that supports invoking a hypercall like interface.
+/// Trait for platforms that support invoking a hypercall like interface.
 pub trait HypercallPlatformTrait {
     /// Platform-specific configurations per-hypercall
     type Config;

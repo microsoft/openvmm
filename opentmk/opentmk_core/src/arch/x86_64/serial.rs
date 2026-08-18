@@ -79,7 +79,7 @@ pub const RX_BUFFER: u16 = 0;
 /// Transmit buffer (out)
 pub const TX_BUFFER: u16 = 0;
 /// Interrupt enable register (in/out)
-pub const INTERUPT_ENABLE: u16 = 1;
+pub const INTERRUPT_ENABLE: u16 = 1;
 /// When DLAB in [`LINE_CONTROL`] is set, this is LSB of the divisor value for setting baud rate
 pub const DLAB_LSB_BAUD: u16 = 0;
 /// When DLAB in [`LINE_CONTROL`] is set, this is MSB of the divisor value for setting baud rate
@@ -98,8 +98,7 @@ pub const MODEM_STATUS: u16 = 6;
 pub const SCRATCH: u16 = 7;
 
 /// Represents the number of bits stored in a character. Fewer bits is faster
-/// but store less information. By default the length is 8-bits
-/// ([`LineDataBits::Len8`])
+/// but store less information.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum LineDataBits {
@@ -130,7 +129,7 @@ impl LineDataBits {
 
 /// Line control bits.
 ///
-/// This configures the line protocol in terms of how bits are transitted to the
+/// This configures the line protocol in terms of how bits are transmitted to the
 /// other end. In general, the sending and receiving device should have the same
 /// protocol parameter values in order for communication to be successful.
 ///
@@ -170,7 +169,7 @@ pub struct LineStatus {
     pub pe: bool,
     /// Framing error: line status flag is set when a stop bit was missing
     pub fe: bool,
-    /// Break idicator: line status flag is set when there is a break in data input
+    /// Break indicator: line status flag is set when there is a break in data input
     pub bi: bool,
     /// Transmitter holding register empty: line status flag is set when the
     /// transmission buffer is empty (i.e. data can be sent)
@@ -183,7 +182,7 @@ pub struct LineStatus {
     pub err: bool,
 }
 
-/// FIFO control bits. This controls the FIFO buffers, accessed by reading the
+/// FIFO control bits. This controls the FIFO buffers, written to the
 /// [`FIFO_CONTROL`] offset.
 #[bitfield(u8)]
 #[derive(PartialEq, Eq)]
@@ -221,7 +220,7 @@ impl<T: IoAccess> Serial<T> {
         // these parameters.
         unsafe {
             // Disable all interrupts
-            self.io.outb(self.serial_port.value(INTERUPT_ENABLE), 0);
+            self.io.outb(self.serial_port.value(INTERRUPT_ENABLE), 0);
 
             // Set baud
             self.line_control(LineControl::new().with_dlab(true));
@@ -254,7 +253,7 @@ impl<T: IoAccess> Serial<T> {
             // SAFETY: caller guarantees that setting the FIFO_CONTROL to these values
             // is safe
             self.io
-                .outb(self.serial_port.value(LINE_CONTROL), value.into_bits());
+                .outb(self.serial_port.value(FIFO_CONTROL), value.into_bits());
         }
     }
 
