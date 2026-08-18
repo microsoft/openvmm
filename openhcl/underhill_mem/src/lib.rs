@@ -39,6 +39,7 @@ use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvInputVtl;
 use mapping::GuestMemoryMapping;
 use mapping::GuestValidMemory;
+use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
@@ -46,6 +47,7 @@ use registrar::RegisterMemory;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 use virt::IsolationType;
 use virt_mshv_vtl::GpnSource;
@@ -382,6 +384,8 @@ pub struct HardwareIsolatedMemoryProtector {
     acceptor: Arc<MemoryAcceptor>,
     vtl0: Arc<GuestMemoryMapping>,
     vtl1_protections_enabled: AtomicBool,
+    /// Number of VPs, used to parallelize long-running memory operations.
+    vp_count: u32,
 }
 
 struct HardwareIsolatedMemoryProtectorInner {
@@ -413,6 +417,7 @@ impl HardwareIsolatedMemoryProtector {
         vtl0: Arc<GuestMemoryMapping>,
         layout: MemoryLayout,
         acceptor: Arc<MemoryAcceptor>,
+        vp_count: u32,
     ) -> Self {
         Self {
             inner: Mutex::new(HardwareIsolatedMemoryProtectorInner {
@@ -432,49 +437,13 @@ impl HardwareIsolatedMemoryProtector {
             acceptor,
             vtl0,
             vtl1_protections_enabled: AtomicBool::new(false),
+            vp_count,
         }
     }
 
-    fn apply_protections_with_overlay_handling(
-        &self,
-        range: MemoryRange,
-        target_vtl: GuestVtl,
-        protections: HvMapGpaFlags,
-        inner: &mut MutexGuard<'_, HardwareIsolatedMemoryProtectorInner>,
-    ) -> Result<(), ApplyVtlProtectionsError> {
-        let mut range_queue = VecDeque::new();
-        range_queue.push_back(range);
-
-        'outer: while let Some(range) = range_queue.pop_front() {
-            for overlay_page in inner.overlay_pages[target_vtl].iter_mut() {
-                let overlay_addr = overlay_page.gpn * HV_PAGE_SIZE;
-                if range.contains_addr(overlay_addr) {
-                    // If the overlay page is within the range, update the
-                    // permissions that will be restored when it is unlocked.
-                    overlay_page.previous_permissions = protections;
-                    // And split the range around it.
-                    let (left, right_with_overlay) =
-                        range.split_at_offset(range.offset_of(overlay_addr).unwrap());
-                    let (overlay, right) = right_with_overlay.split_at_offset(HV_PAGE_SIZE);
-                    debug_assert_eq!(overlay.start_4k_gpn(), overlay_page.gpn);
-                    debug_assert_eq!(overlay.len(), HV_PAGE_SIZE);
-                    if !left.is_empty() {
-                        range_queue.push_back(left);
-                    }
-                    if !right.is_empty() {
-                        range_queue.push_back(right);
-                    }
-                    continue 'outer;
-                }
-            }
-            // We can only reach here if the range does not contain any overlay
-            // pages, so now we can apply the protections to the range.
-            self.apply_protections(range, target_vtl, protections, GpnSource::GuestMemory)?
-        }
-
-        Ok(())
-    }
-
+    /// Apply the given protections to the given range for the given VTL.
+    /// Overlay page permissions are tracked separately; those permissions are
+    /// not updated here.
     fn apply_protections(
         &self,
         range: MemoryRange,
@@ -486,6 +455,7 @@ impl HardwareIsolatedMemoryProtector {
             // Only permissions imposed on VTL 0 guest memory are explicitly tracked
             self.vtl0.update_permission_bitmaps(range, protections);
         }
+
         self.acceptor
             .apply_protections(range, target_vtl, protections)
     }
@@ -862,15 +832,57 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             }
         }
 
-        for range in ranges {
-            self.apply_protections_with_overlay_handling(
-                range,
+        tracing::trace!("Applying default vtl protections.");
+
+        let protect_subrange = move |subrange: MemoryRange| {
+            self.apply_protections(
+                subrange,
                 target_vtl,
                 vtl_protections,
-                &mut inner,
+                GpnSource::GuestMemory,
             )
-            .unwrap();
+        };
+
+        // Handle overlay pages first, collecting the ranges that don't contain
+        // any so they can be protected in parallel below.
+        let mut protect_ranges = Vec::new();
+        for source_range in ranges {
+            let mut range_queue = VecDeque::new();
+            range_queue.push_back(source_range);
+
+            'outer: while let Some(range) = range_queue.pop_front() {
+                for overlay_page in inner.overlay_pages[target_vtl].iter_mut() {
+                    let overlay_addr = overlay_page.gpn * HV_PAGE_SIZE;
+                    if range.contains_addr(overlay_addr) {
+                        // If the overlay page is within the range, update the
+                        // permissions that will be restored when it is unlocked.
+                        overlay_page.previous_permissions = vtl_protections;
+                        // And split the range around it.
+                        let (left, right_with_overlay) =
+                            range.split_at_offset(range.offset_of(overlay_addr).unwrap());
+                        let (overlay, right) = right_with_overlay.split_at_offset(HV_PAGE_SIZE);
+                        debug_assert_eq!(overlay.start_4k_gpn(), overlay_page.gpn);
+                        debug_assert_eq!(overlay.len(), HV_PAGE_SIZE);
+                        if !left.is_empty() {
+                            range_queue.push_back(left);
+                        }
+                        if !right.is_empty() {
+                            range_queue.push_back(right);
+                        }
+                        continue 'outer;
+                    }
+                }
+
+                // We can only reach here if the range does not contain any overlay
+                // pages, so it can be protected in parallel.
+                protect_ranges.push(range);
+            }
         }
+
+        parallelize_mem_op(&protect_ranges, self.vp_count, protect_subrange)
+            .expect("applying default VTL protections should not fail");
+
+        tracing::trace!("Finished applying default vtl protections.");
 
         // Flush any threads accessing pages that had their VTL protections
         // changed.
@@ -1118,12 +1130,150 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     }
 
     fn set_vtl1_protections_enabled(&self) {
-        self.vtl1_protections_enabled
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.vtl1_protections_enabled.store(true, Ordering::Relaxed);
     }
 
     fn vtl1_protections_enabled(&self) -> bool {
-        self.vtl1_protections_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.vtl1_protections_enabled.load(Ordering::Relaxed)
+    }
+}
+
+pub(crate) fn parallelize_mem_op<E>(
+    source_ranges: &[MemoryRange],
+    vp_count: u32,
+    op: impl Fn(MemoryRange) -> Result<(), E> + Send + Sync + Copy,
+) -> Result<(), E>
+where
+    E: Send,
+{
+    const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
+    // Cap the work unit size so that very large ranges are split across multiple
+    // workers instead of being handled by a single one.
+    const MAX_RANGE_LEN: u64 = 2 * 1024 * 1024 * 1024;
+
+    let worker_count = vp_count.saturating_sub(1).max(1);
+
+    let total_len = source_ranges
+        .iter()
+        .fold(0_u64, |len, range| len.saturating_add(range.len()));
+    let target_range_len = total_len
+        .div_ceil(u64::from(worker_count))
+        .clamp(LARGE_PAGE_SIZE, MAX_RANGE_LEN)
+        .next_multiple_of(LARGE_PAGE_SIZE)
+        .min(MAX_RANGE_LEN);
+
+    // Preserve large-page alignment while creating enough work to keep all
+    // workers busy, with a ceiling to balance very large memory ranges.
+    let ranges: Vec<_> = source_ranges
+        .iter()
+        .flat_map(|range| AlignedSubranges::new(*range).with_max_range_len(target_range_len))
+        .collect();
+    if ranges.is_empty() {
+        return Ok(());
+    }
+
+    std::thread::scope(|scope| {
+        // Divide the work up front so each worker owns a contiguous chunk of
+        // ranges, avoiding shared state between workers.
+        let chunk_len = ranges.len().div_ceil(worker_count as usize);
+        let workers: Vec<_> = ranges
+            .chunks(chunk_len)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    for &range in chunk {
+                        op(range)?;
+                    }
+                    Ok::<(), E>(())
+                })
+            })
+            .collect();
+
+        for worker in workers {
+            worker.join().expect("memory range worker panicked")?;
+        }
+
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::convert::Infallible;
+
+    #[test]
+    fn parallelize_mem_op_covers_source_ranges() {
+        const MB: u64 = 1024 * 1024;
+
+        let source_ranges = [
+            MemoryRange::new(0x1000..7 * MB + 0x1000),
+            MemoryRange::new(10 * MB..11 * MB),
+        ];
+        let completed = Mutex::new(Vec::new());
+
+        parallelize_mem_op(&source_ranges, 5, |range| {
+            completed.lock().push(range);
+            Ok::<_, Infallible>(())
+        })
+        .unwrap();
+
+        let mut completed = completed.into_inner();
+        completed.sort_by_key(|range| range.start());
+
+        // The exact subdivision doesn't matter, only that the subranges tile
+        // the source ranges without gaps or overlaps.
+        assert!(
+            memory_range::flatten_ranges(completed).eq(memory_range::flatten_ranges(source_ranges))
+        );
+    }
+
+    #[test]
+    fn parallelize_mem_op_handles_empty_input() {
+        parallelize_mem_op(&[], 0, |_| Ok::<_, Infallible>(())).unwrap();
+    }
+
+    #[test]
+    fn parallelize_mem_op_fewer_workers_than_ranges() {
+        const MB: u64 = 1024 * 1024;
+        const PAGE: u64 = 0x1000;
+
+        // A mix of ranges that exercise the 2MB boundary in different ways:
+        // smaller and larger than 2MB, with aligned and unaligned starts/ends.
+        let source_ranges = [
+            // Sub-2MB, unaligned on both ends.
+            MemoryRange::new(PAGE..3 * PAGE),
+            // Sub-2MB, starts exactly on a 2MB boundary.
+            MemoryRange::new(2 * MB..2 * MB + PAGE),
+            // Sub-2MB, straddles a 2MB boundary.
+            MemoryRange::new(4 * MB - PAGE..4 * MB + PAGE),
+            // Exactly 2MB and fully aligned.
+            MemoryRange::new(6 * MB..8 * MB),
+            // Larger than 2MB, aligned start, unaligned end.
+            MemoryRange::new(10 * MB..12 * MB + PAGE),
+            // Larger than 2MB, unaligned start, aligned end, spanning boundaries.
+            MemoryRange::new(14 * MB + PAGE..18 * MB),
+        ];
+        let completed = Mutex::new(Vec::new());
+
+        // Fewer workers than ranges, so each worker processes multiple ranges.
+        parallelize_mem_op(&source_ranges, 4, |range| {
+            completed.lock().push(range);
+            Ok::<_, Infallible>(())
+        })
+        .unwrap();
+
+        let mut completed = completed.into_inner();
+        completed.sort_by_key(|range| range.start());
+
+        assert!(
+            memory_range::flatten_ranges(completed).eq(memory_range::flatten_ranges(source_ranges))
+        );
+    }
+
+    #[test]
+    fn parallelize_mem_op_propagates_worker_error() {
+        let error = parallelize_mem_op(&[MemoryRange::new(0..0x1000)], 2, |_| Err("failed"));
+
+        assert_eq!(error, Err("failed"));
     }
 }

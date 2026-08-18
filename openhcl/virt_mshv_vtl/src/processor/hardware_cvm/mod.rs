@@ -2247,19 +2247,20 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // than the VTL specified as an argument for hardware CVMs.
         let targeted_vtl = GuestVtl::Vtl0;
 
-        // Don't allow changing existing protections once vtl protection is enabled
-        if protector.vtl1_protections_enabled() {
-            let current_protections = protector.default_vtl0_protections();
-            if protections != current_protections {
+        let current_protections = protector.default_vtl0_protections();
+        if protections != current_protections {
+            if protector.vtl1_protections_enabled() {
+                // Don't allow changing existing protections once vtl protection
+                // is enabled
                 return Err(HvError::InvalidRegisterValue);
+            } else {
+                protector.change_default_vtl_protections(
+                    targeted_vtl,
+                    protections,
+                    &mut self.tlb_flush_lock_access(),
+                )?;
             }
         }
-
-        protector.change_default_vtl_protections(
-            targeted_vtl,
-            protections,
-            &mut self.tlb_flush_lock_access(),
-        )?;
 
         // TODO GUEST VSM: should only be set if enable_vtl_protection is true?
         // We're not to spec but match the HCL, so good enough for now?
