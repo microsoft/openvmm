@@ -22,11 +22,9 @@ paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
+tempfile.workspace = true
 toml_edit.workspace = true
 which.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["windows"] }

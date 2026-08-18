@@ -185,7 +185,7 @@ impl SimpleFlowNode for Node {
                 let test_content_dir = rt.read(test_content_dir);
 
                 let test_log_dir = test_content_dir.join("test_results");
-                let temp_dir = test_content_dir.join("temp");
+                let temp_dir = tempfile::tempdir_in(&test_content_dir)?;
 
                 let mut env = BTreeMap::new();
 
@@ -218,7 +218,7 @@ impl SimpleFlowNode for Node {
                 // Eagerly convert all known paths.
                 let converted_content_dir = wsl_convert_path(&test_content_dir)?;
                 let converted_log_dir = wsl_convert_path(&test_log_dir)?;
-                let converted_temp_dir = wsl_convert_path(&temp_dir)?;
+                let converted_temp_dir = wsl_convert_path(temp_dir.path())?;
                 let converted_disk_image_dir = disk_image_dir
                     .as_ref()
                     .map(|p| wsl_convert_path(p))
@@ -276,10 +276,6 @@ impl SimpleFlowNode for Node {
                     make_portable_path(converted_log_dir)?,
                 );
 
-                if temp_dir.exists() {
-                    fs_err::remove_dir_all(&temp_dir)?;
-                };
-                fs_err::create_dir(&temp_dir)?;
                 let portable_temp_dir = make_portable_path(converted_temp_dir)?;
                 if matches!(rt.platform().kind(), FlowPlatformKind::Windows) || windows_via_wsl2 {
                     env.insert("TEMP".into(), portable_temp_dir.clone());
