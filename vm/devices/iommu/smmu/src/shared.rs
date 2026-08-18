@@ -1859,9 +1859,12 @@ mod tests {
         state
     }
 
-    /// Count events in the EVTQ by reading EVTQ_PROD from shared state.
+    /// Count events currently queued in the EVTQ as the distance between the
+    /// producer and consumer indices. Masking to the index-with-wrap range
+    /// keeps the OVFLG handshake bit and producer wrap out of the count.
     fn evtq_event_count(state: &SmmuSharedState) -> u32 {
-        state.evtq_prod().into()
+        let index_mask = evtq_index_mask(EVTQ_LOG2SIZE);
+        state.evtq_prod().wr().wrapping_sub(state.evtq_cons().rd()) & index_mask
     }
 
     // =========================================================================
