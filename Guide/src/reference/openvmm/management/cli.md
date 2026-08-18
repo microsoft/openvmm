@@ -98,6 +98,9 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
+* `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
+  `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
+  are also accepted.
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
   named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.

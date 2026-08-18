@@ -1646,6 +1646,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Select which TPM reference implementation version the VM's TPM runs.
+    pub fn with_tpm_version(mut self, version: PetriTpmVersion) -> Self {
+        self.config
+            .tpm
+            .as_mut()
+            .expect("TPM version requires a TPM")
+            .version = version;
+        self
+    }
+
     /// Add custom VTL 2 settings.
     // TODO: At some point we want to replace uses of this with nicer with_disk,
     // with_nic, etc. methods.
@@ -2580,6 +2590,8 @@ pub struct TpmConfig {
     pub no_persistent_secrets: bool,
     /// Hardware sealing policy for sealed secrets
     pub hardware_sealing_policy: PetriHardwareSealingPolicy,
+    /// TPM reference implementation version
+    pub version: PetriTpmVersion,
 }
 
 impl Default for TpmConfig {
@@ -2587,8 +2599,19 @@ impl Default for TpmConfig {
         Self {
             no_persistent_secrets: true,
             hardware_sealing_policy: PetriHardwareSealingPolicy::Default,
+            version: PetriTpmVersion::default(),
         }
     }
+}
+
+/// TPM reference implementation version used by the test infrastructure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PetriTpmVersion {
+    /// TPM reference implementation version 1.85
+    #[default]
+    V185,
+    /// TPM reference implementation version 1.38
+    V138,
 }
 
 /// Hardware sealing policy used by the test infrastructure.

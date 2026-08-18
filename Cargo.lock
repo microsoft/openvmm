@@ -347,6 +347,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitfield-struct"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ca6739863c590881f038d033a146c51ddae239186a4327014839fd864f44ed5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -819,6 +830,15 @@ name = "closeable_mutex"
 version = "0.0.0"
 dependencies = [
  "parking_lot",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.54"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -2413,9 +2433,9 @@ dependencies = [
 
 [[package]]
 name = "fs-err"
-version = "3.1.1"
+version = "3.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88d7be93788013f265201256d58f04936a8079ad5dc898743aa20525f503b683"
+checksum = "b91aa448ca50d7e79433bdf3ee8d99215430d2ec02ade5aefab2a073a1822e8a"
 dependencies = [
  "autocfg",
 ]
@@ -4839,6 +4859,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ms-tcg-tpm-sys"
+version = "0.0.0"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=88e11179dc5bd6e77e4917f8dd69bacf7076ae99#88e11179dc5bd6e77e4917f8dd69bacf7076ae99"
+dependencies = [
+ "bitfield-struct 0.13.0",
+ "cmake",
+ "fs-err",
+ "openssl-sys",
+ "postcard",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "ms-tpm-20-ref"
 version = "0.0.0"
 source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d#9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d"
@@ -5589,9 +5623,9 @@ dependencies = [
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.116"
+version = "0.9.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f28a22dc7140cda5f096e5e7724a6962ca81a7f8bfd2979f9b18c11af56318c4"
+checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
 dependencies = [
  "cc",
  "libc",
@@ -8522,6 +8556,7 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "ms-tcg-tpm-sys",
  "ms-tpm-20-ref",
  "open_enum",
  "pal_async",
@@ -8557,6 +8592,7 @@ dependencies = [
  "cvm_tracing",
  "getrandom 0.4.2",
  "inspect",
+ "ms-tcg-tpm-sys",
  "ms-tpm-20-ref",
  "thiserror 2.0.16",
  "tpm_protocol",
