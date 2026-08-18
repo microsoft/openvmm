@@ -229,7 +229,12 @@ impl<T: IoAccess> Serial<T> {
             self.io.outb(self.serial_port.value(DLAB_MSB_BAUD), 0); // High byte divisor
 
             self.line_control(LineControl::new().with_data_bits(LineDataBits::Len8));
-            self.fifo_control(FifoControl::new().with_enable(true).with_clear_rx(true).with_clear_tx(true));
+            self.fifo_control(
+                FifoControl::new()
+                    .with_enable(true)
+                    .with_clear_rx(true)
+                    .with_clear_tx(true),
+            );
         }
     }
 
@@ -248,7 +253,8 @@ impl<T: IoAccess> Serial<T> {
         unsafe {
             // SAFETY: caller guarantees that setting the FIFO_CONTROL to these values
             // is safe
-            self.io.outb(self.serial_port.value(LINE_CONTROL), value.into_bits());
+            self.io
+                .outb(self.serial_port.value(LINE_CONTROL), value.into_bits());
         }
     }
 
@@ -260,7 +266,8 @@ impl<T: IoAccess> Serial<T> {
         unsafe {
             // SAFETY: caller guarantees that setting the LINE_CONTROL to these values
             // is safe
-            self.io.outb(self.serial_port.value(LINE_CONTROL), value.into_bits());
+            self.io
+                .outb(self.serial_port.value(LINE_CONTROL), value.into_bits());
         }
     }
 
