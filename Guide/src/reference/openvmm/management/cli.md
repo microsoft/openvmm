@@ -7,7 +7,16 @@ The most up to date reference is always the [code itself](https://openvmm.dev/ru
 as well as the generated CLI help (via `cargo run -- --help`).
 ```
 
-* `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints the concise identity. `--version` also prints the upstream product version, full Git revision when available, and build target. An ordinary checkout reports `MAJOR.MINOR.PATCH+g<SHORT_REVISION>`. This includes an exact checkout of an `openvmm-vMAJOR.MINOR.PATCH` release tag. A checkout detected with tracked changes appends `.dirty`; staged changes refresh this reliably, while an unstaged-only transition may remain cached until another build-script input changes. A Git-free source tree reports `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the product version as `MAJOR.MINOR.PATCH.0`.
+* `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints
+  the concise identity. `--version` also prints the upstream product version,
+  full Git revision when available, and build target. An ordinary checkout
+  reports `MAJOR.MINOR.PATCH+g<SHORT_REVISION>`. This includes an exact
+  checkout of an `openvmm-vMAJOR.MINOR.PATCH` release tag. A checkout detected
+  with tracked changes appends `.dirty`; staged changes refresh this reliably,
+  while an unstaged-only transition may remain cached until another
+  build-script input changes. A Git-free source tree reports
+  `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the
+  product version as `MAJOR.MINOR.PATCH.0`.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
