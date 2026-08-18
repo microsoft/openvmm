@@ -81,7 +81,7 @@ pub(crate) fn vtl_transform(vtl: Vtl) -> HvInputVtl {
 
 #[cfg_attr(target_arch = "aarch64", expect(dead_code))] // xtask-fmt allow-target-arch sys-crate
 impl HvTestCtx {
-    /// Construct an *un-initialised* test context.  
+    /// Construct an *un-initialised* test context.
     /// Call [`HvTestCtx::init`] before using the value.
     pub const fn new() -> Self {
         HvTestCtx {
@@ -91,9 +91,9 @@ impl HvTestCtx {
         }
     }
 
-    /// Perform the one-time initialisation sequence:  
-    /// – initialise the hypercall page,  
-    /// – discover the VP count and create command queues,  
+    /// Perform the one-time initialisation sequence:
+    /// – initialise the hypercall page,
+    /// – discover the VP count and create command queues,
     /// – record the current VTL.
     pub fn init(&mut self, vtl: Vtl) -> TmkResult<()> {
         self.hvcall.initialize();

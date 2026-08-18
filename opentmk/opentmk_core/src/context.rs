@@ -71,14 +71,8 @@ pub trait HypercallPlatformTrait {
     /// is likewise truncated. It is up to the caller to determine that they
     /// have allocated a sufficiently large buffer to accept the output data.
     ///
-    /// On Hyper-V platforms the input and output arguments are passed via
-    /// memory and then the hypercall is invoked.
-    ///
-    /// On other platforms, the values in `input` may be passed via registers
-    /// with the return value register written back into `output`
-    ///
-    /// There's also a hypercall configuration struct that contains some
-    /// platform-dependent parameters that may not be honored by all platforms
+    /// The inputs and outputs may be passed via memory or registers
+    /// depending on the platform's conventions.
     fn hypercall(
         &mut self,
         code: u64,

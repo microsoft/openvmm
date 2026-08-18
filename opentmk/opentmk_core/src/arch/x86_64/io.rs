@@ -8,7 +8,7 @@ use core::arch::asm;
 /// Write a byte to a port.
 ///
 /// # Safety
-/// Caller guarantees that writing to the given port at this time does not cause UB
+/// Caller guarantees that writing the given value to the given port at this time does not cause UB
 pub unsafe fn outb(port: u16, data: u8) {
     // SAFETY: The caller has assured us this is safe.
     unsafe {
@@ -57,7 +57,7 @@ pub unsafe fn inw(port: u16) -> u16 {
 /// Write a word to a port.
 ///
 /// # Safety
-/// Caller guarantees that writing to the given port at this time does not cause UB
+/// Caller guarantees that writing the given value to the given port at this time does not cause UB
 pub unsafe fn outw(port: u16, data: u16) {
     // SAFETY: The caller has assured us this is safe.
     unsafe {
@@ -89,7 +89,7 @@ pub unsafe fn inl(port: u16) -> u32 {
 /// Write a double word to a port.
 ///
 /// # Safety
-/// Caller guarantees that writing to the given port at this time does not cause UB
+/// Caller guarantees that writing the given value to the given port at this time does not cause UB
 pub unsafe fn outl(port: u16, data: u32) {
     // SAFETY: The caller has assured us this is safe.
     unsafe {

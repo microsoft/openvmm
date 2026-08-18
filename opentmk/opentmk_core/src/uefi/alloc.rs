@@ -61,7 +61,7 @@ unsafe impl GlobalAlloc for MemoryAllocator {
 
 impl MemoryAllocator {
     /// Allocates `num_pages` pages of UEFI loader-data memory.
-    pub fn allocate_pages(
+    pub fn allocate_pages_uefi(
         &self,
         ty: AllocateType,
         num_pages: usize,
@@ -93,7 +93,7 @@ impl MemoryAllocator {
     /// Allocates page-aligned memory with capacity for at least `size` MiB.
     ///
     /// Returns a null pointer if UEFI boot services cannot allocate the memory.
-    pub fn get_page_aligned_memory(&self, size: usize) -> *mut u8 {
+    pub fn get_page_aligned_memory_uefi(&self, size: usize) -> *mut u8 {
         let pages = ((SIZE_1MB * size) / PAGE_SIZE) + 1;
         let mem: Result<NonNull<u8>, uefi::Error> = boot::allocate_pages(
             AllocateType::AnyPages,
