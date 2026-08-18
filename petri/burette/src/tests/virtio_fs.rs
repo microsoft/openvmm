@@ -22,6 +22,7 @@
 //! reads/writes `/tmp/vfs/test.dat`.
 
 use crate::report::MetricResult;
+use crate::tests::common;
 use anyhow::Context as _;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
@@ -67,30 +68,16 @@ pub struct VirtioFsTestState {
     _vfs_root: tempfile::TempDir,
 }
 
-fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    petri::Firmware::linux_direct(resolver, MachineArch::host())
-}
-
-fn require_petritools_erofs(
-    resolver: &petri::ArtifactResolver<'_>,
-) -> petri_artifacts_core::ResolvedArtifact {
-    use petri_artifacts_vmm_test::artifacts::petritools::*;
-    match MachineArch::host() {
-        MachineArch::X86_64 => resolver.require(PETRITOOLS_EROFS_X64).erase(),
-        MachineArch::Aarch64 => resolver.require(PETRITOOLS_EROFS_AARCH64).erase(),
-    }
-}
-
 /// Register artifacts needed by the virtio-fs test.
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
-    let firmware = build_firmware(resolver);
+    let firmware = common::build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
         resolver,
         firmware,
         MachineArch::host(),
         true,
     );
-    require_petritools_erofs(resolver);
+    common::require_petritools_erofs(resolver);
 }
 
 impl crate::harness::WarmPerfTest for VirtioFsTest {
@@ -114,7 +101,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
             "file_size_mib must be greater than 0"
         );
 
-        let firmware = build_firmware(resolver);
+        let firmware = common::build_firmware(resolver);
 
         let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
             resolver,
@@ -133,7 +120,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
         };
 
         // Open the perf rootfs erofs image for the virtio-blk device (carries fio).
-        let erofs_path = require_petritools_erofs(resolver);
+        let erofs_path = common::require_petritools_erofs(resolver);
         let erofs_file = fs_err::File::open(&erofs_path)?;
 
         // Host directory backing the virtio-fs mount.
@@ -254,15 +241,18 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
         // cold against the FUSE path rather than warming the page cache).
         // Sequential tests use 128k blocks to exercise zero-copy and
         // max-pages; random tests use 4k blocks for IOPS measurement.
-        let fio_jobs: &[(&str, &str, &str)] = &[
-            // (fio_rw_mode, primary_field, block_size)
-            ("read", "read", "128k"),
-            ("write", "write", "128k"),
-            ("randread", "read", "4k"),
-            ("randwrite", "write", "4k"),
+        let fio_jobs: &[(&str, &str, &str, u32)] = &[
+            // (fio_rw_mode, primary_field, block_size, numjobs)
+            ("read", "read", "128k", 1),
+            ("write", "write", "128k", 1),
+            ("randread", "read", "4k", 1),
+            ("randwrite", "write", "4k", 1),
+            // Parallel I/O tests (numjobs=4) to exercise multi-queue.
+            ("randread", "read", "4k", 4),
+            ("randwrite", "write", "4k", 4),
         ];
 
-        for &(rw_mode, field, bs) in fio_jobs {
+        for &(rw_mode, field, bs, numjobs) in fio_jobs {
             let is_random = rw_mode.starts_with("rand");
             let phase = if is_random {
                 rw_mode.strip_prefix("rand").unwrap()
@@ -270,21 +260,30 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
                 rw_mode
             };
             let prefix = if is_random { "rand" } else { "seq" };
+            let par_suffix = if numjobs > 1 {
+                format!("_par{numjobs}")
+            } else {
+                String::new()
+            };
 
-            let perf_label = format!("fio_virtiofs_{prefix}_{phase}");
+            // Drop guest page caches before starting the perf recorder so
+            // the trace captures only the fio workload.
+            drop_guest_caches(&state.agent).await?;
+
+            let perf_label = format!("fio_virtiofs_{prefix}_{phase}{par_suffix}");
             recorder.start(&perf_label)?;
 
-            let json = run_fio_job(&state.agent, rw_mode, bs, size_mib)
+            let json = run_fio_job(&state.agent, rw_mode, bs, size_mib, numjobs)
                 .await
-                .with_context(|| format!("fio {rw_mode} failed"))?;
+                .with_context(|| format!("fio {rw_mode} numjobs={numjobs} failed"))?;
 
             recorder.stop()?;
 
-            let bw_name = format!("fio_virtiofs_{prefix}_{phase}_bw");
+            let bw_name = format!("fio_virtiofs_{prefix}_{phase}{par_suffix}_bw");
             metrics.push(parse_fio_bw(&json, &bw_name, field)?);
 
             if is_random {
-                let iops_name = format!("fio_virtiofs_{prefix}_{phase}_iops");
+                let iops_name = format!("fio_virtiofs_{prefix}_{phase}{par_suffix}_iops");
                 metrics.push(parse_fio_iops(&json, &iops_name, field)?);
             }
         }
@@ -299,11 +298,23 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
     }
 }
 
+/// Flush dirty pages and drop guest page caches so reads exercise the full
+/// FUSE request path rather than being served from guest RAM.
+async fn drop_guest_caches(agent: &petri::pipette::PipetteClient) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let script = "sync && echo 3 > /proc/sys/vm/drop_caches";
+    cmd!(sh, "sh -c {script}")
+        .read()
+        .await
+        .context("failed to sync and drop guest page caches")?;
+    Ok(())
+}
+
 /// Run a single fio job against the virtio-fs test file and return the raw
 /// JSON output.
 ///
-/// Before each job we invalidate the guest page cache so that reads exercise
-/// the full FUSE request path rather than being served from guest RAM.
+/// The caller is responsible for dropping guest page caches before calling
+/// this function (see `drop_guest_caches`).
 /// `ramp_time=0` ensures the measurement window starts cold; the harness's
 /// warmup iteration handles VM-level warm-up. `--end_fsync=1` flushes
 /// buffered writes through FUSE before fio reports results.
@@ -317,24 +328,16 @@ async fn run_fio_job(
     rw_mode: &str,
     bs: &str,
     size_mib: u64,
+    numjobs: u32,
 ) -> anyhow::Result<String> {
-    // Flush dirty pages then drop guest page caches so reads go through
-    // the FUSE path. `sync` first ensures writeback is complete, making
-    // cache state deterministic between fio jobs.
-    let drop_sh = agent.unix_shell();
-    let drop_script = "sync; echo 3 > /proc/sys/vm/drop_caches";
-    cmd!(drop_sh, "sh -c {drop_script}")
-        .read()
-        .await
-        .context("failed to drop guest page caches")?;
-
     let mut sh = agent.unix_shell();
     sh.chroot("/perf");
     let size_arg = format!("{size_mib}M");
-    let output: String = cmd!(sh, "fio --name=test --filename=/tmp/vfs/test.dat --rw={rw_mode} --bs={bs} --ioengine=io_uring --direct=0 --runtime=10 --time_based=1 --ramp_time=0 --iodepth=32 --numjobs=1 --size={size_arg} --invalidate=1 --end_fsync=1 --output-format=json")
+    let numjobs_arg = numjobs.to_string();
+    let output: String = cmd!(sh, "fio --name=test --filename=/tmp/vfs/test.dat --rw={rw_mode} --bs={bs} --ioengine=io_uring --direct=0 --runtime=10 --ramp_time=0 --iodepth=32 --numjobs={numjobs_arg} --size={size_arg} --invalidate=1 --end_fsync=1 --output-format=json")
         .read()
         .await
-        .with_context(|| format!("fio {rw_mode} on virtio-fs failed"))?;
+        .with_context(|| format!("fio {rw_mode} numjobs={numjobs} on virtio-fs failed"))?;
 
     Ok(output)
 }
@@ -343,12 +346,15 @@ async fn run_fio_job(
 fn parse_fio_bw(json: &str, metric_name: &str, field: &str) -> anyhow::Result<MetricResult> {
     let v: serde_json::Value = serde_json::from_str(json).context("failed to parse fio JSON")?;
 
-    let bw_bytes = v["jobs"][0][field]["bw_bytes"].as_f64().with_context(|| {
-        tracing::error!(json = %json, "failed to find {field}.bw_bytes in fio output");
-        format!("missing {field}.bw_bytes in fio output for {metric_name}")
-    })?;
+    let jobs = v["jobs"].as_array().context("missing jobs array")?;
+    let mut total_bw: f64 = 0.0;
+    for job in jobs {
+        total_bw += job[field]["bw_bytes"]
+            .as_f64()
+            .with_context(|| format!("missing {field}.bw_bytes in fio output for {metric_name}"))?;
+    }
 
-    let mib_s = bw_bytes / (1024.0 * 1024.0);
+    let mib_s = total_bw / (1024.0 * 1024.0);
     Ok(MetricResult {
         name: metric_name.to_string(),
         unit: "MiB/s".to_string(),
@@ -360,11 +366,15 @@ fn parse_fio_bw(json: &str, metric_name: &str, field: &str) -> anyhow::Result<Me
 fn parse_fio_iops(json: &str, metric_name: &str, field: &str) -> anyhow::Result<MetricResult> {
     let v: serde_json::Value = serde_json::from_str(json).context("failed to parse fio JSON")?;
 
-    let iops = v["jobs"][0][field]["iops"].as_f64().with_context(|| {
-        tracing::error!(json = %json, "failed to find {field}.iops in fio output");
-        format!("missing {field}.iops in fio output for {metric_name}")
-    })?;
+    let jobs = v["jobs"].as_array().context("missing jobs array")?;
+    let mut total_iops: f64 = 0.0;
+    for job in jobs {
+        total_iops += job[field]["iops"]
+            .as_f64()
+            .with_context(|| format!("missing {field}.iops in fio output for {metric_name}"))?;
+    }
 
+    let iops = total_iops;
     Ok(MetricResult {
         name: metric_name.to_string(),
         unit: "IOPS".to_string(),
