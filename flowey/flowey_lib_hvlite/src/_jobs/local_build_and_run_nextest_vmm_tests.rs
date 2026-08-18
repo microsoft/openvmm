@@ -728,6 +728,7 @@ impl SimpleFlowNode for Node {
             use_relative_paths: build_only,
             disable_remote_artifacts: false,
             reuse_prepped_vhds,
+            require_2mb_hugetlb: false,
         });
 
         let mut side_effects = Vec::new();
@@ -912,6 +913,7 @@ impl SimpleFlowNode for Node {
                     crate::run_test_igvm_agent_rpc_server::Request {
                         env: extra_env.clone(),
                         done,
+                        previous_done: None,
                     }
                 }));
                 true
@@ -950,8 +952,6 @@ impl SimpleFlowNode for Node {
             target: nextest_target,
             extra_env,
             pre_run_deps: side_effects,
-            hugetlb_2mb_overcommit_pages: None,
-            prepare_vhost_vsock: false,
             results: v,
         });
 

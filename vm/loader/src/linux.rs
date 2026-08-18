@@ -275,7 +275,7 @@ pub struct SnpBootConfig {
     pub c_bit: u8,
 }
 
-const SNP_BOOT_PAGE_COUNT: u64 = 4;
+const SNP_BOOT_PAGE_COUNT: u64 = 5;
 
 /// The GPA of the SMBIOS structure table: immediately above the ACPI tables in
 /// the low reserved area. Only the `_SM3_` anchor stays in the F-segment; the
@@ -354,6 +354,7 @@ fn import_snp_boot_pages(
     let cpuid_address = range.start() + HV_PAGE_SIZE;
     let cc_blob_address = range.start() + 2 * HV_PAGE_SIZE;
     let cc_setup_data_address = range.start() + 3 * HV_PAGE_SIZE;
+    let vmsa_address = range.start() + 4 * HV_PAGE_SIZE;
 
     importer
         .import_pages(
@@ -414,6 +415,10 @@ fn import_snp_boot_pages(
             BootPageAcceptance::Exclusive,
             cc_setup_data.as_bytes(),
         )
+        .map_err(Error::Importer)?;
+
+    importer
+        .set_vp_context_page(vmsa_address / HV_PAGE_SIZE)
         .map_err(Error::Importer)?;
 
     Ok(cc_setup_data_address)
@@ -1291,6 +1296,7 @@ mod tests {
         /// `(debug_tag, page_base, page_count)` for each imported region.
         pages: Vec<(String, u64, u64)>,
         imports: Vec<ImportRecord>,
+        vp_context_page: Option<u64>,
     }
 
     #[derive(Debug)]
@@ -1381,8 +1387,9 @@ mod tests {
             Ok(())
         }
 
-        fn set_vp_context_page(&mut self, _page_base: u64) -> anyhow::Result<()> {
-            unimplemented!()
+        fn set_vp_context_page(&mut self, page_base: u64) -> anyhow::Result<()> {
+            self.vp_context_page = Some(page_base);
+            Ok(())
         }
 
         fn relocation_region(
@@ -1631,7 +1638,14 @@ mod tests {
             cc_setup_data.cc_blob_address,
             u32::try_from(allocated_range.start() + 2 * HV_PAGE_SIZE).unwrap()
         );
-        assert_eq!(allocated_range.end(), cc_setup_data_address + HV_PAGE_SIZE,);
+        assert_eq!(
+            importer.vp_context_page,
+            Some(allocated_range.start() / HV_PAGE_SIZE + 4)
+        );
+        assert_eq!(
+            allocated_range.end(),
+            cc_setup_data_address + 2 * HV_PAGE_SIZE,
+        );
         assert!(allocated_range.end() <= RSDP_BASE);
 
         let smbios_reserved = &boot_params.e820_map[2];

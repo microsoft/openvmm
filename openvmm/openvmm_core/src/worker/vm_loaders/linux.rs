@@ -36,6 +36,8 @@ pub enum Error {
     Efi(#[source] guestmem::GuestMemoryError),
     #[error("missing SNP C-bit CPUID information")]
     MissingSnpCBit,
+    #[error("failed to finalize SNP VMSA")]
+    SnpVmsa(#[source] anyhow::Error),
 }
 
 struct Aarch64EfiInfo {
@@ -126,6 +128,8 @@ fn default_smbios_tables() -> loader::smbios::SmbiosTables<'static> {
 pub fn load_linux_x86(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
+    caps: &virt::x86::X86PartitionCapabilities,
+    bsp: &vm_topology::processor::x86::X86VpInfo,
     acpi_at_gpa: impl FnOnce(u64) -> loader::linux::AcpiTables,
 ) -> Result<InitialLoad<X86Register>, Error> {
     let mut kernel_file = cfg.kernel;
@@ -169,6 +173,12 @@ pub fn load_linux_x86(
         snp_boot,
     )
     .map_err(Error::Loader)?;
+
+    if cfg.isolation == Some(IsolationType::Snp) {
+        loader
+            .finalize_snp_vmsa(caps, bsp)
+            .map_err(Error::SnpVmsa)?;
+    }
 
     let InitialLoad {
         regs,

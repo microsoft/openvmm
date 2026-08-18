@@ -318,6 +318,13 @@ complex name:
   this via the ACPI `_PXM` object. When omitted, no `_PXM` is emitted
   and the guest uses its default allocation policy.
 
+By default, PCIe ECAM is placed above 4 GiB to preserve low MMIO space for
+device BARs. Use `--pcie-ecam-below-4gb` to place every PCI segment's ECAM in
+32-bit MMIO instead. This compatibility workaround is intended for direct-boot
+guest kernels that cannot discover high ECAM without firmware interfaces
+available during a conventional boot. The flag defaults to off and requires
+`--pcie-root-complex`.
+
 ### Root port and switch options
 
 `--pcie-root-port` accepts optional comma-separated options after the port
@@ -452,8 +459,9 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 `--smmu` enables an emulated Arm SMMUv3 IOMMU for a named PCIe root
 complex. The flag is repeatable — use one `--smmu` per root complex that
-should have an SMMU. Devices behind a covered root complex get software
-IOVA→GPA translation for DMA and MSI addresses.
+should have an SMMU. Devices behind a covered root complex get IOVA→GPA
+translation for DMA and MSI addresses. See
+[Arm SMMUv3](../../emulated/iommu/smmuv3.md) for the device reference.
 
 The syntax is a comma-separated key/value list:
 
@@ -462,15 +470,20 @@ The syntax is a comma-separated key/value list:
 ```
 
 - `rc=<name>` (required): the PCIe root complex this SMMU covers.
-- `accel` (optional): enable hardware-accelerated (iommufd-nested)
-  translation, delegating stage-1 walks to the host IOMMU. See the note
-  below — this is not yet wired up and currently fails at startup.
+- `accel` (optional): delegate stage-1 translation to the host IOMMU via
+  iommufd nesting, so VFIO-assigned devices behind this root complex are
+  translated in hardware. Requires ACPI, a nesting-capable host SMMUv3, and
+  that the devices use the `--iommu` cdev path with a single shared context.
+  Without it, assigning a VFIO device behind an SMMU is rejected.
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
-  `auto` (the default) advertises a fixed 48 bits, which covers typical
-  configurations. Very large RAM or an explicitly pinned high MMIO/ECAM
-  base can exceed this, requiring an explicit larger `oas=` (e.g. `oas=52`).
-  A fixed `N` must be one of the SMMUv3-legal encodings: `32`, `36`, `40`,
-  `42`, `44`, `48`, or `52`.
+  `auto` (the default) starts at 48 bits, which covers typical configurations.
+  Under `accel`, a device attached before VM start changes it to the physical
+  SMMU's OAS. VM start freezes the advertised value, so later hotplug validates
+  against it rather than changing it. Very large RAM or an explicitly pinned
+  high MMIO/ECAM base can exceed 48 bits, requiring an explicit larger `oas=`
+  (e.g. `oas=52`). A fixed `N` must be one of the SMMUv3-legal encodings: `32`,
+  `36`, `40`, `42`, `44`, `48`, or `52`, and cannot exceed the physical
+  SMMU's OAS under `accel`.
 
 ```sh
 # Enable an emulated SMMU on root complex rc0
@@ -481,16 +494,10 @@ The syntax is a comma-separated key/value list:
 
 # Pin the output address size to 48 bits
 --smmu rc=rc0,oas=48
-```
 
-```admonish warning
-`accel` is accepted by the parser but the acceleration backend is not yet
-implemented: requesting it fails during SMMU setup rather than silently
-falling back to emulated translation.
-
-VFIO devices therefore cannot currently be placed behind an SMMU-covered
-root complex, because host passthrough requires the (not-yet-available)
-iommufd nested translation path.
+# Assign a VFIO device behind an accelerated SMMU
+--smmu rc=rc0,accel --iommu id=iommu0 \
+  --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 ```
 
 ### AMD IOMMU (x86_64 only)

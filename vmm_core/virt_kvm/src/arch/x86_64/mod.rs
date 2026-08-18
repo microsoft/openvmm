@@ -10,6 +10,9 @@ pub(crate) mod snp;
 mod vm_state;
 mod vp_state;
 
+pub(crate) use vp_state::seg_reg;
+pub(crate) use vp_state::table_reg;
+
 use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
@@ -374,7 +377,7 @@ impl virt::Hypervisor for Kvm {
                     .read(true)
                     .write(true)
                     .open("/dev/sev")
-                    .map_err(KvmError::OpenSev)?,
+                    .map_err(crate::snp::SnpError::OpenSev)?,
             ),
             virt::IsolationType::None => None,
             virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {

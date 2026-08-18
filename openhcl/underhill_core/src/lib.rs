@@ -12,6 +12,7 @@ mod diag;
 mod dispatch;
 mod emuplat;
 mod get_tracing;
+mod hibernate;
 mod inspect_internal;
 mod inspect_proc;
 mod livedump;

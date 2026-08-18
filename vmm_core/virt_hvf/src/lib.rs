@@ -107,6 +107,7 @@ impl virt::Hypervisor for HvfHypervisor {
             platform_gsiv: None,
             supports_gic_v3: true,
             supports_its: false,
+            device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
         }
     }
 

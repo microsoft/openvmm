@@ -13,9 +13,43 @@
 use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
+use crate::memory::MemoryError;
 use crate::memory::private_memory_range_from_slots;
 use std::os::fd::AsFd;
+use thiserror::Error;
 use virt::InitialPageImportType;
+
+#[derive(Debug, Error)]
+pub enum SnpError {
+    #[error("SNP isolation is not configured")]
+    IsolationNotSupported,
+    #[error("failed to open /dev/sev")]
+    OpenSev(#[source] std::io::Error),
+    #[error("unsupported SNP launch page import type: {0:?}")]
+    UnsupportedPageImportType(InitialPageImportType),
+    #[error("missing SNP VMSA import")]
+    MissingVmsa,
+    #[error("multiple SNP VMSA imports")]
+    MultipleVmsa,
+    #[error("invalid SNP VMSA")]
+    InvalidVmsa(#[source] virt::x86::snp::SnpVmsaError),
+    #[error("failed to access SNP VMSA memory")]
+    VmsaMemory(#[source] guestmem::GuestMemoryError),
+    #[error("invalid SNP launch range")]
+    InvalidLaunchRange,
+    #[error("too many CPUID entries for SNP launch page: {0}")]
+    TooManyCpuidEntries(usize),
+    #[error("SNP launch is already in progress")]
+    LaunchInProgress,
+    #[error("SNP launch previously failed")]
+    LaunchFailed,
+    #[error("invalid SNP BSP state: {0}")]
+    InvalidBspState(&'static str),
+    #[error("KVM SNP operation failed")]
+    Kvm(#[from] kvm::Error),
+    #[error(transparent)]
+    Memory(#[from] MemoryError),
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 /// Progress of the one-shot SNP launch sequence.
@@ -34,20 +68,21 @@ impl virt::AcceptInitialPages for KvmPartition {
     type Error = KvmError;
 
     fn accept_initial_pages(&self, pages: &[virt::InitialPageImport]) -> Result<(), Self::Error> {
-        self.inner.snp_launch_initial_pages(pages)
+        self.inner.snp_launch_initial_pages(pages)?;
+        Ok(())
     }
 }
 
 impl KvmPartitionInner {
     /// Runs the SNP launch sequence once and records its terminal state.
-    fn snp_launch_initial_pages(&self, pages: &[virt::InitialPageImport]) -> Result<(), KvmError> {
+    fn snp_launch_initial_pages(&self, pages: &[virt::InitialPageImport]) -> Result<(), SnpError> {
         {
             let mut state = self.snp_launch_state.lock();
             match *state {
                 SnpLaunchState::NotStarted => *state = SnpLaunchState::Started,
-                SnpLaunchState::Started => return Err(KvmError::SnpLaunchInProgress),
+                SnpLaunchState::Started => return Err(SnpError::LaunchInProgress),
                 SnpLaunchState::Finished => return Ok(()),
-                SnpLaunchState::Failed => return Err(KvmError::SnpLaunchFailed),
+                SnpLaunchState::Failed => return Err(SnpError::LaunchFailed),
             }
         }
 
@@ -70,8 +105,9 @@ impl KvmPartitionInner {
     fn snp_launch_initial_pages_inner(
         &self,
         pages: &[virt::InitialPageImport],
-    ) -> Result<(), KvmError> {
-        let sev = self.sev.as_ref().ok_or(KvmError::IsolationNotSupported)?;
+    ) -> Result<(), SnpError> {
+        let sev = self.sev.as_ref().ok_or(SnpError::IsolationNotSupported)?;
+        self.apply_snp_vmsa(pages)?;
         self.kvm.check_sev_snp_launch_extensions()?;
         let mut launch_start = kvm::kvm_sev_snp_launch_start {
             // TODO: This debug-capable policy is for bring-up.
@@ -125,6 +161,76 @@ impl KvmPartitionInner {
         Ok(())
     }
 
+    // TODO: Remove this register translation once KVM supports importing a
+    // loader-provided VMSA directly.
+    fn apply_snp_vmsa(&self, pages: &[virt::InitialPageImport]) -> Result<(), SnpError> {
+        let mut vmsa_pages = pages
+            .iter()
+            .filter(|page| page.import_type == InitialPageImportType::VpContext);
+        let page = vmsa_pages.next().ok_or(SnpError::MissingVmsa)?;
+        if vmsa_pages.next().is_some() {
+            return Err(SnpError::MultipleVmsa);
+        }
+        if page.range.len() != hvdef::HV_PAGE_SIZE {
+            return Err(SnpError::InvalidLaunchRange);
+        }
+
+        let vmsa = self
+            .gm
+            .read_plain::<x86defs::snp::SevVmsa>(page.range.start())
+            .map_err(SnpError::VmsaMemory)?;
+        let state = virt::x86::snp::state_from_vmsa(&vmsa).map_err(SnpError::InvalidVmsa)?;
+        let kvm_vp = self.vp_kvm(virt::VpIndex::BSP);
+        let registers = state.registers;
+        let regs = kvm::kvm_regs {
+            rax: registers.rax,
+            rbx: registers.rbx,
+            rcx: registers.rcx,
+            rdx: registers.rdx,
+            rsi: registers.rsi,
+            rdi: registers.rdi,
+            rsp: registers.rsp,
+            rbp: registers.rbp,
+            r8: registers.r8,
+            r9: registers.r9,
+            r10: registers.r10,
+            r11: registers.r11,
+            r12: registers.r12,
+            r13: registers.r13,
+            r14: registers.r14,
+            r15: registers.r15,
+            rip: registers.rip,
+            rflags: registers.rflags,
+        };
+        let old_sregs = kvm_vp.get_sregs()?;
+        let sregs = kvm::kvm_sregs {
+            cs: crate::arch::seg_reg(registers.cs),
+            ds: crate::arch::seg_reg(registers.ds),
+            es: crate::arch::seg_reg(registers.es),
+            fs: crate::arch::seg_reg(registers.fs),
+            gs: crate::arch::seg_reg(registers.gs),
+            ss: crate::arch::seg_reg(registers.ss),
+            tr: crate::arch::seg_reg(registers.tr),
+            ldt: crate::arch::seg_reg(registers.ldtr),
+            gdt: crate::arch::table_reg(registers.gdtr),
+            idt: crate::arch::table_reg(registers.idtr),
+            cr0: registers.cr0,
+            cr2: registers.cr2,
+            cr3: registers.cr3,
+            cr4: registers.cr4,
+            cr8: registers.cr8,
+            efer: registers.efer,
+            interrupt_bitmap: [0; 4],
+            ..old_sregs
+        };
+
+        kvm_vp.set_regs(&regs)?;
+        kvm_vp.set_sregs(&sregs)?;
+        kvm_vp.set_msrs(&[(x86defs::X86X_MSR_CR_PAT, state.pat)])?;
+        kvm_vp.set_xcr0(state.xcr0)?;
+        Ok(())
+    }
+
     /// Prepares the vCPU state that KVM will encode into each SNP VMSA.
     ///
     /// KVM owns the VMSA pages and does not expose them as launch imports.
@@ -135,7 +241,7 @@ impl KvmPartitionInner {
     ///
     /// AP register state is not validated here because SNP APs are started
     /// later through GHCB AP creation with guest-provided VMSAs.
-    fn prepare_snp_vmsa_register_state(&self) -> Result<(), KvmError> {
+    fn prepare_snp_vmsa_register_state(&self) -> Result<(), SnpError> {
         for vp in &self.vps {
             let vp_info = vp.vp_info();
             let kvm_vp = self.kvm.vp(vp_info.apic_id);
@@ -163,29 +269,29 @@ impl KvmPartitionInner {
 fn validate_snp_bsp_register_state(
     regs: &kvm::kvm_regs,
     sregs: &kvm::kvm_sregs,
-) -> Result<(), KvmError> {
+) -> Result<(), SnpError> {
     const REQUIRED_CR0: u64 = x86defs::X64_CR0_PE | x86defs::X64_CR0_PG;
     const REQUIRED_CR4: u64 = x86defs::X64_CR4_PAE;
     const REQUIRED_EFER: u64 =
         x86defs::X64_EFER_LME | x86defs::X64_EFER_LMA | x86defs::X64_EFER_NXE;
 
     if sregs.cr0 & REQUIRED_CR0 != REQUIRED_CR0 {
-        return Err(KvmError::InvalidState("invalid SNP BSP CR0"));
+        return Err(SnpError::InvalidBspState("CR0"));
     }
     if sregs.cr3 == 0 {
-        return Err(KvmError::InvalidState("invalid SNP BSP CR3"));
+        return Err(SnpError::InvalidBspState("CR3"));
     }
     if sregs.cr4 & REQUIRED_CR4 != REQUIRED_CR4 {
-        return Err(KvmError::InvalidState("invalid SNP BSP CR4"));
+        return Err(SnpError::InvalidBspState("CR4"));
     }
     if sregs.efer & REQUIRED_EFER != REQUIRED_EFER {
-        return Err(KvmError::InvalidState("invalid SNP BSP EFER"));
+        return Err(SnpError::InvalidBspState("EFER"));
     }
     if sregs.cs.present == 0 || sregs.cs.l == 0 {
-        return Err(KvmError::InvalidState("invalid SNP BSP CS"));
+        return Err(SnpError::InvalidBspState("CS"));
     }
     if regs.rip == 0 {
-        return Err(KvmError::InvalidState("invalid SNP BSP RIP"));
+        return Err(SnpError::InvalidBspState("RIP"));
     }
 
     tracing::debug!(
@@ -222,9 +328,9 @@ fn write_snp_cpuid_page(
     page: *mut u8,
     page_len: u64,
     cpuid: &[kvm::kvm_cpuid_entry2],
-) -> Result<(), KvmError> {
+) -> Result<(), SnpError> {
     if page_len < (SNP_CPUID_TABLE_HEADER_SIZE + SNP_CPUID_COUNT_MAX * SNP_CPUID_FN_SIZE) as u64 {
-        return Err(KvmError::InvalidSnpLaunchRange);
+        return Err(SnpError::InvalidLaunchRange);
     }
 
     let cpuid = cpuid
@@ -236,7 +342,7 @@ fn write_snp_cpuid_page(
         })
         .collect::<Vec<_>>();
     if cpuid.len() > SNP_CPUID_COUNT_MAX {
-        return Err(KvmError::TooManySnpCpuidEntries(cpuid.len()));
+        return Err(SnpError::TooManyCpuidEntries(cpuid.len()));
     }
 
     let page = unsafe { std::slice::from_raw_parts_mut(page, page_len as usize) };
@@ -288,10 +394,10 @@ fn sanitize_snp_cpuid_entry(entry: &mut kvm::kvm_cpuid_entry2) {
 }
 
 /// Converts a generic private-slot lookup failure into the SNP launch error.
-fn map_snp_private_range_error(err: KvmError) -> KvmError {
+fn map_snp_private_range_error(err: MemoryError) -> SnpError {
     match err {
-        KvmError::InvalidPrivateMemoryRange => KvmError::InvalidSnpLaunchRange,
-        err => err,
+        MemoryError::InvalidPrivateMemoryRange => SnpError::InvalidLaunchRange,
+        err => SnpError::Memory(err),
     }
 }
 
@@ -397,7 +503,7 @@ mod tests {
         cpuid.last_mut().unwrap().eax = 1;
         assert!(matches!(
             write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid),
-            Err(KvmError::TooManySnpCpuidEntries(count)) if count == SNP_CPUID_COUNT_MAX + 1
+            Err(SnpError::TooManyCpuidEntries(count)) if count == SNP_CPUID_COUNT_MAX + 1
         ));
     }
 }

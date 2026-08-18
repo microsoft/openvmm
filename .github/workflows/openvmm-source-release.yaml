@@ -13,7 +13,7 @@ on:
         type: boolean
 jobs:
   job0:
-    name: assemble openvmm source release
+    name: assemble openvmm vendor artifact
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -85,8 +85,8 @@ jobs:
         cat <<'EOF' | flowey v 0 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
-        mkdir -p "$AgentTempDirNormal/publish_artifacts/openvmm-source-release"
-        echo "$AgentTempDirNormal/publish_artifacts/openvmm-source-release" | flowey v 0 'artifact_publish_from_openvmm-source-release' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/openvmm-vendor-release"
+        echo "$AgentTempDirNormal/publish_artifacts/openvmm-vendor-release" | flowey v 0 'artifact_publish_from_openvmm-vendor-release' --is-raw-string update
       shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
@@ -114,16 +114,25 @@ jobs:
         flowey e 0 flowey_lib_common::system_info 0
         flowey e 0 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
-    - name: assemble OpenVMM source archive
+    - name: add default cargo home to path
+      run: flowey e 0 flowey_lib_common::install_rust 0
+      shell: bash
+    - name: install Rust
+      run: flowey e 0 flowey_lib_common::install_rust 1
+      shell: bash
+    - name: detect active toolchain
+      run: flowey e 0 flowey_lib_common::install_rust 2
+      shell: bash
+    - name: assemble OpenVMM vendor archive
       run: |-
-        flowey e 0 flowey_lib_hvlite::assemble_openvmm_source_release 0
+        flowey e 0 flowey_lib_hvlite::assemble_openvmm_vendor_release 0
         flowey e 0 flowey_core::pipeline::artifact::publish 0
       shell: bash
-    - name: 🌼📦 Publish openvmm-source-release
+    - name: 🌼📦 Publish openvmm-vendor-release
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: openvmm-source-release
-        path: ${{ runner.temp }}/publish_artifacts/openvmm-source-release/
+        name: openvmm-vendor-release
+        path: ${{ runner.temp }}/publish_artifacts/openvmm-vendor-release/
         include-hidden-files: true
     - name: 🌼🧼 Redact bootstrap var db
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job0.json
@@ -134,7 +143,7 @@ jobs:
         name: _internal-flowey-bootstrap-x86_64-linux-uid-1
         path: ${{ runner.temp }}/bootstrapped-flowey
   job1:
-    name: build openvmm [distribution config, x64-linux-gnu]
+    name: validate openvmm distribution build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -145,7 +154,7 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,openvmm-source-release}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,openvmm-vendor-release}'
         path: ${{ runner.temp }}/used_artifacts/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
@@ -164,15 +173,43 @@ jobs:
         cat <<'EOF' | flowey v 1 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
-        echo "$AgentTempDirNormal/used_artifacts/openvmm-source-release" | flowey v 1 'artifact_use_from_openvmm-source-release' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/openvmm-vendor-release" | flowey v 1 'artifact_use_from_openvmm-vendor-release' --is-raw-string update
       shell: bash
-    - name: add default cargo home to path
+    - name: check if openvmm needs to be cloned
       run: |-
         flowey e 1 flowey_core::pipeline::artifact::resolve 0
-        flowey e 1 flowey_lib_common::install_rust 0
+        flowey e 1 flowey_lib_common::git_checkout 0
+        flowey v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env github floweyvar1
+        flowey v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__git_checkout__1
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        fetch-depth: '1'
+        path: repo0
+        persist-credentials: ${{ env.floweyvar1 }}
+      name: checkout repo openvmm
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: report cloned repo directories
+      run: |-
+        flowey v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source github.workspace <<EOF
+        ${{ github.workspace }}
+        EOF
+        flowey e 1 flowey_lib_common::git_checkout 3
+      shell: bash
+    - name: print system info
+      run: |-
+        flowey e 1 flowey_lib_common::system_info 0
+        flowey e 1 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      shell: bash
+    - name: add default cargo home to path
+      run: flowey e 1 flowey_lib_common::install_rust 0
       shell: bash
     - name: install Rust
       run: flowey e 1 flowey_lib_common::install_rust 1
+      shell: bash
+    - name: detect active toolchain
+      run: flowey e 1 flowey_lib_common::install_rust 2
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 1 flowey_lib_common::install_dist_pkg 0
@@ -187,10 +224,7 @@ jobs:
     name: draft openvmm source release
     runs-on: ubuntu-latest
     permissions:
-      artifact-metadata: write
-      attestations: write
       contents: write
-      id-token: write
     needs:
     - job0
     - job1
@@ -199,7 +233,7 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,openvmm-source-release}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,openvmm-vendor-release}'
         path: ${{ runner.temp }}/used_artifacts/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
@@ -218,7 +252,13 @@ jobs:
         cat <<'EOF' | flowey v 2 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
-        echo "$AgentTempDirNormal/used_artifacts/openvmm-source-release" | flowey v 2 'artifact_use_from_openvmm-source-release' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/openvmm-vendor-release" | flowey v 2 'artifact_use_from_openvmm-vendor-release' --is-raw-string update
+      shell: bash
+    - name: resolve source release identity
+      run: |-
+        flowey e 2 flowey_core::pipeline::artifact::resolve 0
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 1
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 3
       shell: bash
     - name: create gh cache dir
       run: flowey e 2 flowey_lib_common::download_gh_cli 0
@@ -226,14 +266,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 2 flowey_lib_common::cache 0
-        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar2
-        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
+        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar1
+        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar2
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
-        key: ${{ env.floweyvar2 }}
-        path: ${{ env.floweyvar3 }}
+        key: ${{ env.floweyvar1 }}
+        path: ${{ env.floweyvar2 }}
       name: 'Restore cache: gh-cli'
     - name: installing gh
       run: |-
@@ -247,34 +287,21 @@ jobs:
         EOF
       shell: bash
     - name: setup gh cli
-      run: |-
-        flowey e 2 flowey_lib_common::use_gh_cli 0
-        flowey e 2 flowey_core::pipeline::artifact::resolve 0
-      shell: bash
-    - name: enumerate source release files
-      run: |-
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 0
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 1
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 4
+      run: flowey e 2 flowey_lib_common::use_gh_cli 0
       shell: bash
     - name: ensure no existing source release
+      run: flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 5
+      shell: bash
+    - name: enumerate release files
       run: |-
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 6
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 3
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 0
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 2
       shell: bash
     - name: pin source release tag
       run: |-
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 7
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 5
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 2
-        flowey e 2 flowey_lib_common::attest_build_provenance 0
-        flowey v 2 'flowey_lib_common::attest_build_provenance:0:flowey_lib_common/src/attest_build_provenance.rs' --is-raw-string write-to-env github floweyvar1
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 6
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 4
       shell: bash
-    - id: flowey_lib_common__attest_build_provenance__1
-      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-      with:
-        subject-path: ${{ env.floweyvar1 }}
-      name: Attest release artifacts
     - name: publish github releases
       run: flowey e 2 flowey_lib_common::publish_gh_release 0
       shell: bash

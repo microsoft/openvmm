@@ -59,6 +59,7 @@ impl virt::Hypervisor for LinuxMshv {
             // TODO: query from hypervisor
             supports_gic_v3: true,
             supports_its: false,
+            device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Configurable,
         }
     }
 
@@ -109,11 +110,10 @@ impl virt::Hypervisor for LinuxMshv {
         // When a GICv2m MSI frame is configured, disable LPI support
         // (GICD_TYPER.LPIS=0) so Linux routes PCIe MSIs through the v2m frame
         // (SPI-based) instead of looking for an ITS. Mirrors the WHP backend.
-        let v2m_doorbell_base = match config.processor_topology.gic_msi() {
-            vm_topology::processor::aarch64::GicMsiController::V2m(v2m) => Some(v2m.doorbell_base),
-            _ => None,
-        };
-        let gic_lpi_int_id_bits = if v2m_doorbell_base.is_some() {
+        let gic_lpi_int_id_bits = if matches!(
+            config.processor_topology.gic_msi(),
+            vm_topology::processor::aarch64::GicMsiController::V2m(_)
+        ) {
             0u64
         } else {
             1u64
@@ -124,13 +124,12 @@ impl virt::Hypervisor for LinuxMshv {
         )
         .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
-        // Register the v2m MSI doorbell base with the hypervisor as the
-        // GITS translater base, so an assigned device's DMA MSI-X write is
-        // trapped and injected as a guest SPI.
-        if let Some(doorbell_base) = v2m_doorbell_base {
+        // Tell the hypervisor which IOVA base its physical SMMU should reserve
+        // for assigned-device MSI writes.
+        if let Some(range) = config.device_assignment_msi_iova_range {
             vmfd.set_partition_property(
                 HvPartitionPropertyCode::GitsTranslaterBaseAddress.0,
-                doorbell_base,
+                range.start(),
             )
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
         }

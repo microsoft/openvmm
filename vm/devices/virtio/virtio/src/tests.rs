@@ -574,7 +574,12 @@ impl VirtioTestGuest {
         }
         dev.write_u32(112, VIRTIO_DRIVER_OK);
         yield_and_poll_device(dev).await;
-        assert_eq!(dev.read_u32(0xfc), 2);
+        assert_eq!(dev.read_u32(0xfc), 1);
+        assert_eq!(
+            dev.read_u32(96) & 0x2,
+            0,
+            "DRIVER_OK must not signal a config-change interrupt"
+        );
     }
 
     async fn setup_pci_device(
@@ -703,7 +708,12 @@ impl VirtioTestGuest {
             .write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
         yield_and_poll_device(&mut dev.pci_device).await;
         let config_generation = (dev.pci_device.read_u32(20) >> 8) & 0xff;
-        assert_eq!(config_generation, 2);
+        assert_eq!(config_generation, 1);
+        assert_eq!(
+            dev.pci_device.read_u32(60) & 0x2,
+            0,
+            "DRIVER_OK must not signal a config-change interrupt"
+        );
     }
 
     fn get_queue_descriptor(&self, queue_index: u16, descriptor_index: u16) -> u64 {
@@ -3164,13 +3174,7 @@ async fn verify_device_queue_simple_inner(
     .unwrap();
 
     guest.setup_chipset_device(&mut dev, features).await;
-    expect_mmio_interrupt(
-        &mut dev,
-        &target,
-        VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE,
-        false,
-    )
-    .await;
+
     guest.add_to_avail_queue(0);
     // notify device
     dev.write_u32(80, 0);
@@ -3252,13 +3256,7 @@ async fn verify_device_multi_queue_inner(
     )
     .unwrap();
     guest.setup_chipset_device(&mut dev, features).await;
-    expect_mmio_interrupt(
-        &mut dev,
-        &target,
-        VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE,
-        false,
-    )
-    .await;
+
     for i in 0..num_queues {
         guest.add_to_avail_queue(i);
         // notify device
@@ -3337,10 +3335,7 @@ async fn verify_device_multi_queue_pci_inner(
 
     let mut timer = PolledTimer::new(&driver);
 
-    // expect a config generation interrupt
-    timer.sleep(Duration::from_millis(100)).await;
-    let delivered = dev.test_intc.get_next_interrupt().unwrap();
-    assert_eq!(delivered.0, 0);
+    // verify no spurious interrupts were delivered during setup
     assert!(dev.test_intc.get_next_interrupt().is_none());
 
     for i in 0..num_queues {

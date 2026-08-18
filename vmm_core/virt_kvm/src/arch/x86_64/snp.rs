@@ -3,7 +3,7 @@
 
 //! x86-specific translation of loader imports to KVM SNP page types.
 
-use crate::KvmError;
+use crate::snp::SnpError;
 use virt::InitialPageImportType;
 
 /// Returns the KVM SNP launch page type for a loader import.
@@ -12,16 +12,19 @@ use virt::InitialPageImportType;
 /// than being measured with an unintended page type.
 pub fn snp_launch_page_type(
     import_type: InitialPageImportType,
-) -> Result<kvm::SevSnpPageType, KvmError> {
+) -> Result<kvm::SevSnpPageType, SnpError> {
     match import_type {
-        InitialPageImportType::Normal => Ok(kvm::SevSnpPageType::Normal),
+        // KVM owns its runtime VMSA and has no SNP launch-update VMSA page
+        // type. This reserved guest page carries loader state to OpenVMM only;
+        // accept it as normal RAM after applying that state to the KVM vCPU.
+        InitialPageImportType::Normal | InitialPageImportType::VpContext => {
+            Ok(kvm::SevSnpPageType::Normal)
+        }
         InitialPageImportType::NormalUnmeasured => Ok(kvm::SevSnpPageType::Unmeasured),
         InitialPageImportType::Secrets => Ok(kvm::SevSnpPageType::Secrets),
         InitialPageImportType::Cpuid => Ok(kvm::SevSnpPageType::Cpuid),
-        InitialPageImportType::VpContext
-        | InitialPageImportType::Shared
-        | InitialPageImportType::CpuidExtendedState => {
-            Err(KvmError::UnsupportedSnpPageImportType(import_type))
+        InitialPageImportType::Shared | InitialPageImportType::CpuidExtendedState => {
+            Err(SnpError::UnsupportedPageImportType(import_type))
         }
     }
 }
@@ -49,18 +52,21 @@ mod tests {
             snp_launch_page_type(InitialPageImportType::Cpuid).unwrap(),
             kvm::SevSnpPageType::Cpuid
         );
+        assert_eq!(
+            snp_launch_page_type(InitialPageImportType::VpContext).unwrap(),
+            kvm::SevSnpPageType::Normal
+        );
     }
 
     #[test]
     fn rejects_unsupported_imports() {
         for import_type in [
-            InitialPageImportType::VpContext,
             InitialPageImportType::Shared,
             InitialPageImportType::CpuidExtendedState,
         ] {
             assert!(matches!(
                 snp_launch_page_type(import_type),
-                Err(KvmError::UnsupportedSnpPageImportType(actual)) if actual == import_type
+                Err(SnpError::UnsupportedPageImportType(actual)) if actual == import_type
             ));
         }
     }

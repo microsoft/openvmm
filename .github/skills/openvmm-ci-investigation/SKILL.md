@@ -195,7 +195,11 @@ Each test directory contains:
 ## Viewing Results in Browser
 
 Test results are uploaded to Azure Blob Storage and viewable at:
-`https://openvmm.dev/test-results/#/runs/<RUN_ID>`
+`https://openvmm.dev/test-results/#/runs/<RUN_ID>_<RUN_ATTEMPT>`
+
+Logs are uploaded per re-run attempt, so the run key includes the attempt
+number (`1` for the first attempt). `investigate_ci.py` prints the correct
+URL in its summary.
 
 ## Common Failure Patterns
 

@@ -16,6 +16,9 @@ mod memory;
 mod snp;
 
 pub use arch::Kvm;
+pub use memory::MemoryError;
+#[cfg(guest_arch = "x86_64")]
+pub use snp::SnpError;
 
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -40,7 +43,6 @@ use arch::KvmVpInner;
 #[cfg(guest_arch = "x86_64")]
 use snp::SnpLaunchState;
 use std::sync::atomic::Ordering;
-use virt::InitialPageImportType;
 use virt::VpIndex;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -52,12 +54,13 @@ pub enum KvmError {
     Vtl2NotSupported,
     #[error("isolation is not supported on this hypervisor")]
     IsolationNotSupported,
-    #[error("failed to open /dev/sev")]
-    OpenSev(#[source] std::io::Error),
-    #[error("unsupported SNP launch page import type: {0:?}")]
-    UnsupportedSnpPageImportType(InitialPageImportType),
     #[error("kvm error")]
     Kvm(#[from] kvm::Error),
+    #[error(transparent)]
+    Memory(#[from] MemoryError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    Snp(#[from] SnpError),
     #[error("failed to stat /dev/kvm")]
     AvailableCheck(#[source] std::io::Error),
     #[error(transparent)]
@@ -66,28 +69,6 @@ pub enum KvmError {
     InvalidState(&'static str),
     #[error("unsupported isolation configuration: {0}")]
     UnsupportedIsolationConfiguration(&'static str),
-    #[error("cannot resize KVM guest_memfd memory slot")]
-    CannotResizeGuestMemfdSlot,
-    #[error("private memory range is not contained in guest_memfd private memory")]
-    InvalidPrivateMemoryRange,
-    #[error("SNP launch range is not page aligned")]
-    UnalignedSnpLaunchRange,
-    #[error("SNP launch range is not contained in guestmemfd private memory")]
-    InvalidSnpLaunchRange,
-    #[error("too many CPUID entries for SNP launch page: {0}")]
-    TooManySnpCpuidEntries(usize),
-    #[error("invalid KVM_HC_MAP_GPA_RANGE request")]
-    InvalidMapGpaRange,
-    #[error("unsupported KVM_HC_MAP_GPA_RANGE attributes: {0:#x}")]
-    UnsupportedMapGpaRangeAttributes(u64),
-    #[error("failed to discard shared backing after private conversion")]
-    DiscardSharedBacking(#[source] std::io::Error),
-    #[error("failed to discard private backing after shared conversion")]
-    DiscardPrivateBacking(#[source] std::io::Error),
-    #[error("SNP launch is already in progress")]
-    SnpLaunchInProgress,
-    #[error("SNP launch previously failed")]
-    SnpLaunchFailed,
     #[error("misaligned gic base address")]
     Misaligned,
     #[error("host does not support GICv2 or GICv3")]

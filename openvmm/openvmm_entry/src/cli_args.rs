@@ -1165,6 +1165,10 @@ Options:
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
 
+    /// Place PCIe ECAM below 4 GiB for guest kernels that cannot discover high ECAM
+    #[clap(long, requires("pcie_root_complex"), conflicts_with("pcat"))]
+    pub pcie_ecam_below_4gb: bool,
+
     /// Attach a PCI Express root port to the VM
     #[clap(long_help = r#"
 Attach root ports to root complexes.

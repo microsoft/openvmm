@@ -60,6 +60,10 @@ pub struct GhReleaseParams<C = VarNotClaimed> {
     /// What to do when a release already exists for this tag.
     pub on_existing: OnExistingRelease,
     /// Side effects that must complete before the release is published.
+    ///
+    /// These are only claimed, never read: claiming is what orders the publish
+    /// step after them, and side effects handed back by a rust step are never
+    /// written to the var db, so reading one would panic at runtime.
     pub prerequisites: Vec<ReadVar<SideEffect, C>>,
 
     pub done: WriteVar<SideEffect, C>,
@@ -138,13 +142,9 @@ impl FlowNode for Node {
                         draft,
                         verify_tag,
                         on_existing,
-                        prerequisites,
+                        prerequisites: _,
                         done: _,
                     } = req;
-
-                    for prerequisite in prerequisites {
-                        rt.read(prerequisite);
-                    }
 
                     let repo = format!("{repo_owner}/{repo_name}");
                     let target = rt.read(target);

@@ -1,22 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Publish the assembled OpenVMM source archive as a draft GitHub release.
+//! Create a tag and draft GitHub release for OpenVMM.
 //!
 //! Publication is deliberately two-stage: this job only ever creates the tag
 //! and a *draft*. A maintainer reviews the draft and clicks Publish. The
 //! irreversible release step therefore stays with a human, while the release
 //! cannot be rebound to another commit during review.
+//!
+//! GitHub automatically provides source archives for the release tag. The only
+//! uploaded asset is the vendor archive required for offline Cargo builds.
 
-use crate::assemble_openvmm_source_release::CHECKSUM_FILE;
-use crate::assemble_openvmm_source_release::SourceReleaseOutput;
-use crate::assemble_openvmm_source_release::read_source_identity;
+use crate::assemble_openvmm_vendor_release::{VendorReleaseOutput, read_vendor_identity};
 use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        /// The assembled archive and its checksums.
-        pub release: ReadVar<SourceReleaseOutput>,
+        pub release: ReadVar<VendorReleaseOutput>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -28,43 +28,26 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::publish_gh_release::Node>();
-        ctx.import::<flowey_lib_common::attest_build_provenance::Node>();
         ctx.import::<flowey_lib_common::use_gh_cli::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request { release, done } = request;
 
-        let resolved = ctx.emit_rust_stepv("enumerate source release files", |ctx| {
-            let release = release.claim(ctx);
+        let files = ctx.emit_rust_stepv("enumerate release files", |ctx| {
+            let release = release.clone().claim(ctx);
             move |rt| {
-                let assets = rt.read(release).assets;
-                let identity = read_source_identity(&assets)?;
-
-                // Only the two published files, by absolute path. The identity
-                // metadata that rode along in the artifact is internal and is
-                // deliberately not published.
-                let mut files = Vec::new();
-                for name in [identity.archive_name(), CHECKSUM_FILE.to_owned()] {
-                    let path = assets.join(&name);
-                    if !path.exists() {
-                        anyhow::bail!("{name} is missing from the assembled source release");
-                    }
-                    files.push((path.absolute()?, None));
-                }
-
-                Ok((identity, files))
+                let release = rt.read(release);
+                vendor_release_files(&release.assets)
             }
         });
 
-        let identity = resolved.map(ctx, |(identity, _)| identity);
-        let files = resolved.map(ctx, |(_, files)| files);
-
-        // Attest the exact files that are about to be uploaded, so a consumer
-        // can tie the archive back to the workflow run that produced it.
-        let attested = ctx.reqv(|done| flowey_lib_common::attest_build_provenance::Request {
-            files: files.clone(),
-            done,
+        let identity = ctx.emit_rust_stepv("resolve source release identity", |ctx| {
+            let release = release.claim(ctx);
+            move |rt| {
+                let release = rt.read(release);
+                read_vendor_identity(&release.assets)
+            }
         });
 
         let target = identity.map(ctx, |identity| identity.revision);
@@ -113,12 +96,18 @@ impl SimpleFlowNode for Node {
         // the release to a different commit. Reruns reuse it only when it still
         // names the exact archived revision.
         let tag_is_pinned = ctx.emit_rust_step("pin source release tag", |ctx| {
-            let no_existing_release = no_existing_release.claim(ctx);
+            // Claiming without reading is what orders this step after the
+            // check. The side effect a rust step hands back is never written to
+            // the var db, so reading it at runtime would panic.
+            no_existing_release.claim(ctx);
+            // Order the archive-existence check ahead of the tag as well. The
+            // tag cannot be taken back, so an artifact that arrived without its
+            // vendor archive must fail before the tag exists, not after.
+            let _files = files.clone().claim(ctx);
             let gh_cli = gh_cli.claim(ctx);
             let tag = tag.clone().claim(ctx);
             let target = target.clone().claim(ctx);
             move |rt| {
-                rt.read(no_existing_release);
                 let gh_cli = rt.read(gh_cli);
                 let tag = rt.read(tag);
                 let target = rt.read(target);
@@ -196,11 +185,49 @@ impl SimpleFlowNode for Node {
                 // runs because someone asked for this version. Quietly doing
                 // nothing would look like it worked.
                 on_existing: flowey_lib_common::publish_gh_release::OnExistingRelease::Fail,
-                prerequisites: vec![attested, tag_is_pinned],
+                prerequisites: vec![tag_is_pinned],
                 done,
             },
         ));
 
         Ok(())
+    }
+}
+
+fn vendor_release_files(assets: &Path) -> anyhow::Result<Vec<(PathBuf, Option<String>)>> {
+    let identity = read_vendor_identity(assets)?;
+    let archive = assets.join(identity.archive_name());
+    if !archive.is_file() {
+        anyhow::bail!("missing vendor archive {}", archive.display());
+    }
+
+    Ok(vec![(archive, None)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assemble_openvmm_vendor_release::{IDENTITY_FILE, VendorReleaseIdentity};
+
+    #[test]
+    fn identity_stays_private_when_enumerating_release_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = VendorReleaseIdentity {
+            version: "0.12.3".into(),
+            revision: "0123456789abcdef0123456789abcdef01234567".into(),
+        };
+        let archive = dir.path().join(identity.archive_name());
+
+        fs_err::write(
+            dir.path().join(IDENTITY_FILE),
+            serde_json::to_vec(&identity).unwrap(),
+        )
+        .unwrap();
+        fs_err::write(&archive, b"archive").unwrap();
+
+        assert_eq!(
+            vendor_release_files(dir.path()).unwrap(),
+            vec![(archive, None)]
+        );
     }
 }
