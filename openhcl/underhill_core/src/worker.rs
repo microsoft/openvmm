@@ -3717,7 +3717,17 @@ async fn new_underhill_vm(
             Some(token @ hibernate::Token::Hibernated { .. })
                 if token != hibernate::Token::CURRENT =>
             {
-                if !dps
+                if !matches!(load_kind, LoadKind::Uefi) {
+                    // Firmware overload is UEFI-only; a gen-1/PCAT guest can
+                    // hibernate but can't reload firmware, so resume as-is.
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        resume = %token,
+                        "firmware overload is only supported for UEFI; resuming \
+                         with the current firmware despite a hibernation token mismatch"
+                    );
+                    Some(hibernate::Token::CURRENT)
+                } else if !dps
                     .general
                     .management_vtl_features
                     .load_firmware_supported()
@@ -3754,8 +3764,17 @@ async fn new_underhill_vm(
                     }
                 }
             }
-            // Not hibernated, same version, or corrupt: use the current version.
-            _ => Some(hibernate::Token::CURRENT),
+            Some(hibernate::Token::Hibernated { .. }) => {
+                // Guarded above: the token matches the current firmware version.
+                tracing::info!(
+                    CVM_ALLOWED,
+                    "hibernation resume under the current firmware version"
+                );
+                Some(hibernate::Token::CURRENT)
+            }
+            // Clean prior power-off, or no/unreadable token (e.g. first boot):
+            // a normal cold boot on the current firmware.
+            Some(hibernate::Token::NotHibernated) | None => Some(hibernate::Token::CURRENT),
         }
     } else {
         // Hibernation was requested but there is no VMGS to persist the token,
@@ -4183,10 +4202,22 @@ async fn overload_vtl0_firmware(
     {
         if offset != 0 {
             let base = uefi_info.firmware_memory.start();
+            let len = uefi_info.firmware_memory.len();
+            // `offset` is host-provided (untrusted): the entry point must land
+            // inside the measured firmware region and must not overflow.
+            let Some(new_rip) = base.checked_add(offset).filter(|_| offset < len) else {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    offset,
+                    firmware_len = len,
+                    "host returned an out-of-range firmware entry-point offset; \
+                     ignoring overload and resuming with the current firmware"
+                );
+                return false;
+            };
             let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
             for reg in registers {
                 if let loader::importer::X86Register::Rip(rip) = reg {
-                    let new_rip = base + offset;
                     if *rip != new_rip {
                         tracing::info!(
                             CVM_ALLOWED,

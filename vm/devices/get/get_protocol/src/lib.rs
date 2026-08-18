@@ -158,7 +158,6 @@ open_enum! {
         DEVICE_PLATFORM_SETTINGS_V2_REV1 = 27, // wart: only sent back in *response* to DEVICE_PLATFORM_SETTINGS
         CREATE_RAM_GPA_RANGE             = 28,
         RESET_RAM_GPA_RANGE              = 29,
-        // --- NI_REV3 ---
         LOAD_FIRMWARE                    = 30,
 
         // --- Experimental (not yet in Hyper-V) ---

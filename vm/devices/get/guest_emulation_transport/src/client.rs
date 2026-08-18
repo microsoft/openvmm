@@ -773,7 +773,7 @@ impl GuestEmulationTransportClient {
             .await
             .0;
         if response.status != get_protocol::LoadFirmwareStatus::SUCCESS {
-            Err(crate::error::LoadFirmwareError::Status(response.status))
+            Err(crate::error::LoadFirmwareError(response.status))
         } else {
             Ok(response.entry_point_image_offset)
         }

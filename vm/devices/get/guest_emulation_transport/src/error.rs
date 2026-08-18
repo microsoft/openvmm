@@ -54,13 +54,11 @@ pub struct VpciControlError(pub(crate) get_protocol::VpciDeviceControlStatus);
 #[error("create ram GPA range error: {0:?}")]
 pub struct CreateRamGpaRangeError(pub(crate) get_protocol::CreateRamGpaRangeStatus);
 
-/// Error while invoking a LoadFirmwareRequest
+/// Error while invoking a LoadFirmwareRequest: the host rejected it with a
+/// non-success status.
 #[derive(Debug, Error)]
-pub enum LoadFirmwareError {
-    /// The host rejected the request with a non-success status.
-    #[error("load firmware error: {0:?}")]
-    Status(get_protocol::LoadFirmwareStatus),
-}
+#[error("load firmware error: {0:?}")]
+pub struct LoadFirmwareError(pub(crate) get_protocol::LoadFirmwareStatus);
 
 /// Error while invoking a GuestStateProtectionByIdRequest
 #[derive(Debug, Error)]
