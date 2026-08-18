@@ -169,11 +169,27 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
         ),
         (
+            "ubuntu_2504_server_x64_tdx_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
             "ubuntu_2504_server_x64_snp_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
         (
@@ -206,6 +222,14 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_hw_ak_stable",
             IgvmAttestTestConfig::StateRefresh,
         ),
     ];

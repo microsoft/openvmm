@@ -2141,7 +2141,9 @@ async fn new_underhill_vm(
 
     let tee_call: Option<Box<dyn tee_call::TeeCall>> = match isolation {
         virt::IsolationType::Snp => Some(Box::new(tee_call::SnpCall)),
-        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall)),
+        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall::new(
+            proto_partition.tdx_hw_seal_keys_enabled(),
+        ))),
         virt::IsolationType::Vbs => Some(Box::new(tee_call::VbsCall)),
         virt::IsolationType::Cca => {
             tracing::warn!("CCA: new_underhill_vm: tee_call is not implemented yet");

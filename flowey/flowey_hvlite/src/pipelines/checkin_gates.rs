@@ -1584,7 +1584,7 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::windows_tdx_self_hosted_baremetal(),
+                gh_pool: gh_pools::windows_tdx_gnr_self_hosted_baremetal(),
                 ado_pool: None,
                 label: "x64-windows-intel-tdx",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,

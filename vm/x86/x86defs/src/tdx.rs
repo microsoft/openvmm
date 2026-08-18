@@ -24,6 +24,13 @@ pub const TDX_REPORT_DATA_SIZE: usize = 64;
 /// Result of a TDG.VM.RD metadata read.
 pub type TdgVmRdResult = u64;
 
+/// Size of the `TDKEYREQUEST` structure ([`TdKeyRequest`]) that is passed as the
+/// input to the `TDG.MR.KEY.GET` TDCALL.
+pub const TDX_TDKEYREQUEST_SIZE: usize = 128;
+
+/// Maximum size of the key derived by the `TDG.MR.KEY.GET` TDCALL (256 bits).
+pub const TDX_DERIVED_KEY_SIZE: usize = 32;
+
 open_enum! {
     /// TDCALL instruction leafs that are passed into the tdcall instruction
     /// in eax.
@@ -39,10 +46,12 @@ open_enum! {
         VM_WR = 8,
         VP_RD = 9,
         VP_WR = 10,
+        SYS_RD = 11,
         MEM_PAGE_ATTR_RD = 23,
         MEM_PAGE_ATTR_WR = 24,
         VP_ENTER = 25,
         VP_INVGLA = 27,
+        MR_KEY_GET = 29,
     }
 }
 
@@ -483,7 +492,66 @@ pub const TDX_FIELD_CODE_L2_CTLS_VM1: TdxExtendedFieldCode =
 pub const TDX_FIELD_CODE_L2_CTLS_VM2: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000052);
 
-/// Extended field code for TDG.VP.WR and TDG.VP.RD
+/// Field code for the TDCS `TD_CTLS` TD-scope metadata field, accessed via
+/// TDG.VM.RD and TDG.VM.WR.
+pub const TDX_FIELD_CODE_TD_CTLS: TdxExtendedFieldCode = TdxExtendedFieldCode(0x1110000300000017);
+
+/// Metadata field ID for the global-scope `TDX_FEATURES0` field, read by the
+/// guest via the `TDG.SYS.RD` TDCALL.
+pub const TDX_FIELD_ID_TDX_FEATURES0: u64 = 0x0A00000300000008;
+
+/// The global-scope `TDX_FEATURES0` metadata field, enumerating optional TDX
+/// module features. Read by the guest via `TDG.SYS.RD`
+/// ([`TdCallLeaf::SYS_RD`]).
+///
+/// Only the bits relevant to hardware-bound sealing are modeled here; the
+/// remaining bits are documented by the Intel TDX Module ABI specification.
+#[bitfield(u64)]
+#[derive(PartialEq, Eq)]
+pub struct TdxFeatures0 {
+    #[bits(12)]
+    _reserved0: u64,
+    /// `SEALING` (bit 12) - the TDX module supports signed TDs and seal keys
+    /// bound to TD properties, exposing the `TDG.MR.KEY.GET` interface.
+    pub sealing: bool,
+    #[bits(9)]
+    _reserved1: u64,
+    /// `TD_SIGNING_AND_SVN` (bit 22) - prerequisite support that `SEALING`
+    /// depends on.
+    pub td_signing_and_svn: bool,
+    #[bits(27)]
+    _reserved2: u64,
+    /// `SEALKEY_128` (bit 50) - enumerates the seal key size.
+    pub sealkey_128: bool,
+    #[bits(13)]
+    _reserved3: u64,
+}
+
+/// The TDCS `TD_CTLS` TD-scope control field, accessed via TDG.VM.RD and
+/// TDG.VM.WR.
+#[bitfield(u64)]
+#[derive(PartialEq, Eq)]
+pub struct TdCtls {
+    /// `PENDING_VE_DISABLE`
+    pub pending_ve_disable: bool,
+    /// `ENUM_TOPOLOGY`
+    pub enum_topology: bool,
+    /// `VIRT_CPUID2`
+    pub virt_cpuid2: bool,
+    /// `REDUCE_VE`
+    pub reduce_ve: bool,
+    /// `ENABLE_HW_SEAL_KEYS` - opts the TD into hardware-bound seal keys
+    /// returned by `TDG.MR.KEY.GET`, even when
+    /// `CONFIG_FLAGS.SEAL_KEY_SUPPORT` is not set.
+    pub enable_hw_seal_keys: bool,
+    #[bits(58)]
+    _reserved: u64,
+    /// `LOCK` - once set, `TD_CTLS` becomes read-only.
+    pub lock: bool,
+}
+
+/// Extended field code for the Metadata Access Interface TDCalls:
+/// TDG.VP.WR, TDG.VP.RD, TDG.VM.WR, TDG.VM.RD
 #[bitfield(u64)]
 pub struct TdxExtendedFieldCode {
     #[bits(24)]
@@ -814,3 +882,89 @@ pub struct TdInfoBase {
     /// SHA384 of the `TDINFO_STRUCTs` of bound service TDs if there is any.
     pub servd_hash: [u8; 48],
 }
+
+/// Selects which TD-specific measurement and configuration registers are mixed
+/// into the key derived by the `TDG.MR.KEY.GET` TDCALL. This is the analog of
+/// SNP's [`GuestFieldSelect`](crate::snp::GuestFieldSelect).
+///
+/// See `TDKEYPOLICY`, Table 2-2, "System Architecture Specification: Sealing
+/// Support for Intel TDX", Revision 0.7, September 2025.
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TdxKeyPolicy {
+    /// Include `MRTD` (bit 0).
+    pub mr_td: bool,
+    /// Reserved (bit 1).
+    _reserved0: bool,
+    /// Include `MROWNER` (bit 2).
+    pub mr_owner: bool,
+    /// Include `MRCONFIGID` (bit 3).
+    pub mr_config_id: bool,
+    /// Include `MROWNERCONFIG` (bit 4).
+    pub mr_owner_config: bool,
+    /// Reserved (bits 31:5).
+    #[bits(27)]
+    _reserved1: u32,
+    /// `RTMR` selection (bits 47:32). Bits 4:0 select `RTMR n`, bits 7:5 are
+    /// reserved and must be zero.
+    #[bits(16)]
+    pub rtmr: u16,
+    /// Reserved (bits 63:48), must be zero.
+    #[bits(16)]
+    _reserved2: u16,
+}
+
+/// `KEYNAME` value for [`TdKeyRequest::key_name`] that requests a seal key.
+pub const TDX_KEY_NAME_SEAL: u16 = 0;
+
+/// `KEYSIZE` value for [`TdKeyRequest::key_size`] selecting a 128-bit key.
+pub const TDX_KEY_SIZE_128: u8 = 0;
+
+/// `KEYSIZE` value for [`TdKeyRequest::key_size`] selecting a 256-bit key.
+pub const TDX_KEY_SIZE_256: u8 = 1;
+
+/// Request structure (`TDKEYREQUEST`) that is passed as the input to the
+/// `TDG.MR.KEY.GET` TDCALL to derive a persistent key bound to the TD's
+/// measurements and policy.
+///
+/// See `TDKEYREQUEST`, Table 2-1, "System Architecture Specification: Sealing
+/// Support for Intel TDX", Revision 0.7, September 2025.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TdKeyRequest {
+    /// `KEYNAME` - Identifies the key being requested. See
+    /// [`TDX_KEY_NAME_SEAL`].
+    pub key_name: u16,
+    /// `SWKEYNAME` - TD software-assigned key name/identifier.
+    pub sw_key_name: u8,
+    /// `KEYSIZE` - Requested key size. See [`TDX_KEY_SIZE_128`] and
+    /// [`TDX_KEY_SIZE_256`].
+    pub key_size: u8,
+    /// Reserved.
+    pub _reserved0: [u8; 4],
+    /// `KEYPOLICY` - Selects which measurement and configuration registers are
+    /// mixed into the derived key.
+    pub key_policy: TdxKeyPolicy,
+    /// `ATTRIBUTESMASK` - Mask applied to `TDCS.ATTRIBUTES` before mixing into
+    /// the key.
+    pub attributes_mask: u64,
+    /// `XFAMMASK` - Mask applied to `TDCS.XFAM` before mixing into the key.
+    pub xfam_mask: u64,
+    /// `CPUSVN`
+    pub cpu_svn: [u8; 16],
+    /// `TEE_TCB_SVN`
+    pub tee_tcb_svn: [u8; 16],
+    /// `ISVSVN`
+    pub isv_svn: u16,
+    /// `MRCONFIGSVN`
+    pub mr_config_svn: u16,
+    /// `MROWNERCONFIGSVN`
+    pub mr_owner_config_svn: u16,
+    /// `SALT` - Caller-supplied salt mixed into the derived key, allowing the
+    /// same TD to derive multiple distinct keys.
+    pub salt: [u8; 32],
+    /// Reserved.
+    pub _reserved1: [u8; 26],
+}
+
+static_assertions::const_assert_eq!(TDX_TDKEYREQUEST_SIZE, size_of::<TdKeyRequest>());

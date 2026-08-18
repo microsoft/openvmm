@@ -2522,6 +2522,30 @@ impl Hcl {
         value
     }
 
+    /// Attempts to opt this TD into hardware-bound seal keys by setting
+    /// `TD_CTLS.ENABLE_HW_SEAL_KEYS` via `TDG.VM.WR`.
+    ///
+    /// Returns `Ok(true)` if the bit is set after the operation (the
+    /// `TDG.MR.KEY.GET` TDCALL is available), `Ok(false)` if the TDX module
+    /// does not support sealing, or an error if the write itself was rejected.
+    ///
+    /// Only valid on TDX-isolated partitions.
+    pub fn tdx_enable_hw_seal_keys(&self) -> Result<bool, x86defs::tdx::TdCallResult> {
+        self.mshv_vtl.tdx_enable_hw_seal_keys()
+    }
+
+    /// Reads the global-scope `TDX_FEATURES0` metadata field via `TDG.SYS.RD`,
+    /// enumerating optional TDX module features (including hardware-bound
+    /// sealing support).
+    ///
+    /// Returns an error if the module does not support `TDG.SYS.RD` or rejects
+    /// the field. Only valid on TDX-isolated partitions.
+    pub fn tdx_read_features0(
+        &self,
+    ) -> Result<x86defs::tdx::TdxFeatures0, x86defs::tdx::TdCallResult> {
+        self.mshv_vtl.tdx_read_features0()
+    }
+
     /// Invokes the HvCallRetargetDeviceInterrupt hypercall.
     /// `target_processors` must be sorted in ascending order.
     pub fn retarget_device_interrupt(
