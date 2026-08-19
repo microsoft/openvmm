@@ -2077,6 +2077,7 @@ dependencies = [
  "chipset_device_resources",
  "chipset_resources",
  "crypto",
+ "cvm_tracing",
  "der",
  "firmware_uefi_custom_vars",
  "firmware_uefi_resources",

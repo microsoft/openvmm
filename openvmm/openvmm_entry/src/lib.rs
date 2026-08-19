@@ -1157,12 +1157,12 @@ async fn vm_config_from_command_line(
         );
     }
 
-    let (base_template_json, custom_uefi_json) = {
+    let (base_template, custom_uefi_json) = {
         #[cfg(guest_arch = "aarch64")]
         use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
         #[cfg(guest_arch = "x86_64")]
         use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
-        let base_template_json = opt.secure_boot_template.map(|template| match template {
+        let base_template = opt.secure_boot_template.map(|template| match template {
             SecureBootTemplateCli::Windows => secure_boot_templates::microsoft_windows(),
             SecureBootTemplateCli::UefiCa => secure_boot_templates::microsoft_uefi_ca(),
         });
@@ -1178,7 +1178,7 @@ async fn vm_config_from_command_line(
             None => None,
         };
 
-        (base_template_json, custom_uefi_json)
+        (base_template, custom_uefi_json)
     };
 
     if opt.uefi {
@@ -1194,7 +1194,7 @@ async fn vm_config_from_command_line(
         };
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
-            base_template_json,
+            base_template,
             custom_uefi_json,
             opt.secure_boot,
             log_level,
