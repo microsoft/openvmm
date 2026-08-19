@@ -43,7 +43,8 @@ use std::sync::Arc;
 #[derive(Inspect)]
 struct VpciClientTdispMutableState {
     tdi_state: TdispTdiState,
-    guest_device_id: u16,
+    #[inspect(debug)]
+    guest_device_id: TdispDeviceId,
     /// Map of BAR ID to the range the guest configured and how it was
     /// classified. Populated whenever a BAR is reconfigured in the `Run`
     /// state, both for ranges that were unblocked and for ones that were
@@ -64,6 +65,31 @@ struct VpciClientTdispMutableState {
     /// by guest RAM on the host.
     #[inspect(iter_by_index)]
     intercepted_bars: HashSet<u16>,
+}
+
+/// Identifies the TDI device, as distinct from the VPCI slot id.
+///
+/// A TDI only has an id once attestation has fetched one from the host, and it
+/// loses it again on unbind, so "no id" is a real state of the device rather
+/// than a particular id value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TdispDeviceId {
+    /// No TDI has been identified: attestation has not fetched an id yet, or
+    /// unbind has dropped the one it had.
+    Invalid,
+    /// The TDI device id the host reported.
+    Valid(u16),
+}
+
+impl TdispDeviceId {
+    /// The underlying device id, or `None` when no TDI has been identified.
+    /// Platform interfaces address a real TDI, so they take the inner value.
+    fn id(self) -> Option<u16> {
+        match self {
+            TdispDeviceId::Invalid => None,
+            TdispDeviceId::Valid(device_id) => Some(device_id),
+        }
+    }
 }
 
 /// Tracks how a BAR's MMIO range was handled when the guest reconfigured it,
@@ -145,10 +171,10 @@ impl VpciClientTdispMutableState {
         self.tdi_state = new_state;
     }
 
-    fn update_guest_device_id(&mut self, new_device_id: u16) {
+    fn update_guest_device_id(&mut self, new_device_id: TdispDeviceId) {
         tracing::info!(
-            old_device_id = self.guest_device_id,
-            new_device_id = new_device_id,
+            old_device_id = ?self.guest_device_id,
+            new_device_id = ?new_device_id,
             "updating guest device ID based on host response"
         );
         self.guest_device_id = new_device_id;
@@ -190,7 +216,7 @@ impl VpciClientTdispState {
             vpci_device_id: device_id,
             mutable_state: VpciClientTdispMutableState {
                 tdi_state: TdispTdiState::Unlocked,
-                guest_device_id: 0,
+                guest_device_id: TdispDeviceId::Invalid,
                 validated_mmio_bars: std::collections::HashMap::new(),
                 dma_unblocked: false,
                 tdi_report: None,
@@ -206,6 +232,73 @@ impl VpciClientTdispState {
     /// Get the TDI state returned by the host for the most recent operation.
     fn tdi_state(&self) -> TdispTdiState {
         self.mutable_state.tdi_state
+    }
+
+    /// Require the TDI to be in `expected`, according to both the host and the
+    /// platform firmware.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either source reports anything other than `expected`.
+    ///
+    /// The host's reported state and the firmware's state are two independent
+    /// answers to the same question, and at these points in the flow there is
+    /// exactly one answer that is correct. Either source diverging from it
+    /// means the paravisor's view of the device is wrong, which is not a
+    /// condition it can recover from or safely continue past. A platform that
+    /// cannot report its own state leaves only the host's answer to check.
+    ///
+    /// * `expected` - The state the TDI must be in.
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID). When no TDI
+    ///   has been identified there is nothing to ask the firmware about, and
+    ///   only the host's answer is checked.
+    fn require_tdi_state(
+        &self,
+        expected: TdispTdiState,
+        device_id: TdispDeviceId,
+    ) -> anyhow::Result<()> {
+        let cached = self.tdi_state();
+
+        // Read the firmware first even when the host's answer is already wrong,
+        // so the panic can report both values.
+        let firmware = match device_id.id() {
+            Some(device_id) => self
+                .resource_validator
+                .get_tsm_tdi_state(self.target_vtl, device_id)
+                .context("require_tdi_state: failed to read the TDI state from the firmware")?,
+            None => None,
+        };
+
+        if cached != expected {
+            panic!(
+                "TDI {device_id:?} must be in state {expected}, but the host reports \
+                 {cached} (firmware reports {firmware:?})"
+            );
+        }
+
+        match firmware {
+            Some(firmware) if firmware != expected => {
+                panic!(
+                    "TDI {device_id:?} must be in state {expected}, but the firmware \
+                     reports {firmware} (the host reports {cached})"
+                );
+            }
+            Some(firmware) => tracing::trace!(
+                ?device_id,
+                %firmware,
+                %expected,
+                "require_tdi_state: host and firmware both confirm the TDI state"
+            ),
+            None => tracing::debug!(
+                ?device_id,
+                %cached,
+                %expected,
+                "require_tdi_state: firmware state unavailable, \
+                 checking the host's answer alone"
+            ),
+        }
+
+        Ok(())
     }
 
     pub(super) async fn send_tdisp_command(
@@ -462,7 +555,7 @@ impl VpciClientTdispState {
     /// * `range_id` - Identifies which MMIO range to block (the PCI BAR index).
     /// * `gpa_base` - The guest physical base address of the range.
     /// * `range_len_bytes` - The length of the range, in bytes.
-    pub async fn tdisp_block_mmio_range(
+    pub async fn tdisp_host_block_mmio_range(
         &mut self,
         range_id: u16,
         gpa_base: u64,
@@ -475,7 +568,36 @@ impl VpciClientTdispState {
                 gpa_base,
                 range_len_bytes,
             ),
-            "tdisp_block_mmio_range",
+            "tdisp_host_block_mmio_range",
+            range_id,
+            gpa_base,
+            range_len_bytes,
+        )
+        .await
+    }
+
+    /// Tell the host to unblock an MMIO range, so its view matches the
+    /// platform's. This only notifies the host; the platform-side unblock is
+    /// separate.
+    ///
+    /// * `range_id` - Identifies which MMIO range to unblock (the PCI BAR
+    ///   index).
+    /// * `gpa_base` - The guest physical base address of the range.
+    /// * `range_len_bytes` - The length of the range, in bytes.
+    pub async fn tdisp_host_unblock_mmio_range(
+        &mut self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        self.send_modify_mmio_range(
+            openhcl_tdisp::new_unblock_mmio_range_command(
+                self.vpci_device_id,
+                range_id,
+                gpa_base,
+                range_len_bytes,
+            ),
+            "tdisp_host_unblock_mmio_range",
             range_id,
             gpa_base,
             range_len_bytes,
@@ -542,78 +664,89 @@ impl VpciClientTdispState {
         // if all resources were not successfully torn down.
         let validator = self.resource_validator.clone();
         let device_id = self.mutable_state.guest_device_id;
-        let validated_bars_clone = self.mutable_state.validated_mmio_bars.clone();
-        for (bar_id, mmio) in validated_bars_clone {
-            match mmio.isolation {
-                // Nothing was ever unblocked for these, so there is nothing
-                // to block back.
-                TdispResourceIsolation::Shared | TdispResourceIsolation::Invalid => {
-                    self.mutable_state.validated_mmio_bars.remove(&bar_id);
-                    continue;
+
+        // The teardown below addresses a real TDI through the platform. Without
+        // an id there is nothing attested to tear down: no range was ever
+        // unblocked, DMA was never unblocked, and no report was ever recorded.
+        if let Some(raw_device_id) = device_id.id() {
+            let validated_bars_clone = self.mutable_state.validated_mmio_bars.clone();
+            for (bar_id, mmio) in validated_bars_clone {
+                match mmio.isolation {
+                    // Nothing was ever unblocked for these, so there is nothing
+                    // to block back.
+                    TdispResourceIsolation::Shared | TdispResourceIsolation::Invalid => {
+                        self.mutable_state.validated_mmio_bars.remove(&bar_id);
+                        continue;
+                    }
+                    TdispResourceIsolation::Private => {}
                 }
-                TdispResourceIsolation::Private => {}
-            }
 
-            let block_mmio_res = validator
-                .tdisp_block_mmio(
-                    Vtl::Vtl2,
-                    device_id,
-                    mmio.base_gpa,
-                    0,
-                    mmio.length_in_bytes,
-                    bar_id,
-                )
-                .await;
+                let block_mmio_res = validator
+                    .tdisp_block_mmio(
+                        Vtl::Vtl2,
+                        raw_device_id,
+                        mmio.base_gpa,
+                        0,
+                        mmio.length_in_bytes,
+                        bar_id,
+                    )
+                    .await;
 
-            if let Err(e) = block_mmio_res {
-                tracing::error!(
-                    bar_id,
-                    base_gpa = format_args!("{:#x}", mmio.base_gpa),
-                    length_in_bytes = mmio.length_in_bytes,
-                    error = &*e as &dyn std::error::Error,
-                    "tdisp_unbind: failed to re-block MMIO range"
-                );
-            } else {
-                // Tell the host only once the platform actually blocked the
-                // range, so the host's view never runs ahead of the platform's.
-                // Best-effort, like the block above.
-                if self.isolation_type == IsolationType::Tdx
-                    && let Err(e) = self
-                        .tdisp_block_mmio_range(bar_id, mmio.base_gpa, mmio.length_in_bytes.into())
-                        .await
-                {
+                if let Err(e) = block_mmio_res {
                     tracing::error!(
                         bar_id,
                         base_gpa = format_args!("{:#x}", mmio.base_gpa),
                         length_in_bytes = mmio.length_in_bytes,
                         error = &*e as &dyn std::error::Error,
-                        "tdisp_unbind: failed to block MMIO range on the host"
+                        "tdisp_unbind: failed to re-block MMIO range"
                     );
+                } else {
+                    // Tell the host only once the platform actually blocked the
+                    // range, so the host's view never runs ahead of the platform's.
+                    // Best-effort, like the block above.
+                    if let Err(e) = self
+                        .tdisp_host_block_mmio_range(
+                            bar_id,
+                            mmio.base_gpa,
+                            mmio.length_in_bytes.into(),
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            bar_id,
+                            base_gpa = format_args!("{:#x}", mmio.base_gpa),
+                            length_in_bytes = mmio.length_in_bytes,
+                            error = &*e as &dyn std::error::Error,
+                            "tdisp_unbind: failed to block MMIO range on the host"
+                        );
+                    }
+
+                    // Successful re-block, remove the bar from the validated list.
+                    self.mutable_state.validated_mmio_bars.remove(&bar_id);
                 }
-
-                // Successful re-block, remove the bar from the validated list.
-                self.mutable_state.validated_mmio_bars.remove(&bar_id);
             }
-        }
 
-        if self.mutable_state.dma_unblocked {
-            if let Err(e) = validator.tdisp_block_dma(Vtl::Vtl2, device_id) {
-                tracing::error!(
-                    device_id,
-                    error = &*e as &dyn std::error::Error,
-                    "tdisp_unbind: failed to re-block DMA"
-                );
-            } else {
-                // Successful re-block, clear the DMA unblocked flag.
-                self.mutable_state.dma_unblocked = false;
+            if self.mutable_state.dma_unblocked {
+                if let Err(e) = validator.tdisp_block_dma(Vtl::Vtl2, raw_device_id) {
+                    tracing::error!(
+                        raw_device_id,
+                        error = &*e as &dyn std::error::Error,
+                        "tdisp_unbind: failed to re-block DMA"
+                    );
+                } else {
+                    // Successful re-block, clear the DMA unblocked flag.
+                    self.mutable_state.dma_unblocked = false;
+                }
             }
+
+            self.resource_validator
+                .tdisp_clear_tdi_report(raw_device_id);
         }
 
         // Clear every per-attest field. All of these will be fetched cleanly on
         // the next re-attest cycle.
-        self.resource_validator.tdisp_clear_tdi_report(device_id);
         self.mutable_state.tdi_report = None;
-        self.mutable_state.guest_device_id = 0;
+        self.mutable_state.guest_device_id = TdispDeviceId::Invalid;
         self.mutable_state.intercepted_bars.clear();
 
         let res = self
@@ -623,10 +756,15 @@ impl VpciClientTdispState {
             ))
             .await?;
 
-        match res.response::<TdispCommandResponseUnbind>() {
-            Ok(_) => Ok(()),
-            Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
+        if let Err(err) = res.response::<TdispCommandResponseUnbind>() {
+            return Err(anyhow::anyhow!("error response in tdisp_unbind: {err}"));
         }
+
+        // The TDI must be back in Unlocked, and the firmware has to agree that
+        // it actually came back rather than the host merely saying so.
+        self.require_tdi_state(TdispTdiState::Unlocked, device_id)?;
+
+        Ok(())
     }
 
     /// Detects TDISP capabilities for the device. If the device supports TDISP
@@ -759,6 +897,12 @@ impl VpciClientTdispState {
             .await
             .context("tdisp_attest_device: failed to bind device interface")?;
 
+        self.require_tdi_state(
+            TdispTdiState::Locked,
+            TdispDeviceId::Valid(guest_device_id_u16),
+        )
+        .context("tdisp_attest_device: failed to confirm the TDI is Locked after the bind")?;
+
         self.resource_validator
             .on_pre_start(self.target_vtl, guest_device_id_u16)
             .context("tdisp_attest_device: pre-start validation failed")?;
@@ -766,6 +910,12 @@ impl VpciClientTdispState {
         self.tdisp_start_device()
             .await
             .context("tdisp_attest_device: failed to start device")?;
+
+        self.require_tdi_state(
+            TdispTdiState::Run,
+            TdispDeviceId::Valid(guest_device_id_u16),
+        )
+        .context("tdisp_attest_device: failed to confirm the TDI is in Run after the start")?;
 
         self.resource_validator
             .on_post_start(self.target_vtl, guest_device_id_u16)
@@ -784,7 +934,7 @@ impl VpciClientTdispState {
         );
 
         self.mutable_state
-            .update_guest_device_id(guest_device_id_u16);
+            .update_guest_device_id(TdispDeviceId::Valid(guest_device_id_u16));
 
         // Hand the report to the validator before any resource is unblocked:
         // platforms that address an MMIO range by its position in the report's
@@ -1003,7 +1153,15 @@ impl VpciClientTdispState {
             TdispResourceIsolation::Private => {}
         }
 
-        let device_id = self.mutable_state.guest_device_id;
+        // A BAR only classifies Private once the interface report is cached,
+        // which happens during attestation alongside the device id, so reaching
+        // here without one means the two have gone out of step.
+        let Some(device_id) = self.mutable_state.guest_device_id.id() else {
+            anyhow::bail!(
+                "tdisp_on_mmio_reconfigured: BAR {bar_id} is classified Private but no \
+                 TDI device id is known"
+            );
+        };
         let host = VpciTdispHostSender {
             worker_req: self.worker_req.clone(),
             vpci_device_id: self.vpci_device_id,
@@ -1115,7 +1273,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         guard.tdisp_unbind(reason).await
     }
 
-    async fn tdisp_block_mmio_range(
+    async fn tdisp_host_block_mmio_range(
         &self,
         range_id: u16,
         gpa_base: u64,
@@ -1123,7 +1281,19 @@ impl TdispVirtualDeviceInterface for VpciDevice {
     ) -> anyhow::Result<()> {
         let mut guard = self.tdisp.0.lock().await;
         guard
-            .tdisp_block_mmio_range(range_id, gpa_base, range_len_bytes)
+            .tdisp_host_block_mmio_range(range_id, gpa_base, range_len_bytes)
+            .await
+    }
+
+    async fn tdisp_host_unblock_mmio_range(
+        &self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        let mut guard = self.tdisp.0.lock().await;
+        guard
+            .tdisp_host_unblock_mmio_range(range_id, gpa_base, range_len_bytes)
             .await
     }
 }
