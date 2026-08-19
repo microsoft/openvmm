@@ -49,14 +49,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,file=path/to/memory.bin
   --memory size=4G,thp=off
   ```
-* `--restore-snapshot <DIR>`: Restore guest memory and device state from a
-  snapshot directory. The command must also include the same normal boot
-  recipe and VM-shape arguments used for the original launch, including the
-  UEFI firmware, Linux kernel/initrd and command line, PCAT BIOS, or IGVM file
-  as applicable. The artifacts are opened to reconstruct and retain the
-  platform configuration, but are not executed during initial state
-  application. `memory.bin` supplies the RAM backing, so this option conflicts
-  with `--memory file=...` and `--memory-backing-file`.
+* `--restore-snapshot <DIR>`: Restore RAM and device state. Supply the original
+  VM configuration and boot artifacts. Initial restore applies saved state
+  without running the boot loader. Uses `<DIR>/memory.bin` and conflicts with
+  explicit memory backing files.
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
   enlightenments.

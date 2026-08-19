@@ -39,6 +39,7 @@ Start a VM with file-backed memory:
 
 ```bash
 cargo run -- \
+  --uefi \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M,file=path/to/memory.bin
@@ -67,12 +68,11 @@ To restore, pass the snapshot directory with `--restore-snapshot`:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M \
   --processors 4 \
-  --uefi \
-  --uefi-firmware path/to/MSVM.fd \
   --restore-snapshot path/to/snapshot-dir
 ```
 
@@ -80,17 +80,9 @@ cargo run -- \
 directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
 
-Restore requires the same boot recipe as a normal launch. Supply the original
-boot mode and its artifacts: for example, `--uefi` and `--uefi-firmware` for a
-UEFI VM, or the kernel, optional initrd, command line, and ACPI/device-tree mode
-for Linux direct boot. PCAT and IGVM restores likewise require their original
-BIOS or IGVM inputs when the VM's devices support snapshots.
-
-OpenVMM opens these artifacts so it can reconstruct the same platform and
-retain the recipe for later operations. It does not execute the firmware,
-kernel, BIOS, or IGVM loader during initial restore; the existing saved state
-is applied instead. Later operations such as guest reboot or machine reset use
-the retained normal recipe.
+Supply the original boot recipe and artifacts on restore. OpenVMM retains them
+for later operations such as reset, but applies saved state instead of running
+the boot loader during initial restore.
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
@@ -100,11 +92,9 @@ validation error and refuse to start.
 
 ## Device configuration on restore
 
-The snapshot only stores device *state*, not the complete VM *configuration* or
-host artifact paths. All boot and device flags (e.g. firmware/kernel/IGVM,
-`--disk`, `--nic`, `--serial`, `--virtio-blk`, etc.) must be specified on the
-restore command line exactly as they were when the snapshot was saved. They are
-not read from `manifest.bin`, and the snapshot schema is unchanged.
+The snapshot stores device *state*, not VM *configuration* or host paths.
+Specify the same boot and device flags on restore; they are not read from
+`manifest.bin`.
 
 The snapshot manifest validates that `--memory`, `--processors`,
 architecture, and page size match the values recorded at save time. However,
@@ -198,9 +188,6 @@ immediately with a clear error if any active device does not support it.
   guest RAM backing file and will be modified as the VM runs. To restore
   from the same snapshot multiple times, copy the snapshot directory before
   each restore.
-- A restored VM can be saved and restored again. Each fresh restore rebuilds
-  the normal boot recipe from its launch arguments; snapshots do not contain
-  nested restore configuration.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - VMs using PCAT firmware do not support save/restore

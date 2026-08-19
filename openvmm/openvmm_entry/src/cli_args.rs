@@ -247,10 +247,10 @@ Examples:
     )]
     pub deprecated_memory_backing_file: Option<PathBuf>,
 
-    /// Restore VM from a snapshot directory. The original boot mode, boot
-    /// artifacts, and VM configuration must also be supplied. Implies
-    /// file-backed memory from memory.bin and conflicts with explicit memory
-    /// backing files.
+    /// Restore VM from a snapshot directory (implies file-backed memory from
+    /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
+    /// The original boot mode, boot artifacts, and VM configuration must also
+    /// be supplied.
     #[clap(
         long,
         value_name = "DIR",
