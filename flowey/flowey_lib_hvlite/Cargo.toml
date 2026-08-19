@@ -12,6 +12,7 @@ flowey_lib_common.workspace = true
 
 powershell_builder.workspace = true
 igvmfilegen_config.workspace = true
+opentmk_disk.workspace = true
 vmm_test_images = { workspace = true, features = ["serde"] }
 
 anyhow.workspace = true
@@ -21,6 +22,7 @@ paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
+toml_edit.workspace = true
 which.workspace = true
 
 [dev-dependencies]

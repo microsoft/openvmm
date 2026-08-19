@@ -321,15 +321,7 @@ impl<T: Client> Access<'_, T> {
             );
         }
 
-        while let Some(response) =
-            self.inner
-                .dns
-                .as_mut()
-                .and_then(|dns| match dns.poll_udp_response(cx) {
-                    Poll::Ready(resp) => resp,
-                    Poll::Pending => None,
-                })
-        {
+        while let Poll::Ready(Some(response)) = self.inner.dns.poll_udp_response(cx) {
             if let Err(e) = self.send_dns_response(&response) {
                 tracelimit::error_ratelimited!(error = ?e, "Failed to send DNS response");
             }
@@ -393,6 +385,19 @@ impl<T: Client> Access<'_, T> {
                     &checksum.caps(),
                 )?;
 
+                if udp.dst_port == DNS_PORT
+                    && self.inner.dns.should_intercept_static_queries()
+                    && self.handle_dns(
+                        frame,
+                        addrs.src_addr.into(),
+                        addrs.dst_addr.into(),
+                        &udp_packet,
+                        true,
+                    )?
+                {
+                    return Ok(());
+                }
+
                 // Check for gateway-destined packets
                 if addrs.dst_addr == self.inner.state.params.gateway_ip
                     || addrs.dst_addr.is_broadcast()
@@ -415,6 +420,19 @@ impl<T: Client> Access<'_, T> {
                     &addrs.dst_addr.into(),
                     &checksum.caps(),
                 )?;
+
+                if udp.dst_port == DNS_PORT
+                    && self.inner.dns.should_intercept_static_queries()
+                    && self.handle_dns(
+                        frame,
+                        addrs.src_addr.into(),
+                        addrs.dst_addr.into(),
+                        &udp_packet,
+                        true,
+                    )?
+                {
+                    return Ok(());
+                }
 
                 // Check for gateway-destined packets (IPv6 uses multicast instead of broadcast)
                 if addrs.dst_addr == self.inner.state.params.gateway_link_local_ipv6
@@ -523,6 +541,7 @@ impl<T: Client> Access<'_, T> {
                 addresses.src_addr.into(),
                 addresses.dst_addr.into(),
                 udp,
+                false,
             ),
             _ => Ok(false),
         }
@@ -545,6 +564,7 @@ impl<T: Client> Access<'_, T> {
                 addresses.src_addr.into(),
                 addresses.dst_addr.into(),
                 udp,
+                false,
             ),
             _ => Ok(false),
         }
@@ -593,27 +613,59 @@ impl<T: Client> Access<'_, T> {
         src_addr: IpAddress,
         dst_addr: IpAddress,
         udp: &UdpPacket<&[u8]>,
+        forward_static_misses: bool,
     ) -> Result<bool, DropReason> {
-        let Some(dns) = self.inner.dns.as_mut() else {
-            return Ok(false);
+        let flow = DnsFlow {
+            src: SocketAddr::new(src_addr.into(), udp.src_port()),
+            dst: SocketAddr::new(dst_addr.into(), udp.dst_port()),
+            gateway_mac: self.inner.state.params.gateway_mac,
+            client_mac: frame.src_addr,
+            transport: crate::dns_resolver::DnsTransport::Udp,
         };
 
+        // Limit static DNS response sizes to the MTU, and to the 512-byte
+        // maximum for DNS over UDP (no EDNS0 negotiation is performed).
+        let ip_header_len = if matches!(dst_addr, IpAddress::Ipv4(_)) {
+            IPV4_HEADER_LEN
+        } else {
+            IPV6_HEADER_LEN
+        };
+
+        let max_response_len = self
+            .client
+            .rx_mtu()
+            .saturating_sub(ETHERNET_HEADER_LEN + ip_header_len + UDP_HEADER_LEN)
+            .min(crate::dns_resolver::MAX_DNS_UDP_RESPONSE_LEN);
+
+        if let Some(response_data) = self
+            .inner
+            .dns
+            .build_static_response(udp.payload(), max_response_len)
+        {
+            let response = DnsResponse {
+                flow,
+                response_data,
+            };
+            if let Err(e) = self.send_dns_response(&response) {
+                tracelimit::error_ratelimited!(error = ?e, "Failed to send static DNS response");
+            }
+            return Ok(true);
+        }
+
+        if forward_static_misses {
+            return Ok(false);
+        }
+
         let request = DnsRequest {
-            flow: DnsFlow {
-                src: SocketAddr::new(src_addr.into(), udp.src_port()),
-                dst: SocketAddr::new(dst_addr.into(), udp.dst_port()),
-                gateway_mac: self.inner.state.params.gateway_mac,
-                client_mac: frame.src_addr,
-                transport: crate::dns_resolver::DnsTransport::Udp,
-            },
+            flow,
             dns_query: udp.payload(),
         };
 
         // Submit the DNS query with addressing information.
         // The response will be queued and sent later in poll_udp, unless the
-        // resolver is rate-limited, in which case it returns a SERVFAIL to
-        // emit immediately.
-        let immediate_response = dns.submit_udp_query(&request).map_err(|e| {
+        // resolver cannot accept the query, in which case it returns a
+        // SERVFAIL to emit immediately.
+        let immediate_response = self.inner.dns.submit_udp_query(&request).map_err(|e| {
             tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
             DropReason::Packet(smoltcp::wire::Error)
         })?;

@@ -278,8 +278,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         Ok(())
     }
 
-    /// Dump in-memory nvram to the underlying storage device.
-    async fn flush_storage(&mut self) -> Result<(), NvramStorageError> {
+    fn rebuild_nvram_buf(&mut self) -> Result<(), NvramStorageError> {
         self.nvram_buf.clear();
 
         for in_memory::VariableEntry {
@@ -290,13 +289,26 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             attr,
         } in self.in_memory.iter()
         {
+            if name.as_bytes().len() > EFI_MAX_VARIABLE_NAME_SIZE {
+                return Err(NvramStorageError::VariableNameTooLong);
+            }
+            if data.len() > EFI_MAX_VARIABLE_DATA_SIZE {
+                return Err(NvramStorageError::VariableDataTooLong);
+            }
+
+            let entry_len = size_of::<format::NvramVariable>()
+                .checked_add(name.as_bytes().len())
+                .and_then(|len| len.checked_add(data.len()))
+                .ok_or(NvramStorageError::OutOfSpace)?;
+            if self.nvram_buf.len() + entry_len > MAXIMUM_NVRAM_SIZE {
+                return Err(NvramStorageError::OutOfSpace);
+            }
+
             self.nvram_buf.extend_from_slice(
                 format::NvramVariable {
                     header: format::NvramHeader {
                         header_type: format::NvramHeaderType::VARIABLE,
-                        length: (size_of::<format::NvramVariable>()
-                            + name.as_bytes().len()
-                            + data.len()) as u32,
+                        length: entry_len as u32,
                     },
                     attributes: attr,
                     timestamp,
@@ -310,9 +322,12 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             self.nvram_buf.extend_from_slice(data);
         }
 
-        // callers make sure that any operations that add/append to vars will
-        // not result in file size exceeding MAXIMUM_NVRAM_SIZE
-        assert!(self.nvram_buf.len() < MAXIMUM_NVRAM_SIZE);
+        Ok(())
+    }
+
+    /// Dump in-memory nvram to the underlying storage device.
+    async fn flush_storage(&mut self) -> Result<(), NvramStorageError> {
+        self.rebuild_nvram_buf()?;
 
         self.storage
             .persist(self.nvram_buf.clone())
@@ -477,6 +492,8 @@ mod save_restore {
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             if state.nvram.is_some() {
                 self.in_memory.restore(state)?;
+                self.rebuild_nvram_buf()
+                    .map_err(|err| RestoreError::InvalidSavedState(err.into()))?;
                 self.loaded = true;
             }
             Ok(())
@@ -659,5 +676,32 @@ mod test {
         assert_eq!(result_attr, attr);
         assert_eq!(result_data, data);
         assert_eq!(result_timestamp, timestamp);
+    }
+
+    #[cfg(feature = "save_restore")]
+    #[async_test]
+    async fn mutate_after_restore() {
+        use vmcore::save_restore::SaveRestore;
+
+        let vendor = Guid::new_random();
+        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var").as_bytes()).unwrap();
+        let timestamp = EFI_TIME::default();
+
+        let mut source = HclCompatNvram::new(EphemeralStorageBackend::default(), None);
+        source
+            .set_variable(name, vendor, 0x1234, vec![1, 2, 3, 4], timestamp)
+            .await
+            .unwrap();
+        let state = source.save().unwrap();
+
+        let mut restored = HclCompatNvram::new(EphemeralStorageBackend::default(), None);
+        restored.restore(state).unwrap();
+        restored
+            .set_variable(name, vendor, 0x1234, vec![5], timestamp)
+            .await
+            .unwrap();
+
+        let (_, data, _) = restored.get_variable(name, vendor).await.unwrap().unwrap();
+        assert_eq!(data, [5]);
     }
 }

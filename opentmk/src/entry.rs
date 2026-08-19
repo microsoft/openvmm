@@ -1,15 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-pub(crate) mod acpi_wrap;
-mod alloc;
-pub mod init;
-mod rt;
-
-use init::init;
-use uefi::Status;
+//! UEFI entrypoint for the OpenTMK test binary.
 
 use crate::tmk_assert;
+use opentmk_core::uefi::init::init;
+use uefi::Status;
 
 #[uefi::entry]
 fn uefi_main() -> Status {

@@ -119,8 +119,18 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         })
     }
 
-    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        Self::wait_for_boot_event(self).await
+    async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>> {
+        // The event arrives on a channel, so cancelling the wait can't discard
+        // one that has already been delivered.
+        CancelContext::new()
+            .with_timeout(timeout.unwrap_or(Duration::MAX))
+            .until_cancelled(Self::wait_for_boot_event(self))
+            .await
+            .ok()
+            .transpose()
     }
 
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
@@ -565,6 +575,9 @@ impl PetriVmInner {
     async fn reset(&mut self) -> anyhow::Result<()> {
         tracing::info!("Resetting VM");
         self.worker.reset().await?;
+        // Discard any firmware events from the boot that was abandoned, so
+        // that they aren't mistaken for the results of the new boot.
+        while self.resources.firmware_event_recv.try_recv().is_ok() {}
         // Guest state is lost on reset, so CIDATA needs to be remounted.
         self.cidata_mounted = false;
         // On linux direct, pipette won't auto-start unless it is the init

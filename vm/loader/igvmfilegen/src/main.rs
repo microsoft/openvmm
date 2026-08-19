@@ -10,6 +10,7 @@ crypto::ensure_single_backend!();
 
 mod corim_signature;
 mod file_loader;
+mod firmware_dll;
 mod identity_mapping;
 mod measurement_diag;
 mod platform_mask;
@@ -71,7 +72,11 @@ use zerocopy::IntoBytes;
 #[derive(Parser)]
 #[clap(name = "igvmfilegen", about = "Tool to generate IGVM files")]
 enum Options {
-    /// Dumps the contents of an IGVM file in a human-readable format
+    /// Dumps the contents of an IGVM file in a human-readable format.
+    ///
+    /// Accepts either a raw IGVM file or a `vmfirmwareigvm` resource DLL
+    /// (`vmfirmwareigvm.dll` / `vmfirmwarecvm.dll`); for a DLL, the embedded
+    /// IGVM is extracted automatically.
     // TODO: Move into its own tool.
     Dump {
         /// Dump file path
@@ -84,11 +89,15 @@ enum Options {
     /// extracts their contents. By default, all supported CoRIM headers for all platforms found
     /// in the file are dumped. Use `--header-type` and `--platform` to narrow the selection.
     ///
+    /// The input may be either a raw IGVM file or a `vmfirmwareigvm` resource DLL
+    /// (`vmfirmwareigvm.dll` / `vmfirmwarecvm.dll`); for a DLL, the embedded IGVM is
+    /// extracted automatically, so a shipped firmware DLL can be checked for a CoRIM directly.
+    ///
     /// A human-readable summary of the selected CoRIM headers is written to stdout. When
     /// `--output <dir>` is provided, the CoRIM payloads are also extracted to files in
     /// that directory and the file paths are reported.
     DumpCorim {
-        /// Input IGVM file path to read CoRIM headers and payloads from.
+        /// Input IGVM file (or `vmfirmwareigvm` resource DLL) to read CoRIM headers and payloads from.
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
         /// Filter by CoRIM header type (e.g. document or signature). If not specified,
@@ -302,7 +311,7 @@ fn main() -> anyhow::Result<()> {
 
     match opts {
         Options::Dump { file_path } => {
-            let image = fs_err::read(file_path).context("reading input file")?;
+            let image = firmware_dll::read_igvm_image(&file_path)?;
             let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())
                 .expect("Invalid fixed header")
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
@@ -882,7 +891,7 @@ fn dump_corim_headers(
     platform_filter: Option<Platform>,
     output_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let image = fs_err::read(file_path).context("reading input file")?;
+    let image = firmware_dll::read_igvm_image(file_path)?;
 
     // Parse the IGVM file using the igvm crate's structured API.
     let igvm_file = IgvmFile::new_from_binary(&image, None).context("parsing IGVM file")?;
@@ -1211,7 +1220,7 @@ impl IgvmfilegenRegister for X86Register {
         image: &[u8],
         config: loader::uefi::ConfigType,
     ) -> Result<loader::uefi::LoadInfo, loader::uefi::Error> {
-        loader::uefi::x86_64::load(importer, image, config)
+        loader::uefi::x86_64::load(importer, image, config, true)
     }
 
     fn load_linux_kernel_and_initrd<F>(
@@ -1268,7 +1277,7 @@ impl IgvmfilegenRegister for Aarch64Register {
         image: &[u8],
         config: loader::uefi::ConfigType,
     ) -> Result<loader::uefi::LoadInfo, loader::uefi::Error> {
-        loader::uefi::aarch64::load(importer, image, config)
+        loader::uefi::aarch64::load(importer, image, config, true)
     }
 
     fn load_linux_kernel_and_initrd<F>(

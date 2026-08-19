@@ -189,6 +189,7 @@ impl Manifest {
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
+            pcie_ecam_below_4gb: config.pcie_ecam_below_4gb,
             pcie_devices: config.pcie_devices,
             pcie_switches: config.pcie_switches,
             pcie_generic_initiators: config.pcie_generic_initiators,
@@ -232,6 +233,7 @@ pub struct Manifest {
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pcie_ecam_below_4gb: bool,
     pcie_devices: Vec<PcieDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
     pcie_generic_initiators: Vec<openvmm_defs::config::PcieGenericInitiatorConfig>,
@@ -318,6 +320,18 @@ impl Worker for VmWorker {
     fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
         let (device_thread, device_driver) = new_device_thread();
 
+        let saved_state = parameters
+            .saved_state
+            .map(|m| m.parse())
+            .transpose()
+            .context("failed to decode saved state")?;
+        if parameters.cfg.load_mode.has_nested_restore() {
+            anyhow::bail!("restore load mode cannot contain another restore load mode");
+        }
+        if parameters.cfg.load_mode.is_restore() && saved_state.is_none() {
+            anyhow::bail!("restore load mode requires saved state");
+        }
+
         let manifest = Manifest::from_config(parameters.cfg);
 
         let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
@@ -333,12 +347,6 @@ impl Worker for VmWorker {
             manifest,
             shared_memory,
         ))?;
-        let saved_state = parameters
-            .saved_state
-            .map(|m| m.parse())
-            .transpose()
-            .context("failed to decode saved state")?;
-
         let vm = block_with_io(|_| vm.load(saved_state, parameters.notify))?;
 
         LOADED_VM.store(&vm);
@@ -850,7 +858,7 @@ fn convert_vtl2_config(
 
             let allowed_ranges = if let LoadMode::Igvm {
                 vtl2_base_address, ..
-            } = load_mode
+            } = load_mode.boot_recipe()
             {
                 let range = vtl2_memory_info(igvm_file).context("invalid igvm file")?;
                 match vtl2_base_address {
@@ -968,7 +976,7 @@ impl InitializedVm {
             .unwrap();
 
         // Pre-parse the igvm file early.
-        let igvm_file = if let LoadMode::Igvm { file, .. } = &cfg.load_mode {
+        let igvm_file = if let LoadMode::Igvm { file, .. } = cfg.load_mode.boot_recipe() {
             let igvm_file = super::vm_loaders::igvm::read_igvm_file(file)
                 .context("reading igvm file failed")?;
             Some(igvm_file)
@@ -1068,7 +1076,7 @@ impl InitializedVm {
         // Determine if a special vtl2 memory allocation should be used.
         let vtl2_layout = if let LoadMode::Igvm {
             vtl2_base_address, ..
-        } = &cfg.load_mode
+        } = cfg.load_mode.boot_recipe()
         {
             match vtl2_base_address {
                 Vtl2BaseAddressType::File
@@ -1110,7 +1118,7 @@ impl InitializedVm {
         //  3. Install a little bit of low memory, enough for UEFI to get to DXE
         //     (which can run anywhere.)
         let ram_start_address =
-            if cfg!(guest_arch = "aarch64") && matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+            if cfg!(guest_arch = "aarch64") && cfg.load_mode.is_linux_direct_platform() {
                 1024 * 1024 * 1024 // 1 GiB
             } else {
                 0
@@ -1129,6 +1137,7 @@ impl InitializedVm {
             layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
+            pcie_ecam_below_4gb: cfg.pcie_ecam_below_4gb,
             vtl2_layout,
             ram_start_address,
             vtl2_framebuffer_size,
@@ -1170,6 +1179,43 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
+        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
+            if !cfg.load_mode.is_linux_direct_platform() {
+                anyhow::bail!("KVM SNP guest_memfd currently only supports direct Linux load mode");
+            }
+            if cfg.hypervisor.with_hv {
+                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V enlightenments");
+            }
+            if cfg.hypervisor.with_vtl2.is_some() {
+                anyhow::bail!("KVM SNP guest_memfd does not support VTL2");
+            }
+            if cfg.chipset.with_hyperv_vga {
+                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V VGA");
+            }
+            if cfg.chipset_capabilities.with_i440bx_host_pci_bridge {
+                anyhow::bail!("KVM SNP guest_memfd does not support the i440BX host PCI bridge");
+            }
+            if cfg.vmbus.is_some() || cfg.vtl2_vmbus.is_some() || !cfg.vmbus_devices.is_empty() {
+                anyhow::bail!("KVM SNP guest_memfd does not support VMBus");
+            }
+            if !cfg.floppy_disks.is_empty()
+                || !cfg.ide_disks.is_empty()
+                || !cfg.virtio_devices.is_empty()
+            {
+                anyhow::bail!("KVM SNP guest_memfd does not support disks");
+            }
+            if matches!(
+                cfg.vmgs,
+                Some(
+                    VmgsResource::Disk(_)
+                        | VmgsResource::ReprovisionOnFailure(_)
+                        | VmgsResource::Reprovision(_)
+                )
+            ) {
+                anyhow::bail!("KVM SNP guest_memfd does not support VMGS disks");
+            }
+        }
+
         // Build per-node RAM backing requests. Each NUMA node with memory
         // gets its own backing (memfd), enabling per-node hugepage settings
         // and host NUMA binding.
@@ -1210,9 +1256,7 @@ impl InitializedVm {
         memory_builder = memory_builder
             .vtl0_alias_map(vtl0_alias_map)
             .supports_memory_fault_resolution(supports_memory_fault_resolution)
-            .x86_legacy_support(
-                matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
-            );
+            .x86_legacy_support(cfg.load_mode.is_pcat_platform() || cfg.chipset.with_hyperv_vga);
 
         for (vnode, ranges) in ranges_by_node.into_iter().enumerate() {
             if ranges.is_empty() {
@@ -1285,7 +1329,7 @@ impl InitializedVm {
         if cfg.hypervisor.with_hv {
             let confidential_vmbus = false;
             // Only advertise extended IOAPIC on non-PCAT systems.
-            let extended_ioapic_rte = !matches!(cfg.load_mode, LoadMode::Pcat { .. });
+            let extended_ioapic_rte = !cfg.load_mode.is_pcat_platform();
             cpuid.extend(vmm_core::cpuid::hyperv_cpuid_leaves(
                 extended_ioapic_rte,
                 confidential_vmbus,
@@ -1354,6 +1398,8 @@ impl InitializedVm {
     ) -> Result<LoadedVm, anyhow::Error> {
         use vmotherboard::options::dev;
 
+        let is_restoring = saved_state.is_some();
+
         let Self {
             partition,
             vps,
@@ -1374,12 +1420,6 @@ impl InitializedVm {
         } = self;
 
         let mut resolver = ResourceResolver::new();
-
-        resolver.add_async_resolver(
-            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
-                OpenVmmRemoteDynamicResolvers {},
-            ),
-        );
 
         // Expose the partition reference time source, if available.
         if cfg.hypervisor.with_hv {
@@ -1439,6 +1479,14 @@ impl InitializedVm {
             (None, None)
         };
 
+        resolver.add_async_resolver(
+            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
+                OpenVmmRemoteDynamicResolvers {
+                    vmgs: vmgs_client.clone(),
+                },
+            ),
+        );
+
         // For sanity: we immediately restrict `vmgs_client` to the
         // `HvLiteVmgsNonVolatileStore` API, since we don't want code past this
         // point to interact with VMGS as anything but an opaque
@@ -1472,16 +1520,8 @@ impl InitializedVm {
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
-        // Restore forces `load_mode = None`, so detect a restored UEFI VM from
-        // its saved state (which carries a "uefi" state unit) instead.
-        let restoring_uefi_state = saved_state
-            .as_ref()
-            .is_some_and(|s| s.units.iter().any(|u| u.name == "uefi"));
-        match &cfg.load_mode {
-            // Fresh UEFI boot, or a restored UEFI snapshot: both need the UEFI
-            // platform resolvers, else restore hits "no resolver for
-            // uefi_logger:platform".
-            _ if matches!(cfg.load_mode, LoadMode::Uefi { .. }) || restoring_uefi_state => {
+        match cfg.load_mode.boot_recipe() {
+            LoadMode::Uefi { .. } => {
                 use emuplat::uefi::*;
                 // Register the platform-specific resolvers used by the UEFI
                 // device.
@@ -1719,7 +1759,7 @@ impl InitializedVm {
             )));
         }
 
-        let initial_rtc_cmos = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
+        let initial_rtc_cmos = if cfg.load_mode.is_pcat_platform() {
             Some(firmware_pcat::default_cmos_values(&mem_layout))
         } else {
             None
@@ -1878,7 +1918,7 @@ impl InitializedVm {
             device_interfaces: base_chipset_device_interfaces,
         } = BaseChipsetBuilder::new(
             BaseChipsetFoundation {
-                is_restoring: false,
+                is_restoring,
                 untrusted_dma_memory: gm.clone(),
                 // There is no access to encrypted memory on the host, so this
                 // may be misleading. Presumably in any confidential VM
@@ -2142,9 +2182,11 @@ impl InitializedVm {
                     cxl,
                     vnode: rc.vnode,
                     preserve_bars: rc.preserve_bars,
-                    // A request to pin BARs (GPA = HPA) also requires the guest
-                    // to leave the firmware's boot configuration alone.
-                    preserve_boot_config: rc.preserve_bars,
+                    // Pinned BARs require the guest to preserve their assigned
+                    // addresses. UEFI also consumes OpenVMM's preassigned PCI
+                    // configuration, so tell the guest OS not to reallocate it
+                    // and transiently overlap BAR mappings.
+                    preserve_boot_config: rc.preserve_bars || cfg.load_mode.is_uefi_platform(),
                 });
 
                 pcie_root_complexes.push(root_complex.clone());
@@ -2567,7 +2609,7 @@ impl InitializedVm {
                 .use_message_redirect(vmbus_cfg.vtl2_redirect)
                 .max_version(vmbus_max_version)
                 .max_restore_version(vmbus_max_version)
-                .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
+                .delay_max_version(cfg.load_mode.is_uefi_platform())
                 .enable_mnf(true)
                 .build()
                 .context("failed to create vmbus server")?;
@@ -3103,15 +3145,14 @@ impl LoadedVmInner {
         };
 
         if vtl2_only {
-            assert!(matches!(self.load_mode, LoadMode::Igvm { .. }));
+            assert!(self.load_mode.is_igvm_platform());
         }
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let InitialLoad {
             mut regs,
             page_imports: initial_page_imports,
-        } = match &self.load_mode {
-            LoadMode::None => return Ok(()),
+        } = match self.load_mode.boot_recipe() {
             #[cfg(guest_arch = "x86_64")]
             &LoadMode::Linux {
                 ref kernel,
@@ -3132,27 +3173,34 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: self.hypervisor_cfg.with_isolation,
+                    snp_c_bit: self.partition.caps().snp_c_bit,
                 };
-                super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
-                    let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                        add_devices_to_dsdt_x64(
-                            dsdt,
-                            &self.chipset_cfg,
-                            &self.chipset_capabilities,
-                            enable_serial,
-                            self.vmbus_server.is_some(),
-                            &self.chipset_mmio,
-                            self.virtio_mmio_region,
-                            self.virtio_mmio_irq,
-                            &self.pci_legacy_interrupts,
-                        )
-                    });
+                super::vm_loaders::linux::load_linux_x86(
+                    &kernel_config,
+                    &self.gm,
+                    self.partition.caps(),
+                    &self.processor_topology.vp_arch(VpIndex::BSP),
+                    |gpa| {
+                        let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                            add_devices_to_dsdt_x64(
+                                dsdt,
+                                &self.chipset_cfg,
+                                &self.chipset_capabilities,
+                                enable_serial,
+                                self.vmbus_server.is_some(),
+                                &self.chipset_mmio,
+                                self.virtio_mmio_region,
+                                self.virtio_mmio_irq,
+                                &self.pci_legacy_interrupts,
+                            )
+                        });
 
-                    loader::linux::AcpiTables {
-                        rsdp: tables.rsdp,
-                        tables: tables.tables,
-                    }
-                })?
+                        loader::linux::AcpiTables {
+                            rsdp: tables.rsdp,
+                            tables: tables.tables,
+                        }
+                    },
+                )?
             }
             #[cfg(guest_arch = "aarch64")]
             &LoadMode::Linux {
@@ -3170,6 +3218,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: self.hypervisor_cfg.with_isolation,
+                    snp_c_bit: None,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -3218,6 +3267,7 @@ impl LoadedVmInner {
                 bios_guid,
                 enable_vmbus,
                 force_dma_bounce,
+                enable_hv,
             } => {
                 let acpi_tables = [
                     // MADT
@@ -3254,6 +3304,7 @@ impl LoadedVmInner {
                     bios_guid,
                     vmbus: enable_vmbus,
                     force_dma_bounce,
+                    hv: enable_hv,
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
@@ -3635,7 +3686,7 @@ impl LoadedVm {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
                     VmRpc::UpdateCliParams(rpc) => {
-                        rpc.handle_failable_sync(|params| match &mut self.inner.load_mode {
+                        rpc.handle_failable_sync(|params| match self.inner.load_mode.boot_recipe_mut() {
                             LoadMode::Igvm { cmdline, .. } => {
                                 *cmdline = params;
                                 Ok(())
@@ -3905,6 +3956,7 @@ impl LoadedVm {
             floppy_disks: vec![],            // TODO
             ide_disks: vec![],               // TODO
             pcie_root_complexes: vec![],     // TODO
+            pcie_ecam_below_4gb: false,      // TODO
             pcie_devices: vec![],            // TODO
             pcie_switches: vec![],           // TODO
             pcie_generic_initiators: vec![], // TODO
@@ -4103,15 +4155,20 @@ impl WatchdogCallback for WatchdogTimeout {
 }
 
 #[derive(MeshPayload, Clone)]
-struct OpenVmmRemoteDynamicResolvers {}
+struct OpenVmmRemoteDynamicResolvers {
+    vmgs: Option<vmgs_broker::VmgsClient>,
+}
 
 impl chipset_device_worker::RemoteDynamicResolvers for OpenVmmRemoteDynamicResolvers {
     const WORKER_ID_STR: &str = "openvmm_remote_chipset_worker";
 
     async fn register_remote_dynamic_resolvers(
         self,
-        _resolver: &mut ResourceResolver,
+        resolver: &mut ResourceResolver,
     ) -> anyhow::Result<()> {
+        if let Some(vmgs) = self.vmgs {
+            resolver.add_resolver(vmgs);
+        }
         Ok(())
     }
 }

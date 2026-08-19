@@ -16,7 +16,6 @@ use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::LoadMode;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use petri_artifacts_common::tags::MachineArch;
@@ -33,9 +32,8 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Launch a fresh worker that restores from `saved_state`, mirroring
-    /// production `--restore-snapshot`: `load_mode` is forced to
-    /// [`LoadMode::None`] and the snapshot is handed to the worker. Exercises
-    /// the path the in-process pulse (`verify_save_restore`) cannot reach.
+    /// production `--restore-snapshot`. Exercises the path the in-process
+    /// pulse (`verify_save_restore`) cannot reach.
     pub(crate) async fn run_restore(
         self,
         saved_state: ProtobufMessage,
@@ -79,11 +77,8 @@ impl PetriVmConfigOpenVmm {
             rc.iommu = Some(iommu_config.clone());
         }
 
-        // Restore path: force load_mode to None as production
-        // `--restore-snapshot` does (the precondition that arms the
-        // UEFI-resolver regression).
         if restoring {
-            config.load_mode = LoadMode::None;
+            config.load_mode = config.load_mode.into_restore();
         }
 
         // TODO: OpenHCL needs virt_whp support

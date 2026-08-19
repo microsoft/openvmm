@@ -37,5 +37,8 @@ thiserror.workspace = true
 virt_whp.workspace = true
 vmbus_proxy.workspace = true
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

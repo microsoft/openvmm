@@ -68,6 +68,8 @@ flowey_request! {
         pub disable_remote_artifacts: bool,
         /// Whether to reuse VHDs created with prep_steps
         pub reuse_prepped_vhds: bool,
+        /// Tell petri to expect 2mb hugetlb support
+        pub require_2mb_hugetlb: bool,
     }
 }
 
@@ -110,6 +112,7 @@ impl SimpleFlowNode for Node {
             use_relative_paths,
             disable_remote_artifacts,
             reuse_prepped_vhds,
+            require_2mb_hugetlb,
         } = request;
 
         let arch = CommonArch::from_architecture(vmm_tests_target.architecture)?;
@@ -264,17 +267,19 @@ impl SimpleFlowNode for Node {
                     make_portable_path(converted_content_dir)?,
                 );
 
-                if !test_log_dir.exists() {
-                    fs_err::create_dir(&test_log_dir)?
+                if test_log_dir.exists() {
+                    fs_err::remove_dir_all(&test_log_dir)?;
                 };
+                fs_err::create_dir(&test_log_dir)?;
                 env.insert(
                     "TEST_OUTPUT_PATH".into(),
                     make_portable_path(converted_log_dir)?,
                 );
 
-                if !temp_dir.exists() {
-                    fs_err::create_dir(&temp_dir)?
+                if temp_dir.exists() {
+                    fs_err::remove_dir_all(&temp_dir)?;
                 };
+                fs_err::create_dir(&temp_dir)?;
                 let portable_temp_dir = make_portable_path(converted_temp_dir)?;
                 if matches!(rt.platform().kind(), FlowPlatformKind::Windows) || windows_via_wsl2 {
                     env.insert("TEMP".into(), portable_temp_dir.clone());
@@ -301,6 +306,10 @@ impl SimpleFlowNode for Node {
 
                 if ignore_unstable_failures {
                     env.insert("PETRI_IGNORE_UNSTABLE_FAILURES".into(), "1".into());
+                }
+
+                if require_2mb_hugetlb {
+                    env.insert("OPENVMM_REQUIRE_2MB_HUGETLB".into(), "1".into());
                 }
 
                 if let Some(openvmm) = openvmm {

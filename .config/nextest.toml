@@ -80,8 +80,9 @@ fail-fast = false
 [profile.ci]
 # Set the default timeout to 1 second, with tests terminated after 10 seconds
 slow-timeout = { period = "1s", terminate-after = 10 }
-# Print out output for failing tests at the end of the run.
-failure-output = "final"
+# Don't pollute the output with logs. Summaries are printed with flowey
+# and full logs can be downloaded via artifact or viewed on the results website
+failure-output = "never"
 # Do not cancel the test run on the first failure.
 fail-fast = false
 

@@ -8,10 +8,12 @@ use vmm_tests_run::VmmTestsRunCli;
 
 pub mod build_docs;
 pub mod build_igvm;
+pub mod build_opentmk;
 pub mod build_reproducible;
 pub mod cca_tests;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
+pub mod openvmm_source_release;
 pub mod restore_packages;
 pub mod vmm_tests_run;
 
@@ -26,6 +28,8 @@ pub enum OpenvmmPipelines {
     },
 
     BuildIgvm(build_igvm::BuildIgvmCli),
+    /// Build OpenTMK and package it into a bootable VHD
+    BuildOpentmk(build_opentmk::BuildOpentmkCli),
     BuildReproducible(build_reproducible::BuildReproducibleCli),
     CustomVmfirmwareigvmDll(custom_vmfirmwareigvm_dll::CustomVmfirmwareigvmDllCli),
 
@@ -47,6 +51,8 @@ pub enum OpenvmmPipelines {
 pub enum OpenvmmPipelinesCi {
     CheckinGates(checkin_gates::CheckinGatesCli),
     BuildDocs(build_docs::BuildDocsCli),
+    /// Assemble, validate, and draft an OpenVMM source release.
+    OpenvmmSourceRelease(openvmm_source_release::OpenvmmSourceReleaseCli),
 }
 
 impl IntoPipeline for OpenvmmPipelines {
@@ -54,18 +60,28 @@ impl IntoPipeline for OpenvmmPipelines {
         match self {
             OpenvmmPipelines::Regen { args } => {
                 let status = std::process::Command::new("cargo")
-                    .args(["run", "-p", "flowey_hvlite", "--", "regen"])
+                    .args([
+                        "run",
+                        "-p",
+                        "flowey_hvlite",
+                        "--profile",
+                        "light",
+                        "--",
+                        "regen",
+                    ])
                     .args(args)
                     .spawn()?
                     .wait()?;
                 std::process::exit(status.code().unwrap_or(-1));
             }
             OpenvmmPipelines::BuildIgvm(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::BuildOpentmk(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::BuildReproducible(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::CustomVmfirmwareigvmDll(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::Ci(cmd) => match cmd {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
+                OpenvmmPipelinesCi::OpenvmmSourceRelease(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),

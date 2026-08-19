@@ -2,7 +2,7 @@
     "guest_arch": "x64",
     "guest_configs": [
         {
-            "guest_svn": 10,
+            "guest_svn": 12,
             "max_vtl": 2,
             "isolation_type": {
                 "snp": {
@@ -23,7 +23,7 @@
             }
         },
         {
-            "guest_svn": 10,
+            "guest_svn": 12,
             "max_vtl": 2,
             "isolation_type": {
                 "tdx": {
@@ -41,7 +41,7 @@
             }
         },
         {
-            "guest_svn": 10,
+            "guest_svn": 12,
             "max_vtl": 2,
             "isolation_type": {
                 "vbs": {

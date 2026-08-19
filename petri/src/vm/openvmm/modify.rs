@@ -64,7 +64,7 @@ impl PetriVmConfigOpenVmm {
                 }
                 .into_resource(),
             });
-            if let LoadMode::Uefi { enable_battery, .. } = &mut self.config.load_mode {
+            if let LoadMode::Uefi { enable_battery, .. } = self.config.load_mode.boot_recipe_mut() {
                 *enable_battery = true;
             }
         }
@@ -328,7 +328,7 @@ impl PetriVmConfigOpenVmm {
     pub fn with_vtl2_relocation_mode(mut self, mode: Vtl2BaseAddressType) -> Self {
         let LoadMode::Igvm {
             vtl2_base_address, ..
-        } = &mut self.config.load_mode
+        } = self.config.load_mode.boot_recipe_mut()
         else {
             panic!("vtl2 relocation mode is only supported for OpenHCL firmware")
         };

@@ -319,7 +319,10 @@ fn create_request(
             .with_error_code(true)
             .with_retry(true)
             .with_skip_hw_unsealing(true)
-            .with_use_rsa_aes_key_wrap_384(true);
+            .with_use_rsa_aes_key_wrap_384(true)
+            // Signal the IGVM Agent to fetch the CoRIM launch endorsement.
+            // TDX only for now.
+            .with_corim_endorsement(matches!(report_type, &ReportType::Tdx));
         let ext = IgvmAttestRequestDataExt::new(capability_bitmap);
         buffer.extend_from_slice(ext.as_bytes());
     }
@@ -470,6 +473,9 @@ mod tests {
         assert!(ext.capability_bitmap.error_code());
         assert!(ext.capability_bitmap.retry());
         assert!(ext.capability_bitmap.skip_hw_unsealing());
+        // CoRIM endorsement is requested for TDX only; an SNP request must not
+        // set the bit.
+        assert!(!ext.capability_bitmap.corim_endorsement());
 
         assert_eq!(
             buffer.len(),
@@ -479,6 +485,33 @@ mod tests {
             &buffer[header_size + expected_extension_size..],
             runtime_claims.as_slice()
         );
+    }
+
+    #[test]
+    fn test_create_request_version2_tdx_requests_corim() {
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
+
+        let runtime_claims = vec![4u8, 5, 6, 7];
+        let attestation_report =
+            vec![0u8; openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE];
+
+        let buffer = create_request(
+            IgvmAttestRequestVersion::VERSION_2,
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            &runtime_claims,
+            &attestation_report,
+            &ReportType::Tdx,
+            IgvmAttestHashType::SHA_256,
+        )
+        .expect("request generation");
+
+        let header_size = size_of::<IgvmAttestRequestBase>();
+        let (ext, _) = IgvmAttestRequestDataExt::read_from_prefix(&buffer[header_size..])
+            .expect("parse IgvmAttestRequestDataExt");
+        // TDX requests must signal the IGVM Agent to fetch the CoRIM endorsement.
+        assert!(ext.capability_bitmap.corim_endorsement());
     }
 
     #[test]

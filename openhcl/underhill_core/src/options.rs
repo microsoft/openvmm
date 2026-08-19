@@ -130,6 +130,7 @@ impl FromStr for EfiDiagnosticsLogLevelCli {
 pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
+    EnabledHostAndPrivatePoolNotPresent,
     Disabled,
 }
 
@@ -139,6 +140,7 @@ impl FromStr for KeepAliveConfig {
     fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
         match s.to_lowercase().as_str() {
             "host,privatepool" | "enabled" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
+            "host,noprivatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolNotPresent),
             "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
             "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
             x if x == "disabled" || x.starts_with("disabled,") => Ok(KeepAliveConfig::Disabled),
@@ -152,11 +154,12 @@ impl KeepAliveConfig {
         matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
     }
 
-    /// Returns the string representation matching the inspect rename attributes.
+    /// Returns a canonical string representation accepted by the parser.
     pub fn as_str(&self) -> &'static str {
         match self {
             KeepAliveConfig::EnabledHostAndPrivatePoolPresent => "enabled",
             KeepAliveConfig::DisabledHostAndPrivatePoolPresent => "nohost,privatepool",
+            KeepAliveConfig::EnabledHostAndPrivatePoolNotPresent => "host,noprivatepool",
             KeepAliveConfig::Disabled => "disabled",
         }
     }
@@ -198,6 +201,11 @@ pub struct Options {
     ///
     /// N.B.: Not all vmbus devices support this feature, so enabling it may cause failures.
     pub vmbus_force_confidential_external_memory: bool,
+
+    /// (OPENHCL_VMBUS_FORCE_GPA_PINNING=1)
+    /// Force all vmbus channels to use pinned GPA ranges if the guest supports that feature. Used
+    /// for testing purposes only.
+    pub vmbus_force_gpa_pinning: bool,
 
     /// (OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS=\<number\>) (default: 100)
     /// Delay before unsticking a vmbus channel after it has been opened, in milliseconds. Set to
@@ -264,6 +272,7 @@ pub struct Options {
     /// Configure NVMe keep alive behavior when servicing.
     /// Options are:
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "host,noprivatepool" - The host supports keepalive, but a private pool is not present. Keepalive is disabled.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
     ///  - "disabled, X, X" - Keepalive is disabled due to manual
@@ -274,6 +283,7 @@ pub struct Options {
     /// Configure MANA keep alive behavior when servicing.
     /// Options are:
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "host,noprivatepool" - The host supports keepalive, but a private pool is not present. Keepalive is disabled.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
     ///  - "disabled, X, X" - TODO: This needs to be implemented for mana.
@@ -446,6 +456,7 @@ impl Options {
             read_legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
         let vmbus_force_confidential_external_memory =
             parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
+        let vmbus_force_gpa_pinning = parse_env_bool("OPENHCL_VMBUS_FORCE_GPA_PINNING");
         let vmbus_channel_unstick_delay_ms =
             parse_legacy_env_number("OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS")?;
         let cmdline_append = read_legacy_openhcl_env("OPENHCL_CMDLINE_APPEND")
@@ -584,6 +595,7 @@ impl Options {
             vmbus_max_version,
             vmbus_enable_mnf,
             vmbus_force_confidential_external_memory,
+            vmbus_force_gpa_pinning,
             vmbus_channel_unstick_delay_ms: vmbus_channel_unstick_delay_ms.unwrap_or(100),
             cmdline_append,
             vnc_port: vnc_port.unwrap_or(3),

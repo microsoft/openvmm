@@ -45,7 +45,11 @@ impl SimpleFlowNode for Node {
 
                 // Because the project is using vite, the output will go
                 // directly to the 'dist-ci' folder
-                flowey::shell_cmd!(rt, "npm install").run()?;
+                //
+                // `npm ci` (rather than `npm install`) so that the build fails
+                // loudly if package-lock.json ever drifts out of sync with
+                // package.json, instead of silently repairing the tree.
+                flowey::shell_cmd!(rt, "npm ci").run()?;
                 flowey::shell_cmd!(rt, "npm run build:ci").run()?;
 
                 dist_path.push("dist-ci");

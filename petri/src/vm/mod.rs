@@ -190,6 +190,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     vhost_vsock_guest_cid: Option<u32>,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
+    // Disable the hypervisor (HV#1) enlightenments. Implies `no_vmbus`.
+    no_hv: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -213,6 +215,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
             .field("no_vmbus", &self.no_vmbus)
+            .field("no_hv", &self.no_hv)
             .finish()
     }
 }
@@ -312,6 +315,8 @@ pub struct PetriVmProperties {
     pub vhost_vsock_guest_cid: Option<u32>,
     /// VMBus is entirely disabled
     pub no_vmbus: bool,
+    /// The hypervisor (HV#1) enlightenments are entirely disabled
+    pub no_hv: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -488,6 +493,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            no_hv: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -568,6 +574,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            no_hv: false,
         })
     }
 
@@ -713,6 +720,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }
         self.config.vmbus_storage_controllers.clear();
         self
+    }
+
+    /// Disable the hypervisor (HV#1) enlightenments.
+    ///
+    /// This also disables VMBus, since VMBus depends on the hypervisor. On
+    /// aarch64 UEFI this causes the loader to pass the generic SEC platform
+    /// type to the firmware. This mode is not supported on x86_64 UEFI.
+    pub fn with_no_hv(mut self) -> Self {
+        self.no_hv = true;
+        self.with_no_vmbus()
     }
 
     fn add_petri_scsi_controllers(self) -> Self {
@@ -1027,6 +1044,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: self.vhost_vsock_guest_cid,
             no_vmbus: self.no_vmbus,
+            no_hv: self.no_hv,
         }
     }
 
@@ -1969,27 +1987,25 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
         tracing::info!("Waiting for boot event...");
         let boot_event = loop {
-            match CancelContext::new()
-                .with_timeout(self.vmm_quirks.flaky_boot.unwrap_or(Duration::MAX))
-                .until_cancelled(self.runtime.wait_for_boot_event())
-                .await
+            if let Some(event) = self
+                .runtime
+                .wait_for_boot_event(self.vmm_quirks.flaky_boot)
+                .await?
             {
-                Ok(res) => break res?,
-                Err(_) => {
-                    tracing::error!("Did not get boot event in required time, resetting...");
-                    if let Some(inspector) = self.runtime.inspector() {
-                        save_inspect(
-                            "vmm",
-                            Box::pin(async move { inspector.inspect("").await }),
-                            &self.resources.log_source,
-                        )
-                        .await;
-                    }
-
-                    self.runtime.reset().await?;
-                    continue;
-                }
+                break event;
             }
+
+            tracing::error!("Did not get boot event in required time, resetting...");
+            if let Some(inspector) = self.runtime.inspector() {
+                save_inspect(
+                    "vmm",
+                    Box::pin(async move { inspector.inspect("").await }),
+                    &self.resources.log_source,
+                )
+                .await;
+            }
+
+            self.runtime.reset().await?;
         };
         tracing::info!("Got boot event: {boot_event:?}");
         Ok(boot_event)
@@ -2185,8 +2201,11 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     /// Get an OpenHCL diagnostics handler for the VM
     fn openhcl_diag(&self) -> Option<OpenHclDiagHandler>;
     /// Waits for an event emitted by the firmware about its boot status, and
-    /// returns that status.
-    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>;
+    /// returns that status. Returns `None` if `timeout` elapsed first.
+    async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>>;
     /// Waits for the Hyper-V shutdown IC to be ready
     // TODO: return a receiver that will be closed when it is no longer ready.
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()>;
@@ -2287,18 +2306,6 @@ pub trait PetriVmFramebufferAccess: Send + 'static {
     /// returning the dimensions and color type.
     async fn screenshot(&mut self, image: &mut Vec<u8>)
     -> anyhow::Result<Option<VmScreenshotMeta>>;
-}
-
-/// Use this for the associated type if not supported
-pub struct NoPetriVmFramebufferAccess;
-#[async_trait]
-impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
-    async fn screenshot(
-        &mut self,
-        _image: &mut Vec<u8>,
-    ) -> anyhow::Result<Option<VmScreenshotMeta>> {
-        unreachable!()
-    }
 }
 
 /// Common processor topology information for the VM.

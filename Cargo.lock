@@ -823,9 +823,9 @@ dependencies = [
 
 [[package]]
 name = "cmov"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
+checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cms"
@@ -1494,6 +1494,7 @@ dependencies = [
  "blocking",
  "disk_backend",
  "disk_backend_resources",
+ "disk_vhd1",
  "guestmem",
  "http",
  "http-body-util",
@@ -1502,7 +1503,10 @@ dependencies = [
  "hyper-util",
  "inspect",
  "once_cell",
+ "pal_async",
  "scsi_buffers",
+ "storage_tests",
+ "tempfile",
  "thiserror 2.0.16",
  "tokio",
  "vhd1_defs",
@@ -1537,6 +1541,7 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "scsi_buffers",
+ "storage_tests",
  "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
@@ -1559,6 +1564,7 @@ dependencies = [
  "inspect",
  "pal_async",
  "scsi_buffers",
+ "storage_tests",
  "thiserror 2.0.16",
  "vm_resource",
 ]
@@ -1579,10 +1585,12 @@ dependencies = [
  "async-trait",
  "disk_backend",
  "disk_backend_resources",
+ "disklayer_ram",
  "inspect",
  "mesh",
  "pal_async",
  "scsi_buffers",
+ "storage_tests",
  "vm_resource",
  "vmcore",
 ]
@@ -1596,7 +1604,10 @@ dependencies = [
  "disk_backend_resources",
  "guestmem",
  "inspect",
+ "pal_async",
  "scsi_buffers",
+ "storage_tests",
+ "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
 ]
@@ -1612,6 +1623,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "scsi_buffers",
+ "storage_tests",
  "thiserror 2.0.16",
  "vmgs",
  "vmgs_broker",
@@ -1658,9 +1670,12 @@ dependencies = [
  "async-trait",
  "disk_backend",
  "disk_backend_resources",
+ "disklayer_ram",
  "inspect",
+ "pal_async",
  "parking_lot",
  "scsi_buffers",
+ "storage_tests",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
@@ -1681,6 +1696,7 @@ dependencies = [
  "inspect",
  "pal_async",
  "scsi_buffers",
+ "storage_tests",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
@@ -1698,6 +1714,7 @@ dependencies = [
  "inspect",
  "pal_async",
  "scsi_buffers",
+ "storage_tests",
  "tempfile",
  "thiserror 2.0.16",
  "vhd1_defs",
@@ -1719,6 +1736,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "scsi_buffers",
+ "storage_tests",
  "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
@@ -1740,6 +1758,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "scsi_buffers",
+ "storage_tests",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
@@ -1760,10 +1779,12 @@ dependencies = [
  "futures",
  "guestmem",
  "inspect",
+ "pal_async",
  "rusqlite",
  "scsi_buffers",
  "serde",
  "serde_json",
+ "storage_tests",
  "tempfile",
  "tracing",
  "vm_resource",
@@ -1784,6 +1805,7 @@ dependencies = [
  "inspect",
  "pal_async",
  "scsi_buffers",
+ "storage_tests",
  "tempfile",
  "thiserror 2.0.16",
  "vhdx",
@@ -2331,12 +2353,14 @@ dependencies = [
  "flowey_lib_common",
  "igvmfilegen_config",
  "log",
+ "opentmk_disk",
  "paste",
  "powershell_builder",
  "serde",
  "serde_json",
  "target-lexicon",
  "tempfile",
+ "toml_edit",
  "vmm_test_images",
  "which 8.0.0",
 ]
@@ -2569,6 +2593,20 @@ dependencies = [
  "mesh",
  "pal_async",
  "vmcore",
+ "xtask_fuzz",
+]
+
+[[package]]
+name = "fuzz_disk_layered"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "disk_backend",
+ "disklayer_ram",
+ "guestmem",
+ "libfuzzer-sys",
+ "pal_async",
+ "scsi_buffers",
  "xtask_fuzz",
 ]
 
@@ -3814,6 +3852,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "memory_range",
+ "object 0.37.3",
  "product_policy",
  "range_map_vec",
  "serde",
@@ -5579,6 +5618,21 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
+ "hvdef",
+ "log",
+ "nostd_spin_channel",
+ "opentmk_core",
+ "opentmk_protocol",
+ "serde",
+ "serde_json",
+ "spin",
+ "uefi",
+]
+
+[[package]]
+name = "opentmk_core"
+version = "0.0.0"
+dependencies = [
  "acpi_spec",
  "bitfield-struct 0.11.0",
  "cfg-if",
@@ -5598,14 +5652,45 @@ dependencies = [
 ]
 
 [[package]]
-name = "openvmm"
+name = "opentmk_disk"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "disk_vhd1",
+ "fatfs",
+ "fscommon",
+ "gptman",
+ "guid",
+ "opentmk_protocol",
+ "tempfile",
+]
+
+[[package]]
+name = "opentmk_protocol"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.16",
+ "zerocopy",
+]
+
+[[package]]
+name = "openvmm"
+version = "0.1.0"
 dependencies = [
  "crypto",
  "embed-resource",
  "openvmm_entry",
  "openvmm_hypervisors",
  "openvmm_resources",
+]
+
+[[package]]
+name = "openvmm_build_info"
+version = "0.1.0"
+dependencies = [
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -5676,6 +5761,7 @@ dependencies = [
  "smmu",
  "sparse_mmap",
  "state_unit",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5721,6 +5807,7 @@ dependencies = [
  "mesh_worker",
  "net_backend_resources",
  "openvmm_pcat_locator",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "unix_socket",
  "virt",
@@ -5775,6 +5862,7 @@ dependencies = [
  "net_tap",
  "netvsp_resources",
  "nvme_resources",
+ "openvmm_build_info",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_pcat_locator",
@@ -7828,6 +7916,7 @@ version = "0.0.0"
 dependencies = [
  "chipset_device",
  "disk_backend",
+ "disk_layered",
  "disk_nvme",
  "disklayer_ram",
  "guestmem",
@@ -8842,6 +8931,7 @@ dependencies = [
  "disk_blockdevice",
  "disk_get_vmgs",
  "disk_nvme",
+ "disklayer_ram",
  "firmware_pcat",
  "firmware_uefi_resources",
  "framebuffer",
@@ -9471,12 +9561,14 @@ dependencies = [
  "inspect",
  "jiff",
  "kvm",
+ "libc",
  "memory_range",
  "open_enum",
  "pal_event",
  "parking_lot",
  "pci_core",
  "safe_intrinsics",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",

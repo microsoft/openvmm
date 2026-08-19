@@ -55,6 +55,11 @@ fn enable_uefi_vtl_protection() {
     let _memory_map = unsafe { exit_boot_services(Some(MemoryType::BOOT_SERVICES_DATA)) };
 }
 
+/// Prepares the UEFI environment for a test run.
+///
+/// Switches to a capped heap, installs the serial logger, captures the ACPI
+/// tables while boot services are still available, then enables VTL protection
+/// (which exits boot services).
 pub fn init() -> Result<(), Status> {
     let r: bool = ALLOCATOR.switch_to_capped_heap(512);
     if !r {

@@ -3,12 +3,12 @@
 
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { HashRouter } from "react-router-dom";
+import { HashRouter } from "react-router";
 import "../tailwind.css";
 import "./styles/main.css";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route } from "react-router";
 import { Runs } from "./runs";
-import { Navigate } from "react-router-dom";
+import { Navigate } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { startDataPrefetching } from "./utils/fetch_runs_data";
 import { RunDetails } from "./run_details";

@@ -190,7 +190,11 @@ pub struct FeatureFlags {
     /// case the guest cannot cancel MNF interrupts from the host.
     pub server_specified_monitor_pages: bool, // 0x40
 
-    #[bits(25)]
+    /// The guest supports channels that require the use of pinned memory. This indicates that the
+    /// `require_pinned_external_memory` flag in the channel offer message is supported.
+    pub gpa_pinning: bool, // 0x80
+
+    #[bits(24)]
     _reserved: u32,
 }
 
@@ -553,9 +557,9 @@ pub struct OfferFlags {
     /// Indicates the channel must use encrypted additional GPADLs and GPA direct ranges on a
     /// hardware-isolated VM.
     pub confidential_external_memory: bool, // 0x4
-    #[bits(1)]
-    _reserved1: u16,
-    pub named_pipe_mode: bool, // 0x10
+    /// Indicates that additional GPADLs and GPA direct packets must use pinned GPA ranges.
+    pub require_pinned_external_memory: bool, // 0x8
+    pub named_pipe_mode: bool,            // 0x10
     #[bits(8)]
     _reserved2: u16,
     pub tlnpi_provider: bool, // 0x2000
@@ -572,17 +576,73 @@ open_enum! {
     }
 }
 
-/// First 4 bytes of user_defined for named pipe offers.
+/// Provider-defined portion of the user-defined data for named pipe offers.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    IntoBytes,
+    FromBytes,
+    Immutable,
+    KnownLayout,
+    Protobuf,
+    Inspect,
+)]
+#[repr(transparent)]
+#[mesh(transparent)]
+#[inspect(transparent)]
+pub struct PipeUserDefinedData([u8; 112]);
+
+impl From<[u8; 112]> for PipeUserDefinedData {
+    fn from(value: [u8; 112]) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PipeUserDefinedData> for [u8; 112] {
+    fn from(value: PipeUserDefinedData) -> Self {
+        value.0
+    }
+}
+
+impl Default for PipeUserDefinedData {
+    fn default() -> Self {
+        Self::new_zeroed()
+    }
+}
+
+/// User-defined data layout for named pipe offers.
 #[repr(C)]
 #[derive(Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct PipeUserDefinedParameters {
     pub pipe_type: PipeType,
+    pub user_defined: PipeUserDefinedData,
+    pub flags: PipeFlags,
+}
+
+static_assertions::const_assert_eq!(
+    size_of::<PipeUserDefinedParameters>(),
+    size_of::<UserDefinedData>()
+);
+
+/// Flags stored in the final 4 bytes of the named pipe user-defined data.
+#[derive(Inspect)]
+#[bitfield(u32)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq, Protobuf)]
+#[mesh(transparent)]
+pub struct PipeFlags {
+    /// Indicates that the pipe supports GPA-direct transfers.
+    pub gpa_direct: bool,
+    #[bits(31)]
+    _reserved: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct HvsockUserDefinedParameters {
-    pub pipe_params: PipeUserDefinedParameters,
+    pub pipe_type: PipeType,
     pub is_for_guest_accept: u8,
     pub is_for_guest_container: u8,
     pub version: Unalign<HvsockParametersVersion>, // unaligned u32
@@ -593,9 +653,7 @@ pub struct HvsockUserDefinedParameters {
 impl HvsockUserDefinedParameters {
     pub fn new(is_for_guest_accept: bool, is_for_guest_container: bool, silo_id: Guid) -> Self {
         Self {
-            pipe_params: PipeUserDefinedParameters {
-                pipe_type: PipeType::BYTE,
-            },
+            pipe_type: PipeType::BYTE,
             is_for_guest_accept: is_for_guest_accept.into(),
             is_for_guest_container: is_for_guest_container.into(),
             version: Unalign::new(HvsockParametersVersion::RS5),

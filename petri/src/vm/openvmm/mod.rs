@@ -156,11 +156,19 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
 impl PetriVmBuilder<OpenVmmPetriBackend> {
     /// Exercise the cross-process snapshot restore path (like production
     /// `openvmm --restore-snapshot`): boot worker #1, save, tear it down, then
-    /// restore its snapshot on a fresh worker #2 (`load_mode = None`). This is
-    /// the only path that reproduces the UEFI-resolver regression, which the
-    /// in-process pulse can't reach (it restores into the same worker).
+    /// restore its snapshot on a fresh worker #2. This is the only path that
+    /// reproduces fresh-worker restore issues, which the in-process pulse
+    /// cannot reach because it restores into the same worker.
     pub async fn verify_openvmm_cross_process_restore(self) -> anyhow::Result<()> {
-        let builder = self.add_boot_disk().add_agent_disks();
+        let mut builder = self.add_boot_disk().add_agent_disks();
+        let prepared_initrd_guard =
+            if builder.uses_pipette_as_init() && builder.prebuilt_initrd.is_none() {
+                let initrd = builder.prepare_initrd()?;
+                builder.prebuilt_initrd = Some(initrd.to_path_buf());
+                Some(initrd)
+            } else {
+                None
+            };
 
         let openvmm_path = builder.backend.openvmm_path.clone();
         let resources = &builder.resources;
@@ -169,6 +177,7 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
         let recipe = builder.config.clone();
         let props1 = builder.properties();
         let props2 = builder.properties();
+        let props3 = builder.properties();
 
         // Shared backing file carries guest RAM across the process boundary.
         let backing =
@@ -182,23 +191,62 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
             .with_memory_backing_file(backing_path.to_path_buf());
         let (mut vm1, _rc1) = cfg1.run_core().await?;
 
-        let _client = vm1.wait_for_agent(false).await?;
+        let client = vm1.wait_for_agent(false).await?;
+        client.ping().await?;
+        drop(client);
         vm1.pause().await?;
         let saved_state = vm1.save_state_protobuf().await?;
         vm1.teardown().await?;
 
         // Worker #2: fresh worker restoring the snapshot (the regression gate).
         tracing::info!("cross-process restore: launching worker #2 from saved state");
-        let cfg2 = PetriVmConfigOpenVmm::new(&openvmm_path, recipe, resources, props2)
+        let cfg2 = PetriVmConfigOpenVmm::new(&openvmm_path, recipe.clone(), resources, props2)
             .await?
             .with_memory_backing_file(backing_path.to_path_buf());
-        let (vm2, _rc2) = cfg2
+        let (mut vm2, _rc2) = cfg2
             .run_restore(saved_state)
             .await
-            .context("restoring UEFI snapshot onto a fresh worker failed (Bug 2)")?;
+            .context("restoring snapshot onto a fresh worker failed")?;
 
+        let client = vm2.wait_for_agent(false).await?;
+        client.ping().await?;
+        drop(client);
+
+        // The restore wrapper must retain the recipe through in-process
+        // save/reset/restore.
+        vm2.verify_save_restore().await?;
+        let client = vm2.wait_for_agent(false).await?;
+        client.ping().await?;
+
+        // A guest reboot executes the retained recipe rather than turning into
+        // the old Restore/None no-op.
+        client.reboot().await?;
+        let client = vm2.wait_for_agent(false).await?;
+        client.ping().await?;
+        drop(client);
+
+        // Save the restored worker and restore that state on another fresh
+        // worker. The recipe must remain wrapped exactly once.
+        vm2.pause().await?;
+        let saved_state = vm2.save_state_protobuf().await?;
         vm2.teardown().await?;
+
+        tracing::info!("cross-process restore: launching worker #3 from saved state");
+        let cfg3 = PetriVmConfigOpenVmm::new(&openvmm_path, recipe, resources, props3)
+            .await?
+            .with_memory_backing_file(backing_path.to_path_buf());
+        let (mut vm3, _rc3) = cfg3
+            .run_restore(saved_state)
+            .await
+            .context("restoring a snapshot produced by a restored worker failed")?;
+
+        let client = vm3.wait_for_agent(false).await?;
+        client.ping().await?;
+        drop(client);
+
+        vm3.teardown().await?;
         drop(backing_path);
+        drop(prepared_initrd_guard);
         Ok(())
     }
 }
