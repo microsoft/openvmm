@@ -3767,6 +3767,15 @@ async fn new_underhill_vm(
                 );
                 Some(hibernate::Token::CURRENT)
             }
+            Some(hibernate::Token::Other(raw)) => {
+                // An out-of-range/corrupt token value; ignore it.
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    raw,
+                    "ignoring unrecognized hibernate token; using the current firmware version"
+                );
+                Some(hibernate::Token::CURRENT)
+            }
             // Clean prior power-off, or no/unreadable token (e.g. first boot):
             // a normal cold boot on the current firmware.
             Some(hibernate::Token::NotHibernated) | None => Some(hibernate::Token::CURRENT),
