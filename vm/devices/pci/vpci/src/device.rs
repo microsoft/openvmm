@@ -1031,28 +1031,32 @@ impl ReadyState {
                                 dma_isolation: protocol::ResourceIsolation::INVALID,
                             }
                         } else {
-                            // TODO: For bringup, do not drive device attestation
-                            // from QueryIsolatedResources. Instead, return a
-                            // static isolation report so the bringup test has a
-                            // deterministic result.
-                            let reply = protocol::VpciIsolatedResourcesReply {
-                                status: protocol::Status::SUCCESS,
-                                bar_isolation: [
-                                    protocol::ResourceIsolation::PRIVATE,
-                                    protocol::ResourceIsolation::INVALID,
-                                    protocol::ResourceIsolation::INVALID,
-                                    protocol::ResourceIsolation::INVALID,
-                                    protocol::ResourceIsolation::SHARED,
-                                    protocol::ResourceIsolation::INVALID,
-                                ],
-                                dma_isolation: protocol::ResourceIsolation::PRIVATE,
+                            // The reporter returns a `'static` boxed future, so
+                            // we can drop the sync device guard before awaiting
+                            // it. This avoids holding the chipset device lock
+                            // across attestation work.
+                            let fut = {
+                                let mut locked_dev = dev.device.lock();
+                                locked_dev
+                                    .supports_tdisp_isolation()
+                                    .map(|r| r.tdisp_isolation_report())
                             };
+                            let report = match fut {
+                                Some(f) => Some(f.await),
+                                None => None,
+                            };
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                ?report,
+                                "VPCI_QUERY_ISOLATED_RESOURCES isolation report"
+                            );
+                            let reply = build_isolation_reply(report);
                             tracelimit::info_ratelimited!(
                                 instance_id = %dev.instance_id,
                                 status = ?reply.status,
                                 bar_isolation = ?reply.bar_isolation,
                                 dma_isolation = ?reply.dma_isolation,
-                                "VPCI_QUERY_ISOLATED_RESOURCES static bringup reply (for MANA)"
+                                "VPCI_QUERY_ISOLATED_RESOURCES reply"
                             );
                             reply
                         };
@@ -1146,10 +1150,6 @@ enum InvalidBars {
 /// Convert a `TdispIsolationReport` (or `None`, when the chipset device
 /// does not support the isolation reporter) into the wire reply for
 /// `VPCI_QUERY_ISOLATED_RESOURCES`.
-// TODO: Currently unused because QueryIsolatedResources returns a static
-// bringup reply instead of driving device attestation. Retained so the
-// attestation-driven path can be restored later.
-#[allow(dead_code)]
 fn build_isolation_reply(
     report: Option<tdisp::TdispIsolationReport>,
 ) -> protocol::VpciIsolatedResourcesReply {
@@ -2819,11 +2819,12 @@ mod tests {
     /// Verify that `VPCI_QUERY_ISOLATED_RESOURCES` is answered locally on a
     /// TDISP-isolation-capable mock device after negotiating `RB`.
     ///
-    /// For bringup, the reply is a static isolation report (device attestation
-    /// is not driven), so every capable-device case returns the same
-    /// `[PRIVATE, INVALID, PRIVATE, INVALID, SHARED, INVALID]` bar isolation
-    /// with `PRIVATE` DMA isolation, regardless of the device's report. A
-    /// downlevel (no `RB`) negotiation still replies `NOT_SUPPORTED`.
+    /// Exercises every branch of `build_isolation_reply`:
+    /// - `Ready` → `SUCCESS` with the per-BAR/DMA classifications echoed.
+    /// - `NotReady` → `INVALID_DEVICE_STATE` with all entries `INVALID`.
+    /// - `NotTdispCapable` → `SUCCESS` with all entries `SHARED`.
+    /// - `Error` → `UNSUCCESSFUL`.
+    /// - Downlevel negotiation (no `RB`) → `NOT_SUPPORTED`.
     #[async_test]
     async fn verify_query_isolated_resources(driver: DefaultDriver) {
         use tdisp::TdispIsolationReport;
@@ -2840,27 +2841,40 @@ mod tests {
             TdispResourceIsolation::Invalid,
         ];
 
-        // Static bringup reply expected for any TDISP-isolation-capable device.
-        let expected_static_bars = [
-            protocol::ResourceIsolation::PRIVATE,
-            protocol::ResourceIsolation::INVALID,
-            protocol::ResourceIsolation::PRIVATE,
-            protocol::ResourceIsolation::INVALID,
-            protocol::ResourceIsolation::SHARED,
-            protocol::ResourceIsolation::INVALID,
+        let cases: &[(TdispIsolationReport, _, _)] = &[
+            (
+                TdispIsolationReport::Ready {
+                    bars: ready_bars,
+                    dma: TdispResourceIsolation::Private,
+                },
+                protocol::Status::SUCCESS,
+                [
+                    protocol::ResourceIsolation::PRIVATE,
+                    protocol::ResourceIsolation::INVALID,
+                    protocol::ResourceIsolation::SHARED,
+                    protocol::ResourceIsolation::INVALID,
+                    protocol::ResourceIsolation::SHARED,
+                    protocol::ResourceIsolation::INVALID,
+                ],
+            ),
+            (
+                TdispIsolationReport::NotTdispCapable,
+                protocol::Status::SUCCESS,
+                [protocol::ResourceIsolation::SHARED; 6],
+            ),
+            (
+                TdispIsolationReport::NotReady,
+                protocol::Status::INVALID_DEVICE_STATE,
+                [protocol::ResourceIsolation::INVALID; 6],
+            ),
+            (
+                TdispIsolationReport::Error,
+                protocol::Status::UNSUCCESSFUL,
+                [protocol::ResourceIsolation::INVALID; 6],
+            ),
         ];
 
-        let reports: &[TdispIsolationReport] = &[
-            TdispIsolationReport::Ready {
-                bars: ready_bars,
-                dma: TdispResourceIsolation::Private,
-            },
-            TdispIsolationReport::NotTdispCapable,
-            TdispIsolationReport::NotReady,
-            TdispIsolationReport::Error,
-        ];
-
-        for report in reports.iter().copied() {
+        for (report, expected_status, expected_bars) in cases.iter().copied() {
             let msi_controller = TestVpciInterruptController::new();
             let vm_chipset = TestChipset::default();
             let pci = vm_chipset
@@ -2875,23 +2889,18 @@ mod tests {
             guest_driver.start_device(0x1000000).await;
 
             let reply = guest_driver.send_query_isolated_resources().await;
-            assert_eq!(
-                reply.status,
-                protocol::Status::SUCCESS,
-                "report {:?}",
-                report
-            );
-            assert_eq!(
-                reply.bar_isolation, expected_static_bars,
-                "report {:?}",
-                report
-            );
-            assert_eq!(
-                reply.dma_isolation,
-                protocol::ResourceIsolation::PRIVATE,
-                "report {:?}",
-                report
-            );
+            assert_eq!(reply.status, expected_status, "report {:?}", report);
+            assert_eq!(reply.bar_isolation, expected_bars, "report {:?}", report);
+            let expected_dma = match (report, expected_status) {
+                (TdispIsolationReport::Ready { dma, .. }, _) => match dma {
+                    TdispResourceIsolation::Private => protocol::ResourceIsolation::PRIVATE,
+                    TdispResourceIsolation::Shared => protocol::ResourceIsolation::SHARED,
+                    TdispResourceIsolation::Invalid => protocol::ResourceIsolation::INVALID,
+                },
+                (TdispIsolationReport::NotTdispCapable, _) => protocol::ResourceIsolation::SHARED,
+                _ => protocol::ResourceIsolation::INVALID,
+            };
+            assert_eq!(reply.dma_isolation, expected_dma, "report {:?}", report);
         }
 
         // Downlevel: negotiate `VB` instead of `RB`. A `TestDevice` that
