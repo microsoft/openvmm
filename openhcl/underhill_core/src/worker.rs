@@ -3707,7 +3707,16 @@ async fn new_underhill_vm(
         // there's no firmware version to pin — don't track a token.
         None
     } else if is_restoring {
-        // Older saved state may not carry hibernation state; treat as unknown.
+        // In the restore case, the VMGS token was already consumed at the
+        // original cold boot, so recover it from saved state.  Note that we must
+        // not attempt to overload the firmware here, because the firmware has
+        // already been loaded and is running.  If the firmware version has changed
+        // since the original cold boot, the firmware will have already been
+        // overloaded and the token in saved state will reflect that.  If the
+        // firmware version has not changed, the token in saved state will be the
+        // current firmware version (from the previous instance).  In either case,
+        // we can just use the token.
+        // N.B. Older saved state may not carry hibernation state; treat as unknown.
         Some(
             servicing_state
                 .hibernate
