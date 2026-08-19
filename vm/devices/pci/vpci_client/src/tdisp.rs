@@ -100,7 +100,7 @@ struct ValidatedMmio {
     #[inspect(hex)]
     base_gpa: u64,
     #[inspect(hex)]
-    length_in_bytes: u32,
+    length_in_bytes: u64,
     /// How the range was classified. `Private` means it was passed to
     /// `tdisp_unblock_mmio` and must be blocked back on unbind; `Shared`
     /// means it was deliberately skipped and there is nothing to undo.
@@ -705,11 +705,7 @@ impl VpciClientTdispState {
                     // range, so the host's view never runs ahead of the platform's.
                     // Best-effort, like the block above.
                     if let Err(e) = self
-                        .tdisp_host_block_mmio_range(
-                            bar_id,
-                            mmio.base_gpa,
-                            mmio.length_in_bytes.into(),
-                        )
+                        .tdisp_host_block_mmio_range(bar_id, mmio.base_gpa, mmio.length_in_bytes)
                         .await
                     {
                         tracing::error!(
@@ -1091,7 +1087,7 @@ impl VpciClientTdispState {
         &mut self,
         bar_id: u16,
         base_address: u64,
-        length: u32,
+        length: u64,
     ) -> anyhow::Result<()> {
         // If the device is not attested and in Run state, don't attempt to unblock resources
         if self.tdi_state() != TdispTdiState::Run {
@@ -1330,7 +1326,7 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
         &self,
         bar_id: u16,
         base_address: u64,
-        length: u32,
+        length: u64,
     ) -> anyhow::Result<()>;
 
     /// Mark a BAR as paravisor-intercepted, so that it is never made private
@@ -1365,7 +1361,7 @@ impl TdispVpciAttestationInterface for VpciDevice {
         &self,
         bar_id: u16,
         base_address: u64,
-        length: u32,
+        length: u64,
     ) -> anyhow::Result<()> {
         let mut guard = self.tdisp.0.lock().await;
         guard

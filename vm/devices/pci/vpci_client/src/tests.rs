@@ -254,7 +254,7 @@ mod active_mmio_bars {
 
     #[test]
     fn no_bars_implemented() {
-        assert_eq!(active_mmio_bars(&[0; 6], &[0; 6]).unwrap(), vec![]);
+        assert_eq!(active_mmio_bars(&[0; 6], &[0; 6]), vec![]);
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod active_mmio_bars {
         bars[0] = 0xf000_0000;
 
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![ActiveMmioBar {
                 bar_id: 0,
                 base_address: 0xf000_0000,
@@ -284,7 +284,7 @@ mod active_mmio_bars {
         bars[0] = 0xf000_0000 | 0b1000;
 
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![ActiveMmioBar {
                 bar_id: 0,
                 base_address: 0xf000_0000,
@@ -306,7 +306,7 @@ mod active_mmio_bars {
         // Reported once, under the lower half's index, with the two halves
         // combined into one address.
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![ActiveMmioBar {
                 bar_id: 0,
                 base_address: 0x1_e000_0000,
@@ -326,7 +326,7 @@ mod active_mmio_bars {
         bars[1] = 0;
 
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![ActiveMmioBar {
                 bar_id: 0,
                 base_address: 0xf000_0000,
@@ -357,7 +357,7 @@ mod active_mmio_bars {
         bars[4] = 0xd000_0000;
 
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![
                 ActiveMmioBar {
                     bar_id: 0,
@@ -392,7 +392,7 @@ mod active_mmio_bars {
         bars[1] = 0x0000_0010;
 
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![ActiveMmioBar {
                 bar_id: 0,
                 base_address: 0x10_f000_0000,
@@ -413,7 +413,7 @@ mod active_mmio_bars {
         bars[1] = 0xf000_0000;
 
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![ActiveMmioBar {
                 bar_id: 1,
                 base_address: 0xf000_0000,
@@ -423,39 +423,67 @@ mod active_mmio_bars {
     }
 
     #[test]
-    fn sixty_four_bit_bar_larger_than_4gib_is_an_error() {
+    fn sixty_four_bit_bar_larger_than_4gib() {
         let mut bars = [0u32; 6];
         let mut masks = [0u32; 6];
-        // 8GiB: the length cannot be expressed as a u32, and reporting a
-        // truncated one would understate the range, so this fails.
+        // 8GiB, which a u32 length could not have described at all.
         let (low, high) = mask_64(0x2_0000_0000, true);
         masks[0] = low;
         masks[1] = high;
         bars[0] = 0;
         bars[1] = 0x0000_0004;
 
-        let err = active_mmio_bars(&bars, &masks).unwrap_err();
-        assert!(
-            err.to_string().contains("does not fit in a u32"),
-            "unexpected error: {err}"
+        assert_eq!(
+            active_mmio_bars(&bars, &masks),
+            vec![ActiveMmioBar {
+                bar_id: 0,
+                base_address: 0x4_0000_0000,
+                length_bytes: 0x2_0000_0000,
+            }]
         );
     }
 
     #[test]
-    fn exactly_4gib_64_bit_bar_is_an_error() {
+    fn exactly_4gib_64_bit_bar() {
         let mut bars = [0u32; 6];
         let mut masks = [0u32; 6];
-        // 4GiB is one past what a u32 length can hold.
+        // 4GiB is one byte past what a u32 length could hold, so this is the
+        // smallest BAR the old u32 plumbing had to reject outright.
         let (low, high) = mask_64(0x1_0000_0000, true);
         masks[0] = low;
         masks[1] = high;
         bars[0] = 0;
         bars[1] = 0x0000_0008;
 
-        let err = active_mmio_bars(&bars, &masks).unwrap_err();
-        assert!(
-            err.to_string().contains("does not fit in a u32"),
-            "unexpected error: {err}"
+        assert_eq!(
+            active_mmio_bars(&bars, &masks),
+            vec![ActiveMmioBar {
+                bar_id: 0,
+                base_address: 0x8_0000_0000,
+                length_bytes: 0x1_0000_0000,
+            }]
+        );
+    }
+
+    #[test]
+    fn two_gib_64_bit_bar_still_decodes() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        // 2GiB is the largest power of two that fit in a u32 length, so it is
+        // the boundary the old plumbing stopped at. It must still work.
+        let (low, high) = mask_64(0x8000_0000, true);
+        masks[0] = low;
+        masks[1] = high;
+        bars[0] = 0x8000_0000;
+        bars[1] = 0;
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks),
+            vec![ActiveMmioBar {
+                bar_id: 0,
+                base_address: 0x8000_0000,
+                length_bytes: 0x8000_0000,
+            }]
         );
     }
 
@@ -470,7 +498,7 @@ mod active_mmio_bars {
         bars[5] = 0xf000_0000;
 
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![ActiveMmioBar {
                 bar_id: 5,
                 base_address: 0xf000_0000,
@@ -496,7 +524,7 @@ mod active_mmio_bars {
         }
 
         assert_eq!(
-            active_mmio_bars(&bars, &masks).unwrap(),
+            active_mmio_bars(&bars, &masks),
             vec![
                 ActiveMmioBar {
                     bar_id: 0,

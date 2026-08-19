@@ -645,20 +645,7 @@ impl VpciDevice {
 
         tracing::debug!(?bars, ?self.bar_masks, "command register write enabled mmio, notifying TDISP of MMIO bars");
 
-        let active_bars = match active_mmio_bars(&bars, &self.bar_masks) {
-            Ok(active_bars) => active_bars,
-            Err(err) => {
-                tracing::error!(
-                    error = &*err as &dyn std::error::Error,
-                    "tdisp_on_device_activate: failed to decode the guest's BAR configuration. \
-                     Failing activation."
-                );
-                self.tdisp_fail_attestation().await;
-                return false;
-            }
-        };
-
-        for bar in active_bars {
+        for bar in active_mmio_bars(&bars, &self.bar_masks) {
             let ActiveMmioBar {
                 bar_id,
                 base_address,
@@ -1470,7 +1457,7 @@ pub(crate) struct ActiveMmioBar {
     /// The guest physical base address the range is mapped at.
     pub base_address: u64,
     /// The length of the range in bytes.
-    pub length_bytes: u32,
+    pub length_bytes: u64,
 }
 
 /// Decode the guest-programmed BARs into the MMIO ranges that are actually
@@ -1481,16 +1468,9 @@ pub(crate) struct ActiveMmioBar {
 /// its own. Unimplemented BARs (mask zero) are skipped, as are ranges the guest
 /// has not actually mapped, meaning a zero base address or a zero length.
 ///
-/// Fails if a 64-bit BAR is larger than a `u32` can describe, since the unblock
-/// path takes a `u32` length and there is no correct way to report such a range
-/// through it.
-///
 /// * `bars` - The shadowed BAR values as the guest programmed them.
 /// * `bar_masks` - The size masks the device reported for each BAR.
-pub(crate) fn active_mmio_bars(
-    bars: &[u32; 6],
-    bar_masks: &[u32; 6],
-) -> anyhow::Result<Vec<ActiveMmioBar>> {
+pub(crate) fn active_mmio_bars(bars: &[u32; 6], bar_masks: &[u32; 6]) -> Vec<ActiveMmioBar> {
     let mut active = Vec::new();
     let mut i = 0usize;
 
@@ -1512,13 +1492,13 @@ pub(crate) fn active_mmio_bars(
             let base = ((bars[i + 1] as u64) << 32) | ((bars[i] & !0xF_u32) as u64);
             let full_mask = ((bar_masks[i + 1] as u64) << 32) | ((mask & !0xF_u32) as u64);
             let size = (!full_mask).wrapping_add(1);
-            let size_u32 = u32::try_from(size).with_context(|| {
-                format!("BAR {i} is {size:#x} bytes, which does not fit in a u32")
-            })?;
-            (base, size_u32, i + 2)
+            (base, size, i + 2)
         } else {
             let base = (bars[i] & !0xF_u32) as u64;
-            let size = (!(mask & !0xF_u32)).wrapping_add(1);
+            // Keep the complement in u32 and widen the result. Doing this in
+            // u64 would turn a mask with no address bits set, which should
+            // yield zero and be skipped below, into a bogus 4GiB range.
+            let size = u64::from((!(mask & !0xF_u32)).wrapping_add(1));
             (base, size, i + 1)
         };
 
@@ -1533,5 +1513,5 @@ pub(crate) fn active_mmio_bars(
         i = next_i;
     }
 
-    Ok(active)
+    active
 }
