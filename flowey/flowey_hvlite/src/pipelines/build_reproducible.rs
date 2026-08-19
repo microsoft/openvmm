@@ -69,6 +69,7 @@ impl IntoPipeline for BuildReproducibleCli {
             &mut pipeline,
             backend_hint,
             Some(local_run_args),
+            crate::pipelines_shared::cfg_common_params::DenyWarnings::Enabled,
         )?;
 
         let openvmm_repo_source =

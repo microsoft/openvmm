@@ -34,6 +34,20 @@ pub struct LocalRunArgs {
 pub type FulfillCommonRequestsParamsResolver =
     Box<dyn for<'a> Fn(&mut PipelineJobCtx<'a>) -> flowey_lib_hvlite::_jobs::cfg_common::Params>;
 
+/// Whether a cloud pipeline should build with `-Dwarnings`.
+///
+/// Enabling this rewrites the tracked `.cargo/config.toml` in the checkout,
+/// which leaves the working tree dirty. Any binary built afterwards is stamped
+/// `.dirty` by `openvmm_build_info`, so pipelines that produce artifacts handed
+/// to end users must leave this disabled and let the CI gates enforce warnings.
+///
+/// Has no effect on local runs, which never deny warnings.
+#[derive(Clone, Copy)]
+pub enum DenyWarnings {
+    Enabled,
+    Disabled,
+}
+
 fn get_params_local(
     local_run_args: Option<LocalRunArgs>,
 ) -> anyhow::Result<FulfillCommonRequestsParamsResolver> {
@@ -62,6 +76,7 @@ fn get_params_local(
 
 fn get_params_cloud(
     pipeline: &mut Pipeline,
+    deny_warnings: DenyWarnings,
 ) -> anyhow::Result<FulfillCommonRequestsParamsResolver> {
     let param_verbose = pipeline.new_parameter_bool(
         "verbose",
@@ -75,7 +90,7 @@ fn get_params_cloud(
             local_only: None,
             verbose: ctx.use_parameter(param_verbose.clone()),
             locked: true,
-            deny_warnings: true,
+            deny_warnings: matches!(deny_warnings, DenyWarnings::Enabled),
             no_incremental: true,
         }
     }))
@@ -85,6 +100,7 @@ pub fn get_cfg_common_params(
     pipeline: &mut Pipeline,
     backend_hint: PipelineBackendHint,
     local_run_args: Option<LocalRunArgs>,
+    deny_warnings: DenyWarnings,
 ) -> anyhow::Result<FulfillCommonRequestsParamsResolver> {
     match backend_hint {
         PipelineBackendHint::Local => get_params_local(local_run_args),
@@ -92,7 +108,7 @@ pub fn get_cfg_common_params(
             if local_run_args.is_some() {
                 anyhow::bail!("cannot set local only params when emitting as non-local pipeline")
             }
-            get_params_cloud(pipeline)
+            get_params_cloud(pipeline, deny_warnings)
         }
     }
 }

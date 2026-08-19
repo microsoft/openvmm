@@ -8,15 +8,19 @@
 //! irreversible release step therefore stays with a human, while the release
 //! cannot be rebound to another commit during review.
 //!
-//! GitHub automatically provides source archives for the release tag. The only
-//! uploaded asset is the vendor archive required for offline Cargo builds.
+//! GitHub automatically provides source archives for the release tag. This job
+//! uploads the vendor archive required for offline Cargo builds and raw Linux
+//! binaries. Unsigned Windows outputs remain workflow artifacts.
 
 use crate::assemble_openvmm_vendor_release::{VendorReleaseOutput, read_vendor_identity};
+use crate::build_openvmm::OpenvmmOutput;
 use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
         pub release: ReadVar<VendorReleaseOutput>,
+        pub linux_x64: ReadVar<OpenvmmOutput>,
+        pub linux_aarch64: ReadVar<OpenvmmOutput>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -32,17 +36,27 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request { release, done } = request;
+        let Request {
+            release,
+            linux_x64,
+            linux_aarch64,
+            done,
+        } = request;
 
         let files = ctx.emit_rust_stepv("enumerate release files", |ctx| {
             let release = release.clone().claim(ctx);
+            let linux_x64 = linux_x64.claim(ctx);
+            let linux_aarch64 = linux_aarch64.claim(ctx);
             move |rt| {
                 let release = rt.read(release);
-                vendor_release_files(&release.assets)
+                let linux_x64 = rt.read(linux_x64);
+                let linux_aarch64 = rt.read(linux_aarch64);
+                let stage_dir = std::env::current_dir()?;
+                openvmm_release_files(&release.assets, linux_x64, linux_aarch64, &stage_dir)
             }
         });
 
-        let identity = ctx.emit_rust_stepv("resolve source release identity", |ctx| {
+        let identity = ctx.emit_rust_stepv("resolve release identity", |ctx| {
             let release = release.claim(ctx);
             move |rt| {
                 let release = rt.read(release);
@@ -59,7 +73,7 @@ impl SimpleFlowNode for Node {
         // exists for this version means a rerun would otherwise pin a tag that
         // the pre-existing release silently adopts.
         let gh_cli = ctx.reqv(flowey_lib_common::use_gh_cli::Request::Get);
-        let no_existing_release = ctx.emit_rust_step("ensure no existing source release", |ctx| {
+        let no_existing_release = ctx.emit_rust_step("ensure no existing release", |ctx| {
             let gh_cli = gh_cli.clone().claim(ctx);
             let tag = tag.clone().claim(ctx);
             move |rt| {
@@ -95,7 +109,7 @@ impl SimpleFlowNode for Node {
         // Create the tag before the draft so a later tag cannot silently rebind
         // the release to a different commit. Reruns reuse it only when it still
         // names the exact archived revision.
-        let tag_is_pinned = ctx.emit_rust_step("pin source release tag", |ctx| {
+        let tag_is_pinned = ctx.emit_rust_step("pin release tag", |ctx| {
             // Claiming without reading is what orders this step after the
             // check. The side effect a rust step hands back is never written to
             // the var db, so reading it at runtime would panic.
@@ -194,14 +208,48 @@ impl SimpleFlowNode for Node {
     }
 }
 
-fn vendor_release_files(assets: &Path) -> anyhow::Result<Vec<(PathBuf, Option<String>)>> {
+fn openvmm_release_files(
+    assets: &Path,
+    linux_x64: OpenvmmOutput,
+    linux_aarch64: OpenvmmOutput,
+    stage_dir: &Path,
+) -> anyhow::Result<Vec<(PathBuf, Option<String>)>> {
     let identity = read_vendor_identity(assets)?;
     let archive = assets.join(identity.archive_name());
     if !archive.is_file() {
         anyhow::bail!("missing vendor archive {}", archive.display());
     }
 
-    Ok(vec![(archive, None)])
+    let mut files = vec![(archive, None)];
+    files.push(stage_linux_binary(
+        linux_x64,
+        "x86_64-unknown-linux-musl",
+        stage_dir,
+    )?);
+    files.push(stage_linux_binary(
+        linux_aarch64,
+        "aarch64-unknown-linux-musl",
+        stage_dir,
+    )?);
+    Ok(files)
+}
+
+fn stage_linux_binary(
+    output: OpenvmmOutput,
+    target: &str,
+    stage_dir: &Path,
+) -> anyhow::Result<(PathBuf, Option<String>)> {
+    let OpenvmmOutput::LinuxBin { bin, dbg: _ } = output else {
+        anyhow::bail!("expected a Linux OpenVMM binary for {target}");
+    };
+    if !bin.is_file() {
+        anyhow::bail!("missing OpenVMM binary {}", bin.display());
+    }
+
+    let staged = stage_dir.join(format!("openvmm-{target}"));
+    fs_err::hard_link(&bin, &staged)
+        .with_context(|| format!("failed to stage {} as {}", bin.display(), staged.display()))?;
+    Ok((staged.absolute()?, None))
 }
 
 #[cfg(test)]
@@ -210,13 +258,16 @@ mod tests {
     use crate::assemble_openvmm_vendor_release::{IDENTITY_FILE, VendorReleaseIdentity};
 
     #[test]
-    fn identity_stays_private_when_enumerating_release_assets() {
+    fn release_assets_include_vendor_and_raw_linux_binaries() {
         let dir = tempfile::tempdir().unwrap();
+        let stage_dir = tempfile::tempdir().unwrap();
         let identity = VendorReleaseIdentity {
             version: "0.12.3".into(),
             revision: "0123456789abcdef0123456789abcdef01234567".into(),
         };
         let archive = dir.path().join(identity.archive_name());
+        let x64 = dir.path().join("x64-openvmm");
+        let aarch64 = dir.path().join("aarch64-openvmm");
 
         fs_err::write(
             dir.path().join(IDENTITY_FILE),
@@ -224,10 +275,66 @@ mod tests {
         )
         .unwrap();
         fs_err::write(&archive, b"archive").unwrap();
+        fs_err::write(&x64, b"x64").unwrap();
+        fs_err::write(&aarch64, b"aarch64").unwrap();
 
         assert_eq!(
-            vendor_release_files(dir.path()).unwrap(),
-            vec![(archive, None)]
+            openvmm_release_files(
+                dir.path(),
+                OpenvmmOutput::LinuxBin {
+                    bin: x64,
+                    dbg: dir.path().join("x64.dbg"),
+                },
+                OpenvmmOutput::LinuxBin {
+                    bin: aarch64,
+                    dbg: dir.path().join("aarch64.dbg"),
+                },
+                stage_dir.path(),
+            )
+            .unwrap(),
+            vec![
+                (archive, None),
+                (
+                    stage_dir
+                        .path()
+                        .join("openvmm-x86_64-unknown-linux-musl")
+                        .absolute()
+                        .unwrap(),
+                    None,
+                ),
+                (
+                    stage_dir
+                        .path()
+                        .join("openvmm-aarch64-unknown-linux-musl")
+                        .absolute()
+                        .unwrap(),
+                    None,
+                ),
+            ]
+        );
+        assert_eq!(
+            fs_err::read(stage_dir.path().join("openvmm-x86_64-unknown-linux-musl")).unwrap(),
+            b"x64"
+        );
+        assert_eq!(
+            fs_err::read(stage_dir.path().join("openvmm-aarch64-unknown-linux-musl")).unwrap(),
+            b"aarch64"
+        );
+    }
+
+    #[test]
+    fn rejects_windows_output_as_a_linux_release_asset() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            stage_linux_binary(
+                OpenvmmOutput::WindowsBin {
+                    exe: dir.path().join("openvmm.exe"),
+                    pdb: None,
+                },
+                "x86_64-unknown-linux-musl",
+                dir.path(),
+            )
+            .is_err()
         );
     }
 }

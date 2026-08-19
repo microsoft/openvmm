@@ -147,6 +147,9 @@ Each row in the mapping table follows:
 | Code path | Guide page |
 | --- | --- |
 | `openvmm/openvmm_build_info/` | `reference/openvmm/management/cli.md` |
+| `flowey/flowey_hvlite/src/pipelines/openvmm_release.rs` | `dev_guide/contrib/openvmm_release.md` |
+| `flowey/flowey_lib_hvlite/src/assemble_openvmm_vendor_release.rs` | `dev_guide/contrib/openvmm_release.md`, `dev_guide/contrib/openvmm_packaging.md` |
+| `flowey/flowey_lib_hvlite/src/_jobs/publish_openvmm_gh_release.rs` | `dev_guide/contrib/openvmm_release.md` |
 
 ## What to Flag
 
@@ -155,3 +158,7 @@ Each row in the mapping table follows:
   update `reference/openvmm/management/cli.md`, and
   `dev_guide/contrib/openvmm_packaging.md` when the packager-facing contract
   changes.
+- Changes to OpenVMM release assets, release identity, tag handling, or draft
+  publication must update `dev_guide/contrib/openvmm_release.md`.
+- Changes to the vendor archive layout or offline build contract must update
+  `dev_guide/contrib/openvmm_packaging.md`.
