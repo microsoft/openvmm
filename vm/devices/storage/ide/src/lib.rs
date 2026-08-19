@@ -103,6 +103,52 @@ open_enum! {
     }
 }
 
+/// DIVERGENCE PROBES (temporary): count IDE interrupt-gating differences vs Hyper-V.
+///
+/// A = an unmasked pending IRQ exists on a drive that is NOT currently selected,
+///     so UH drops the line while Hyper-V keeps it latched until a status read.
+///     Edge-triggered via a per-channel latch: one log line per distinct occurrence.
+/// B = the guest clears nIEN (1->0) while a drive still has a masked pending IRQ,
+///     so UH will now raise it while Hyper-V would not. Edge-triggered by nature.
+pub static IRQ_DIVERGENCE_A: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static IRQ_DIVERGENCE_B: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Temporary per-opcode dedup set for the unimplemented-command probe (C), so a
+/// polling guest logs each distinct opcode once instead of flooding CI.
+pub(crate) mod probe {
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+
+    static SEEN_HDD: [AtomicU64; 4] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+    static SEEN_ATAPI: [AtomicU64; 4] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+
+    fn mark_new(seen: &[AtomicU64; 4], opcode: u8) -> bool {
+        let word = (opcode >> 6) as usize;
+        let bit = 1u64 << (opcode & 63);
+        (seen[word].fetch_or(bit, Ordering::Relaxed) & bit) == 0
+    }
+
+    /// Returns true the first time `opcode` is seen on a hard drive.
+    pub(crate) fn first_unknown_hdd(opcode: u8) -> bool {
+        mark_new(&SEEN_HDD, opcode)
+    }
+
+    /// Returns true the first time `opcode` is seen on an ATAPI drive.
+    pub(crate) fn first_unknown_atapi(opcode: u8) -> bool {
+        mark_new(&SEEN_ATAPI, opcode)
+    }
+}
+
 enum Port {
     Data,
     Drive(DriveRegister),
@@ -928,6 +974,10 @@ impl PortIoIntercept for IdeDevice {
                     IoResult::Ok
                 }
                 Port::Drive(register) => {
+                    // DIVERGENCE PROBE B (temporary): guest-initiated nIEN clear only.
+                    if matches!(register, DriveRegister::AlternateStatusDeviceControl) {
+                        self.channels[index].probe_nien_clear(data[0]);
+                    }
                     self.channels[index].write_drive_register(
                         register,
                         data[0],
@@ -1118,6 +1168,10 @@ struct Channel {
     guest_memory: GuestMemory,
     #[inspect(skip)]
     channel: u8,
+    // DIVERGENCE PROBE A latch (temporary): true while the pending-unselected
+    // condition holds, so we log once per distinct occurrence, not per access.
+    #[inspect(skip)]
+    probe_a_latched: bool,
 }
 
 fn inspect_drives(drives: &mut [Option<DiskDrive>]) -> impl '_ + InspectMut {
@@ -1174,6 +1228,7 @@ impl Channel {
             enlightened_write: None,
             guest_memory,
             channel: channel_number,
+            probe_a_latched: false,
         })
     }
 
@@ -1192,6 +1247,23 @@ impl Channel {
             drive.poll_device(cx);
         }
         self.post_drive_access(bus_master_state);
+    }
+
+    // DIVERGENCE PROBE B (temporary): count guest nIEN 1->0 writes while a drive
+    // still has a (masked) pending IRQ. On the guest PIO write path so the
+    // enlightened path's own control-reg restores don't create false positives.
+    fn probe_nien_clear(&self, data: u8) {
+        let old_nien = DeviceControlReg::from_bits_truncate(self.state.shadow_adapter_control_reg)
+            .interrupt_mask();
+        let new_nien = DeviceControlReg::from_bits_truncate(data).interrupt_mask();
+        if old_nien && !new_nien && self.drives.iter().flatten().any(|d| d.probe_raw_pending()) {
+            let count = IRQ_DIVERGENCE_B.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            tracing::warn!(
+                channel = self.channel,
+                count,
+                "IDEPROBE_B guest cleared nIEN with a pending IRQ"
+            );
+        }
     }
 
     fn current_drive_status(&mut self) -> Option<Status> {
@@ -1268,6 +1340,22 @@ impl Channel {
             self.bus_master_state.status_reg.set_interrupt(true);
         }
         self.interrupt.set_level(interrupt);
+
+        // DIVERGENCE PROBE A (temporary): edge-triggered so CI logs stay small.
+        let a_now = self
+            .drives
+            .iter()
+            .flatten()
+            .any(|d| d.probe_pending_unselected());
+        if a_now && !self.probe_a_latched {
+            let count = IRQ_DIVERGENCE_A.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            tracing::warn!(
+                channel = self.channel,
+                count,
+                "IDEPROBE_A pending IRQ on an unselected drive"
+            );
+        }
+        self.probe_a_latched = a_now;
     }
 
     /// Returns Ok(true) if an interrupt should be delivered. The whole result
@@ -3110,5 +3198,494 @@ mod tests {
             .read_at(data_gpa.into(), &mut buffer)
             .unwrap();
         assert_eq!(buffer, file_contents.as_bytes()[..buffer.len()]);
+    }
+
+    // ----------------------------------------------------------------------
+    // Metamorphic property tests
+    // ----------------------------------------------------------------------
+    //
+    // A normal test compares the device against a known-correct answer -- an
+    // "oracle". Writing that oracle down is the hard part: for legacy IDE,
+    // "correct" is whatever real Hyper-V does, and we can't run Hyper-V inside
+    // a unit test.
+    //
+    // A *metamorphic* test sidesteps the oracle. It runs the SAME operation
+    // twice under two conditions that must NOT affect the result, and asserts
+    // the two results are identical. We never state what the result *should*
+    // be -- only that a particular input must not matter. This is what catches
+    // "interaction" bugs that a hand-written scenario list would miss, because
+    // the bug is a dependence on something that should have been irrelevant.
+
+    /// The interfering (non-target) drive's state before the enlightened
+    /// command -- the thing that must NOT affect the target's result.
+    #[derive(Debug, Clone, Copy)]
+    enum InterfererState {
+        /// Selected but idle.
+        Idle,
+        /// Optical drive parked mid-command with DRQ set (awaiting a packet).
+        OpticalDrq,
+        /// Optical drive left in ERR (exercises the guard's `status.err()` branch).
+        OpticalError,
+        /// Hard drive parked in a PIO write with DRQ set -- a different pending
+        /// shape than the ATAPI DRQ.
+        HardPioDrq,
+    }
+
+    impl InterfererState {
+        /// Whether this state requires the interferer to be a hard disk.
+        fn interferer_is_hard(self) -> bool {
+            matches!(self, InterfererState::HardPioDrq)
+        }
+    }
+
+    /// Runs an enlightened DMA read on `channel` (0 = primary, 1 = secondary)
+    /// targeting the hard disk at `target_idx` (0 = master, 1 = slave) and
+    /// returns the bytes delivered into guest memory.
+    ///
+    /// The other drive position holds an empty optical drive -- the
+    /// "interferer". `interferer` is the condition that must NOT matter: it
+    /// puts that optical drive into a given state before the command is issued.
+    /// The command names the hard disk in its packet, so the interferer's state
+    /// must not change the bytes read.
+    async fn enlightened_hdd_read_bytes(
+        channel: u8,
+        target_idx: usize,
+        interferer: InterfererState,
+    ) -> Vec<u8> {
+        const SECTOR_COUNT: u16 = 4;
+        const BYTE_COUNT: u16 = SECTOR_COUNT * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let interferer_idx = 1 - target_idx;
+
+        let test_guest_mem = GuestMemory::allocate(16384);
+
+        let table_gpa = 0x1000;
+        let data_gpa = 0x2000;
+        test_guest_mem
+            .write_plain(
+                table_gpa,
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: BYTE_COUNT,
+                    unused: 0,
+                    end_of_table: 0x80,
+                },
+            )
+            .unwrap();
+
+        // The packet targets the hard disk at `target_idx`.
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_DMA_EXT,
+            device_head: DeviceHeadReg::new()
+                .with_lba(true)
+                .with_dev(target_idx == 1),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: SECTOR_COUNT,
+            byte_count: 0,
+            data_buffer: table_gpa as u32,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        // Target = hard disk with known contents.
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut handle = temp_file.reopen().unwrap();
+        let file_contents = (0..0x100000_u32).collect::<Vec<_>>();
+        handle.write_all(file_contents.as_bytes()).unwrap();
+        let hard =
+            DriveMedia::hard_disk(Disk::new(FileDisk::open(handle, false).unwrap()).unwrap());
+
+        // Interferer = empty optical, unless the state needs a hard disk. The
+        // returned temp file (if any) must stay alive for the disk to be valid.
+        let (interferer_media, _interferer_temp) = if interferer.interferer_is_hard() {
+            let temp = NamedTempFile::new().unwrap();
+            let mut handle = temp.reopen().unwrap();
+            handle
+                .write_all((0..0x1000_u32).collect::<Vec<_>>().as_bytes())
+                .unwrap();
+            let disk = Disk::new(FileDisk::open(handle, false).unwrap()).unwrap();
+            (DriveMedia::hard_disk(disk), Some(temp))
+        } else {
+            let optical = DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(
+                SimpleScsiDvd::new(None),
+            ))));
+            (optical, None)
+        };
+
+        // Place each drive at its master/slave position on the chosen channel.
+        let mut media: [Option<DriveMedia>; 2] = [None, None];
+        media[target_idx] = Some(hard);
+        media[interferer_idx] = Some(interferer_media);
+        let (primary_drives, secondary_drives) = if channel == 0 {
+            (media, [None, None])
+        } else {
+            ([None, None], media)
+        };
+
+        let mut ide_device = IdeDevice::new(
+            test_guest_mem.clone(),
+            &mut ExternallyManagedPortIoIntercepts,
+            primary_drives,
+            secondary_drives,
+            LineInterrupt::detached(),
+            LineInterrupt::detached(),
+        )
+        .unwrap();
+
+        let dev_path = IdePath { channel, drive: 0 };
+        device_select(&mut ide_device, &dev_path).await;
+
+        // The condition that must NOT matter: put the interfering optical drive
+        // into `interferer` state. Select it first (the enlightened packet
+        // re-selects the target), so this only sets up misleading prior state.
+        if !matches!(interferer, InterfererState::Idle) {
+            ide_device
+                .io_write(
+                    io_port(IdeIoPort::PRI_DEVICE_HEAD, channel as usize),
+                    &[DeviceHeadReg::new()
+                        .with_lba(true)
+                        .with_dev(interferer_idx == 1)
+                        .into()],
+                )
+                .unwrap();
+            match interferer {
+                InterfererState::Idle => unreachable!(),
+                InterfererState::OpticalDrq => {
+                    execute_command(&mut ide_device, &dev_path, IdeCommand::PACKET_COMMAND.0);
+                    assert!(
+                        get_status(&mut ide_device, &dev_path).drq(),
+                        "expected optical interferer to be pending (DRQ)"
+                    );
+                }
+                InterfererState::OpticalError => {
+                    // READ_SECTORS on an ATAPI drive aborts with ERR set.
+                    execute_command(&mut ide_device, &dev_path, IdeCommand::READ_SECTORS.0);
+                    assert!(
+                        get_status(&mut ide_device, &dev_path).err(),
+                        "expected optical interferer to be in ERR state"
+                    );
+                }
+                InterfererState::HardPioDrq => {
+                    // A 1-sector WRITE_SECTORS parks the hard interferer in DRQ
+                    // awaiting the host's data -- a PIO pending state.
+                    ide_device
+                        .io_write(io_port(IdeIoPort::PRI_SECTOR_COUNT, channel as usize), &[1])
+                        .unwrap();
+                    execute_command(&mut ide_device, &dev_path, IdeCommand::WRITE_SECTORS.0);
+                    assert!(
+                        get_status(&mut ide_device, &dev_path).drq(),
+                        "expected hard interferer to be pending (DRQ)"
+                    );
+                }
+            }
+        }
+
+        // Issue the enlightened read. If the device wrongly drops it (the
+        // historical TOCTOU bug), the result buffer simply stays zero -- and
+        // the metamorphic comparison catches the difference without us ever
+        // asserting what the bytes should be.
+        // The enlightened port isn't a command-block register, so it doesn't
+        // go through the `io_port` helper; select it directly.
+        let enlightened_port = if channel == 0 {
+            IdeIoPort::PRI_ENLIGHTENED.0
+        } else {
+            IdeIoPort::SEC_ENLIGHTENED.0
+        };
+        match ide_device.io_write(enlightened_port, 0_u32.as_bytes()) {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            IoResult::Ok => {}
+            other => panic!("unexpected io_write result: {other:?}"),
+        }
+
+        let mut buffer = vec![0u8; BYTE_COUNT as usize];
+        test_guest_mem
+            .read_at(data_gpa.into(), &mut buffer)
+            .unwrap();
+        buffer
+    }
+
+    /// Metamorphic property: an enlightened command must act on the drive named
+    /// in its packet, regardless of which drive was selected (and in what
+    /// state) beforehand. This is the property the DeviceHead TOCTOU bug
+    /// violated -- it made a command's outcome depend on the previously
+    /// selected drive's state.
+    ///
+    /// We assert this over both channels, both master/slave positions, and
+    /// several interferer states, without ever stating what the bytes *should*
+    /// be -- only that the interferer's state must not matter.
+    ///
+    /// The non-vacuity guard is the subtle part: an "the two runs agree" check
+    /// passes trivially if both runs are broken the same way (e.g. both read
+    /// zeros). Asserting the baseline actually read data closes that hole.
+    #[async_test]
+    async fn enlightened_target_invariant_over_interference() {
+        for channel in [0u8, 1] {
+            for target_idx in [0usize, 1] {
+                let baseline =
+                    enlightened_hdd_read_bytes(channel, target_idx, InterfererState::Idle).await;
+
+                assert!(
+                    baseline.iter().any(|&b| b != 0),
+                    "channel {channel} target {target_idx}: baseline read no data; the invariance check would be vacuous"
+                );
+
+                for interferer in [
+                    InterfererState::OpticalDrq,
+                    InterfererState::OpticalError,
+                    InterfererState::HardPioDrq,
+                ] {
+                    let interfered =
+                        enlightened_hdd_read_bytes(channel, target_idx, interferer).await;
+                    assert_eq!(
+                        baseline, interfered,
+                        "channel {channel} target {target_idx} interferer {interferer:?}: \
+                         enlightened result changed based on the other drive's state"
+                    );
+                }
+            }
+        }
+    }
+
+    /// With only a master present, selecting the absent slave and reading a
+    /// selection-independent register must surface the master's live value --
+    /// the documented fall-back-to-drive-0 behavior. Pinning it guards a
+    /// Hyper-V-compatibility decision: a "more correct" implementation might
+    /// instead float the bus (0x7f) for a selected-but-absent device.
+    ///
+    /// Distinctive sentinels make the check non-vacuous: a floating-bus 0x7f or
+    /// a register reset to its default would not match. (Status/alt-status are
+    /// excluded because the master reports all-zero status while not selected.)
+    #[async_test]
+    async fn absent_slave_read_falls_back_to_master() {
+        let cases = [
+            (IdeIoPort::PRI_SECTOR_COUNT, 0x5Au8),
+            (IdeIoPort::PRI_SECTOR_NUM, 0xA5),
+            (IdeIoPort::PRI_CYLINDER_LSB, 0x3C),
+            (IdeIoPort::PRI_CYLINDER_MSB, 0xC3),
+        ];
+
+        let (mut ide_device, _disk, _contents, _geometry) = ide_test_setup(None, DriveType::Hard);
+        let dev_path = IdePath::default();
+        device_select(&mut ide_device, &dev_path).await;
+
+        // Load distinctive values into the master's registers.
+        for (port, sentinel) in cases {
+            ide_device.io_write(port.0, &[sentinel]).unwrap();
+        }
+
+        // Select the absent slave; reads must now fall back to the master.
+        ide_device
+            .io_write(
+                IdeIoPort::PRI_DEVICE_HEAD.0,
+                &[DeviceHeadReg::new().with_dev(true).into()],
+            )
+            .unwrap();
+
+        for (port, sentinel) in cases {
+            let mut data = [0u8; 1];
+            ide_device.io_read(port.0, &mut data).unwrap();
+            assert_eq!(
+                data[0], sentinel,
+                "absent slave selected: reading port {:#x} did not fall back to the master",
+                port.0
+            );
+        }
+    }
+
+    /// A single operation applied to the *interferer* drive to build up prior
+    /// state before the target command. These are generated, not hand-picked.
+    #[derive(Debug, Clone, Copy)]
+    enum InterfererOp {
+        /// Write a byte to a command-block register (not the command port).
+        WriteReg { port: IdeIoPort, val: u8 },
+        /// Issue a command byte to the command/status port.
+        Command(u8),
+    }
+
+    impl InterfererOp {
+        fn from_seed(seed: u64) -> Self {
+            let regs = [
+                IdeIoPort::PRI_ERROR_FEATURES,
+                IdeIoPort::PRI_SECTOR_COUNT,
+                IdeIoPort::PRI_SECTOR_NUM,
+                IdeIoPort::PRI_CYLINDER_LSB,
+                IdeIoPort::PRI_CYLINDER_MSB,
+            ];
+            let cmds = [
+                IdeCommand::PACKET_COMMAND.0,
+                IdeCommand::READ_SECTORS.0,
+                IdeCommand::WRITE_SECTORS.0,
+                IdeCommand::IDENTIFY_DEVICE.0,
+                IdeCommand::IDENTIFY_PACKET_DEVICE.0,
+            ];
+            if seed & 1 == 0 {
+                InterfererOp::WriteReg {
+                    port: regs[(seed >> 1) as usize % regs.len()],
+                    val: (seed >> 8) as u8,
+                }
+            } else {
+                InterfererOp::Command(cmds[(seed >> 1) as usize % cmds.len()])
+            }
+        }
+    }
+
+    /// Applies `prelude` to the (optical) slave interferer, then issues an
+    /// enlightened DMA read targeting the (hard) master, and returns the bytes
+    /// delivered into guest memory. The prelude only ever touches the slave;
+    /// the master's read must be unaffected by whatever state it leaves behind.
+    async fn enlightened_read_with_interferer_prelude(prelude: &[InterfererOp]) -> Vec<u8> {
+        const SECTOR_COUNT: u16 = 4;
+        const BYTE_COUNT: u16 = SECTOR_COUNT * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let test_guest_mem = GuestMemory::allocate(16384);
+        let table_gpa = 0x1000;
+        let data_gpa = 0x2000;
+        test_guest_mem
+            .write_plain(
+                table_gpa,
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: BYTE_COUNT,
+                    unused: 0,
+                    end_of_table: 0x80,
+                },
+            )
+            .unwrap();
+
+        // Packet targets the hard master (dev = 0).
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_DMA_EXT,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: SECTOR_COUNT,
+            byte_count: 0,
+            data_buffer: table_gpa as u32,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        // Master = hard disk with known contents; slave = empty optical.
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut handle = temp_file.reopen().unwrap();
+        let file_contents = (0..0x400_u32).collect::<Vec<_>>();
+        handle.write_all(file_contents.as_bytes()).unwrap();
+        let hard =
+            DriveMedia::hard_disk(Disk::new(FileDisk::open(handle, false).unwrap()).unwrap());
+        let optical = DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(
+            SimpleScsiDvd::new(None),
+        ))));
+
+        let mut ide_device = IdeDevice::new(
+            test_guest_mem.clone(),
+            &mut ExternallyManagedPortIoIntercepts,
+            [Some(hard), Some(optical)],
+            [None, None],
+            LineInterrupt::detached(),
+            LineInterrupt::detached(),
+        )
+        .unwrap();
+
+        let dev_path = IdePath::default();
+        device_select(&mut ide_device, &dev_path).await;
+
+        // Select the slave (interferer) and apply the generated prelude to it.
+        // No prelude op selects a drive, so the slave stays selected -- which is
+        // exactly the "previously selected drive" the TOCTOU guard must ignore.
+        ide_device
+            .io_write(
+                IdeIoPort::PRI_DEVICE_HEAD.0,
+                &[DeviceHeadReg::new().with_dev(true).into()],
+            )
+            .unwrap();
+        for op in prelude {
+            match *op {
+                InterfererOp::WriteReg { port, val } => {
+                    ide_device.io_write(port.0, &[val]).unwrap();
+                }
+                InterfererOp::Command(cmd) => {
+                    ide_device
+                        .io_write(IdeIoPort::PRI_STATUS_CMD.0, &[cmd])
+                        .unwrap();
+                }
+            }
+        }
+
+        // Issue the enlightened read targeting the master.
+        match ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes()) {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            IoResult::Ok => {}
+            other => panic!("unexpected io_write result: {other:?}"),
+        }
+
+        let mut buffer = vec![0u8; BYTE_COUNT as usize];
+        test_guest_mem
+            .read_at(data_gpa.into(), &mut buffer)
+            .unwrap();
+        buffer
+    }
+
+    /// Property test: prior operations on the *interferer* drive must never
+    /// change the target drive's enlightened-read result. Unlike the tests
+    /// above, the interferer's prior state is not hand-picked -- it is built
+    /// from randomly generated operation sequences. A metamorphic invariant
+    /// (result unchanged vs. a clean baseline), not a hardcoded oracle, judges
+    /// each generated scenario.
+    ///
+    /// This is the unit-test-sized version of running the `FuzzChipset` harness
+    /// with an oracle: the generator supplies scenarios nobody enumerated, and
+    /// the invariant catches interaction bugs -- e.g. it fails on the DeviceHead
+    /// TOCTOU regression from generated input, with no knowledge of that bug.
+    #[async_test]
+    async fn enlightened_target_invariant_under_generated_interference() {
+        let baseline = enlightened_read_with_interferer_prelude(&[]).await;
+        assert!(
+            baseline.iter().any(|&b| b != 0),
+            "baseline read no data; the invariance check would be vacuous"
+        );
+
+        // A tiny deterministic xorshift PRNG keeps any failure reproducible.
+        let mut rng = 0x1234_5678_9abc_def0_u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+
+        for _ in 0..256 {
+            let len = (next() % 6) as usize;
+            let mut prelude = Vec::with_capacity(len);
+            for _ in 0..len {
+                prelude.push(InterfererOp::from_seed(next()));
+            }
+
+            let result = enlightened_read_with_interferer_prelude(&prelude).await;
+            assert_eq!(
+                baseline, result,
+                "a generated interferer prelude changed the target's result: {prelude:?}"
+            );
+        }
     }
 }

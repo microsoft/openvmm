@@ -111,6 +111,20 @@ impl DiskDrive {
             DiskDrive::OpticalDevice(device) => device.interrupt_pending(),
         }
     }
+    // DIVERGENCE PROBE (temporary): pending & unmasked & not-in-reset but NOT selected.
+    pub fn probe_pending_unselected(&self) -> bool {
+        match self {
+            DiskDrive::HardDevice(device) => device.probe_pending_unselected(),
+            DiskDrive::OpticalDevice(device) => device.probe_pending_unselected(),
+        }
+    }
+    // DIVERGENCE PROBE (temporary): raw pending flag, regardless of gates.
+    pub fn probe_raw_pending(&self) -> bool {
+        match self {
+            DiskDrive::HardDevice(device) => device.probe_raw_pending(),
+            DiskDrive::OpticalDevice(device) => device.probe_raw_pending(),
+        }
+    }
     pub fn dma_request(&self) -> Option<(&DmaType, usize)> {
         match self {
             DiskDrive::HardDevice(device) => device.dma_request(),
