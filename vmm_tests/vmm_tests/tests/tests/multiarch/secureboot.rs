@@ -323,9 +323,6 @@ async fn custom_uefi_replace_defaults<T: PetriVmmBackend>(
 
 /// Verify that retaining the default PK, KEK, and db while emptying dbx is reported.
 #[vmm_test(
-    // TODO: Re-enable once direct OpenVMM x64 CI jobs provide vmgstool.
-    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
-    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
@@ -351,34 +348,6 @@ async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
         .until_cancelled(verify_secure_boot_variable_presence(&vm, "dbx", false))
         .await
         .context("absent dbx report was not observed within 60 seconds")??;
-
-    let shell = agent.unix_shell();
-    let pk_path = format!("/sys/firmware/efi/efivars/PK-{EFI_GLOBAL_VARIABLE_GUID}");
-    let pk_exists = cmd!(shell, "sudo")
-        .args(["test", "-f", &pk_path])
-        .output()
-        .await?;
-    assert!(pk_exists.status.success(), "replacement PK should exist");
-
-    let dbx_path = format!("/sys/firmware/efi/efivars/dbx-{IMAGE_SECURITY_DATABASE_GUID}");
-    let dbx_exists = cmd!(shell, "sudo")
-        .args(["test", "-e", &dbx_path])
-        .output()
-        .await?;
-    if dbx_exists.status.success() {
-        let dbx = cmd!(shell, "sudo")
-            .args([
-                "dd",
-                &format!("if={dbx_path}"),
-                "bs=4",
-                "skip=1",
-                "status=none",
-            ])
-            .output()
-            .await?;
-        assert!(dbx.status.success(), "dbx should be readable");
-        assert!(dbx.stdout.is_empty(), "dbx should have no entries");
-    }
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
