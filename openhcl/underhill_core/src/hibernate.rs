@@ -204,6 +204,9 @@ mod tests {
     #[test]
     fn constants_encode_as_expected() {
         assert_eq!(u64::from(Token::NotHibernated), 0);
+        #[cfg(guest_arch = "aarch64")]
+        assert_eq!(u64::from(Token::CURRENT), 0x0108);
+        #[cfg(guest_arch = "x86_64")]
         assert_eq!(u64::from(Token::CURRENT), 0x0107);
         assert_eq!(u64::from(Token::UNKNOWN), 0x0100);
     }
