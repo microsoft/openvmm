@@ -127,6 +127,8 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Number of virtio-mmio device slots to allocate in 32-bit MMIO space.
     /// A single contiguous region of `count * 4 KiB` is allocated.
     pub virtio_mmio_count: usize,
+    /// Place PCIe ECAM below 4 GiB for x86 guests that cannot use high ECAM.
+    pub pcie_ecam_below_4gb: bool,
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
     /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
@@ -232,8 +234,15 @@ pub(super) fn resolve_memory_layout(
         }
     }
 
-    // ECAM: dynamically allocated above 4GB, keeping the low MMIO window free
-    // for devices that require 32-bit addressing.
+    // ECAM normally lives above 4GB, keeping low MMIO free for device BARs.
+    // Some direct-boot kernels cannot discover high ECAM without the firmware
+    // interfaces used during a conventional boot, so allow callers to request
+    // 32-bit placement as a compatibility workaround.
+    let ecam_placement = if input.pcie_ecam_below_4gb {
+        Placement::Mmio32
+    } else {
+        Placement::Mmio64
+    };
     for se in &mut segment_ecams {
         let bus_count = u64::from(se.max_bus - se.min_bus) + 1;
         builder.request(
@@ -241,7 +250,7 @@ pub(super) fn resolve_memory_layout(
             &mut se.range,
             bus_count * PCIE_ECAM_BYTES_PER_BUS,
             PCIE_ECAM_BYTES_PER_BUS,
-            Placement::Mmio64,
+            ecam_placement,
         );
     }
 
@@ -635,6 +644,7 @@ mod tests {
             layout: DEFAULT_LAYOUT,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
+            pcie_ecam_below_4gb: false,
             vtl2_layout,
             ram_start_address: 0,
             vtl2_framebuffer_size: 0,
@@ -764,6 +774,20 @@ mod tests {
             actual.memory_layout.probe_address(ranges.high_mmio.start()),
             Some(AddressType::PciMmio)
         );
+    }
+
+    #[test]
+    fn pcie_ecam_can_be_placed_below_4gb() {
+        let root_complexes = [pcie_root_complex(
+            PcieMmioRangeConfig::Dynamic { size: 64 * MB },
+            PcieMmioRangeConfig::Dynamic { size: GB },
+        )];
+        let mut config = input(&[512 * MB], None);
+        config.pcie_root_complexes = &root_complexes;
+        config.pcie_ecam_below_4gb = true;
+
+        let actual = resolve_memory_layout(config).unwrap();
+        assert!(actual.pcie_root_complex_ranges[0].ecam_range.end() <= 4 * GB);
     }
 
     #[test]

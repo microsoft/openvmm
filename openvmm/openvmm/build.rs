@@ -13,27 +13,24 @@ fn main() {
 
         // Embed version/resource info into the EXE.
         println!("cargo:rerun-if-changed=resources.rc");
-        println!("cargo:rerun-if-env-changed=OPENVMM_MAJOR");
-        println!("cargo:rerun-if-env-changed=OPENVMM_MINOR");
-        println!("cargo:rerun-if-env-changed=OPENVMM_PATCH");
-        println!("cargo:rerun-if-env-changed=OPENVMM_REVISION");
-
-        let parse_u16 = |s: String| s.parse::<u16>().unwrap_or(0);
-        let major = std::env::var("OPENVMM_MAJOR").map(parse_u16).unwrap_or(0);
-        let minor = std::env::var("OPENVMM_MINOR").map(parse_u16).unwrap_or(0);
-        let patch = std::env::var("OPENVMM_PATCH").map(parse_u16).unwrap_or(0);
-        let revision = std::env::var("OPENVMM_REVISION")
-            .map(parse_u16)
-            .unwrap_or(0);
-
         let macros = [
             (
                 "OPENVMM_VERSION",
-                format!("{major},{minor},{patch},{revision}"),
+                format!(
+                    "{},{},{},0",
+                    env!("CARGO_PKG_VERSION_MAJOR"),
+                    env!("CARGO_PKG_VERSION_MINOR"),
+                    env!("CARGO_PKG_VERSION_PATCH"),
+                ),
             ),
             (
                 "OPENVMM_VERSION_STR",
-                format!(r#""{major}.{minor}.{patch}.{revision}""#),
+                format!(
+                    r#""{}.{}.{}.0""#,
+                    env!("CARGO_PKG_VERSION_MAJOR"),
+                    env!("CARGO_PKG_VERSION_MINOR"),
+                    env!("CARGO_PKG_VERSION_PATCH"),
+                ),
             ),
         ];
 

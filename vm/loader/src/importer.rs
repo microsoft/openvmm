@@ -377,19 +377,6 @@ impl IsolationConfig {
 }
 
 #[derive(Debug)]
-pub struct ImportRegion {
-    pub page_base: u64,
-    pub page_count: u64,
-    pub acceptance: BootPageAcceptance,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct PageRegion {
-    pub page_base: u64,
-    pub page_count: u64,
-}
-
-#[derive(Debug)]
 pub enum IgvmParameterType {
     VpCount,
     Srat,
@@ -535,4 +522,18 @@ where
     /// [`loader_defs::paravisor::ImportedRegionDescriptor`] with a page count
     /// of 0 indicates the end of the list.
     fn set_imported_regions_config_page(&mut self, page_base: u64);
+
+    /// Lets the loader know the base page of the measured region that will
+    /// carry an [`loader_defs::paravisor::ExpectedPageHashesHeader`] followed
+    /// by an array of
+    /// [`loader_defs::paravisor::ExpectedPageHash`] entries -- one SHA-384
+    /// per unmeasured (shared) 4 KB page, in the same order the boot shim
+    /// walks `imported_regions().filter(!already_accepted)`. Lets the boot
+    /// shim identify which individual pages diverged from the measured
+    /// baseline (rather than only knowing "the combined hash was wrong").
+    ///
+    /// Default implementation is a no-op: only the IGVM file loader
+    /// materially populates this region; runtime loaders that don't emit an
+    /// IGVM can ignore it.
+    fn set_expected_page_hashes_config_page(&mut self, _page_base: u64) {}
 }

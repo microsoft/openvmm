@@ -35,10 +35,6 @@ flowey_request! {
         /// any tests. (e.g: to allow for some ambient packages / dependencies
         /// to get installed).
         pub pre_run_deps: Vec<ReadVar<SideEffect>>,
-        /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
-        pub hugetlb_2mb_overcommit_pages: Option<u64>,
-        /// Load vhost-vsock and make `/dev/vhost-vsock` accessible before tests.
-        pub prepare_vhost_vsock: bool,
         /// Results of running the tests
         pub results: WriteVar<TestResults>,
     }
@@ -62,117 +58,10 @@ impl SimpleFlowNode for Node {
             nextest_config_file,
             nextest_bin,
             target,
-            mut extra_env,
-            mut pre_run_deps,
-            hugetlb_2mb_overcommit_pages,
-            prepare_vhost_vsock,
+            extra_env,
+            pre_run_deps,
             results,
         } = request;
-
-        if hugetlb_2mb_overcommit_pages.is_some() {
-            extra_env = extra_env.map(ctx, |mut env| {
-                env.insert("OPENVMM_REQUIRE_2MB_HUGETLB".into(), "1".into());
-                env
-            });
-        }
-
-        if !matches!(ctx.backend(), FlowBackend::Local)
-            && matches!(ctx.platform(), FlowPlatform::Linux(_))
-        {
-            pre_run_deps.push({
-                ctx.emit_rust_step("ensure hypervisor device is accessible", |_| {
-                    |rt| {
-                        // Make whichever hypervisor device exists accessible.
-                        // KVM machines have /dev/kvm, MSHV machines have /dev/mshv.
-                        if Path::new("/dev/kvm").exists() {
-                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/kvm").run()?;
-                        }
-                        if Path::new("/dev/mshv").exists() {
-                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/mshv").run()?;
-                        }
-                        Ok(())
-                    }
-                })
-            });
-
-            if let Some(overcommit_pages) = hugetlb_2mb_overcommit_pages {
-                pre_run_deps.push({
-                    ctx.emit_rust_step("ensure 2 MiB hugetlb pages are available", move |_| {
-                        move |rt| {
-                            let hugepages_dir =
-                                Path::new("/sys/kernel/mm/hugepages/hugepages-2048kB");
-
-                            let read_counter = |name: &str| -> anyhow::Result<u64> {
-                                let path = hugepages_dir.join(name);
-                                let value = fs_err::read_to_string(&path)?;
-                                Ok(value.trim().parse()?)
-                            };
-
-                            let write_overcommit_script = format!(
-                                "echo {overcommit_pages} | sudo tee {path}",
-                                path = hugepages_dir.join("nr_overcommit_hugepages").display(),
-                            );
-                            flowey::shell_cmd!(rt, "sh -c {write_overcommit_script}").run()?;
-
-                            let nr_hugepages = read_counter("nr_hugepages")?;
-                            let free_hugepages = read_counter("free_hugepages")?;
-                            let nr_overcommit_hugepages = read_counter("nr_overcommit_hugepages")?;
-                            let surplus_hugepages = read_counter("surplus_hugepages")?;
-
-                            log::info!("2 MiB hugetlb nr_hugepages={nr_hugepages}");
-                            log::info!("2 MiB hugetlb free_hugepages={free_hugepages}");
-                            log::info!(
-                                "2 MiB hugetlb nr_overcommit_hugepages={nr_overcommit_hugepages}"
-                            );
-                            log::info!("2 MiB hugetlb surplus_hugepages={surplus_hugepages}");
-
-                            if nr_overcommit_hugepages < overcommit_pages {
-                                anyhow::bail!(
-                                    "2 MiB hugetlb overcommit remains {}, below requested {}",
-                                    nr_overcommit_hugepages,
-                                    overcommit_pages
-                                );
-                            }
-
-                            Ok(())
-                        }
-                    })
-                });
-            }
-
-            if prepare_vhost_vsock {
-                pre_run_deps.push({
-                    ctx.emit_rust_step("prepare vhost-vsock", |_| {
-                        |rt| {
-                            flowey::shell_cmd!(rt, "sudo modprobe vhost_vsock").run()?;
-                            // The kernel creates /dev/vhost-vsock as part of
-                            // loading the module, but udev then processes the
-                            // corresponding uevent asynchronously and applies
-                            // its own (root-only) permissions to the node.
-                            // Without settling first, that races with - and
-                            // frequently wins against - the chmod below,
-                            // leaving the device inaccessible to the tests.
-                            flowey::shell_cmd!(rt, "sudo udevadm settle").run()?;
-                            if !Path::new("/dev/vhost-vsock").exists() {
-                                anyhow::bail!(
-                                    "/dev/vhost-vsock did not appear after loading vhost_vsock"
-                                );
-                            }
-                            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/vhost-vsock").run()?;
-                            // Confirm the permissions actually stuck, so that a
-                            // failure here is reported by this step instead of
-                            // as an opaque test failure minutes later.
-                            fs_err::OpenOptions::new()
-                                .read(true)
-                                .write(true)
-                                .open("/dev/vhost-vsock")
-                                .context("/dev/vhost-vsock is not accessible to the test user")?;
-                            Ok(())
-                        }
-                    })
-                });
-            }
-        }
 
         let nextest_archive = nextest_archive_file.map(ctx, |x| x.archive_file);
 

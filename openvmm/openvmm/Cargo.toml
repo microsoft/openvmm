@@ -3,6 +3,8 @@
 
 [package]
 name = "openvmm"
+version.workspace = true
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 

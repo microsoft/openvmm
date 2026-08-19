@@ -66,7 +66,7 @@ pub struct Pkcs7SignedDataInner {
 
 impl Pkcs7SignedDataInner {
     pub fn from_der(data: &[u8]) -> Result<Self, Pkcs7Error> {
-        let raw_der = cf_data(data, "CFDataCreate for SignedData").map_err(err)?;
+        let raw_der = cf_data(data, "creating a CFData for the signed data").map_err(err)?;
         let decoder = decoder_from_cfdata(&raw_der).map_err(err)?;
         // Sanity-check that this is a well-formed CMS SignedData with
         // at least one signer; matches the symmetric check done by the
@@ -77,11 +77,11 @@ impl Pkcs7SignedDataInner {
         if !s.success() {
             return Err(err(crate::BackendError::OsStatus(
                 s,
-                "CMSDecoderGetNumSigners",
+                "counting the PKCS#7 signers",
             )));
         }
         if signers == 0 {
-            return Err(err(crate::BackendError::Null(
+            return Err(err(crate::BackendError::Invalid(
                 "PKCS#7 SignedData has no signers",
             )));
         }
@@ -117,12 +117,12 @@ impl Pkcs7SignedDataInner {
         if !s.success() {
             return Err(err(crate::BackendError::OsStatus(
                 s,
-                "CMSDecoderGetNumSigners",
+                "counting the PKCS#7 signers",
             )));
         }
         if signers != 1 {
-            return Err(err(crate::BackendError::Null(
-                "expected exactly one signer in PKCS#7 SignedData",
+            return Err(err(crate::BackendError::Invalid(
+                "PKCS#7 SignedData does not have exactly one signer",
             )));
         }
         let signer = copy_signer_cert(&self.decoder, 0)?;
@@ -146,7 +146,7 @@ fn decoder_from_cfdata(data: &CfHandle) -> Result<CfHandle, crate::BackendError>
     // SAFETY: decoder is initialized by CMSDecoderCreate.
     let s = unsafe { CMSDecoderCreate(&mut decoder) };
     if !s.success() {
-        return Err(crate::BackendError::OsStatus(s, "CMSDecoderCreate"));
+        return Err(crate::BackendError::OsStatus(s, "creating the CMS decoder"));
     }
     let decoder = CfHandle(decoder);
 
@@ -158,14 +158,17 @@ fn decoder_from_cfdata(data: &CfHandle) -> Result<CfHandle, crate::BackendError>
     // contract; decoder is valid.
     let s = unsafe { CMSDecoderUpdateMessage(decoder.0, ptr, len) };
     if !s.success() {
-        return Err(crate::BackendError::OsStatus(s, "CMSDecoderUpdateMessage"));
+        return Err(crate::BackendError::OsStatus(
+            s,
+            "decoding the PKCS#7 message",
+        ));
     }
     // SAFETY: decoder valid.
     let s = unsafe { CMSDecoderFinalizeMessage(decoder.0) };
     if !s.success() {
         return Err(crate::BackendError::OsStatus(
             s,
-            "CMSDecoderFinalizeMessage",
+            "finalizing the PKCS#7 message",
         ));
     }
     Ok(decoder)
@@ -178,11 +181,13 @@ fn copy_signer_cert(decoder: &CfHandle, index: usize) -> Result<X509Certificate,
     if !s.success() {
         return Err(err(crate::BackendError::OsStatus(
             s,
-            "CMSDecoderCopySignerCert",
+            "copying the signer certificate",
         )));
     }
     if cert.is_null() {
-        return Err(err(crate::BackendError::Null("CMSDecoderCopySignerCert")));
+        return Err(err(crate::BackendError::Null(
+            "copying the signer certificate",
+        )));
     }
     let cert = CfHandle(cert);
     sec_cert_to_x509(cert.0)
@@ -193,7 +198,10 @@ fn copy_all_certs(decoder: &CfHandle) -> Result<Vec<X509Certificate>, crate::Bac
     // SAFETY: decoder valid; arr receives an owned CFArray.
     let s = unsafe { CMSDecoderCopyAllCerts(decoder.0, &mut arr) };
     if !s.success() {
-        return Err(crate::BackendError::OsStatus(s, "CMSDecoderCopyAllCerts"));
+        return Err(crate::BackendError::OsStatus(
+            s,
+            "copying the embedded certificates",
+        ));
     }
     if arr.is_null() {
         return Ok(Vec::new());
@@ -221,7 +229,9 @@ fn sec_cert_to_x509(cert: CFTypeRef) -> Result<X509Certificate, Pkcs7Error> {
     // SAFETY: cert is a valid SecCertificateRef.
     let der = unsafe { SecCertificateCopyData(cert) };
     if der.is_null() {
-        return Err(err(crate::BackendError::Null("SecCertificateCopyData")));
+        return Err(err(crate::BackendError::Null(
+            "copying the certificate DER bytes",
+        )));
     }
     let der = CfHandle(der);
     // SAFETY: der is a valid owned CFDataRef.
@@ -237,7 +247,7 @@ fn sec_cert_to_x509(cert: CFTypeRef) -> Result<X509Certificate, Pkcs7Error> {
 /// API.
 fn extract_first_signer_signature(p7_der: &[u8]) -> Result<Vec<u8>, Pkcs7Error> {
     fn bogus() -> Pkcs7Error {
-        err(crate::BackendError::Null("malformed PKCS#7 SignerInfo"))
+        err(crate::BackendError::Invalid("malformed PKCS#7 SignerInfo"))
     }
 
     /// Parse one DER TLV. Returns `(tag, contents, rest)`. Supports
@@ -337,8 +347,12 @@ fn cms_sign(
     let cert_der = cert
         .to_der()
         .map_err(|e| crate::rsa::RsaError(crate::x509::mac::backend_err(e)))?;
-    let parsed_cert = Certificate::from_der(&cert_der)
-        .map_err(|e| crate::rsa::RsaError(crate::BackendError::Der(e, "parsing signer cert")))?;
+    let parsed_cert = Certificate::from_der(&cert_der).map_err(|e| {
+        crate::rsa::RsaError(crate::BackendError::Der(
+            e,
+            "parsing the signer certificate",
+        ))
+    })?;
 
     let digest_alg = AlgorithmIdentifierOwned {
         oid: der::oid::db::rfc5912::ID_SHA_256,
@@ -387,16 +401,19 @@ fn cms_sign(
         signer_infos: cms::signed_data::SignerInfos(signer_infos),
     };
 
-    let sd_der = signed_data
-        .to_der()
-        .map_err(|e| crate::rsa::RsaError(crate::BackendError::Der(e, "encoding SignedData")))?;
+    let sd_der = signed_data.to_der().map_err(|e| {
+        crate::rsa::RsaError(crate::BackendError::Der(e, "encoding the SignedData"))
+    })?;
     let content = der::AnyRef::try_from(sd_der.as_slice()).map_err(|e| {
-        crate::rsa::RsaError(crate::BackendError::Der(e, "wrapping SignedData in Any"))
+        crate::rsa::RsaError(crate::BackendError::Der(
+            e,
+            "wrapping the SignedData in an ANY",
+        ))
     })?;
     let ci = ContentInfo {
         content_type: ID_SIGNED_DATA,
         content: content.into(),
     };
     ci.to_der()
-        .map_err(|e| crate::rsa::RsaError(crate::BackendError::Der(e, "encoding ContentInfo")))
+        .map_err(|e| crate::rsa::RsaError(crate::BackendError::Der(e, "encoding the ContentInfo")))
 }

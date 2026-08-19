@@ -576,8 +576,11 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         })
     }
 
-    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.vm.wait_for_boot_event().await
+    async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>> {
+        self.vm.wait_for_boot_event(timeout).await
     }
 
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {

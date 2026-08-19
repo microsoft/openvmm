@@ -7,7 +7,7 @@ import { SortingState } from "@tanstack/react-table";
 import { TestResult } from "./data_defs";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { fetchRunDetails } from "./utils/fetch_runs_data";
 import { parseRunKey } from "./data_defs";

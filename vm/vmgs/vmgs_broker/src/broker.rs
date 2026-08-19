@@ -11,10 +11,13 @@ use vmgs::Vmgs;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
 
+/// An error returned by a VMGS broker operation.
 #[derive(Protobuf, Error, Debug)]
 pub enum VmgsBrokerError {
+    /// The requested file has no allocated bytes (i.e. does not exist).
     #[error("no allocated bytes for file id being read")]
     FileInfoNotAllocated,
+    /// Another VMGS error.
     #[error(transparent)]
     Other(RemoteError),
 }
@@ -52,6 +55,7 @@ pub enum VmgsBrokerRpc {
     #[cfg(feature = "encryption")]
     WriteFileEncrypted(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
+    DeleteFile(Rpc<BrokerFileId, Result<(), VmgsBrokerError>>),
 }
 
 pub struct VmgsBrokerTask {
@@ -109,6 +113,15 @@ impl VmgsBrokerTask {
                 .await
             }
             VmgsBrokerRpc::Save(rpc) => rpc.handle_sync(|()| self.vmgs.save()),
+            VmgsBrokerRpc::DeleteFile(rpc) => {
+                rpc.handle(async |file_id| {
+                    self.vmgs
+                        .delete_file(file_id.into())
+                        .await
+                        .map_err(Into::into)
+                })
+                .await
+            }
         }
     }
 }

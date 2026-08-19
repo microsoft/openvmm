@@ -148,6 +148,7 @@ pub struct Server {
     // shared memory and we cannot set protections on shared memory.
     require_server_allocated_mnf: bool,
     use_absolute_channel_order: bool,
+    support_gpa_pinning: bool,
 }
 
 pub struct ServerWithNotifier<'a, T> {
@@ -692,13 +693,21 @@ impl From<OfferParams> for OfferParamsInternal {
                 flags.set_enumerate_device_interface(true);
                 user_defined = interface_user_defined;
             }
-            ChannelType::Pipe { message_mode } => {
+            ChannelType::Pipe {
+                message_mode,
+                user_defined: pipe_user_defined,
+                pipe_flags,
+            } => {
                 flags.set_enumerate_device_interface(true);
                 flags.set_named_pipe_mode(true);
-                user_defined.as_pipe_params_mut().pipe_type = if message_mode {
-                    protocol::PipeType::MESSAGE
-                } else {
-                    protocol::PipeType::BYTE
+                *user_defined.as_pipe_params_mut() = protocol::PipeUserDefinedParameters {
+                    pipe_type: if message_mode {
+                        protocol::PipeType::MESSAGE
+                    } else {
+                        protocol::PipeType::BYTE
+                    },
+                    user_defined: pipe_user_defined,
+                    flags: pipe_flags,
                 };
             }
             ChannelType::HvSocket {
@@ -1323,6 +1332,7 @@ static SUPPORTED_VERSIONS: &[Version] = &[
 
 // Feature flags that are always supported.
 // N.B. Confidential channels are conditionally supported if running in the paravisor.
+// N.B. GPA pinning is conditionally supported if the server is configured to support it.
 const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_channel_interrupt_redirection(true)
@@ -1373,6 +1383,7 @@ impl Server {
         child_connection_id: u32,
         channel_id_offset: u16,
         use_absolute_channel_order: bool,
+        support_gpa_pinning: bool,
     ) -> Self {
         Server {
             state: ConnectionState::Disconnected,
@@ -1388,6 +1399,7 @@ impl Server {
             pending_messages: PendingMessages(VecDeque::new()),
             require_server_allocated_mnf: false,
             use_absolute_channel_order,
+            support_gpa_pinning,
         }
     }
 
@@ -2282,14 +2294,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return;
         };
 
-        tracelimit::info_ratelimited!(
-            vtl,
-            ?version,
-            client_id = ?request.client_id,
-            trusted = request.trusted,
-            "Guest negotiated version"
-        );
-
         // Make sure we can receive incoming interrupts on the monitor page. The parent to child
         // page is not used as this server doesn't send monitored interrupts.
         let monitor_page = match request.monitor_page {
@@ -2365,7 +2369,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         //      supported.
         const LOCAL_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
             .with_client_id(true)
-            .with_confidential_channels(true);
+            .with_confidential_channels(true)
+            .with_gpa_pinning(true);
 
         let (relay_feature_flags, server_specified_monitor_page) = match response {
             // There is no relay, or it successfully processed our request.
@@ -2434,6 +2439,14 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 .set_server_specified_monitor_pages(false);
         }
 
+        tracelimit::info_ratelimited!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            version = ?info.version,
+            client_id = ?info.client_id,
+            trusted = info.trusted,
+            "guest negotiated version"
+        );
+
         let version = info.version;
         self.inner.state = ConnectionState::Connected(info);
 
@@ -2462,8 +2475,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         let supported_flags = if version >= Version::Copper {
             // Confidential channels should only be enabled if the connection is trusted.
-            let max_supported_flags =
-                SUPPORTED_FEATURE_FLAGS.with_confidential_channels(request.trusted);
+            let max_supported_flags = SUPPORTED_FEATURE_FLAGS
+                .with_confidential_channels(request.trusted)
+                .with_gpa_pinning(self.inner.support_gpa_pinning);
 
             // The max features may be limited in order to test older protocol versions.
             if let Some(max_version) = self.inner.max_version {
@@ -3965,6 +3979,8 @@ impl<N: Notifier> MessageSender<'_, N> {
     fn send_offer(&mut self, channel: &mut Channel, connection_info: &ConnectionInfo) {
         let info = channel.info.as_ref().expect("assigned");
         let mut flags = channel.offer.flags;
+
+        // Disable offer flags that are not supported by the current set of feature flags.
         if !connection_info
             .version
             .feature_flags
@@ -3972,6 +3988,10 @@ impl<N: Notifier> MessageSender<'_, N> {
         {
             flags.set_confidential_ring_buffer(false);
             flags.set_confidential_external_memory(false);
+        }
+
+        if !connection_info.version.feature_flags.gpa_pinning() {
+            flags.set_require_pinned_external_memory(false);
         }
 
         // Send the monitor ID only if the guest supports MNF. MNF may also be disabled if the guest
