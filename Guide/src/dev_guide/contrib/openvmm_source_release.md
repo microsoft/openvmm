@@ -51,6 +51,12 @@ Dispatch the **OpenVMM Source Release** workflow against the commit to
 release. It has no automatic triggers; it only runs when someone asks
 for it.
 
+A dispatch may name any ref, so the workflow confirms that the commit it is
+about to tag is contained in a protected `main` or `release/*` branch. It asks
+GitHub which branches are protected rather than keeping its own list, so a
+newly cut release branch works immediately. Dispatching an unmerged commit
+fails before the tag is created.
+
 The workflow:
 
 1. reads `[workspace.package] version` and the commit from the checkout;
@@ -59,8 +65,9 @@ The workflow:
 3. checks out the same revision, appends the generated `cargo_config`
    to `.cargo/config.toml`, and builds `openvmm` with
    `--locked --offline`;
-4. creates or verifies `openvmm-v<VERSION>` at that commit, after
-   confirming no release already exists for it;
+4. creates or verifies `openvmm-v<VERSION>` at that commit, after confirming
+   the commit is on a reviewed branch and that no release already exists
+   for it;
 5. creates a **draft** release for that tag, relies on GitHub's
    automatic source archive, and uploads only the vendor archive.
 
