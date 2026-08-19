@@ -538,8 +538,8 @@ impl VpciClientTdispState {
     pub async fn tdisp_unbind(&mut self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
         // Flip all unblocked MMIO ranges and DMA back to shared before we tell
         // the host to unbind the TDI. This is best-effort: a failure here is
-        // logged but doesn't abort the unbind (this is not security critical to
-        // perform).
+        // logged but doesn't abort the unbind. A new attestation won't proceed
+        // if all resources were not successfully torn down.
         let validator = self.resource_validator.clone();
         let device_id = self.mutable_state.guest_device_id;
         let validated_bars_clone = self.mutable_state.validated_mmio_bars.clone();
@@ -553,7 +553,8 @@ impl VpciClientTdispState {
                 }
                 TdispResourceIsolation::Private => {}
             }
-            if let Err(e) = validator
+
+            let block_mmio_res = validator
                 .tdisp_block_mmio(
                     Vtl::Vtl2,
                     device_id,
@@ -562,8 +563,9 @@ impl VpciClientTdispState {
                     mmio.length_in_bytes,
                     bar_id,
                 )
-                .await
-            {
+                .await;
+
+            if let Err(e) = block_mmio_res {
                 tracing::error!(
                     bar_id,
                     base_gpa = format_args!("{:#x}", mmio.base_gpa),
