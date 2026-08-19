@@ -239,7 +239,8 @@ pub struct HyperVManagementVtlFeatureFlags {
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
-    #[bits(59)]
+    pub tvm_host_certification: bool,
+    #[bits(58)]
     pub _reserved2: u64,
 }
 
@@ -247,6 +248,28 @@ impl ps::AsVal for HyperVManagementVtlFeatureFlags {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         self.0.as_val()
     }
+}
+
+fn apply_management_vtl_feature_flags_command_line(
+    firmware_parameters: &mut Option<String>,
+    management_vtl_feature_flags: HyperVManagementVtlFeatureFlags,
+) -> anyhow::Result<()> {
+    let supported_flags = HyperVManagementVtlFeatureFlags::new()
+        .with_strict_encryption_policy(true)
+        .with_tvm_host_certification(true);
+    if management_vtl_feature_flags.0 & !supported_flags.0 != 0 {
+        anyhow::bail!(
+            "not all ManagementVtlFeatureFlags can be set using the command line: {}",
+            management_vtl_feature_flags.0
+        )
+    }
+    if management_vtl_feature_flags.strict_encryption_policy() {
+        append_cmdline(firmware_parameters, "HCL_STRICT_ENCRYPTION_POLICY=1");
+    }
+    if management_vtl_feature_flags.tvm_host_certification() {
+        append_cmdline(firmware_parameters, "HCL_TVM_HOST_CERTIFICATION=1");
+    }
+    Ok(())
 }
 
 /// Arguments for the New-CustomVM powershell cmdlet
@@ -399,20 +422,10 @@ impl HyperVNewCustomVMArgs {
                 anyhow::bail!("OpenHCL is required to set ManagementVtlFeatureFlags");
             }
 
-            let supported_flags =
-                HyperVManagementVtlFeatureFlags::new().with_strict_encryption_policy(true);
-            if management_vtl_feature_flags.0 & !supported_flags.0 != 0 {
-                anyhow::bail!(
-                    "not all ManagementVtlFeatureFlags can be set using the command line: {}",
-                    management_vtl_feature_flags.0
-                )
-            }
-            if management_vtl_feature_flags.strict_encryption_policy() {
-                append_cmdline(
-                    &mut self.firmware_parameters,
-                    "HCL_STRICT_ENCRYPTION_POLICY=1",
-                );
-            }
+            apply_management_vtl_feature_flags_command_line(
+                &mut self.firmware_parameters,
+                *management_vtl_feature_flags,
+            )?;
             self.management_vtl_feature_flags = None;
         }
 
@@ -2234,4 +2247,41 @@ pub async fn run_disable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
     .await
     .map(|_| ())
     .context("run_disable_vmtpm")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HyperVManagementVtlFeatureFlags;
+    use super::apply_management_vtl_feature_flags_command_line;
+
+    #[test]
+    fn tvm_host_certification_is_default_off_at_bit_five() {
+        let flags = HyperVManagementVtlFeatureFlags::new();
+        assert!(!flags.tvm_host_certification());
+        assert_eq!(flags.with_tvm_host_certification(true).into_bits(), 1 << 5);
+    }
+
+    #[test]
+    fn command_line_fallback_sets_supported_flags() {
+        let flags = HyperVManagementVtlFeatureFlags::new()
+            .with_strict_encryption_policy(true)
+            .with_tvm_host_certification(true);
+
+        let mut command_line = Some("OPENHCL_TEST=1".to_owned());
+        apply_management_vtl_feature_flags_command_line(&mut command_line, flags).unwrap();
+
+        assert_eq!(
+            command_line.as_deref(),
+            Some("OPENHCL_TEST=1 HCL_STRICT_ENCRYPTION_POLICY=1 HCL_TVM_HOST_CERTIFICATION=1")
+        );
+    }
+
+    #[test]
+    fn command_line_fallback_rejects_unsupported_flags() {
+        let flags = HyperVManagementVtlFeatureFlags::new().with_control_ak_cert_provisioning(true);
+
+        let mut command_line = None;
+        assert!(apply_management_vtl_feature_flags_command_line(&mut command_line, flags).is_err());
+        assert!(command_line.is_none());
+    }
 }

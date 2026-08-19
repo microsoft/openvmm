@@ -343,6 +343,9 @@ pub struct Options {
     /// If not specified, use the configuration in DPSv2 ManagementVtlFeatures.
     pub attempt_ak_cert_callback: Option<bool>,
 
+    /// (HCL_TVM_HOST_CERTIFICATION=1) Enable direct TVM host certification.
+    pub tvm_host_certification: Option<bool>,
+
     /// (OPENHCL_ENABLE_VPCI_RELAY=1) Enable the VPCI relay.
     pub enable_vpci_relay: Option<bool>,
 
@@ -550,6 +553,7 @@ impl Options {
             .transpose()?;
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
+        let tvm_host_certification = parse_env_bool_opt("HCL_TVM_HOST_CERTIFICATION");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
         let disable_proxy_redirect = parse_env_bool("OPENHCL_DISABLE_PROXY_REDIRECT");
         let disable_lower_vtl_timer_virt = parse_env_bool("OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT");
@@ -622,6 +626,7 @@ impl Options {
             efi_diagnostics_rate_limit,
             strict_encryption_policy,
             attempt_ak_cert_callback,
+            tvm_host_certification,
             enable_vpci_relay,
             disable_proxy_redirect,
             disable_lower_vtl_timer_virt,
