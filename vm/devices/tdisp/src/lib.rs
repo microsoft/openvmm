@@ -101,8 +101,8 @@ pub trait TdispHostDeviceInterface: Send + Sync {
 
     /// Block or unblock an MMIO range in the guest's private context.
     ///
-    /// Called only while the TDI is Locked or Run; the state machine rejects
-    /// every other state before reaching the host.
+    /// The TDI is guaranteed to be Locked or Run; every other state is
+    /// rejected before this is reached.
     ///
     /// * `action` - Whether the range is being blocked or unblocked. Never
     ///   [`TdispMmioRangeAction::Invalid`].
