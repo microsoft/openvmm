@@ -762,7 +762,7 @@ impl GuestEmulationTransportClient {
     /// `image_base + offset`).
     ///
     /// Only call this when the host has advertised support via the
-    /// `load_firmware_supported` bit in `ManagementVtlFeatures`.
+    /// `load_firmware_supported` bit in `ManagementVtlFeatures`, otherwise the GET may hang indefinitely.
     pub async fn load_firmware(
         &self,
         firmware_token: u64,
