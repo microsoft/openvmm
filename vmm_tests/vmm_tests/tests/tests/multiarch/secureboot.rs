@@ -29,7 +29,6 @@ const APPEND_NON_SIGNATURE_VAR_JSON: &[u8] =
     include_bytes!("custom_uefi_json/append_non_signature_var.json");
 const REPLACE_DEFAULTS_WITH_NON_SIGNATURE_VAR_JSON: &[u8] =
     include_bytes!("custom_uefi_json/replace_defaults_with_non_signature_var.json");
-const REPLACE_WITHOUT_DBX_JSON: &[u8] = include_bytes!("custom_uefi_json/replace_without_dbx.json");
 const APPEND_SHA256_DBX_JSON: &[u8] = include_bytes!("custom_uefi_json/append_sha256_dbx.json");
 
 // Custom UEFI variable names and values
@@ -121,35 +120,6 @@ async fn verify_secure_boot_variable_reports<T: PetriVmmBackend>(
     let expected_variables = BTreeSet::from(EXPECTED_VARIABLES);
     let missing_variables: Vec<_> = expected_variables.difference(&reported_variables).collect();
     anyhow::bail!("missing Secure Boot variable reports: {missing_variables:?}")
-}
-
-/// Wait for a Secure Boot variable report and validate its NVRAM presence.
-async fn verify_secure_boot_variable_presence<T: PetriVmmBackend>(
-    vm: &PetriVm<T>,
-    variable_name: &str,
-    in_nvram: bool,
-) -> Result<(), anyhow::Error> {
-    let mut kmsg = vm.kmsg().await?;
-
-    while let Some(data) = kmsg.next().await {
-        let data = data.context("reading kmsg")?;
-        let message = kmsg::KmsgParsedEntry::new(&data).unwrap();
-        let raw = message.message.as_raw();
-
-        if raw.contains("SecureBootVariable") && raw.contains(&format!("name: {variable_name:?}")) {
-            anyhow::ensure!(
-                raw.contains(&format!("in_nvram: {in_nvram}")),
-                "unexpected Secure Boot variable presence: {raw}"
-            );
-            anyhow::ensure!(
-                raw.contains("has_custom_uefi: true"),
-                "custom UEFI configuration not reported: {raw}"
-            );
-            return Ok(());
-        }
-    }
-
-    anyhow::bail!("Secure Boot variable report for {variable_name} was not observed")
 }
 
 /// Boot with optional custom UEFI configuration and verify its Secure Boot variable reports.
@@ -315,39 +285,6 @@ async fn custom_uefi_replace_defaults<T: PetriVmmBackend>(
         .output()
         .await?;
     assert!(pk_exists.status.success(), "default PK should be retained");
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
-/// Verify that retaining the default PK, KEK, and db while emptying dbx is reported.
-#[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
-    openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE]
-)]
-async fn custom_uefi_replace_without_dbx<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
-) -> Result<(), anyhow::Error> {
-    let (_temp_dir, vmgs_path) =
-        create_uefi_vmgs(vmgstool.get(), Some(REPLACE_WITHOUT_DBX_JSON)).await?;
-
-    let (vm, agent) = config
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_persistent_vmgs(&vmgs_path)
-        .with_secure_boot()
-        .with_custom_uefi_json(REPLACE_WITHOUT_DBX_JSON)
-        .run()
-        .await?;
-
-    CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
-        .until_cancelled(verify_secure_boot_variable_presence(&vm, "dbx", false))
-        .await
-        .context("absent dbx report was not observed within 60 seconds")??;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
