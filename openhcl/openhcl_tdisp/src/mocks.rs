@@ -26,7 +26,7 @@ pub struct UnblockedMmioRange {
     /// The offset within `range_id` that unblocking started from.
     pub base_offset: u32,
     /// The length in bytes of the unblocked MMIO range.
-    pub length_in_bytes: u32,
+    pub length_in_bytes: u64,
     /// Identifies which MMIO range was unblocked.
     pub range_id: u16,
 }
@@ -115,7 +115,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
-        length_in_bytes: u32,
+        length_in_bytes: u64,
         range_id: u16,
         _host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
@@ -157,7 +157,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
-        length_in_bytes: u32,
+        length_in_bytes: u64,
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
         Box::pin(async move {

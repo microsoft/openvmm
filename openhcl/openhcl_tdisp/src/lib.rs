@@ -240,7 +240,7 @@ pub trait TdispResourceValidationInterface: Send + Sync {
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
-        length_in_bytes: u32,
+        length_in_bytes: u64,
         range_id: u16,
         host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>>;
@@ -271,7 +271,7 @@ pub trait TdispResourceValidationInterface: Send + Sync {
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
-        length_in_bytes: u32,
+        length_in_bytes: u64,
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>>;
 

@@ -234,7 +234,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
-        length_in_bytes: u32,
+        length_in_bytes: u64,
         range_id: u16,
         _host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
@@ -242,7 +242,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             let base_pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;
 
             // Ensure length_in_bytes is page aligned
-            if !length_in_bytes.is_multiple_of(hvdef::HV_PAGE_SIZE as u32) {
+            if !length_in_bytes.is_multiple_of(hvdef::HV_PAGE_SIZE) {
                 anyhow::bail!("length_in_bytes must be page aligned");
             }
 
@@ -250,17 +250,17 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 anyhow::bail!("length_in_bytes must be greater than 0");
             }
 
-            let length_in_pages = length_in_bytes / (hvdef::HV_PAGE_SIZE as u32);
+            let length_in_pages = length_in_bytes / hvdef::HV_PAGE_SIZE;
 
             // Build the full list of PFNs covered by the MMIO range.
-            let pfns: Vec<u64> = (0..length_in_pages as u64).map(|i| base_pfn + i).collect();
+            let pfns: Vec<u64> = (0..length_in_pages).map(|i| base_pfn + i).collect();
 
             tracing::info!(
                 base_gpa = format_args!("{:#x}", base_gpa),
                 length_in_bytes,
                 page_count = pfns.len(),
                 first_pfn = format_args!("{:#x}", base_pfn),
-                last_pfn = format_args!("{:#x}", base_pfn + length_in_pages as u64 - 1),
+                last_pfn = format_args!("{:#x}", base_pfn + length_in_pages - 1),
                 "about to call modify_gpa_visibility(PRIVATE + IMMUTABLE)"
             );
 
@@ -272,7 +272,8 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
             let guest_device_id = device_id;
             let subrange_base = base_gpa;
-            let subrange_page_count = length_in_pages;
+            let subrange_page_count =
+                u32::try_from(length_in_pages).context("MMIO range is more than u32::MAX pages")?;
             let range_offset = base_offset;
             let validate = true;
             let force_validate = false;
@@ -294,7 +295,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 "modify_gpa_visibility_and_immutability(PRIVATE, immutable=true) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) for MMIO unblock",
                 pfns.len(),
                 base_pfn,
-                base_pfn + length_in_pages as u64 - 1,
+                base_pfn + length_in_pages - 1,
                 base_gpa,
                 length_in_bytes
             );
@@ -351,7 +352,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 "modify_gpa_visibility_and_immutability(PRIVATE, immutable=false) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) after the PSP validate call for MMIO unblock",
                 pfns.len(),
                 base_pfn,
-                base_pfn + length_in_pages as u64 - 1,
+                base_pfn + length_in_pages - 1,
                 base_gpa,
                 length_in_bytes
             );
@@ -443,21 +444,21 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
-        length_in_bytes: u32,
+        length_in_bytes: u64,
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
         Box::pin(async move {
             let base_pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;
 
-            if !length_in_bytes.is_multiple_of(hvdef::HV_PAGE_SIZE as u32) {
+            if !length_in_bytes.is_multiple_of(hvdef::HV_PAGE_SIZE) {
                 anyhow::bail!("length_in_bytes must be page aligned");
             }
             if length_in_bytes == 0 {
                 anyhow::bail!("length_in_bytes must be greater than 0");
             }
 
-            let length_in_pages = length_in_bytes / (hvdef::HV_PAGE_SIZE as u32);
-            let pfns: Vec<u64> = (0..length_in_pages as u64).map(|i| base_pfn + i).collect();
+            let length_in_pages = length_in_bytes / hvdef::HV_PAGE_SIZE;
+            let pfns: Vec<u64> = (0..length_in_pages).map(|i| base_pfn + i).collect();
 
             // Open fresh mshv/mshv_vtl handles on the current VP; these cannot be
             // cached because the VP that created the handle must be the one using
@@ -470,7 +471,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 "modify_gpa_visibility_and_immutability(PRIVATE, immutable=true) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) for MMIO block",
                 pfns.len(),
                 base_pfn,
-                base_pfn + length_in_pages as u64 - 1,
+                base_pfn + length_in_pages - 1,
                 base_gpa,
                 length_in_bytes
             );
@@ -495,7 +496,8 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
             // Invalidate the TDI's record of the MMIO range on the PSP.
             let subrange_base = base_gpa;
-            let subrange_page_count = length_in_pages;
+            let subrange_page_count =
+                u32::try_from(length_in_pages).context("MMIO range is more than u32::MAX pages")?;
             match self.sev_guest.tio_msg_mmio_validate_req(
                 device_id,
                 subrange_base,
@@ -536,7 +538,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 "modify_gpa_visibility_and_immutability(PRIVATE, immutable=false) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) for MMIO block",
                 pfns.len(),
                 base_pfn,
-                base_pfn + length_in_pages as u64 - 1,
+                base_pfn + length_in_pages - 1,
                 base_gpa,
                 length_in_bytes
             );
@@ -570,7 +572,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 "modify_gpa_visibility(SHARED) on {} pfn(s) {:#x}..={:#x} (base_gpa {:#x}, {} bytes) for MMIO block",
                 pfns.len(),
                 base_pfn,
-                base_pfn + length_in_pages as u64 - 1,
+                base_pfn + length_in_pages - 1,
                 base_gpa,
                 length_in_bytes
             );

@@ -647,7 +647,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
-        length_in_bytes: u32,
+        length_in_bytes: u64,
         range_id: u16,
         host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
@@ -655,7 +655,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             if length_in_bytes == 0 {
                 anyhow::bail!("length_in_bytes must be greater than 0");
             }
-            if !length_in_bytes.is_multiple_of(HV_PAGE_SIZE as u32) {
+            if !length_in_bytes.is_multiple_of(HV_PAGE_SIZE) {
                 anyhow::bail!("length_in_bytes must be page aligned");
             }
 
@@ -677,7 +677,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                     0,
                     range_id,
                     base_gpa,
-                    length_in_bytes.into(),
+                    length_in_bytes,
                 ))
                 .await
                 .context("failed to send the ModifyMmioRange unblock command")?;
@@ -706,7 +706,13 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             // resolve it against the report recorded at attestation.
             let mmio_range_index = self.mmio_range_index(device_id, range_id)?;
             let base_pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;
-            let page_count = length_in_bytes / HV_PAGE_SIZE as u32;
+            // Both accept loops, `TdgTdiMmioAcceptR9`'s page-count fields, and
+            // the diagnostics below are all u32 page counts, so narrow once
+            // here rather than casting at each use. A u32 page count reaches
+            // 16TiB, so this is a limit of the TDX Connect ABI rather than one
+            // this code imposes.
+            let page_count = u32::try_from(length_in_bytes / HV_PAGE_SIZE)
+                .context("MMIO range is more than u32::MAX pages")?;
             let base_offset_pages = base_offset / HV_PAGE_SIZE as u32;
             let mut already_accepted = 0u32;
 
@@ -912,7 +918,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
-        length_in_bytes: u32,
+        length_in_bytes: u64,
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
         Box::pin(async move {
