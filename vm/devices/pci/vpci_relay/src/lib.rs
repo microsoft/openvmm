@@ -65,7 +65,6 @@ use vpci_client::tdisp::TdispVpciAttestationInterface;
 use tdisp::TdispHostDeviceInterface;
 use tdisp::TdispIsolationReport;
 use tdisp::TdispIsolationReporter;
-use tdisp::TdispResourceIsolation;
 use tdisp::TdispTdiState;
 use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
 use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
@@ -596,69 +595,23 @@ impl PollDevice for RelayedVpciDevice {
 }
 
 impl TdispIsolationReporter for RelayedVpciDevice {
+    // Builds a report of what device resources for vpci device in a CVM are isolated or shared.
     fn tdisp_isolation_report(
         &mut self,
     ) -> Pin<Box<dyn Future<Output = TdispIsolationReport> + Send + 'static>> {
-        use vpci_client::tdisp::IsolationSnapshot;
-        use vpci_protocol::ResourceIsolation;
-
         let device = self.device.clone();
         let tdisp_capable = self.tdisp_capable;
 
         Box::pin(async move {
+            // Whether the device is TDISP capable at all is decided once, when
+            // the host offers the device, so answer that here rather than
+            // asking the client. Everything else, including attesting when the
+            // TDI is `Unlocked`, is the client's job.
             if !tdisp_capable {
                 return TdispIsolationReport::NotTdispCapable;
             }
 
-            fn to_tdisp(r: ResourceIsolation) -> TdispResourceIsolation {
-                match r {
-                    ResourceIsolation::PRIVATE => TdispResourceIsolation::Private,
-                    ResourceIsolation::SHARED => TdispResourceIsolation::Shared,
-                    _ => TdispResourceIsolation::Invalid,
-                }
-            }
-
-            fn build(snapshot: IsolationSnapshot) -> TdispIsolationReport {
-                match snapshot {
-                    IsolationSnapshot::NotReady => TdispIsolationReport::NotReady,
-                    IsolationSnapshot::Ready { bars, dma } => TdispIsolationReport::Ready {
-                        bars: [
-                            to_tdisp(bars[0]),
-                            to_tdisp(bars[1]),
-                            to_tdisp(bars[2]),
-                            to_tdisp(bars[3]),
-                            to_tdisp(bars[4]),
-                            to_tdisp(bars[5]),
-                        ],
-                        dma: to_tdisp(dma),
-                    },
-                }
-            }
-
-            // If TDI is in `Unlocked` state, we need to drive a full attest cycle
-            // to generate a fresh interface report for this query.
-            if device.tdisp_tdi_state().await == TdispTdiState::Unlocked {
-                let info = match device.tdisp_query_capabilities().await {
-                    Ok(info) => info,
-                    Err(err) => {
-                        tracing::error!(
-                            error = &*err as &dyn std::error::Error,
-                            "tdisp_isolation_report: query_capabilities failed",
-                        );
-                        return TdispIsolationReport::Error;
-                    }
-                };
-                if let Err(err) = device.tdisp_attest_device(info).await {
-                    tracing::error!(
-                        error = &*err as &dyn std::error::Error,
-                        "tdisp_isolation_report: attest from Unlocked failed",
-                    );
-                    return TdispIsolationReport::Error;
-                }
-            }
-
-            // TDI is in Locked / Run, request the report without attesting.
-            build(device.tdisp_isolation_snapshot().await)
+            device.tdisp_isolation_snapshot().await
         })
     }
 }
