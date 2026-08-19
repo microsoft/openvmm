@@ -264,7 +264,15 @@ impl SmmuAccelState {
         vsmmu: &Arc<smmu::SmmuSharedState>,
         driver: &dyn SpawnDriver,
     ) -> anyhow::Result<Self> {
-        let viommu = PendingIommufdObject::new(&ctx, viommu_id, "vIOMMU");
+        let s2_parent_hwpt_id = parent.hwpt_id;
+        // Take ownership of the vIOMMU before allocating anything under it, so
+        // that the locals below are declared parent-first and therefore drop
+        // children-first on every error path.
+        let viommu = Arc::new(Viommu {
+            ctx: ctx.clone(),
+            _parent: parent,
+            id: viommu_id,
+        });
 
         // Pre-allocate the persistent abort and bypass nested HWPTs under this
         // vIOMMU (matching QEMU). Every device is always attached to a nested
@@ -277,7 +285,7 @@ impl SmmuAccelState {
             ctx.hwpt_alloc(
                 0,
                 dev_id,
-                viommu.id(),
+                viommu.id,
                 vfio_sys::iommufd::IOMMU_HWPT_DATA_ARM_SMMUV3,
                 Some(&vfio_sys::iommufd::IommuHwptArmSmmuv3 {
                     ste: ABORT_STE_DWORDS,
@@ -291,7 +299,7 @@ impl SmmuAccelState {
             ctx.hwpt_alloc(
                 0,
                 dev_id,
-                viommu.id(),
+                viommu.id,
                 vfio_sys::iommufd::IOMMU_HWPT_DATA_ARM_SMMUV3,
                 Some(&vfio_sys::iommufd::IommuHwptArmSmmuv3 {
                     ste: BYPASS_STE_DWORDS,
@@ -302,18 +310,13 @@ impl SmmuAccelState {
         );
 
         tracing::debug!(
-            viommu_id = viommu.id(),
-            s2_parent_hwpt_id = parent.hwpt_id,
+            viommu_id = viommu.id,
+            s2_parent_hwpt_id,
             abort_hwpt_id = abort_hwpt.id(),
             bypass_hwpt_id = bypass_hwpt.id(),
             "created SMMU accel state (vIOMMU)"
         );
 
-        let viommu = Arc::new(Viommu {
-            ctx: ctx.clone(),
-            _parent: parent,
-            id: viommu.into_id(),
-        });
         let veventq = spawn_veventq(&ctx, &viommu, vsmmu, driver)?;
         let abort_hwpt_id = abort_hwpt.into_id();
         let bypass_hwpt_id = bypass_hwpt.into_id();
