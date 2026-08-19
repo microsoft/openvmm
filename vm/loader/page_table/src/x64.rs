@@ -5,6 +5,7 @@
 
 use crate::Error;
 use crate::IdentityMapSize;
+use core::ops::RangeInclusive;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -21,6 +22,13 @@ const PAGE_TABLE_ENTRY_SIZE: usize = 8;
 
 const X64_PAGE_SHIFT: u64 = 12;
 const X64_PTE_BITS: u64 = 9;
+const X64_PTE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+const X64_PTE_ADDRESS_LAST_BIT: u8 = (u64::BITS - X64_PTE_ADDRESS_MASK.leading_zeros() - 1) as u8;
+
+/// Inclusive bit positions occupied by the physical address in an x64 page
+/// table entry.
+pub const X64_PTE_ADDRESS_BIT_RANGE: RangeInclusive<u8> =
+    X64_PAGE_SHIFT as u8..=X64_PTE_ADDRESS_LAST_BIT;
 
 /// Number of bytes in a page for X64.
 pub const X64_PAGE_SIZE: u64 = 4096;
@@ -328,8 +336,7 @@ pub struct PageTableBuilder<'a> {
 
 impl PageTableBuilderInner {
     fn get_addr_mask(&self) -> u64 {
-        const ALL_ADDR_BITS: u64 = 0x000f_ffff_ffff_f000;
-        ALL_ADDR_BITS & !self.get_confidential_mask()
+        X64_PTE_ADDRESS_MASK & !self.get_confidential_mask()
     }
 
     fn get_confidential_mask(&self) -> u64 {
@@ -708,10 +715,7 @@ impl<'a> IdentityMapBuilder<'a> {
         };
 
         // Build PDEs that point to 2 MB pages.
-        let top_address = match params.identity_map_size {
-            IdentityMapSize::Size4Gb => 0x100000000u64,
-            IdentityMapSize::Size8Gb => 0x200000000u64,
-        };
+        let top_address = params.identity_map_size.address_space_size();
         let mut current_va = 0;
 
         while current_va < top_address {

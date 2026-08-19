@@ -715,6 +715,7 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
 /// whether IoMmuDxe will force bounce buffering on all DMA operations.
 #[vmm_test_with(
     requires(vpci),
+    unstable(reason = "Test is flaky on CI, known WHP bug suspected"),
     configs(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))
 )]
 async fn uefi_force_dma_bounce<T: PetriVmmBackend>(

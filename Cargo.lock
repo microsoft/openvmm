@@ -3839,6 +3839,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bitfield-struct 0.11.0",
+ "chipset_resources",
  "clap",
  "corim",
  "crypto",
@@ -3857,11 +3858,14 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
+ "serial_16550_resources",
  "signature",
  "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
+ "vm_topology",
+ "vmm_core",
  "x509-cert",
  "x86defs",
  "zerocopy",
@@ -3871,9 +3875,12 @@ dependencies = [
 name = "igvmfilegen_config"
 version = "0.0.0"
 dependencies = [
+ "igvm_defs",
+ "page_table",
  "product_policy",
  "serde",
  "serde_json",
+ "thiserror 2.0.16",
 ]
 
 [[package]]
@@ -9326,6 +9333,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "pci_resources",
+ "smmu",
  "test_with_tracing",
  "tracelimit",
  "tracing",

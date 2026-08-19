@@ -464,7 +464,7 @@ pub mod test_helpers {
 
         pub fn poll_high(&self, cx: &mut Context<'_>, vector: u32) -> Poll<()> {
             let mut state = self.state.lock();
-            let state = state.get_mut(&vector).unwrap();
+            let state = state.entry(vector).or_default();
             if state.is_high {
                 Poll::Ready(())
             } else {

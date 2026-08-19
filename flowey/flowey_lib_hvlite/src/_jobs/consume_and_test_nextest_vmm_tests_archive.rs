@@ -408,17 +408,23 @@ impl SimpleFlowNode for Node {
                 })
             });
 
-            let log_dir_archive = {
-                // Bind the externally generated output paths together with the results
-                // to create a dependency on the VMM tests having actually run.
-                let test_log_path = test_log_path.depending_on(
-                    ctx,
-                    &rpc_server_stopped.unwrap_or(results.clone().into_side_effect()),
-                );
+            // Bind the externally generated output paths together with the results
+            // to create a dependency on the VMM tests having actually run.
+            let current_test_log_path = test_log_path.depending_on(
+                ctx,
+                &rpc_server_stopped.unwrap_or(results.clone().into_side_effect()),
+            );
+
+            let current_test_log_path = if repetitions > 1 {
+                // WARNING: on platforms that rely on the JUnit file to upload
+                // test artifacts (ADO in our case), renaming the folder here
+                // will break those paths and result in them failing to upload.
+                // TODO: fix paths in JUnit or change the TEST_OUTPUT_PATH
+                // environment variable for each repetition.
                 ctx.emit_rust_stepv("rename and create new log dir", |ctx| {
-                    let test_log_path = test_log_path.claim(ctx);
+                    let current_test_log_path = current_test_log_path.claim(ctx);
                     move |rt| {
-                        let log_dir = rt.read(test_log_path);
+                        let log_dir = rt.read(current_test_log_path);
 
                         // rename the log dir and create a fresh one
                         let log_dir_archive = log_dir_for_iteration(&log_dir, i)?;
@@ -436,10 +442,12 @@ impl SimpleFlowNode for Node {
                         Ok(log_dir_archive)
                     }
                 })
+            } else {
+                current_test_log_path
             };
 
-            all_results.push((results, log_dir_archive.clone()));
-            all_log_dirs.push(log_dir_archive);
+            all_results.push((results, current_test_log_path.clone()));
+            all_log_dirs.push(current_test_log_path);
         }
 
         let test_label_for_iteration = {

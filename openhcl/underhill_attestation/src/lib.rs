@@ -39,7 +39,6 @@ use guest_emulation_transport::api::GuestStateProtection;
 use guest_emulation_transport::api::GuestStateProtectionById;
 use guid::Guid;
 use hardware_key_sealing::HardwareDerivedKeys;
-use hardware_key_sealing::HardwareKeyProtectorExt as _;
 use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
@@ -49,9 +48,7 @@ use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::VmgsProvisio
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_CURRENT_VERSION;
-use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_1;
-use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_2;
-use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
+use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorV3;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
 use pal_async::local::LocalDriver;
@@ -63,6 +60,7 @@ use std::fmt::Debug;
 use tee_call::KeyDerivationPolicy;
 use tee_call::REPORT_DATA_SIZE;
 use tee_call::TeeCall;
+use tee_call::TeeType;
 use thiserror::Error;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -280,7 +278,7 @@ struct DerivedKeyResult {
     /// The instance of [`GspExtendedStatusFlags`] returned by GSP.
     gsp_extended_status_flags: GspExtendedStatusFlags,
     /// Optional hardware key protector.
-    hardware_key_protector: Option<HardwareKeyProtector>,
+    hardware_key_protector: Option<HardwareKeyProtectorV3>,
 }
 
 /// The return values of [`initialize_platform_security`].
@@ -349,7 +347,7 @@ async fn try_unlock_vmgs(
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: None,
                 wrapped_des_key: None,
-                tcb_version: report.tcb_version,
+                key_derivation_svn: report.key_derivation_svn,
             })
         }
     } else {
@@ -382,7 +380,7 @@ async fn try_unlock_vmgs(
     let VmgsEncryptionKeys {
         ingress_rsa_kek,
         wrapped_des_key,
-        tcb_version,
+        key_derivation_svn,
     } = match skr_response {
         Ok(k) => {
             tracing::info!(CVM_ALLOWED, "Successfully retrieved key-encryption key");
@@ -437,8 +435,8 @@ async fn try_unlock_vmgs(
         HardwareSealingPolicy::Hash
     );
 
-    let key_derivation_policy = tcb_version.map(|tcb_version| KeyDerivationPolicy {
-        tcb_version,
+    let key_derivation_policy = key_derivation_svn.map(|svn| KeyDerivationPolicy {
+        svn,
         mix_measurement,
     });
 
@@ -586,6 +584,37 @@ pub async fn initialize_platform_security(
             attestation_vm_config.hardware_sealing_policy,
             HardwareSealingPolicy::None
         );
+
+    // TDX has no signer/identity key-policy register to substitute for `MRTD`
+    // when deriving a measurement-independent key, so signer-based hardware
+    // sealing can never succeed on TDX. Reject the unsupported combination here,
+    // where both the sealing policy and the TEE type are known, so we can fail
+    // closed with a precise diagnostic instead of only tripping the low-level
+    // guard deep in `TdxCall::get_derived_key` (kept as defense in depth).
+    if matches!(tee_call.map(|tee| tee.tee_type()), Some(TeeType::Tdx))
+        && matches!(
+            attestation_vm_config.hardware_sealing_policy,
+            HardwareSealingPolicy::Signer
+        )
+    {
+        tracing::error!(
+            CVM_ALLOWED,
+            "signer-based hardware sealing is not supported on TDX; TDX has no \
+             identity key-policy register to bind a measurement-independent key to"
+        );
+        // Exclusive (stateless) hardware sealing is the only encryption source,
+        // so fail closed. In the stateful (backup) case the error log above
+        // suffices; the low-level `tee_call` guard skips the backup seal.
+        if require_hardware_sealing {
+            return Err(
+                AttestationErrorInner::HardwareSealingRequestedButNotAvailable {
+                    tee_available: tee_call.is_some(),
+                    hardware_sealing_policy: attestation_vm_config.hardware_sealing_policy,
+                }
+                .into(),
+            );
+        }
+    }
 
     // A stateful (`!suppress_attestation`) request for `HardwareSealing` breaks
     // the invariant above. We don't fail closed because the normal attestation
@@ -766,7 +795,7 @@ async fn unlock_vmgs_data_store(
     vmgs_encrypted: bool,
     key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
-    hardware_key_protector: Option<HardwareKeyProtector>,
+    hardware_key_protector: Option<HardwareKeyProtectorV3>,
     derived_keys: Option<Keys>,
     key_protector_settings: KeyProtectorSettings,
     bios_guid: Guid,
@@ -1102,37 +1131,17 @@ async fn get_derived_keys(
 
             let hardware_derived_keys = tee_call.supports_get_derived_key().and_then(|tee_call| {
                 if let Some(hardware_key_protector) = &hardware_key_protector {
-                    let policy = match hardware_key_protector.header.version {
-                        HW_KEY_PROTECTOR_VERSION_1 => {
-                            // Version 1 is not forward compatible with other versions because it always mixes the OpenHCL
-                            // measurement into the hardware key derivation function (KDF). This means that any version
-                            // change implying an OpenHCL measurement change will result in a different hardware sealing key,
-                            // causing the unsealing process to fail. To prevent this issue, we return None here and log
-                            // the appropriate information.
-                            //
-                            // NOTE: In future implementations, we should handle version 2 and above differently.
-                            // These versions support forward compatibility when using signer-based sealing policy that
-                            // does not mix the OpenHCL measurement into the hardware KDF.
-                            tracing::error!(
-                                CVM_ALLOWED,
-                                current_version = HW_KEY_PROTECTOR_CURRENT_VERSION,
-                                "HW_KEY_PROTECTOR version 1 is incompatible with newer versions. Skip VMGS DEK unsealing with hardware key protector."
-                            );
-                            return None;
-                        }
-                        HW_KEY_PROTECTOR_VERSION_2 => KeyDerivationPolicy {
-                            tcb_version: hardware_key_protector.header.tcb_version,
-                            mix_measurement: hardware_key_protector.header.mix_measurement != 0,
-                        },
-                        unsupported_version => {
-                            // unsupported version
-                            tracing::warn!(
-                                CVM_ALLOWED,
-                                unsupported_version,
-                                "unsupported HW_KEY_PROTECTOR version",
-                            );
-                            return None;
-                        }
+                    // `key_derivation_policy` returns `None` for formats that
+                    // cannot be re-derived by this OpenHCL (v1, which always
+                    // mixes the measurement, or an unknown version/tee-type).
+                    let Some(policy) = hardware_key_protector.key_derivation_policy() else {
+                        tracing::error!(
+                            CVM_ALLOWED,
+                            version = hardware_key_protector.version(),
+                            current_version = HW_KEY_PROTECTOR_CURRENT_VERSION,
+                            "incompatible HW_KEY_PROTECTOR; skip VMGS DEK unsealing with hardware key protector."
+                        );
+                        return None;
                     };
 
                     match HardwareDerivedKeys::derive_key(tee_call, attestation_vm_config, policy) {
@@ -1142,8 +1151,7 @@ async fn get_derived_keys(
                             tracing::warn!(
                                 CVM_ALLOWED,
                                 error = &e as &dyn std::error::Error,
-                                tcb_version = hardware_key_protector.header.tcb_version,
-                                mix_measurement = hardware_key_protector.header.mix_measurement,
+                                version = hardware_key_protector.version(),
                                 "failed to derive hardware keys using HW_KEY_PROTECTOR",
                             );
                             None
@@ -1222,7 +1230,7 @@ async fn get_derived_keys(
                 getrandom::fill(&mut new_dek).expect("rng failure");
 
                 let updated_hardware_key_protector =
-                    HardwareKeyProtector::seal_key(&hardware_derived_keys, &new_dek)
+                    hardware_key_sealing::seal_key(&hardware_derived_keys, &new_dek)
                         .map_err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys)?;
 
                 derived_keys.encrypt_egress = new_dek;
@@ -1243,8 +1251,10 @@ async fn get_derived_keys(
                     "Using hardware-derived key to recover VMGS DEK"
                 );
 
-                // Use the same key protector in the VMGS DEK backup scenario
-                hardware_key_protector
+                // Re-seal the recovered DEK as a v3 protector (also migrates a
+                // legacy v2 protector to the current format).
+                hardware_key_sealing::seal_key(&hardware_derived_keys, &derived_keys.ingress)
+                    .map_err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys)?
             };
 
             key_protector_settings.should_write_kp = false;
@@ -1321,7 +1331,7 @@ async fn get_derived_keys(
         getrandom::fill(&mut new_dek).expect("rng failure");
 
         let hardware_key_protector =
-            match HardwareKeyProtector::seal_key(&hardware_derived_keys, &new_dek) {
+            match hardware_key_sealing::seal_key(&hardware_derived_keys, &new_dek) {
                 Ok(hardware_key_protector) => hardware_key_protector,
                 Err(e) => {
                     get.event_log_fatal(
@@ -1385,7 +1395,7 @@ async fn get_derived_keys(
         derived_keys.encrypt_egress = encrypt_egress_key;
 
         if let Some(hardware_derived_keys) = hardware_derived_keys {
-            let hardware_key_protector = HardwareKeyProtector::seal_key(
+            let hardware_key_protector = hardware_key_sealing::seal_key(
                 &hardware_derived_keys,
                 &derived_keys.encrypt_egress,
             )
@@ -1564,7 +1574,7 @@ async fn get_derived_keys(
         key_protector.gsp[egress_idx].gsp_length = gsp_response.encrypted_gsp.length;
 
         if let Some(hardware_derived_keys) = hardware_derived_keys {
-            let hardware_key_protector = HardwareKeyProtector::seal_key(
+            let hardware_key_protector = hardware_key_sealing::seal_key(
                 &hardware_derived_keys,
                 &derived_keys.encrypt_egress,
             )
@@ -1694,7 +1704,7 @@ async fn persist_all_key_protectors(
     vmgs: &mut Vmgs,
     key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
-    hardware_key_protector: Option<&HardwareKeyProtector>,
+    hardware_key_protector: Option<&HardwareKeyProtectorV3>,
     bios_guid: Guid,
     key_protector_settings: KeyProtectorSettings,
 ) -> Result<(), PersistAllKeyProtectorsError> {
@@ -1880,7 +1890,9 @@ pub mod test_utils {
 
             Ok(GetAttestationReportResult {
                 report: report.to_vec(),
-                tcb_version: Some(self.tcb_version),
+                key_derivation_svn: Some(tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: self.tcb_version,
+                }),
             })
         }
 
@@ -1902,8 +1914,12 @@ pub mod test_utils {
             // Base test key; mix in policy so different policies yield different derived secrets
             let mut key: [u8; HW_DERIVED_KEY_LENGTH] = [0xab; HW_DERIVED_KEY_LENGTH];
 
-            // Use mutation to simulate the policy
-            let tcb = policy.tcb_version.to_le_bytes();
+            // Mock is SNP; mix in the recorded TCB version.
+            let tcb_version = match policy.svn {
+                tee_call::KeyDerivationSvn::Snp { tcb_version } => tcb_version,
+                tee_call::KeyDerivationSvn::Tdx { .. } => 0,
+            };
+            let tcb = tcb_version.to_le_bytes();
             for (i, b) in key.iter_mut().enumerate() {
                 if policy.mix_measurement {
                     *b ^= self.measurement[i] ^ tcb[i % tcb.len()];
@@ -1930,7 +1946,7 @@ pub mod test_utils {
 
             Ok(GetAttestationReportResult {
                 report: report.to_vec(),
-                tcb_version: None,
+                key_derivation_svn: None,
             })
         }
 
@@ -2639,7 +2655,7 @@ mod tests {
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
-            Some(&HardwareKeyProtector::new_zeroed()),
+            Some(&HardwareKeyProtectorV3::new_zeroed()),
             bios_guid,
             key_protector_settings,
         )
@@ -2699,7 +2715,9 @@ mod tests {
             None,
             None,
             Some(KeyDerivationPolicy {
-                tcb_version: 0x1234,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0x1234,
+                },
                 mix_measurement: true,
             }),
             GuestStateEncryptionPolicy::HardwareSealing,
@@ -2773,12 +2791,14 @@ mod tests {
                 vmgs_provisioner: None,
             },
             KeyDerivationPolicy {
-                tcb_version: 0x1234,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0x1234,
+                },
                 mix_measurement: true,
             },
         )
         .unwrap();
-        let hwkp = HardwareKeyProtector::seal_key(&hdk, &bootstrap).unwrap();
+        let hwkp = hardware_key_sealing::seal_key(&hdk, &bootstrap).unwrap();
         vmgs::write_hardware_key_protector(&hwkp, &mut vmgs)
             .await
             .unwrap();
@@ -2818,7 +2838,9 @@ mod tests {
             None,
             None,
             Some(KeyDerivationPolicy {
-                tcb_version: 0x1234,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0x1234,
+                },
                 mix_measurement: true,
             }),
             GuestStateEncryptionPolicy::HardwareSealing,
@@ -2886,7 +2908,9 @@ mod tests {
             None,
             None,
             Some(KeyDerivationPolicy {
-                tcb_version: 0x1234,
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: 0x1234,
+                },
                 mix_measurement: true,
             }),
             GuestStateEncryptionPolicy::HardwareSealing,
@@ -3093,7 +3117,7 @@ mod tests {
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
-            Some(&HardwareKeyProtector::new_zeroed()),
+            Some(&HardwareKeyProtectorV3::new_zeroed()),
             bios_guid,
             key_protector_settings,
         )

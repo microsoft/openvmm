@@ -1654,6 +1654,7 @@ pub struct UhProtoPartition<'a> {
     hcl: Hcl,
     guest_vsm_available: bool,
     create_partition_available: bool,
+    tdx_hw_seal_keys_enabled: bool,
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 }
@@ -1716,6 +1717,70 @@ impl<'a> UhProtoPartition<'a> {
 
         set_vtl2_vsm_partition_config(&hcl)?;
 
+        // For TDX, opt this TD into hardware-bound seal keys as early as
+        // possible (before attestation runs `TDG.MR.KEY.GET` to seal/unseal the
+        // VMGS DEK). `TD_CTLS.ENABLE_HW_SEAL_KEYS` is a prerequisite for
+        // `TDG.MR.KEY.GET`, so it must be set before
+        // `initialize_platform_security`, which runs before the partition
+        // backing (and individual VPs) are created. This is best-effort: it is
+        // a no-op on TDX modules that do not implement sealing, in which case
+        // attestation falls back to other key-protection schemes.
+        //
+        // The result is recorded so that the `tee_call` used by attestation can
+        // accurately report whether `TDG.MR.KEY.GET` is available this boot,
+        // instead of optimistically assuming support.
+        let tdx_hw_seal_keys_enabled = if params.isolation == IsolationType::Tdx {
+            // Read `TDX_FEATURES0` purely for diagnostics: it surfaces whether
+            // the module advertises sealing support so a field failure can be
+            // triaged as "module doesn't implement sealing" vs. "enable didn't
+            // stick". It does NOT gate enablement below; the authoritative check
+            // is the read-back verify inside `tdx_enable_hw_seal_keys`, since
+            // `ENABLE_HW_SEAL_KEYS` can work even when the feature bit is clear.
+            // Best-effort: older modules may not support `TDG.SYS.RD`.
+            match hcl.tdx_read_features0() {
+                Ok(features0) => {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        sealing = features0.sealing(),
+                        td_signing_and_svn = features0.td_signing_and_svn(),
+                        sealkey_128 = features0.sealkey_128(),
+                        "TDX_FEATURES0 sealing capability"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        error = u64::from(err),
+                        "failed to read TDX_FEATURES0 (TDG.SYS.RD unsupported?)"
+                    );
+                }
+            }
+
+            match hcl.tdx_enable_hw_seal_keys() {
+                Ok(true) => {
+                    tracing::info!(CVM_ALLOWED, "TDX hardware-bound seal keys enabled");
+                    true
+                }
+                Ok(false) => {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        "TDX hardware-bound seal keys not supported by the TDX module"
+                    );
+                    false
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        error = u64::from(err),
+                        "failed to enable TDX hardware-bound seal keys"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
         let privs = hcl
             .get_privileges_and_features_info()
             .map_err(Error::GetReg)?;
@@ -1769,6 +1834,7 @@ impl<'a> UhProtoPartition<'a> {
             params: UhPartitionNewParams { vtom, ..*params },
             guest_vsm_available,
             create_partition_available: privs.create_partitions(),
+            tdx_hw_seal_keys_enabled,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         })
@@ -1785,6 +1851,13 @@ impl<'a> UhProtoPartition<'a> {
         self.create_partition_available
     }
 
+    /// Returns whether TDX hardware-bound seal keys were successfully enabled
+    /// for this TD (always `false` for non-TDX isolation). When `true`, the
+    /// `TDG.MR.KEY.GET` TDCALL is available for deriving hardware-bound keys.
+    pub fn tdx_hw_seal_keys_enabled(&self) -> bool {
+        self.tdx_hw_seal_keys_enabled
+    }
+
     /// Returns a new Underhill partition.
     pub async fn build(
         self,
@@ -1795,6 +1868,7 @@ impl<'a> UhProtoPartition<'a> {
             params,
             guest_vsm_available,
             create_partition_available: _,
+            tdx_hw_seal_keys_enabled: _,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         } = self;
