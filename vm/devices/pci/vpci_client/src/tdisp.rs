@@ -852,10 +852,7 @@ impl VpciClientTdispState {
 
         // If there are any existing attestation artifacts, we need to clear
         // them before starting a new attestation.
-        if self.tdi_state() != TdispTdiState::Unlocked
-            || self.mutable_state.dma_unblocked
-            || !self.mutable_state.validated_mmio_bars.is_empty()
-        {
+        if self.mutable_state.dma_unblocked || !self.mutable_state.validated_mmio_bars.is_empty() {
             tracing::info!(
                 current_state = %self.tdi_state(),
                 "tdisp_attest_device: TDI not in Unlocked, unbinding before rebind"
@@ -867,10 +864,7 @@ impl VpciClientTdispState {
 
         // If there are *still* any attestation artifacts after unbind,
         // something went wrong. We can't continue out of paranoia.
-        if self.tdi_state() != TdispTdiState::Unlocked
-            || self.mutable_state.dma_unblocked
-            || !self.mutable_state.validated_mmio_bars.is_empty()
-        {
+        if self.mutable_state.dma_unblocked || !self.mutable_state.validated_mmio_bars.is_empty() {
             anyhow::bail!(
                 "tdisp_attest_device: failed to clear existing attestation state, cannot proceed with new attestation"
             );
