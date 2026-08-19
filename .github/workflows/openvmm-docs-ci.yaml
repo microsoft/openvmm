@@ -36,7 +36,7 @@ jobs:
       shell: bash
     - run: |
         set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
@@ -44,7 +44,7 @@ jobs:
       shell: bash
     - run: |
         set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
@@ -198,7 +198,7 @@ jobs:
       shell: bash
     - run: |
         set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
@@ -206,7 +206,7 @@ jobs:
       shell: bash
     - run: |
         set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
@@ -361,7 +361,7 @@ jobs:
       shell: bash
     - run: |
         set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
@@ -369,7 +369,7 @@ jobs:
       shell: bash
     - run: |
         set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
