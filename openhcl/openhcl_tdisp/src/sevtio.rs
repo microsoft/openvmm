@@ -7,6 +7,7 @@
 
 use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
+use crate::TdispTdiState;
 use anyhow::Context;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvHvcall;
@@ -190,6 +191,24 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         // See `on_pre_bind`.
         tracing::info!(?target_vtl, device_id, "SEV-TIO on_post_start: no-op");
         Ok(())
+    }
+
+    #[tracing::instrument(skip(self), fields(device_id))]
+    fn get_tsm_tdi_state(
+        &self,
+        target_vtl: Vtl,
+        device_id: u16,
+    ) -> anyhow::Result<Option<TdispTdiState>> {
+        // TDISP TODO: ask the PSP for the TDI's TDISP state so it can be
+        // checked against the host's claim, as the TDX Connect validator does.
+        // Until then this reports that SEV-TIO cannot answer, which leaves
+        // callers with only the host's view.
+        tracing::info!(
+            ?target_vtl,
+            device_id,
+            "SEV-TIO get_tsm_tdi_state: not implemented"
+        );
+        Ok(None)
     }
 
     #[tracing::instrument(skip(self, _report), fields(device_id))]

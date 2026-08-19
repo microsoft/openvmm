@@ -9,6 +9,7 @@ use hvdef::Vtl;
 
 use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
+use crate::TdispTdiState;
 use std::future::Future;
 use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
@@ -83,6 +84,21 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
             "mock resource validator on_post_start"
         );
         Ok(())
+    }
+
+    fn get_tsm_tdi_state(
+        &self,
+        target_vtl: Vtl,
+        device_id: u16,
+    ) -> anyhow::Result<Option<TdispTdiState>> {
+        // The mock has no firmware to ask, so it reports that it cannot answer
+        // rather than inventing a state for callers to check against.
+        tracing::info!(
+            ?target_vtl,
+            ?device_id,
+            "mock resource validator get_tsm_tdi_state"
+        );
+        Ok(None)
     }
 
     fn tdisp_set_tdi_report(&self, device_id: u16, _report: &TdiReportStruct) {

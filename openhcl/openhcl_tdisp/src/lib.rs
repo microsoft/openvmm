@@ -113,7 +113,25 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     /// * `range_id` - Identifies which MMIO range to block (the PCI BAR index).
     /// * `gpa_base` - The guest physical base address of the range.
     /// * `range_len_bytes` - The length of the range, in bytes.
-    fn tdisp_block_mmio_range(
+    fn tdisp_host_block_mmio_range(
+        &self,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    /// Tell the host to unblock an MMIO range, so its view matches the
+    /// platform's. The TDI must be Locked or Run.
+    ///
+    /// This only notifies the host over the VPCI channel. It does not perform
+    /// the platform-side unblock, which is a separate step on the resource
+    /// validation interface.
+    ///
+    /// * `range_id` - Identifies which MMIO range to unblock (the PCI BAR
+    ///   index).
+    /// * `gpa_base` - The guest physical base address of the range.
+    /// * `range_len_bytes` - The length of the range, in bytes.
+    fn tdisp_host_unblock_mmio_range(
         &self,
         range_id: u16,
         gpa_base: u64,
@@ -161,6 +179,26 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     /// * `target_vtl` - The VTL the device is being attested for.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
+
+    /// Read the TDI's TDISP state directly from the platform's TEE Security
+    /// Manager, without the host's involvement.
+    ///
+    /// This is an independent answer to the same question the host answers in
+    /// its command responses, so a caller can hold the two against each other
+    /// rather than having to take the host's word for it.
+    ///
+    /// Returns `Ok(None)` on a platform that cannot report the state, which
+    /// leaves the caller with nothing to compare and is not an error. `Err` is
+    /// for a platform that should have been able to answer and could not,
+    /// including a TDI in the TDISP error state, which has no equivalent here.
+    ///
+    /// * `target_vtl` - The VTL the device is assigned to.
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    fn get_tsm_tdi_state(
+        &self,
+        target_vtl: Vtl,
+        device_id: u16,
+    ) -> anyhow::Result<Option<TdispTdiState>>;
 
     /// Record the TDI interface report for a device.
     ///

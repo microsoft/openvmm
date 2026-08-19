@@ -13,6 +13,7 @@
 
 use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
+use crate::TdispTdiState;
 use crate::new_unblock_mmio_range_command;
 use anyhow::Context as _;
 use hcl::ioctl::Mshv;
@@ -507,25 +508,13 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
     #[tracing::instrument(skip(self), fields(device_id))]
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
-        let mshv_vtl = Self::open_mshv_vtl()?;
-        let function_id = Self::function_id(device_id);
-
         // The host says the TDI is running. Per the TDX Connect ABI EAS, the
         // Known RUN state is reliable after TDG.TDI.START, so this is the TDX
         // Module's own view rather than the host's claim.
-        let state = mshv_vtl
-            .tdx_tdi_rd(function_id, TdiRdField::GET_TDISP_STATE, 0)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "TDG.TDI.RD(GET_TDISP_STATE) failed for requester id {device_id:#x} after the host start: {}",
-                    Self::describe_status(e)
-                )
-            })?;
-
-        let state = TdispInterfaceState(state);
-        if state != TdispInterfaceState::RUN {
+        let state = self.get_tsm_tdi_state(target_vtl, device_id)?;
+        if state != Some(TdispTdiState::Run) {
             anyhow::bail!(
-                "TDI {device_id:#x} is in TDISP state {state:?} after the host start, expected RUN"
+                "TDI {device_id:#x} is in TDISP state {state:?} after the host start, expected Run"
             );
         }
 
@@ -536,6 +525,91 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         );
 
         Ok(())
+    }
+
+    #[tracing::instrument(skip(self), fields(device_id))]
+    fn get_tsm_tdi_state(
+        &self,
+        target_vtl: Vtl,
+        device_id: u16,
+    ) -> anyhow::Result<Option<TdispTdiState>> {
+        let mshv_vtl = Self::open_mshv_vtl()?;
+
+        // The Connect leaves only exist on a TD that enabled the feature, so a
+        // TD without it cannot answer rather than having failed to.
+        if !mshv_vtl.tdx_get_config_flags().tdx_connect() {
+            tracing::info!(
+                ?target_vtl,
+                device_id,
+                "TDX Connect get_tsm_tdi_state: TDX Connect is not enabled on this TD"
+            );
+            return Ok(None);
+        }
+
+        let function_id = Self::function_id(device_id);
+
+        // GET_TDISP_STATE returns its value in RCX. Only the two hash field
+        // codes take an output buffer, so the gpa argument must be zero.
+        let raw = match mshv_vtl.tdx_tdi_rd(function_id, TdiRdField::GET_TDISP_STATE, 0) {
+            Ok(raw) => raw,
+            Err(e) => {
+                // A GET_TDISP_STATE read only succeeds while the TDI is bound,
+                // so these three statuses report an unbound TDI rather than a
+                // malformed call. That is a state, not a failure to answer:
+                // reporting it as `Unlocked` is what lets a caller catch a host
+                // claiming this TDI reached Locked or Run when it never bound.
+                //
+                // TDI_INVALID_STATE is documented as ambiguous between unbound
+                // and the TDISP error state. Both mean the TDI is not where the
+                // host said it was, so treat it the same way.
+                let code = e.code();
+                if matches!(
+                    code,
+                    TdCallResultCode::TDI_NOT_PRESENT
+                        | TdCallResultCode::TDI_INVALID_METADATA
+                        | TdCallResultCode::TDI_INVALID_STATE
+                ) {
+                    tracing::info!(
+                        ?target_vtl,
+                        device_id,
+                        status = %Self::describe_status(e),
+                        "TDX Connect get_tsm_tdi_state: TDI is unbound, reporting Unlocked"
+                    );
+                    return Ok(Some(TdispTdiState::Unlocked));
+                }
+
+                anyhow::bail!(
+                    "TDG.TDI.RD(GET_TDISP_STATE) failed for requester id {device_id:#x}: {}",
+                    Self::describe_status(e)
+                );
+            }
+        };
+
+        // The encodings do not line up with `TdispTdiState` and TDISP's ERROR
+        // has no counterpart there, so this has to be an explicit match rather
+        // than a cast. `TdispInterfaceState` is an open enum, hence the
+        // catch-all.
+        let state = TdispInterfaceState(raw);
+        let state = match state {
+            TdispInterfaceState::CONFIG_UNLOCKED => TdispTdiState::Unlocked,
+            TdispInterfaceState::CONFIG_LOCKED => TdispTdiState::Locked,
+            TdispInterfaceState::RUN => TdispTdiState::Run,
+            TdispInterfaceState::ERROR => anyhow::bail!(
+                "TDI {device_id:#x} is in the TDISP error state, which has no TDI state equivalent"
+            ),
+            other => anyhow::bail!(
+                "TDG.TDI.RD(GET_TDISP_STATE) returned unknown TDISP state {other:?} for requester id {device_id:#x}"
+            ),
+        };
+
+        tracing::info!(
+            ?target_vtl,
+            device_id,
+            %state,
+            "TDX Connect get_tsm_tdi_state: read TDI state from the TDX Module"
+        );
+
+        Ok(Some(state))
     }
 
     #[tracing::instrument(skip(self, report), fields(device_id))]
