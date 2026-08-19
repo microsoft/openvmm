@@ -346,6 +346,14 @@ pub struct Options {
     /// (OPENHCL_ENABLE_VPCI_RELAY=1) Enable the VPCI relay.
     pub enable_vpci_relay: Option<bool>,
 
+    /// (OPENHCL_NVIDIA_VPCI_RELAY_ALLOWED=1) Allow NVIDIA GPUs and
+    /// NVLink/NVSwitch fabric devices through the VPCI relay's device filter.
+    ///
+    /// Overrides the host's `NvidiaVpciRelayAllowed` Device Platform Settings
+    /// value, for hosts that cannot yet set it. The attestation claim follows
+    /// this override, so the reported posture always matches the filter.
+    pub nvidia_vpci_relay_allowed: Option<bool>,
+
     /// (OPENHCL_DISABLE_PROXY_REDIRECT=1) Disable proxy interrupt redirection.
     pub disable_proxy_redirect: bool,
 
@@ -551,6 +559,7 @@ impl Options {
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
+        let nvidia_vpci_relay_allowed = parse_env_bool_opt("OPENHCL_NVIDIA_VPCI_RELAY_ALLOWED");
         let disable_proxy_redirect = parse_env_bool("OPENHCL_DISABLE_PROXY_REDIRECT");
         let disable_lower_vtl_timer_virt = parse_env_bool("OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT");
         let config_timeout_in_seconds =
@@ -623,6 +632,7 @@ impl Options {
             strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,
+            nvidia_vpci_relay_allowed,
             disable_proxy_redirect,
             disable_lower_vtl_timer_virt,
             config_timeout_in_seconds,

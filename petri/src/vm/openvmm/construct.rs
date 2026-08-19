@@ -1165,6 +1165,7 @@ impl PetriVmConfigSetupCore<'_> {
             com2: true,
             serial_tx_only: false,
             vmbus_redirection: *vmbus_redirect,
+            nvidia_vpci_relay_allowed: false,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
             vmgs: memdiff_vmgs(self.vmgs).await?,
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
