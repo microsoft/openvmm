@@ -896,7 +896,7 @@ impl HclNetworkVFManagerWorker {
                     let old_bus_control =
                         std::mem::replace(&mut self.vtl0_bus_control, bus_control);
                     // Revoke the VTL0 VF on removal, even when the VTL2 device is not present.
-                    if matches!(self.vtl0_bus_control, Vtl0Bus::NotPresent) {
+                    if matches!(old_bus_control, Vtl0Bus::Present(_)) {
                         *self.guest_state.vtl0_vfid.lock().await = None;
                         self.try_notify_guest_and_revoke_vtl0_vf(
                             &old_bus_control,
@@ -986,7 +986,19 @@ impl HclNetworkVFManagerWorker {
                 device.start_notification_task(&self.driver_source).await;
 
                 self.mana_device = Some(device);
-                self.connect_endpoints().await.is_ok()
+                let connect_endpoints_result = self.connect_endpoints().await;
+                if let Err(err) = &connect_endpoints_result {
+                    tracing::error!(
+                        vtl2_vfid,
+                        err = err.as_ref() as &dyn std::error::Error,
+                        "failed to connect endpoints"
+                    );
+                    self.shutdown_vtl2_device(false).await;
+                    // Device shutdown will drop the sender of `vf_reset_request_receiver`.
+                    // Leaving the closed receiver installed because the loop expects it
+                    // to be `Some`. A successful restart will replace it with a valid receiver.
+                }
+                connect_endpoints_result.is_ok()
             }
             Err(err) => {
                 tracing::error!(
