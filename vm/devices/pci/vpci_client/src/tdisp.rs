@@ -26,11 +26,12 @@ use openhcl_tdisp::TdispReportType;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
 use std::future::Future;
 use std::pin::Pin;
+use tdisp::TdispIsolationReport;
+use tdisp::TdispResourceIsolation;
 use tdisp::TdispTdiState;
 use tdisp::devicereport::TdiReportStruct;
 use virt::IsolationType;
 use vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE;
-use vpci_protocol::ResourceIsolation;
 use vpci_protocol::SlotNumber;
 
 use super::VpciDevice;
@@ -38,28 +39,6 @@ use super::WorkerRequest;
 use openhcl_tdisp::TdispResourceValidationInterface;
 use std::collections::HashSet;
 use std::sync::Arc;
-
-/// Point-in-time classification of a device's BAR and DMA isolation.
-///
-/// Returned by [`VpciClientTdispState::isolation_snapshot`] and used to
-/// populate `VpciIsolatedResourcesReply` on the paravisor's guest-facing
-/// VPCI channel.
-#[derive(Debug, Clone, Copy)]
-pub enum IsolationSnapshot {
-    /// The TDI is not in the `Run` state, or is in `Run` but no resource
-    /// has been unblocked yet. The paravisor cannot answer the isolation
-    /// query in this state. Callers should map this to an error reply.
-    NotReady,
-    /// The TDI is in `Run`. BAR entries may be `SHARED`, `PRIVATE`, or
-    /// `INVALID` (for BAR IDs outside the device's known range, e.g. upper
-    /// halves of 64-bit BARs). `dma` is always `SHARED` or `PRIVATE`.
-    Ready {
-        /// Classification for each of the device's six BARs.
-        bars: [ResourceIsolation; 6],
-        /// Classification for the device's DMA path.
-        dma: ResourceIsolation,
-    },
-}
 
 #[derive(Inspect)]
 struct VpciClientTdispMutableState {
@@ -823,18 +802,18 @@ impl VpciClientTdispState {
     /// BAR whose classification here is `PRIVATE` is exactly one that
     /// `tdisp_on_mmio_reconfigured` will call `tdisp_unblock_mmio` for, while
     /// `SHARED` is skipped. `INVALID` means the BAR has no entry in the report.
-    fn classify_bar(&self, bar_id: u16) -> ResourceIsolation {
+    fn classify_bar(&self, bar_id: u16) -> TdispResourceIsolation {
         // Host-intercepted BARs (MSI-X table / PBA) have no host-RAM
         // backing and can never be flipped private, so always SHARED,
         // independent of what the report says.
         if self.mutable_state.intercepted_bars.contains(&bar_id) {
-            return ResourceIsolation::SHARED;
+            return TdispResourceIsolation::Shared;
         }
 
         // No cached report yet (attestation hasn't run) → we don't know
         // if this BAR is claimed at all, so INVALID rather than SHARED.
         let Some(report) = self.mutable_state.tdi_report.as_ref() else {
-            return ResourceIsolation::INVALID;
+            return TdispResourceIsolation::Invalid;
         };
 
         // `range_id` == PCI BAR index for the guest protocols we
@@ -845,16 +824,16 @@ impl VpciClientTdispState {
             .iter()
             .find(|r| r.range_id == bar_id)
         else {
-            return ResourceIsolation::INVALID;
+            return TdispResourceIsolation::Invalid;
         };
 
         // `is_non_tee_mem` ranges have no protected backing and must
         // never be passed to `tdisp_unblock_mmio`. Report SHARED and
         // skip. Everything else is TEE memory the TDI owns → PRIVATE.
         if range.flags.is_non_tee_mem() {
-            ResourceIsolation::SHARED
+            TdispResourceIsolation::Shared
         } else {
-            ResourceIsolation::PRIVATE
+            TdispResourceIsolation::Private
         }
     }
 
@@ -862,39 +841,46 @@ impl VpciClientTdispState {
     /// suitable for populating a `VpciIsolatedResourcesReply` on the
     /// guest-facing side.
     ///
-    /// Returns [`IsolationSnapshot::NotReady`] iff no TDI interface
-    /// report is currently cached, which is the case both before the
-    /// first attestation and after any [`Self::tdisp_unbind`], since
-    /// unbind drops the cached report along with the rest of the
-    /// per-attest state. Callers that need a snapshot from an
-    /// `Unlocked` TDI have to re-attest first. Classification mirrors
-    /// the logic that [`Self::tdisp_on_mmio_reconfigured`] applies when
-    /// the guest enables MMIO: a BAR is `PRIVATE` exactly when
-    /// `tdisp_unblock_mmio` would be called for it, `SHARED` when it
-    /// would be skipped, and `INVALID` when the cached TDI report has
+    /// This is pure classification over the currently cached state: it
+    /// never drives attestation, so it only ever returns
+    /// [`TdispIsolationReport::NotReady`] or
+    /// [`TdispIsolationReport::Ready`]. `NotTdispCapable` and `Error`
+    /// come from the callers above. See
+    /// [`VpciDevice::tdisp_isolation_snapshot`], which attests first
+    /// when the TDI is `Unlocked`.
+    ///
+    /// Returns `NotReady` iff no TDI interface report is currently
+    /// cached, which is the case both before the first attestation and
+    /// after any [`Self::tdisp_unbind`], since unbind drops the cached
+    /// report along with the rest of the per-attest state.
+    /// Classification mirrors the logic that
+    /// [`Self::tdisp_on_mmio_reconfigured`] applies when the guest
+    /// enables MMIO: a BAR is `Private` exactly when
+    /// `tdisp_unblock_mmio` would be called for it, `Shared` when it
+    /// would be skipped, and `Invalid` when the cached TDI report has
     /// no entry for it.
-    pub fn isolation_snapshot(&self) -> IsolationSnapshot {
+    pub fn isolation_snapshot(&self) -> TdispIsolationReport {
         if self.mutable_state.tdi_report.is_none() {
-            return IsolationSnapshot::NotReady;
+            return TdispIsolationReport::NotReady;
         }
 
-        let mut bars = [ResourceIsolation::INVALID; 6];
+        let mut bars = [TdispResourceIsolation::Invalid; 6];
         for bar_id in 0..6u16 {
             bars[bar_id as usize] = self.classify_bar(bar_id);
         }
 
-        let dma: ResourceIsolation = {
+        let dma: TdispResourceIsolation = {
             // If any BAR is classified as PRIVATE, the the device should also have PRIVATE DMA.
-            if bars.contains(&ResourceIsolation::PRIVATE) {
+            if bars.contains(&TdispResourceIsolation::Private) {
                 // TDISP devices with private MMIO always have private DMA, even
                 // if at this moment the device's DMA isn't unblocked.
-                ResourceIsolation::PRIVATE
+                TdispResourceIsolation::Private
             } else {
-                ResourceIsolation::SHARED
+                TdispResourceIsolation::Shared
             }
         };
 
-        IsolationSnapshot::Ready { bars, dma }
+        TdispIsolationReport::Ready { bars, dma }
     }
 
     /// Called when a BAR MMIO range is reconfigured by the guest. If a resource
@@ -942,7 +928,7 @@ impl VpciClientTdispState {
         }
 
         match self.classify_bar(bar_id) {
-            ResourceIsolation::SHARED => {
+            TdispResourceIsolation::Shared => {
                 tracing::info!(
                     bar_id,
                     base_address,
@@ -963,21 +949,14 @@ impl VpciClientTdispState {
                 );
                 return Ok(());
             }
-            ResourceIsolation::INVALID => {
+            TdispResourceIsolation::Invalid => {
                 anyhow::bail!(
                     "tdisp_on_mmio_reconfigured: BAR {bar_id} has no entry in \
                      the TDI interface report (or report not available); \
                      device has not been attested"
                 );
             }
-            ResourceIsolation::PRIVATE => {}
-            other => {
-                anyhow::bail!(
-                    "tdisp_on_mmio_reconfigured: unexpected BAR {bar_id} \
-                     classification {:?}",
-                    other
-                );
-            }
+            TdispResourceIsolation::Private => {}
         }
 
         let device_id = self.mutable_state.guest_device_id;
@@ -1153,11 +1132,6 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
     /// (e.g. the MSI-X table / PBA BAR) and therefore has no host-side RAM
     /// backing that could be flipped to private.
     async fn tdisp_mark_bar_intercepted(&self, bar_id: u16);
-
-    /// Return a classification of BAR and DMA isolation for this device.
-    /// Callers on the guest-facing VPCI channel use this to synthesize the
-    /// `VpciIsolatedResourcesReply` for `VPCI_QUERY_ISOLATED_RESOURCES`.
-    async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot;
 }
 
 impl TdispVpciAttestationInterface for VpciDevice {
@@ -1195,19 +1169,45 @@ impl TdispVpciAttestationInterface for VpciDevice {
         let mut guard = self.tdisp.0.lock().await;
         guard.mark_bar_intercepted(bar_id);
     }
-
-    async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot {
-        let guard = self.tdisp.0.lock().await;
-        guard.isolation_snapshot()
-    }
 }
 
 impl VpciDevice {
-    /// Awaits the per-device TDISP mutex and returns the current isolation
-    /// snapshot. Use from async contexts where blocking on the mutex is
-    /// acceptable (e.g. the guest-facing VPCI dispatch on its async path).
-    pub async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot {
-        let guard = self.tdisp.0.lock().await;
+    /// Return a classification of BAR and DMA isolation for this device,
+    /// suitable for answering `VPCI_QUERY_ISOLATED_RESOURCES` on the
+    /// guest-facing VPCI channel.
+    ///
+    /// An `Unlocked` TDI has no cached interface report to classify, since
+    /// unbind drops it, so this drives a full attest cycle first to produce a
+    /// fresh one. The whole sequence runs under a single hold of the
+    /// per-device TDISP mutex, so the state checked here cannot change before
+    /// it is acted on.
+    ///
+    /// Never returns [`TdispIsolationReport::NotTdispCapable`]; whether the
+    /// device is TDISP capable at all is decided by the caller, before it gets
+    /// here.
+    pub async fn tdisp_isolation_snapshot(&self) -> TdispIsolationReport {
+        let mut guard = self.tdisp.0.lock().await;
+
+        if guard.tdi_state() == TdispTdiState::Unlocked {
+            let info = match guard.query_capabilities().await {
+                Ok(info) => info,
+                Err(err) => {
+                    tracing::error!(
+                        error = &*err as &dyn std::error::Error,
+                        "tdisp_isolation_snapshot: query_capabilities failed",
+                    );
+                    return TdispIsolationReport::Error;
+                }
+            };
+            if let Err(err) = guard.attest(info).await {
+                tracing::error!(
+                    error = &*err as &dyn std::error::Error,
+                    "tdisp_isolation_snapshot: attest from Unlocked failed",
+                );
+                return TdispIsolationReport::Error;
+            }
+        }
+
         guard.isolation_snapshot()
     }
 }
@@ -1273,14 +1273,14 @@ mod tests {
         let state = new_state();
         assert!(matches!(
             state.isolation_snapshot(),
-            IsolationSnapshot::NotReady
+            TdispIsolationReport::NotReady
         ));
 
         let mut state = new_state();
         state.mutable_state.tdi_state = TdispTdiState::Run;
         assert!(matches!(
             state.isolation_snapshot(),
-            IsolationSnapshot::NotReady
+            TdispIsolationReport::NotReady
         ));
     }
 
@@ -1290,11 +1290,11 @@ mod tests {
         // No TDI-state requirement.
         let mut state = new_state();
         state.mutable_state.tdi_report = Some(make_report(vec![]));
-        let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
+        let TdispIsolationReport::Ready { bars, dma } = state.isolation_snapshot() else {
             panic!("expected Ready");
         };
-        assert_eq!(bars, [ResourceIsolation::INVALID; 6]);
-        assert_eq!(dma, ResourceIsolation::SHARED);
+        assert_eq!(bars, [TdispResourceIsolation::Invalid; 6]);
+        assert_eq!(dma, TdispResourceIsolation::Shared);
     }
 
     #[test]
@@ -1310,41 +1310,41 @@ mod tests {
             non_tee_range(2),
             tee_range(4),
         ]));
-        let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
+        let TdispIsolationReport::Ready { bars, dma } = state.isolation_snapshot() else {
             panic!("expected Ready");
         };
         assert_eq!(
             bars,
             [
-                ResourceIsolation::PRIVATE,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::SHARED,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::SHARED,
-                ResourceIsolation::INVALID,
+                TdispResourceIsolation::Private,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Shared,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Shared,
+                TdispResourceIsolation::Invalid,
             ]
         );
-        assert_eq!(dma, ResourceIsolation::PRIVATE);
+        assert_eq!(dma, TdispResourceIsolation::Private);
     }
 
     #[test]
     fn isolation_snapshot_dma_private_with_any_private_mmio() {
         let mut state = new_state();
         state.mutable_state.tdi_report = Some(make_report(vec![tee_range(0)]));
-        let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
+        let TdispIsolationReport::Ready { bars, dma } = state.isolation_snapshot() else {
             panic!("expected Ready");
         };
         assert_eq!(
             bars,
             [
-                ResourceIsolation::PRIVATE,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::INVALID,
+                TdispResourceIsolation::Private,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Invalid,
             ]
         );
-        assert_eq!(dma, ResourceIsolation::PRIVATE);
+        assert_eq!(dma, TdispResourceIsolation::Private);
     }
 }
