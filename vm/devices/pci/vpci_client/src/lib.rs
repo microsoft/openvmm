@@ -645,66 +645,46 @@ impl VpciDevice {
 
         tracing::debug!(?bars, ?self.bar_masks, "command register write enabled mmio, notifying TDISP of MMIO bars");
 
-        let mut i = 0usize;
-        while i < bars.len() {
-            let mask = self.bar_masks[i];
-            if mask == 0 {
-                i += 1;
-                continue;
+        let active_bars = match active_mmio_bars(&bars, &self.bar_masks) {
+            Ok(active_bars) => active_bars,
+            Err(err) => {
+                tracing::error!(
+                    error = &*err as &dyn std::error::Error,
+                    "tdisp_on_device_activate: failed to decode the guest's BAR configuration. \
+                     Failing activation."
+                );
+                self.tdisp_fail_attestation().await;
+                return false;
             }
+        };
 
-            let bits = pci_core::spec::cfg_space::BarEncodingBits::from(mask);
-
-            // Decode the BAR values to determine what the base address and length of the MMIO ranges configured by the guest.
-            let (bar_id, base_address, length_bytes, next_i) = if bits.type_64_bit() && i + 1 < 6 {
-                // Combine both 32-bit masks and bases into 64-bit values. Mask off low 4 bits used for flags.
-                let base = ((bars[i + 1] as u64) << 32) | ((bars[i] & !0xF_u32) as u64);
-                let full_mask = ((self.bar_masks[i + 1] as u64) << 32) | ((mask & !0xF_u32) as u64);
-                let size = (!full_mask).wrapping_add(1);
-                let size_u32 = u32::try_from(size).unwrap_or_else(|_| {
-                    tracing::warn!(bar_id = i, size, "64-bit BAR size exceeds u32");
-                    0
-                });
-                (i as u16, base, size_u32, i + 2)
-            } else {
-                let base = (bars[i] & !0xF_u32) as u64;
-                let size = (!(mask & !0xF_u32)).wrapping_add(1);
-                (i as u16, base, size, i + 1)
-            };
-
-            tracing::debug!(
-                ?self.bar_masks,
-                ?bars,
+        for bar in active_bars {
+            let ActiveMmioBar {
                 bar_id,
                 base_address,
                 length_bytes,
-                "tdisp_on_device_activate"
-            );
+            } = bar;
 
-            if base_address != 0 && length_bytes != 0 {
-                tracing::info!(
+            tracing::info!(
+                bar_id,
+                base_address,
+                length_bytes,
+                "notifying TDISP state of active MMIO BAR"
+            );
+            if let Err(e) = self
+                .tdisp_on_mmio_reconfigured(bar_id, base_address, length_bytes)
+                .await
+            {
+                tracing::error!(
                     bar_id,
                     base_address,
                     length_bytes,
-                    "notifying TDISP state of active MMIO BAR"
+                    error = %e,
+                    "failed to notify TDISP of active MMIO BAR. Failing activation."
                 );
-                if let Err(e) = self
-                    .tdisp_on_mmio_reconfigured(bar_id, base_address, length_bytes)
-                    .await
-                {
-                    tracing::error!(
-                        bar_id,
-                        base_address,
-                        length_bytes,
-                        error = %e,
-                        "failed to notify TDISP of active MMIO BAR. Failing activation."
-                    );
-                    self.tdisp_fail_attestation().await;
-                    return false;
-                }
+                self.tdisp_fail_attestation().await;
+                return false;
             }
-
-            i = next_i;
         }
 
         tracing::info!(
@@ -1478,4 +1458,80 @@ fn index_to_tx_id(index: usize) -> u64 {
 
 fn tx_id_to_index(tx_id: u64) -> usize {
     tx_id.saturating_sub(1) as usize
+}
+
+/// One MMIO range the guest has programmed into a BAR, decoded from the
+/// shadowed BAR values and the masks the device reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveMmioBar {
+    /// The BAR index. For a 64-bit BAR this is the lower half, which is the
+    /// index the TDI interface report uses for the pair.
+    pub bar_id: u16,
+    /// The guest physical base address the range is mapped at.
+    pub base_address: u64,
+    /// The length of the range in bytes.
+    pub length_bytes: u32,
+}
+
+/// Decode the guest-programmed BARs into the MMIO ranges that are actually
+/// mapped, in BAR order.
+///
+/// A 64-bit BAR occupies two consecutive slots and is reported once, under the
+/// index of its lower half; the upper half is consumed and never reported on
+/// its own. Unimplemented BARs (mask zero) are skipped, as are ranges the guest
+/// has not actually mapped, meaning a zero base address or a zero length.
+///
+/// Fails if a 64-bit BAR is larger than a `u32` can describe, since the unblock
+/// path takes a `u32` length and there is no correct way to report such a range
+/// through it.
+///
+/// * `bars` - The shadowed BAR values as the guest programmed them.
+/// * `bar_masks` - The size masks the device reported for each BAR.
+pub(crate) fn active_mmio_bars(
+    bars: &[u32; 6],
+    bar_masks: &[u32; 6],
+) -> anyhow::Result<Vec<ActiveMmioBar>> {
+    let mut active = Vec::new();
+    let mut i = 0usize;
+
+    while i < bars.len() {
+        let mask = bar_masks[i];
+        if mask == 0 {
+            i += 1;
+            continue;
+        }
+
+        let bits = pci_core::spec::cfg_space::BarEncodingBits::from(mask);
+
+        // Decode the BAR values to determine the base address and length of the
+        // MMIO range the guest configured.
+        let (base_address, length_bytes, next_i) = if bits.type_64_bit() && i + 1 < 6 {
+            // Combine both 32-bit masks and bases into 64-bit values. Mask off
+            // the low 4 bits, which carry the encoding flags rather than
+            // address or size.
+            let base = ((bars[i + 1] as u64) << 32) | ((bars[i] & !0xF_u32) as u64);
+            let full_mask = ((bar_masks[i + 1] as u64) << 32) | ((mask & !0xF_u32) as u64);
+            let size = (!full_mask).wrapping_add(1);
+            let size_u32 = u32::try_from(size).with_context(|| {
+                format!("BAR {i} is {size:#x} bytes, which does not fit in a u32")
+            })?;
+            (base, size_u32, i + 2)
+        } else {
+            let base = (bars[i] & !0xF_u32) as u64;
+            let size = (!(mask & !0xF_u32)).wrapping_add(1);
+            (base, size, i + 1)
+        };
+
+        if base_address != 0 && length_bytes != 0 {
+            active.push(ActiveMmioBar {
+                bar_id: i as u16,
+                base_address,
+                length_bytes,
+            });
+        }
+
+        i = next_i;
+    }
+
+    Ok(active)
 }

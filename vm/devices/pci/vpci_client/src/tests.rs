@@ -224,3 +224,296 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
         Err(err) => panic!("unexpected error: {err}"),
     }
 }
+
+mod active_mmio_bars {
+    use crate::ActiveMmioBar;
+    use crate::active_mmio_bars;
+
+    /// Build the size mask a device reports for a 32-bit memory BAR of `size`
+    /// bytes. `size` must be a power of two.
+    fn mask_32(size: u32, prefetchable: bool) -> u32 {
+        let mut mask = (!(size - 1)) & !0xF;
+        if prefetchable {
+            mask |= 0b1000;
+        }
+        mask
+    }
+
+    /// Build the low and high size masks a device reports for a 64-bit memory
+    /// BAR of `size` bytes. `size` must be a power of two.
+    fn mask_64(size: u64, prefetchable: bool) -> (u32, u32) {
+        let full = (!(size - 1)) & !0xF;
+        let mut low = full as u32;
+        // Bits 2:1 == 0b10 marks the BAR as 64-bit.
+        low |= 0b0100;
+        if prefetchable {
+            low |= 0b1000;
+        }
+        ((low) & !0b0010, (full >> 32) as u32)
+    }
+
+    #[test]
+    fn no_bars_implemented() {
+        assert_eq!(active_mmio_bars(&[0; 6], &[0; 6]).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn single_32_bit_bar() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        masks[0] = mask_32(0x1000, false);
+        bars[0] = 0xf000_0000;
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![ActiveMmioBar {
+                bar_id: 0,
+                base_address: 0xf000_0000,
+                length_bytes: 0x1000,
+            }]
+        );
+    }
+
+    #[test]
+    fn thirty_two_bit_bar_ignores_encoding_bits_in_the_base() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        masks[0] = mask_32(0x1000, true);
+        // The guest writes the address; the device's encoding bits stay in the
+        // low nibble and must not leak into the reported base.
+        bars[0] = 0xf000_0000 | 0b1000;
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![ActiveMmioBar {
+                bar_id: 0,
+                base_address: 0xf000_0000,
+                length_bytes: 0x1000,
+            }]
+        );
+    }
+
+    #[test]
+    fn single_64_bit_bar_consumes_two_slots() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        let (low, high) = mask_64(0x20_0000, true);
+        masks[0] = low;
+        masks[1] = high;
+        bars[0] = 0xe000_0000;
+        bars[1] = 0x0000_0001;
+
+        // Reported once, under the lower half's index, with the two halves
+        // combined into one address.
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![ActiveMmioBar {
+                bar_id: 0,
+                base_address: 0x1_e000_0000,
+                length_bytes: 0x20_0000,
+            }]
+        );
+    }
+
+    #[test]
+    fn sixty_four_bit_bar_with_zero_high_half() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        let (low, high) = mask_64(0x1000, false);
+        masks[0] = low;
+        masks[1] = high;
+        bars[0] = 0xf000_0000;
+        bars[1] = 0;
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![ActiveMmioBar {
+                bar_id: 0,
+                base_address: 0xf000_0000,
+                length_bytes: 0x1000,
+            }]
+        );
+    }
+
+    #[test]
+    fn mixed_32_and_64_bit_bars() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+
+        // BAR 0: 32-bit, 4KiB.
+        masks[0] = mask_32(0x1000, false);
+        bars[0] = 0xf000_0000;
+
+        // BAR 1+2: 64-bit, 2MiB. Reported under index 1.
+        let (low, high) = mask_64(0x20_0000, true);
+        masks[1] = low;
+        masks[2] = high;
+        bars[1] = 0xe000_0000;
+        bars[2] = 0x0000_0002;
+
+        // BAR 3: unimplemented.
+        // BAR 4: 32-bit, 64KiB.
+        masks[4] = mask_32(0x1_0000, false);
+        bars[4] = 0xd000_0000;
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![
+                ActiveMmioBar {
+                    bar_id: 0,
+                    base_address: 0xf000_0000,
+                    length_bytes: 0x1000,
+                },
+                ActiveMmioBar {
+                    bar_id: 1,
+                    base_address: 0x2_e000_0000,
+                    length_bytes: 0x20_0000,
+                },
+                ActiveMmioBar {
+                    bar_id: 4,
+                    base_address: 0xd000_0000,
+                    length_bytes: 0x1_0000,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn sixty_four_bit_upper_half_is_not_reported_separately() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        let (low, high) = mask_64(0x1000, false);
+        masks[0] = low;
+        masks[1] = high;
+        bars[0] = 0xf000_0000;
+        // An upper half that would decode to a nonzero base of its own, so a
+        // decoder that failed to consume this slot would emit a second entry
+        // here rather than folding it into BAR 0's address.
+        bars[1] = 0x0000_0010;
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![ActiveMmioBar {
+                bar_id: 0,
+                base_address: 0x10_f000_0000,
+                length_bytes: 0x1000,
+            }]
+        );
+    }
+
+    #[test]
+    fn unmapped_bar_is_skipped() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        // Implemented but never programmed by the guest: base stays zero.
+        masks[0] = mask_32(0x1000, false);
+        bars[0] = 0;
+        // A programmed one alongside it, to show only the unmapped one drops.
+        masks[1] = mask_32(0x1000, false);
+        bars[1] = 0xf000_0000;
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![ActiveMmioBar {
+                bar_id: 1,
+                base_address: 0xf000_0000,
+                length_bytes: 0x1000,
+            }]
+        );
+    }
+
+    #[test]
+    fn sixty_four_bit_bar_larger_than_4gib_is_an_error() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        // 8GiB: the length cannot be expressed as a u32, and reporting a
+        // truncated one would understate the range, so this fails.
+        let (low, high) = mask_64(0x2_0000_0000, true);
+        masks[0] = low;
+        masks[1] = high;
+        bars[0] = 0;
+        bars[1] = 0x0000_0004;
+
+        let err = active_mmio_bars(&bars, &masks).unwrap_err();
+        assert!(
+            err.to_string().contains("does not fit in a u32"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn exactly_4gib_64_bit_bar_is_an_error() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        // 4GiB is one past what a u32 length can hold.
+        let (low, high) = mask_64(0x1_0000_0000, true);
+        masks[0] = low;
+        masks[1] = high;
+        bars[0] = 0;
+        bars[1] = 0x0000_0008;
+
+        let err = active_mmio_bars(&bars, &masks).unwrap_err();
+        assert!(
+            err.to_string().contains("does not fit in a u32"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn sixty_four_bit_bar_in_the_last_slot_falls_back_to_32_bit() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        // A 64-bit BAR in slot 5 has no upper half to pair with, which is
+        // malformed. It is decoded as 32-bit rather than reading past the end.
+        let (low, _high) = mask_64(0x1000, false);
+        masks[5] = low;
+        bars[5] = 0xf000_0000;
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![ActiveMmioBar {
+                bar_id: 5,
+                base_address: 0xf000_0000,
+                length_bytes: 0x1000,
+            }]
+        );
+    }
+
+    #[test]
+    fn all_six_slots_used_by_three_64_bit_bars() {
+        let mut bars = [0u32; 6];
+        let mut masks = [0u32; 6];
+        for pair in 0..3u32 {
+            let low_index = pair as usize * 2;
+            let (low, high) = mask_64(0x1000, false);
+            masks[low_index] = low;
+            masks[low_index + 1] = high;
+            bars[low_index] = 0xf000_0000 + pair * 0x1000;
+            // Nonzero upper halves, so that a decoder which failed to consume
+            // the second slot of each pair would emit spurious entries for
+            // them rather than silently dropping them as zero bases.
+            bars[low_index + 1] = 0x10 + pair * 0x10;
+        }
+
+        assert_eq!(
+            active_mmio_bars(&bars, &masks).unwrap(),
+            vec![
+                ActiveMmioBar {
+                    bar_id: 0,
+                    base_address: 0x10_f000_0000,
+                    length_bytes: 0x1000,
+                },
+                ActiveMmioBar {
+                    bar_id: 2,
+                    base_address: 0x20_f000_1000,
+                    length_bytes: 0x1000,
+                },
+                ActiveMmioBar {
+                    bar_id: 4,
+                    base_address: 0x30_f000_2000,
+                    length_bytes: 0x1000,
+                },
+            ]
+        );
+    }
+}
