@@ -863,12 +863,13 @@ impl VpciClientTdispState {
     /// guest-facing side.
     ///
     /// Returns [`IsolationSnapshot::NotReady`] iff no TDI interface
-    /// report has been cached yet (attestation has not run). Once a
-    /// report is cached, always returns `Ready`, including after a
-    /// `tdisp_unbind_preserve_report` has returned the TDI to
-    /// `Unlocked`. Classification mirrors the logic that
-    /// [`Self::tdisp_on_mmio_reconfigured`] applies when the guest
-    /// enables MMIO: a BAR is `PRIVATE` exactly when
+    /// report is currently cached, which is the case both before the
+    /// first attestation and after any [`Self::tdisp_unbind`], since
+    /// unbind drops the cached report along with the rest of the
+    /// per-attest state. Callers that need a snapshot from an
+    /// `Unlocked` TDI have to re-attest first. Classification mirrors
+    /// the logic that [`Self::tdisp_on_mmio_reconfigured`] applies when
+    /// the guest enables MMIO: a BAR is `PRIVATE` exactly when
     /// `tdisp_unblock_mmio` would be called for it, `SHARED` when it
     /// would be skipped, and `INVALID` when the cached TDI report has
     /// no entry for it.
@@ -1202,8 +1203,7 @@ impl TdispVpciAttestationInterface for VpciDevice {
 }
 
 impl VpciDevice {
-    /// Async equivalent of [`Self::tdisp_try_isolation_snapshot`]: awaits
-    /// the per-device TDISP mutex and returns the current isolation
+    /// Awaits the per-device TDISP mutex and returns the current isolation
     /// snapshot. Use from async contexts where blocking on the mutex is
     /// acceptable (e.g. the guest-facing VPCI dispatch on its async path).
     pub async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot {
