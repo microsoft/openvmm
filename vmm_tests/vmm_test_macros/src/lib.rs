@@ -1133,7 +1133,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 
         let test = quote! {
             #cfg_conditions
-            ::petri::SimpleTest::new(
+            ::petri::SimpleTest::new_async(
                 #name,
                 |resolver| {
                     let firmware = #firmware;
@@ -1142,11 +1142,9 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                     let artifacts = #artifacts::new(resolver, firmware, arch, #with_vtl0_pipette)?;
                     Some((artifacts, extra_deps))
                 },
-                |params, (artifacts, extra_deps)| {
-                    ::pal_async::DefaultPool::run_with(async |driver| {
-                        let config = #petri_vm_config;
-                        #original_name(#original_args).await
-                    })
+                async |params, driver, (artifacts, extra_deps)| {
+                    let config = #petri_vm_config;
+                    #original_name(#original_args).await
                 },
             )
             .requirements(#requirements)
