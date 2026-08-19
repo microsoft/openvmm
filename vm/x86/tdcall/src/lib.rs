@@ -19,6 +19,7 @@ use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdVmCallSubFunction;
 use x86defs::tdx::TdgMemPageAcceptRcx;
+use x86defs::tdx::TdgVmRdResult;
 use x86defs::tdx::TdgMemPageAttrGpaMappingReadRcxResult;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageAttrWriteRcx;
@@ -710,6 +711,37 @@ pub fn tdcall_vp_rd(
         leaf: TdCallLeaf::VP_RD,
         rcx: 0,
         rdx: field_code.into(),
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(output.r8),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.VM.RD call to read a TD-scope metadata field.
+///
+/// `field_id` is the field code to read.
+///
+/// Returns the field value.
+pub fn tdcall_vm_rd(
+    call: &mut impl Tdcall,
+    field_id: TdxExtendedFieldCode,
+) -> Result<TdgVmRdResult, TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VM_RD,
+        rcx: 0,
+        rdx: field_id.into(),
         r8: 0,
         r9: 0,
         r10: 0,

@@ -21,6 +21,9 @@ pub const TDX_REPORT_SIZE: usize = 0x400;
 /// Size of `report_data` member in [`ReportMac`].
 pub const TDX_REPORT_DATA_SIZE: usize = 64;
 
+/// Result of a TDG.VM.RD metadata read.
+pub type TdgVmRdResult = u64;
+
 open_enum! {
     /// TDCALL instruction leafs that are passed into the tdcall instruction
     /// in eax.
