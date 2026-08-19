@@ -44,10 +44,12 @@ use std::sync::Arc;
 struct VpciClientTdispMutableState {
     tdi_state: TdispTdiState,
     guest_device_id: u16,
-    /// Map of BAR ID to the `(base_gpa, length_in_bytes)` that was passed
-    /// to `tdisp_unblock_mmio`. Populated on unblock and used during
-    /// unbind to call `tdisp_block_mmio` with the same parameters so
-    /// private pages can be flipped back to shared. Cleared on unbind.
+    /// Map of BAR ID to the range the guest configured and how it was
+    /// classified. Populated whenever a BAR is reconfigured in the `Run`
+    /// state, both for ranges that were unblocked and for ones that were
+    /// deliberately skipped. Used during unbind to call `tdisp_block_mmio`
+    /// with the same parameters, for the ranges that need it, so private
+    /// pages can be flipped back to shared. Cleared on unbind.
     #[inspect(iter_by_key)]
     validated_mmio_bars: std::collections::HashMap<u16, ValidatedMmio>,
     /// Whether DMA has been unblocked via `tdisp_unblock_dma`. Cleared on
@@ -64,14 +66,20 @@ struct VpciClientTdispMutableState {
     intercepted_bars: HashSet<u16>,
 }
 
-/// Tracks the parameters used to unblock a BAR's MMIO pages, so the same
-/// range can be re-blocked on unbind.
+/// Tracks how a BAR's MMIO range was handled when the guest reconfigured it,
+/// so unbind knows whether the range needs blocking back and with what
+/// parameters.
 #[derive(Inspect, Clone, Copy, Debug)]
 struct ValidatedMmio {
     #[inspect(hex)]
     base_gpa: u64,
     #[inspect(hex)]
     length_in_bytes: u32,
+    /// How the range was classified. `Private` means it was passed to
+    /// `tdisp_unblock_mmio` and must be blocked back on unbind; `Shared`
+    /// means it was deliberately skipped and there is nothing to undo.
+    #[inspect(debug)]
+    isolation: TdispResourceIsolation,
 }
 
 /// Sends guest-to-host TDISP commands for one device, handed to the resource
@@ -506,11 +514,14 @@ impl VpciClientTdispState {
         let device_id = self.mutable_state.guest_device_id;
         let validated_bars_clone = self.mutable_state.validated_mmio_bars.clone();
         for (bar_id, mmio) in validated_bars_clone {
-            // length == 0 is the "classified SHARED, never unblocked"
-            // sentinel meaning there is nothing to block.
-            if mmio.length_in_bytes == 0 {
-                self.mutable_state.validated_mmio_bars.remove(&bar_id);
-                continue;
+            match mmio.isolation {
+                // Nothing was ever unblocked for these, so there is nothing
+                // to block back.
+                TdispResourceIsolation::Shared | TdispResourceIsolation::Invalid => {
+                    self.mutable_state.validated_mmio_bars.remove(&bar_id);
+                    continue;
+                }
+                TdispResourceIsolation::Private => {}
             }
             if let Err(e) = validator
                 .tdisp_block_mmio(
@@ -936,15 +947,15 @@ impl VpciClientTdispState {
                     "skipping MMIO unblock for BAR classified SHARED \
                      (intercepted or non-TEE memory)"
                 );
-                // Record with a zero-length entry so we don't repeatedly
-                // fall through here on subsequent reconfigurations. The
-                // unbind path uses length == 0 as a sentinel for "no
-                // block call needed."
+                // Record the range so we don't repeatedly fall through here
+                // on subsequent reconfigurations. Marked `Shared`, which
+                // tells the unbind path there is no block call to undo.
                 self.mutable_state.validated_mmio_bars.insert(
                     bar_id,
                     ValidatedMmio {
                         base_gpa: base_address,
-                        length_in_bytes: 0,
+                        length_in_bytes: length,
+                        isolation: TdispResourceIsolation::Shared,
                     },
                 );
                 return Ok(());
@@ -994,6 +1005,7 @@ impl VpciClientTdispState {
             ValidatedMmio {
                 base_gpa: base_address,
                 length_in_bytes: length,
+                isolation: TdispResourceIsolation::Private,
             },
         );
 
