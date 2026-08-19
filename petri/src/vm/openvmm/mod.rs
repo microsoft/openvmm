@@ -221,6 +221,12 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
         // A guest reboot executes the retained recipe rather than turning into
         // the old Restore/None no-op.
         client.reboot().await?;
+        drop(client);
+        let halt_reason = vm2.wait_for_halt(true).await?;
+        anyhow::ensure!(
+            halt_reason.reason == crate::PetriHaltReason::Reset,
+            "expected reset after guest reboot, got {halt_reason:?}"
+        );
         let client = vm2.wait_for_agent(false).await?;
         client.ping().await?;
         drop(client);
