@@ -930,9 +930,7 @@ impl VpciClientTdispState {
         self.mutable_state
             .update_guest_device_id(TdispDeviceId::Valid(guest_device_id_u16));
 
-        // Hand the report to the validator before any resource is unblocked:
-        // platforms that address an MMIO range by its position in the report's
-        // list resolve that from here.
+        // Hand the report to the validator before any resource is unblocked.
         self.resource_validator
             .tdisp_set_tdi_report(guest_device_id_u16, &tdi_report);
 
@@ -955,8 +953,7 @@ impl VpciClientTdispState {
         self.mutable_state.tdi_report = Some(tdi_report);
 
         // Device is now in the Run state without resource validation being
-        // performed. Platform specific validation methods will be called on
-        // command register write to unblock resources.
+        // performed.
         Ok(())
     }
 
@@ -1293,7 +1290,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
 }
 
 /// Higher level interface for TDISP operations on a VPCI device.
-#[allow(async_fn_in_trait)]
+#[expect(async_fn_in_trait)]
 pub trait TdispVpciAttestationInterface: Sync + Send {
     /// Attests the device using the TDISP flow. This includes binding the
     /// device, starting it, and any other validation steps on reports that are
@@ -1391,10 +1388,6 @@ impl VpciDevice {
     /// attests it first to produce one. The whole sequence runs under a single
     /// hold of the per-device TDISP mutex, so the state observed here cannot
     /// change before it is acted on.
-    ///
-    /// Never returns [`TdispIsolationReport::NotTdispCapable`]; whether the
-    /// device is TDISP capable at all is decided by the caller, before it gets
-    /// here.
     pub async fn tdisp_isolation_snapshot(&self) -> TdispIsolationReport {
         let mut guard = self.tdisp.0.lock().await;
 
@@ -1403,10 +1396,9 @@ impl VpciDevice {
                 Ok(info) => info,
                 Err(err) => {
                     tracing::error!(
-                        error = &*err as &dyn std::error::Error,
-                        "tdisp_isolation_snapshot: query_capabilities failed",
+                        "tdisp_isolation_snapshot: query_capabilities failed (tdisp not supported or host errored out): {err}"
                     );
-                    return TdispIsolationReport::Error;
+                    return TdispIsolationReport::NotTdispCapable;
                 }
             };
             if let Err(err) = guard.attest(info).await {
