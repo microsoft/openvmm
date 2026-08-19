@@ -53,9 +53,9 @@ const TDI_HASH_BUF_SIZE: usize = HV_PAGE_SIZE as usize;
 ///
 /// After a device has been attested and placed in the Run state, this struct
 /// will issue guest-side TDCALLs to the TDX Module to make device resources
-/// (MMIO, DMA) accessible to the guest. The unblock methods are currently no-op
-/// stubs preceded by [`Self::probe_tdi`]; the accept TDCALLs land in a
-/// follow-up change.
+/// (MMIO, DMA) accessible to the guest. Note that the unblock paths are
+/// currently stubs that validate the TDI but do not yet issue the accept
+/// TDCALLs, so no resource is actually made accessible.
 pub struct TdispTdxConnectResourceValidator {
     /// The address mask with the VTOM bit set, signifying where VTOM addresses
     /// start in the CVM. Retained for the forthcoming TDCALL work (shared-GPA

@@ -13,7 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
 
-/// Recorded call to [`TdispNoopResourceValidator::tdisp_unblock_mmio`].
+/// A single MMIO unblock request recorded by the mock validator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnblockedMmioRange {
     /// The VTL the MMIO range was unblocked for.
@@ -32,11 +32,8 @@ pub struct UnblockedMmioRange {
 
 /// Mock implementation of [`TdispResourceValidationInterface`] for testing.
 ///
-/// Records calls to [`tdisp_unblock_mmio`] and [`tdisp_unblock_dma`] so tests
-/// can verify the correct ranges were unblocked.
-///
-/// [`tdisp_unblock_mmio`]: TdispResourceValidationInterface::tdisp_unblock_mmio
-/// [`tdisp_unblock_dma`]: TdispResourceValidationInterface::tdisp_unblock_dma
+/// Unblocking does nothing, but every MMIO and DMA unblock request is recorded
+/// so tests can verify the correct resources were unblocked.
 #[derive(Default)]
 pub struct TdispNoopResourceValidator {
     unblocked_mmio_ranges: Mutex<Vec<UnblockedMmioRange>>,
@@ -44,7 +41,7 @@ pub struct TdispNoopResourceValidator {
 }
 
 impl TdispNoopResourceValidator {
-    /// Creates a new [`TdispNoopResourceValidator`] with no recorded calls.
+    /// Creates a validator with nothing recorded yet.
     pub fn new() -> Self {
         Self::default()
     }
@@ -54,9 +51,7 @@ impl TdispNoopResourceValidator {
         self.unblocked_mmio_ranges.lock().clone()
     }
 
-    /// Returns `true` if [`tdisp_unblock_dma`] was called.
-    ///
-    /// [`tdisp_unblock_dma`]: TdispResourceValidationInterface::tdisp_unblock_dma
+    /// Returns `true` if DMA was unblocked.
     pub fn dma_unblocked(&self) -> bool {
         *self.dma_unblocked.lock()
     }

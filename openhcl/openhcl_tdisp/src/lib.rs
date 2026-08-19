@@ -106,10 +106,9 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     /// Tell the host to block an MMIO range, reversing a previous unblock. The
     /// TDI must be Locked or Run.
     ///
-    /// Not to be confused with
-    /// [`TdispResourceValidationInterface::tdisp_block_mmio`], which performs
-    /// the platform-side block. This one only notifies the host over the VPCI
-    /// channel.
+    /// This only notifies the host over the VPCI channel. It does not perform
+    /// the platform-side block, which is a separate step on the resource
+    /// validation interface.
     ///
     /// * `range_id` - Identifies which MMIO range to block (the PCI BAR index).
     /// * `gpa_base` - The guest physical base address of the range.
@@ -175,21 +174,22 @@ pub trait TdispResourceValidationInterface: Send + Sync {
 
     /// Drop the TDI interface report recorded for a device.
     ///
-    /// Called during unbind, alongside the caller clearing its own per-attest
-    /// state, so nothing recorded from the old report outlives it.
+    /// Called during unbind, so that nothing kept from the old report outlives
+    /// the attestation it came from.
     ///
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn tdisp_clear_tdi_report(&self, device_id: u16);
 
     /// Unblock MMIO access for a specific resource on the device.
     ///
+    /// * `target_vtl` - The VTL to unblock the range for.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     /// * `range_id` - Identifies which MMIO range to unblock. This is the
     ///   device-specific range identifier reported in the TDI interface report
     ///   (the PCI BAR index for the guest protocols supported here), *not* the
     ///   range's position in the report's list. A platform that needs the list
-    ///   position resolves it from the report recorded by
-    ///   [`Self::tdisp_set_tdi_report`].
+    ///   position looks it up in the interface report it was given for this
+    ///   device.
     /// * `base_gpa` - The base guest physical address of the MMIO range to unblock.
     /// * `base_offset` - The offset within the range specified by `range_id` to start
     ///   unblocking from. Necessary for cases where the host splits the MMIO range
@@ -213,12 +213,20 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 
-    /// Re-block a previously-unblocked MMIO range. This is the inverse
-    /// of [`Self::tdisp_unblock_mmio`] and is called during unbind so
-    /// the guest-private pages are flipped back to shared (host-visible)
-    /// before the device channel is torn down.
+    /// Re-block a previously-unblocked MMIO range, flipping the
+    /// guest-private pages back to shared (host-visible). Called during
+    /// unbind, before the device channel is torn down.
     ///
-    /// Arguments mirror [`Self::tdisp_unblock_mmio`].
+    /// * `target_vtl` - The VTL the range was unblocked for.
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    /// * `base_gpa` - The base guest physical address of the MMIO range.
+    /// * `base_offset` - The offset within the range specified by `range_id` to
+    ///   start blocking from.
+    /// * `length_in_bytes` - The length in bytes of the MMIO range to block
+    ///   starting from `base_offset`.
+    /// * `range_id` - Identifies which MMIO range to block. As on the unblock
+    ///   path, this is the device-specific range identifier from the TDI
+    ///   interface report, not the range's position in the report's list.
     fn tdisp_block_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -229,7 +237,11 @@ pub trait TdispResourceValidationInterface: Send + Sync {
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>>;
 
-    /// Re-block DMA access. Inverse of [`Self::tdisp_unblock_dma`].
+    /// Re-block DMA access for the device's IOMMU domain, reversing a previous
+    /// unblock.
+    ///
+    /// * `target_vtl` - The VTL to block DMA for.
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 }
 
@@ -340,8 +352,7 @@ pub fn new_block_mmio_range_command(
     )
 }
 
-/// Shared body of [`new_unblock_mmio_range_command`] and
-/// [`new_block_mmio_range_command`].
+/// Builds a `ModifyMmioRange` command for either action.
 fn new_modify_mmio_range_command(
     device_id: u64,
     action: TdispMmioRangeAction,
