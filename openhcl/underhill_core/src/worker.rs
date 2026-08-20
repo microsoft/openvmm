@@ -4371,25 +4371,7 @@ async fn restore_vtl0_firmware_from_vmgs(
     // Rebase VTL0's RIP to the restored image's entry point; `load_firmware`
     // applies the updated measured UEFI context to VTL0.
     #[cfg(guest_arch = "x86_64")]
-    if let Some(uefi_info) = measured_vtl0_info
-        .as_mut()
-        .and_then(|info| info.supports_uefi.as_mut())
-    {
-        let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
-        for reg in registers {
-            if let loader::importer::X86Register::Rip(rip) = reg {
-                if *rip != new_rip {
-                    tracing::info!(
-                        CVM_ALLOWED,
-                        old_rip = *rip,
-                        new_rip,
-                        "rebased VTL0 RIP for restored firmware"
-                    );
-                    *rip = new_rip;
-                }
-            }
-        }
-    }
+    set_vtl0_uefi_rip(measured_vtl0_info, new_rip);
 
     tracing::info!(
         CVM_ALLOWED,
@@ -4397,6 +4379,34 @@ async fn restore_vtl0_firmware_from_vmgs(
         "restored UEFI firmware image from VMGS for hibernation resume"
     );
     true
+}
+
+/// Rebase VTL0's initial RIP in the measured UEFI context to `new_rip`, so
+/// `load_firmware` starts VTL0 at the entry point of a firmware image swapped in
+/// at runtime (host overload or VMGS restore). A no-op if there is no measured
+/// UEFI context or RIP register.
+#[cfg(guest_arch = "x86_64")]
+fn set_vtl0_uefi_rip(measured_vtl0_info: &mut Option<MeasuredVtl0Info>, new_rip: u64) {
+    let Some(uefi_info) = measured_vtl0_info
+        .as_mut()
+        .and_then(|info| info.supports_uefi.as_mut())
+    else {
+        return;
+    };
+    let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
+    for reg in registers {
+        if let loader::importer::X86Register::Rip(rip) = reg {
+            if *rip != new_rip {
+                tracing::info!(
+                    CVM_ALLOWED,
+                    old_rip = *rip,
+                    new_rip,
+                    "rebased VTL0 RIP for hibernation firmware swap"
+                );
+                *rip = new_rip;
+            }
+        }
+    }
 }
 
 /// Ask the host to overwrite VTL0's firmware image in guest RAM with the version
@@ -4435,13 +4445,17 @@ async fn overload_vtl0_firmware(
     // so point the measured UEFI context's RIP at the host-computed offset;
     // load_firmware later applies it to VTL0.
     #[cfg(guest_arch = "x86_64")]
-    if let Some(uefi_info) = measured_vtl0_info
-        .as_mut()
-        .and_then(|info| info.supports_uefi.as_mut())
-    {
-        if offset != 0 {
-            let base = uefi_info.firmware_memory.start();
-            let len = uefi_info.firmware_memory.len();
+    if offset != 0 {
+        if let Some((base, len)) = measured_vtl0_info
+            .as_ref()
+            .and_then(|info| info.supports_uefi.as_ref())
+            .map(|uefi_info| {
+                (
+                    uefi_info.firmware_memory.start(),
+                    uefi_info.firmware_memory.len(),
+                )
+            })
+        {
             // `offset` is host-provided (untrusted): the entry point must land
             // inside the measured firmware region and must not overflow.
             let Some(new_rip) = base.checked_add(offset).filter(|_| offset < len) else {
@@ -4454,20 +4468,7 @@ async fn overload_vtl0_firmware(
                 );
                 return false;
             };
-            let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
-            for reg in registers {
-                if let loader::importer::X86Register::Rip(rip) = reg {
-                    if *rip != new_rip {
-                        tracing::info!(
-                            CVM_ALLOWED,
-                            old_rip = *rip,
-                            new_rip,
-                            "rebased VTL0 RIP for overloaded firmware"
-                        );
-                        *rip = new_rip;
-                    }
-                }
-            }
+            set_vtl0_uefi_rip(measured_vtl0_info, new_rip);
         }
     }
     #[cfg(guest_arch = "aarch64")]
