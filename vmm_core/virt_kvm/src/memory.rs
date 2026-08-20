@@ -1038,7 +1038,7 @@ mod tests {
         ));
         assert!(matches!(
             guest_memfd_range_intersections(range(0x1000, 0x4000), &slots),
-            Err(KvmError::InvalidMapGpaRange)
+            Err(MemoryError::InvalidMapGpaRange)
         ));
     }
 }
