@@ -144,13 +144,13 @@ fn build_ipv6_syn(
 /// Verify that traffic to IPv4 loopback (127.0.0.1) is blocked by default.
 #[pal_async::async_test]
 async fn ipv4_loopback_blocked_by_default(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver);
     let mut buf = vec![0u8; 1514];
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
 
     let len = build_ipv4_syn(
         &mut buf,
@@ -171,13 +171,13 @@ async fn ipv4_loopback_blocked_by_default(driver: DefaultDriver) {
 /// Verify that traffic to IPv4 unspecified (0.0.0.0) is blocked.
 #[pal_async::async_test]
 async fn ipv4_unspecified_blocked(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver);
     let mut buf = vec![0u8; 1514];
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
 
     let len = build_ipv4_syn(
         &mut buf,
@@ -198,13 +198,13 @@ async fn ipv4_unspecified_blocked(driver: DefaultDriver) {
 /// Verify that traffic to IPv4 link-local (169.254.x.x) is blocked.
 #[pal_async::async_test]
 async fn ipv4_link_local_blocked(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver);
     let mut buf = vec![0u8; 1514];
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
 
     let len = build_ipv4_syn(
         &mut buf,
@@ -225,7 +225,7 @@ async fn ipv4_link_local_blocked(driver: DefaultDriver) {
 /// Verify that loopback traffic is allowed when opted in.
 #[pal_async::async_test]
 async fn ipv4_loopback_allowed_when_opted_in(driver: DefaultDriver) {
-    let mut consomme = Consomme::new({
+    let mut consomme = Consomme::new(ConsommeConfig::new(), {
         let mut params = ConsommeParams::new().unwrap();
         params.allow_host_local_access = true;
         params
@@ -233,9 +233,9 @@ async fn ipv4_loopback_allowed_when_opted_in(driver: DefaultDriver) {
     let mut client = TestClient::new(driver);
     let mut buf = vec![0u8; 1514];
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
 
     let len = build_ipv4_syn(
         &mut buf,
@@ -258,16 +258,14 @@ async fn ipv4_loopback_allowed_when_opted_in(driver: DefaultDriver) {
 /// Verify that traffic to IPv6 loopback (::1) is blocked by default.
 #[pal_async::async_test]
 async fn ipv6_loopback_blocked_by_default(driver: DefaultDriver) {
-    let mut consomme = Consomme::new({
-        let mut params = ConsommeParams::new().unwrap();
-        params.skip_ipv6_checks = true;
-        params
-    });
+    let mut config = ConsommeConfig::new();
+    config.skip_ipv6_checks = true;
+    let mut consomme = Consomme::new(config, ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver);
     let mut buf = vec![0u8; 1514];
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac_ipv6;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac_ipv6;
     let guest_ip = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
 
     let len = build_ipv6_syn(
@@ -289,16 +287,14 @@ async fn ipv6_loopback_blocked_by_default(driver: DefaultDriver) {
 /// Verify that traffic to IPv6 link-local (fe80::/10) is blocked by default.
 #[pal_async::async_test]
 async fn ipv6_link_local_blocked_by_default(driver: DefaultDriver) {
-    let mut consomme = Consomme::new({
-        let mut params = ConsommeParams::new().unwrap();
-        params.skip_ipv6_checks = true;
-        params
-    });
+    let mut config = ConsommeConfig::new();
+    config.skip_ipv6_checks = true;
+    let mut consomme = Consomme::new(config, ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver);
     let mut buf = vec![0u8; 1514];
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac_ipv6;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac_ipv6;
     let guest_ip = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
 
     let len = build_ipv6_syn(
@@ -320,13 +316,13 @@ async fn ipv6_link_local_blocked_by_default(driver: DefaultDriver) {
 /// Verify that traffic to a normal external IP is not blocked.
 #[pal_async::async_test]
 async fn ipv4_normal_destination_not_blocked(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     let mut client = TestClient::new(driver);
     let mut buf = vec![0u8; 1514];
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
 
     let len = build_ipv4_syn(
         &mut buf,
@@ -343,6 +339,35 @@ async fn ipv4_normal_destination_not_blocked(driver: DefaultDriver) {
         !matches!(result, Err(DropReason::DestinationNotAllowed)),
         "normal destination should not be blocked, got {result:?}"
     );
+}
+
+fn create_ipv4_tcp_connection(consomme: &mut Consomme, client: &mut TestClient) {
+    let mut buf = vec![0u8; 1514];
+    let config = consomme.config();
+    let len = build_ipv4_syn(
+        &mut buf,
+        config.client_mac,
+        config.gateway_mac,
+        config.client_ip,
+        Ipv4Address::new(8, 8, 8, 8),
+    );
+
+    consomme
+        .access(client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("TCP SYN should create a connection");
+    assert_eq!(consomme.shard.tcp.connection_count(), 1);
+}
+
+#[pal_async::async_test]
+async fn live_parameter_update_preserves_existing_connection(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver);
+    create_ipv4_tcp_connection(&mut consomme, &mut client);
+
+    consomme.update_params(|params| params.allow_host_local_access = true);
+
+    assert_eq!(consomme.shard.tcp.connection_count(), 1);
 }
 
 #[test]
@@ -382,43 +407,54 @@ fn test_is_same_ipv6_subnet_prefix_above_128_does_not_panic() {
     assert!(!is_same_ipv6_subnet(a, b, 255));
 }
 
-fn eui64_routable_address(params: &ConsommeParams) -> Ipv6Address {
-    let mut octets = ConsommeParams::compute_link_local_address(params.client_mac).octets();
+fn eui64_routable_address(config: &ConsommeConfig) -> Ipv6Address {
+    let mut octets = ConsommeConfig::compute_link_local_address(config.client_mac).octets();
     octets[..8].copy_from_slice(&[0xfd, 0x00, 0x0d, 0xb8, 0, 0, 0, 0]);
     Ipv6Address::from_octets(octets)
 }
 
+fn test_runtime() -> (ConsommeConfig, ConsommePrimaryRuntime) {
+    (
+        ConsommeConfig::new(),
+        ConsommePrimaryRuntime {
+            local_addr_map: local_addr_map::LocalAddrMap::new(),
+            client_ip_ipv6: None,
+            client_ip_ipv6_routable: None,
+        },
+    )
+}
+
 #[test]
 fn infer_client_link_local_from_routable_with_matching_eui64_iid() {
-    let mut params = ConsommeParams::new().unwrap();
-    params.client_ip_ipv6 = None;
-    let expected_link_local = ConsommeParams::compute_link_local_address(params.client_mac);
+    let (config, mut runtime) = test_runtime();
+    let expected_link_local = ConsommeConfig::compute_link_local_address(config.client_mac);
+    let routable = eui64_routable_address(&config);
 
-    params.infer_client_link_local_from_routable(eui64_routable_address(&params), "test");
+    runtime.infer_client_link_local_from_routable(&config, routable, "test");
 
-    assert_eq!(params.client_ip_ipv6, Some(expected_link_local));
+    assert_eq!(runtime.client_ip_ipv6, Some(expected_link_local));
 }
 
 #[test]
 fn infer_client_link_local_from_routable_ignores_privacy_iid() {
-    let mut params = ConsommeParams::new().unwrap();
-    params.client_ip_ipv6 = None;
+    let (config, mut runtime) = test_runtime();
     let privacy_address = Ipv6Address::new(0xfd00, 0x0db8, 0, 0, 1, 2, 3, 4);
 
-    params.infer_client_link_local_from_routable(privacy_address, "test");
+    runtime.infer_client_link_local_from_routable(&config, privacy_address, "test");
 
-    assert_eq!(params.client_ip_ipv6, None);
+    assert_eq!(runtime.client_ip_ipv6, None);
 }
 
 #[test]
 fn infer_client_link_local_from_routable_does_not_overwrite_existing_address() {
-    let mut params = ConsommeParams::new().unwrap();
+    let (config, mut runtime) = test_runtime();
     let existing_address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x1234);
-    params.client_ip_ipv6 = Some(existing_address);
+    runtime.client_ip_ipv6 = Some(existing_address);
+    let routable = eui64_routable_address(&config);
 
-    params.infer_client_link_local_from_routable(eui64_routable_address(&params), "test");
+    runtime.infer_client_link_local_from_routable(&config, routable, "test");
 
-    assert_eq!(params.client_ip_ipv6, Some(existing_address));
+    assert_eq!(runtime.client_ip_ipv6, Some(existing_address));
 }
 
 /// A minimal Client implementation for synchronous tests that do not create
@@ -437,15 +473,12 @@ impl Client for NoDriverClient {
     }
 }
 
-fn learn_from_ipv6_traffic(params: &mut ConsommeParams, src_addr: Ipv6Address) {
-    params.skip_ipv6_checks = true;
-    params.allow_host_local_access = true;
-    let gateway_ip = params.gateway_link_local_ipv6;
-    let mut consomme = Consomme::new(std::mem::replace(params, ConsommeParams::new().unwrap()));
+fn learn_from_ipv6_traffic(consomme: &mut Consomme, src_addr: Ipv6Address) {
+    let gateway_ip = consomme.config().gateway_link_local_ipv6;
     let mut client = NoDriverClient;
     let frame = EthernetRepr {
-        src_addr: consomme.state.params.client_mac,
-        dst_addr: consomme.state.params.gateway_mac_ipv6,
+        src_addr: consomme.config().client_mac,
+        dst_addr: consomme.config().gateway_mac_ipv6,
         ethertype: EthernetProtocol::Ipv6,
     };
     let mut payload = [0; smoltcp::wire::IPV6_HEADER_LEN];
@@ -461,25 +494,112 @@ fn learn_from_ipv6_traffic(params: &mut ConsommeParams, src_addr: Ipv6Address) {
     let _ = consomme
         .access(&mut client)
         .handle_ipv6(&frame, &payload, &ChecksumState::TCP6);
-    *params = consomme.state.params;
 }
 
 #[test]
 fn handle_ipv6_updates_link_local_from_traffic() {
+    let mut config = ConsommeConfig::new();
+    config.skip_ipv6_checks = true;
     let mut params = ConsommeParams::new().unwrap();
-    params.client_ip_ipv6 = None;
+    params.allow_host_local_access = true;
+    let mut consomme = Consomme::new(config, params);
     let first_address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
     let second_address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
 
-    learn_from_ipv6_traffic(&mut params, first_address);
-    learn_from_ipv6_traffic(&mut params, second_address);
+    learn_from_ipv6_traffic(&mut consomme, first_address);
+    learn_from_ipv6_traffic(&mut consomme, second_address);
 
-    assert_eq!(params.client_ip_ipv6, Some(second_address));
+    assert_eq!(
+        consomme.primary.runtime.client_ip_ipv6,
+        Some(second_address)
+    );
+}
+
+#[test]
+fn new_seeds_initial_client_ipv6() {
+    let initial_address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    let mut config = ConsommeConfig::new();
+    config.initial_client_ip_ipv6 = Some(initial_address);
+
+    let consomme = Consomme::new(config, ConsommeParams::new().unwrap());
+
+    assert_eq!(
+        consomme.primary.runtime.client_ip_ipv6,
+        Some(initial_address)
+    );
+}
+
+#[test]
+fn update_params_preserves_runtime_state_for_unrelated_changes() {
+    let mut config = ConsommeConfig::new();
+    config.skip_ipv6_checks = true;
+    let mut consomme = Consomme::new(config, ConsommeParams::new().unwrap());
+    let learned_address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    consomme.primary.runtime.client_ip_ipv6 = Some(learned_address);
+    let virtual_address = consomme
+        .primary
+        .runtime
+        .local_addr_map
+        .get_or_allocate_v4(
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::new(10, 0, 0, 0),
+            consomme.config().net_mask,
+            consomme.config().gateway_ip,
+            consomme.config().client_ip,
+        )
+        .unwrap();
+
+    consomme.update_params(|params| params.allow_host_local_access = true);
+
+    assert!(consomme.primary.config.params.allow_host_local_access);
+    assert_eq!(
+        consomme.primary.runtime.client_ip_ipv6,
+        Some(learned_address)
+    );
+    assert_eq!(
+        consomme
+            .primary
+            .runtime
+            .local_addr_map
+            .resolve_virtual(&IpAddr::V4(virtual_address)),
+        Some(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    );
+}
+
+#[test]
+fn update_params_clears_local_addr_map_when_disabling_host_local_access() {
+    let mut params = ConsommeParams::new().unwrap();
+    params.allow_host_local_access = true;
+    let mut consomme = Consomme::new(ConsommeConfig::new(), params);
+    let virtual_address = consomme
+        .create_virtual_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .unwrap();
+
+    consomme.update_params(|params| params.allow_host_local_access = false);
+
+    assert_eq!(
+        consomme
+            .primary
+            .runtime
+            .local_addr_map
+            .resolve_virtual(&virtual_address),
+        None
+    );
+}
+
+#[test]
+fn update_params_preserves_nameserver_update() {
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
+    let nameserver = IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, 1));
+
+    consomme.update_params(|params| params.nameservers = vec![nameserver]);
+
+    assert_eq!(consomme.primary.config.params.nameservers, [nameserver]);
 }
 
 #[test]
 fn create_virtual_address_allocates_subnet_address() {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
 
     // Expect 10.0.0.254 since the default subnet is 10.0.0/24.
     let addr = consomme
@@ -503,7 +623,7 @@ fn create_virtual_address_allocates_subnet_address() {
 
 #[test]
 fn create_virtual_address_allocates_ipv6_link_local() {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
 
     let addr = consomme
         .create_virtual_address(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))
@@ -590,15 +710,15 @@ impl Client for CapturingClient {
 /// End to end validation for a static DNS A record.
 #[pal_async::async_test]
 async fn static_dns_a_record_answered(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
     consomme
         .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
         .unwrap();
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
-    let gateway_ip = consomme.params_mut().gateway_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
+    let gateway_ip = consomme.config().gateway_ip;
 
     let query = build_dns_a_query(0x1234, "example.com");
     let query_src_port = 40000u16;
@@ -663,21 +783,24 @@ async fn static_dns_a_record_answered(driver: DefaultDriver) {
 /// unavailable and the guest is using the advertised external DNS server.
 #[pal_async::async_test]
 async fn static_dns_fallback_intercepts_matches_only(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
-    consomme.dns =
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
+    consomme.primary.dns =
         dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
     consomme
         .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
         .unwrap();
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
     let dns_ip = Ipv4Address::new(192, 0, 2, 53);
-    consomme.params_mut().nameservers = vec![dns_ip.into()];
+    consomme.update_params(|params| params.nameservers = vec![dns_ip.into()]);
     let mut client = CapturingClient::new(driver);
     consomme.access(&mut client).update_dns_nameservers();
-    assert_eq!(consomme.params_mut().nameservers, vec![dns_ip.into()]);
+    assert_eq!(
+        consomme.primary.config.params.nameservers,
+        vec![dns_ip.into()]
+    );
 
     let mut buf = vec![0u8; 1514];
 
@@ -709,14 +832,14 @@ async fn static_dns_fallback_intercepts_matches_only(driver: DefaultDriver) {
 /// resolver backend and no matching static record.
 #[pal_async::async_test]
 async fn dns_static_miss_without_backend_returns_servfail(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
-    consomme.dns =
+    let mut consomme = Consomme::new(ConsommeConfig::new(), ConsommeParams::new().unwrap());
+    consomme.primary.dns =
         dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
 
-    let guest_mac = consomme.params_mut().client_mac;
-    let gateway_mac = consomme.params_mut().gateway_mac;
-    let guest_ip = consomme.params_mut().client_ip;
-    let gateway_ip = consomme.params_mut().gateway_ip;
+    let guest_mac = consomme.config().client_mac;
+    let gateway_mac = consomme.config().gateway_mac;
+    let guest_ip = consomme.config().client_ip;
+    let gateway_ip = consomme.config().gateway_ip;
 
     let query = build_dns_a_query(0x5678, "missing.example");
     let query_src_port = 40001u16;

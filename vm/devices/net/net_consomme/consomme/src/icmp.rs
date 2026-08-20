@@ -6,7 +6,7 @@
 
 use super::Access;
 use super::Client;
-use super::ConsommeState;
+use super::ConsommeConfig;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::Ipv4Addresses;
@@ -90,10 +90,11 @@ impl IcmpConnection {
         &mut self,
         cx: &mut Context<'_>,
         dst_addr: &SocketAddrV4,
-        state: &mut ConsommeState,
+        config: &ConsommeConfig,
+        buffer: &mut [u8],
         client: &mut impl Client,
     ) {
-        let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
+        let mut eth = EthernetFrame::new_unchecked(buffer);
         loop {
             match self
                 .socket
@@ -112,7 +113,7 @@ impl IcmpConnection {
                     // What is received is a raw IPV4 packet. Add the Ethernet frame and
                     // set the destination address in the IP header.
                     eth.set_ethertype(EthernetProtocol::Ipv4);
-                    eth.set_src_addr(state.params.gateway_mac);
+                    eth.set_src_addr(config.gateway_mac);
                     eth.set_dst_addr(self.guest_mac);
                     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
                     ipv4.set_dst_addr(*dst_addr.ip());
@@ -159,8 +160,15 @@ impl IcmpConnection {
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_icmp(&mut self, cx: &mut Context<'_>) {
-        for (dst_addr, conn) in &mut self.inner.icmp.connections {
-            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client);
+        let buffer = &mut self.inner.shard.buffer;
+        for (dst_addr, conn) in &mut self.inner.primary.icmp.connections {
+            conn.poll_conn(
+                cx,
+                dst_addr,
+                &self.inner.primary.config.immutable,
+                buffer,
+                self.client,
+            );
         }
     }
 
@@ -195,7 +203,7 @@ impl<T: Client> Access<'_, T> {
 
         // Ethernet header
         let resp_eth = EthernetRepr {
-            src_addr: self.inner.state.params.gateway_mac,
+            src_addr: self.inner.primary.config.immutable.gateway_mac,
             dst_addr: frame.src_addr,
             ethertype: EthernetProtocol::Ipv4,
         };
@@ -204,7 +212,7 @@ impl<T: Client> Access<'_, T> {
 
         // IPv4 header
         let resp_ipv4 = Ipv4Repr {
-            src_addr: self.inner.state.params.gateway_ip,
+            src_addr: self.inner.primary.config.immutable.gateway_ip,
             dst_addr: addresses.src_addr,
             next_header: IpProtocol::Icmp,
             payload_len: icmp_len,
@@ -235,14 +243,14 @@ impl<T: Client> Access<'_, T> {
     ) -> Result<(), DropReason> {
         // Respond to pings aimed at the gateway directly, giving the guest
         // a way to measure VMM round-trip time without host socket overhead.
-        if addresses.dst_addr == self.inner.state.params.gateway_ip {
+        if addresses.dst_addr == self.inner.primary.config.immutable.gateway_ip {
             return self.handle_icmp_gateway_echo(frame, addresses, payload);
         }
 
         let icmp_packet = Icmpv4Packet::new_unchecked(payload);
         let guest_addr = SocketAddrV4::new(addresses.src_addr, 0);
 
-        let entry = self.inner.icmp.connections.entry(guest_addr);
+        let entry = self.inner.primary.icmp.connections.entry(guest_addr);
         let conn = match entry {
             hash_map::Entry::Occupied(conn) => conn.into_mut(),
             hash_map::Entry::Vacant(e) => {

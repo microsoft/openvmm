@@ -33,8 +33,11 @@ impl<T: Client> Access<'_, T> {
     pub(crate) fn handle_dhcp(&mut self, payload: &[u8]) -> Result<(), DropReason> {
         let dhcp_packet = DhcpPacket::new_checked(payload)?;
         let dhcp_req = DhcpRepr::parse(&dhcp_packet)?;
-        let gateway_ip = self.inner.state.params.gateway_ip;
-        let client_ip = self.inner.state.params.client_ip;
+        let config = &self.inner.primary.config.immutable;
+        let gateway_ip = config.gateway_ip;
+        let gateway_mac = config.gateway_mac;
+        let client_ip = config.client_ip;
+        let net_mask = config.net_mask;
 
         // Consomme has no relay-facing network path. Silently ignore relayed
         // requests rather than emitting a direct-client reply with invalid
@@ -83,7 +86,8 @@ impl<T: Client> Access<'_, T> {
             HeaplessVec::new();
         dns_servers.extend(
             self.inner
-                .state
+                .primary
+                .config
                 .params
                 .nameservers
                 .iter()
@@ -104,7 +108,7 @@ impl<T: Client> Access<'_, T> {
                 your_ip,
                 server_ip: Ipv4Address::UNSPECIFIED,
                 router: Some(gateway_ip),
-                subnet_mask: Some(self.inner.state.params.net_mask),
+                subnet_mask: Some(net_mask),
                 relay_agent_ip: Ipv4Address::UNSPECIFIED,
                 broadcast: dhcp_req.broadcast,
                 requested_ip: None,
@@ -167,7 +171,7 @@ impl<T: Client> Access<'_, T> {
             hop_limit: 64,
         };
         let resp_eth = EthernetRepr {
-            src_addr: self.inner.state.params.gateway_mac,
+            src_addr: gateway_mac,
             dst_addr: dst_hardware_address,
             ethertype: EthernetProtocol::Ipv4,
         };
@@ -207,6 +211,7 @@ impl<T: Client> Access<'_, T> {
 mod tests {
     use super::*;
     use crate::Consomme;
+    use crate::ConsommeConfig;
     use crate::ConsommeParams;
     use pal_async::DefaultDriver;
     use pal_async::driver::Driver;
@@ -294,12 +299,12 @@ mod tests {
     }
 
     fn capture(driver: DefaultDriver, request: &[u8]) -> Vec<(Vec<u8>, ChecksumState)> {
-        let mut params = ConsommeParams::new().unwrap();
-        params.net_mask = NET_MASK;
-        params.gateway_ip = GATEWAY_IP;
-        params.client_ip = CLIENT_IP;
-        params.client_mac = CLIENT_MAC;
-        let mut consomme = Consomme::new(params);
+        let mut config = ConsommeConfig::new();
+        config.net_mask = NET_MASK;
+        config.gateway_ip = GATEWAY_IP;
+        config.client_ip = CLIENT_IP;
+        config.client_mac = CLIENT_MAC;
+        let mut consomme = Consomme::new(config, ConsommeParams::new().unwrap());
         let mut client = CaptureClient {
             driver,
             frames: Vec::new(),

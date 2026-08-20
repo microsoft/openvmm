@@ -10,6 +10,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use consomme::ChecksumState;
 use consomme::Consomme;
+use consomme::ConsommeConfig;
 use consomme::ConsommeParams;
 pub use consomme::IpVersion;
 pub use consomme::StaticDnsRecord;
@@ -115,10 +116,10 @@ struct EndpointState {
 }
 
 impl ConsommeEndpoint {
-    pub fn new(state: ConsommeParams) -> Self {
+    pub fn new(config: ConsommeConfig, params: ConsommeParams) -> Self {
         Self {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
-                consomme: Consomme::new(state),
+                consomme: Consomme::new(config, params),
                 recv: None,
                 port_recv: None,
                 port_forwards: Vec::new(),
@@ -127,10 +128,14 @@ impl ConsommeEndpoint {
     }
 
     /// Creates a new endpoint with ports to forward once the queue starts.
-    pub fn new_with_ports(state: ConsommeParams, ports: Vec<PortForwardConfig>) -> Self {
+    pub fn new_with_ports(
+        config: ConsommeConfig,
+        params: ConsommeParams,
+        ports: Vec<PortForwardConfig>,
+    ) -> Self {
         Self {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
-                consomme: Consomme::new(state),
+                consomme: Consomme::new(config, params),
                 recv: None,
                 port_recv: None,
                 port_forwards: ports,
@@ -138,8 +143,8 @@ impl ConsommeEndpoint {
         }
     }
 
-    pub fn new_dynamic(state: ConsommeParams) -> (Self, ConsommeControl) {
-        let consomme = Consomme::new(state);
+    pub fn new_dynamic(config: ConsommeConfig, params: ConsommeParams) -> (Self, ConsommeControl) {
+        let consomme = Consomme::new(config, params);
         let (send, recv) = mesh::channel();
         (
             Self {
@@ -157,13 +162,14 @@ impl ConsommeEndpoint {
     /// Creates a new endpoint with initial ports and a channel for runtime
     /// port bind/unbind requests from an external source (e.g. ttrpc server).
     pub fn new_with_port_channel(
-        state: ConsommeParams,
+        config: ConsommeConfig,
+        params: ConsommeParams,
         ports: Vec<PortForwardConfig>,
         port_recv: mesh::Receiver<ConsommeRequest>,
     ) -> Self {
         Self {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
-                consomme: Consomme::new(state),
+                consomme: Consomme::new(config, params),
                 recv: None,
                 port_recv: Some(port_recv),
                 port_forwards: ports,
@@ -664,11 +670,7 @@ fn process_message(
             });
         }
         ConsommeMessage::UpdateState(rpc) => {
-            rpc.handle_sync(|f| {
-                f(consomme.get_mut().params_mut());
-                consomme.get_mut().clear_local_addr_map();
-                consomme.update_dns_nameservers()
-            });
+            rpc.handle_sync(|f| consomme.get_mut().update_params(f));
         }
         ConsommeMessage::AddDnsRecord(rpc) => {
             rpc.handle_sync(|cfg| consomme.get_mut().add_dns_record(cfg.record, &cfg.name));
