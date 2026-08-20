@@ -572,9 +572,7 @@ impl HclNetworkVFManagerWorker {
                 );
             }
             // Explicitly update save state mac filter settings in case of errors.
-            for direction_to_vtl0 in &mut *self.save_state.direction_to_vtl0.lock() {
-                *direction_to_vtl0 = Some(false);
-            }
+            self.save_state.direction_to_vtl0.lock().fill(Some(false));
         }
         if let Err(err) = {
             let vpci_bus_control = if let Vtl0Bus::Present(current_bus) = bus_control {

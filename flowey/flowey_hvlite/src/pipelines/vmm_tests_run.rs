@@ -307,7 +307,7 @@ impl IntoPipeline for VmmTestsRunCli {
         } else {
             let mut hyperv_tests: usize = 0;
             let mut hyperv_artifacts = Vec::new();
-            for (_, suite) in suites.iter() {
+            for suite in suites.values() {
                 let hyperv_testcases: Vec<_> = suite
                     .testcases
                     .iter()

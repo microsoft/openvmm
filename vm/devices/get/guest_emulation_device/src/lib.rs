@@ -1288,39 +1288,34 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         &mut self,
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        let vpci_boot_enabled;
-        let enable_firmware_debugging;
-        let disable_frontpage;
-        let firmware_mode_is_pcat;
-        let pcat_boot_device_order;
-        let uefi_console_mode;
-        let default_boot_always_attempt;
-        match state.config.firmware {
+        let (
+            vpci_boot_enabled,
+            enable_firmware_debugging,
+            disable_frontpage,
+            firmware_mode_is_pcat,
+            pcat_boot_device_order,
+            uefi_console_mode,
+            default_boot_always_attempt,
+        ) = match state.config.firmware {
             GuestFirmwareConfig::Uefi {
                 enable_vpci_boot,
                 firmware_debug,
                 disable_frontpage: v_disable_frontpage,
                 console_mode,
                 default_boot_always_attempt: v_default_boot_always_attempt,
-            } => {
-                vpci_boot_enabled = enable_vpci_boot;
-                enable_firmware_debugging = firmware_debug;
-                disable_frontpage = v_disable_frontpage;
-                firmware_mode_is_pcat = false;
-                pcat_boot_device_order = None;
-                uefi_console_mode = Some(console_mode);
-                default_boot_always_attempt = v_default_boot_always_attempt;
-            }
+            } => (
+                enable_vpci_boot,
+                firmware_debug,
+                v_disable_frontpage,
+                false,
+                None,
+                Some(console_mode),
+                v_default_boot_always_attempt,
+            ),
             GuestFirmwareConfig::Pcat { boot_order } => {
-                vpci_boot_enabled = false;
-                enable_firmware_debugging = false;
-                disable_frontpage = false;
-                firmware_mode_is_pcat = true;
-                pcat_boot_device_order = Some(boot_order);
-                uefi_console_mode = None;
-                default_boot_always_attempt = false;
+                (false, false, false, true, Some(boot_order), None, false)
             }
-        }
+        };
 
         let json = get_protocol::dps_json::DevicePlatformSettingsV2Json {
             v1: get_protocol::dps_json::HclDevicePlatformSettings {
