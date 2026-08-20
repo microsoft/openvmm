@@ -215,7 +215,13 @@ struct EFI_COMMON_SECTION_HEADER {
 const EFI_SECTION_PE32: u8 = 0x10;
 
 /// Get the SEC entry point offset from the firmware base.
-fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
+///
+/// On x86_64 the initial VTL0 RIP is the firmware base plus this offset. It is
+/// exposed so callers that swap the firmware image at runtime (e.g. restoring a
+/// hibernated firmware image) can recompute the entry point from the new image.
+/// Returns `None` if the image has no recognizable SEC firmware volume / entry
+/// point.
+pub fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     // Skip to SEC volume start.
     let mut image_offset = SEC_FIRMWARE_VOLUME_OFFSET;
 
