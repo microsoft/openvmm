@@ -3702,6 +3702,10 @@ async fn new_underhill_vm(
     // firmware is overloaded (via the GET `LoadFirmware` host request) with the
     // hibernated version before it runs; on success that version becomes the
     // recorded token.
+    //
+    // Set when a hibernated firmware image is restored from VMGS on resume, so
+    // the cold-boot snapshot below can skip re-storing an image already in VMGS.
+    let mut firmware_restored_from_vmgs = false;
     let current_hibernate_token = if !dps.general.hibernation_enabled
         || !matches!(firmware_type, FirmwareType::Uefi)
     {
@@ -3742,6 +3746,7 @@ async fn new_underhill_vm(
                 if restore_vtl0_firmware_from_vmgs(gm.vtl0(), &mut measured_vtl0_info, vmgs_client)
                     .await
                 {
+                    firmware_restored_from_vmgs = true;
                     tracing::info!(
                         CVM_ALLOWED,
                         resume = %token,
@@ -3820,10 +3825,11 @@ async fn new_underhill_vm(
     // that cannot overload the firmware itself. This runs after any firmware
     // overload/restore above (so it captures the image the guest will actually
     // run) and before `write_uefi_config` (in `load_firmware`) layers the
-    // dynamic config on top, regardless of the resolved token. A servicing
-    // restore is skipped: its firmware is already running with dynamic config
-    // applied and is no longer pristine.
-    if dps.general.hibernation_enabled && !is_restoring {
+    // dynamic config on top, regardless of the resolved token. Skipped for a
+    // servicing restore (its firmware already has dynamic config applied and is
+    // no longer pristine) and when the image was just restored from VMGS (it is
+    // already saved there).
+    if dps.general.hibernation_enabled && !is_restoring && !firmware_restored_from_vmgs {
         if let (Some(uefi_info), Some(vmgs_client)) = (
             measured_vtl0_info
                 .as_ref()
@@ -4322,11 +4328,16 @@ async fn restore_vtl0_firmware_from_vmgs(
         .await
     {
         Ok(firmware) => firmware,
+        // No stored image is the usual case (e.g. first hibernation, or the VMGS
+        // was too small to snapshot one); fall back without logging.
+        Err(vmgs_broker::VmgsClientError::Vmgs(
+            vmgs_broker::VmgsBrokerError::FileInfoNotAllocated,
+        )) => return false,
         Err(err) => {
             tracing::warn!(
                 CVM_ALLOWED,
                 error = &err as &dyn std::error::Error,
-                "no UEFI firmware image to restore from VMGS on hibernation resume"
+                "failed to read UEFI firmware image from VMGS on hibernation resume"
             );
             return false;
         }
