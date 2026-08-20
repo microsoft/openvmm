@@ -640,6 +640,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::UNMAP_FRAMEBUFFER => self.handle_unmap_framebuffer(state).await?,
             HostRequests::CREATE_RAM_GPA_RANGE => self.handle_create_ram_gpa_range(message_buf)?,
             HostRequests::RESET_RAM_GPA_RANGE => self.handle_reset_ram_gpa_range(message_buf)?,
+            HostRequests::LOAD_FIRMWARE => self.handle_load_firmware(message_buf)?,
             _ => {
                 tracing::error!(message_id = ?header.message_id(), "unexpected message");
                 return Err(Error::InvalidSequence);
@@ -1053,6 +1054,26 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             .map_err(|_| Error::MessageTooSmall)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let response = get_protocol::ResetRamGpaRangeResponse::new();
+        self.channel
+            .try_send(response.as_bytes())
+            .map_err(Error::Vmbus)?;
+        Ok(())
+    }
+
+    fn handle_load_firmware(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+        let request = get_protocol::LoadFirmwareRequest::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+
+        let firmware_token = request.firmware_token;
+        tracing::info!(firmware_token, "load firmware request");
+
+        // This emulated host does not have a firmware image to write into guest
+        // RAM, so the request is simply acknowledged with a zero entry-point
+        // offset (leave VTL0's RIP unchanged). A real host loads the image
+        // identified by the token and returns the computed SEC entry offset.
+        let response =
+            get_protocol::LoadFirmwareResponse::new(get_protocol::LoadFirmwareStatus::SUCCESS, 0);
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
