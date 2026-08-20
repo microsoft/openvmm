@@ -3735,14 +3735,15 @@ async fn new_underhill_vm(
         // Consume any token, valid or corrupt, so it is not re-read next boot.
         hibernate::delete_token(vmgs_client).await;
         match resume_token {
-            Some(token @ hibernate::Token::Hibernated { .. })
-                if token != hibernate::Token::CURRENT =>
-            {
+            // Clean prior power-off (NotHibernated) or no/unreadable token
+            // (None): a normal cold boot on the current firmware; no load needed.
+            Some(hibernate::Token::NotHibernated) | None => Some(hibernate::Token::CURRENT),
+            Some(token) => {
                 // Prefer restoring the exact firmware image snapshotted to VMGS
                 // at the original cold boot: it reproduces the hibernated
-                // firmware bit-for-bit without needing host support. Fall back to
-                // a host firmware overload if no usable image is stored, then to
-                // resuming on the current firmware.
+                // firmware bit-for-bit without needing host support. Only if no
+                // usable image is stored do we fall back to the version-based
+                // logic (host overload, then the current firmware).
                 if restore_vtl0_firmware_from_vmgs(gm.vtl0(), &mut measured_vtl0_info, vmgs_client)
                     .await
                 {
@@ -3750,65 +3751,72 @@ async fn new_underhill_vm(
                     tracing::info!(
                         CVM_ALLOWED,
                         resume = %token,
-                        "hibernation resume under a different firmware version; \
-                         restored the hibernated firmware image from VMGS"
+                        "restored the hibernated UEFI firmware image from VMGS"
                     );
                     Some(token)
-                } else if dps
-                    .general
-                    .management_vtl_features
-                    .load_firmware_supported()
-                {
-                    tracing::info!(
-                        CVM_ALLOWED,
-                        resume = %token,
-                        current = %hibernate::Token::CURRENT,
-                        "hibernation resume under a different firmware version; requesting firmware overload"
-                    );
-                    // If the overload succeeds VTL0 now runs the hibernated
-                    // version, so record it; otherwise fall back to the current one.
-                    if overload_vtl0_firmware(
-                        &get_client,
-                        u64::from(token),
-                        &mut measured_vtl0_info,
-                    )
-                    .await
-                    {
-                        Some(token)
-                    } else {
-                        Some(hibernate::Token::CURRENT)
-                    }
                 } else {
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        resume = %token,
-                        "no stored firmware image and host does not support firmware \
-                         overload (LoadFirmware); resuming with the current firmware \
-                         version despite a hibernation token mismatch"
-                    );
-                    Some(hibernate::Token::CURRENT)
+                    match token {
+                        token @ hibernate::Token::Hibernated { .. }
+                            if token != hibernate::Token::CURRENT =>
+                        {
+                            if dps
+                                .general
+                                .management_vtl_features
+                                .load_firmware_supported()
+                            {
+                                tracing::info!(
+                                    CVM_ALLOWED,
+                                    resume = %token,
+                                    current = %hibernate::Token::CURRENT,
+                                    "hibernation resume under a different firmware version; requesting firmware overload"
+                                );
+                                // If the overload succeeds VTL0 now runs the
+                                // hibernated version, so record it; otherwise fall
+                                // back to the current one.
+                                if overload_vtl0_firmware(
+                                    &get_client,
+                                    u64::from(token),
+                                    &mut measured_vtl0_info,
+                                )
+                                .await
+                                {
+                                    Some(token)
+                                } else {
+                                    Some(hibernate::Token::CURRENT)
+                                }
+                            } else {
+                                tracing::warn!(
+                                    CVM_ALLOWED,
+                                    resume = %token,
+                                    "no stored firmware image and host does not support firmware \
+                                     overload (LoadFirmware); resuming with the current firmware \
+                                     version despite a hibernation token mismatch"
+                                );
+                                Some(hibernate::Token::CURRENT)
+                            }
+                        }
+                        hibernate::Token::Hibernated { .. } => {
+                            // The token matches the current firmware version.
+                            tracing::info!(
+                                CVM_ALLOWED,
+                                "hibernation resume under the current firmware version"
+                            );
+                            Some(hibernate::Token::CURRENT)
+                        }
+                        hibernate::Token::Other(raw) => {
+                            // An out-of-range/corrupt token value; ignore it.
+                            tracing::warn!(
+                                CVM_ALLOWED,
+                                raw,
+                                "ignoring unrecognized hibernate token; using the current firmware version"
+                            );
+                            Some(hibernate::Token::CURRENT)
+                        }
+                        // NotHibernated is handled by the outer arm.
+                        hibernate::Token::NotHibernated => Some(hibernate::Token::CURRENT),
+                    }
                 }
             }
-            Some(hibernate::Token::Hibernated { .. }) => {
-                // Guarded above: the token matches the current firmware version.
-                tracing::info!(
-                    CVM_ALLOWED,
-                    "hibernation resume under the current firmware version"
-                );
-                Some(hibernate::Token::CURRENT)
-            }
-            Some(hibernate::Token::Other(raw)) => {
-                // An out-of-range/corrupt token value; ignore it.
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    raw,
-                    "ignoring unrecognized hibernate token; using the current firmware version"
-                );
-                Some(hibernate::Token::CURRENT)
-            }
-            // Clean prior power-off, or no/unreadable token (e.g. first boot):
-            // a normal cold boot on the current firmware.
-            Some(hibernate::Token::NotHibernated) | None => Some(hibernate::Token::CURRENT),
         }
     } else {
         // Hibernation was requested but there is no VMGS to persist the token,
@@ -4191,6 +4199,9 @@ async fn halt_task(
                             hibernate::Token::NotHibernated,
                         )
                         .await;
+                        // Drop any stored firmware image so a later boot does not
+                        // restore a stale one.
+                        delete_firmware_from_vmgs(&hibernate_halt.vmgs_client).await;
                     }
                     get_client.send_power_off()
                 }
@@ -4202,6 +4213,9 @@ async fn halt_task(
                             hibernate::Token::NotHibernated,
                         )
                         .await;
+                        // Drop any stored firmware image so a later boot does not
+                        // restore a stale one.
+                        delete_firmware_from_vmgs(&hibernate_halt.vmgs_client).await;
                     }
                     get_client.send_reset()
                 }
@@ -4296,6 +4310,28 @@ async fn store_firmware_to_vmgs(
         "stored UEFI firmware image to VMGS for hibernation"
     );
     Ok(StoreFirmwareOutcome::Stored)
+}
+
+/// Best-effort deletion of any stored hibernation firmware image, used on a
+/// clean power off / reset so a later boot does not restore a stale image. A
+/// missing image is the common case and is not logged.
+async fn delete_firmware_from_vmgs(vmgs_client: &vmgs_broker::VmgsClient) {
+    match vmgs_client
+        .delete_file(vmgs::FileId::HIBERNATION_FIRMWARE)
+        .await
+    {
+        Ok(())
+        | Err(vmgs_broker::VmgsClientError::Vmgs(
+            vmgs_broker::VmgsBrokerError::FileInfoNotAllocated,
+        )) => {}
+        Err(err) => {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = &err as &dyn std::error::Error,
+                "failed to delete stored UEFI firmware image from VMGS"
+            );
+        }
+    }
 }
 
 /// Restores a previously stored UEFI firmware image from VMGS back into VTL0
