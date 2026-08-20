@@ -4357,17 +4357,25 @@ async fn restore_vtl0_firmware_from_vmgs(
 
     // On x86_64, compute the restored image's SEC entry point before touching
     // guest memory so a malformed image is a clean fallback (nothing written).
+    // The image is untrusted (may be corrupt): the entry point must land inside
+    // the firmware region and must not overflow.
     #[cfg(guest_arch = "x86_64")]
-    let new_rip = match loader::uefi::get_sec_entry_point_offset(&firmware) {
-        Some(offset) => firmware_memory.start() + offset,
-        None => {
+    let new_rip = {
+        let Some(new_rip) =
+            loader::uefi::get_sec_entry_point_offset(&firmware).and_then(|offset| {
+                firmware_memory
+                    .start()
+                    .checked_add(offset)
+                    .filter(|_| offset < region_len)
+            })
+        else {
             tracing::warn!(
                 CVM_ALLOWED,
-                "could not find a SEC entry point in the stored UEFI firmware image; \
-                 not restoring"
+                "stored UEFI firmware image has no valid SEC entry point; not restoring"
             );
             return false;
-        }
+        };
+        new_rip
     };
 
     if let Err(err) = gm.write_at(firmware_memory.start(), &firmware) {

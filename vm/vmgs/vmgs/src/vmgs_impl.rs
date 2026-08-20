@@ -641,9 +641,10 @@ impl Vmgs {
         Ok(vmgs)
     }
 
-    /// Returns the total size, in bytes, of the underlying VMGS backing store.
+    /// Returns the total size, in bytes, of the underlying VMGS backing store,
+    /// clamped to the maximum VMGS capacity.
     pub fn device_size(&self) -> u64 {
-        self.storage.sector_count() * self.storage.sector_size() as u64
+        self.storage.capacity()
     }
 
     /// Get allocated and valid bytes from File Control Block for file_id.

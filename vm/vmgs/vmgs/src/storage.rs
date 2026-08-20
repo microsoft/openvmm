@@ -160,8 +160,10 @@ impl VmgsStorage {
         self.disk.sector_count()
     }
 
-    fn capacity(&self) -> u64 {
-        (self.sector_count() * self.sector_size() as u64).min(vmgs_format::VMGS_MAX_CAPACITY_BYTES)
+    pub fn capacity(&self) -> u64 {
+        self.sector_count()
+            .saturating_mul(self.sector_size() as u64)
+            .min(vmgs_format::VMGS_MAX_CAPACITY_BYTES)
     }
 
     /// Capacity in VMGS blocks.
