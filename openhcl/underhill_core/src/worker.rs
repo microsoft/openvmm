@@ -169,6 +169,7 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmgs::Vmgs;
 use vmgs_broker::spawn_vmgs_broker;
+use vmgs_format::VMGS_HIBERNATION_FIRMWARE_MIN_SIZE;
 use vmgs_format::VmgsProvisioner;
 use vmgs_format::VmgsProvisioningMarker;
 use vmgs_format::VmgsProvisioningReason;
@@ -3738,16 +3739,56 @@ async fn new_underhill_vm(
                     .management_vtl_features
                     .load_firmware_supported()
                 {
-                    // The host must advertise LoadFirmware support; without it
-                    // we can't overload, so resume on the current firmware.
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        resume = %token,
-                        "host does not support firmware overload (LoadFirmware); \
-                         resuming with the current firmware version despite a \
-                         hibernation token mismatch"
-                    );
-                    Some(hibernate::Token::CURRENT)
+                    // The host can't overload the firmware, so fall back to
+                    // restoring the exact firmware image snapshotted to VMGS at
+                    // the original cold boot. On success VTL0 runs the hibernated
+                    // firmware (same region, same entry point), so record the
+                    // hibernated version; otherwise resume on the current firmware.
+                    match measured_vtl0_info
+                        .as_ref()
+                        .and_then(|info| info.supports_uefi.as_ref())
+                    {
+                        Some(uefi_info) => {
+                            match load_firmware_from_vmgs(
+                                gm.vtl0(),
+                                uefi_info.firmware_memory,
+                                vmgs_client,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        CVM_ALLOWED,
+                                        resume = %token,
+                                        "host does not support firmware overload (LoadFirmware); \
+                                         restored the hibernated firmware image from VMGS"
+                                    );
+                                    Some(token)
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        CVM_ALLOWED,
+                                        error = err.as_ref() as &dyn std::error::Error,
+                                        resume = %token,
+                                        "host does not support firmware overload (LoadFirmware) \
+                                         and no usable firmware image in VMGS; resuming with the \
+                                         current firmware version despite a hibernation token mismatch"
+                                    );
+                                    Some(hibernate::Token::CURRENT)
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::warn!(
+                                CVM_ALLOWED,
+                                resume = %token,
+                                "host does not support firmware overload (LoadFirmware); \
+                                 resuming with the current firmware version despite a \
+                                 hibernation token mismatch"
+                            );
+                            Some(hibernate::Token::CURRENT)
+                        }
+                    }
                 } else {
                     tracing::info!(
                         CVM_ALLOWED,
@@ -3800,6 +3841,47 @@ async fn new_underhill_vm(
         );
         None
     };
+
+    // On a cold boot running the current firmware, snapshot the pristine UEFI
+    // firmware image into VMGS so a future hibernation resume can restore it
+    // bit-for-bit on a host that cannot overload the firmware itself. This must
+    // happen before `write_uefi_config` (in `load_firmware`) layers the dynamic
+    // config on top. A firmware-mismatch resume records a non-CURRENT token and
+    // is skipped here so the stored image is not overwritten.
+    if dps.general.hibernation_enabled
+        && !is_restoring
+        && current_hibernate_token == Some(hibernate::Token::CURRENT)
+    {
+        if let (Some(uefi_info), Some(vmgs_client)) = (
+            measured_vtl0_info
+                .as_ref()
+                .and_then(|info| info.supports_uefi.as_ref()),
+            vmgs_client.as_ref(),
+        ) {
+            match store_firmware_to_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client).await {
+                Ok(StoreFirmwareOutcome::Stored) => {}
+                Ok(StoreFirmwareOutcome::InsufficientSpace {
+                    firmware_size,
+                    device_size,
+                }) => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        firmware_size,
+                        device_size,
+                        minimum_size = VMGS_HIBERNATION_FIRMWARE_MIN_SIZE,
+                        "VMGS backing store too small to preserve UEFI firmware across hibernation"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "failed to store UEFI firmware image for hibernation"
+                    );
+                }
+            }
+        }
+    }
 
     // A Some token means hibernation is enabled and populated; pair it with a
     // VMGS client to drive token persistence at halt time.
@@ -4173,6 +4255,102 @@ async fn wait_for_flush_logs(control_send: &Arc<Mutex<Option<mesh::Sender<Contro
     if let Some(call) = call {
         call.await.ok();
     }
+}
+
+/// The result of attempting to store a firmware image into VMGS for hibernation.
+enum StoreFirmwareOutcome {
+    /// The firmware image was stored to VMGS.
+    Stored,
+    /// The VMGS backing store is too small to hold the firmware image. This is
+    /// not an error: hibernation falls back to not preserving the firmware
+    /// image across resume.
+    InsufficientSpace {
+        firmware_size: u64,
+        device_size: u64,
+    },
+}
+
+/// Stores the pristine UEFI firmware image out of VTL0 guest memory and into
+/// [`vmgs::FileId::HIBERNATION_FIRMWARE`] so it can be restored identically on a
+/// hibernation resume where the host cannot overload the firmware itself.
+///
+/// This must be called *before* any dynamic configuration is written into the
+/// firmware region (i.e. before `write_uefi_config`), so that the stored image
+/// matches the measured firmware as loaded from the IGVM file.
+///
+/// The image is only stored if the VMGS backing store is large enough to hold
+/// it; otherwise [`StoreFirmwareOutcome::InsufficientSpace`] is returned and the
+/// caller falls back to not preserving the firmware across hibernation. An
+/// `Err` is only returned for an actual failure to query or write VMGS.
+async fn store_firmware_to_vmgs(
+    gm: &GuestMemory,
+    firmware_memory: MemoryRange,
+    vmgs_client: &vmgs_broker::VmgsClient,
+) -> anyhow::Result<StoreFirmwareOutcome> {
+    let len = firmware_memory.len();
+
+    // The firmware image can only be stored if the VMGS backing store is large
+    // enough. Require a minimum overall size so there is room for the firmware
+    // image alongside the other VMGS files, and also verify the image fits.
+    // Insufficient space is a normal fallback, not an error.
+    let device_size = vmgs_client
+        .device_size()
+        .await
+        .context("failed to query VMGS size")?;
+    if device_size < VMGS_HIBERNATION_FIRMWARE_MIN_SIZE || len > device_size {
+        return Ok(StoreFirmwareOutcome::InsufficientSpace {
+            firmware_size: len,
+            device_size,
+        });
+    }
+
+    let firmware_len = usize::try_from(len).context("firmware image size does not fit in usize")?;
+    let mut firmware = vec![0u8; firmware_len];
+    gm.read_at(firmware_memory.start(), &mut firmware)
+        .context("failed to read UEFI firmware image from VTL0 memory")?;
+    vmgs_client
+        .write_file(vmgs::FileId::HIBERNATION_FIRMWARE, firmware)
+        .await
+        .context("failed to write UEFI firmware snapshot to VMGS")?;
+    tracing::info!(
+        CVM_ALLOWED,
+        size_bytes = len,
+        "stored UEFI firmware image to VMGS for hibernation"
+    );
+    Ok(StoreFirmwareOutcome::Stored)
+}
+
+/// Loads a previously stored UEFI firmware image from VMGS back into VTL0 guest
+/// memory. Used when resuming a hibernated guest on a host that cannot overload
+/// the firmware, so that the firmware binary matches what was present when the
+/// guest hibernated.
+///
+/// This must be called *before* `write_uefi_config`, so that the current
+/// dynamic config is layered on top of the restored firmware image.
+async fn load_firmware_from_vmgs(
+    gm: &GuestMemory,
+    firmware_memory: MemoryRange,
+    vmgs_client: &vmgs_broker::VmgsClient,
+) -> anyhow::Result<()> {
+    let firmware = vmgs_client
+        .read_file(vmgs::FileId::HIBERNATION_FIRMWARE)
+        .await
+        .context("failed to read UEFI firmware snapshot from VMGS")?;
+    let region_len = firmware_memory.len();
+    if firmware.len() as u64 != region_len {
+        anyhow::bail!(
+            "stored firmware image size {} does not match firmware region size {region_len}",
+            firmware.len(),
+        );
+    }
+    gm.write_at(firmware_memory.start(), &firmware)
+        .context("failed to write UEFI firmware image into VTL0 memory")?;
+    tracing::info!(
+        CVM_ALLOWED,
+        size_bytes = region_len,
+        "restored UEFI firmware image from VMGS for hibernation resume"
+    );
+    Ok(())
 }
 
 /// Ask the host to overwrite VTL0's firmware image in guest RAM with the version
