@@ -127,6 +127,11 @@ mod ioctl {
     );
     ioctl_readwrite!(kvm_create_device, KVMIO, 0xe0, kvm_create_device);
     ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, kvm_device_attr);
+    // KVM_GET_DEVICE_ATTR and KVM_HAS_DEVICE_ATTR are both _IOW: the struct itself is
+    // input either way, and a get returns its value through the user pointer the struct's
+    // `addr` field carries, not through the struct.
+    ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, kvm_device_attr);
+    ioctl_write_ptr!(kvm_has_device_attr, KVMIO, 0xe3, kvm_device_attr);
     ioctl_readwrite!(kvm_create_guest_memfd, KVMIO, 0xd4, kvm_create_guest_memfd);
     #[cfg(target_arch = "aarch64")]
     ioctl_readwrite_bad!(
@@ -366,6 +371,10 @@ pub enum Error {
     CreateDevice(#[source] nix::Error),
     #[error("SetDeviceAttr")]
     SetDeviceAttr(#[source] nix::Error),
+    #[error("GetTscOffset")]
+    GetTscOffset(#[source] nix::Error),
+    #[error("SetTscOffset")]
+    SetTscOffset(#[source] nix::Error),
     #[error("CheckExtension")]
     CheckExtension(#[source] nix::Error),
     #[error("GetClock")]
@@ -1724,6 +1733,70 @@ impl<'a> Processor<'a> {
                 },
             )
         }
+    }
+
+    /// Returns whether the kernel implements the vcpu TSC-offset attribute.
+    ///
+    /// The attribute landed in Linux 5.16, so an older kernel answers `ENXIO` here
+    /// rather than failing the write later. Callers that only want the TSC to move
+    /// can degrade quietly on `false`.
+    #[cfg(target_arch = "x86_64")]
+    pub fn supports_tsc_offset(&self) -> bool {
+        // SAFETY: KVM_HAS_DEVICE_ATTR reads only the struct; `addr` is unused for it.
+        unsafe {
+            ioctl::kvm_has_device_attr(
+                self.get().vcpu.as_raw_fd(),
+                &kvm_device_attr {
+                    group: KVM_VCPU_TSC_CTRL,
+                    attr: KVM_VCPU_TSC_OFFSET as u64,
+                    addr: 0,
+                    flags: 0,
+                },
+            )
+            .is_ok()
+        }
+    }
+
+    /// Returns the vcpu's current L1 TSC offset.
+    ///
+    /// The guest reads `scale(host TSC) + offset`, so this is the whole of what stands
+    /// between the host counter and the guest's view of it.
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_offset(&self) -> Result<u64> {
+        let mut offset = 0u64;
+        // SAFETY: the attribute's payload is a single u64, which is what `offset` is,
+        // and it outlives the call.
+        unsafe {
+            ioctl::kvm_get_device_attr(
+                self.get().vcpu.as_raw_fd(),
+                &kvm_device_attr {
+                    group: KVM_VCPU_TSC_CTRL,
+                    attr: KVM_VCPU_TSC_OFFSET as u64,
+                    addr: std::ptr::from_mut(&mut offset) as u64,
+                    flags: 0,
+                },
+            )
+            .map_err(Error::GetTscOffset)?;
+        }
+        Ok(offset)
+    }
+
+    /// Sets the vcpu's L1 TSC offset, so that the guest reads
+    /// `scale(host TSC) + offset`.
+    ///
+    /// Unlike a write to `MSR_IA32_TSC`, this lands verbatim: the MSR path infers what
+    /// userspace "meant" and substitutes the partition's current offset for a write of
+    /// zero, which makes a write of zero the one value it cannot deliver. Write the same
+    /// offset to every vcpu, in one pass, so they stay in a single TSC-matching
+    /// generation.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_tsc_offset(&self, offset: u64) -> Result<()> {
+        // SAFETY: the attribute's payload is a single u64, which is what `offset` is.
+        unsafe {
+            self.set_device_attr(KVM_VCPU_TSC_CTRL, KVM_VCPU_TSC_OFFSET, &offset, 0)
+                .map_err(Error::SetTscOffset)?;
+        }
+        Ok(())
     }
 
     pub fn runner(&self) -> VpRunner<'a> {

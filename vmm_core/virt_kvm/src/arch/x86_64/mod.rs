@@ -715,9 +715,96 @@ impl ResetPartition for KvmPartition {
 
     fn reset(&self) -> Result<(), Self::Error> {
         let mut this = self;
+        // Sampled before the reset so the line below carries BOTH halves of the
+        // partition's clock. A reset that moves only one of them is what wedges a guest
+        // that calibrates one against the other, and the pair is the only reading that
+        // distinguishes that from a healthy reset.
+        let reference_time_before = self.inner.now().ref_time;
         this.reset_all(&self.inner.bsp().vp_info)
             .map_err(Box::new)?;
+        let tsc = self.inner.restart_tsc()?;
+        tracing::info!(
+            reference_time_before,
+            reference_time_after = self.inner.now().ref_time,
+            guest_tsc_before = tsc.map(|t| t.before),
+            guest_tsc_after = tsc.map(|t| t.after),
+            "machine reset"
+        );
         Ok(())
+    }
+}
+
+/// The guest timestamp counter either side of a machine reset, as read from the bsp.
+///
+/// Absent when the kernel cannot express a TSC reset, so that a reader can tell "the
+/// counter did not move" from "we never asked it to".
+#[derive(Copy, Clone)]
+struct GuestTscRestart {
+    before: u64,
+    after: u64,
+}
+
+impl KvmPartitionInner {
+    /// Restarts the guest timestamp counter from (approximately) zero on every vp.
+    ///
+    /// `reset_all` asks for this already, by setting each vp's `Tsc` element to its
+    /// at-reset value of zero, but on KVM that request cannot arrive: the write goes to
+    /// `MSR_IA32_TSC`, and the kernel treats a host write of exactly zero as "userspace
+    /// is creating or synchronizing this vcpu" and substitutes the partition's current
+    /// offset (`kvm_synchronize_tsc`, arch/x86/kvm/x86.c - the branch commented "Force
+    /// synchronization when creating a vCPU, or when userspace explicitly writes a zero
+    /// value"). So the one value a reset needs is the one value that path discards, and
+    /// the counter carries the previous boot's elapsed cycles into the new one. Measured
+    /// on this host: guest TSC 5403506220, wrote 0, read back 5403522705.
+    ///
+    /// The vcpu device attribute has no such heuristic - `kvm_arch_tsc_set_attr` hands
+    /// the caller's value straight to `__kvm_synchronize_tsc` - so this writes the offset
+    /// instead. The attribute is an OFFSET, not a counter value: the guest reads
+    /// `scale(host TSC) + offset`, so restarting the guest near zero means writing
+    /// roughly minus the (scaled) host TSC. Deriving that from the current pair rather
+    /// than from `rdtsc` keeps it correct under TSC scaling and needs no knowledge of the
+    /// ratio, since `scale(host) == guest_tsc - offset` by the same identity.
+    ///
+    /// Every vp gets the SAME offset, computed once. Writing a separately-sampled value
+    /// per vp would leave them fractionally apart, and the kernel reads unequal offsets
+    /// as unsynchronized vcpus: each write would open a new TSC generation and drop the
+    /// partition out of masterclock mode, which is what the reference clock is built on.
+    ///
+    /// The residual error is the host time between the read and the writes, so the guest
+    /// restarts a few microseconds' worth of cycles above zero rather than exactly at it.
+    /// That is the same order as the skew a cold start has anyway, and far below anything
+    /// a guest can calibrate against.
+    fn restart_tsc(&self) -> Result<Option<GuestTscRestart>, KvmError> {
+        let bsp = self.kvm.vp(self.bsp().vp_info.apic_id);
+        if !bsp.supports_tsc_offset() {
+            // Pre-5.16 kernels have no way to express this, and failing the whole reset
+            // would be a worse outcome than a counter that does not restart. Say so
+            // loudly, rather than leaving the guest's later bugcheck unexplained.
+            tracing::warn!(
+                "kernel does not support KVM_VCPU_TSC_OFFSET; \
+                 the guest TSC will not restart across a machine reset"
+            );
+            return Ok(None);
+        }
+
+        let offset = bsp.tsc_offset()?;
+        let mut tsc = [0u64; 1];
+        bsp.get_msrs(&[x86defs::X86X_MSR_TSC], &mut tsc)?;
+        let new_offset = offset.wrapping_sub(tsc[0]);
+
+        for vp in &self.vps {
+            self.kvm.vp(vp.vp_info.apic_id).set_tsc_offset(new_offset)?;
+        }
+
+        // Read back rather than assume. The write goes through the kernel's TSC
+        // synchronization, which is entitled to adjust what it stores, and the whole
+        // defect this fixes was a write that reported success and changed nothing.
+        let mut after = [0u64; 1];
+        bsp.get_msrs(&[x86defs::X86X_MSR_TSC], &mut after)?;
+        Ok(Some(GuestTscRestart {
+            before: tsc[0],
+            after: after[0],
+        }))
     }
 }
 
