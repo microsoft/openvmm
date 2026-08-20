@@ -3836,7 +3836,7 @@ async fn new_underhill_vm(
                     firmware_size,
                     device_size,
                 }) => {
-                    tracing::warn!(
+                    tracing::info!(
                         CVM_ALLOWED,
                         firmware_size,
                         device_size,
