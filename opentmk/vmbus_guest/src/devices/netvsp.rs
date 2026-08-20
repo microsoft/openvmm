@@ -865,7 +865,7 @@ impl Netvsp {
                 reason: "netvsp ring allocation failed",
             });
         }
-        let base_gpa = base as u64;
+        let base_gpa = crate::virt_to_phys(base);
         log::info!(
             "netvsp: ring region at GPA {:#x} ({} bytes)",
             base_gpa,
@@ -1400,7 +1400,7 @@ impl Netvsp {
         let rndis_total_bytes = (hdr_bytes.len() + req_bytes.len()) as u32;
         log::info!(
             "netvsp: rndis buffer at GPA {:#x}, {} bytes",
-            rndis_ptr as u64,
+            crate::virt_to_phys(rndis_ptr),
             rndis_total_bytes
         );
 
@@ -1425,7 +1425,7 @@ impl Netvsp {
         let tid = self.alloc_transaction_id();
         let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
-        let rndis_gpa = rndis_ptr as u64;
+        let rndis_gpa = crate::virt_to_phys(rndis_ptr);
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
         if self.channel.state() != ChannelState::Open {
@@ -1729,7 +1729,7 @@ impl Netvsp {
         let tid = self.alloc_transaction_id();
         let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
-        let rndis_gpa = rndis_ptr as u64;
+        let rndis_gpa = crate::virt_to_phys(rndis_ptr);
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
         let _need_signal =
@@ -2028,7 +2028,7 @@ impl Netvsp {
         let tid = self.alloc_transaction_id();
         let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
-        let rndis_gpa = rndis_ptr as u64;
+        let rndis_gpa = crate::virt_to_phys(rndis_ptr);
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
         let _need_signal =
@@ -2453,7 +2453,7 @@ fn allocate_gpadl_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfi
             reason: "GPADL buffer allocation failed",
         });
     }
-    let base_gpa = ptr as u64;
+    let base_gpa = crate::virt_to_phys(ptr);
 
     let pfn_count = size / 4096;
     let mut pfns: Vec<u64> = Vec::with_capacity(pfn_count);

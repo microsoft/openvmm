@@ -286,6 +286,60 @@ use alloc::vec::Vec;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 
+/// Translate a pointer (guest virtual address) to a guest-physical
+/// address (GPA).
+///
+/// This crate assumes all memory it allocates is **identity-mapped**
+/// — the guest-virtual address returned by the global allocator is
+/// numerically equal to the guest-physical address the hypervisor
+/// will see when it reads that page. Under this invariant
+/// `virt_to_phys` is a zero-cost cast.
+///
+/// # Identity-map invariant
+///
+/// The UEFI specification (§2.3) requires that all memory described
+/// in the UEFI memory map be identity-mapped during boot services,
+/// on both x86_64 and aarch64. This is the environment this crate
+/// runs in (`target_os = "uefi"`).
+///
+/// After `exit_boot_services` the UEFI-installed page tables remain
+/// active until someone reprograms CR3 / TTBR; opentmk never does
+/// this, so the mapping persists for the lifetime of the guest. The
+/// post-EBS allocator (opentmk's static heap) hands out pages that
+/// were identity-mapped at boot time.
+///
+/// # Load-bearing across the crate
+///
+/// Every place in this crate that hands a guest-physical address to
+/// the hypervisor — SIMP/SIEFP register writes in
+/// [`synic::init_synic`], GPADL PFN lists in
+/// [`gpadl::establish_gpadl`], and GPA-direct external buffer
+/// descriptors in [`ring::SendRing::write_gpa_direct`] — routes the
+/// address through this function. If the identity-map invariant
+/// ever fails (e.g. isolating opentmk under its own CR3, or a
+/// paravisor VTL1 layout that remaps guest memory), replace the
+/// body with a real translation and every consumer picks it up
+/// automatically:
+///
+/// * `HvCallTranslateVirtualAddress` (hypercall `0x52`) — asks the
+///   hypervisor to walk the guest's own page tables and return the
+///   GPA. Preferred if available.
+/// * Walk the guest's page tables directly — requires reading
+///   CR3/TTBR and matching the paging mode.
+///
+/// # Not for host-supplied addresses
+///
+/// Do **not** call this on pointers or offsets that don't come from
+/// the guest's own allocator — e.g. host-supplied recv-buffer
+/// offsets or foreign GPAs delivered over the wire. Those are
+/// already GPAs; passing them through this function is a no-op
+/// today but conceptually wrong and would break under a
+/// non-identity translation.
+#[inline]
+pub fn virt_to_phys<T>(ptr: *const T) -> u64 {
+    ptr as u64
+}
+
 /// Initialise the guest-side VMBus stack: bring up SynIC on the current VP,
 /// negotiate a protocol version with the host, and prime the message
 /// dispatcher.

@@ -241,8 +241,7 @@ pub fn init_synic_with_pages<C: HypercallPlatformTrait<Config = HyperVHypercallC
 /// Allocate SIMP + SIEFP pages via `uefi::boot::allocate_pages`
 /// without programming the registers. Useful for callers that want
 /// to control when `exit_boot_services` happens relative to the
-/// hypercalls.
-#[cfg(target_os = "uefi")]
+/// hypercalls.#[cfg(target_os = "uefi")]
 pub fn preallocate_synic_pages() -> Result<SynicPages> {
     allocate_synic_pages()
 }
@@ -251,8 +250,10 @@ pub fn preallocate_synic_pages() -> Result<SynicPages> {
 ///
 /// Uses `alloc::alloc::alloc_zeroed` with a 4 KiB-aligned Layout so
 /// the allocation works both **before** and **after**
-/// `exit_boot_services`. Under UEFI the identity-mapped VA is
-/// numerically equal to the GPA, so we cast pointer → u64.
+/// `exit_boot_services`. The returned VA → GPA translation goes
+/// through [`crate::virt_to_phys`], which today is a zero-cost cast
+/// under UEFI's identity-map invariant; see that function's doc for
+/// what to change if we ever run under non-identity paging.
 ///
 /// Pre-EBS this goes through the UEFI boot-services allocator (which
 /// hands back BOOT_SERVICES_DATA that becomes stale at EBS); post-EBS
@@ -285,8 +286,8 @@ fn allocate_synic_pages() -> Result<SynicPages> {
     }
 
     Ok(SynicPages {
-        simp_gpa: simp_ptr as u64,
-        siefp_gpa: siefp_ptr as u64,
+        simp_gpa: crate::virt_to_phys(simp_ptr),
+        siefp_gpa: crate::virt_to_phys(siefp_ptr),
     })
 }
 

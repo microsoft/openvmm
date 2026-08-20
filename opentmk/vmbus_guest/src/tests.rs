@@ -183,6 +183,20 @@ fn message_parse_rejects_wrong_type() {
     assert!(matches!(err, crate::Error::UnexpectedMessage(_)));
 }
 
+/// The `virt_to_phys` shim is currently a zero-cost cast under the
+/// UEFI identity-map invariant. This test locks that in — anyone
+/// changing the body to a real translation should update the shim's
+/// documentation and this test's expectation together.
+#[test]
+fn virt_to_phys_is_identity_today() {
+    let x = 0xDEAD_BEEF_u64;
+    let ptr = &x as *const u64;
+    assert_eq!(crate::virt_to_phys(ptr), ptr as u64);
+    // Null pointer is defined to map to 0 under a raw cast.
+    let null_ptr: *const u8 = core::ptr::null();
+    assert_eq!(crate::virt_to_phys(null_ptr), 0);
+}
+
 // ---------------------------------------------------------------------------
 // GPADL encoder tests
 // ---------------------------------------------------------------------------
