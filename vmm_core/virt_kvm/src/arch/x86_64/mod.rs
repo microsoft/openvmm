@@ -1150,7 +1150,29 @@ fn align_guest_tsc_to_reference_clock(
         return Ok(None);
     }
 
-    let guest_tsc_khz = bsp.tsc_khz()?;
+    // Every conversion below is scaled by this rate, so a rate that cannot be read does
+    // not merely make the correction inaccurate: the target counter falls out as zero
+    // ticks and the offset written to every vp puts the guest counter on an origin
+    // unrelated to anything. That is strictly worse than the no-op of leaving the counter
+    // alone, which is at least self-consistent, and the verification afterwards would
+    // report the missing lead without being able to undo the write. So this degrades
+    // exactly like the unsupported-attribute branch above does: the alignment is best
+    // effort and must not fail the partition build over it.
+    //
+    // Whether a rate is usable at all is the wrapper's judgement, not this function's -
+    // it rejects anything not strictly positive - so there is one place to look and no
+    // second opinion to keep in step with it here.
+    let guest_tsc_khz = match bsp.tsc_khz() {
+        Ok(khz) => khz,
+        Err(err) => {
+            tracing::warn!(
+                error = &err as &dyn std::error::Error,
+                "could not read a usable guest tsc rate; \
+                 the guest tsc will not be aligned to the partition reference clock"
+            );
+            return Ok(None);
+        }
+    };
     let offset = bsp.tsc_offset()?;
 
     prime_reference_clock_pairing(vm)?;
@@ -2604,6 +2626,22 @@ struct LeadTolerances {
 /// so the caller reports them at different levels instead of collapsing both into one
 /// "unexpected" line that a reader has to decode.
 fn classify_achieved_lead(achieved_ns: i64, against: &LeadTolerances) -> LeadVerdict {
+    // The sign is settled first, on its own terms. A negative lead is the counter behind
+    // the clock, which is the state the whole check exists to catch, and no allowance for
+    // what the instrument cannot see can make it acceptable.
+    //
+    // Stating it here also removes a coupling the rest of the function would otherwise
+    // depend on without saying so: the band comparison below casts to `u64`, which is
+    // sound only while every negative value has already been rejected. Today that holds
+    // by arithmetic rather than by intent - a resolution derived from any plausible
+    // counter rate cannot reach a 20 us floor, so the floor test catches the negatives
+    // first - and it stops holding the moment the floor is lowered towards a microsecond.
+    // A small negative lead would then clear the floor test, widen into a huge positive
+    // on the cast, and be reported as a harmless overshoot: the dangerous direction
+    // rendered as the safe one.
+    if achieved_ns < 0 {
+        return LeadVerdict::BelowFloor;
+    }
     // Judged at the resolution of the instrument. A reported shortfall smaller than what
     // the verification's own conversions discard says nothing about where the counter is,
     // and firing on it costs the alarm its meaning: measured on this host, the bare
@@ -3324,6 +3362,71 @@ mod tests {
                 &tolerances(GUEST_TSC_LEAD_FLOOR_NS, 0, KHZ)
             ),
             LeadVerdict::AsIntended,
+        );
+    }
+
+    #[test]
+    fn a_negative_lead_is_under_the_floor_however_coarse_the_instrument() {
+        // The counter behind the clock is the failure the floor exists to catch, so the
+        // sign has to decide the verdict on its own rather than have an allowance added
+        // to it first. A resolution wider than the floor is what separates the two: added
+        // to a small negative lead it clears the floor arithmetically, and the band
+        // comparison that follows reads the negative through an unsigned cast, so the
+        // dangerous direction would be reported as a harmless overshoot.
+        let coarse = LeadTolerances {
+            requested_ns: GUEST_TSC_LEAD_FLOOR_NS,
+            band_ns: GUEST_TSC_LEAD_FLOOR_NS,
+            resolution_ns: GUEST_TSC_LEAD_FLOOR_NS + 5_000,
+        };
+        for measured in [-1i64, -5_000, -22_080, i64::MIN] {
+            assert_eq!(
+                classify_achieved_lead(measured, &coarse),
+                LeadVerdict::BelowFloor,
+                "{measured} ns is the counter trailing the clock",
+            );
+        }
+        // And at a resolution the caller would really derive, where the floor test
+        // happens to catch the same values, so the two agree rather than one covering up
+        // for the other.
+        for khz in RATES_KHZ {
+            assert_eq!(
+                classify_achieved_lead(-1, &tolerances(GUEST_TSC_LEAD_FLOOR_NS, 0, khz)),
+                LeadVerdict::BelowFloor,
+                "khz={khz}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_tsc_rate_would_put_the_counter_on_a_meaningless_origin() {
+        // Why the caller refuses an unusable rate at the entry point instead of letting
+        // the conversions absorb it. Each leaf special-cases zero so it cannot divide by
+        // it, which keeps them all DEFINED - and none of that keeps the answer MEANINGFUL.
+        // The rate is not reachable through the ioctl wrapper without a live vcpu, so what
+        // is checkable here is the arithmetic the guard stands in front of.
+        let clock_ns = 900_000;
+        let offset = 0x1234_5678_9abc_def0;
+        let guest_tsc = 0x0fed_cba9_8765_4321;
+        // The target collapses to zero ticks whatever the clock reads, so the offset that
+        // gets written to every vp carries no relation to the reference clock at all.
+        assert_eq!(
+            guest_tsc_ticks_at_reference_clock_plus_lead(clock_ns, lead_ns(), 0),
+            0,
+        );
+        assert_eq!(
+            tsc_offset_aligned_to_reference_clock(offset, guest_tsc, clock_ns, 0, lead_ns()),
+            offset.wrapping_sub(guest_tsc),
+        );
+        // The verification does notice - it reads the lead as zero for any counter, and
+        // zero is under the floor - but only after the write. Noticing is not undoing,
+        // which is what makes this worse than not aligning at all.
+        assert_eq!(
+            guest_tsc_lead_from_reference_clock(guest_tsc, clock_ns, 0),
+            0
+        );
+        assert_eq!(
+            classify_achieved_lead(0, &tolerances(lead_ns(), 0, KHZ)),
+            LeadVerdict::BelowFloor,
         );
     }
 

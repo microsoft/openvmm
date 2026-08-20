@@ -379,6 +379,8 @@ pub enum Error {
     SetDeviceAttr(#[source] nix::Error),
     #[error("GetTscKhz")]
     GetTscKhz(#[source] nix::Error),
+    #[error("kvm reported an implausible guest tsc rate of {0} kHz")]
+    ImplausibleTscKhz(libc::c_int),
     #[error("GetTscOffset")]
     GetTscOffset(#[source] nix::Error),
     #[error("SetTscOffset")]
@@ -1778,20 +1780,34 @@ impl<'a> Processor<'a> {
     /// sees: where the hardware supports TSC scaling the two differ, and every conversion
     /// between the counter and a wall-clock duration has to use the guest's rate to come
     /// out right.
+    ///
+    /// A rate that is not strictly positive is an error rather than a cast. The ioctl
+    /// hands back a signed int, so a negative one widens into a rate near 4.29e9 kHz and
+    /// a zero divides or multiplies every conversion down to nothing; both give a caller
+    /// a number it cannot tell from a real one, and a scaling derived from either is
+    /// worse than no scaling at all. Returning the raw value keeps which of the two it
+    /// was in the error.
     #[cfg(target_arch = "x86_64")]
     pub fn tsc_khz(&self) -> Result<u32> {
         // SAFETY: the request carries no payload; the rate comes back as the result.
         let khz = unsafe {
             ioctl::kvm_get_tsc_khz(self.get().vcpu.as_raw_fd()).map_err(Error::GetTscKhz)?
         };
+        if khz <= 0 {
+            return Err(Error::ImplausibleTscKhz(khz));
+        }
         Ok(khz as u32)
     }
 
     /// Returns whether the kernel implements the vcpu TSC-offset attribute.
     ///
-    /// The attribute landed in Linux 5.16, so an older kernel answers `ENXIO` here
-    /// rather than failing the write later. Callers that only want the TSC to move
-    /// can degrade quietly on `false`.
+    /// ANY error is read as "not implemented", not only the `ENXIO` that a kernel older
+    /// than the attribute's 5.16 debut answers with in practice. Reporting the reason
+    /// would be reporting it to nobody: the probe exists so that the write is not
+    /// attempted blind, and no error it can return leaves a caller anything to do except
+    /// go without the attribute, so a `Result` would hand back a decision that cannot be
+    /// made differently. Callers that only want the TSC to move can degrade quietly on
+    /// `false`.
     #[cfg(target_arch = "x86_64")]
     pub fn supports_tsc_offset(&self) -> bool {
         // SAFETY: KVM_HAS_DEVICE_ATTR reads only the struct; `addr` is unused for it.
