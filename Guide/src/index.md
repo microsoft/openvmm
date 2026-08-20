@@ -3,8 +3,8 @@
 OpenVMM is a modular, cross-platform Virtual Machine Monitor (VMM), written in
 Rust.
 
-Although it can function as a traditional VMM, OpenVMM's development is
-currently focused on its role in the [OpenHCL paravisor][paravisor].
+OpenVMM can run as a traditional VMM and also serves as the VMM within the
+[OpenHCL paravisor][paravisor].
 
 The project is open-source, MIT Licensed, and developed publicly at
 [microsoft/openvmm](https://github.com/microsoft/openvmm) on GitHub.
@@ -50,16 +50,9 @@ enabling several important Azure scenarios:
 ## Standalone VMM
 
 OpenVMM can also run as a general-purpose VMM on a Windows, Linux, or macOS
-host. At the moment, this is primarily a development vehicle: most of the same
-code runs in OpenVMM on a host and OpenVMM in a paravisor, and it is often
-easier to test it on a host.
-
-We will continue to build and test OpenVMM in this configuration, but currently
-we are not focused on the goal of supporting this for production workloads. It
-is missing many of the features and interface stability that are required for
-general-purpose use. We recommend you consider other Rust-based VMMs such as
-[Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) for
-such use cases.
+host. This configuration shares most of its code with OpenVMM running in a
+paravisor and provides a convenient environment for running and testing virtual
+machines directly on a host.
 
 ## Relationship to other Rust-based VMMs
 

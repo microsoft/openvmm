@@ -1,29 +1,25 @@
 # Windows - OpenVMM
 
-OpenVMM currently has basic support for running with OpenHCL when run on Windows
-with WHP, with some caveats:
+OpenVMM can run OpenHCL on Windows using WHP. Compared with running OpenHCL on
+Hyper-V, this environment has the following differences:
 
-1. Performance is not great due to the extra overhead of OpenVMM modeling VTLs,
-   not the hypervisor.
-2. Not all hypercalls are implemented, only the set used by OpenHCL.
-3. Not all OpenHCL configuration and runtime management APIs are exposed / wired-up.
+1. Modeling VTLs in OpenVMM adds overhead compared with hypervisor-provided
+   VTLs.
+2. The WHP path implements the hypercalls used by OpenHCL rather than the full
+   Hyper-V hypercall surface.
+3. Some OpenHCL configuration and runtime management APIs are not exposed
+   through this path.
 
-These are all caveats that can (and will) be overcome with additional
-investments into OpenVMM.
-
-That said: running OpenHCL on OpenVMM is currently considered to be a **dev-only
-workflow**, not suitable for production use.
-
-To get a more complete and accurate experience of what OpenHCL's production
-runtime characteristics and user ergonomics are like, we currently suggest
-[running OpenHCL on Hyper-V](./hyperv.md).
+This configuration is intended primarily for developing and validating
+OpenHCL. It does not reproduce every runtime or performance characteristic of
+Hyper-V. To evaluate behavior in a Hyper-V environment, see
+[Running OpenHCL on Hyper-V](./hyperv.md).
 
 ## Examples
 
 ```admonish warning
-These examples assume basic familiarity with the OpenVMM command line, and a
-willingness to deal with OpenVMM's various "rough edges" (as described in
-[Getting Started: OpenVMM](../../openvmm.md#disclaimer)).
+These examples assume basic familiarity with the OpenVMM command line. See
+[Running OpenVMM](../../openvmm/run.md) for an introduction.
 ```
 
 ```admonish tip

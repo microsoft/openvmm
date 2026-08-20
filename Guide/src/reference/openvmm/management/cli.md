@@ -1,10 +1,11 @@
 # CLI
 
-```admonish danger title="Disclaimer"
-The following list is not exhaustive, and may be out of date.
-
-The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html),
-as well as the generated CLI help (via `cargo run -- --help`).
+```admonish note title="CLI compatibility and reference"
+The CLI is not a stable compatibility interface and may change between
+releases. This page summarizes OpenVMM's command-line options. The generated
+`openvmm --help` output is authoritative for the binary being run, and the
+[`Options` rustdoc](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html)
+describes the source definitions.
 ```
 
 * `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints
