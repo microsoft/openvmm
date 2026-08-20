@@ -3175,11 +3175,11 @@ pub mod boot_image_type {
     pub trait BootImageType: private::Sealed {}
 
     /// BootImageConfig for a VHD file
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Vhd {}
 
     /// BootImageConfig for an ISO file
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Iso {}
 
     impl BootImageType for Vhd {}
@@ -3187,7 +3187,7 @@ pub mod boot_image_type {
 }
 
 /// Configuration information for the boot drive of the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     /// Artifact source corresponding to the boot media (local or remote).
     artifact: ResolvedArtifactSource,
@@ -3199,17 +3199,6 @@ pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     quirks: GuestQuirks,
     /// Marker denoting what type of media `artifact` corresponds to
     _type: core::marker::PhantomData<T>,
-}
-
-impl<T: boot_image_type::BootImageType> Clone for BootImageConfig<T> {
-    fn clone(&self) -> Self {
-        Self {
-            artifact: self.artifact.clone(),
-            os_flavor: self.os_flavor,
-            quirks: self.quirks.clone(),
-            _type: core::marker::PhantomData,
-        }
-    }
 }
 
 impl<T: boot_image_type::BootImageType> BootImageConfig<T> {

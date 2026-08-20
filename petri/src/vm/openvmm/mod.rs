@@ -32,7 +32,6 @@ use crate::OpenvmmLogConfig;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
-use crate::PetriVmRuntime;
 use crate::PetriVmRuntimeConfig;
 use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
@@ -153,13 +152,22 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     }
 }
 
+/// Reusable OpenVMM configuration for tests that launch the same VM recipe in
+/// multiple worker processes.
+pub struct OpenVmmRelaunchConfig {
+    builder: PetriVmBuilder<OpenVmmPetriBackend>,
+    _prepared_initrd_guard: Option<TempPath>,
+}
+
 impl PetriVmBuilder<OpenVmmPetriBackend> {
-    /// Exercise the cross-process snapshot restore path (like production
-    /// `openvmm --restore-snapshot`): boot worker #1, save, tear it down, then
-    /// restore its snapshot on a fresh worker #2. This is the only path that
-    /// reproduces fresh-worker restore issues, which the in-process pulse
-    /// cannot reach because it restores into the same worker.
-    pub async fn verify_openvmm_cross_process_restore(self) -> anyhow::Result<()> {
+    /// Prepare this configuration for launching multiple OpenVMM workers with
+    /// the same VM recipe.
+    pub fn prepare_openvmm_relaunch(self) -> anyhow::Result<OpenVmmRelaunchConfig> {
+        anyhow::ensure!(
+            self.modify_vmm_config.is_none(),
+            "OpenVMM relaunch configurations do not support modify_backend"
+        );
+
         let mut builder = self.add_boot_disk().add_agent_disks();
         let prepared_initrd_guard =
             if builder.uses_pipette_as_init() && builder.prebuilt_initrd.is_none() {
@@ -170,90 +178,50 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
                 None
             };
 
-        let openvmm_path = builder.backend.openvmm_path.clone();
-        let resources = &builder.resources;
+        Ok(OpenVmmRelaunchConfig {
+            builder,
+            _prepared_initrd_guard: prepared_initrd_guard,
+        })
+    }
+}
 
-        // Both workers build from an identical recipe so the snapshot restores.
-        let recipe = builder.config.clone();
-        let props1 = builder.properties();
-        let props2 = builder.properties();
-        let props3 = builder.properties();
+impl OpenVmmRelaunchConfig {
+    async fn config(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+    ) -> anyhow::Result<PetriVmConfigOpenVmm> {
+        Ok(PetriVmConfigOpenVmm::new(
+            &self.builder.backend.openvmm_path,
+            self.builder.config.clone(),
+            &self.builder.resources,
+            self.builder.properties(),
+        )
+        .await?
+        .with_memory_backing_file(memory_backing_file))
+    }
 
-        // Shared backing file carries guest RAM across the process boundary.
-        let backing =
-            tempfile::NamedTempFile::new().context("failed to create guest memory backing file")?;
-        let backing_path = backing.into_temp_path();
+    /// Launch a new worker using this VM recipe and file-backed guest memory.
+    pub async fn launch(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+    ) -> anyhow::Result<PetriVmOpenVmm> {
+        let (vm, _) = self.config(memory_backing_file).await?.run_core().await?;
+        Ok(vm)
+    }
 
-        // Worker #1: cold boot, reach steady state, save.
-        tracing::info!("cross-process restore: booting worker #1");
-        let cfg1 = PetriVmConfigOpenVmm::new(&openvmm_path, recipe.clone(), resources, props1)
+    /// Launch a new worker using this VM recipe and restore its state from
+    /// serialized snapshot bytes.
+    pub async fn restore(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+        saved_state: &[u8],
+    ) -> anyhow::Result<PetriVmOpenVmm> {
+        let (vm, _) = self
+            .config(memory_backing_file)
             .await?
-            .with_memory_backing_file(backing_path.to_path_buf());
-        let (mut vm1, _rc1) = cfg1.run_core().await?;
-
-        let client = vm1.wait_for_agent(false).await?;
-        client.ping().await?;
-        drop(client);
-        vm1.pause().await?;
-        let saved_state = vm1.save_state_protobuf().await?;
-        vm1.teardown().await?;
-
-        // Worker #2: fresh worker restoring the snapshot (the regression gate).
-        tracing::info!("cross-process restore: launching worker #2 from saved state");
-        let cfg2 = PetriVmConfigOpenVmm::new(&openvmm_path, recipe.clone(), resources, props2)
-            .await?
-            .with_memory_backing_file(backing_path.to_path_buf());
-        let (mut vm2, _rc2) = cfg2
             .run_restore(saved_state)
-            .await
-            .context("restoring snapshot onto a fresh worker failed")?;
-
-        let client = vm2.wait_for_agent(false).await?;
-        client.ping().await?;
-        drop(client);
-
-        // The restore wrapper must retain the recipe through in-process
-        // save/reset/restore.
-        vm2.verify_save_restore().await?;
-        let client = vm2.wait_for_agent(false).await?;
-        client.ping().await?;
-
-        // A guest reboot executes the retained recipe rather than turning into
-        // the old Restore/None no-op.
-        client.reboot().await?;
-        drop(client);
-        let halt_reason = vm2.wait_for_halt(true).await?;
-        anyhow::ensure!(
-            halt_reason.reason == crate::PetriHaltReason::Reset,
-            "expected reset after guest reboot, got {halt_reason:?}"
-        );
-        let client = vm2.wait_for_agent(false).await?;
-        client.ping().await?;
-        drop(client);
-
-        // Save the restored worker and restore that state on another fresh
-        // worker. The recipe must remain wrapped exactly once.
-        vm2.pause().await?;
-        let saved_state = vm2.save_state_protobuf().await?;
-        vm2.teardown().await?;
-
-        tracing::info!("cross-process restore: launching worker #3 from saved state");
-        let cfg3 = PetriVmConfigOpenVmm::new(&openvmm_path, recipe, resources, props3)
-            .await?
-            .with_memory_backing_file(backing_path.to_path_buf());
-        let (mut vm3, _rc3) = cfg3
-            .run_restore(saved_state)
-            .await
-            .context("restoring a snapshot produced by a restored worker failed")?;
-
-        let client = vm3.wait_for_agent(false).await?;
-        client.ping().await?;
-        drop(client);
-
-        vm3.teardown().await?;
-        drop(backing_path);
-        drop(prepared_initrd_guard);
-        Ok(())
+            .await?;
+        Ok(vm)
     }
 }
 

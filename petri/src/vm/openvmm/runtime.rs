@@ -353,12 +353,6 @@ impl PetriVmOpenVmm {
         pub async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>
     );
     petri_vm_fn!(
-        /// Save the VM's state as a raw [`ProtobufMessage`](mesh::payload::message::ProtobufMessage),
-        /// to feed directly into a fresh worker's restore path (no encode/decode
-        /// round-trip). The VM should be paused first.
-        pub(crate) async fn save_state_protobuf(&mut self) -> anyhow::Result<mesh::payload::message::ProtobufMessage>
-    );
-    petri_vm_fn!(
         /// Resume a paused VM.
         pub async fn resume(&mut self) -> anyhow::Result<()>
     );
@@ -783,10 +777,6 @@ impl PetriVmInner {
     async fn save_state(&self) -> anyhow::Result<Vec<u8>> {
         let state_msg = self.worker.save().await?;
         Ok(mesh::payload::encode(state_msg))
-    }
-
-    async fn save_state_protobuf(&self) -> anyhow::Result<mesh::payload::message::ProtobufMessage> {
-        self.worker.save().await
     }
 
     async fn resume(&self) -> anyhow::Result<()> {

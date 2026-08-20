@@ -36,8 +36,10 @@ impl PetriVmConfigOpenVmm {
     /// pulse (`verify_save_restore`) cannot reach.
     pub(crate) async fn run_restore(
         self,
-        saved_state: ProtobufMessage,
+        saved_state: &[u8],
     ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        let saved_state: ProtobufMessage = mesh::payload::decode(saved_state)
+            .context("failed to decode serialized saved state")?;
         self.run_core_inner(Some(saved_state)).await
     }
 
@@ -204,9 +206,9 @@ impl PetriVmConfigOpenVmm {
         tracing::info!("Resuming VM");
         vm.resume().await?;
 
-        // Run the basic save/restore pulse if supported. Skip on the restore
-        // path (the worker is already restoring a snapshot).
-        if supports_save_restore && !is_minimal && !restoring {
+        // Run the basic save/restore pulse if supported. This also verifies
+        // that a restored VM can be saved and restored again.
+        if supports_save_restore && !is_minimal {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
         }
