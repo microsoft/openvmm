@@ -28,6 +28,7 @@ mod ioctl {
     use kvm_bindings::*;
     #[cfg(target_arch = "x86_64")]
     use nix::errno::Errno;
+    use nix::ioctl_none_bad;
     use nix::ioctl_read;
     use nix::ioctl_readwrite;
     use nix::ioctl_readwrite_bad;
@@ -98,6 +99,11 @@ mod ioctl {
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_debugregs, KVMIO, 0xa2, kvm_debugregs);
     ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, kvm_enable_cap);
+    // Shares its number with KVM_ENABLE_CAP above; the two differ in the direction and
+    // size bits of the request code, so both spellings of 0xa3 are distinct requests.
+    // This one carries no payload at all and returns the rate as its result.
+    #[cfg(target_arch = "x86_64")]
+    ioctl_none_bad!(kvm_get_tsc_khz, request_code_none!(KVMIO, 0xa3));
     #[cfg(target_arch = "x86_64")]
     ioctl_read!(kvm_get_xsave, KVMIO, 0xa4, kvm_xsave);
     #[cfg(target_arch = "x86_64")]
@@ -371,6 +377,8 @@ pub enum Error {
     CreateDevice(#[source] nix::Error),
     #[error("SetDeviceAttr")]
     SetDeviceAttr(#[source] nix::Error),
+    #[error("GetTscKhz")]
+    GetTscKhz(#[source] nix::Error),
     #[error("GetTscOffset")]
     GetTscOffset(#[source] nix::Error),
     #[error("SetTscOffset")]
@@ -1185,14 +1193,24 @@ impl Partition {
         Ok(())
     }
 
-    /// Gets the current kvmclock value.
-    pub fn get_clock_ns(&self) -> Result<kvm_clock_data> {
+    /// Gets the current kvmclock value, with the host counter it was sampled at when the
+    /// kernel reports one.
+    pub fn get_clock(&self) -> Result<ClockReading> {
         let mut clock = kvm_clock_data::default();
         // SAFETY: Calling IOCTL as documented, with no special requirements.
         unsafe {
             ioctl::kvm_get_clock(self.vm.as_raw_fd(), &mut clock).map_err(Error::GetClock)?;
         }
-        Ok(clock)
+        Ok(ClockReading {
+            clock_ns: clock.clock,
+            // Both of these are only meaningful when the kernel says so: the fields are
+            // left at whatever the caller passed in on the branch that does not sample
+            // them, so a caller reading one unconditionally gets a zero that looks like a
+            // reading. Decoded here rather than at the call sites so the flag bit and the
+            // field it guards stay together.
+            host_tsc: (clock.flags & KVM_CLOCK_HOST_TSC != 0).then_some(clock.host_tsc),
+            realtime_ns: (clock.flags & KVM_CLOCK_REALTIME != 0).then_some(clock.realtime),
+        })
     }
 
     /// Sets the current kvmclock value.
@@ -1207,6 +1225,25 @@ impl Partition {
         }
         Ok(())
     }
+}
+
+/// A reading of the partition's kvmclock.
+#[derive(Debug, Copy, Clone)]
+pub struct ClockReading {
+    /// The kvmclock, in nanoseconds.
+    pub clock_ns: u64,
+    /// The host timestamp counter at the instant the kernel sampled `clock_ns`, when the
+    /// kernel reported the pair.
+    ///
+    /// Present only on the masterclock branch of the kernel's clock read (`__get_kvmclock`
+    /// sets `KVM_CLOCK_HOST_TSC` there and computes `clock` from exactly this counter
+    /// value), which is why it is an option rather than a field: a caller that needs the
+    /// two as one observation has to know when the kernel is offering that and when it
+    /// has to measure the pairing itself.
+    pub host_tsc: Option<u64>,
+    /// Host wall-clock time at the same instant, in nanoseconds since the epoch, when the
+    /// kernel reported it.
+    pub realtime_ns: Option<u64>,
 }
 
 /// An in-kernel emulated device.
@@ -1733,6 +1770,21 @@ impl<'a> Processor<'a> {
                 },
             )
         }
+    }
+
+    /// Returns the rate the guest's timestamp counter runs at, in kHz.
+    ///
+    /// Asked of the vcpu rather than the vm so that the answer is the rate the GUEST
+    /// sees: where the hardware supports TSC scaling the two differ, and every conversion
+    /// between the counter and a wall-clock duration has to use the guest's rate to come
+    /// out right.
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_khz(&self) -> Result<u32> {
+        // SAFETY: the request carries no payload; the rate comes back as the result.
+        let khz = unsafe {
+            ioctl::kvm_get_tsc_khz(self.get().vcpu.as_raw_fd()).map_err(Error::GetTscKhz)?
+        };
+        Ok(khz as u32)
     }
 
     /// Returns whether the kernel implements the vcpu TSC-offset attribute.

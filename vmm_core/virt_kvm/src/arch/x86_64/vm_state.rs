@@ -43,9 +43,9 @@ impl AccessVmState for &'_ KvmPartition {
         // Round up so that restoring this value never moves the kvm clock
         // backwards, since the guest can observe the clock at nanosecond
         // granularity.
-        let clock = self.inner.kvm.get_clock_ns()?;
+        let clock = self.inner.kvm.get_clock()?;
         Ok(vm::ReferenceTime {
-            value: clock.clock.div_ceil(100),
+            value: clock.clock_ns.div_ceil(100),
         })
     }
 
