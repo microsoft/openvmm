@@ -3,6 +3,7 @@
 
 use core::alloc::GlobalAlloc;
 use core::cell::RefCell;
+use core::ptr::NonNull;
 
 use linked_list_allocator::LockedHeap;
 use spin::Mutex;
@@ -11,9 +12,11 @@ use uefi::boot::AllocateType;
 use uefi::boot::MemoryType;
 use uefi::boot::{self};
 
+/// The number of bytes in one mebibyte.
 pub const SIZE_1MB: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 4096;
 
+/// The global allocator used by the UEFI runtime.
 #[global_allocator]
 pub static ALLOCATOR: MemoryAllocator = MemoryAllocator {
     use_locked_heap: Mutex::new(RefCell::new(false)),
@@ -21,6 +24,7 @@ pub static ALLOCATOR: MemoryAllocator = MemoryAllocator {
     uefi_allocator: Allocator {},
 };
 
+/// An allocator that can switch from UEFI boot services to a fixed-size heap.
 pub struct MemoryAllocator {
     use_locked_heap: Mutex<RefCell<bool>>,
     locked_heap: LockedHeap,
@@ -56,10 +60,22 @@ unsafe impl GlobalAlloc for MemoryAllocator {
 }
 
 impl MemoryAllocator {
+    /// Allocates `num_pages` pages of UEFI loader-data memory.
+    pub fn allocate_pages_uefi(
+        &self,
+        ty: AllocateType,
+        num_pages: usize,
+    ) -> Result<NonNull<u8>, uefi::Error> {
+        boot::allocate_pages(ty, MemoryType::LOADER_DATA, num_pages)
+    }
+
+    /// Switches allocation to a locked heap of at least `size` MiB.
+    ///
+    /// Returns `false` if UEFI boot services cannot allocate the heap.
     pub fn switch_to_capped_heap(&self, size: usize) -> bool {
         let pages = ((SIZE_1MB * size) / 4096) + 1;
         let size = pages * 4096;
-        let mem: Result<core::ptr::NonNull<u8>, uefi::Error> = boot::allocate_pages(
+        let mem: Result<NonNull<u8>, uefi::Error> = boot::allocate_pages(
             AllocateType::AnyPages,
             MemoryType::BOOT_SERVICES_DATA,
             pages,
@@ -74,10 +90,12 @@ impl MemoryAllocator {
         true
     }
 
-    #[expect(dead_code)]
-    pub fn get_page_aligned_memory(&self, size: usize) -> *mut u8 {
+    /// Allocates page-aligned memory with capacity for at least `size` MiB.
+    ///
+    /// Returns a null pointer if UEFI boot services cannot allocate the memory.
+    pub fn get_page_aligned_memory_uefi(&self, size: usize) -> *mut u8 {
         let pages = ((SIZE_1MB * size) / PAGE_SIZE) + 1;
-        let mem: Result<core::ptr::NonNull<u8>, uefi::Error> = boot::allocate_pages(
+        let mem: Result<NonNull<u8>, uefi::Error> = boot::allocate_pages(
             AllocateType::AnyPages,
             MemoryType::BOOT_SERVICES_DATA,
             pages,
