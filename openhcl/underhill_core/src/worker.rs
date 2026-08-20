@@ -3705,7 +3705,7 @@ async fn new_underhill_vm(
     //
     // Set when a hibernated firmware image is restored from VMGS on resume, so
     // the cold-boot snapshot below can skip re-storing an image already in VMGS.
-    let mut firmware_restored_from_vmgs = false;
+    let mut firmware_loaded_from_vmgs = false;
     let current_hibernate_token = if !dps.general.hibernation_enabled
         || !matches!(firmware_type, FirmwareType::Uefi)
     {
@@ -3746,7 +3746,7 @@ async fn new_underhill_vm(
                 if restore_vtl0_firmware_from_vmgs(gm.vtl0(), &mut measured_vtl0_info, vmgs_client)
                     .await
                 {
-                    firmware_restored_from_vmgs = true;
+                    firmware_loaded_from_vmgs = true;
                     tracing::info!(
                         CVM_ALLOWED,
                         resume = %token,
@@ -3829,7 +3829,7 @@ async fn new_underhill_vm(
     // servicing restore (its firmware already has dynamic config applied and is
     // no longer pristine) and when the image was just restored from VMGS (it is
     // already saved there).
-    if dps.general.hibernation_enabled && !is_restoring && !firmware_restored_from_vmgs {
+    if dps.general.hibernation_enabled && !is_restoring && !firmware_loaded_from_vmgs {
         if let (Some(uefi_info), Some(vmgs_client)) = (
             measured_vtl0_info
                 .as_ref()
