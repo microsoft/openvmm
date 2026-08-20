@@ -219,10 +219,6 @@ const EFI_SECTION_PE32: u8 = 0x10;
 /// hibernated firmware image) can recompute the entry point from the new image.
 /// Returns `None` if the image has no recognizable SEC firmware volume / entry
 /// point.
-///
-/// All indexing is bounds-checked and arithmetic overflow-checked so a
-/// malformed/corrupt image (e.g. restored from VMGS) returns `None` rather than
-/// panicking or looping.
 pub fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     // Skip to SEC volume start.
     let mut image_offset = SEC_FIRMWARE_VOLUME_OFFSET;
