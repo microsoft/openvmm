@@ -60,6 +60,7 @@ impl virt::Hypervisor for LinuxMshv {
             supports_gic_v3: true,
             supports_its: false,
             device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Configurable,
+            shared_gpa_bit: None,
         }
     }
 

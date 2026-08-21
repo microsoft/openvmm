@@ -89,13 +89,18 @@ describes the source definitions.
   --hypervisor kvm
   ```
 * `--isolation <MODE>`: Enable a confidential or isolated VM mode.
-  Supported modes include `vbs` and, for `x86_64` guests on KVM, `snp`.
+  Supported modes include `vbs`, `snp` for `x86_64` KVM guests, and `cca` for
+  `aarch64` KVM guests.
 
   SNP support is currently limited to Linux direct boot and is intended for
   bring-up. It does not support UEFI, Hyper-V enlightenments, VTL2, VMBus,
   or hugetlb-backed memory. In addition to the minimal emulated chipset and
   serial console, optional devices are limited to virtio devices attached
   through PCIe.
+
+  CCA support requires device-tree Linux direct boot with shared userspace RAM
+  backing. It does not support Hyper-V enlightenments, VTL2, VMBus, hugetlb
+  memory, assigned devices, vhost-user devices, PCIe hotplug, or CXL.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and

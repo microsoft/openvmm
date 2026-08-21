@@ -27,6 +27,7 @@ use core::panic;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
+use kvm::KVM_CAP_ARM_RMI_UAPI;
 use kvm::KVM_CAP_ARM_VM_IPA_SIZE;
 use kvm::KVM_DEV_ARM_VGIC_CTRL_INIT;
 use kvm::KVM_DEV_ARM_VGIC_GRP_ADDR;
@@ -227,6 +228,8 @@ pub struct Kvm {
     kvm: kvm::Kvm,
     supports_gic_v3: bool,
     supports_its: bool,
+    ipa_size: u8,
+    cca_ipa_size: Option<u8>,
 }
 
 impl Kvm {
@@ -240,6 +243,31 @@ impl Kvm {
         // Probe GIC version by creating a throwaway VM and attempting to
         // create a GICv3 device. If that fails, try GICv2.
         let kvm = kvm::Kvm::from(file);
+        let ipa_size = match kvm
+            .check_extension(KVM_CAP_ARM_VM_IPA_SIZE)
+            .map_err(kvm::Error::CheckExtension)?
+        {
+            v if v > 0 => v as u8,
+            _ => 40,
+        };
+        let cca_ipa_size = if kvm
+            .check_extension(KVM_CAP_ARM_RMI_UAPI)
+            .map_err(kvm::Error::CheckExtension)?
+            != 0
+        {
+            match kvm.new_realm_vm_with_max_ipa_size(ipa_size) {
+                Ok((_probe_realm, cca_ipa_size)) => Some(cca_ipa_size),
+                Err(err) => {
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to probe KVM CCA Realm IPA size"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let probe_vm = kvm.new_vm(kvm::VmType::Default)?;
         let supports_gic_v3 = if probe_vm
             .test_create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3)
@@ -255,7 +283,12 @@ impl Kvm {
             return Err(KvmError::NoGic);
         };
 
-        tracing::info!(supports_gic_v3, "detected KVM GIC version");
+        tracing::info!(
+            supports_gic_v3,
+            host_ipa_size = ipa_size,
+            ?cca_ipa_size,
+            "detected KVM GIC version and IPA sizes"
+        );
 
         // Probe ITS support: only available with GICv3.
         let supports_its = supports_gic_v3
@@ -269,6 +302,8 @@ impl Kvm {
             kvm,
             supports_gic_v3,
             supports_its,
+            ipa_size,
+            cca_ipa_size,
         })
     }
 }
@@ -381,10 +416,12 @@ impl virt::vp::AccessVpState for &'_ mut KvmProcessor<'_> {
         set_reg(KvmRegisterId::X28, value.x28)?;
         set_reg(KvmRegisterId::X29, value.fp)?;
         set_reg(KvmRegisterId::X30, value.lr)?;
-        set_reg(KvmRegisterId::SP, value.sp_el0)?;
         set_reg(KvmRegisterId::PC, value.pc)?;
-        set_reg(KvmRegisterId::SP_EL1, value.sp_el1)?;
-        set_reg(KvmRegisterId::PSTATE, value.cpsr)?;
+        if self.partition.caps.isolation != virt::IsolationType::Cca {
+            set_reg(KvmRegisterId::SP, value.sp_el0)?;
+            set_reg(KvmRegisterId::SP_EL1, value.sp_el1)?;
+            set_reg(KvmRegisterId::PSTATE, value.cpsr)?;
+        }
 
         Ok(())
     }
@@ -410,6 +447,10 @@ impl virt::vp::AccessVpState for &'_ mut KvmProcessor<'_> {
     }
 
     fn set_system_registers(&mut self, value: &SystemRegisters) -> Result<(), Self::Error> {
+        if self.partition.caps.isolation == virt::IsolationType::Cca {
+            return Ok(());
+        }
+
         let set_reg = |id: KvmRegisterId, value: u64| -> Result<(), KvmError> {
             // tracing::warn!("set_sreg: {:?}({:#x}) = {:x}", id, id.0, value);
             self.kvm.set_reg64(id.into(), value).map_err(KvmError::Kvm)
@@ -481,26 +522,71 @@ impl virt::Processor for KvmProcessor<'_> {
                     self.runner.complete_exit()
                 } else {
                     // Run the VP.
+                    if self.partition.caps.isolation == virt::IsolationType::Cca {
+                        if self.partition.cca_fatal.load(Ordering::Acquire) {
+                            return Err(
+                                dev.fatal_error(KvmRunVpError::CcaMemoryCleanupFailed.into())
+                            );
+                        }
+                        match *self.partition.cca_launch_state.lock() {
+                            crate::CcaLaunchState::Populated => {}
+                            crate::CcaLaunchState::Failed => {
+                                return Err(
+                                    dev.fatal_error(KvmRunVpError::CcaPopulationFailed.into())
+                                );
+                            }
+                            crate::CcaLaunchState::NotStarted
+                            | crate::CcaLaunchState::Populating => {
+                                return Err(dev.fatal_error(KvmRunVpError::CcaNotPopulated.into()));
+                            }
+                        }
+                    }
                     self.runner.run()
                 };
 
-                let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
+                let exit = match exit {
+                    Ok(exit) => exit,
+                    Err(kvm::Error::RunMemoryFault {
+                        flags, gpa, size, ..
+                    }) if self.partition.caps.isolation == virt::IsolationType::Cca => {
+                        match self.partition.handle_cca_ripas_change(gpa, size, flags) {
+                            Ok(()) => {
+                                pending_exit = false;
+                                continue;
+                            }
+                            Err(err) => {
+                                return Err(dev.fatal_error(err.into()));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        return Err(dev.fatal_error(KvmRunVpError::from_kvm_run_error(err).into()));
+                    }
+                };
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
                         pending_exit = false;
                     }
                     kvm::Exit::MmioWrite { address, data } => {
-                        dev.write_mmio(self.vpindex, address, data).await
+                        dev.write_mmio(self.vpindex, self.partition.mmio_address(address), data)
+                            .await
                     }
                     kvm::Exit::MmioRead { address, data } => {
-                        dev.read_mmio(self.vpindex, address, data).await
+                        dev.read_mmio(self.vpindex, self.partition.mmio_address(address), data)
+                            .await
                     }
                     kvm::Exit::Shutdown => {
                         return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
                     }
                     kvm::Exit::InternalError { error, .. } => {
                         return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
+                    }
+                    kvm::Exit::EmulationFailure { instruction_bytes } => {
+                        tracing::error!(?instruction_bytes, "KVM reported an emulation failure");
+                        return Err(dev.fatal_error(
+                            KvmRunVpError::UnhandledExit(format!("{exit:?}")).into(),
+                        ));
                     }
                     kvm::Exit::FailEntry {
                         hardware_entry_failure_reason,
@@ -530,7 +616,6 @@ impl virt::Processor for KvmProcessor<'_> {
                             }
                         }
                     }
-                    _ => panic!("unhandled exit: {:?}", exit),
                 }
             }
         }
@@ -792,6 +877,9 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
             GicVersion::V3 {
                 redistributors_base,
             } => self.add_gicv3(redistributors_base)?,
+            GicVersion::V2 { .. } if self.config.isolation == virt::IsolationType::Cca => {
+                return Err(KvmError::CcaRequiresGicV3);
+            }
             GicVersion::V2 { cpu_interface_base } => self.add_gicv2(cpu_interface_base)?,
         };
 
@@ -822,23 +910,40 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 pfr0 & 0xf == 2
             };
             PartitionCapabilities {
-                isolation: virt::IsolationType::None,
+                isolation: self.config.isolation,
                 vendor: Vendor::ARM,
                 supports_aarch32_el0,
+            }
+        };
+
+        let ram_ranges: Vec<_> = config
+            .mem_layout
+            .ram()
+            .iter()
+            .map(|range| range.range)
+            .chain(config.mem_layout.vtl2_range())
+            .collect();
+        let memory_backing_mode = match self.config.isolation {
+            virt::IsolationType::None => KvmMemoryBackingMode::Userspace,
+            virt::IsolationType::Cca => KvmMemoryBackingMode::guest_memfd(
+                &self.vm,
+                ram_ranges.iter().copied(),
+                crate::memory::KvmGuestMemfdPrivateState::GuestMemfdDefault,
+            )?,
+            virt::IsolationType::Vbs | virt::IsolationType::Snp | virt::IsolationType::Tdx => {
+                unreachable!()
             }
         };
 
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
-            memory_backing_mode: KvmMemoryBackingMode::Userspace,
-            ram_ranges: config
-                .mem_layout
-                .ram()
-                .iter()
-                .map(|range| range.range)
-                .chain(config.mem_layout.vtl2_range())
-                .collect(),
+            cca_launch_state: Mutex::new(crate::CcaLaunchState::NotStarted),
+            cca_fatal: false.into(),
+            shared_gpa_bit: (self.config.isolation == virt::IsolationType::Cca)
+                .then_some(1_u64 << (self.ipa_size - 1)),
+            memory_backing_mode,
+            ram_ranges,
             hv1_enabled: self.config.hv_config.is_some(),
             gm: config.guest_memory.clone(),
             vps: self
@@ -889,6 +994,16 @@ impl virt::Partition for KvmPartition {
         &self,
     ) -> Option<&dyn virt::ResetPartition<Error = <Self as virt::Hv1>::Error>> {
         None
+    }
+
+    fn supports_initial_page_acceptance(
+        &self,
+    ) -> Option<&dyn virt::AcceptInitialPages<Error = <Self as virt::Hv1>::Error>> {
+        matches!(
+            self.inner.memory_backing_mode,
+            KvmMemoryBackingMode::GuestMemfd(_)
+        )
+        .then_some(self)
     }
 
     fn caps(&self) -> &PartitionCapabilities {
@@ -979,6 +1094,20 @@ impl virt::irqcon::ControlGic for KvmPartitionInner {
                 err = &err as &dyn std::error::Error,
                 "failed to set SPI IRQ",
             );
+        }
+    }
+}
+
+impl KvmPartitionInner {
+    /// Removes the CCA shared-address bit before routing an MMIO access.
+    ///
+    /// Realm guests use the shared bit to select the host-visible alias of a
+    /// device address, while KVM routing entries contain the underlying IPA.
+    fn mmio_address(&self, address: u64) -> u64 {
+        if let Some(shared_bit) = self.shared_gpa_bit {
+            address & (shared_bit - 1)
+        } else {
+            address
         }
     }
 }
@@ -1131,6 +1260,9 @@ impl virt::Hypervisor for Kvm {
             device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Fixed(
                 memory_range::MemoryRange::new(0x0800_0000..0x0810_0000),
             ),
+            // TODO: Revisit whether CCA should share an abstraction with SNP's
+            // vtom/shared-GPA-boundary model instead of using a separate field.
+            shared_gpa_bit: self.cca_ipa_size.map(|ipa_size| 1_u64 << (ipa_size - 1)),
         }
     }
 
@@ -1138,8 +1270,29 @@ impl virt::Hypervisor for Kvm {
         &'a mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
-        if config.isolation.is_isolated() {
-            return Err(KvmError::IsolationNotSupported);
+        match config.isolation {
+            virt::IsolationType::None => {}
+            virt::IsolationType::Cca => {
+                if config.hv_config.is_some() {
+                    return Err(KvmError::UnsupportedIsolationConfiguration(
+                        "CCA does not support Hyper-V enlightenments or VTL2",
+                    ));
+                }
+                if !self.supports_gic_v3 {
+                    return Err(KvmError::CcaRequiresGicV3);
+                }
+                if self
+                    .kvm
+                    .check_extension(KVM_CAP_ARM_RMI_UAPI)
+                    .map_err(kvm::Error::CheckExtension)?
+                    == 0
+                {
+                    return Err(KvmError::MissingCcaCapability("KVM_CAP_ARM_RMI"));
+                }
+            }
+            virt::IsolationType::Vbs | virt::IsolationType::Snp | virt::IsolationType::Tdx => {
+                return Err(KvmError::IsolationNotSupported);
+            }
         }
 
         if let Some(hv_config) = &config.hv_config {
@@ -1148,21 +1301,42 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let ipa_size = match self
-            .kvm
-            .check_extension(KVM_CAP_ARM_VM_IPA_SIZE)
-            .map_err(kvm::Error::CheckExtension)?
-        {
-            v if v > 0 => v as u8,
-            _ => 40,
+        let ipa_size = match config.isolation {
+            virt::IsolationType::Cca => self
+                .cca_ipa_size
+                .ok_or(KvmError::MissingCcaCapability("KVM_CAP_ARM_RMI"))?,
+            _ => self.ipa_size,
         };
 
-        let vm = self.kvm.new_vm(kvm::VmType::Default)?;
+        let vm = match config.isolation {
+            virt::IsolationType::None => self.kvm.new_vm(kvm::VmType::Default)?,
+            virt::IsolationType::Cca => {
+                let vm = self.kvm.new_vm(kvm::VmType::Realm { ipa_bits: ipa_size })?;
+                crate::memory::check_private_memory_extensions(
+                    &vm,
+                    crate::memory::KvmGuestMemfdPrivateState::GuestMemfdDefault,
+                )
+                .map_err(map_cca_capability_error)?;
+                vm
+            }
+            virt::IsolationType::Vbs | virt::IsolationType::Snp | virt::IsolationType::Tdx => {
+                unreachable!()
+            }
+        };
 
         Ok(KvmProtoPartition {
             vm,
             config,
             ipa_size,
         })
+    }
+}
+
+fn map_cca_capability_error(err: crate::memory::MemoryError) -> KvmError {
+    match err {
+        crate::memory::MemoryError::Kvm(kvm::Error::MissingCapability(capability)) => {
+            KvmError::MissingCcaCapability(capability)
+        }
+        err => err.into(),
     }
 }

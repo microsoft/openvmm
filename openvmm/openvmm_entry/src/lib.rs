@@ -1635,6 +1635,8 @@ async fn vm_config_from_command_line(
                 Some(openvmm_defs::config::IsolationType::Vbs)
             }
             cli_args::IsolationCli::Snp => Some(openvmm_defs::config::IsolationType::Snp),
+            #[cfg(guest_arch = "aarch64")]
+            cli_args::IsolationCli::Cca => Some(openvmm_defs::config::IsolationType::Cca),
         }
     } else {
         None
@@ -2041,6 +2043,7 @@ async fn vm_config_from_command_line(
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
     resources.serial_driver = Some(serial_driver);
     validate_snp_config(&cfg)?;
+    validate_cca_config(&cfg)?;
     Ok((cfg, resources))
 }
 
@@ -2092,6 +2095,86 @@ fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_cca_config(cfg: &Config) -> anyhow::Result<()> {
+    if cfg.hypervisor.with_isolation != Some(openvmm_defs::config::IsolationType::Cca) {
+        return Ok(());
+    }
+
+    #[cfg(not(guest_arch = "aarch64"))]
+    {
+        anyhow::bail!("CCA isolation currently only supports aarch64 guests");
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    {
+        if !matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+            anyhow::bail!("CCA isolation currently only supports Linux direct boot");
+        }
+        if cfg.hypervisor.with_hv {
+            anyhow::bail!("CCA isolation currently does not support Hyper-V enlightenments");
+        }
+        if cfg.hypervisor.with_vtl2.is_some() {
+            anyhow::bail!("CCA isolation currently does not support VTL2");
+        }
+        if cfg.vmbus.is_some() || cfg.vtl2_vmbus.is_some() || !cfg.vmbus_devices.is_empty() {
+            anyhow::bail!("CCA isolation currently does not support VMBus devices");
+        }
+        if !matches!(
+            cfg.load_mode,
+            LoadMode::Linux {
+                boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                ..
+            }
+        ) {
+            anyhow::bail!("CCA isolation currently only supports device tree Linux direct boot");
+        }
+        if !cfg.virtio_devices.is_empty() {
+            anyhow::bail!(
+                "CCA isolation currently only supports virtio devices on PCIe root ports"
+            );
+        }
+        if !cfg.pcie_switches.is_empty() {
+            anyhow::bail!("CCA isolation currently does not support PCIe switches");
+        }
+        let unsupported_pcie_root_complex = cfg.pcie_root_complexes.iter().any(|root_complex| {
+            root_complex.cxl.is_some()
+                || root_complex
+                    .ports
+                    .iter()
+                    .any(|port| port.hotplug || port.cxl)
+        });
+        if unsupported_pcie_root_complex {
+            anyhow::bail!(
+                "CCA isolation currently does not support PCIe hotplug or CXL root ports"
+            );
+        }
+
+        let only_supported_chipset_devices = cfg
+            .chipset_devices
+            .iter()
+            .all(|device| matches!(device.resource.id(), "serial_pl011" | "missing-dev"));
+        let only_virtio_pcie_devices = cfg
+            .pcie_devices
+            .iter()
+            .all(|device| device.resource.id() == "virtio");
+        if !cfg.floppy_disks.is_empty()
+            || !cfg.ide_disks.is_empty()
+            || !cfg.virtio_devices.is_empty()
+            || !only_virtio_pcie_devices
+            || !cfg.vpci_devices.is_empty()
+            || !only_supported_chipset_devices
+            || !cfg.pci_chipset_devices.is_empty()
+        {
+            anyhow::bail!("CCA isolation currently only supports virtio devices");
+        }
+        if cfg.framebuffer.is_some() || cfg.vga_firmware.is_some() || cfg.debugger_rpc.is_some() {
+            anyhow::bail!("CCA isolation currently does not support this VM configuration");
+        }
+
+        Ok(())
+    }
 }
 
 /// Gets the terminal to use for externally launched console windows.

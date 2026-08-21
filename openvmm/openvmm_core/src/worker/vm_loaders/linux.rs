@@ -55,6 +55,7 @@ pub struct KernelConfig<'a> {
     pub cmdline: &'a str,
     pub mem_layout: &'a MemoryLayout,
     pub isolation: Option<IsolationType>,
+    pub shared_gpa_bit: Option<u64>,
     pub snp_c_bit: Option<u8>,
 }
 
@@ -223,6 +224,13 @@ fn build_dt(
     const SMMU_SIZE: u64 = 0x2_0000;
 
     let num_cpus = processor_topology.vps().len();
+    let shared_gpa_bit = cfg.shared_gpa_bit;
+    // TODO: Linux arm64_rsi_is_protected() queries RIPAS for addresses that
+    // already contain the Realm shared IPA bit, causing RSI_ERROR_INPUT and a
+    // WARN_ON during device probing. Keep the shared address because earlycon
+    // maps the DT address directly. Revisit once Linux handles shared IPAs
+    // without issuing an RSI_IPA_STATE_GET request.
+    let shared_addr = |addr| shared_gpa_bit.map_or(addr, |bit| addr | bit);
 
     use vm_topology::processor::aarch64::GicMsiController;
     use vm_topology::processor::aarch64::GicVersion;
@@ -355,7 +363,14 @@ fn build_dt(
     let psci = root_builder
         .start_node("psci")?
         .add_str(p_compatible, "arm,psci-0.2")?
-        .add_str(p_method, "hvc")?;
+        .add_str(
+            p_method,
+            if cfg.isolation == Some(IsolationType::Cca) {
+                "smc"
+            } else {
+                "hvc"
+            },
+        )?;
     root_builder = psci.end_node()?;
 
     // Add a memory node for each RAM range.
@@ -497,7 +512,8 @@ fn build_dt(
     const PCI_SPACE_MEM64: u32 = 0x03000000; // 64-bit prefetchable MMIO
 
     for bridge in pcie_host_bridges {
-        let name = format!("pcie@{:x}", bridge.ecam_range.start());
+        let ecam_start = shared_addr(bridge.ecam_range.start());
+        let name = format!("pcie@{:x}", ecam_start);
 
         // The `ranges` property encodes translations from PCI MMIO address
         // space to CPU physical address space.  Each entry is 7 cells:
@@ -507,28 +523,30 @@ fn build_dt(
         let mut ranges: Vec<u32> = Vec::new();
 
         let low_start = bridge.low_mmio.start();
+        let low_cpu_start = shared_addr(low_start);
         let low_len = bridge.low_mmio.len();
         if low_len > 0 {
             ranges.extend_from_slice(&[
                 PCI_SPACE_MEM32,
                 0,
                 low_start as u32,
-                (low_start >> 32) as u32,
-                (low_start & 0xFFFF_FFFF) as u32,
+                (low_cpu_start >> 32) as u32,
+                (low_cpu_start & 0xFFFF_FFFF) as u32,
                 (low_len >> 32) as u32,
                 (low_len & 0xFFFF_FFFF) as u32,
             ]);
         }
 
         let high_start = bridge.high_mmio.start();
+        let high_cpu_start = shared_addr(high_start);
         let high_len = bridge.high_mmio.len();
         if high_len > 0 {
             ranges.extend_from_slice(&[
                 PCI_SPACE_MEM64,
                 (high_start >> 32) as u32,
                 (high_start & 0xFFFF_FFFF) as u32,
-                (high_start >> 32) as u32,
-                (high_start & 0xFFFF_FFFF) as u32,
+                (high_cpu_start >> 32) as u32,
+                (high_cpu_start & 0xFFFF_FFFF) as u32,
                 (high_len >> 32) as u32,
                 (high_len & 0xFFFF_FFFF) as u32,
             ]);
@@ -541,7 +559,7 @@ fn build_dt(
             .add_str(p_compatible, "pci-host-ecam-generic")?
             .add_str(p_device_type, "pci")?
             .add_u32(p_linux_pci_domain, bridge.segment as u32)?
-            .add_u64_array(p_reg, &[bridge.ecam_range.start(), bridge.ecam_range.len()])?
+            .add_u64_array(p_reg, &[ecam_start, bridge.ecam_range.len()])?
             .add_u32_array(
                 p_bus_range,
                 &[bridge.start_bus as u32, bridge.end_bus as u32],
@@ -591,14 +609,15 @@ fn build_dt(
             (PL011_SERIAL0_BASE, PL011_SERIAL0_IRQ),
             (PL011_SERIAL1_BASE, PL011_SERIAL1_IRQ),
         ] {
-            let name = format!("uart@{:x}", serial_base);
+            let guest_serial_base = shared_addr(serial_base);
+            let name = format!("uart@{:x}", guest_serial_base);
             soc = soc
                 .start_node(name.as_ref())?
                 .add_str_array(p_compatible, &["arm,sbsa-uart", "arm,primecell"])?
                 .add_str_array(p_clock_names, &["apb_pclk"])?
                 .add_u32(p_clocks, PHANDLE_APB_PCLK)?
                 .add_u32(p_interrupt_parent, PHANDLE_GIC)?
-                .add_u64_array(p_reg, &[serial_base, 0x1000])?
+                .add_u64_array(p_reg, &[guest_serial_base, 0x1000])?
                 .add_u32(p_current_speed, PL011_BAUD)?
                 .add_u32(p_arm_periph_id, PL011_PERIPH_ID)?
                 .add_u32_array(
@@ -619,9 +638,9 @@ fn build_dt(
         .add_u64_array(
             p_ranges,
             &[
-                chipset_low_mmio.start(),
+                shared_addr(chipset_low_mmio.start()),
                 chipset_low_mmio.len(),
-                chipset_high_mmio.start(),
+                shared_addr(chipset_high_mmio.start()),
                 chipset_high_mmio.len(),
             ],
         )?
@@ -645,7 +664,7 @@ fn build_dt(
     if enable_serial {
         chosen = chosen.add_str(
             p_stdout_path,
-            format!("/hvlite/uart@{PL011_SERIAL0_BASE:x}").as_str(),
+            format!("/openvmm/uart@{:x}", shared_addr(PL011_SERIAL0_BASE)).as_str(),
         )?;
     }
 
