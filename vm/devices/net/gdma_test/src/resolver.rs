@@ -70,6 +70,10 @@ fn encode_request(request: GdmaTestRequest) -> EncodedTestRequest {
             } else {
                 HWC_DATA_TYPE_HW_VPORT_LINK_DISCONNECT
             };
+            assert!(
+                vport <= 0x00ff_ffff,
+                "vport index does not fit in the 24-bit EQE field"
+            );
             let vport = vport.to_le_bytes();
             EncodedTestRequest::VportLinkState(EqeDataReconfig {
                 data: [vport[0], vport[1], vport[2]],

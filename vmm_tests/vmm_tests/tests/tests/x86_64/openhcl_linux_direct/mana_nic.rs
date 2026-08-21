@@ -85,8 +85,7 @@ async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), any
 }
 
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Use the shared pool override to test
-/// the shared pool dma path.
+/// the MANA emulator), and vmbus relay.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn mana_nic_shared_pool(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
