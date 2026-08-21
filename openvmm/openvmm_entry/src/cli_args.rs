@@ -1097,7 +1097,7 @@ flags:
     #[clap(long)]
     pub battery: bool,
 
-    /// enable guest hibernation (ACPI S4)
+    /// enable guest hibernation
     #[clap(long)]
     pub hibernation: bool,
 
