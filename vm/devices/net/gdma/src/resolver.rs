@@ -34,11 +34,7 @@ pub enum Error {
     VportResolve(#[source] ResolveError),
 }
 
-/// Resolves a list of [`gdma_resources::VportDefinition`]s into
-/// [`VportConfig`]s.
-///
-/// Shared by [`GdmaDeviceResolver`] and `gdma_test`'s test resolver.
-pub async fn resolve_vports(
+pub(crate) async fn resolve_vports(
     resolver: &ResourceResolver,
     vports: Vec<gdma_resources::VportDefinition>,
 ) -> Result<Vec<VportConfig>, Error> {
