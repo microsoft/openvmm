@@ -148,6 +148,8 @@ pub struct GuestConfig {
     pub secure_boot_template: SecureBootTemplateType,
     /// Enable battery.
     pub enable_battery: bool,
+    /// Enable hibernation.
+    pub enable_hibernation: bool,
     /// Suppress attestation.
     pub no_persistent_secrets: bool,
     /// Guest state lifetime
@@ -1348,6 +1350,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     _ => panic!("Invalid secure boot template"),
                 },
                 enable_battery: state.config.enable_battery,
+                enable_hibernation: state.config.enable_hibernation,
                 console_mode: uefi_console_mode.unwrap_or(UefiConsoleMode::DEFAULT).0,
                 bios_guid: if state.test_gsp_by_id {
                     guid::guid!("2b701019-2816-4a85-9692-3981f1af4423")

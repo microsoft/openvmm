@@ -1529,6 +1529,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Enable guest hibernation support (OpenHCL DPS `enable_hibernation`).
+    pub fn with_hibernation_enabled(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("hibernation is only supported for OpenHCL firmware.")
+            .hibernation_enabled = enable;
+        self
+    }
+
     /// Specify the guest state lifetime for the VM
     pub fn with_guest_state_lifetime(
         mut self,
@@ -2503,6 +2513,9 @@ pub enum OpenvmmLogConfig {
 pub struct OpenHclConfig {
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
+    /// Whether to enable guest hibernation support (OpenHCL DPS
+    /// `enable_hibernation`).
+    pub hibernation_enabled: bool,
     /// Test-specified command-line parameters to append to the petri generated
     /// command line and pass to OpenHCL. VM backends should use
     /// [`OpenHclConfig::command_line()`] rather than reading this directly.
@@ -2565,6 +2578,7 @@ impl Default for OpenHclConfig {
     fn default() -> Self {
         Self {
             vmbus_redirect: false,
+            hibernation_enabled: false,
             custom_command_line: None,
             log_levels: OpenvmmLogConfig::TestDefault,
             vtl2_base_address_type: None,

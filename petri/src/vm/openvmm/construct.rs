@@ -988,7 +988,8 @@ impl PetriVmConfigSetupCore<'_> {
                 },
             ) => {
                 let OpenHclConfig {
-                    vmbus_redirect: _, // config_openhcl_vmbus_devices
+                    vmbus_redirect: _,      // config_openhcl_vmbus_devices
+                    hibernation_enabled: _, // config_openhcl_vmbus_devices (GED)
                     custom_command_line: _,
                     log_levels: _,
                     vtl2_base_address_type,
@@ -1134,7 +1135,11 @@ impl PetriVmConfigSetupCore<'_> {
                 efi_diagnostics_log_level,
                 efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
             },
-            OpenHclConfig { vmbus_redirect, .. },
+            OpenHclConfig {
+                vmbus_redirect,
+                hibernation_enabled,
+                ..
+            },
         ) = match self.firmware {
             Firmware::OpenhclUefi {
                 uefi_config,
@@ -1182,6 +1187,7 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
+            enable_hibernation: *hibernation_enabled,
             no_persistent_secrets: self.tpm_config.as_ref().is_some_and(|c| c.no_persistent_secrets),
             igvm_attest_test_config: None,
             test_gsp_by_id,
