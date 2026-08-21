@@ -90,8 +90,8 @@ as well as the generated CLI help (via `cargo run -- --help`).
   PCIe.
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
   loader-generated SNP VMSA. This bring-up option has no default and requires
-  `--hypervisor mshv --isolation snp` with Linux direct boot. Do not enable it
-  for the KVM SNP repro.
+  `--hypervisor mshv --isolation snp` with Linux direct boot. KVM SNP does not
+  support this option.
 * `--hypervisor mshv:snp_disable_cpuid_offload=true`: Disable MSHV handling of
   SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
   offloading enabled. This diagnostic parameter is meaningful only with
