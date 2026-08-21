@@ -3844,9 +3844,10 @@ async fn new_underhill_vm(
                 .and_then(|info| info.supports_uefi.as_ref()),
             vmgs_client.as_ref(),
         ) {
-            match store_firmware_to_vmgs(gm.vtl0(), uefi_info.firmware_memory, vmgs_client).await {
-                Ok(StoreFirmwareOutcome::Stored) => {}
-                Ok(StoreFirmwareOutcome::InsufficientSpace {
+            match hibernate::store_firmware(gm.vtl0(), uefi_info.firmware_memory, vmgs_client).await
+            {
+                Ok(hibernate::StoreFirmwareOutcome::Stored) => {}
+                Ok(hibernate::StoreFirmwareOutcome::InsufficientSpace {
                     firmware_size,
                     device_size,
                 }) => {
@@ -4201,7 +4202,7 @@ async fn halt_task(
                         .await;
                         // Drop any stored firmware image so a later boot does not
                         // restore a stale one.
-                        delete_firmware_from_vmgs(&hibernate_halt.vmgs_client).await;
+                        hibernate::delete_firmware(&hibernate_halt.vmgs_client).await;
                     }
                     get_client.send_power_off()
                 }
@@ -4215,7 +4216,7 @@ async fn halt_task(
                         .await;
                         // Drop any stored firmware image so a later boot does not
                         // restore a stale one.
-                        delete_firmware_from_vmgs(&hibernate_halt.vmgs_client).await;
+                        hibernate::delete_firmware(&hibernate_halt.vmgs_client).await;
                     }
                     get_client.send_reset()
                 }
@@ -4249,91 +4250,6 @@ async fn wait_for_flush_logs(control_send: &Arc<Mutex<Option<mesh::Sender<Contro
     }
 }
 
-/// The result of attempting to store a firmware image into VMGS for hibernation.
-enum StoreFirmwareOutcome {
-    /// The firmware image was stored to VMGS.
-    Stored,
-    /// The VMGS backing store is too small to hold the firmware image. This is
-    /// not an error: hibernation falls back to not preserving the firmware
-    /// image across resume.
-    InsufficientSpace {
-        firmware_size: u64,
-        device_size: u64,
-    },
-}
-
-/// Stores the pristine UEFI firmware image out of VTL0 guest memory and into
-/// [`vmgs::FileId::HIBERNATION_FIRMWARE`] so it can be restored identically on a
-/// hibernation resume where the host cannot overload the firmware itself.
-///
-/// This must be called *before* any dynamic configuration is written into the
-/// firmware region (i.e. before `write_uefi_config`), so that the stored image
-/// matches the measured firmware as loaded from the IGVM file.
-///
-/// The image is only stored if the VMGS backing store is large enough to hold
-/// it; otherwise [`StoreFirmwareOutcome::InsufficientSpace`] is returned and the
-/// caller falls back to not preserving the firmware across hibernation. An
-/// `Err` is only returned for an actual failure to query or write VMGS.
-async fn store_firmware_to_vmgs(
-    gm: &GuestMemory,
-    firmware_memory: MemoryRange,
-    vmgs_client: &vmgs_broker::VmgsClient,
-) -> anyhow::Result<StoreFirmwareOutcome> {
-    let len = firmware_memory.len();
-
-    // The firmware image can only be stored if the VMGS backing store is large
-    // enough. Require a minimum overall size so there is room for the firmware
-    // image alongside the other VMGS files, and also verify the image fits.
-    // Insufficient space is a normal fallback, not an error.
-    let device_size = vmgs_client
-        .device_size()
-        .await
-        .context("failed to query VMGS size")?;
-    if device_size < VMGS_HIBERNATION_FIRMWARE_MIN_SIZE || len > device_size {
-        return Ok(StoreFirmwareOutcome::InsufficientSpace {
-            firmware_size: len,
-            device_size,
-        });
-    }
-
-    let firmware_len = usize::try_from(len).context("firmware image size does not fit in usize")?;
-    let mut firmware = vec![0u8; firmware_len];
-    gm.read_at(firmware_memory.start(), &mut firmware)
-        .context("failed to read UEFI firmware image from VTL0 memory")?;
-    vmgs_client
-        .write_file(vmgs::FileId::HIBERNATION_FIRMWARE, firmware)
-        .await
-        .context("failed to write UEFI firmware snapshot to VMGS")?;
-    tracing::info!(
-        CVM_ALLOWED,
-        size_bytes = len,
-        "stored UEFI firmware image to VMGS for hibernation"
-    );
-    Ok(StoreFirmwareOutcome::Stored)
-}
-
-/// Best-effort deletion of any stored hibernation firmware image, used on a
-/// clean power off / reset so a later boot does not restore a stale image. A
-/// missing image is the common case and is not logged.
-async fn delete_firmware_from_vmgs(vmgs_client: &vmgs_broker::VmgsClient) {
-    match vmgs_client
-        .delete_file(vmgs::FileId::HIBERNATION_FIRMWARE)
-        .await
-    {
-        Ok(())
-        | Err(vmgs_broker::VmgsClientError::Vmgs(
-            vmgs_broker::VmgsBrokerError::FileInfoNotAllocated,
-        )) => {}
-        Err(err) => {
-            tracing::error!(
-                CVM_ALLOWED,
-                error = &err as &dyn std::error::Error,
-                "failed to delete stored UEFI firmware image from VMGS"
-            );
-        }
-    }
-}
-
 /// Restores a previously stored UEFI firmware image from VMGS back into VTL0
 /// guest memory when resuming a hibernated guest, so the firmware binary matches
 /// what was present when the guest hibernated. Preferred over a host firmware
@@ -4359,24 +4275,9 @@ async fn restore_vtl0_firmware_from_vmgs(
         return false;
     };
 
-    let firmware = match vmgs_client
-        .read_file(vmgs::FileId::HIBERNATION_FIRMWARE)
-        .await
-    {
-        Ok(firmware) => firmware,
-        // No stored image is the usual case (e.g. first hibernation, or the VMGS
-        // was too small to snapshot one); fall back without logging.
-        Err(vmgs_broker::VmgsClientError::Vmgs(
-            vmgs_broker::VmgsBrokerError::FileInfoNotAllocated,
-        )) => return false,
-        Err(err) => {
-            tracing::warn!(
-                CVM_ALLOWED,
-                error = &err as &dyn std::error::Error,
-                "failed to read UEFI firmware image from VMGS on hibernation resume"
-            );
-            return false;
-        }
+    let Some(firmware) = hibernate::read_firmware(vmgs_client).await else {
+        // No usable stored image; leave the current firmware in place.
+        return false;
     };
 
     let region_len = firmware_memory.len();
