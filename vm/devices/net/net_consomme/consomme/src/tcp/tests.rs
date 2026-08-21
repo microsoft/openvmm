@@ -1237,6 +1237,8 @@ async fn test_tcp_port_forward_defers_initial_syn_without_rx_buffer(driver: Defa
     ));
     connection.inner.lifetime_timer =
         LifetimeTimer::Handshake(TimerInstant::now() - Duration::from_millis(1));
+    received.lock().clear();
+    client.add_rx_buffers(1);
     std::future::poll_fn(|cx| {
         consomme.access(&mut client).poll(cx);
         Poll::Ready(())
@@ -1245,6 +1247,20 @@ async fn test_tcp_port_forward_defers_initial_syn_without_rx_buffer(driver: Defa
     assert!(
         consomme.tcp.connections.is_empty(),
         "expired handshake should be reclaimed"
+    );
+    let rst_packet = received
+        .lock()
+        .iter()
+        .find(|packet| {
+            TcpTestHarness::is_tcp_packet(packet).is_some_and(|tcp| tcp.control == TcpControl::Rst)
+        })
+        .cloned()
+        .expect("expired handshake should reset the guest connection");
+    let (_, _, rst) = parse_tcp_packet(&rst_packet);
+    assert_eq!(rst.seq_number, syn.seq_number + 1);
+    assert!(
+        rst.ack_number.is_none(),
+        "a pre-handshake reset must not acknowledge an unknown guest sequence"
     );
 }
 
@@ -2732,10 +2748,10 @@ async fn test_tcp_guest_action_timeout_cleanup(driver: DefaultDriver) {
     }
 }
 
-/// Test that a guest-initiated half-close is reclaimed even if the host keeps
-/// its write side open indefinitely.
+/// Test that a guest-initiated half-close remains active while the host still
+/// owns the open direction of the connection.
 #[pal_async::async_test]
-async fn test_tcp_close_wait_cleanup(driver: DefaultDriver) {
+async fn test_tcp_close_wait_has_no_peer_progress_timeout(driver: DefaultDriver) {
     let mut h = TcpTestHarness::connect(driver).await;
 
     h.clear_guest_packets();
@@ -2746,10 +2762,9 @@ async fn test_tcp_close_wait_cleanup(driver: DefaultDriver) {
         let conn = access.inner.tcp.connections.values_mut().next().unwrap();
         assert_eq!(conn.inner.state, TcpState::CloseWait);
         assert!(
-            matches!(conn.inner.lifetime_timer, LifetimeTimer::Close(_)),
-            "close deadline must be armed in CloseWait"
+            matches!(conn.inner.lifetime_timer, LifetimeTimer::None),
+            "CloseWait must not expire while the host is still working"
         );
-        conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() - Duration::from_secs(1));
     }
 
     std::future::poll_fn(|cx| {
@@ -2758,15 +2773,7 @@ async fn test_tcp_close_wait_cleanup(driver: DefaultDriver) {
     })
     .await;
 
-    assert!(
-        h.consomme
-            .access(&mut h.client)
-            .inner
-            .tcp
-            .connections
-            .is_empty(),
-        "expired CloseWait connection should be removed"
-    );
+    assert_eq!(h.connection_inner().state, TcpState::CloseWait);
     assert_eq!(
         h.consomme
             .access(&mut h.client)
@@ -2775,56 +2782,74 @@ async fn test_tcp_close_wait_cleanup(driver: DefaultDriver) {
             .aggregate_stats
             .connections_closed_timeout
             .get(),
-        1,
-        "expired CloseWait connection should be counted as a timeout close"
+        0,
+        "CloseWait must not be counted as a timeout close"
     );
 }
 
 #[pal_async::async_test]
-async fn test_tcp_close_wait_zero_window_ack_refreshes_timeout(driver: DefaultDriver) {
+async fn test_tcp_last_ack_restarts_timeout_after_close_wait(driver: DefaultDriver) {
     let mut h = TcpTestHarness::connect(driver).await;
 
-    h.send_segment_with_window(TcpControl::Fin, h.guest_seq, &[], 0);
-    h.guest_seq += 1;
+    h.send_fin();
     assert_eq!(h.connection_inner().state, TcpState::CloseWait);
 
-    h.host_write(b"flow controlled").await;
-    h.poll_until(|inner| !inner.tx_buffer.is_empty()).await;
+    // Ensure LastAck gets a fresh timeout even if a previous close deadline
+    // happens to be present.
     {
         let access = h.consomme.access(&mut h.client);
         let conn = access.inner.tcp.connections.values_mut().next().unwrap();
-        conn.inner.retransmission.timer = RetransmissionTimer::Persist {
-            deadline: Instant::now() - Duration::from_millis(1),
-            backoff: 0,
-            recover: None,
-        };
+        conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() + Duration::from_millis(1));
     }
-    std::future::poll_fn(|cx| {
-        h.consomme.access(&mut h.client).poll(cx);
-        Poll::Ready(())
-    })
-    .await;
-    assert_eq!(
-        h.connection_inner().tx_send,
-        h.connection_inner().tx_acked + 1,
-        "the persist probe should remain unacknowledged through a zero window"
+
+    h.host_shutdown_write();
+    let _ = h
+        .poll_until_guest_packet(|tcp| tcp.control == TcpControl::Fin)
+        .await;
+
+    assert_eq!(h.connection_inner().state, TcpState::LastAck);
+    assert!(
+        h.connection_inner().lifetime_timer.deadline()
+            > Some(Instant::now() + Duration::from_secs(1)),
+        "LastAck must receive a fresh peer-progress timeout"
     );
+}
 
-    let expiring_deadline = Instant::now() + Duration::from_millis(1);
-    h.consomme
-        .tcp
-        .connections
-        .get_mut(&h.four_tuple())
-        .unwrap()
-        .inner
-        .lifetime_timer = LifetimeTimer::Close(expiring_deadline);
+#[pal_async::async_test]
+async fn test_tcp_fin_wait_zero_window_probe_refreshes_timeout(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
 
-    h.send_segment_with_window(TcpControl::None, h.guest_seq, &[], 0);
+    h.clear_guest_packets();
+    h.host_shutdown_write();
+    let fin_packet = h
+        .poll_until_guest_packet(|tcp| tcp.control == TcpControl::Fin)
+        .await;
+    let (_, _, fin) = parse_tcp_packet(&fin_packet);
+    h.server_ack = fin.seq_number + fin.segment_len();
+    h.send_segment(TcpControl::None, h.guest_seq, &[]);
+    assert_eq!(h.connection_inner().state, TcpState::FinWait2);
+
+    let ft = h.four_tuple();
+    {
+        let conn = h.consomme.tcp.connections.get_mut(&ft).unwrap();
+        let available = conn.inner.rx_window_cap - conn.inner.rx_buffer.len();
+        conn.inner
+            .rx_buffer
+            .write_at(conn.inner.rx_buffer.len(), &vec![0; available]);
+        conn.inner.rx_buffer.extend_by(available);
+        conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() + Duration::from_millis(1));
+    }
+
+    assert!(
+        h.try_send_segment(TcpControl::None, h.guest_seq, b"x", 64240)
+            .is_err(),
+        "a zero-window probe should follow the unacceptable-segment path"
+    );
 
     assert!(
         h.connection_inner().lifetime_timer.deadline()
             > Some(Instant::now() + Duration::from_secs(1)),
-        "a zero-window ACK for pending data should refresh the close timeout"
+        "a zero-window probe should refresh the close timeout"
     );
 }
 
@@ -3245,6 +3270,43 @@ async fn test_tcp_zero_window_persist_probe(driver: DefaultDriver) {
         h.connection_inner().retransmission.timer,
         RetransmissionTimer::Rto { recover: None, .. }
     ));
+}
+
+#[pal_async::async_test]
+async fn test_tcp_window_reopen_retransmits_once_per_ack_boundary(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    h.clear_guest_packets();
+    h.host_write(&[0x5a; 2 * 536]).await;
+    h.poll_until(|inner| inner.tx_send == inner.tx_acked + 2 * 536)
+        .await;
+
+    let first_sequence = h.connection_inner().tx_acked;
+    h.clear_guest_packets();
+    h.send_segment_with_window(TcpControl::None, h.guest_seq, &[], 0);
+    h.clear_guest_packets();
+    h.send_segment_with_window(TcpControl::None, h.guest_seq, &[], 64240);
+    assert!(h.client.received_packets.lock().iter().any(|packet| {
+        TcpTestHarness::is_tcp_packet(packet)
+            .is_some_and(|tcp| !tcp.payload.is_empty() && tcp.seq_number == first_sequence)
+    }));
+
+    h.clear_guest_packets();
+    h.send_segment_with_window(TcpControl::None, h.guest_seq, &[], 0);
+    h.clear_guest_packets();
+    h.send_segment_with_window(TcpControl::None, h.guest_seq, &[], 64240);
+    assert!(
+        h.client.received_packets.lock().is_empty(),
+        "window oscillation must not repeatedly retransmit the same ACK boundary"
+    );
+
+    h.server_ack = first_sequence + 536;
+    h.send_segment_with_window(TcpControl::None, h.guest_seq, &[], 0);
+    h.clear_guest_packets();
+    h.send_segment_with_window(TcpControl::None, h.guest_seq, &[], 64240);
+    assert!(h.client.received_packets.lock().iter().any(|packet| {
+        TcpTestHarness::is_tcp_packet(packet)
+            .is_some_and(|tcp| !tcp.payload.is_empty() && tcp.seq_number == first_sequence + 536)
+    }));
 }
 
 #[pal_async::async_test]
@@ -3689,8 +3751,9 @@ fn test_retransmission_state_follows_rfc_6298() {
     state.on_send_at(TcpSeqNumber(3), start + Duration::from_secs(3));
     let rto_before_early_retransmit = state.rto;
     state.duplicate_acks = 2;
-    state.on_early_retransmit(start + Duration::from_secs(4));
+    state.on_early_retransmit(start + Duration::from_secs(4), TcpSeqNumber(2));
     assert_eq!(state.rto, rto_before_early_retransmit);
+    assert_eq!(state.window_reopen_retransmit, Some(TcpSeqNumber(2)));
     assert!(matches!(
         state.timer,
         RetransmissionTimer::Rto {

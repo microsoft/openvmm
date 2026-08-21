@@ -101,13 +101,13 @@ impl Assembler {
         if len != 0 && self.fin_offset.is_some_and(|fin_offset| end > fin_offset) {
             return Err(AddError::DataPastFin);
         }
-        if fin && self.fin_offset.is_none() {
-            if self.ranges[..self.count as usize]
+        if fin
+            && self.fin_offset.is_none()
+            && self.ranges[..self.count as usize]
                 .last()
                 .is_some_and(|&(_, range_end)| range_end > end)
-            {
-                return Err(AddError::FinBeforeData);
-            }
+        {
+            return Err(AddError::FinBeforeData);
         }
         Ok(())
     }

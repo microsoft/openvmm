@@ -141,9 +141,11 @@ ramp up to a large window. Embedders can override the bounds via the
 `[16 KiB, 4 MiB]` and rounded up to a power of two. Setting
 `initial == max` pins a fixed size and disables growth.
 
-Connections waiting for a TCP close handshake to make progress use a
+Connections waiting for the peer to advance a TCP close handshake use a
 60-second inactivity timeout by default, including connections closed before
-their initial handshake completes. ACKs and newly accepted data restart the
+their initial handshake completes. `CloseWait` is excluded because the local
+backend can still produce data; its timeout starts when the backend closes and
+the connection enters `LastAck`. ACKs and newly accepted data restart the
 timeout. Embedders can override it with the `tcp_close_timeout` field on
 `ConsommeParams`. The same duration is used for `TimeWait`, where it
 represents the 2*MSL wait required by RFC 9293. A separate fixed 60-second
