@@ -882,8 +882,9 @@ impl<T: Client> Access<'_, T> {
                         if guest_has_seen_connection && sender.client.rx_mtu() != 0 {
                             let ack_number =
                                 (conn.inner.tx_syn != TxSynState::Syn).then_some(conn.inner.rx_seq);
-                            sender.rst(conn.inner.tx_send, ack_number);
-                            conn.inner.stats.rsts_tx.increment();
+                            if sender.try_rst(conn.inner.tx_send, ack_number) {
+                                conn.inner.stats.rsts_tx.increment();
+                            }
                         }
                         self.inner.tcp.aggregate_stats.record_timeout_close();
                     }
@@ -1278,6 +1279,14 @@ impl<T: Client> Sender<'_, T> {
     }
 
     fn rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) {
+        let _ = self.try_rst(seq, ack);
+    }
+
+    fn try_rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) -> bool {
+        if self.client.rx_mtu() == 0 {
+            return false;
+        }
+
         let tcp = TcpRepr {
             src_port: self.ft.dst.port(),
             dst_port: self.ft.src.port(),
@@ -1296,6 +1305,7 @@ impl<T: Client> Sender<'_, T> {
         trace_tcp_packet(self.ft, &tcp, 0, "rst xmit");
 
         self.send_packet(&tcp, None);
+        true
     }
 }
 
@@ -1539,8 +1549,9 @@ impl TcpConnectionInner {
             Ok(_) => {}
             Err(_) => {
                 // The DNS TCP query could not be processed; reset the connection.
-                sender.rst(self.tx_send, Some(self.rx_seq));
-                self.stats.rsts_tx.increment();
+                if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                    self.stats.rsts_tx.increment();
+                }
                 return false;
             }
         }
@@ -1569,8 +1580,9 @@ impl TcpConnectionInner {
                     );
                 }
                 Poll::Ready(Err(_)) => {
-                    sender.rst(self.tx_send, Some(self.rx_seq));
-                    self.stats.rsts_tx.increment();
+                    if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                        self.stats.rsts_tx.increment();
+                    }
                     return false;
                 }
                 Poll::Pending => break,
@@ -1636,8 +1648,9 @@ impl TcpConnectionInner {
                                 "socket failure after fin"
                             ),
                         }
-                        sender.rst(self.tx_send, Some(self.rx_seq));
-                        self.stats.rsts_tx.increment();
+                        if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                            self.stats.rsts_tx.increment();
+                        }
                         return false;
                     }
 
@@ -1685,8 +1698,9 @@ impl TcpConnectionInner {
                                         "socket read error"
                                     ),
                                 }
-                                sender.rst(self.tx_send, Some(self.rx_seq));
-                                self.stats.rsts_tx.increment();
+                                if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                                    self.stats.rsts_tx.increment();
+                                }
                                 return false;
                             }
                             Poll::Pending => break 'read,
@@ -1783,8 +1797,9 @@ impl TcpConnectionInner {
                             );
                         }
                     }
-                    sender.rst(self.tx_send, Some(self.rx_seq));
-                    self.stats.rsts_tx.increment();
+                    if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                        self.stats.rsts_tx.increment();
+                    }
                     return false;
                 }
             }
@@ -1830,8 +1845,9 @@ impl TcpConnectionInner {
                     dst = %sender.ft.dst,
                     "shutdown error"
                 );
-                sender.rst(self.tx_send, Some(self.rx_seq));
-                self.stats.rsts_tx.increment();
+                if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                    self.stats.rsts_tx.increment();
+                }
                 return false;
             }
             self.is_shutdown = true;
@@ -1933,8 +1949,9 @@ impl TcpConnectionInner {
             );
         } else {
             log_connect_error(sender.ft, &err);
-            sender.rst(self.tx_send, Some(self.rx_seq));
-            self.stats.rsts_tx.increment();
+            if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                self.stats.rsts_tx.increment();
+            }
         }
     }
 
@@ -2481,6 +2498,20 @@ impl TcpConnectionInner {
     /// shouldn't be combined with data so that they are interpreted correctly
     /// by the peer.
     fn ack(&mut self, sender: &mut Sender<'_, impl Client>) {
+        let _ = self.try_ack(sender);
+    }
+
+    fn ack_or_defer(&mut self, sender: &mut Sender<'_, impl Client>) {
+        if !self.try_ack(sender) {
+            self.needs_ack = true;
+        }
+    }
+
+    fn try_ack(&mut self, sender: &mut Sender<'_, impl Client>) -> bool {
+        if sender.client.rx_mtu() == 0 {
+            return false;
+        }
+
         let window_len = self.rx_window_len();
         let tcp = TcpRepr {
             src_port: sender.ft.dst.port(),
@@ -2502,6 +2533,7 @@ impl TcpConnectionInner {
         sender.send_packet(&tcp, None);
         self.stats.standalone_acks_tx.increment();
         self.record_advertised_window(window_len);
+        true
     }
 
     fn handle_listen_syn(
@@ -2517,8 +2549,9 @@ impl TcpConnectionInner {
             && !ack_acceptable
         {
             if tcp.control != TcpControl::Rst {
-                sender.rst(ack_number, None);
-                self.stats.rsts_tx.increment();
+                if sender.try_rst(ack_number, None) {
+                    self.stats.rsts_tx.increment();
+                }
             }
             return Ok(true);
         }
@@ -2552,7 +2585,7 @@ impl TcpConnectionInner {
         self.tx_window_len = tcp.window_len;
 
         // Send an ACK to complete the initial SYN handshake.
-        self.ack(sender);
+        self.ack_or_defer(sender);
 
         if !self.tx_fin.is_pending() {
             self.lifetime_timer = LifetimeTimer::None;
@@ -2591,7 +2624,7 @@ impl TcpConnectionInner {
             && tcp.segment_len() == 1
             && tcp.seq_number + 1 == self.rx_seq
         {
-            self.ack(sender);
+            self.ack_or_defer(sender);
             self.restart_time_wait(sender.state.params.tcp_close_timeout);
             return Ok(true);
         }
@@ -2630,9 +2663,9 @@ impl TcpConnectionInner {
         if !seq_acceptable {
             self.stats.out_of_window_pkts.increment();
             let is_zero_window_probe = rx_window_len == 0
-                && tcp.control == TcpControl::None
+                && matches!(tcp.control, TcpControl::None | TcpControl::Psh)
                 && tcp.ack_number.is_some()
-                && tcp.payload.len() == 1
+                && tcp.payload.len() <= 1
                 && (tcp.seq_number == self.rx_seq || tcp.seq_number + 1 == self.rx_seq);
             if is_zero_window_probe {
                 self.refresh_close_deadline(
@@ -2667,8 +2700,9 @@ impl TcpConnectionInner {
         // Handle ACK of our SYN.
         if self.state == TcpState::SynReceived {
             if ack_number <= self.tx_acked || ack_number > self.tx_send {
-                sender.rst(ack_number, None);
-                self.stats.rsts_tx.increment();
+                if sender.try_rst(ack_number, None) {
+                    self.stats.rsts_tx.increment();
+                }
                 return Ok(false);
             }
             self.tx_window_len = tcp.window_len;
@@ -2867,7 +2901,7 @@ impl TcpConnectionInner {
             }
             TcpState::CloseWait | TcpState::Closing | TcpState::LastAck => {}
             TcpState::TimeWait => {
-                self.ack(sender);
+                self.ack_or_defer(sender);
             }
         }
 

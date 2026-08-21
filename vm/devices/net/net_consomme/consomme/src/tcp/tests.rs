@@ -1322,7 +1322,6 @@ async fn test_tcp_port_forward_recovers_from_stale_ack(driver: DefaultDriver) {
         dst: SocketAddr::V4(SocketAddrV4::new(syn_src_ip, syn.src_port)),
     };
     received.lock().clear();
-    client.add_rx_buffers(2);
 
     let stale_ack = TcpRepr {
         src_port: guest_port,
@@ -1351,7 +1350,16 @@ async fn test_tcp_port_forward_recovers_from_stale_ack(driver: DefaultDriver) {
         .access(&mut client)
         .send(&buf[..len], &ChecksumState::NONE)
         .unwrap();
+    assert!(
+        received.lock().is_empty(),
+        "a stale ACK must not emit an RST without an RX buffer"
+    );
 
+    client.add_rx_buffers(2);
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .unwrap();
     {
         let packets = received.lock();
         let (_, _, rst) = parse_tcp_packet(
@@ -1416,7 +1424,8 @@ async fn test_tcp_port_forward_recovers_from_stale_ack(driver: DefaultDriver) {
     assert_eq!(retry_syn.seq_number, syn.seq_number);
     assert!(retry_syn.ack_number.is_none());
 
-    client.add_rx_buffers(1);
+    client.rx_buffers = Some(0);
+    received.lock().clear();
     let syn_ack = TcpRepr {
         src_port: guest_port,
         dst_port: retry_syn.src_port,
@@ -1466,6 +1475,35 @@ async fn test_tcp_port_forward_recovers_from_stale_ack(driver: DefaultDriver) {
             LifetimeTimer::None
         ),
         "completed handshake should clear its deadline"
+    );
+    assert!(
+        consomme.tcp.connections.get(&ft).unwrap().inner.needs_ack,
+        "final handshake ACK should remain pending without an RX buffer"
+    );
+    assert!(
+        received.lock().is_empty(),
+        "final handshake ACK must not be emitted without an RX buffer"
+    );
+
+    client.add_rx_buffers(1);
+    std::future::poll_fn(|cx| {
+        consomme.access(&mut client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+
+    assert!(
+        received.lock().iter().any(|packet| {
+            TcpTestHarness::is_tcp_packet(packet).is_some_and(|tcp| {
+                tcp.control == TcpControl::None
+                    && tcp.ack_number == Some(syn_ack.seq_number + syn_ack.segment_len())
+            })
+        }),
+        "final handshake ACK should be sent once an RX buffer is available"
+    );
+    assert!(
+        !consomme.tcp.connections.get(&ft).unwrap().inner.needs_ack,
+        "sending the final handshake ACK should clear the pending state"
     );
 }
 
@@ -2637,9 +2675,20 @@ async fn test_tcp_time_wait_cleanup(driver: DefaultDriver) {
         "an unacceptable FIN must not restart the TimeWait deadline"
     );
 
-    // A retransmitted FIN must be ACKed and restart the 2*MSL timer.
+    // A retransmitted FIN must restart the 2*MSL timer and defer its ACK
+    // until an RX buffer is available.
     h.clear_guest_packets();
+    h.client.rx_buffers = Some(0);
     h.send_segment(TcpControl::Fin, h.guest_seq - 1, &[]);
+    assert!(h.client.received_packets.lock().is_empty());
+    assert!(h.connection_inner().needs_ack);
+
+    h.client.add_rx_buffers(1);
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
     assert!(h.client.received_packets.lock().iter().any(|packet| {
         TcpTestHarness::is_tcp_packet(packet).is_some_and(|tcp| {
             tcp.control == TcpControl::None && tcp.ack_number == Some(h.guest_seq)
@@ -2816,7 +2865,7 @@ async fn test_tcp_last_ack_restarts_timeout_after_close_wait(driver: DefaultDriv
 }
 
 #[pal_async::async_test]
-async fn test_tcp_fin_wait_zero_window_probe_refreshes_timeout(driver: DefaultDriver) {
+async fn test_tcp_fin_wait_zero_window_probes_refresh_timeout(driver: DefaultDriver) {
     let mut h = TcpTestHarness::connect(driver).await;
 
     h.clear_guest_packets();
@@ -2849,7 +2898,41 @@ async fn test_tcp_fin_wait_zero_window_probe_refreshes_timeout(driver: DefaultDr
     assert!(
         h.connection_inner().lifetime_timer.deadline()
             > Some(Instant::now() + Duration::from_secs(1)),
-        "a zero-window probe should refresh the close timeout"
+        "a one-byte zero-window probe should refresh the close timeout"
+    );
+
+    {
+        let conn = h.consomme.tcp.connections.get_mut(&ft).unwrap();
+        conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() + Duration::from_millis(1));
+    }
+
+    assert!(
+        h.try_send_segment(TcpControl::None, h.guest_seq - 1, &[], 64240)
+            .is_err(),
+        "a zero-length zero-window probe should follow the unacceptable-segment path"
+    );
+
+    assert!(
+        h.connection_inner().lifetime_timer.deadline()
+            > Some(Instant::now() + Duration::from_secs(1)),
+        "a zero-length zero-window probe should refresh the close timeout"
+    );
+
+    {
+        let conn = h.consomme.tcp.connections.get_mut(&ft).unwrap();
+        conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() + Duration::from_millis(1));
+    }
+
+    assert!(
+        h.try_send_segment(TcpControl::Psh, h.guest_seq, b"x", 64240)
+            .is_err(),
+        "a PSH-marked zero-window probe should follow the unacceptable-segment path"
+    );
+
+    assert!(
+        h.connection_inner().lifetime_timer.deadline()
+            > Some(Instant::now() + Duration::from_secs(1)),
+        "a PSH-marked zero-window probe should refresh the close timeout"
     );
 }
 
