@@ -210,6 +210,8 @@ impl PetriVmConfigOpenVmm {
                     max_sub_channels: None,
                 },
             );
+        } else {
+            panic!("with_nic_test_control requires VTL2 settings");
         }
 
         self
