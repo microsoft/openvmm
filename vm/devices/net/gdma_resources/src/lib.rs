@@ -23,6 +23,38 @@ impl ResourceId<PciDeviceHandleKind> for GdmaDeviceHandle {
     const ID: &'static str = "gdma";
 }
 
+/// A resource handle to a test-controllable GDMA device.
+///
+/// Used in VMM tests to issue typed hardware requests.
+#[derive(MeshPayload)]
+pub struct GdmaTestDeviceHandle {
+    /// The vports to instantiate on the NIC.
+    pub vports: Vec<VportDefinition>,
+    /// Channel for delivering requests from the test harness.
+    pub request_recv: mesh::Receiver<mesh::rpc::Rpc<GdmaTestRequest, ()>>,
+}
+
+impl ResourceId<PciDeviceHandleKind> for GdmaTestDeviceHandle {
+    const ID: &'static str = "gdma-test";
+}
+
+/// A test request for an emulated GDMA device.
+#[derive(MeshPayload)]
+pub enum GdmaTestRequest {
+    /// Request that the VF be reconfigured.
+    VfReset {
+        /// Whether OpenHCL should revoke the VTL0 VF during reset.
+        revoke_vtl0_vf: bool,
+    },
+    /// Change a vport's link state.
+    VportLinkState {
+        /// The zero-based vport index.
+        vport: u32,
+        /// Whether the link should be connected.
+        connected: bool,
+    },
+}
+
 /// A basic NIC vport definition.
 #[derive(MeshPayload)]
 pub struct VportDefinition {

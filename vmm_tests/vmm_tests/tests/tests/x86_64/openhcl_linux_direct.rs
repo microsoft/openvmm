@@ -3,6 +3,8 @@
 
 //! Integration tests for x86_64 Linux direct boot with OpenHCL.
 
+mod mana_nic;
+
 use crate::x86_64::storage::new_test_vtl2_nvme_device;
 use guid::Guid;
 use memory_range::MemoryRange;
@@ -22,62 +24,6 @@ use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_test_macros::openvmm_test;
 use zerocopy::FromBytes;
-
-/// Today this only tests that the nic can get an IP address via consomme's DHCP
-/// implementation.
-///
-/// FUTURE: Test traffic on the nic.
-async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
-    let sh = agent.unix_shell();
-    cmd!(sh, "ifconfig eth0 up").run().await?;
-    cmd!(sh, "udhcpc eth0").run().await?;
-    let output = cmd!(sh, "ifconfig eth0").read().await?;
-    // Validate that we see a mana nic with the expected MAC address and IPs.
-    assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
-    assert!(output.contains("inet addr:10.0.0.2"));
-    assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
-
-    Ok(())
-}
-
-/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay.
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
-    let (vm, agent) = config
-        .with_vmbus_redirect(true)
-        .modify_backend(|b| b.with_nic())
-        .run()
-        .await?;
-
-    validate_mana_nic(&agent).await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
-/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Use the shared pool override to test
-/// the shared pool dma path.
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn mana_nic_shared_pool(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> Result<(), anyhow::Error> {
-    let (vm, agent) = config
-        .with_vmbus_redirect(true)
-        .modify_backend(|b| b.with_nic())
-        .run()
-        .await?;
-
-    validate_mana_nic(&agent).await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
 
 /// Test an OpenHCL Linux direct VM with many NVMe devices assigned to VTL2 and vmbus relay.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]

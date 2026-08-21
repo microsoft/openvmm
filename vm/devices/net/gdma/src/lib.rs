@@ -121,12 +121,38 @@ enum SmcError {
 
 pub use bnic::BnicConfig;
 
+/// A cloneable handle for injecting EQEs into the hardware channel EQ.
+///
+/// Obtained via [`GdmaDevice::hwc_eq_injector`] before handing the device to
+/// the VM machinery.
+#[derive(Clone)]
+pub struct HwcEqInjector {
+    queues: Arc<Queues>,
+}
+
+impl HwcEqInjector {
+    /// Posts an EQE directly to the hardware channel EQ, bypassing the guest
+    /// driver command path. Intended for out-of-band test EQE injection in
+    /// VMM tests (`gdma_test`).
+    pub fn post(&self, ty: u8, data: &[u8]) {
+        self.queues.post_eq(queues::ID_OFFSET as u32, ty, data)
+    }
+}
+
 pub struct VportConfig {
     pub mac_address: MacAddress,
     pub endpoint: Box<dyn Endpoint>,
 }
 
 impl GdmaDevice {
+    /// Returns a cloneable handle for injecting EQEs into the hardware channel
+    /// EQ after this device has been handed to the VM machinery.
+    pub fn hwc_eq_injector(&self) -> HwcEqInjector {
+        HwcEqInjector {
+            queues: self.queues.clone(),
+        }
+    }
+
     pub fn new(
         driver_source: &VmTaskDriverSource,
         gm: GuestMemory,
