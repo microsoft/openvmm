@@ -305,6 +305,8 @@ pub struct HyperVNewCustomVMArgs {
     pub com_3: bool,
     /// Enable the TPM
     pub tpm_enabled: bool,
+    /// Enable guest hibernation
+    pub hibernation_enabled: bool,
     /// Temporary file containing management VTL settings
     pub management_vtl_settings: Option<NamedTempFile>,
 }
@@ -482,11 +484,6 @@ impl HyperVNewCustomVMArgs {
             ..
         } = config;
 
-        anyhow::ensure!(
-            !config.hibernation_enabled,
-            "hibernation is not yet supported on the Hyper-V backend"
-        );
-
         if firmware
             .openhcl_config()
             .is_some_and(|c| c.vtl2_base_address_type.is_some())
@@ -620,6 +617,7 @@ impl HyperVNewCustomVMArgs {
                 }
                 tpm_enabled
             },
+            hibernation_enabled: config.hibernation_enabled,
             com_1: true,
 
             // specified after creation
@@ -836,6 +834,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             .arg("Com1", args.com_1)
             .arg("Com3", args.com_3)
             .arg("TpmEnabled", args.tpm_enabled)
+            .arg("EnableHibernation", args.hibernation_enabled)
             .arg_opt(
                 "ManagementVtlSettings",
                 args.management_vtl_settings.as_ref().map(|f| f.path()),
