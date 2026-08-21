@@ -121,6 +121,7 @@ impl PetriVmConfigOpenVmm {
             firmware,
             hibernation_enabled,
             ipmi_enabled,
+            load_openhcl_from_vmgs,
             memory,
             proc_topology,
             vmgs,
@@ -133,6 +134,10 @@ impl PetriVmConfigOpenVmm {
 
         if !physical_nvme_devices.is_empty() {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
+        }
+
+        if load_openhcl_from_vmgs {
+            anyhow::bail!("loading OpenHCL from VMGS is only supported by the Hyper-V backend");
         }
 
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");

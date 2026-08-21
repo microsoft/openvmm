@@ -235,6 +235,8 @@ pub struct PetriVmConfig {
     pub hibernation_enabled: bool,
     /// Whether to expose an IPMI KCS interface to the guest.
     pub ipmi_enabled: bool,
+    /// Flag whether to load the paravisor IGVM from the VMGS guest firmware file
+    pub load_openhcl_from_vmgs: bool,
     /// The amount of memory, in bytes, to assign to the VM
     pub memory: MemoryConfig,
     /// The processor topology for the VM
@@ -464,6 +466,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 firmware: artifacts.firmware,
                 hibernation_enabled: false,
                 ipmi_enabled: false,
+                load_openhcl_from_vmgs: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -547,6 +550,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 firmware: artifacts.firmware,
                 hibernation_enabled: false,
                 ipmi_enabled: false,
+                load_openhcl_from_vmgs: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -1396,6 +1400,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
             }
         }
+        self
+    }
+
+    /// Boot the paravisor from the IGVM stored in the VMGS guest firmware file
+    pub fn with_openhcl_from_vmgs(mut self) -> Self {
+        assert!(
+            self.config.firmware.is_openhcl(),
+            "Loading OpenHCL from VMGS is only supported for OpenHCL firmware."
+        );
+        self.config.load_openhcl_from_vmgs = true;
         self
     }
 
