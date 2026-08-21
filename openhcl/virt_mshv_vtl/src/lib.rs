@@ -42,6 +42,8 @@ cfg_if::cfg_if!(
         use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
         use processor::cca::CcaBackedShared;
         use safe_intrinsics::read_cntfrq_el0;
+        use virt_support_gic::GicV3Model;
+        use virt_support_gic::GicV3ModelError;
     }
 );
 
@@ -154,6 +156,9 @@ pub enum Error {
     #[error("failed to create cpuid tables for cvm")]
     #[cfg(guest_arch = "x86_64")]
     CvmCpuid(#[source] cvm_cpuid::CpuidResultsError),
+    #[error("failed to create GICv3 model")]
+    #[cfg(guest_arch = "aarch64")]
+    GicV3Model(#[source] GicV3ModelError),
     #[error("failed to update hypercall msr")]
     UpdateHypercallMsr,
     #[error("failed to update reference tsc msr")]
@@ -292,9 +297,10 @@ impl BackingShared {
                 backing_shared_params,
             )?),
             #[cfg(guest_arch = "aarch64")]
-            IsolationType::Cca => {
-                BackingShared::Cca(Box::new(CcaBackedShared::new(backing_shared_params)?))
-            }
+            IsolationType::Cca => BackingShared::Cca(Box::new(CcaBackedShared::new(
+                backing_shared_params,
+                partition_params.topology.virt_timer_ppi(),
+            )?)),
             _ => unreachable!(),
         })
     }
@@ -494,6 +500,9 @@ struct UhCvmPartitionState {
     #[cfg(guest_arch = "x86_64")]
     /// The emulated local APIC set.
     lapic: VtlArray<LocalApicSet, 2>,
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic: Arc<GicV3Model>,
     /// The emulated hypervisor state.
     hv: GlobalHv<2>,
     /// Guest VSM state.
@@ -651,6 +660,25 @@ impl GetReferenceTime for TscReferenceTimeSource {
 
 impl virt::irqcon::ControlGic for UhPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
+        #[cfg(guest_arch = "aarch64")]
+        if self.isolation == IsolationType::Cca {
+            let Some(cvm) = self.backing_shared.cvm_state() else {
+                tracelimit::warn_ratelimited!(
+                    irq = irq_id,
+                    asserted = high,
+                    "failed to request CCA SPI without CVM state"
+                );
+                return;
+            };
+
+            for vp_index in cvm.gic.set_spi_irq(irq_id, high) {
+                if let Some(vp) = self.vp(vp_index) {
+                    vp.wake(GuestVtl::Vtl0, WakeReason::INTCON);
+                }
+            }
+            return;
+        }
+
         if let Err(err) = self.hcl.request_interrupt(
             hvdef::HvInterruptControl::new()
                 .with_arm64_asserted(high)
@@ -703,6 +731,15 @@ impl UhProcessorBox {
         self.partition
             .hcl
             .sidecar_base_cpu(self.vp_info.base.vp_index.index())
+    }
+
+    /// Returns the partition-owned GICv3 model, when this processor belongs to a CCA partition.
+    #[cfg(guest_arch = "aarch64")]
+    pub fn gic_v3_model(&self) -> Option<Arc<GicV3Model>> {
+        match &self.partition.backing_shared {
+            BackingShared::Cca(shared) => Some(Arc::clone(&shared.cvm.gic)),
+            _ => None,
+        }
     }
 
     /// Returns the processor object, bound to this thread.
@@ -836,7 +873,6 @@ impl WakeReason {
     const MESSAGE_QUEUES: Self = Self::new().with_message_queues(true);
     #[cfg(guest_arch = "x86_64")]
     const HV_START_ENABLE_VP_VTL: Self = Self::new().with_hv_start_enable_vtl_vp(true); // StartVp/EnableVpVtl handling
-    #[cfg(guest_arch = "x86_64")]
     const INTCON: Self = Self::new().with_intcon(true);
     #[cfg(guest_arch = "x86_64")]
     const UPDATE_PROXY_IRR_FILTER: Self = Self::new().with_update_proxy_irr_filter(true);
@@ -2355,6 +2391,9 @@ impl UhProtoPartition<'_> {
                 .build()
         });
 
+        #[cfg(guest_arch = "aarch64")]
+        let gic = Arc::new(GicV3Model::new(params.topology).map_err(Error::GicV3Model)?);
+
         let tsc_frequency = get_tsc_frequency(params.isolation)?;
         let ref_time = ReferenceTimeSource::new(TscReferenceTimeSource::new(tsc_frequency));
 
@@ -2381,6 +2420,8 @@ impl UhProtoPartition<'_> {
             isolated_memory_protector: late_params.isolated_memory_protector,
             #[cfg(guest_arch = "x86_64")]
             lapic,
+            #[cfg(guest_arch = "aarch64")]
+            gic,
             hv,
             guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
             access_vsm_privilege: guest_vsm_available,
