@@ -43,21 +43,6 @@ pub trait PartitionMemoryMap: Send + Sync {
         Ok(())
     }
 
-    /// Acquires host access to a guest-memory range.
-    ///
-    /// Some isolated hypervisors do not make a guest page accessible to
-    /// userspace merely because the guest marked it shared. The VMM must also
-    /// ask the hypervisor to grant the host permission to touch the existing
-    /// backing. This method grants that permission without changing guest
-    /// visibility.
-    ///
-    /// TODO: This trait is sufficient for MSHV bring-up, but a redesign is
-    /// required to safely lower host access and track that pages are not
-    /// currently in use before revoking access.
-    fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
-        anyhow::bail!("acquiring host access is not supported")
-    }
-
     /// Maps a range residing in a remote process.
     ///
     /// This may fail if the range overlaps any other mapped range.
@@ -75,4 +60,18 @@ pub trait PartitionMemoryMap: Send + Sync {
         writable: bool,
         exec: bool,
     ) -> anyhow::Result<()>;
+}
+
+/// Interface for acquiring host access to guest memory.
+///
+/// Some isolated hypervisors do not make a guest page accessible to userspace
+/// merely because the guest marked it shared. The VMM must also ask the
+/// hypervisor to grant the host permission to touch the existing backing.
+pub trait PartitionHostAccess: Send + Sync {
+    /// Acquires host access without changing guest visibility.
+    ///
+    /// TODO: This trait is sufficient for MSHV bring-up, but a redesign is
+    /// required to safely lower host access and track that pages are not
+    /// currently in use before revoking access.
+    fn acquire_host_access(&self, addr: u64, size: u64, write: bool) -> anyhow::Result<()>;
 }

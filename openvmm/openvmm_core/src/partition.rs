@@ -70,6 +70,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets the [`PartitionMemoryMap`] interface for `vtl`.
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap>;
 
+    /// Gets the host-access interface, if the partition requires it.
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>>;
+
     /// Requests an MSI be delivered to `vtl`.
     #[cfg(guest_arch = "x86_64")]
     fn request_msi(&self, vtl: Vtl, request: MsiRequest);
@@ -204,6 +207,10 @@ where
 
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap> {
         self.memory_mapper(vtl)
+    }
+
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>> {
+        PartitionMemoryMapper::host_access(self)
     }
 
     #[cfg(guest_arch = "x86_64")]

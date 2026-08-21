@@ -3,6 +3,7 @@
 
 mod partition_memory_map;
 
+pub use partition_memory_map::PartitionHostAccess;
 pub use partition_memory_map::PartitionMemoryMap;
 pub use vm_topology::processor::VpIndex;
 
@@ -892,6 +893,11 @@ impl From<VpStopped> for VpHaltReason {
 pub trait PartitionMemoryMapper {
     /// Returns a memory mapper for the partition backing `vtl`.
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap>;
+
+    /// Returns an interface for acquiring host access to memory.
+    fn host_access(&self) -> Option<Arc<dyn PartitionHostAccess>> {
+        None
+    }
 }
 
 pub trait Hv1 {
