@@ -585,8 +585,8 @@ impl HclNetworkVFManagerWorker {
                 *direction_to_vtl0 = Some(false);
             }
         }
-        // Pick a `Present` vPCI bus control to revoke against: try the caller-supplied
-        // bus first, then fall back to the worker's current bus.
+        // Pick a `Present` or `HiddenPresent` vPCI bus control to revoke against: 
+        // try the caller-supplied bus first, then fall back to the worker's current bus.
         let vpci_bus_control = match bus_control {
             Vtl0Bus::Present(current_bus) | Vtl0Bus::HiddenPresent(current_bus) => {
                 Some(current_bus)
@@ -611,7 +611,7 @@ impl HclNetworkVFManagerWorker {
         } else {
             tracing::info!(
                 vtl2_vfid,
-                "VTL0 VF offered, but vPCI bus is either not present or hidden; skipping revoke"
+                "VTL0 VF offered, but vPCI bus is either not Present or HiddenPresent; skipping revoke"
             );
         }
     }
