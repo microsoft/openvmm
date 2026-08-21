@@ -2877,6 +2877,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gdma_test"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gdma",
+ "gdma_defs",
+ "gdma_resources",
+ "pal_async",
+ "pci_resources",
+ "test_with_tracing",
+ "vm_resource",
+ "zerocopy",
+]
+
+[[package]]
 name = "generation_id"
 version = "0.0.0"
 dependencies = [
@@ -6035,6 +6051,7 @@ dependencies = [
  "disklayer_vhdx",
  "firmware_uefi",
  "gdma",
+ "gdma_test",
  "guest_crash_device",
  "guest_emulation_device",
  "guest_emulation_log",
