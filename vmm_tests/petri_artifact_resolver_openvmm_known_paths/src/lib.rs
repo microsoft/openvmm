@@ -154,6 +154,19 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
 
             _ if id == vmgstool::VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
             _ if id == vmgstool::VMGSTOOL_DEV_NATIVE => vmgstool_dev_native_executable_path(),
+            _ if id == vmfw_dll::LATEST_CVM_X64 => get_path(
+                Path::new("."),
+                vmfw_dll::LATEST_CVM_X64_FILE_NAME,
+                MissingCommand::XFlowey {
+                    description: "x64 CVM vmfirmwareigvm test DLL",
+                    xflowey_args: &[
+                        "vmm-tests-run",
+                        "--filter",
+                        "test(vmgstool_copy_igvmfile)",
+                        "--build-only",
+                    ],
+                },
+            ),
 
             _ if id == guest_tools::TPM_GUEST_TESTS_WINDOWS_X64 => {
                 tpm_guest_tests_windows_path(MachineArch::X86_64)

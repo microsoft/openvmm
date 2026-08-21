@@ -1395,12 +1395,21 @@ impl IntoPipeline for CheckinGatesCli {
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd vmm_tests artifact: {missing}")
             })?;
-        let vmm_tests_artifacts_windows_amd_snp_x86 = vmm_tests_artifacts_windows_x86
-            .clone()
-            .finish()
-            .map_err(|missing| {
-                anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
-            })?;
+        let vmm_tests_artifacts_windows_amd_snp_x86: ResolveVmmTestsDepArtifacts = {
+            let resolve = vmm_tests_artifacts_windows_x86
+                .clone()
+                .finish()
+                .map_err(|missing| {
+                    anyhow::anyhow!(
+                        "missing required windows-amd-snp vmm_tests artifact: {missing}"
+                    )
+                })?;
+            Box::new(move |ctx| {
+                let mut artifacts = resolve(ctx);
+                artifacts.vmfirmwareigvm_cvm_x64_source = artifacts.openhcl_cvm.clone();
+                artifacts
+            })
+        };
         let vmm_tests_artifacts_linux_mshv_x86 = vmm_tests_artifacts_linux_musl_x86
             .finish()
             .map_err(|missing| {

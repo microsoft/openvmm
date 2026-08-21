@@ -833,6 +833,11 @@ impl ResolvedArtifactSelections {
                 self.build.vmgstool_dev = true;
             }
 
+            petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64::GLOBAL_UNIQUE_ID => {
+                self.build.vmfirmwareigvm_cvm_x64 = true;
+                self.build.openhcl_cvm = true;
+            }
+
             // TPM guest tests
             petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64::GLOBAL_UNIQUE_ID => {
                 self.build.tpm_guest_tests_windows = true;

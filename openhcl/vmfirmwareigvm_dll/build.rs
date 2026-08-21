@@ -46,6 +46,7 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=UH_DLL_NAME");
     println!("cargo:rerun-if-env-changed=UH_IGVM_PATH");
+    println!("cargo:rerun-if-env-changed=UH_RESOURCE_ID");
     println!("cargo:rerun-if-env-changed=UH_MAJOR");
     println!("cargo:rerun-if-env-changed=UH_MINOR");
     println!("cargo:rerun-if-env-changed=UH_PATCH");
@@ -54,6 +55,7 @@ fn main() {
     // If none of our env vars are set, do nothing instead of erroring.
     if std::env::var_os("UH_DLL_NAME").is_none()
         && std::env::var_os("UH_IGVM_PATH").is_none()
+        && std::env::var_os("UH_RESOURCE_ID").is_none()
         && std::env::var_os("UH_MAJOR").is_none()
         && std::env::var_os("UH_MINOR").is_none()
         && std::env::var_os("UH_PATCH").is_none()
@@ -72,6 +74,11 @@ fn main() {
 
     // (path) absolute path to an IGVM file to package up
     let uh_igvm_path = std::env::var("UH_IGVM_PATH").expect("must set UH_IGVM_PATH");
+
+    // (u32) Defaults to 1, the resource ID used before UH_RESOURCE_ID was configurable.
+    let uh_resource_id = std::env::var("UH_RESOURCE_ID")
+        .map(|id| id.parse::<u32>().expect("UH_RESOURCE_ID must be a u32"))
+        .unwrap_or(1);
 
     // (u16) Major version number of the DLL
     let uh_major = std::env::var("UH_MAJOR")
@@ -116,6 +123,7 @@ fn main() {
     let macros = [
         ("UH_DLL_NAME", format!(r#""{uh_dll_name}""#)),
         ("UH_IGVM_PATH", format!(r#""{uh_igvm_path}""#)),
+        ("UH_RESOURCE_ID", uh_resource_id.to_string()),
         ("UH_VERSION", uh_version),
         ("UH_VERSION_STR", uh_version_str),
     ];

@@ -27,5 +27,5 @@ BLOCK "VarFileInfo"
 
 2 24 "manifest.xml"
 
-1 VMFW UH_IGVM_PATH
+UH_RESOURCE_ID VMFW UH_IGVM_PATH
 
