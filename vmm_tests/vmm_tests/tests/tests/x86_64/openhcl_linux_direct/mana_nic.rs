@@ -14,7 +14,10 @@ use vmm_test_macros::openvmm_test;
 /// Validates ICMP by testing that the nic can ping consomme's IP address.
 ///
 /// FUTURE: TCP / UDP traffic?
-async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
+async fn validate_mana_nic(
+    agent: &PipetteClient,
+    eth0_is_mana_vf: bool,
+) -> Result<(), anyhow::Error> {
     let sh = agent.unix_shell();
     cmd!(sh, "ifconfig eth0 up").run().await?;
     cmd!(sh, "udhcpc eth0").run().await?;
@@ -22,7 +25,11 @@ async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
     // Validate that we see a mana nic with the expected MAC address and IPs.
     assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
     assert!(output.contains("inet addr:10.0.0.2"));
-    assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
+    if eth0_is_mana_vf {
+        cmd!(sh, "ifconfig eth1").ignore_status().run().await?;
+    } else {
+        assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
+    }
     cmd!(sh, "ping -c 1 -W 5 -I eth0 10.0.0.1").run().await?;
 
     Ok(())
@@ -38,7 +45,7 @@ async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), any
         .run()
         .await?;
 
-    validate_mana_nic(&agent).await?;
+    validate_mana_nic(&agent, false).await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -59,7 +66,7 @@ async fn mana_nic_shared_pool(
         .run()
         .await?;
 
-    validate_mana_nic(&agent).await?;
+    validate_mana_nic(&agent, false).await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -78,13 +85,13 @@ async fn mana_nic_vf_reconfig(
 
     let (vm, agent) = config.run().await?;
 
-    validate_mana_nic(&agent).await?;
+    validate_mana_nic(&agent, true).await?;
 
     let sh = agent.unix_shell();
 
     mana.inject_vf_reset(revoke_vtl0_vf).await?;
     cmd!(sh, "sleep 5").run().await?;
-    validate_mana_nic(&agent).await?;
+    validate_mana_nic(&agent, true).await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -119,7 +126,7 @@ async fn mana_nic_vport_link_state(
         .modify_backend(move |b| b.with_nic_test_control(mana_config));
 
     let (vm, agent) = config.run().await?;
-    validate_mana_nic(&agent).await?;
+    validate_mana_nic(&agent, true).await?;
 
     let sh = agent.unix_shell();
     mana.set_vport_link_state(0, false).await?;
@@ -137,7 +144,7 @@ async fn mana_nic_vport_link_state(
     )
     .run()
     .await?;
-    validate_mana_nic(&agent).await?;
+    validate_mana_nic(&agent, true).await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
