@@ -2780,6 +2780,54 @@ async fn test_tcp_close_wait_cleanup(driver: DefaultDriver) {
     );
 }
 
+#[pal_async::async_test]
+async fn test_tcp_close_wait_zero_window_ack_refreshes_timeout(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+
+    h.send_segment_with_window(TcpControl::Fin, h.guest_seq, &[], 0);
+    h.guest_seq += 1;
+    assert_eq!(h.connection_inner().state, TcpState::CloseWait);
+
+    h.host_write(b"flow controlled").await;
+    h.poll_until(|inner| !inner.tx_buffer.is_empty()).await;
+    {
+        let access = h.consomme.access(&mut h.client);
+        let conn = access.inner.tcp.connections.values_mut().next().unwrap();
+        conn.inner.retransmission.timer = RetransmissionTimer::Persist {
+            deadline: Instant::now() - Duration::from_millis(1),
+            backoff: 0,
+            recover: None,
+        };
+    }
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(
+        h.connection_inner().tx_send,
+        h.connection_inner().tx_acked + 1,
+        "the persist probe should remain unacknowledged through a zero window"
+    );
+
+    let expiring_deadline = Instant::now() + Duration::from_millis(1);
+    h.consomme
+        .tcp
+        .connections
+        .get_mut(&h.four_tuple())
+        .unwrap()
+        .inner
+        .lifetime_timer = LifetimeTimer::Close(expiring_deadline);
+
+    h.send_segment_with_window(TcpControl::None, h.guest_seq, &[], 0);
+
+    assert!(
+        h.connection_inner().lifetime_timer.deadline()
+            > Some(Instant::now() + Duration::from_secs(1)),
+        "a zero-window ACK for pending data should refresh the close timeout"
+    );
+}
+
 /// Test that a simultaneous close reaches `Closing`, arms the cleanup
 /// deadline, and is counted as a timeout close if the guest never ACKs our FIN.
 #[pal_async::async_test]

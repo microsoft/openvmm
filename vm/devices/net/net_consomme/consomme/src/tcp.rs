@@ -2702,6 +2702,16 @@ impl TcpConnectionInner {
             let now = *packet_now.get_or_insert_with(TimerInstant::now);
             self.retransmission.on_ack(self.tx_acked, self.tx_send, now);
             self.refresh_close_deadline(now, sender.state.params.tcp_close_timeout);
+        } else if ack_number == self.tx_acked
+            && (self.tx_acked < self.tx_send || !self.tx_buffer.is_empty())
+            && tcp.control == TcpControl::None
+            && tcp.payload.is_empty()
+        {
+            // A pure ACK for pending data confirms that a flow-controlled peer
+            // is still responsive, even when its zero window prevents the ACK
+            // number from advancing.
+            let now = *packet_now.get_or_insert_with(TimerInstant::now);
+            self.refresh_close_deadline(now, sender.state.params.tcp_close_timeout);
         }
 
         let is_duplicate_ack = self.tx_acked == previous_tx_acked
