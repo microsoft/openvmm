@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Resource resolver for the nvme controller.
+//! Resource resolver for the GDMA device.
 
 use crate::GdmaDevice;
 use crate::VportConfig;
@@ -26,12 +26,39 @@ declare_static_async_resolver! {
     (PciDeviceHandleKind, GdmaDeviceHandle),
 }
 
-/// Error returned by [`GdmaDeviceResolver`].
+/// Error returned by [`GdmaDeviceResolver`] and shared resolvers.
 #[derive(Debug, Error)]
 #[expect(missing_docs)]
 pub enum Error {
     #[error("failed to resolve vport")]
     VportResolve(#[source] ResolveError),
+}
+
+/// Resolves a list of [`gdma_resources::VportDefinition`]s into
+/// [`VportConfig`]s.
+///
+/// Shared by [`GdmaDeviceResolver`] and `gdma_test`'s test resolver.
+pub async fn resolve_vports(
+    resolver: &ResourceResolver,
+    vports: Vec<gdma_resources::VportDefinition>,
+) -> Result<Vec<VportConfig>, Error> {
+    try_join_all(vports.into_iter().map(async |vport| {
+        let endpoint = resolver
+            .resolve(
+                vport.endpoint,
+                ResolveEndpointParams {
+                    mac_address: vport.mac_address,
+                },
+            )
+            .await
+            .map_err(Error::VportResolve)?;
+
+        Ok(VportConfig {
+            mac_address: vport.mac_address,
+            endpoint: endpoint.0,
+        })
+    }))
+    .await
 }
 
 #[async_trait]
@@ -45,23 +72,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaDeviceHandle> for GdmaDeviceR
         resource: GdmaDeviceHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let vports = try_join_all(resource.vports.into_iter().map(async |vport| {
-            let endpoint = resolver
-                .resolve(
-                    vport.endpoint,
-                    ResolveEndpointParams {
-                        mac_address: vport.mac_address,
-                    },
-                )
-                .await
-                .map_err(Error::VportResolve)?;
-
-            Ok(VportConfig {
-                mac_address: vport.mac_address,
-                endpoint: endpoint.0,
-            })
-        }))
-        .await?;
+        let vports = resolve_vports(resolver, resource.vports).await?;
 
         let device = GdmaDevice::new(
             input.driver_source,

@@ -61,6 +61,7 @@ vmgs_broker.workspace = true
 # PCI devices
 cxl_spec.workspace = true
 gdma.workspace = true
+gdma_test.workspace = true
 nvme.workspace = true
 nvme_test.workspace = true
 
