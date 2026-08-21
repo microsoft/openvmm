@@ -1132,10 +1132,10 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let msg = get_protocol::PowerOffNotification::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-        let request = if msg.hibernate.0 != 0 {
-            PowerRequest::Hibernate
-        } else {
-            PowerRequest::PowerOff
+        let request = match msg.hibernate.0 {
+            0 => PowerRequest::PowerOff,
+            1 => PowerRequest::Hibernate,
+            _ => return Err(Error::InvalidFieldValue),
         };
         state.power_client.power_request(request);
         Ok(())
