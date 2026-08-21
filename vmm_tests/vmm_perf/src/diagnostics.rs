@@ -127,7 +127,8 @@ fn copy_virtual_client_results<'a>(
 }
 
 fn is_publishable_virtual_client_file(filename: &str) -> bool {
-    filename == "metrics.csv"
+    filename == "console.log"
+        || filename == "metrics.csv"
         || filename == "vc.metrics"
         || filename == "vc.traces"
         || filename
@@ -214,6 +215,7 @@ mod tests {
             Vec::from([
                 path(&["openvmm-logs", "data", "nested", "guest.log"]),
                 path(&["results", "data", "nested", "metrics.csv"]),
+                path(&["virtual-client", "logs", "console.log"]),
                 path(&["virtual-client", "logs", "metrics.csv"]),
                 path(&["virtual-client", "logs", "vc.metrics"]),
                 path(&["virtual-client", "logs", "vc.traces"]),
