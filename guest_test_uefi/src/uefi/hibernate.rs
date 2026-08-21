@@ -30,13 +30,14 @@ pub fn hibernate() -> ! {
 
     #[cfg(target_arch = "aarch64")]
     // SAFETY: PSCI SYSTEM_OFF2 (0x8400_0015) with HIBERNATE_OFF (1) requests
-    // hibernation and does not return.
+    // hibernation and does not return. x0/x1 are marked clobbered (and flags are
+    // not preserved) because an SMC may modify them if it unexpectedly returns.
     unsafe {
         core::arch::asm!(
             "smc #0",
-            in("x0") 0x8400_0015u64,
-            in("x1") 1u64,
-            options(nomem, nostack, preserves_flags),
+            inlateout("x0") 0x8400_0015u64 => _,
+            inlateout("x1") 1u64 => _,
+            options(nomem, nostack),
         );
     }
 
