@@ -6,10 +6,11 @@
 //! If persistent storage is available, caches downloaded artifacts locally.
 
 use flowey::node::prelude::*;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
+use vmm_test_images::CONTAINER;
 use vmm_test_images::KnownTestArtifacts;
+use vmm_test_images::STORAGE_ACCOUNT;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CustomDiskPolicy {
@@ -86,7 +87,7 @@ impl FlowNodeWithConfig for Node {
 
         let azcopy_bin = ctx.reqv(flowey_lib_common::download_azcopy::Request::GetAzCopy);
 
-        let (files_to_download, write_files_to_download) = ctx.new_var::<Vec<KnownTestArtifacts>>();
+        let (files_to_download, write_files_to_download) = ctx.new_var::<Vec<(String, u64)>>();
         let (output_folder, write_output_folder) = ctx.new_var();
 
         ctx.emit_rust_step("calculating required VMM tests disk images", |ctx| {
@@ -122,20 +123,19 @@ impl FlowNodeWithConfig for Node {
                         continue;
                     };
 
-                    if let Some(artifact) = KnownTestArtifacts::from_filename(filename) {
-                        if let Some(expected_size) = artifact.expected_file_size() {
-                            let size = e.metadata()?.len();
-                            if size != expected_size {
-                                log::warn!(
-                                    "unexpected size for {}: expected {}, found {}",
-                                    filename,
-                                    expected_size,
-                                    size
-                                );
-                                unexpected_artifacts.insert(artifact);
-                            } else {
-                                skip_artifacts.insert(artifact);
-                            }
+                    if let Some(vhd) = KnownTestArtifacts::from_filename(filename) {
+                        let size = e.metadata()?.len();
+                        let expected_size = vhd.file_size();
+                        if size != expected_size {
+                            log::warn!(
+                                "unexpected size for {}: expected {}, found {}",
+                                filename,
+                                expected_size,
+                                size
+                            );
+                            unexpected_artifacts.insert(vhd);
+                        } else {
+                            skip_artifacts.insert(vhd);
                         }
                     } else {
                         continue;
@@ -181,12 +181,12 @@ Detected inconsistencies between expected and cached VMM test images.
                         if !skip_artifacts.contains(&artifact)
                             || unexpected_artifacts.contains(&artifact)
                         {
-                            files.push(artifact);
+                            files.push((artifact.filename().to_string(), artifact.file_size()));
                         }
                     }
 
                     // for aesthetic reasons
-                    files.sort_by_key(|artifact| artifact.filename());
+                    files.sort();
                     files
                 };
 
@@ -199,28 +199,11 @@ Detected inconsistencies between expected and cached VMM test images.
                         let output_folder = output_folder.display();
                         let disk_image_list = files_to_download
                             .iter()
-                            .map(|artifact| {
-                                let size = artifact
-                                    .expected_file_size()
-                                    .map_or_else(|| "size unknown".into(), |size| size.to_string());
-                                format!("  - {} ({size})", artifact.filename())
-                            })
+                            .map(|(name, size)| format!("  - {name} ({size})"))
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let known_download_size: u64 = files_to_download
-                            .iter()
-                            .filter_map(|artifact| artifact.expected_file_size())
-                            .sum();
-                        let has_unknown_sizes = files_to_download
-                            .iter()
-                            .any(|artifact| artifact.expected_file_size().is_none());
-                        let download_size = if has_unknown_sizes {
-                            format!(
-                                "at least {known_download_size} bytes (excluding artifacts with unknown size)"
-                            )
-                        } else {
-                            format!("{known_download_size} bytes")
-                        };
+                        let download_size: u64 =
+                            files_to_download.iter().map(|(_, size)| size).sum();
                         let msg = format!(
                             r#"
 ================================================================================
@@ -231,7 +214,7 @@ to be downloaded from Azure blob storage.
 {disk_image_list}
 
 - Images will be downloaded to: {output_folder}
-- The total download size is: {download_size}
+- The total download size is: {download_size} bytes
 
 If running locally, you can re-run with `--help` for info on how to:
 - tweak the selected download folder (e.g: download images to an external HDD)
@@ -292,25 +275,13 @@ Otherwise, press anything else with <enter> to cancel the run.
                 let azcopy_bin = rt.read(azcopy_bin);
 
                 if !files_to_download.is_empty() {
-                    let mut grouped = BTreeMap::<(&str, &str), Vec<KnownTestArtifacts>>::new();
-                    for artifact in files_to_download {
-                        grouped
-                            .entry((artifact.storage_account(), artifact.container()))
-                            .or_default()
-                            .push(artifact);
-                    }
-
-                    for ((storage_account, container), artifacts) in grouped {
-                        download_blobs_from_azure(
-                            rt,
-                            &azcopy_bin,
-                            None,
-                            storage_account,
-                            container,
-                            artifacts,
-                            &output_folder,
-                        )?;
-                    }
+                    download_blobs_from_azure(
+                        rt,
+                        &azcopy_bin,
+                        None,
+                        files_to_download,
+                        &output_folder,
+                    )?;
                 }
 
                 Ok(())
@@ -347,19 +318,17 @@ fn download_blobs_from_azure(
     rt: &mut RustRuntimeServices<'_>,
     azcopy_bin: &PathBuf,
     azcopy_auth_method: Option<AzCopyAuthMethod>,
-    storage_account: &str,
-    container: &str,
-    files_to_download: Vec<KnownTestArtifacts>,
+    files_to_download: Vec<(String, u64)>,
     output_folder: &Path,
 ) -> anyhow::Result<()> {
     //
     // Use azcopy to download the files
     //
-    let url = format!("https://{storage_account}.blob.core.windows.net/{container}/*");
+    let url = format!("https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/*");
 
     let include_path = files_to_download
-        .iter()
-        .map(|artifact| artifact.filename())
+        .into_iter()
+        .map(|(name, _)| name)
         .collect::<Vec<_>>()
         .join(";");
 

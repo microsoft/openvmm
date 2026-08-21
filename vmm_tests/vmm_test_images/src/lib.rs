@@ -19,7 +19,6 @@ use petri_artifacts_core::ArtifactId;
 use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
 use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
-use petri_artifacts_vmm_test::tags::IsHostedOnVmmPerfAzureBlobStore;
 
 pub use petri_artifacts_vmm_test::artifacts::CONTAINER;
 pub use petri_artifacts_vmm_test::artifacts::STORAGE_ACCOUNT;
@@ -44,19 +43,15 @@ pub enum KnownTestArtifacts {
     Windows11EnterpriseAarch64Vhdx,
     VmgsWithBootEntry,
     VmgsWith16kTpm,
-    VmmPerfRuntimeLinuxX64,
-    VmmPerfRuntimeLinuxArm64,
 }
 
 struct KnownTestArtifactMeta {
     variant: KnownTestArtifacts,
     handle_fn: fn() -> ErasedArtifactHandle,
     filename: &'static str,
-    expected_size: Option<u64>,
+    size: u64,
     download_name: &'static str,
     supports_blob_disk: bool,
-    storage_account: &'static str,
-    container: &'static str,
 }
 
 const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
@@ -86,10 +81,6 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
         ),
         meta::<test_vmgs::VMGS_WITH_BOOT_ENTRY>(KnownTestArtifacts::VmgsWithBootEntry),
         meta::<test_vmgs::VMGS_WITH_16K_TPM>(KnownTestArtifacts::VmgsWith16kTpm),
-        vmm_perf_meta::<vmm_perf::RUNTIME_LINUX_X64>(KnownTestArtifacts::VmmPerfRuntimeLinuxX64),
-        vmm_perf_meta::<vmm_perf::RUNTIME_LINUX_ARM64>(
-            KnownTestArtifacts::VmmPerfRuntimeLinuxArm64,
-        ),
     ]
 };
 
@@ -100,26 +91,9 @@ const fn meta<T: ArtifactId + IsHostedOnHvliteAzureBlobStore>(
         variant,
         handle_fn: || petri_artifacts_core::ArtifactHandle::<T>::new().erase(),
         filename: T::FILENAME,
-        expected_size: Some(T::SIZE),
+        size: T::SIZE,
         download_name: T::DOWNLOAD_NAME,
         supports_blob_disk: T::SUPPORTS_BLOB_DISK,
-        storage_account: STORAGE_ACCOUNT,
-        container: CONTAINER,
-    }
-}
-
-const fn vmm_perf_meta<T: ArtifactId + IsHostedOnVmmPerfAzureBlobStore>(
-    variant: KnownTestArtifacts,
-) -> KnownTestArtifactMeta {
-    KnownTestArtifactMeta {
-        variant,
-        handle_fn: || petri_artifacts_core::ArtifactHandle::<T>::new().erase(),
-        filename: T::FILENAME,
-        expected_size: None,
-        download_name: T::DOWNLOAD_NAME,
-        supports_blob_disk: false,
-        storage_account: "vmmperfartifactpublic",
-        container: "perfpackage/latest",
     }
 }
 
@@ -141,19 +115,9 @@ impl KnownTestArtifacts {
         self.meta().filename
     }
 
-    /// Get the expected file size when the artifact has a fixed size.
-    pub fn expected_file_size(self) -> Option<u64> {
-        self.meta().expected_size
-    }
-
-    /// Get the Azure Storage account containing the artifact.
-    pub fn storage_account(self) -> &'static str {
-        self.meta().storage_account
-    }
-
-    /// Get the Azure Blob container containing the artifact.
-    pub fn container(self) -> &'static str {
-        self.meta().container
+    /// Get the expected file size of the image.
+    pub fn file_size(self) -> u64 {
+        self.meta().size
     }
 
     /// Get the erased artifact handle for this image.

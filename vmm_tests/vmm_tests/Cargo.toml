@@ -18,10 +18,6 @@ harness = false
 name = "cca"
 harness = false
 
-[[test]]
-name = "vmm_perf"
-harness = false
-
 [dev-dependencies]
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true
@@ -57,7 +53,6 @@ kmsg.workspace = true
 mesh.workspace = true
 pal.workspace = true
 pal_async.workspace = true
-parking_lot.workspace = true
 unix_socket.workspace = true
 vmgs_resources.workspace = true
 
@@ -77,10 +72,6 @@ tempfile.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 pipette_client.workspace = true
 serde = { workspace = true, features = ["std"] }
-
-[target.'cfg(windows)'.dev-dependencies]
-sysinfo.workspace = true
-whp.workspace = true
 
 [lints]
 workspace = true

@@ -12,7 +12,7 @@ const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
 pub(crate) const MIN_WORK_DIR_BYTES: u64 = 30 * GIB;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HostCapacity {
     pub(crate) logical_processors: usize,
     pub(crate) available_memory_bytes: u64,
@@ -360,4 +360,56 @@ fn current_id(flag: &str, description: &str) -> anyhow::Result<String> {
     let id = String::from_utf8(output.stdout)
         .with_context(|| format!("current {description} ID was not valid UTF-8"))?;
     Ok(id.trim().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HostCapacity;
+    use super::MIN_WORK_DIR_BYTES;
+    use super::validate_requested_capacity;
+    use super::validate_work_dir_capacity;
+    use std::collections::BTreeMap;
+    use std::path::Path;
+    use test_with_tracing::test;
+
+    #[test]
+    fn validates_requested_capacity_within_host_limits() -> anyhow::Result<()> {
+        validate_requested_capacity(
+            &BTreeMap::from([
+                ("CpuCount".into(), "4".into()),
+                ("MemoryMB".into(), "4096".into()),
+            ]),
+            HostCapacity {
+                logical_processors: 8,
+                available_memory_bytes: 8 * 1024 * 1024 * 1024,
+            },
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_requested_capacity_above_host_limits() {
+        let error = validate_requested_capacity(
+            &BTreeMap::from([("CpuCount".into(), "9".into())]),
+            HostCapacity {
+                logical_processors: 8,
+                available_memory_bytes: 8 * 1024 * 1024 * 1024,
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("requested 9 CPUs"));
+    }
+
+    #[test]
+    fn rejects_small_work_dir_capacity() {
+        let error = validate_work_dir_capacity(
+            Path::new("work"),
+            MIN_WORK_DIR_BYTES - 1,
+            MIN_WORK_DIR_BYTES,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("at least 30 GiB is required"));
+    }
 }

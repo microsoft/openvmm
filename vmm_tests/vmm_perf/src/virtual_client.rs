@@ -26,7 +26,7 @@ pub(crate) struct VirtualClientRunRequest<'a> {
     pub(crate) openvmm: &'a Path,
     pub(crate) firmware: &'a Path,
     pub(crate) output_dir: &'a Path,
-    pub(crate) logger: &'a petri::PetriLogSource,
+    pub(crate) temp_dir: &'a Path,
     pub(crate) host: &'a HostEnvironment,
 }
 
@@ -35,7 +35,6 @@ pub(crate) struct VirtualClientRun<'a> {
     profile: VmmPerfProfile,
     runtime: &'a VmmPerfRuntime,
     directories: RunDirectories,
-    logger: &'a petri::PetriLogSource,
     host: &'a HostEnvironment,
     command: Command,
 }
@@ -59,6 +58,7 @@ impl<'a> VirtualClientRun<'a> {
             request.profile,
             &request.config.name,
             request.output_dir,
+            request.temp_dir,
             request.runtime.root(),
             work_dir_base.as_deref(),
         )?;
@@ -111,19 +111,24 @@ impl<'a> VirtualClientRun<'a> {
             profile: request.profile,
             runtime: request.runtime,
             directories,
-            logger: request.logger,
             host: request.host,
             command,
         })
     }
 
     fn execute(&mut self) -> (anyhow::Result<std::process::ExitStatus>, u64) {
-        let console_log = self.logger.log_file(&format!("console-{}", self.name));
+        tracing::info!(
+            configuration = self.name,
+            profile = self.profile.name(),
+            console_log = %self.directories.console_log_path.display(),
+            "starting VMM.Perf configuration"
+        );
         let started = Instant::now();
-        let execution = match console_log {
-            Ok(console_log) => run_command(&mut self.command, console_log),
-            Err(err) => Err(err),
-        };
+        let execution = run_command(
+            &mut self.command,
+            &self.directories.console_log_path,
+            &self.name,
+        );
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         (execution, duration_ms)
     }
@@ -217,6 +222,7 @@ impl ConfigOutcome {
 struct RunDirectories {
     config_output_dir: PathBuf,
     virtual_client_logs: PathBuf,
+    console_log_path: PathBuf,
     data_dir: PathBuf,
     profile_work_dir: PathBuf,
     temp_dir: PathBuf,
@@ -229,27 +235,28 @@ impl RunDirectories {
         profile: VmmPerfProfile,
         config_name: &str,
         output_dir: &Path,
+        temp_root: &Path,
         runtime_dir: &Path,
         requested_work_dir_base: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let config_output_dir = output_dir.join(config_name);
+        let config_output_dir = staged_config_output_dir(output_dir, profile, config_name);
         if config_output_dir.exists() {
             fs_err::remove_dir_all(&config_output_dir)?;
         }
-        let virtual_client_logs = config_output_dir.join("virtual-client");
-        fs_err::create_dir_all(&virtual_client_logs)?;
         fs_err::create_dir_all(config_output_dir.join("results"))?;
         fs_err::create_dir_all(config_output_dir.join("openvmm-logs"))?;
 
-        let work_parent = std::env::temp_dir();
-        fs_err::create_dir_all(&work_parent)?;
+        fs_err::create_dir_all(temp_root)?;
         let work = tempfile::Builder::new()
             .prefix(&format!("vmm-perf-{}-{config_name}-", profile.name()))
-            .tempdir_in(work_parent)?;
+            .tempdir_in(temp_root)?;
         let data_dir = work.path().join("data");
         let temp_dir = work.path().join("temp");
+        let virtual_client_logs = work.path().join("virtual-client");
+        let console_log_path = virtual_client_logs.join("console.log");
         fs_err::create_dir_all(&data_dir)?;
         fs_err::create_dir_all(&temp_dir)?;
+        fs_err::create_dir_all(&virtual_client_logs)?;
 
         let (profile_work_dir, profile_work_root) = match requested_work_dir_base {
             Some(base) => {
@@ -271,6 +278,7 @@ impl RunDirectories {
         Ok(Self {
             config_output_dir,
             virtual_client_logs,
+            console_log_path,
             profile_work_dir,
             data_dir,
             temp_dir,
@@ -294,6 +302,14 @@ impl RunDirectories {
         }
         paths
     }
+}
+
+fn staged_config_output_dir(
+    output_dir: &Path,
+    profile: VmmPerfProfile,
+    config_name: &str,
+) -> PathBuf {
+    output_dir.join(profile.name()).join(config_name)
 }
 
 fn resolve_parameters(
@@ -343,4 +359,56 @@ fn experiment_id(profile: VmmPerfProfile, config_name: &str) -> anyhow::Result<S
         profile.name(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_parameters;
+    use super::resolve_work_dir_base;
+    use super::staged_config_output_dir;
+    use crate::config::VmmPerfProfile;
+    use crate::test_support;
+    use std::collections::BTreeMap;
+    use std::path::Path;
+    use test_with_tracing::test;
+
+    #[test]
+    fn resolves_relative_work_dir_base_against_runtime_dir() -> anyhow::Result<()> {
+        let scratch = test_support::tempdir("work-dir-base")?;
+        let runtime_dir = scratch.path().join("runtime");
+        let work_base = runtime_dir.join("relative-base");
+
+        fs_err::create_dir_all(&work_base)?;
+
+        assert_eq!(
+            resolve_work_dir_base("relative-base", &runtime_dir)?,
+            fs_err::canonicalize(&work_base)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stages_profile_specific_output_paths() {
+        assert_eq!(
+            staged_config_output_dir(Path::new("out"), VmmPerfProfile::BootTime, "cfg"),
+            Path::new("out").join("boot_time").join("cfg")
+        );
+    }
+
+    #[test]
+    fn resolves_parameters_with_default_backend() {
+        let parameters = resolve_parameters(
+            BTreeMap::from([("CpuCount".into(), "4".into())]),
+            Path::new("work"),
+            Path::new("openvmm"),
+            Path::new("firmware"),
+            Some("kvm"),
+        );
+
+        assert_eq!(parameters["WorkDir"], "work");
+        assert_eq!(parameters["OpenVmmBinary"], "openvmm");
+        assert_eq!(parameters["MsvmFirmware"], "firmware");
+        assert_eq!(parameters["HypervisorBackend"], "kvm");
+        assert_eq!(parameters["CpuCount"], "4");
+    }
 }

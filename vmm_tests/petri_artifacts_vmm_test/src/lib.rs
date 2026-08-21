@@ -28,41 +28,6 @@ pub mod artifacts {
     openvmm_native!(OPENVMM_LINUX_AARCH64, "linux", "aarch64");
     openvmm_native!(OPENVMM_MACOS_AARCH64, "macos", "aarch64");
 
-    /// VMM.Perf runtime archives.
-    pub mod vmm_perf {
-        use crate::tags::IsHostedOnVmmPerfAzureBlobStore;
-        use petri_artifacts_core::declare_blob_artifacts;
-
-        declare_blob_artifacts! {
-            /// VMM.Perf runtime for Linux x86_64 hosts.
-            RUNTIME_LINUX_X64,
-            /// VMM.Perf runtime for Linux ARM64 hosts.
-            RUNTIME_LINUX_ARM64,
-        }
-
-        impl IsHostedOnVmmPerfAzureBlobStore for RUNTIME_LINUX_X64 {
-            const FILENAME: &'static str = "vmm-perf-linux-x64-1.0.0.tar.gz";
-            const DOWNLOAD_NAME: &'static str = "VmmPerfRuntimeLinuxX64";
-        }
-
-        impl IsHostedOnVmmPerfAzureBlobStore for RUNTIME_LINUX_ARM64 {
-            const FILENAME: &'static str = "vmm-perf-linux-arm64-1.0.0.tar.gz";
-            const DOWNLOAD_NAME: &'static str = "VmmPerfRuntimeLinuxArm64";
-        }
-
-        /// Handle for the VMM.Perf runtime matching the supported native host.
-        // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        pub const RUNTIME_NATIVE: petri_artifacts_core::ArtifactHandle<RUNTIME_LINUX_X64> =
-            petri_artifacts_core::ArtifactHandle::new();
-
-        /// Handle for the VMM.Perf runtime matching the supported native host.
-        // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        pub const RUNTIME_NATIVE: petri_artifacts_core::ArtifactHandle<RUNTIME_LINUX_ARM64> =
-            petri_artifacts_core::ArtifactHandle::new();
-    }
-
     /// openvmm_vhost "native" executable — the vhost-user backend binary.
     /// Only available on Linux (vhost-user requires Unix sockets).
     // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
@@ -847,14 +812,6 @@ pub mod tags {
         /// Size of the file in bytes
         const SIZE: u64;
         /// CLI name for `cargo xtask guest-test download-image --artifacts <name>`
-        const DOWNLOAD_NAME: &'static str;
-    }
-
-    /// Artifact is a VMM.Perf runtime hosted in public Azure Blob Storage.
-    pub trait IsHostedOnVmmPerfAzureBlobStore: ArtifactId {
-        /// Local cache filename.
-        const FILENAME: &'static str;
-        /// Name used by local artifact-selection tooling.
         const DOWNLOAD_NAME: &'static str;
     }
 }

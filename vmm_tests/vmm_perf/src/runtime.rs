@@ -206,3 +206,52 @@ fn ensure_file(path: &Path, description: &str) -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::archive_signature;
+    use super::find_runtime_dir;
+    use super::virtual_client_name;
+    use crate::test_support;
+    use test_with_tracing::test;
+
+    #[test]
+    fn finds_single_runtime_directory() -> anyhow::Result<()> {
+        let scratch = test_support::tempdir("runtime-find")?;
+        let runtime_dir = scratch.path().join("payload").join("linux-x64");
+
+        fs_err::create_dir_all(&runtime_dir)?;
+        fs_err::write(runtime_dir.join(virtual_client_name()), [])?;
+
+        assert_eq!(find_runtime_dir(scratch.path())?, runtime_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_multiple_runtime_directories() -> anyhow::Result<()> {
+        let scratch = test_support::tempdir("runtime-multiple")?;
+        for directory in ["a", "b"] {
+            let runtime_dir = scratch.path().join(directory);
+            fs_err::create_dir_all(&runtime_dir)?;
+            fs_err::write(runtime_dir.join(virtual_client_name()), [])?;
+        }
+
+        let error = find_runtime_dir(scratch.path()).unwrap_err();
+        assert!(format!("{error:#}").contains("multiple runtime directories"));
+        Ok(())
+    }
+
+    #[test]
+    fn archive_signature_changes_with_file_contents() -> anyhow::Result<()> {
+        let scratch = test_support::tempdir("runtime-signature")?;
+        let archive = scratch.path().join("runtime.tar.gz");
+
+        fs_err::write(&archive, "abc")?;
+        let first = archive_signature(&archive)?;
+        fs_err::write(&archive, "abcd")?;
+        let second = archive_signature(&archive)?;
+
+        assert_ne!(first, second);
+        Ok(())
+    }
+}

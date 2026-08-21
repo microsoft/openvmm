@@ -8,13 +8,11 @@ use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-const CONFIGS_ENV: &str = "VMM_PERF_VM_SIZES";
-const PARAMETERS_ENV: &str = "VMM_PERF_PARAMETERS";
 const MIB: u64 = 1024 * 1024;
 const MIB_PER_GIB: u64 = 1024;
 const DEFAULT_CAPACITY_PERCENT: u64 = 80;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VmmPerfProfile {
     Fio,
     Iperf3,
@@ -22,6 +20,12 @@ pub(crate) enum VmmPerfProfile {
 }
 
 impl VmmPerfProfile {
+    const ALL: [Self; 3] = [Self::Fio, Self::Iperf3, Self::BootTime];
+
+    pub(crate) fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Fio => "fio",
@@ -38,16 +42,26 @@ impl VmmPerfProfile {
                 Self::BootTime => "PERF-OPENVMM-WHP-BOOTTIME.json",
             }
         } else {
-            match self {
-                Self::Fio => "PERF-OPENVMM-FIO.json",
-                Self::Iperf3 => "PERF-OPENVMM-IPERF3.json",
-                Self::BootTime => "PERF-OPENVMM-BOOTTIME.json",
+            match (std::env::consts::ARCH, self) {
+                ("x86_64", Self::Fio) => "PERF-OPENVMM-X64-FIO.json",
+                ("x86_64", Self::Iperf3) => "PERF-OPENVMM-X64-IPERF3.json",
+                ("x86_64", Self::BootTime) => "PERF-OPENVMM-X64-BOOTTIME.json",
+                ("aarch64", Self::Fio) => "PERF-OPENVMM-ARM64-FIO.json",
+                ("aarch64", Self::Iperf3) => "PERF-OPENVMM-ARM64-IPERF3.json",
+                ("aarch64", Self::BootTime) => "PERF-OPENVMM-ARM64-BOOTTIME.json",
+                _ => unreachable!("unsupported VMM.Perf host architecture"),
             }
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ConfigSelection {
+    pub(crate) vm_sizes_json: Option<String>,
+    pub(crate) parameters_json: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct VmmPerfConfig {
     pub(crate) name: String,
     pub(crate) parameters: BTreeMap<String, String>,
@@ -61,19 +75,26 @@ struct RawConfig {
     parameters: BTreeMap<String, serde_json::Value>,
 }
 
-pub(crate) fn selected_configs(capacity: HostCapacity) -> anyhow::Result<Vec<VmmPerfConfig>> {
-    let raw_configs = read_json_env::<Vec<RawConfig>>(CONFIGS_ENV)?.unwrap_or_default();
+pub(crate) fn selected_configs(
+    capacity: HostCapacity,
+    selection: &ConfigSelection,
+) -> anyhow::Result<Vec<VmmPerfConfig>> {
+    let raw_configs =
+        parse_json::<Vec<RawConfig>>(selection.vm_sizes_json.as_deref(), "--vm-sizes-json")?
+            .unwrap_or_default();
     let mut configs = if raw_configs.is_empty() {
         default_configs(capacity)?
     } else {
         configs_from_raw(raw_configs)?
     };
 
-    if let Some(parameters) = read_json_env::<BTreeMap<String, serde_json::Value>>(PARAMETERS_ENV)?
-    {
+    if let Some(parameters) = parse_json::<BTreeMap<String, serde_json::Value>>(
+        selection.parameters_json.as_deref(),
+        "--parameters-json",
+    )? {
         apply_parameters(
             &mut configs,
-            stringify_parameters(parameters, PARAMETERS_ENV)?,
+            stringify_parameters(parameters, "--parameters-json")?,
         )?;
     }
     Ok(configs)
@@ -130,15 +151,12 @@ fn apply_parameters(
     Ok(())
 }
 
-fn read_json_env<T: DeserializeOwned>(name: &str) -> anyhow::Result<Option<T>> {
-    let Some(json) = std::env::var_os(name) else {
+fn parse_json<T: DeserializeOwned>(json: Option<&str>, source: &str) -> anyhow::Result<Option<T>> {
+    let Some(json) = json else {
         return Ok(None);
     };
-    let json = json
-        .into_string()
-        .map_err(|_| anyhow::anyhow!("{name} is not valid UTF-8"))?;
-    serde_json::from_str(&json)
-        .with_context(|| format!("failed to parse {name}"))
+    serde_json::from_str(json)
+        .with_context(|| format!("failed to parse {source}"))
         .map(Some)
 }
 
@@ -223,5 +241,98 @@ fn scalar_to_string(name: &str, value: &serde_json::Value) -> anyhow::Result<Str
         serde_json::Value::Number(value) => Ok(value.to_string()),
         serde_json::Value::Bool(value) => Ok(value.to_string()),
         _ => anyhow::bail!("VMM.Perf parameter {name:?} must be a string, number, or boolean"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigSelection;
+    use super::VmmPerfProfile;
+    use super::selected_configs;
+    use crate::host::HostCapacity;
+    use std::collections::BTreeMap;
+    use test_with_tracing::test;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn default_configs_use_eighty_percent_capacity() -> anyhow::Result<()> {
+        let configs = selected_configs(
+            HostCapacity {
+                logical_processors: 10,
+                available_memory_bytes: 10 * GIB,
+            },
+            &ConfigSelection::default(),
+        )?;
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "cpu-8-memory-8192mb");
+        assert_eq!(
+            configs[0].parameters,
+            BTreeMap::from([
+                ("CpuCount".into(), "8".into()),
+                ("MemoryMB".into(), "8192".into()),
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn vm_sizes_and_parameters_json_preserve_override_behavior() -> anyhow::Result<()> {
+        let configs = selected_configs(
+            HostCapacity {
+                logical_processors: 16,
+                available_memory_bytes: 32 * GIB,
+            },
+            &ConfigSelection {
+                vm_sizes_json: Some(
+                    r#"[{"parameters":{"CpuCount":4,"MemoryMB":4096}},{"name":"custom","parameters":{"CpuCount":2,"MemoryMB":2048}}]"#
+                        .into(),
+                ),
+                parameters_json: Some(r#"{"CpuCount":6,"HypervisorBackend":"kvm"}"#.into()),
+            },
+        )?;
+
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].name, "cpu-6-memory-4096mb");
+        assert_eq!(configs[0].parameters["CpuCount"], "6");
+        assert_eq!(configs[0].parameters["HypervisorBackend"], "kvm");
+        assert_eq!(configs[1].name, "custom");
+        assert_eq!(configs[1].parameters["CpuCount"], "6");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_non_scalar_parameter_values() {
+        let error = selected_configs(
+            HostCapacity {
+                logical_processors: 16,
+                available_memory_bytes: 32 * GIB,
+            },
+            &ConfigSelection {
+                vm_sizes_json: Some(r#"[{"parameters":{"CpuCount":[4]}}]"#.into()),
+                parameters_json: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("must be a string, number, or boolean"));
+    }
+
+    #[test]
+    fn profile_file_names_match_host_backend_expectations() {
+        let profile = VmmPerfProfile::Fio;
+        if cfg!(target_os = "windows") {
+            assert_eq!(profile.file(), "PERF-OPENVMM-WHP-FIO.json");
+        } else {
+            assert_eq!(
+                profile.file(),
+                match std::env::consts::ARCH {
+                    "x86_64" => "PERF-OPENVMM-X64-FIO.json",
+                    "aarch64" => "PERF-OPENVMM-ARM64-FIO.json",
+                    _ => unreachable!("unsupported VMM.Perf host architecture"),
+                }
+            );
+        }
     }
 }

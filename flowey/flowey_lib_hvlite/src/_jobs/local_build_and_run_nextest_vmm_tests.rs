@@ -98,12 +98,6 @@ flowey_request! {
         /// an emulated VM instead of on the host.
         pub incubator_profile: Option<PathBuf>,
 
-        /// Optional serialized VMM.Perf VM-size array for local runs.
-        pub vmm_perf_vm_sizes: Option<String>,
-
-        /// Optional serialized VMM.Perf parameter overrides for local runs.
-        pub vmm_perf_parameters: Option<String>,
-
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -161,8 +155,6 @@ impl SimpleFlowNode for Node {
             reuse_prepped_vhds,
             disable_secure_avic,
             incubator_profile,
-            vmm_perf_vm_sizes,
-            vmm_perf_parameters,
             done,
         } = request;
 
@@ -738,23 +730,6 @@ impl SimpleFlowNode for Node {
             disable_remote_artifacts: false,
             reuse_prepped_vhds,
         });
-        let extra_env = if let Some(vmm_perf_vm_sizes) = vmm_perf_vm_sizes {
-            extra_env.map(ctx, move |mut env| {
-                env.insert("VMM_PERF_VM_SIZES".into(), vmm_perf_vm_sizes);
-                env
-            })
-        } else {
-            extra_env
-        };
-        let extra_env = if let Some(vmm_perf_parameters) = vmm_perf_parameters {
-            extra_env.map(ctx, move |mut env| {
-                env.insert("VMM_PERF_PARAMETERS".into(), vmm_perf_parameters);
-                env
-            })
-        } else {
-            extra_env
-        };
-
         let mut side_effects = Vec::new();
 
         side_effects.push(

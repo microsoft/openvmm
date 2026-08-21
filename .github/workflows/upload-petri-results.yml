@@ -109,56 +109,43 @@ jobs:
       - name: Upload VMM.Perf results to Azure Blob Storage
         continue-on-error: true
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
-          mapfile -d '' result_files < <(
-            find results \
-              -type f \
-              -path '*vmm_perf__*/*' \
-              \( \
-                -name 'metrics.csv' \
-                -o -name 'vc.metrics' \
-                -o -name 'vc_*.metrics' \
-                -o -name 'vc.traces' \
-                -o \( -path '*/openvmm-logs/*' -name '*.log' \) \
-              \) \
-              -print0
-          )
-
-          if [ "${#result_files[@]}" -eq 0 ]; then
+          mkdir -p vmm-perf-results
+          artifact_names=$(gh api \
+            --paginate \
+            "repos/$repo/actions/runs/$run_id/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | .name | select(endswith("-vmm-perf-results"))')
+          if [ -z "$artifact_names" ]; then
             echo "No VMM.Perf results found; skipping dedicated results publication."
             exit 0
           fi
 
           prefix="$VMMPERF_METRICS_PREFIX/${run_id}/attempt-${run_attempt}"
-          status=0
-          for result_file in "${result_files[@]}"; do
-            relative_path="${result_file#results/}"
-            destination="$prefix/$relative_path"
-            echo "Uploading $result_file -> $destination"
-            if upload_output=$(az storage blob upload \
+          while IFS= read -r artifact_name; do
+            result_dir="vmm-perf-results/$artifact_name"
+            mkdir -p "$result_dir"
+            gh run \
+              -R "$repo" \
+              download "$run_id" \
+              -n "$artifact_name" \
+              -D "$result_dir"
+            pool="${artifact_name%-vmm-perf-results}"
+            az storage blob upload-batch \
               --account-name "$VMMPERF_STORAGE_ACCOUNT" \
-              --container-name "$VMMPERF_STORAGE_CONTAINER" \
-              --name "$destination" \
-              --file "$result_file" \
+              --destination "$VMMPERF_STORAGE_CONTAINER" \
+              --destination-path "$prefix/$pool" \
+              --source "$result_dir" \
               --auth-mode login \
               --overwrite false \
               --only-show-errors \
-              --output none 2>&1); then
-              :
-            elif grep -q 'BlobAlreadyExists' <<< "$upload_output"; then
-              echo "Already uploaded; skipping $destination"
-            else
-              echo "$upload_output" >&2
-              echo "VMM.Perf results upload failed for $result_file" >&2
-              status=1
-            fi
-          done
-
-          exit "$status"
+              --output none
+          done <<< "$artifact_names"
         env:
+          repo: ${{ github.event.workflow_run.repository.full_name }}
           run_id: ${{ github.event.workflow_run.id }}
           run_attempt: ${{ github.event.workflow_run.run_attempt }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to memory validation results to Azure Blob Storage
         run: |
