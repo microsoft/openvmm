@@ -69,38 +69,13 @@ use zerocopy::IntoBytes;
 
 mod snp;
 
-use snp::GHCB_R8_VALID_BIT;
-use snp::GHCB_RCX_VALID_BIT;
-use snp::GHCB_RDX_VALID_BIT;
 pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
 pub(crate) use snp::acquire_snp_host_access;
-use snp::ghcb_rax_is_valid;
-use snp::read_snp_start_vp_input;
-use snp::set_ghcb_gp;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
 use snp::snp_start_vp_vmsa_gpa;
-
-/// Checks registers duplicated between the kernel-produced MSHV intercept
-/// message and the guest-populated GHCB.
-///
-/// RAX and RCX identify the Hyper-V hypercall and must be valid in both
-/// sources. MSHV does not always mark RDX and R8 valid in the GHCB, so compare
-/// those fields only when the guest included them there. The intercept message
-/// remains the register source used to dispatch the hypercall.
-fn snp_hypercall_registers_are_consistent(
-    ghcb: &x86defs::snp::GhcbPage,
-    info: &hvdef::HvX64HypercallInterceptMessage,
-) -> bool {
-    ghcb_rax_is_valid(ghcb)
-        && ghcb.save.valid_bitmap1 & GHCB_RCX_VALID_BIT != 0
-        && ghcb.save.rax == info.rax
-        && ghcb.save.rcx == info.rcx
-        && (ghcb.save.valid_bitmap1 & GHCB_RDX_VALID_BIT == 0 || ghcb.save.rdx == info.rdx)
-        && (ghcb.save.valid_bitmap1 & GHCB_R8_VALID_BIT == 0 || ghcb.save.r8 == info.r8)
-}
 
 impl virt::Hypervisor for LinuxMshv {
     type ProtoPartition<'a> = MshvProtoPartition<'a>;
@@ -844,7 +819,7 @@ impl MshvProcessor<'_> {
             }
             HvMessageType::HvMessageTypeHypercallIntercept => {
                 tracing::trace!("HYPERCALL_INTERCEPT");
-                self.handle_hypercall_intercept(exit, dev)?;
+                self.handle_hypercall_intercept(exit)?;
             }
             HvMessageType::HvMessageTypeX64ApicEoi => {
                 let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
@@ -902,120 +877,23 @@ impl MshvProcessor<'_> {
         self.emulate(message, devices, interruption_pending).await
     }
 
-    fn handle_hypercall_intercept(
-        &mut self,
-        message: &HvMessage,
-        _devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason> {
+    fn handle_hypercall_intercept(&mut self, message: &HvMessage) -> Result<(), VpHaltReason> {
         let info = message.as_message::<hvdef::HvX64HypercallInterceptMessage>();
-        let isolated = self.partition.isolation.snp().is_some();
-        // SEV-SNP guests use the 64-bit direct VMMCALL ABI. MSHV redacts the
-        // execution-state bits in the isolated hypercall intercept.
-        let is_64bit = isolated
-            || info.header.execution_state.cr0_pe() && info.header.execution_state.efer_lma();
-        let vcpufd = self.runner.vcpufd;
-        let mut isolated_regs = HvX64RegisterPage::new_zeroed();
-        let reg_page = if isolated {
-            let ghcb = self
-                .runner
-                .ghcb_page()
-                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-            if !snp_hypercall_registers_are_consistent(ghcb, info) {
-                tracelimit::warn_ratelimited!("inconsistent SNP hypercall registers");
-                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-            }
-            isolated_regs.gp_registers[x86emu::Gp::RAX as usize] = info.rax;
-            isolated_regs.gp_registers[x86emu::Gp::RBX as usize] = info.rbx;
-            isolated_regs.gp_registers[x86emu::Gp::RCX as usize] = info.rcx;
-            isolated_regs.gp_registers[x86emu::Gp::RDX as usize] = info.rdx;
-            isolated_regs.gp_registers[x86emu::Gp::RSI as usize] = info.rsi;
-            isolated_regs.gp_registers[x86emu::Gp::RDI as usize] = info.rdi;
-            isolated_regs.gp_registers[x86emu::Gp::R8 as usize] = info.r8;
-            for (dst, src) in isolated_regs.xmm.iter_mut().zip(&info.xmm_registers) {
-                *dst = u128::from(*src);
-            }
-            &mut isolated_regs
-        } else {
-            self.runner.reg_page()
+        let is_64bit =
+            info.header.execution_state.cr0_pe() && info.header.execution_state.efer_lma();
+        let mut handler = MshvHypercallHandler {
+            partition: self.partition,
+            reg_page: self.runner.reg_page(),
+            caller_vp: self.vpindex,
+            isolated: false,
+            modified_gp: 0,
+            modified_xmm: 0,
         };
 
-        let (modified_gp, modified_xmm) = {
-            let mut handler = MshvHypercallHandler {
-                partition: self.partition,
-                reg_page,
-                caller_vp: self.vpindex,
-                isolated,
-                modified_gp: 0,
-                modified_xmm: 0,
-            };
-
-            if isolated && info.rcx as u16 == hvdef::HypercallCode::HvCallStartVirtualProcessor.0 {
-                let input_end = info
-                    .rdx
-                    .checked_add(size_of::<hvdef::hypercall::StartVirtualProcessorX64>() as u64);
-                let result = input_end
-                    .ok_or(hvdef::HvError::InvalidParameter)
-                    .and_then(|_| {
-                        read_snp_start_vp_input(vcpufd, info.rdx).map_err(|err| {
-                            tracelimit::warn_ratelimited!(
-                                error = &err as &dyn std::error::Error,
-                                input_gpa = info.rdx,
-                                "failed to read SNP StartVirtualProcessor input"
-                            );
-                            hvdef::HvError::InvalidParameter
-                        })
-                    })
-                    .and_then(|input| {
-                        if input.rsvd0 != 0 || input.rsvd1 != 0 {
-                            return Err(hvdef::HvError::InvalidParameter);
-                        }
-                        hv1_hypercall::StartVirtualProcessor::start_virtual_processor(
-                            &mut handler,
-                            input.partition_id,
-                            input.vp_index,
-                            Vtl::try_from(input.target_vtl)?,
-                            &input.vp_context,
-                        )
-                    });
-                let output = match result {
-                    Ok(()) => hvdef::hypercall::HypercallOutput::SUCCESS,
-                    Err(err) => err.into(),
-                };
-                hv1_hypercall::X64RegisterState::set_gp(
-                    &mut handler,
-                    hv1_hypercall::X64HypercallRegister::Rax,
-                    output.into(),
-                );
-            } else {
-                MshvHypercallHandler::DISPATCHER.dispatch(
-                    &self.partition.gm,
-                    X64RegisterIo::new(&mut handler, is_64bit, !isolated),
-                );
-            }
-            (handler.modified_gp, handler.modified_xmm)
-        };
-
-        if isolated {
-            if modified_xmm != 0 {
-                tracelimit::warn_ratelimited!(modified_xmm, "unsupported SNP hypercall XMM output");
-                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-            }
-            let ghcb = self
-                .runner
-                .ghcb_page()
-                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-            for index in 0..isolated_regs.gp_registers.len() {
-                if modified_gp & (1 << index) != 0
-                    && !set_ghcb_gp(ghcb, index, isolated_regs.gp_registers[index])
-                {
-                    tracelimit::warn_ratelimited!(
-                        index,
-                        "unsupported SNP hypercall GP-register output"
-                    );
-                    return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-                }
-            }
-        }
+        MshvHypercallHandler::DISPATCHER.dispatch(
+            &self.partition.gm,
+            X64RegisterIo::new(&mut handler, is_64bit, true),
+        );
         Ok(())
     }
 }
@@ -1607,36 +1485,6 @@ mod tests {
             virt::IsolationType::None,
             false
         ));
-    }
-
-    #[test]
-    fn snp_hypercall_requires_valid_consistent_registers() {
-        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
-        let mut info = hvdef::HvX64HypercallInterceptMessage::new_zeroed();
-        for (index, value) in [
-            (x86emu::Gp::RAX as usize, 1),
-            (x86emu::Gp::RCX as usize, 2),
-            (x86emu::Gp::RDX as usize, 3),
-            (x86emu::Gp::R8 as usize, 4),
-        ] {
-            assert!(set_ghcb_gp(&mut ghcb, index, value));
-        }
-        info.rax = ghcb.save.rax;
-        info.rcx = ghcb.save.rcx;
-        info.rdx = ghcb.save.rdx;
-        info.r8 = ghcb.save.r8;
-
-        assert!(snp_hypercall_registers_are_consistent(&ghcb, &info));
-
-        ghcb.save.rdx ^= 1;
-        assert!(!snp_hypercall_registers_are_consistent(&ghcb, &info));
-        ghcb.save.valid_bitmap1 &= !GHCB_RDX_VALID_BIT;
-        assert!(snp_hypercall_registers_are_consistent(&ghcb, &info));
-
-        ghcb.save.r8 ^= 1;
-        assert!(!snp_hypercall_registers_are_consistent(&ghcb, &info));
-        ghcb.save.valid_bitmap1 &= !GHCB_R8_VALID_BIT;
-        assert!(snp_hypercall_registers_are_consistent(&ghcb, &info));
     }
 
     #[test]
