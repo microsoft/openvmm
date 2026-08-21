@@ -1405,6 +1405,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Append additional command line arguments to the VTL0 Linux kernel.
+    pub fn with_vtl0_kernel_command_line(mut self, additional_command_line: &str) -> Self {
+        let Firmware::OpenhclLinuxDirect { openhcl_config, .. } = &mut self.config.firmware else {
+            panic!("VTL0 kernel command line is only supported for OpenHCL Linux direct firmware.")
+        };
+        append_cmdline(
+            &mut openhcl_config.vtl0_kernel_command_line,
+            additional_command_line,
+        );
+        self
+    }
+
     /// Enable confidential filtering, even if the VM is not confidential.
     pub fn with_confidential_filtering(self) -> Self {
         if !self.config.firmware.is_openhcl() {
@@ -2507,6 +2519,8 @@ pub struct OpenHclConfig {
     /// command line and pass to OpenHCL. VM backends should use
     /// [`OpenHclConfig::command_line()`] rather than reading this directly.
     pub custom_command_line: Option<String>,
+    /// Test-specified command-line parameters to append to the VTL0 Linux kernel command line.
+    pub vtl0_kernel_command_line: Option<String>,
     /// Command line parameters that control OpenHCL logging behavior. Separate
     /// from `command_line` so that petri can decide to use default log
     /// levels.
@@ -2566,6 +2580,7 @@ impl Default for OpenHclConfig {
         Self {
             vmbus_redirect: false,
             custom_command_line: None,
+            vtl0_kernel_command_line: None,
             log_levels: OpenvmmLogConfig::TestDefault,
             vtl2_base_address_type: None,
             vtl2_settings: None,
