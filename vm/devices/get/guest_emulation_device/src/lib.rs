@@ -1094,7 +1094,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         match header.message_id() {
             HostNotifications::POWER_OFF => {
-                self.handle_power_off(state);
+                self.handle_power_off(message_buf, state)?;
             }
             HostNotifications::RESET => {
                 self.handle_reset(state);
@@ -1124,8 +1124,21 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_power_off(&mut self, state: &mut GuestEmulationDevice) {
-        state.power_client.power_request(PowerRequest::PowerOff);
+    fn handle_power_off(
+        &mut self,
+        message_buf: &[u8],
+        state: &mut GuestEmulationDevice,
+    ) -> Result<(), Error> {
+        let msg = get_protocol::PowerOffNotification::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        let request = if msg.hibernate.0 != 0 {
+            PowerRequest::Hibernate
+        } else {
+            PowerRequest::PowerOff
+        };
+        state.power_client.power_request(request);
+        Ok(())
     }
 
     fn handle_reset(&mut self, state: &mut GuestEmulationDevice) {
