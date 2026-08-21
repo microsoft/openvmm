@@ -964,6 +964,8 @@ impl virt::PartitionHostAccess for MshvPartitionInner {
         // bring-up with no concurrent page-state changes, but the GPA attribute
         // intercept revocation path must share serialized state with
         // acquire_snp_host_access before concurrent use is safe.
+        // TODO: Investigate whether MSHV supports read-only host-access
+        // requests and use `_write` to avoid granting write access for reads.
         #[cfg(guest_arch = "x86_64")]
         if self.isolation.snp().is_some() {
             return arch::acquire_snp_host_access(self, _addr, _size);

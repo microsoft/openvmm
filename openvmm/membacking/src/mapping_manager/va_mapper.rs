@@ -932,7 +932,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
                     Err(err) => {
                         return PageFaultAction::Fail(PageFaultError::new(
                             GuestMemoryErrorKind::Other,
-                            std::io::Error::other(err.to_string()),
+                            std::io::Error::other(err),
                         ));
                     }
                 }
