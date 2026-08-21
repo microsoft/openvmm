@@ -1472,7 +1472,7 @@ async fn vm_config_from_command_line(
                         },
                     },
                     enable_battery: opt.battery,
-                    enable_hibernation: false,
+                    enable_hibernation: opt.hibernation,
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
@@ -1895,7 +1895,7 @@ async fn vm_config_from_command_line(
         );
     }
 
-    let hibernation_enabled = matches!(load_mode, LoadMode::Uefi { .. });
+    let hibernation_enabled = opt.hibernation;
     let mut cfg = Config {
         chipset,
         load_mode,

@@ -1097,6 +1097,10 @@ flags:
     #[clap(long)]
     pub battery: bool,
 
+    /// enable guest hibernation (ACPI S4)
+    #[clap(long)]
+    pub hibernation: bool,
+
     /// set the uefi console mode
     #[clap(long)]
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
