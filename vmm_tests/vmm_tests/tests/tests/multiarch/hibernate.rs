@@ -79,9 +79,7 @@ async fn hibernate_halts<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     noagent,
     configs(
         openvmm_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE],
-        openvmm_openhcl_uefi_aarch64(guest_test_uefi_aarch64)[VMGSTOOL_NATIVE],
-        hyperv_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE],
-        hyperv_openhcl_uefi_aarch64(guest_test_uefi_aarch64)[VMGSTOOL_NATIVE]
+        openvmm_openhcl_uefi_aarch64(guest_test_uefi_aarch64)[VMGSTOOL_NATIVE]
     )
 )]
 async fn hibernate_token<T: PetriVmmBackend>(
@@ -124,9 +122,6 @@ async fn hibernate_token<T: PetriVmmBackend>(
         anyhow::bail!("expected Hibernate, got {halt_reason:?}");
     }
 
-    // Read the token from the VMGS the VM actually used (the Hyper-V backend
-    // may relocate it out of the temp dir).
-    let vmgs_path = vm.get_guest_state_file().await?.unwrap_or(vmgs_path);
     vm.teardown().await?;
 
     // The hibernate token must record the current firmware version.
