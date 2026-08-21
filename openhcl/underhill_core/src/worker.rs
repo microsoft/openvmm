@@ -38,6 +38,7 @@ use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
 use crate::emuplat::watchdog::UnderhillWatchdogPlatform;
+use crate::hibernate;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
@@ -259,6 +260,8 @@ pub struct UnderhillEnvCfg {
     pub vmbus_enable_mnf: Option<bool>,
     /// Force the use of confidential external memory for all non-relay vmbus channels.
     pub vmbus_force_confidential_external_memory: bool,
+    /// Force the use of GPA pinning for all vmbus channels.
+    pub vmbus_force_gpa_pinning: bool,
     /// Delay before unsticking a vmbus channel after it has been opened.
     pub vmbus_channel_unstick_delay: Option<Duration>,
     /// Command line to append to VTL0 command line. Only used for linux direct.
@@ -855,6 +858,18 @@ impl UhVmNetworkSettings {
         } else {
             VfioDmaClients::EphemeralOnly(ephemeral_dma_client)
         };
+
+        tracing::info!(
+            CVM_ALLOWED,
+            pci_id = %nic_config.pci_id,
+            %instance_id,
+            keepalive_mode = ?keepalive_mode,
+            keepalive_enabled = keepalive_mode.is_enabled(),
+            has_saved_mana_state = saved_mana_state.is_some(),
+            saved_mana_state_pci_id = saved_mana_state.map(|s| s.pci_id.as_str()),
+            dma_clients_mode = if matches!(dma_clients, VfioDmaClients::Split { .. }) { "Split" } else { "EphemeralOnly" },
+            "checking for MANA VF keepalive prior to creating underhill NIC"
+        );
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
@@ -2127,7 +2142,9 @@ async fn new_underhill_vm(
 
     let tee_call: Option<Box<dyn tee_call::TeeCall>> = match isolation {
         virt::IsolationType::Snp => Some(Box::new(tee_call::SnpCall)),
-        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall)),
+        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall::new(
+            proto_partition.tdx_hw_seal_keys_enabled(),
+        ))),
         virt::IsolationType::Vbs => Some(Box::new(tee_call::VbsCall)),
         virt::IsolationType::Cca => {
             tracing::warn!("CCA: new_underhill_vm: tee_call is not implemented yet");
@@ -2231,7 +2248,7 @@ async fn new_underhill_vm(
     );
 
     // Read measured config from VTL0 memory. When restoring, it is already gone.
-    let (firmware_type, measured_vtl0_info, load_kind) = {
+    let (firmware_type, mut measured_vtl0_info, load_kind) = {
         if let Some(firmware_type) = servicing_state.firmware_type {
             (firmware_type.into(), None, LoadKind::None)
         } else {
@@ -2542,7 +2559,7 @@ async fn new_underhill_vm(
         use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
         #[cfg(guest_arch = "x86_64")]
         use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
-        let base_template_json = match &dps.general.secure_boot_template {
+        let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
                 Some(secure_boot_templates::microsoft_windows())
@@ -2566,7 +2583,7 @@ async fn new_underhill_vm(
         .map(Into::into);
 
         let config = firmware_uefi_resources::UefiConfig {
-            base_template_json,
+            base_template,
             custom_uefi_json,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,
@@ -3207,18 +3224,38 @@ async fn new_underhill_vm(
             .unwrap_or(!controllers.mana.is_empty());
         tracing::info!(CVM_ALLOWED, enable_mnf, "Underhill MNF enabled?");
 
+        // Enable the GPA pinning feature only if the hypercalls are available.
+        #[cfg(not(guest_arch = "x86_64"))]
+        let support_gpa_pinning = false;
+        #[cfg(guest_arch = "x86_64")]
+        let support_gpa_pinning = {
+            let result =
+                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+            hvdef::HvEnlightenmentInformation::from(
+                result.eax as u128
+                    | (result.ebx as u128) << 32
+                    | (result.ecx as u128) << 64
+                    | (result.edx as u128) << 96,
+            )
+            .use_gpa_pinning_hypercall()
+        };
+
         let max_version = env_cfg
             .vmbus_max_version
             .map(vmbus_core::MaxVersionInfo::new)
             .or_else(|| {
-                // For compatibility with rollback, any additional features are currently disabled,
-                // except for isolated guests which do not support servicing.
+                // For compatibility with rollback, the max version should only include feature
+                // flags that are available in all in-service versions of OpenHCL.
+                // N.B. Isolated VMs do not support servicing, so they can use all flags.
+                // N.B. VM SKUs that support GPA pinning are guaranteed to use a compatible
+                //      version of OpenHCL so it can safely be enabled here.
                 (!hardware_isolated).then_some(vmbus_core::MaxVersionInfo {
                     version: vmbus_core::protocol::Version::Copper as u32,
                     feature_flags: vmbus_core::protocol::FeatureFlags::new()
                         .with_guest_specified_signal_parameters(true)
                         .with_channel_interrupt_redirection(true)
-                        .with_modify_connection(true),
+                        .with_modify_connection(true)
+                        .with_gpa_pinning(true),
                 })
             });
 
@@ -3244,6 +3281,8 @@ async fn new_underhill_vm(
                 .force_confidential_external_memory(
                     env_cfg.vmbus_force_confidential_external_memory,
                 )
+                .support_gpa_pinning(support_gpa_pinning)
+                .force_gpa_pinning(support_gpa_pinning && env_cfg.vmbus_force_gpa_pinning)
                 .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
                 // For saved-state compat with release/2411.
                 .send_messages_while_stopped(true)
@@ -3513,6 +3552,20 @@ async fn new_underhill_vm(
                 None
             };
 
+            tracing::info!(
+                CVM_ALLOWED,
+                pci_id = %nic_config.pci_id,
+                instance_id = %nic_config.instance_id,
+                has_servicing_mana_state = servicing_state.mana_state.is_some(),
+                num_mana_devices = servicing_state
+                    .mana_state
+                    .as_ref()
+                    .map(|s| s.len())
+                    .unwrap_or(0),
+                has_nic_servicing_state = nic_servicing_state.is_some(),
+                "MANA keepalive: resolved saved state for NIC"
+            );
+
             let save_state = uh_network_settings
                 .add_network(
                     nic_config.instance_id,
@@ -3639,6 +3692,125 @@ async fn new_underhill_vm(
             .await
             .context("failed to relay initial vpci channels")?;
     }
+    // The hibernate token pins the firmware version across a hibernate/resume
+    // cycle. On a servicing restore the VMGS token was already consumed at the
+    // original cold boot, so recover it from saved state; otherwise read (and
+    // consume) it from VMGS.
+    //
+    // When resuming under a firmware version other than the current one, VTL0's
+    // firmware is overloaded (via the GET `LoadFirmware` host request) with the
+    // hibernated version before it runs; on success that version becomes the
+    // recorded token.
+    let current_hibernate_token = if !dps.general.hibernation_enabled
+        || !matches!(firmware_type, FirmwareType::Uefi)
+    {
+        // Hibernation is disabled, or this isn't a UEFI guest. Firmware overload
+        // is UEFI-only (gen-1/PCAT can hibernate but can't reload firmware), so
+        // there's no firmware version to pin — don't track a token.
+        None
+    } else if is_restoring {
+        // In the restore case, the VMGS token was already consumed at the
+        // original cold boot, so recover it from saved state.  Note that we must
+        // not attempt to overload the firmware here, because the firmware has
+        // already been loaded and is running.  If the firmware version has changed
+        // since the original cold boot, the firmware will have already been
+        // overloaded and the token in saved state will reflect that.  If the
+        // firmware version has not changed, the token in saved state will be the
+        // current firmware version (from the previous instance).  In either case,
+        // we can just use the token.
+        // N.B. Older saved state may not carry hibernation state; treat as unknown.
+        Some(
+            servicing_state
+                .hibernate
+                .flatten()
+                .map_or(hibernate::Token::UNKNOWN, |h| h.token.into()),
+        )
+    } else if let Some(vmgs_client) = vmgs_client.as_ref() {
+        let resume_token = hibernate::read_token(vmgs_client).await;
+        // Consume any token, valid or corrupt, so it is not re-read next boot.
+        hibernate::delete_token(vmgs_client).await;
+        match resume_token {
+            Some(token @ hibernate::Token::Hibernated { .. })
+                if token != hibernate::Token::CURRENT =>
+            {
+                if !dps
+                    .general
+                    .management_vtl_features
+                    .load_firmware_supported()
+                {
+                    // The host must advertise LoadFirmware support; without it
+                    // we can't overload, so resume on the current firmware.
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        resume = %token,
+                        "host does not support firmware overload (LoadFirmware); \
+                         resuming with the current firmware version despite a \
+                         hibernation token mismatch"
+                    );
+                    Some(hibernate::Token::CURRENT)
+                } else {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        resume = %token,
+                        current = %hibernate::Token::CURRENT,
+                        "hibernation resume under a different firmware version; requesting firmware overload"
+                    );
+                    // If the overload succeeds VTL0 now runs the hibernated
+                    // version, so record it; otherwise fall back to the current one.
+                    if overload_vtl0_firmware(
+                        &get_client,
+                        u64::from(token),
+                        &mut measured_vtl0_info,
+                    )
+                    .await
+                    {
+                        Some(token)
+                    } else {
+                        Some(hibernate::Token::CURRENT)
+                    }
+                }
+            }
+            Some(hibernate::Token::Hibernated { .. }) => {
+                // Guarded above: the token matches the current firmware version.
+                tracing::info!(
+                    CVM_ALLOWED,
+                    "hibernation resume under the current firmware version"
+                );
+                Some(hibernate::Token::CURRENT)
+            }
+            Some(hibernate::Token::Other(raw)) => {
+                // An out-of-range/corrupt token value; ignore it.
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    raw,
+                    "ignoring unrecognized hibernate token; using the current firmware version"
+                );
+                Some(hibernate::Token::CURRENT)
+            }
+            // Clean prior power-off, or no/unreadable token (e.g. first boot):
+            // a normal cold boot on the current firmware.
+            Some(hibernate::Token::NotHibernated) | None => Some(hibernate::Token::CURRENT),
+        }
+    } else {
+        // Hibernation was requested but there is no VMGS to persist the token,
+        // so it cannot survive a power transition.
+        tracing::warn!(
+            CVM_ALLOWED,
+            "hibernation enabled but no VMGS is available; hibernate token will not be persisted"
+        );
+        None
+    };
+
+    // A Some token means hibernation is enabled and populated; pair it with a
+    // VMGS client to drive token persistence at halt time.
+    let hibernate_halt =
+        current_hibernate_token
+            .zip(vmgs_client.clone())
+            .map(|(current_token, vmgs_client)| hibernate::HaltState {
+                vmgs_client,
+                current_token,
+            });
+
     let (halt_notify_send, halt_notify_recv) = mesh::channel();
     let halt_task = tp.spawn(
         "halt",
@@ -3647,6 +3819,7 @@ async fn new_underhill_vm(
             fatal_error_recv,
             control_send.clone(),
             get_client.clone(),
+            hibernate_halt,
             env_cfg.halt_on_guest_halt,
         ),
     );
@@ -3706,6 +3879,7 @@ async fn new_underhill_vm(
         partition_unit,
         memory: gm,
         firmware_type,
+        hibernate_token: current_hibernate_token,
         isolation,
         chipset_devices: devices,
         _vmtime: vmtime,
@@ -3898,6 +4072,7 @@ async fn halt_task(
     mut _fatal_error_recv: mesh::Receiver<Box<dyn std::error::Error + Send + Sync>>,
     control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
     get_client: GuestEmulationTransportClient,
+    hibernate_halt: Option<hibernate::HaltState>,
     halt_on_guest_halt: bool,
 ) {
     #[derive(Debug)]
@@ -3948,9 +4123,39 @@ async fn halt_task(
 
             // Now we can notify the host about the halt.
             match halt_request {
-                HaltRequest::PowerOff => get_client.send_power_off(),
-                HaltRequest::Reset => get_client.send_reset(),
-                HaltRequest::Hibernate => get_client.send_hibernate(),
+                HaltRequest::PowerOff => {
+                    // Record the powered-off state so a later boot is not a resume.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate::Token::NotHibernated,
+                        )
+                        .await;
+                    }
+                    get_client.send_power_off()
+                }
+                HaltRequest::Reset => {
+                    // Record the powered-off state so a later boot is not a resume.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate::Token::NotHibernated,
+                        )
+                        .await;
+                    }
+                    get_client.send_reset()
+                }
+                HaltRequest::Hibernate => {
+                    // Write the hibernate token before signaling the host.
+                    if let Some(hibernate_halt) = &hibernate_halt {
+                        hibernate::write_token(
+                            &hibernate_halt.vmgs_client,
+                            hibernate_halt.current_token,
+                        )
+                        .await;
+                    }
+                    get_client.send_hibernate()
+                }
                 HaltRequest::TripleFault { vp, regs } => {
                     get_client.triple_fault(vp, TripleFaultType::UNRECOVERABLE_EXCEPTION, regs)
                 }
@@ -3968,6 +4173,95 @@ async fn wait_for_flush_logs(control_send: &Arc<Mutex<Option<mesh::Sender<Contro
     if let Some(call) = call {
         call.await.ok();
     }
+}
+
+/// Ask the host to overwrite VTL0's firmware image in guest RAM with the version
+/// identified by `token` (used on a hibernation resume under a different firmware
+/// version). On success, updates the measured UEFI context so VTL0 starts at the
+/// overloaded image's entry point and returns `true`. Best-effort: on failure
+/// the cold-boot image is left in place and `false` is returned.
+///
+/// The caller must only invoke this when the host has advertised the
+/// `load_firmware_supported` bit in `ManagementVtlFeatures`.
+async fn overload_vtl0_firmware(
+    get_client: &GuestEmulationTransportClient,
+    token: u64,
+    measured_vtl0_info: &mut Option<MeasuredVtl0Info>,
+) -> bool {
+    let offset = match get_client.load_firmware(token).await {
+        Ok(offset) => offset,
+        Err(err) => {
+            tracing::warn!(
+                CVM_ALLOWED,
+                error = &err as &dyn std::error::Error,
+                token,
+                "LoadFirmware host request for firmware overload failed"
+            );
+            return false;
+        }
+    };
+
+    tracing::info!(
+        CVM_ALLOWED,
+        token,
+        "overloaded VTL0 firmware via host LoadFirmware request"
+    );
+
+    // The overloaded image's entry point may differ from the cold-boot image's,
+    // so point the measured UEFI context's RIP at the host-computed offset;
+    // load_firmware later applies it to VTL0.
+    #[cfg(guest_arch = "x86_64")]
+    if let Some(uefi_info) = measured_vtl0_info
+        .as_mut()
+        .and_then(|info| info.supports_uefi.as_mut())
+    {
+        if offset != 0 {
+            let base = uefi_info.firmware_memory.start();
+            let len = uefi_info.firmware_memory.len();
+            // `offset` is host-provided (untrusted): the entry point must land
+            // inside the measured firmware region and must not overflow.
+            let Some(new_rip) = base.checked_add(offset).filter(|_| offset < len) else {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    offset,
+                    firmware_len = len,
+                    "host returned an out-of-range firmware entry-point offset; \
+                     ignoring overload and resuming with the current firmware"
+                );
+                return false;
+            };
+            let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
+            for reg in registers {
+                if let loader::importer::X86Register::Rip(rip) = reg {
+                    if *rip != new_rip {
+                        tracing::info!(
+                            CVM_ALLOWED,
+                            old_rip = *rip,
+                            new_rip,
+                            "rebased VTL0 RIP for overloaded firmware"
+                        );
+                        *rip = new_rip;
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(guest_arch = "aarch64")]
+    {
+        // `measured_vtl0_info` is only read on x86_64, to rebase VTL0's RIP.
+        let _ = measured_vtl0_info;
+        if offset != 0 {
+            // aarch64 has no entry-point offset; a non-zero value is a host
+            // protocol violation. Don't trust it, just surface it and ignore.
+            tracing::warn!(
+                CVM_ALLOWED,
+                offset,
+                "host returned a non-zero firmware entry-point offset on aarch64; ignoring"
+            );
+        }
+    }
+
+    true
 }
 
 async fn load_firmware(

@@ -327,25 +327,6 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
     capabilities
 }
 
-/// Result of evaluating all requirements for a test
-#[derive(Debug, Clone)]
-pub struct TestEvaluationResult {
-    /// Name of the test being evaluated
-    pub test_name: String,
-    /// Overall result: can the test be run?
-    pub can_run: bool,
-}
-
-impl TestEvaluationResult {
-    /// Create a new result indicating the test can run (no requirements)
-    pub fn new(test_name: &str) -> Self {
-        Self {
-            test_name: test_name.to_string(),
-            can_run: true,
-        }
-    }
-}
-
 /// Container for test requirements that can be evaluated
 pub struct TestCaseRequirements {
     requirements: TestRequirement,

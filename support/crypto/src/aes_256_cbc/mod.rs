@@ -32,7 +32,7 @@ pub struct Aes256Cbc(sys::Aes256CbcInner);
 
 /// An error for AES-256-CBC cryptographic operations.
 #[derive(Clone, Debug, Error)]
-#[error("AES-256-CBC error")]
+#[error("AES-256-CBC operation failed")]
 pub struct Aes256CbcError(#[source] super::BackendError);
 
 impl Aes256Cbc {

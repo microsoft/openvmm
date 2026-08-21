@@ -753,6 +753,32 @@ impl GuestEmulationTransportClient {
             .await;
     }
 
+    /// Asks the host to (re)load a firmware image into VTL0 guest RAM, keyed by
+    /// an opaque `firmware_token`. The host writes the image into guest memory
+    /// only; the guest/paravisor remains responsible for VP state.
+    ///
+    /// On success, returns the offset from the firmware image base to the
+    /// firmware entry point, which the caller programs into VTL0's RIP (RIP =
+    /// `image_base + offset`).
+    ///
+    /// Only call this when the host has advertised support via the
+    /// `load_firmware_supported` bit in `ManagementVtlFeatures`, otherwise the GET may hang indefinitely.
+    pub async fn load_firmware(
+        &self,
+        firmware_token: u64,
+    ) -> Result<u64, crate::error::LoadFirmwareError> {
+        let response = self
+            .control
+            .call(msg::Msg::LoadFirmware, firmware_token)
+            .await
+            .0;
+        if response.status != get_protocol::LoadFirmwareStatus::SUCCESS {
+            Err(crate::error::LoadFirmwareError(response.status))
+        } else {
+            Ok(response.entry_point_image_offset)
+        }
+    }
+
     /// Gets the saved state from the host. Returns immediately with whatever
     /// saved state existed at the time the call is processed, which may be None.
     pub async fn get_saved_state_from_host(

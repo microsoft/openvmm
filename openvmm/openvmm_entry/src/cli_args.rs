@@ -143,6 +143,11 @@ pub struct NumaDistanceCli {
 /// This is not yet a stable interface and may change radically between
 /// versions.
 #[derive(Parser)]
+#[command(
+    name = "openvmm",
+    version = openvmm_build_info::get().version(),
+    long_version = openvmm_build_info::get().long_version(),
+)]
 pub struct Options {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
@@ -279,6 +284,15 @@ Examples:
     #[clap(long)]
     pub hv: bool,
 
+    /// Boot UEFI without exposing hypervisor (HV#1) enlightenments. Requires
+    /// `--no-vmbus` since VMBus depends on the hypervisor.
+    #[clap(
+        long,
+        requires_all = ["uefi", "no_vmbus"],
+        conflicts_with_all = ["hv", "vtl2", "get", "pcat", "igvm"]
+    )]
+    pub no_hv: bool,
+
     /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
     /// boot. By default, ARM64 uses ACPI mode (stub DT + EFI + ACPI tables).
     /// This flag selects the legacy DT-only path. Rejected on x86.
@@ -322,8 +336,8 @@ Examples:
     #[clap(long, requires("vtl2"))]
     pub no_alias_map: bool,
 
-    /// enable isolation emulation
-    #[clap(long, requires("vtl2"))]
+    /// enable isolation
+    #[clap(long)]
     pub isolation: Option<IsolationCli>,
 
     /// the hybrid vsock listener path
@@ -761,6 +775,10 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
 
+    /// select the bus for virtio vsock devices (pci | mmio)
+    #[clap(long, value_name = "BUS", value_parser = parse_virtio_vsock_bus)]
+    pub virtio_vsock_bus: Option<VirtioBusCli>,
+
     /// add a virtio vsock device with the given Unix socket base path
     #[clap(long, value_name = "PATH")]
     pub virtio_vsock_path: Option<String>,
@@ -1147,6 +1165,10 @@ Options:
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
 
+    /// Place PCIe ECAM below 4 GiB for guest kernels that cannot discover high ECAM
+    #[clap(long, requires("pcie_root_complex"), conflicts_with("pcat"))]
+    pub pcie_ecam_below_4gb: bool,
+
     /// Attach a PCI Express root port to the VM
     #[clap(long_help = r#"
 Attach root ports to root complexes.
@@ -1359,6 +1381,24 @@ impl Options {
         }
         Ok(())
     }
+
+    /// Validates isolation-specific command-line option combinations.
+    pub fn validate_isolation_options(&self) -> anyhow::Result<()> {
+        if matches!(self.isolation, Some(IsolationCli::Snp)) {
+            if self.uefi {
+                anyhow::bail!("SNP isolation currently only supports Linux direct boot");
+            }
+            if self.memory.hugepages
+                || self
+                    .numa
+                    .as_ref()
+                    .is_some_and(|nodes| nodes.iter().any(|node| node.memory.hugepages))
+            {
+                anyhow::bail!("SNP isolation currently does not support hugetlb memory");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1455,6 +1495,13 @@ pub enum VirtioBusCli {
     Mmio,
     Pci,
     Vpci,
+}
+
+fn parse_virtio_vsock_bus(value: &str) -> Result<VirtioBusCli, String> {
+    match VirtioBusCli::from_str(value, true) {
+        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci)) => Ok(bus),
+        _ => Err("expected mmio or pci".to_string()),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2749,6 +2796,7 @@ pub enum GicMsiCli {
 #[derive(Debug, Copy, Clone, ValueEnum)]
 pub enum IsolationCli {
     Vbs,
+    Snp,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -3391,6 +3439,31 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    /// `--version` reports the resolved build identity rather than clap's
+    /// default, which would be the parser crate's own name and version.
+    #[test]
+    fn version_reports_build_info() {
+        let short = version_output(["openvmm", "-V"]);
+        assert_eq!(
+            short,
+            format!("openvmm {}\n", openvmm_build_info::get().version())
+        );
+
+        let long = version_output(["openvmm", "--version"]);
+        assert_eq!(
+            long,
+            format!("openvmm {}\n", openvmm_build_info::get().long_version())
+        );
+    }
+
+    fn version_output(args: [&str; 2]) -> String {
+        let Err(error) = Options::try_parse_from(args) else {
+            panic!("{args:?} unexpectedly parsed as runtime options");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        error.to_string()
+    }
 
     #[test]
     fn test_parse_rpc() {
@@ -4830,6 +4903,20 @@ mod tests {
     }
 
     #[test]
+    fn test_no_hv_requires_no_vmbus() {
+        assert!(Options::try_parse_from(["openvmm", "--no-hv"]).is_err());
+
+        let opt = Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus"]).unwrap();
+        assert!(opt.no_hv);
+        assert!(opt.no_vmbus);
+
+        assert!(
+            Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus", "--hv"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn test_memory_options_allow_legacy_thp_with_new_private_memory() {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
         opt.validate_memory_options().unwrap();
@@ -4842,6 +4929,63 @@ mod tests {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=on", "--private-memory"])
             .unwrap();
         assert!(opt.validate_memory_options().is_err());
+    }
+
+    #[test]
+    fn test_isolation_options_reject_snp_uefi() {
+        let opt = Options::try_parse_from(["openvmm", "--isolation", "snp", "--uefi"]).unwrap();
+
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "SNP isolation currently only supports Linux direct boot"
+        );
+    }
+
+    #[test]
+    fn test_isolation_options_reject_snp_hugepages() {
+        for args in [
+            vec![
+                "openvmm",
+                "--isolation",
+                "snp",
+                "--memory",
+                "size=1G,hugepages=on",
+            ],
+            vec![
+                "openvmm",
+                "--isolation",
+                "snp",
+                "--numa",
+                "size=1G,hugepages=on",
+            ],
+        ] {
+            let opt = Options::try_parse_from(args).unwrap();
+            assert_eq!(
+                opt.validate_isolation_options().unwrap_err().to_string(),
+                "SNP isolation currently does not support hugetlb memory"
+            );
+        }
+    }
+
+    #[test]
+    fn test_isolation_options_allow_vbs_uefi() {
+        let opt = Options::try_parse_from(["openvmm", "--isolation", "vbs", "--uefi"]).unwrap();
+
+        opt.validate_isolation_options().unwrap();
+    }
+
+    #[test]
+    fn test_isolation_options_allow_vbs_hugepages() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--isolation",
+            "vbs",
+            "--memory",
+            "size=1G,hugepages=on",
+        ])
+        .unwrap();
+
+        opt.validate_isolation_options().unwrap();
     }
 
     #[test]
@@ -5039,6 +5183,18 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn test_virtio_vsock_bus_cli() {
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "mmio"]).unwrap();
+        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio)));
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pci"]).unwrap();
+        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci)));
+
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "auto"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "vpci"]).is_err());
     }
 
     #[test]

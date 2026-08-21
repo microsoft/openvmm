@@ -131,6 +131,7 @@ pub enum PermissionValue {
 #[serde(rename_all = "kebab-case")]
 pub enum Permissions {
     Actions,
+    ArtifactMetadata,
     Attestations,
     Checks,
     Contents,

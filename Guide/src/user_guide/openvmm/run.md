@@ -4,8 +4,7 @@
 This page offers a high-level overview of different ways to launch and interact
 with OpenVMM.
 
-These examples are by no means "exhaustive", and should be treated as a useful
-jumping-off point for subsequent self-guided experimentation with OpenVMM.
+These examples provide a starting point for launching and configuring OpenVMM.
 
 ## Obtaining a copy of OpenVMM
 

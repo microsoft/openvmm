@@ -45,6 +45,7 @@ use memory_range::MemoryRange;
 use range_map_vec::Entry;
 use range_map_vec::RangeMap;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::fmt::Display;
 use zerocopy::FromBytes;
@@ -84,6 +85,17 @@ struct RangeInfo {
     acceptance: BootPageAcceptance,
 }
 
+/// Additional finalization needed by a self-contained SNP Linux-direct image.
+#[derive(Debug, Copy, Clone)]
+pub struct SnpLinuxDirectConfig {
+    pub policy: SnpPolicy,
+    pub c_bit_mask: u64,
+    pub ram_page_count: u64,
+    pub vmsa_page: Option<u64>,
+    pub injection_type: InjectionType,
+    pub import_all_ram: bool,
+}
+
 pub struct IgvmLoader<R: VbsRegister + GuestArch> {
     accepted_ranges: RangeMap<u64, RangeInfo>,
     relocatable_regions: RangeMap<u64, RelocationType>,
@@ -99,6 +111,8 @@ pub struct IgvmLoader<R: VbsRegister + GuestArch> {
     isolation_type: LoaderIsolationType,
     paravisor_present: bool,
     imported_regions_config_page: Option<u64>,
+    expected_page_hashes_config_page: Option<u64>,
+    snp_linux_direct: Option<SnpLinuxDirectConfig>,
 }
 
 pub struct IgvmVtlLoader<'a, R: VbsRegister + GuestArch> {
@@ -425,6 +439,53 @@ pub struct IgvmOutput {
     pub map: MapFile,
 }
 
+impl IgvmLoader<X86Register> {
+    /// Create a loader for a self-contained SNP Linux-direct image.
+    pub fn new_snp_linux_direct(config: SnpLinuxDirectConfig) -> Self {
+        let isolation_type = LoaderIsolationType::Snp {
+            shared_gpa_boundary_bits: None,
+            policy: config.policy,
+            injection_type: config.injection_type,
+            secure_avic: SecureAvic::Disabled,
+        };
+        let platform_header = IgvmPlatformHeader::SupportedPlatform(IGVM_VHS_SUPPORTED_PLATFORM {
+            compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
+            highest_vtl: Vtl::Vtl0 as u8,
+            platform_type: IgvmPlatformType::SEV_SNP,
+            platform_version: igvm_defs::IGVM_SEV_SNP_PLATFORM_VERSION,
+            shared_gpa_boundary: 0,
+        });
+        let initialization_headers = vec![IgvmInitializationHeader::GuestPolicy {
+            policy: config.policy.into(),
+            compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
+        }];
+        let mut vp_context =
+            SnpHardwareContext::new_linux_direct(config.c_bit_mask, config.injection_type);
+        if let Some(page) = config.vmsa_page {
+            vp_context.set_vp_context_memory(page);
+        }
+
+        Self {
+            accepted_ranges: RangeMap::new(),
+            relocatable_regions: RangeMap::new(),
+            required_memory: Vec::new(),
+            page_table_region: None,
+            platform_header,
+            initialization_headers,
+            directives: Vec::new(),
+            page_data_directives: Vec::new(),
+            vp_context: Some(Box::new(vp_context)),
+            max_vtl: Vtl::Vtl0,
+            parameter_areas: BTreeMap::new(),
+            isolation_type,
+            paravisor_present: false,
+            imported_regions_config_page: None,
+            expected_page_hashes_config_page: None,
+            snp_linux_direct: Some(config),
+        }
+    }
+}
+
 impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
     pub fn new(with_paravisor: bool, isolation_type: LoaderIsolationType) -> Self {
         let vp_context_builder: Option<Box<dyn VpContextBuilder<Register = R>>>;
@@ -472,19 +533,145 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             isolation_type,
             paravisor_present: with_paravisor,
             imported_regions_config_page: None,
+            expected_page_hashes_config_page: None,
+            snp_linux_direct: None,
         }
     }
 
-    fn generate_cryptographic_hash_of_shared_pages(&mut self) -> Vec<u8> {
-        // Sort the page data directives by GPA to ensure the hash is consistent.
+    /// Adds the fixed-memory contract required by a self-contained
+    /// Linux-direct image.
+    ///
+    /// The generic Linux loader imports only the pages that contain boot data
+    /// and does not call `verify_startup_memory_available`. UEFI and paravisor
+    /// loaders use that callback to emit their required-memory directives, but
+    /// a direct Linux IGVM must describe its complete startup RAM here. When
+    /// requested, this also imports every otherwise-unused RAM page as measured
+    /// zero data. The caller then places the BSP VMSA after those page updates.
+    fn finalize_snp_linux_direct(&mut self, config: SnpLinuxDirectConfig) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.required_memory.is_empty(),
+            "SNP Linux-direct image already contains a required-memory directive"
+        );
+        let ram_size = config
+            .ram_page_count
+            .checked_mul(PAGE_SIZE_4K)
+            .context("RAM size overflow")?;
+        let number_of_bytes = ram_size
+            .try_into()
+            .context("RAM size does not fit in an IGVM required-memory directive")?;
+        self.directives.insert(
+            0,
+            IgvmDirectiveHeader::RequiredMemory {
+                gpa: 0,
+                compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
+                number_of_bytes,
+                vtl2_protectable: false,
+            },
+        );
+        self.required_memory.push(RequiredMemory {
+            range: MemoryRange::new(0..ram_size),
+            vtl2_protectable: false,
+        });
+
+        let mut page_data_pages = BTreeSet::new();
+        for directive in &self.page_data_directives {
+            let IgvmDirectiveHeader::PageData { gpa, .. } = directive else {
+                unreachable!("page_data_directives contains only PageData")
+            };
+            anyhow::ensure!(
+                gpa.is_multiple_of(PAGE_SIZE_4K),
+                "unaligned page-data GPA {gpa:#x}"
+            );
+            let page = gpa / PAGE_SIZE_4K;
+            anyhow::ensure!(
+                page < config.ram_page_count,
+                "page-data GPA {gpa:#x} lies outside configured RAM"
+            );
+            anyhow::ensure!(
+                page_data_pages.insert(page),
+                "duplicate page-data GPA {gpa:#x}"
+            );
+        }
+
+        if config.import_all_ram {
+            let mut missing_start = None;
+            for page in 0..config.ram_page_count {
+                let occupied = page_data_pages.contains(&page)
+                    || self
+                        .accepted_ranges
+                        .iter()
+                        .any(|(range, _)| range.contains(&page));
+                if occupied {
+                    if let Some(start) = missing_start.take() {
+                        self.accept_new_range(
+                            start,
+                            page - start,
+                            "accepted-zero-ram",
+                            BootPageAcceptance::Exclusive,
+                        )?;
+                    }
+                    continue;
+                }
+
+                missing_start.get_or_insert(page);
+                self.page_data_directives
+                    .push(IgvmDirectiveHeader::PageData {
+                        gpa: page * PAGE_SIZE_4K,
+                        compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
+                        flags: IgvmPageDataFlags::new(),
+                        data_type: IgvmPageDataType::NORMAL,
+                        data: Vec::new(),
+                    });
+            }
+            if let Some(start) = missing_start {
+                self.accept_new_range(
+                    start,
+                    config.ram_page_count - start,
+                    "accepted-zero-ram",
+                    BootPageAcceptance::Exclusive,
+                )?;
+            }
+        }
+
+        self.page_data_directives
+            .sort_unstable_by_key(|directive| match directive {
+                IgvmDirectiveHeader::PageData { gpa, .. } => *gpa,
+                _ => unreachable!("page_data_directives contains only PageData"),
+            });
+
+        let vmsa_count = self
+            .directives
+            .iter()
+            .filter(|directive| matches!(directive, IgvmDirectiveHeader::SnpVpContext { .. }))
+            .count();
+        anyhow::ensure!(
+            vmsa_count == 1,
+            "expected one SNP BSP VMSA context, found {vmsa_count}"
+        );
+        Ok(())
+    }
+
+    /// Compute both the combined SHA-384 over all shared (unmeasured) pages
+    /// (matching the value stored in `ImportedRegionsPageHeader::sha384_hash`)
+    /// and a per-page array of SHA-384s (one entry per 4 KB shared page, in
+    /// ascending-GPA order) suitable for the expected-page-hashes region.
+    ///
+    /// The per-page array is what the boot shim uses to identify which
+    /// individual pages diverged from the measured baseline on a hash
+    /// mismatch.
+    fn generate_cryptographic_hashes_of_shared_pages(
+        &mut self,
+    ) -> (Vec<u8>, Vec<loader_defs::paravisor::ExpectedPageHash>) {
+        // Sort the page data directives by GPA to ensure the hashes are
+        // consistent and that the per-page array is in ascending-GPA order.
         self.page_data_directives
             .sort_unstable_by_key(|directive| match directive {
                 IgvmDirectiveHeader::PageData { gpa, .. } => *gpa,
                 _ => unreachable!("all directives should be IgvmDirectiveHeader::PageData"),
             });
 
-        // Generate the hash of the unaccepted pages.
-        let mut hasher = Sha384::new();
+        let mut combined = Sha384::new();
+        let mut per_page = Vec::new();
         self.page_data_directives.iter().for_each(|directive| {
             if let IgvmDirectiveHeader::PageData {
                 gpa: _,
@@ -506,11 +693,22 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                         data
                     };
 
-                    hasher.update(data_to_hash);
+                    combined.update(data_to_hash);
+
+                    // Per-page hash: a fresh Sha384 fed the same zero-
+                    // extended page bytes.
+                    let mut per = Sha384::new();
+                    per.update(data_to_hash);
+                    let hash: [u8; 48] = per
+                        .finish()
+                        .as_bytes()
+                        .try_into()
+                        .expect("sha384 output should be 48 bytes");
+                    per_page.push(loader_defs::paravisor::ExpectedPageHash { sha384_hash: hash });
                 }
             }
         });
-        hasher.finish().to_vec()
+        (combined.finish().to_vec(), per_page)
     }
 
     /// Finalize the loader state, returning an IGVM file.
@@ -543,9 +741,76 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         // Put list of accepted pages into the config region, if there
         if let Some(page_base) = self.imported_regions_config_page {
+            // All shared pages have been imported. Generate both the combined
+            // cryptographic hash of the unaccepted (shared) imported pages
+            // (stored in the header) and the per-page hash array (imported
+            // separately below into the expected-page-hashes region).
+            let (combined_hash, per_page_hashes) =
+                self.generate_cryptographic_hashes_of_shared_pages();
+
+            // Emit the per-page expected-hashes region *first* if we have
+            // one, so that when we snapshot `imported_regions_data` below
+            // the descriptor list already covers it. Otherwise the shim
+            // would see this Exclusive region in the RMP (loader-pvalidated)
+            // but not in its imported-regions list, and would try to
+            // PVALIDATE it again -- resulting in `MemorySecurityViolation
+            // { carry_flag: 1 }` at the first page of the region.
+            //
+            // This is a separate measured region rather than an extension
+            // of the imported-regions page header so that older consumers
+            // of `ImportedRegionsPageHeader` see the exact same layout as
+            // before.
+            if let Some(hashes_page_base) = self.expected_page_hashes_config_page {
+                use loader_defs::paravisor::{
+                    EXPECTED_PAGE_HASH_MAX_COUNT, EXPECTED_PAGE_HASHES_MAGIC,
+                    EXPECTED_PAGE_HASHES_VERSION, ExpectedPageHashesHeader,
+                    PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES,
+                };
+
+                let count = per_page_hashes.len();
+                if count > EXPECTED_PAGE_HASH_MAX_COUNT {
+                    anyhow::bail!(
+                        "expected-page-hashes region overflow: {} pages > {} max \
+                         (increase PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES)",
+                        count,
+                        EXPECTED_PAGE_HASH_MAX_COUNT,
+                    );
+                }
+
+                let hashes_header = ExpectedPageHashesHeader {
+                    magic: EXPECTED_PAGE_HASHES_MAGIC,
+                    version: EXPECTED_PAGE_HASHES_VERSION,
+                    page_hash_count: count as u32,
+                    reserved: 0,
+                };
+
+                let region_bytes_capacity = PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES
+                    as usize
+                    * PAGE_SIZE_4K as usize;
+                let mut region = Vec::with_capacity(region_bytes_capacity);
+                region.extend_from_slice(hashes_header.as_bytes());
+                region.extend_from_slice(per_page_hashes.as_bytes());
+                // Zero-pad to fill the whole reserved region so measurement
+                // sees a deterministic image regardless of how many pages
+                // this build ended up with.
+                region.resize(region_bytes_capacity, 0);
+
+                self.import_pages(
+                    hashes_page_base,
+                    PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_SIZE_PAGES,
+                    "loader-expected-page-hashes",
+                    BootPageAcceptance::Exclusive,
+                    &region,
+                )
+                .context("failed to import expected-page-hashes region")?;
+            }
+
+            // Snapshot accepted_ranges *after* the hashes region (if any)
+            // has been imported so it appears in the descriptor list.
             let mut imported_regions_data: Vec<_> = self.imported_regions();
 
-            // Add this config page as well
+            // Add this config page as well (still not in accepted_ranges
+            // until the import_pages below runs).
             imported_regions_data.push(loader_defs::paravisor::ImportedRegionDescriptor::new(
                 page_base, 1, true,
             ));
@@ -554,11 +819,8 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             // so just sort by the base page number
             imported_regions_data.sort_by_key(|region| region.base_page_number);
 
-            // All shared pages have been imported. Generate the secure cryptographic hash of the unaccepted
-            // imported pages.
-            let hash = self.generate_cryptographic_hash_of_shared_pages();
             let page_header = loader_defs::paravisor::ImportedRegionsPageHeader {
-                sha384_hash: hash
+                sha384_hash: combined_hash
                     .as_bytes()
                     .try_into()
                     .expect("hash should be correct size"),
@@ -589,6 +851,10 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                     parameter_area_index: *index,
                 },
             ));
+        }
+
+        if let Some(config) = self.snp_linux_direct {
+            self.finalize_snp_linux_direct(config)?;
         }
 
         // Merge the page_data_directives into the others directives. This
@@ -720,6 +986,11 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             "Importing page",
         );
 
+        anyhow::ensure!(page_count != 0, "cannot import an empty page range");
+        page_base
+            .checked_add(page_count)
+            .context("imported page range overflow")?;
+
         // Pages must not overlap already accepted ranges
         self.accept_new_range(page_base, page_count, debug_tag, acceptance)?;
 
@@ -772,13 +1043,23 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             let mut padded = vec![0u8; size_of::<SevVmsa>()];
             padded[..data.len()].copy_from_slice(data);
 
+            let vmsa = SevVmsa::read_from_bytes(padded.as_slice()).expect("should be correct size");
+            if let Some(config) = self.snp_linux_direct {
+                anyhow::ensure!(vmsa.rip != 0, "Linux loader did not provide an entry point");
+                anyhow::ensure!(
+                    vmsa.cr3 & config.c_bit_mask != 0,
+                    "initial CR3 does not contain the configured SNP C-bit"
+                );
+                anyhow::ensure!(
+                    !vmsa.sev_features.vtom() && vmsa.virtual_tom == 0,
+                    "C-bit image must not enable vTOM"
+                );
+            }
             self.directives.push(IgvmDirectiveHeader::SnpVpContext {
                 gpa: page_base * PAGE_SIZE_4K,
                 compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                 vp_index: 0,
-                vmsa: Box::new(
-                    SevVmsa::read_from_bytes(padded.as_slice()).expect("should be correct size"),
-                ), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                vmsa: Box::new(vmsa),
             });
         } else {
             for page in page_base..page_base + page_count {
@@ -1022,6 +1303,16 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
     }
 
     fn set_vp_context_page(&mut self, page_base: u64) -> anyhow::Result<()> {
+        if let Some(config) = &mut self.loader.snp_linux_direct {
+            anyhow::ensure!(
+                page_base < config.ram_page_count,
+                "Linux-selected VP context page lies outside RAM"
+            );
+            if config.vmsa_page.is_some() {
+                return Ok(());
+            }
+            config.vmsa_page = Some(page_base);
+        }
         self.loader
             .vp_context
             .as_mut()
@@ -1177,6 +1468,10 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
 
     fn set_imported_regions_config_page(&mut self, page_base: u64) {
         self.loader.imported_regions_config_page = Some(page_base);
+    }
+
+    fn set_expected_page_hashes_config_page(&mut self, page_base: u64) {
+        self.loader.expected_page_hashes_config_page = Some(page_base);
     }
 }
 

@@ -64,7 +64,7 @@ devices, and scenarios OpenVMM currently supports.
   - Serial (term, socket, tcp)
   - Storage (raw img, VHD/VHDx, Linux blockdev, HTTP)
   - Networking (various)
-- Management APIs (unstable)
+- Management interfaces (evolving)
   - CLI
   - Interactive console
   - gRPC
@@ -73,32 +73,10 @@ devices, and scenarios OpenVMM currently supports.
 For more information on any / all of these features, see their corresponding
 pages under the **Reference** section of the OpenVMM Guide.
 
-...though, as you may be able to tell by looking at the sidebar, that section of
-the Guide is currently under construction, and not all items have corresponding
-pages at this time.
-
-* * *
-
-Before heading on to [Running OpenVMM](./openvmm/run.md), please take a moment
-to read and understand the following important disclaimer:
-
-```admonish warning title="DISCLAIMER"
-In recent years, development efforts in the OpenVMM project have primarily
-focused on [OpenHCL](./openhcl.md) (AKA: OpenVMM as a paravisor).
-
-As a result, not a lot of "polish" has gone into making the experience of
-running OpenVMM in traditional host contexts particularly "pleasant".
-This lack of polish manifests in several ways, including but not limited to:
-
-- Unorganized and minimally documented management interfaces (e.g: CLI, ttrpc/grpc)
-- Unoptimized device backend performance (e.g: for storage, networking, graphics)
-- Unexpectedly missing device features (e.g: legacy IDE drive, PS/2 mouse features)
-- **No API or feature-set stability guarantees whatsoever.**
-
-At this time, OpenVMM _on the host_ is not yet ready to run end-user
-workloads, and should should be treated more akin to a development platform
-for implementing new OpenVMM features, rather than a ready-to-deploy
-application.
+```admonish note title="Management interface compatibility"
+OpenVMM's management interfaces continue to evolve and may change between
+releases. Consult the documentation for your OpenVMM version, especially when
+upgrading.
 ```
 
 [^dlls]: though, depending on the platform and compiled-in feature-set, some

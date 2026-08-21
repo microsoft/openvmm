@@ -1,0 +1,29 @@
+{
+    "guest_arch": "x64",
+    "guest_configs": [
+        {
+            "guest_svn": 1,
+            "max_vtl": 0,
+            "isolation_type": {
+                "snp": {
+                    "shared_gpa_boundary_bits": null,
+                    "policy": 196608,
+                    "enable_debug": true,
+                    "injection_type": "normal",
+                    "secure_avic": "disabled"
+                }
+            },
+            "image": {
+                "snp_linux_direct": {
+                    "processor_count": 2,
+                    "linux": {
+                        "use_initrd": true,
+                        "command_line": "console=ttyS0 earlyprintk=serial earlycon panic=-1"
+                    },
+                    "memory_page_count": 40960,
+                    "c_bit_position": 51
+                }
+            }
+        }
+    ]
+}

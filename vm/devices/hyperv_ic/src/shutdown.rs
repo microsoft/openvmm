@@ -242,7 +242,11 @@ impl SimpleVmbusDevice for ShutdownIc {
             interface_name: "shutdown_ic".to_owned(),
             instance_id: hyperv_ic_protocol::shutdown::INSTANCE_ID,
             interface_id: hyperv_ic_protocol::shutdown::INTERFACE_ID,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }

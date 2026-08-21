@@ -14,10 +14,10 @@
 //! when a VA might leak out of a `GuestMemory` object and possibly be passed to
 //! a kernel routine.
 //!
-//! This is done by registering memory in 2GB chunks, which is large enough to
-//! get large pages in the kernel, but small enough to keep the overhead of the
-//! initial registration for a chunk small. We track whether a given chunk has
-//! been registered via a small bitmap.
+//! This is done by registering memory in 1-GB chunks. Fully aligned chunks can
+//! use PUD mappings in the kernel, while unaligned RAM edges automatically fall
+//! back to smaller mappings. We track whether a given chunk has been registered
+//! via a small bitmap.
 
 use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
@@ -107,8 +107,8 @@ impl<T: Fn(MemoryRange) -> Result<(), E>, E: 'static + std::error::Error> Regist
     }
 }
 
-/// Register in 2GB chunks.
-const GRANULARITY: u64 = 2 << 30;
+/// Register in 1-GB chunks so aligned RAM can use PUD mappings.
+const GRANULARITY: u64 = 1 << 30;
 
 impl<T: RegisterMemory> MemoryRegistrar<T> {
     pub fn new(layout: &MemoryLayout, registration_offset: u64, register: T) -> Self {
@@ -184,6 +184,12 @@ impl<T: RegisterMemory> MemoryRegistrar<T> {
         }
         Ok(())
     }
+
+    /// Register every RAM range in the address space.
+    pub fn register_all(&self) -> Result<(), u64> {
+        let address_space_size = self.ram.last().unwrap().end();
+        self.register(0, address_space_size)
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +200,7 @@ mod tests {
     use std::cell::RefCell;
     use std::convert::Infallible;
     use vm_topology::memory::MemoryLayout;
+    use vm_topology::memory::MemoryRangeWithNode;
 
     #[test]
     fn test_registrar() {
@@ -253,6 +260,91 @@ mod tests {
                 .map(|r| r.to_string())
                 .collect::<Vec<_>>()
                 .join("\n")
+        );
+    }
+
+    #[test]
+    fn test_register_all_preserves_aligned_interior() {
+        let layout = MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::new(0x10000..2 * GRANULARITY + 0x20000),
+                vnode: 0,
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let ranges = RefCell::new(Vec::new());
+        let registrar = MemoryRegistrar::new(&layout, 0, |range| {
+            ranges.borrow_mut().push(range);
+            Ok::<_, Infallible>(())
+        });
+
+        registrar.register_all().unwrap();
+
+        assert_eq!(
+            ranges.take(),
+            [
+                MemoryRange::new(0x10000..GRANULARITY),
+                MemoryRange::new(GRANULARITY..2 * GRANULARITY),
+                MemoryRange::new(2 * GRANULARITY..2 * GRANULARITY + 0x20000),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_register_all_multiple_ranges_with_gap() {
+        // A mix of RAM ranges with unbacked gaps between them: one spanning a
+        // chunk boundary, one contained in a single chunk, one spanning
+        // several whole chunks, and one crossing a boundary with unaligned ends.
+        let layout = MemoryLayout::new_from_ranges(
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0x10000..GRANULARITY + 0x20000),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(3 * GRANULARITY + 0x10000..3 * GRANULARITY + 0x30000),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(4 * GRANULARITY + 0x40000..4 * GRANULARITY + 0x50000),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(5 * GRANULARITY..8 * GRANULARITY),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(9 * GRANULARITY + 0x30000..10 * GRANULARITY + 0x10000),
+                    vnode: 0,
+                },
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let ranges = RefCell::new(Vec::new());
+        let registrar = MemoryRegistrar::new(&layout, 0, |range| {
+            ranges.borrow_mut().push(range);
+            Ok::<_, Infallible>(())
+        });
+
+        registrar.register_all().unwrap();
+
+        assert_eq!(
+            ranges.take(),
+            [
+                MemoryRange::new(0x10000..GRANULARITY),
+                MemoryRange::new(GRANULARITY..GRANULARITY + 0x20000),
+                MemoryRange::new(3 * GRANULARITY + 0x10000..3 * GRANULARITY + 0x30000),
+                MemoryRange::new(4 * GRANULARITY + 0x40000..4 * GRANULARITY + 0x50000),
+                MemoryRange::new(5 * GRANULARITY..6 * GRANULARITY),
+                MemoryRange::new(6 * GRANULARITY..7 * GRANULARITY),
+                MemoryRange::new(7 * GRANULARITY..8 * GRANULARITY),
+                MemoryRange::new(9 * GRANULARITY + 0x30000..10 * GRANULARITY),
+                MemoryRange::new(10 * GRANULARITY..10 * GRANULARITY + 0x10000),
+            ]
         );
     }
 }

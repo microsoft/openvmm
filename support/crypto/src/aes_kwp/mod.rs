@@ -43,10 +43,10 @@ pub struct AesKeyWrapError(AesKeyWrapErrorInner);
 #[derive(Clone, Debug, Error)]
 enum AesKeyWrapErrorInner {
     /// The wrapping key size is not 16, 24, or 32 bytes.
-    #[error("invalid wrapping key size {0}")]
+    #[error("invalid wrapping key size {0}, expected 16, 24, or 32 bytes")]
     InvalidKeySize(usize),
     /// A backend cryptographic error occurred.
-    #[error("AES key wrap error")]
+    #[error("AES key wrap operation failed")]
     Backend(#[source] super::BackendError),
 }
 

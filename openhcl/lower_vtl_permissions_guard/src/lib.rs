@@ -35,15 +35,22 @@ impl PagesAccessibleToLowerVtl {
         vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
         pages: &[u64],
     ) -> Result<Self> {
+        // Track pages that we have successfully lowered the VTL permissions on,
+        // so that we can restore them if any subsequent pages fail.
+        let mut guard = Self {
+            vtl_protect,
+            pages: Vec::with_capacity(pages.len()),
+        };
+
         for pfn in pages {
-            vtl_protect
+            guard
+                .vtl_protect
                 .modify_vtl_page_setting(*pfn, hvdef::HV_MAP_GPA_PERMISSIONS_ALL)
                 .context("failed to update VTL protections on page")?;
+
+            guard.pages.push(*pfn);
         }
-        Ok(Self {
-            vtl_protect,
-            pages: pages.to_vec(),
-        })
+        Ok(guard)
     }
 }
 

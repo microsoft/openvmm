@@ -799,6 +799,71 @@ pub fn tdcall_vp_rd(
     }
 }
 
+/// Issue a TDG.VM.WR call to write a TD-scope metadata field (e.g. `TD_CTLS`).
+///
+/// `field_code` is the field code to use for the call.
+///
+/// `value` is the value to set, with `mask` being the mask controlling which
+/// bits will be set from `value`, as specified by the TDX API.
+///
+/// Returns the old value of the field.
+pub fn tdcall_vm_wr(
+    call: &mut impl Tdcall,
+    field_code: TdxExtendedFieldCode,
+    value: u64,
+    mask: u64,
+) -> Result<u64, TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VM_WR,
+        rcx: 0,
+        rdx: field_code.into(),
+        r8: value,
+        r9: mask,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(output.r8),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.SYS.RD call to read a global-scope TDX module metadata field
+/// (e.g. `TDX_FEATURES0`).
+///
+/// `field_id` is the metadata field ID to read.
+///
+/// Returns the field value.
+pub fn tdcall_sys_rd(call: &mut impl Tdcall, field_id: u64) -> Result<u64, TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::SYS_RD,
+        rcx: 0,
+        rdx: field_id,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(output.r8),
+        _ => Err(output.rax),
+    }
+}
+
 /// Issue a TDG.VP.INVGLA call.
 pub fn tdcall_vp_invgla(
     call: &mut impl Tdcall,
