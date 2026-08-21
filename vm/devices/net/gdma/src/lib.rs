@@ -125,7 +125,18 @@ pub use bnic::BnicConfig;
 #[cfg(feature = "test_helpers")]
 pub mod test_helpers {
     use super::GdmaDevice;
+    use super::VportConfig;
     use super::queues;
+    use gdma_resources::VportDefinition;
+    use vm_resource::ResourceResolver;
+
+    /// Resolves vport definitions for a test GDMA device.
+    pub async fn resolve_vports(
+        resolver: &ResourceResolver,
+        vports: Vec<VportDefinition>,
+    ) -> Result<Vec<VportConfig>, super::resolver::Error> {
+        super::resolver::resolve_vports(resolver, vports).await
+    }
 
     /// Returns a function that injects EQEs into the hardware channel EQ.
     pub fn hwc_eq_injector(device: &GdmaDevice) -> impl Fn(u8, &[u8]) + Send + Sync + 'static {
