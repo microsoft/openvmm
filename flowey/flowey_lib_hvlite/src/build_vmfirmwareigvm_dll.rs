@@ -6,6 +6,7 @@
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
+use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64_FILE_NAME;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
@@ -20,11 +21,28 @@ flowey_request! {
     pub struct Request {
         pub arch: CommonArch,
         pub igvm_bin: ReadVar<PathBuf>,
+        /// ID to store the IGVM under within the `VMFW` resource type.
+        pub resource_id: u32,
         /// (major, minor, patch, revision)
         pub dll_version: ReadVar<(u16, u16, u16, u16)>,
         pub internal_dll_name: String,
         pub vmfirmwareigvm_dll: WriteVar<VmfirmwareigvmDllOutput>,
     }
+}
+
+/// Builds the x64 CVM resource DLL under the SNP resource ID for the VMGS boot test.
+pub fn cvm_x64_test_dll(
+    ctx: &mut NodeCtx<'_>,
+    igvm_bin: ReadVar<PathBuf>,
+) -> ReadVar<VmfirmwareigvmDllOutput> {
+    ctx.reqv(|v| Request {
+        arch: CommonArch::X86_64,
+        igvm_bin,
+        resource_id: 13515,
+        dll_version: ReadVar::from_static((0, 0, 0, 0)),
+        internal_dll_name: LATEST_CVM_X64_FILE_NAME.into(),
+        vmfirmwareigvm_dll: v,
+    })
 }
 
 new_simple_flow_node!(struct Node);
@@ -40,6 +58,7 @@ impl SimpleFlowNode for Node {
         let Request {
             arch,
             igvm_bin,
+            resource_id,
             internal_dll_name,
             dll_version,
             vmfirmwareigvm_dll,
@@ -66,6 +85,7 @@ impl SimpleFlowNode for Node {
                             .to_string()
                             .replace('\\', "/"),
                     );
+                    extra_env.insert("UH_RESOURCE_ID".into(), resource_id.to_string());
                     let (major, minor, patch, revision) = rt.read(dll_version);
                     extra_env.insert("UH_MAJOR".into(), major.to_string());
                     extra_env.insert("UH_MINOR".into(), minor.to_string());

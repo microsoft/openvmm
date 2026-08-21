@@ -53,6 +53,7 @@ pub struct BuildSelections {
     pub tmk_vmm_linux: bool,
     pub vmgstool: bool,
     pub vmgstool_dev: bool,
+    pub vmfirmwareigvm_cvm_x64: bool,
     pub tpm_guest_tests_windows: bool,
     pub tpm_guest_tests_linux: bool,
     pub test_igvm_agent_rpc_server: bool,
@@ -136,6 +137,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::build_vmgstool::Node>();
+        ctx.import::<crate::build_vmfirmwareigvm_dll::Node>();
         ctx.import::<crate::write_incubator_target_runner::Node>();
     }
 
@@ -203,6 +205,8 @@ impl SimpleFlowNode for Node {
                 "Selected tests require artifacts that can only be built on linux. Try building from WSL2."
             );
         }
+
+        let mut register_vmfirmwareigvm_cvm_x64 = None;
 
         let register_openhcl_igvm_files = if build_openhcl {
             let openvmm_hcl_profile = if release {
@@ -274,6 +278,13 @@ impl SimpleFlowNode for Node {
                     openhcl_igvm,
                     openhcl_igvm_extras,
                 });
+
+                if build.vmfirmwareigvm_cvm_x64 && matches!(recipe, OpenhclIgvmRecipe::X64Cvm) {
+                    let igvm_bin = read_openhcl_igvm.map(ctx, |o| o.igvm_bin().to_path_buf());
+                    register_vmfirmwareigvm_cvm_x64 = Some(
+                        crate::build_vmfirmwareigvm_dll::cvm_x64_test_dll(ctx, igvm_bin),
+                    );
+                }
 
                 register_openhcl_igvm_files.push(read_openhcl_igvm);
 
@@ -717,6 +728,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm_linux_musl,
             register_vmgstool,
             register_vmgstool_dev,
+            register_vmfirmwareigvm_cvm_x64,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
             register_test_igvm_agent_rpc_server,

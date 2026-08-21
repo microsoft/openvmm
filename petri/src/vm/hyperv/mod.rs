@@ -64,6 +64,14 @@ use vtl2_settings_proto::Vtl2Settings;
 
 const IGVM_FILE_NAME: &str = "igvm.bin";
 
+fn openhcl_firmware_path(
+    is_openhcl: bool,
+    load_openhcl_from_vmgs: bool,
+    temp_dir: &Path,
+) -> Option<PathBuf> {
+    (is_openhcl && !load_openhcl_from_vmgs).then(|| temp_dir.join(IGVM_FILE_NAME))
+}
+
 /// The Hyper-V Petri backend
 #[derive(Debug)]
 pub struct HyperVPetriBackend {}
@@ -182,9 +190,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let temp_dir = tempfile::tempdir()?;
 
-        let igvm_file = properties
-            .is_openhcl
-            .then(|| temp_dir.path().join(IGVM_FILE_NAME));
+        let igvm_file = openhcl_firmware_path(
+            properties.is_openhcl,
+            config.load_openhcl_from_vmgs,
+            temp_dir.path(),
+        );
 
         let mut openhcl_command_line = config.firmware.openhcl_config().map(|c| c.command_line());
 
@@ -436,13 +446,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
 
         if properties.is_openhcl {
-            // Copy the IGVM file locally, since it may not be accessible by
-            // Hyper-V (e.g., if it is in a WSL filesystem).
-            let local_path = igvm_file.as_ref().unwrap();
-            fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
-                .context("failed to copy igvm file")?;
-            acl_for_vm(local_path, Some(*vm.vmid()), false)
-                .context("failed to set ACL for igvm file")?;
+            if let Some(local_path) = &igvm_file {
+                // Copy the IGVM file locally, since it is not accessible from a WSL filesystem
+                fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
+                    .context("failed to copy igvm file")?;
+                acl_for_vm(local_path, Some(*vm.vmid()), false)
+                    .context("failed to set ACL for igvm file")?;
+            }
 
             let openhcl_log_file = log_source.log_file("openhcl")?;
             if supports_com3 {

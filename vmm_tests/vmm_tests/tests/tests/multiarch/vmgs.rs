@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use anyhow::Context;
 use petri::CommandError;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
@@ -9,11 +10,17 @@ use petri::ResolvedArtifact;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
+use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_NATIVE;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
+use vmgs_format::VMGS_BYTES_PER_BLOCK;
+use vmgs_format::VMGS_DEFAULT_CAPACITY;
+use vmgs_format::VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE;
+use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
+use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
 use vmgs_resources::GuestStateEncryptionPolicy;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
@@ -146,6 +153,75 @@ async fn vmgstool_create<T: PetriVmmBackend>(
     run_vmgstool_verification(vmgstool_path, &vmgs_path, None, &temp_dir).await?;
 
     vm.teardown().await?;
+
+    Ok(())
+}
+
+/// Returns the capacity for a fresh VMGS plus one copy-on-write IGVM write.
+fn vmgs_capacity_for_igvm(igvm_size_upper_bound: u64) -> u64 {
+    const FILE_TABLE_COPIES_DURING_REWRITE: u64 = 2;
+
+    let block_size = u64::from(VMGS_BYTES_PER_BLOCK);
+    let payload_capacity = igvm_size_upper_bound.next_multiple_of(block_size);
+    let metadata_blocks = u64::from(VMGS_MIN_FILE_BLOCK_OFFSET)
+        + u64::from(VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE)
+        + FILE_TABLE_COPIES_DURING_REWRITE * u64::from(VMGS_FILE_TABLE_BLOCK_SIZE);
+
+    VMGS_DEFAULT_CAPACITY.max(payload_capacity + metadata_blocks * block_size)
+}
+
+/// Verifies `copy-igvmfile` by booting OpenHCL from the resulting VMGS.
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[VMGSTOOL_NATIVE, LATEST_CVM_X64],
+)]
+async fn vmgstool_copy_igvmfile<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (vmgstool, vmfw_dll): (
+        ResolvedArtifact<impl IsVmgsTool>,
+        ResolvedArtifact<LATEST_CVM_X64>,
+    ),
+) -> Result<(), anyhow::Error> {
+    let temp_dir = tempfile::tempdir()?;
+    let vmgs_path = temp_dir.path().join("test.vmgs");
+    let vmgstool_path = vmgstool.get();
+
+    // DLL length is the upper bound of the embedded IGVM, so that the PE resource parsing is owned by vmgstool
+    let vmgs_size = vmgs_capacity_for_igvm(
+        vmfw_dll
+            .get()
+            .metadata()
+            .context("failed to stat vmfw dll")?
+            .len(),
+    );
+
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("create")
+        .arg("--filepath")
+        .arg(&vmgs_path)
+        .arg("--file-size")
+        .arg(vmgs_size.to_string());
+    run_host_cmd(cmd).await?;
+
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("copy-igvmfile")
+        .arg("--filepath")
+        .arg(&vmgs_path)
+        .arg("--data-path")
+        .arg(vmfw_dll.get())
+        .arg("--resource-code")
+        .arg("SNP");
+    run_host_cmd(cmd).await?;
+
+    let (mut vm, agent) = config
+        .with_openhcl_from_vmgs()
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_persistent_vmgs(&vmgs_path)
+        .run()
+        .await?;
+
+    vm.test_inspect_openhcl().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
