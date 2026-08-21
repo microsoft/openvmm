@@ -722,6 +722,10 @@ impl ResetPartition for KvmPartition {
 }
 
 impl Partition for KvmPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
         Some(self)
     }
