@@ -16,24 +16,13 @@ fn configure_mana_vf_diagnostics(
 ) -> PetriVmBuilder<OpenVmmPetriBackend> {
     config
         .with_vtl0_kernel_command_line(
-            "rcupdate.rcu_cpu_stall_timeout=10 rcupdate.rcu_cpu_stall_cputime=1 mana.dyndbg=+p hv_netvsc.dyndbg=+p pci_hyperv.dyndbg=+p",
+            "rcupdate.rcu_cpu_stall_timeout=10 rcupdate.rcu_cpu_stall_cputime=1",
         )
-        .with_host_log_levels(OpenvmmLogConfig::Custom(
-            [
-                (
-                    "OPENVMM_LOG".to_owned(),
-                    "debug,gdma=trace,vpci=trace,hv1_emulator::message_queues=trace".to_owned(),
-                ),
-                ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
-            ]
-            .into(),
-        ))
         .with_openhcl_log_levels(OpenvmmLogConfig::Custom(
             [
                 (
                     "OPENVMM_LOG".to_owned(),
-                    "debug,underhill_core::emuplat::netvsp=trace,netvsp=trace,mana_driver=trace"
-                        .to_owned(),
+                    "debug,underhill_core::emuplat::netvsp=trace".to_owned(),
                 ),
                 ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
             ]
