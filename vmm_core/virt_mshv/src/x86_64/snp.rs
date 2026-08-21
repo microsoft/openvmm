@@ -4,8 +4,46 @@
 //! AMD SEV-SNP support for the x86_64 MSHV backend.
 
 use super::*;
+use crate::KernelError;
+use std::io;
 
 pub(super) const SNP_IMPORT_CHUNK_PAGES: usize = 256;
+
+#[derive(Debug, Error)]
+pub(crate) enum SnpError {
+    #[error("failed to map the SNP GHCB page")]
+    MapGhcbPage(#[source] io::Error),
+    #[error("SNP launch is already in progress")]
+    LaunchInProgress,
+    #[error("SNP launch is already complete")]
+    LaunchAlreadyFinished,
+    #[error("SNP launch previously failed")]
+    LaunchFailed,
+    #[error("unsupported SNP initial page import type: {0:?}")]
+    UnsupportedPageImportType(virt::InitialPageImportType),
+    #[error("invalid SNP initial page range")]
+    InvalidPageRange,
+    #[error("missing SNP VMSA import")]
+    MissingVmsa,
+    #[error("multiple SNP VMSA imports")]
+    MultipleVmsa,
+    #[error("missing SNP CPUID import")]
+    MissingCpuid,
+    #[error("multiple SNP CPUID imports")]
+    MultipleCpuid,
+    #[error("too many SNP CPUID entries: {0}")]
+    TooManyCpuidEntries(usize),
+    #[error("failed to query SNP CPUID")]
+    Cpuid(#[source] KernelError),
+    #[error("failed to write SNP CPUID page")]
+    GuestMemory(#[source] guestmem::GuestMemoryError),
+    #[error("failed to map SNP guest memory")]
+    MapGuestMemory(#[source] KernelError),
+    #[error("failed to import SNP pages")]
+    ImportIsolatedPages(#[source] KernelError),
+    #[error("failed to complete SNP isolated import")]
+    CompleteIsolatedImport(#[source] KernelError),
+}
 
 pub(super) const SNP_HYPERV_CPUID_FUNCTIONS: [u32; 10] = [
     hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
@@ -73,7 +111,7 @@ impl SnpVpState {
             )
         };
         if page == libc::MAP_FAILED {
-            return Err(ErrorInner::MapGhcbPage(std::io::Error::last_os_error()).into());
+            return Err(SnpError::MapGhcbPage(io::Error::last_os_error()).into());
         }
         Ok(Self {
             ghcb_page: MshvGhcbPage(page.cast()),
@@ -545,11 +583,11 @@ impl MshvPartitionInner {
             let mut state = snp.launch_state.lock();
             match *state {
                 SnpLaunchState::NotStarted => *state = SnpLaunchState::Started,
-                SnpLaunchState::Started => return Err(ErrorInner::SnpLaunchInProgress.into()),
+                SnpLaunchState::Started => return Err(SnpError::LaunchInProgress.into()),
                 SnpLaunchState::Finished => {
-                    return Err(ErrorInner::SnpLaunchAlreadyFinished.into());
+                    return Err(SnpError::LaunchAlreadyFinished.into());
                 }
-                SnpLaunchState::Failed => return Err(ErrorInner::SnpLaunchFailed.into()),
+                SnpLaunchState::Failed => return Err(SnpError::LaunchFailed.into()),
             }
         }
 
@@ -574,7 +612,7 @@ impl MshvPartitionInner {
         let vmsa = self
             .gm
             .read_plain::<x86defs::snp::SevVmsa>(vmsa_gpa)
-            .map_err(ErrorInner::SnpGuestMemory)?;
+            .map_err(SnpError::GuestMemory)?;
         // GHCB SNP AP-creation requests supply a new VMSA. Save the BSP launch
         // features so handle_snp_ap_create can require each AP VMSA to use the
         // same guest-visible SEV feature set.
@@ -594,7 +632,7 @@ impl MshvPartitionInner {
                 if !range.mapped {
                     self.vmfd
                         .map_user_memory(range.region)
-                        .map_err(|e| ErrorInner::SnpMapGuestMemory(e.into()))?;
+                        .map_err(|e| SnpError::MapGuestMemory(e.into()))?;
                     range.mapped = true;
                 }
             }
@@ -643,10 +681,10 @@ impl MshvPartitionInner {
         let mut page = self
             .gm
             .read_plain::<x86defs::snp::HvPspCpuidPage>(cpuid_gpa)
-            .map_err(ErrorInner::SnpGuestMemory)?;
+            .map_err(SnpError::GuestMemory)?;
         let count = page.count as usize;
         if count > x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX {
-            return Err(ErrorInner::TooManySnpCpuidEntries(count).into());
+            return Err(SnpError::TooManyCpuidEntries(count).into());
         }
         if self.caps.hv1 {
             // TODO: Determine the correct long-term strategy for exposing
@@ -677,7 +715,7 @@ impl MshvPartitionInner {
             // appending the leaves for compatibility with those guests. A
             // guest that returns -EOPNOTSUPP for missing synthetic leaves does
             // not require this augmentation.
-            add_snp_hyperv_cpuid_leaves(&mut page).map_err(ErrorInner::TooManySnpCpuidEntries)?;
+            add_snp_hyperv_cpuid_leaves(&mut page).map_err(SnpError::TooManyCpuidEntries)?;
         }
         let count = page.count as usize;
 
@@ -690,7 +728,7 @@ impl MshvPartitionInner {
                 leaf.xss_in,
                 self.caps.hv1,
             )
-            .map_err(|e| ErrorInner::SnpCpuid(e.into()))?;
+            .map_err(|e| SnpError::Cpuid(e.into()))?;
             leaf.eax_out = values[0];
             leaf.ebx_out = values[1];
             leaf.ecx_out = values[2];
@@ -699,7 +737,7 @@ impl MshvPartitionInner {
         }
         self.gm
             .write_plain(cpuid_gpa, &page)
-            .map_err(ErrorInner::SnpGuestMemory)?;
+            .map_err(SnpError::GuestMemory)?;
         Ok(())
     }
 
@@ -724,7 +762,7 @@ impl MshvPartitionInner {
         };
         self.vmfd
             .import_isolated_pages(args)
-            .map_err(|e| ErrorInner::ImportIsolatedPages(e.into()))?;
+            .map_err(|e| SnpError::ImportIsolatedPages(e.into()))?;
         Ok(())
     }
 
@@ -736,7 +774,7 @@ impl MshvPartitionInner {
         data.import_data.psp_parameters.author_key_enabled = 0;
         self.vmfd
             .complete_isolated_import(&data)
-            .map_err(|e| ErrorInner::CompleteIsolatedImport(e.into()))?;
+            .map_err(|e| SnpError::CompleteIsolatedImport(e.into()))?;
         Ok(())
     }
 }
@@ -753,21 +791,21 @@ fn snp_launch_pages(pages: &[virt::InitialPageImport]) -> Result<(u64, u64), Err
         };
         if slot.is_some() {
             return Err(match page.import_type {
-                virt::InitialPageImportType::VpContext => ErrorInner::MultipleSnpVmsa,
-                virt::InitialPageImportType::Cpuid => ErrorInner::MultipleSnpCpuid,
+                virt::InitialPageImportType::VpContext => SnpError::MultipleVmsa,
+                virt::InitialPageImportType::Cpuid => SnpError::MultipleCpuid,
                 _ => unreachable!(),
             }
             .into());
         }
         validate_snp_page_range(page.range)?;
         if page.range.len() != hvdef::HV_PAGE_SIZE {
-            return Err(ErrorInner::InvalidSnpPageRange.into());
+            return Err(SnpError::InvalidPageRange.into());
         }
         *slot = Some(page.range.start());
     }
     Ok((
-        vmsa.ok_or(ErrorInner::MissingSnpVmsa)?,
-        cpuid.ok_or(ErrorInner::MissingSnpCpuid)?,
+        vmsa.ok_or(SnpError::MissingVmsa)?,
+        cpuid.ok_or(SnpError::MissingCpuid)?,
     ))
 }
 
@@ -776,7 +814,7 @@ fn validate_snp_page_range(range: MemoryRange) -> Result<(), Error> {
         || !range.start().is_multiple_of(hvdef::HV_PAGE_SIZE)
         || !range.end().is_multiple_of(hvdef::HV_PAGE_SIZE)
     {
-        return Err(ErrorInner::InvalidSnpPageRange.into());
+        return Err(SnpError::InvalidPageRange.into());
     }
     Ok(())
 }
@@ -792,7 +830,7 @@ fn snp_isolated_page_type(import_type: virt::InitialPageImportType) -> Result<Op
         virt::InitialPageImportType::Cpuid => mshv_bindings::MSHV_ISOLATED_PAGE_CPUID as u8,
         virt::InitialPageImportType::Shared => return Ok(None),
         virt::InitialPageImportType::CpuidExtendedState => {
-            return Err(ErrorInner::UnsupportedSnpPageImportType(import_type).into());
+            return Err(SnpError::UnsupportedPageImportType(import_type).into());
         }
     }))
 }
@@ -1730,9 +1768,9 @@ mod tests {
         );
         assert!(matches!(
             snp_isolated_page_type(virt::InitialPageImportType::CpuidExtendedState),
-            Err(Error(ErrorInner::UnsupportedSnpPageImportType(
+            Err(Error(ErrorInner::Snp(SnpError::UnsupportedPageImportType(
                 virt::InitialPageImportType::CpuidExtendedState
-            )))
+            ))))
         ));
     }
 
@@ -1756,7 +1794,7 @@ mod tests {
         let duplicate = [pages[0].clone(), pages[0].clone(), pages[1].clone()];
         assert!(matches!(
             snp_launch_pages(&duplicate),
-            Err(Error(ErrorInner::MultipleSnpVmsa))
+            Err(Error(ErrorInner::Snp(SnpError::MultipleVmsa)))
         ));
     }
 
@@ -1764,7 +1802,7 @@ mod tests {
     fn rejects_invalid_snp_page_ranges() {
         assert!(matches!(
             validate_snp_page_range(MemoryRange::EMPTY),
-            Err(Error(ErrorInner::InvalidSnpPageRange))
+            Err(Error(ErrorInner::Snp(SnpError::InvalidPageRange)))
         ));
 
         let pages = [
@@ -1781,7 +1819,7 @@ mod tests {
         ];
         assert!(matches!(
             snp_launch_pages(&pages),
-            Err(Error(ErrorInner::InvalidSnpPageRange))
+            Err(Error(ErrorInner::Snp(SnpError::InvalidPageRange)))
         ));
     }
 

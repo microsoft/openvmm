@@ -69,6 +69,7 @@ use zerocopy::IntoBytes;
 
 mod snp;
 
+pub(super) use snp::SnpError;
 pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
