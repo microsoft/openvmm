@@ -482,6 +482,11 @@ impl HyperVNewCustomVMArgs {
             ..
         } = config;
 
+        anyhow::ensure!(
+            !config.hibernation_enabled,
+            "hibernation is not yet supported on the Hyper-V backend"
+        );
+
         if firmware
             .openhcl_config()
             .is_some_and(|c| c.vtl2_base_address_type.is_some())

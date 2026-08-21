@@ -122,8 +122,6 @@ async fn hibernate_token<T: PetriVmmBackend>(
         anyhow::bail!("expected Hibernate, got {halt_reason:?}");
     }
 
-    // Hyper-V VMs copy the VMGS rather than use it in-place; use the real path.
-    let vmgs_path = vm.get_guest_state_file().await?.unwrap_or(vmgs_path);
     vm.teardown().await?;
 
     // The hibernate token must record the current firmware version.

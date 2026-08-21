@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 mod action;
+mod hibernate;
 mod rt;
 mod splash;
 mod tests;
@@ -23,7 +24,7 @@ fn uefi_main() -> Status {
     splash::draw_splash(Splashes(NonZeroU8::new(1).unwrap()));
 
     match action::selected_action() {
-        action::GuestAction::Hibernate => action::hibernate(),
+        action::GuestAction::Hibernate => hibernate::hibernate(),
         action::GuestAction::RunTests => tests::run_tests(),
     }
 
