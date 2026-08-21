@@ -50,7 +50,6 @@ impl SimpleFlowNode for Node {
                 profile,
                 features: [crate::build_openvmm::OpenvmmFeature::Tpm].into(),
             },
-            version: None,
             openvmm: v,
         });
         let runner = ctx.reqv(|v| crate::build_vmm_perf::Request {
