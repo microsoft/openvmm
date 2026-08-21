@@ -76,6 +76,7 @@ use range_map_vec::RangeMap;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
@@ -249,11 +250,11 @@ struct MapperInner {
     supports_memory_fault_resolution: bool,
     req_send: mesh::Sender<MappingRequest>,
     /// Maintains a weak reference to avoid a reference cycle with the partition.
-    host_access: Mutex<Option<HostAccess>>,
+    host_access: OnceLock<HostAccess>,
 }
 
 #[derive(Clone)]
-struct HostAccess(std::sync::Weak<dyn virt::PartitionMemoryMap>);
+struct HostAccess(std::sync::Weak<dyn virt::PartitionHostAccess>);
 
 impl std::fmt::Debug for HostAccess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -769,7 +770,7 @@ impl VaMapper {
             primary,
             supports_memory_fault_resolution,
             req_send,
-            host_access: Mutex::new(None),
+            host_access: OnceLock::new(),
         });
 
         // Spawn the mapper thread *before* the AddMapper RPC. The manager
@@ -823,11 +824,16 @@ impl VaMapper {
         self.inner.mapping.as_ptr().cast()
     }
 
-    /// Installs or removes the callback used to recover eager-mapper faults
-    /// caused by missing host permission.
-    pub(crate) fn set_host_access(&self, host_access: Option<Arc<dyn virt::PartitionMemoryMap>>) {
-        *self.inner.host_access.lock() =
-            host_access.map(|host_access| HostAccess(Arc::downgrade(&host_access)));
+    /// Installs the callback used to recover eager-mapper faults caused by
+    /// missing host permission.
+    pub(crate) fn install_host_access(&self, host_access: Arc<dyn virt::PartitionHostAccess>) {
+        assert!(
+            self.inner
+                .host_access
+                .set(HostAccess(Arc::downgrade(&host_access)))
+                .is_ok(),
+            "host access is already installed"
+        );
     }
 
     /// Returns the length of the VA reservation in bytes.
@@ -907,8 +913,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
             if let Some(host_access) = self
                 .inner
                 .host_access
-                .lock()
-                .as_ref()
+                .get()
                 .and_then(|host_access| host_access.0.upgrade())
             {
                 let start = address & !(hvdef::HV_PAGE_SIZE - 1);

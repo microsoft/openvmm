@@ -946,10 +946,18 @@ impl virt::PartitionMemoryMapper for MshvPartition {
         assert_eq!(vtl, Vtl::Vtl0);
         self.inner.clone()
     }
+
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>> {
+        #[cfg(guest_arch = "x86_64")]
+        if self.inner.isolation.snp().is_some() {
+            return Some(self.inner.clone());
+        }
+        None
+    }
 }
 
 // TODO: figure out a better abstraction that also works for KVM and WHP.
-impl virt::PartitionMemoryMap for MshvPartitionInner {
+impl virt::PartitionHostAccess for MshvPartitionInner {
     fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
         // TODO: The current prototype only provides the acquisition half of
         // the host-visibility lifecycle. This is sufficient for single-threaded
@@ -962,7 +970,9 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         }
         anyhow::bail!("acquiring host access is not supported")
     }
+}
 
+impl virt::PartitionMemoryMap for MshvPartitionInner {
     unsafe fn map_range(
         &self,
         data: *mut u8,

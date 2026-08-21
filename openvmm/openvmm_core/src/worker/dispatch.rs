@@ -1348,17 +1348,14 @@ impl InitializedVm {
         let partition = Arc::new(partition);
 
         memory_manager
-            .attach_partition(Vtl::Vtl0, &partition.memory_mapper(Vtl::Vtl0), None)
+            .attach_partition(
+                Vtl::Vtl0,
+                &partition.memory_mapper(Vtl::Vtl0),
+                None,
+                partition.host_access(),
+            )
             .await
             .context("failed to attach memory to the partition")?;
-
-        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
-            memory_manager
-                .client()
-                .set_host_access(Some(partition.memory_mapper(Vtl::Vtl0)))
-                .await
-                .context("failed to install SNP host-access fault handler")?;
-        }
 
         if cfg.hypervisor.with_vtl2.is_some() {
             memory_manager
@@ -1366,6 +1363,7 @@ impl InitializedVm {
                     Vtl::Vtl2,
                     &partition.memory_mapper(Vtl::Vtl2),
                     vtl2_memory_process,
+                    None,
                 )
                 .await
                 .context("failed to attach memory to VTL2")?;

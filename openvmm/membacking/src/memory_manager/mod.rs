@@ -709,18 +709,6 @@ pub struct GuestMemoryClient {
 }
 
 impl GuestMemoryClient {
-    /// Installs a handler used to acquire host access after a guest-memory fault.
-    ///
-    /// Some hypervisors require the host to request access after the guest
-    /// marks a page shared. Host access is that permission for userspace to
-    /// touch the shared page.
-    pub async fn set_host_access(
-        &self,
-        host_access: Option<Arc<dyn virt::PartitionMemoryMap>>,
-    ) -> Result<(), VaMapperError> {
-        self.mapping_manager.set_host_access(host_access).await
-    }
-
     /// Retrieves a [`GuestMemory`] object to access guest memory from this
     /// process.
     ///
@@ -808,6 +796,9 @@ impl GuestMemoryManager {
     /// process. This is necessary to work around WHP's lack of support for
     /// mapping multiple partitions from a single process.
     ///
+    /// `host_access` configures fault-driven host access on the primary VTL0
+    /// mapper. It must be `None` when attaching any other VTL.
+    ///
     /// TODO: currently, all VTLs will get the same mappings--no support for
     /// per-VTL memory protections is supported.
     pub async fn attach_partition(
@@ -815,7 +806,17 @@ impl GuestMemoryManager {
         vtl: Vtl,
         partition: &Arc<dyn virt::PartitionMemoryMap>,
         process: Option<RemoteProcess>,
+        host_access: Option<Arc<dyn virt::PartitionHostAccess>>,
     ) -> Result<(), PartitionAttachError> {
+        if let Some(host_access) = host_access {
+            assert_eq!(
+                vtl,
+                Vtl::Vtl0,
+                "host access must be installed while attaching VTL0"
+            );
+            self.va_mapper.install_host_access(host_access);
+        }
+
         let va_mapper = if let Some(process) = process {
             self.mapping_manager
                 .client()
