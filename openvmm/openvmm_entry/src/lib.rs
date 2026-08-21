@@ -1278,6 +1278,7 @@ async fn vm_config_from_command_line(
                 .pcat_boot_order
                 .map(|x| x.0)
                 .unwrap_or(DEFAULT_PCAT_BOOT_ORDER),
+            enable_hibernation: false,
         };
     } else if opt.uefi {
         use openvmm_defs::config::UefiConsoleMode;
@@ -1317,6 +1318,7 @@ async fn vm_config_from_command_line(
             enable_vmbus: !opt.no_vmbus,
             force_dma_bounce: opt.uefi_force_dma_bounce,
             enable_hv: !opt.no_hv,
+            enable_hibernation: true,
         };
     } else {
         // Linux Direct

@@ -142,10 +142,12 @@ pub enum LoadMode {
         enable_vmbus: bool,
         force_dma_bounce: bool,
         enable_hv: bool,
+        enable_hibernation: bool,
     },
     Pcat {
         firmware: RomFileLocation,
         boot_order: [PcatBootDevice; 4],
+        enable_hibernation: bool,
     },
     Igvm {
         file: File,

@@ -57,6 +57,7 @@ const HIBERNATE_TOKEN_CURRENT: [u8; 8] = [0x09, 0x01, 0, 0, 0, 0, 0, 0];
 async fn hibernate_halts<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config
         .with_windows_secure_boot_template()
+        .with_hibernation_enabled(true)
         .with_custom_uefi_json(HIBERNATE_ACTION_JSON)
         .run_without_agent()
         .await?;

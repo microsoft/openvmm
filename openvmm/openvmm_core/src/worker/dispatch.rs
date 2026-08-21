@@ -1583,6 +1583,7 @@ impl InitializedVm {
             LoadMode::Pcat {
                 firmware,
                 boot_order,
+                enable_hibernation,
             } => {
                 tracing::debug!(?firmware, "Loading BIOS firmware.");
                 let rom_builder = RomBuilder::new("bios".into(), Box::new(mapper.clone()));
@@ -1638,7 +1639,7 @@ impl InitializedVm {
                             chipset_high_mmio: chipset_mmio.high,
                             srat,
 
-                            hibernation_enabled: false,
+                            hibernation_enabled: *enable_hibernation,
                             initial_generation_id: {
                                 let mut generation_id = [0; 16];
                                 getrandom::fill(&mut generation_id).expect("rng failure");
@@ -3333,6 +3334,7 @@ impl LoadedVmInner {
                 enable_vmbus,
                 force_dma_bounce,
                 enable_hv,
+                enable_hibernation,
             } => {
                 let acpi_tables = [
                     // MADT
@@ -3370,6 +3372,7 @@ impl LoadedVmInner {
                     vmbus: enable_vmbus,
                     force_dma_bounce,
                     hv: enable_hv,
+                    hibernation: enable_hibernation,
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {

@@ -119,6 +119,7 @@ impl PetriVmConfigOpenVmm {
             arch,
             host_log_levels,
             firmware,
+            hibernation_enabled,
             memory,
             proc_topology,
             vmgs,
@@ -146,6 +147,7 @@ impl PetriVmConfigOpenVmm {
         let setup = PetriVmConfigSetupCore {
             arch,
             firmware: &firmware,
+            hibernation_enabled,
             driver,
             logger: log_source,
             vmgs: &vmgs,
@@ -773,6 +775,7 @@ impl PetriVmConfigOpenVmm {
 struct PetriVmConfigSetupCore<'a> {
     arch: MachineArch,
     firmware: &'a Firmware,
+    hibernation_enabled: bool,
     driver: &'a DefaultDriver,
     logger: &'a PetriLogSource,
     vmgs: &'a PetriVmgsResource,
@@ -928,6 +931,7 @@ impl PetriVmConfigSetupCore<'_> {
                 LoadMode::Pcat {
                     firmware,
                     boot_order: DEFAULT_PCAT_BOOT_ORDER,
+                    enable_hibernation: self.hibernation_enabled,
                 }
             }
             (
@@ -971,6 +975,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_vmbus: !self.no_vmbus,
                     force_dma_bounce: *force_dma_bounce,
                     enable_hv: !self.no_hv,
+                    enable_hibernation: self.hibernation_enabled,
                 }
             }
             (
@@ -988,8 +993,7 @@ impl PetriVmConfigSetupCore<'_> {
                 },
             ) => {
                 let OpenHclConfig {
-                    vmbus_redirect: _,      // config_openhcl_vmbus_devices
-                    hibernation_enabled: _, // config_openhcl_vmbus_devices (GED)
+                    vmbus_redirect: _, // config_openhcl_vmbus_devices
                     custom_command_line: _,
                     log_levels: _,
                     vtl2_base_address_type,
@@ -1135,11 +1139,7 @@ impl PetriVmConfigSetupCore<'_> {
                 efi_diagnostics_log_level,
                 efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
             },
-            OpenHclConfig {
-                vmbus_redirect,
-                hibernation_enabled,
-                ..
-            },
+            OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
             Firmware::OpenhclUefi {
                 uefi_config,
@@ -1187,7 +1187,7 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
-            enable_hibernation: *hibernation_enabled,
+            enable_hibernation: self.hibernation_enabled,
             no_persistent_secrets: self.tpm_config.as_ref().is_some_and(|c| c.no_persistent_secrets),
             igvm_attest_test_config: None,
             test_gsp_by_id,

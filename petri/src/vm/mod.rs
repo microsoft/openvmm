@@ -231,6 +231,8 @@ pub struct PetriVmConfig {
     pub host_log_levels: Option<OpenvmmLogConfig>,
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
+    /// Whether to enable guest hibernation support.
+    pub hibernation_enabled: bool,
     /// The amount of memory, in bytes, to assign to the VM
     pub memory: MemoryConfig,
     /// The processor topology for the VM
@@ -458,6 +460,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
+                hibernation_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -539,6 +542,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
+                hibernation_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -1529,13 +1533,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Enable guest hibernation support (OpenHCL DPS `enable_hibernation`).
+    /// Enable guest hibernation support.
+    ///
+    /// Applies to any firmware type: for OpenHCL this sets the DPS
+    /// `enable_hibernation` flag; for OpenVMM UEFI/PCAT firmware it enables the
+    /// firmware's hibernation support.
     pub fn with_hibernation_enabled(mut self, enable: bool) -> Self {
-        self.config
-            .firmware
-            .openhcl_config_mut()
-            .expect("hibernation is only supported for OpenHCL firmware.")
-            .hibernation_enabled = enable;
+        self.config.hibernation_enabled = enable;
         self
     }
 
@@ -2513,9 +2517,6 @@ pub enum OpenvmmLogConfig {
 pub struct OpenHclConfig {
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
-    /// Whether to enable guest hibernation support (OpenHCL DPS
-    /// `enable_hibernation`).
-    pub hibernation_enabled: bool,
     /// Test-specified command-line parameters to append to the petri generated
     /// command line and pass to OpenHCL. VM backends should use
     /// [`OpenHclConfig::command_line()`] rather than reading this directly.
@@ -2578,7 +2579,6 @@ impl Default for OpenHclConfig {
     fn default() -> Self {
         Self {
             vmbus_redirect: false,
-            hibernation_enabled: false,
             custom_command_line: None,
             log_levels: OpenvmmLogConfig::TestDefault,
             vtl2_base_address_type: None,
