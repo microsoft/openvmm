@@ -225,6 +225,11 @@ fn build_dt(
 
     let num_cpus = processor_topology.vps().len();
     let shared_gpa_bit = cfg.shared_gpa_bit;
+    // TODO: Linux arm64_rsi_is_protected() queries RIPAS for addresses that
+    // already contain the Realm shared IPA bit, causing RSI_ERROR_INPUT and a
+    // WARN_ON during device probing. Keep the shared address because earlycon
+    // maps the DT address directly. Revisit once Linux handles shared IPAs
+    // without issuing an RSI_IPA_STATE_GET request.
     let shared_addr = |addr| shared_gpa_bit.map_or(addr, |bit| addr | bit);
 
     use vm_topology::processor::aarch64::GicMsiController;
