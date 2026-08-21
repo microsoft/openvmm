@@ -50,13 +50,15 @@ impl From<BrokerFileId> for FileId {
 pub enum VmgsBrokerRpc {
     Inspect(inspect::Deferred),
     GetFileInfo(Rpc<BrokerFileId, Result<VmgsFileInfo, VmgsBrokerError>>),
-    DeviceSize(Rpc<(), u64>),
     ReadFile(Rpc<BrokerFileId, Result<Vec<u8>, VmgsBrokerError>>),
     WriteFile(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     #[cfg(feature = "encryption")]
     WriteFileEncrypted(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
     DeleteFile(Rpc<BrokerFileId, Result<(), VmgsBrokerError>>),
+    // N.B. `MeshPayload` numbers fields by declaration order; append new RPCs
+    // here so existing ones keep their wire numbers across revisions.
+    DeviceSize(Rpc<(), u64>),
 }
 
 pub struct VmgsBrokerTask {

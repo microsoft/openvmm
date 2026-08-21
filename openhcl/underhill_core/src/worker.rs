@@ -4274,22 +4274,13 @@ async fn restore_vtl0_firmware_from_vmgs(
         return false;
     };
 
-    let Some(firmware) = hibernate::read_firmware(vmgs_client).await else {
+    // `read_firmware` requires the stored image to be exactly `region_len`, so
+    // no separate size check is needed here.
+    let region_len = firmware_memory.len();
+    let Some(firmware) = hibernate::read_firmware(vmgs_client, region_len).await else {
         // No usable stored image; leave the current firmware in place.
         return false;
     };
-
-    let region_len = firmware_memory.len();
-    if firmware.len() as u64 != region_len {
-        tracing::warn!(
-            CVM_ALLOWED,
-            stored_size = firmware.len(),
-            region_size = region_len,
-            "stored UEFI firmware image size does not match the firmware region; \
-             not restoring"
-        );
-        return false;
-    }
 
     // On x86_64, compute the restored image's SEC entry point before touching
     // guest memory so a malformed image is a clean fallback (nothing written).

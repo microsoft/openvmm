@@ -227,17 +227,50 @@ pub async fn store_firmware(
     Ok(StoreFirmwareOutcome::Stored)
 }
 
-/// Reads a stored UEFI firmware image from VMGS, returning `None` if none is
+/// Reads a stored UEFI firmware image from VMGS, returning `None` if no image is
 /// stored (the usual case, e.g. first hibernation or a VMGS too small to hold
-/// one) or the read fails.
-pub async fn read_firmware(vmgs_client: &vmgs_broker::VmgsClient) -> Option<Vec<u8>> {
+/// one) or if the stored image's size is not exactly `expected_len`. The size is
+/// checked via the file metadata *before* reading, so a corrupt or oversized
+/// entry cannot force a large allocation.
+pub async fn read_firmware(
+    vmgs_client: &vmgs_broker::VmgsClient,
+    expected_len: u64,
+) -> Option<Vec<u8>> {
+    let info = match vmgs_client
+        .get_file_info(vmgs::FileId::HIBERNATION_FIRMWARE)
+        .await
+    {
+        Ok(info) => info,
+        // No stored image is the usual case; not an error.
+        Err(VmgsClientError::Vmgs(VmgsBrokerError::FileInfoNotAllocated)) => return None,
+        Err(err) => {
+            tracing::warn!(
+                CVM_ALLOWED,
+                error = &err as &dyn std::error::Error,
+                "failed to query stored UEFI firmware image metadata"
+            );
+            return None;
+        }
+    };
+
+    // A resumed image is only usable if it is bit-for-bit the same size as the
+    // firmware region; requiring an exact match here also bounds the allocation
+    // `read_file` makes below.
+    if info.valid_bytes != expected_len {
+        tracing::warn!(
+            CVM_ALLOWED,
+            stored_size = info.valid_bytes,
+            expected_size = expected_len,
+            "stored UEFI firmware image size does not match the firmware region; not restoring"
+        );
+        return None;
+    }
+
     match vmgs_client
         .read_file(vmgs::FileId::HIBERNATION_FIRMWARE)
         .await
     {
         Ok(firmware) => Some(firmware),
-        // No stored image is the usual case; not an error.
-        Err(VmgsClientError::Vmgs(VmgsBrokerError::FileInfoNotAllocated)) => None,
         Err(err) => {
             tracing::warn!(
                 CVM_ALLOWED,
@@ -316,7 +349,7 @@ mod tests {
         let (client, _task) = spawn_vmgs_broker(driver.clone(), vmgs);
 
         // No image stored initially.
-        assert!(read_firmware(&client).await.is_none());
+        assert!(read_firmware(&client, 0x1000).await.is_none());
 
         let gm = GuestMemory::allocate(0x2000);
         let firmware_memory = MemoryRange::new(0x1000..0x2000);
@@ -328,12 +361,14 @@ mod tests {
             StoreFirmwareOutcome::Stored
         ));
         assert_eq!(
-            read_firmware(&client).await.as_deref(),
+            read_firmware(&client, 0x1000).await.as_deref(),
             Some(image.as_slice())
         );
+        // A size mismatch is rejected without loading.
+        assert!(read_firmware(&client, 0x800).await.is_none());
 
         delete_firmware(&client).await;
-        assert!(read_firmware(&client).await.is_none());
+        assert!(read_firmware(&client, 0x1000).await.is_none());
     }
 
     #[async_test]
@@ -346,7 +381,7 @@ mod tests {
             store_firmware(&gm, firmware_memory, &client).await.unwrap(),
             StoreFirmwareOutcome::InsufficientSpace { .. }
         ));
-        assert!(read_firmware(&client).await.is_none());
+        assert!(read_firmware(&client, 0x1000).await.is_none());
     }
 
     #[test]

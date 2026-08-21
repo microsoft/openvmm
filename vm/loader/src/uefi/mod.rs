@@ -262,14 +262,21 @@ pub fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     // There should always be a Security Core file.
     let sec_core_file_header = sec_core_file_header?;
     let sec_core_file_size = expand_3byte_integer(sec_core_file_header.size);
+    // A zero-size SEC file has no sections; reject it rather than returning an
+    // offset that is not an entry point.
+    if sec_core_file_size == 0 {
+        return None;
+    }
 
     // Move past the firmware file header.
     let file_header_size = size_of::<EFI_FFS_FILE_HEADER>() as u64;
     image_offset = image_offset.checked_add(file_header_size)?;
     volume_offset = volume_offset.checked_add(file_header_size)?;
 
-    // Loop through the firmware file sections looking for PE section.
+    // Loop through the firmware file sections looking for the PE section, which
+    // holds the entry point.
     let mut file_offset = volume_offset;
+    let mut pe_entry = None;
     while file_offset < sec_core_file_size {
         //
         // Section headers are 8 byte aligned with respect to the beginning of the file stream.
@@ -285,7 +292,7 @@ pub fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
             let section_header_size = size_of::<EFI_COMMON_SECTION_HEADER>() as u64;
             let pe_data_offset = image_offset.checked_add(section_header_size)?;
             let pe_offset = pe_get_entry_point_offset(image.get(pe_data_offset as usize..)?)?;
-            image_offset = pe_data_offset.checked_add(pe_offset as u64)?;
+            pe_entry = Some(pe_data_offset.checked_add(pe_offset as u64)?);
             break;
         }
         // A zero-size section would not advance the scan; treat as malformed.
@@ -297,7 +304,8 @@ pub fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
         file_offset = file_offset.checked_add(section_size)?;
     }
 
-    Some(image_offset)
+    // No PE section means no entry point.
+    pe_entry
 }
 
 /// Definitions shared by UEFI and the loader when loaded with parameters passed in IGVM format.
