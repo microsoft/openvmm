@@ -227,6 +227,7 @@ impl FlowNode for Node {
                 config,
                 pre_build_deps,
                 output: v,
+                build_script_out_dir: None,
             });
 
             if !no_split_dbg_info
