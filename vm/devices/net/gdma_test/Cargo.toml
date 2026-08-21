@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-gdma.workspace = true
+gdma = { workspace = true, features = ["test_helpers"] }
 gdma_defs.workspace = true
 gdma_resources.workspace = true
 pci_resources.workspace = true
