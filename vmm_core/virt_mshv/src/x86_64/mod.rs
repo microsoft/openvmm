@@ -69,7 +69,9 @@ use zerocopy::IntoBytes;
 
 mod snp;
 
+use snp::GHCB_R8_VALID_BIT;
 use snp::GHCB_RCX_VALID_BIT;
+use snp::GHCB_RDX_VALID_BIT;
 pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
@@ -80,6 +82,25 @@ use snp::set_ghcb_gp;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
 use snp::snp_start_vp_vmsa_gpa;
+
+/// Checks registers duplicated between the kernel-produced MSHV intercept
+/// message and the guest-populated GHCB.
+///
+/// RAX and RCX identify the Hyper-V hypercall and must be valid in both
+/// sources. MSHV does not always mark RDX and R8 valid in the GHCB, so compare
+/// those fields only when the guest included them there. The intercept message
+/// remains the register source used to dispatch the hypercall.
+fn snp_hypercall_registers_are_consistent(
+    ghcb: &x86defs::snp::GhcbPage,
+    info: &hvdef::HvX64HypercallInterceptMessage,
+) -> bool {
+    ghcb_rax_is_valid(ghcb)
+        && ghcb.save.valid_bitmap1 & GHCB_RCX_VALID_BIT != 0
+        && ghcb.save.rax == info.rax
+        && ghcb.save.rcx == info.rcx
+        && (ghcb.save.valid_bitmap1 & GHCB_RDX_VALID_BIT == 0 || ghcb.save.rdx == info.rdx)
+        && (ghcb.save.valid_bitmap1 & GHCB_R8_VALID_BIT == 0 || ghcb.save.r8 == info.r8)
+}
 
 impl virt::Hypervisor for LinuxMshv {
     type ProtoPartition<'a> = MshvProtoPartition<'a>;
@@ -899,13 +920,7 @@ impl MshvProcessor<'_> {
                 .runner
                 .ghcb_page()
                 .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-            if !ghcb_rax_is_valid(ghcb)
-                || ghcb.save.valid_bitmap1 & GHCB_RCX_VALID_BIT == 0
-                || ghcb.save.rax != info.rax
-                || ghcb.save.rcx != info.rcx
-                || ghcb.save.rdx != info.rdx
-                || ghcb.save.r8 != info.r8
-            {
+            if !snp_hypercall_registers_are_consistent(ghcb, info) {
                 tracelimit::warn_ratelimited!("inconsistent SNP hypercall registers");
                 return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
             }
@@ -1592,6 +1607,36 @@ mod tests {
             virt::IsolationType::None,
             false
         ));
+    }
+
+    #[test]
+    fn snp_hypercall_requires_valid_consistent_registers() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+        let mut info = hvdef::HvX64HypercallInterceptMessage::new_zeroed();
+        for (index, value) in [
+            (x86emu::Gp::RAX as usize, 1),
+            (x86emu::Gp::RCX as usize, 2),
+            (x86emu::Gp::RDX as usize, 3),
+            (x86emu::Gp::R8 as usize, 4),
+        ] {
+            assert!(set_ghcb_gp(&mut ghcb, index, value));
+        }
+        info.rax = ghcb.save.rax;
+        info.rcx = ghcb.save.rcx;
+        info.rdx = ghcb.save.rdx;
+        info.r8 = ghcb.save.r8;
+
+        assert!(snp_hypercall_registers_are_consistent(&ghcb, &info));
+
+        ghcb.save.rdx ^= 1;
+        assert!(!snp_hypercall_registers_are_consistent(&ghcb, &info));
+        ghcb.save.valid_bitmap1 &= !GHCB_RDX_VALID_BIT;
+        assert!(snp_hypercall_registers_are_consistent(&ghcb, &info));
+
+        ghcb.save.r8 ^= 1;
+        assert!(!snp_hypercall_registers_are_consistent(&ghcb, &info));
+        ghcb.save.valid_bitmap1 &= !GHCB_R8_VALID_BIT;
+        assert!(snp_hypercall_registers_are_consistent(&ghcb, &info));
     }
 
     #[test]
