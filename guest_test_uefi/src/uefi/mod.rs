@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod action;
 mod rt;
 mod splash;
 mod tests;
@@ -21,7 +22,10 @@ fn uefi_main() -> Status {
     // running UEFI on a VM without a gfx adapter - such as in CI).
     splash::draw_splash(Splashes(NonZeroU8::new(1).unwrap()));
 
-    tests::run_tests();
+    match action::selected_action() {
+        action::GuestAction::Hibernate => action::hibernate(),
+        action::GuestAction::RunTests => tests::run_tests(),
+    }
 
     Status::SUCCESS
 }
