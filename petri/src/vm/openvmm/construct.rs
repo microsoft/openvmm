@@ -927,6 +927,7 @@ impl PetriVmConfigSetupCore<'_> {
                 let OpenHclConfig {
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
                     custom_command_line: _,
+                    vtl0_kernel_command_line,
                     log_levels: _,
                     vtl2_base_address_type,
                     vtl2_settings: _, // run_core
@@ -941,10 +942,16 @@ impl PetriVmConfigSetupCore<'_> {
                         // Set UNDERHILL_SERIAL_WAIT_FOR_RTS=1 so that we don't pull serial data
                         // until the guest is ready. Otherwise, Linux will drop the input serial
                         // data on the floor during boot.
+                        let mut vtl0_cmdline = format!("rdinit=/bin/sh {vsock_blacklist}");
+                        if let Some(additional_command_line) = vtl0_kernel_command_line {
+                            vtl0_cmdline.push(' ');
+                            vtl0_cmdline.push_str(additional_command_line);
+                        }
                         append_cmdline(
                             &mut cmdline,
                             format!(
-                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {vsock_blacklist}\""
+                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"{}\"",
+                                vtl0_cmdline
                             ),
                         );
                         false

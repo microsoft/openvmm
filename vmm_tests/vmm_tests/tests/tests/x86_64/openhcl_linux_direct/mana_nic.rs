@@ -3,12 +3,43 @@
 
 //! MANA integration tests for x86_64 Linux direct boot with OpenHCL.
 
+use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::openvmm::ManaTestControl;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
 use vmm_test_macros::openvmm_test;
+
+fn configure_mana_vf_diagnostics(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> PetriVmBuilder<OpenVmmPetriBackend> {
+    config
+        .with_vtl0_kernel_command_line(
+            "rcupdate.rcu_cpu_stall_timeout=10 rcupdate.rcu_cpu_stall_cputime=1 mana.dyndbg=+p hv_netvsc.dyndbg=+p pci_hyperv.dyndbg=+p",
+        )
+        .with_host_log_levels(OpenvmmLogConfig::Custom(
+            [
+                (
+                    "OPENVMM_LOG".to_owned(),
+                    "debug,gdma=trace,vpci=trace,hv1_emulator::message_queues=trace".to_owned(),
+                ),
+                ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
+            ]
+            .into(),
+        ))
+        .with_openhcl_log_levels(OpenvmmLogConfig::Custom(
+            [
+                (
+                    "OPENVMM_LOG".to_owned(),
+                    "debug,underhill_core::emuplat::netvsp=trace,netvsp=trace,mana_driver=trace"
+                        .to_owned(),
+                ),
+                ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
+            ]
+            .into(),
+        ))
+}
 
 /// Validates that the nic can get an IP address via consomme's DHCP implementation.
 /// Validates ICMP by testing that the nic can ping consomme's IP address.
@@ -79,7 +110,7 @@ async fn mana_nic_vf_reconfig(
     revoke_vtl0_vf: bool,
 ) -> Result<(), anyhow::Error> {
     let (mana, mana_config) = ManaTestControl::new();
-    let config = config
+    let config = configure_mana_vf_diagnostics(config)
         .with_vmbus_redirect(true)
         .modify_backend(move |b| b.with_nic_test_control(mana_config));
 
@@ -121,7 +152,7 @@ async fn mana_nic_vport_link_state(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     let (mana, mana_config) = ManaTestControl::new();
-    let config = config
+    let config = configure_mana_vf_diagnostics(config)
         .with_vmbus_redirect(true)
         .modify_backend(move |b| b.with_nic_test_control(mana_config));
 
