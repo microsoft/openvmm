@@ -119,6 +119,18 @@ pub enum LinuxDirectBootMode {
     Acpi,
 }
 
+/// Isolation-specific settings for Linux direct boot.
+#[derive(MeshPayload, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxIsolationConfig {
+    /// No isolation-specific loader configuration.
+    None,
+    /// AMD SEV-SNP loader configuration.
+    Snp {
+        /// Enables restricted interrupt injection in the SNP VMSA.
+        restricted_injection: bool,
+    },
+}
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -126,8 +138,7 @@ pub enum LoadMode {
         initrd: Option<File>,
         cmdline: String,
         enable_serial: bool,
-        /// Enables restricted interrupt injection in the SNP VMSA.
-        snp_restricted_injection: bool,
+        isolation: LinuxIsolationConfig,
         boot_mode: LinuxDirectBootMode,
     },
     Uefi {

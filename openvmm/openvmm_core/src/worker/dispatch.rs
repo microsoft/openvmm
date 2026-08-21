@@ -3161,7 +3161,7 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
-                snp_restricted_injection,
+                isolation,
                 boot_mode,
             } => {
                 match boot_mode {
@@ -3170,14 +3170,39 @@ impl LoadedVmInner {
                     }
                     openvmm_defs::config::LinuxDirectBootMode::Acpi => {}
                 }
+                let isolation = match (isolation, self.hypervisor_cfg.with_isolation) {
+                    (
+                        openvmm_defs::config::LinuxIsolationConfig::Snp {
+                            restricted_injection,
+                        },
+                        Some(openvmm_defs::config::IsolationType::Snp),
+                    ) => super::vm_loaders::linux::KernelIsolationConfig::Snp(
+                        super::vm_loaders::linux::SnpKernelConfig {
+                            c_bit: self
+                                .partition
+                                .caps()
+                                .snp_c_bit
+                                .context("missing SNP C-bit CPUID information")?,
+                            restricted_injection,
+                        },
+                    ),
+                    (
+                        openvmm_defs::config::LinuxIsolationConfig::None,
+                        Some(openvmm_defs::config::IsolationType::Snp),
+                    ) => anyhow::bail!("SNP partition requires SNP Linux loader configuration"),
+                    (openvmm_defs::config::LinuxIsolationConfig::Snp { .. }, _) => {
+                        anyhow::bail!("SNP Linux loader configuration requires SNP isolation")
+                    }
+                    (openvmm_defs::config::LinuxIsolationConfig::None, _) => {
+                        super::vm_loaders::linux::KernelIsolationConfig::None
+                    }
+                };
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: self.hypervisor_cfg.with_isolation,
-                    snp_c_bit: self.partition.caps().snp_c_bit,
-                    snp_restricted_injection,
+                    isolation,
                 };
                 super::vm_loaders::linux::load_linux_x86(
                     &kernel_config,
@@ -3212,19 +3237,20 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
-                snp_restricted_injection: _,
+                isolation,
                 boot_mode,
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
 
+                if isolation != openvmm_defs::config::LinuxIsolationConfig::None {
+                    anyhow::bail!("SNP Linux loader configuration is not supported on aarch64");
+                }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: self.hypervisor_cfg.with_isolation,
-                    snp_c_bit: None,
-                    snp_restricted_injection: false,
+                    isolation: super::vm_loaders::linux::KernelIsolationConfig::None,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
