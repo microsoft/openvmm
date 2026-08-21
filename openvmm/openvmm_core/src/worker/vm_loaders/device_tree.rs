@@ -1003,6 +1003,11 @@ fn uart_resources(uart: UartId) -> (u64, u64, u32) {
 }
 
 fn shared_mmio_address(address: u64, shared_gpa_bit: Option<u64>) -> u64 {
+    // TODO: Linux arm64_rsi_is_protected() queries RIPAS for addresses that
+    // already contain the Realm shared IPA bit, causing RSI_ERROR_INPUT and a
+    // WARN_ON during device probing. Keep the shared address because earlycon
+    // maps the DT address directly. Revisit once Linux handles shared IPAs
+    // without issuing an RSI_IPA_STATE_GET request.
     shared_gpa_bit.map_or(address, |bit| address | bit)
 }
 
