@@ -815,7 +815,7 @@ impl StorageBuilder {
                             if let LoadMode::Uefi {
                                 enable_vpci_boot: vpci_boot,
                                 ..
-                            } = &mut config.load_mode
+                            } = config.load_mode.boot_recipe_mut()
                             {
                                 *vpci_boot = true;
                             }
@@ -845,7 +845,7 @@ impl StorageBuilder {
             if let LoadMode::Uefi {
                 enable_vpci_boot: vpci_boot,
                 ..
-            } = &mut config.load_mode
+            } = config.load_mode.boot_recipe_mut()
             {
                 *vpci_boot = true;
             }

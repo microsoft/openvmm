@@ -38,6 +38,7 @@ use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::VmmQuirks;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
+use crate::vm::PetriVmBuilder;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -148,6 +149,79 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         }
 
         config.run().await
+    }
+}
+
+/// Reusable OpenVMM configuration for tests that launch the same VM recipe in
+/// multiple worker processes.
+pub struct OpenVmmRelaunchConfig {
+    builder: PetriVmBuilder<OpenVmmPetriBackend>,
+    _prepared_initrd_guard: Option<TempPath>,
+}
+
+impl PetriVmBuilder<OpenVmmPetriBackend> {
+    /// Prepare this configuration for launching multiple OpenVMM workers with
+    /// the same VM recipe.
+    pub fn prepare_openvmm_relaunch(self) -> anyhow::Result<OpenVmmRelaunchConfig> {
+        anyhow::ensure!(
+            self.modify_vmm_config.is_none(),
+            "OpenVMM relaunch configurations do not support modify_backend"
+        );
+
+        let mut builder = self.add_boot_disk().add_agent_disks();
+        let prepared_initrd_guard =
+            if builder.uses_pipette_as_init() && builder.prebuilt_initrd.is_none() {
+                let initrd = builder.prepare_initrd()?;
+                builder.prebuilt_initrd = Some(initrd.to_path_buf());
+                Some(initrd)
+            } else {
+                None
+            };
+
+        Ok(OpenVmmRelaunchConfig {
+            builder,
+            _prepared_initrd_guard: prepared_initrd_guard,
+        })
+    }
+}
+
+impl OpenVmmRelaunchConfig {
+    async fn config(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+    ) -> anyhow::Result<PetriVmConfigOpenVmm> {
+        Ok(PetriVmConfigOpenVmm::new(
+            &self.builder.backend.openvmm_path,
+            self.builder.config.clone(),
+            &self.builder.resources,
+            self.builder.properties(),
+        )
+        .await?
+        .with_memory_backing_file(memory_backing_file))
+    }
+
+    /// Launch a new worker using this VM recipe and file-backed guest memory.
+    pub async fn launch(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+    ) -> anyhow::Result<PetriVmOpenVmm> {
+        let (vm, _) = self.config(memory_backing_file).await?.run_core().await?;
+        Ok(vm)
+    }
+
+    /// Launch a new worker using this VM recipe and restore its state from
+    /// serialized snapshot bytes.
+    pub async fn restore(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+        saved_state: &[u8],
+    ) -> anyhow::Result<PetriVmOpenVmm> {
+        let (vm, _) = self
+            .config(memory_backing_file)
+            .await?
+            .run_restore(saved_state)
+            .await?;
+        Ok(vm)
     }
 }
 

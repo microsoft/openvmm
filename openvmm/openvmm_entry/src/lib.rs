@@ -1139,7 +1139,6 @@ async fn vm_config_from_command_line(
         || serial3_cfg.is_some();
 
     let has_com3 = serial2_cfg.is_some();
-
     let mut chipset = VmManifestBuilder::new(
         if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
             BaseChipsetType::EnlightenedLinuxDirect
@@ -1243,12 +1242,7 @@ async fn vm_config_from_command_line(
         .build()
         .context("failed to build chipset configuration")?;
 
-    if opt.restore_snapshot.is_some() {
-        // Snapshot restore: skip firmware loading entirely. Device state and
-        // memory come from the snapshot directory.
-        load_mode = LoadMode::None;
-        with_hv = true;
-    } else if let Some(path) = &opt.igvm {
+    if let Some(path) = &opt.igvm {
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
@@ -2039,6 +2033,9 @@ async fn vm_config_from_command_line(
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
+    if opt.restore_snapshot.is_some() {
+        cfg.load_mode = cfg.load_mode.into_restore();
+    }
     resources.serial_driver = Some(serial_driver);
     validate_snp_config(&cfg)?;
     Ok((cfg, resources))
@@ -2049,7 +2046,7 @@ fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if !matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+    if !cfg.load_mode.is_linux_direct_platform() {
         anyhow::bail!("SNP isolation currently only supports Linux direct boot");
     }
     if cfg.hypervisor.with_hv {
