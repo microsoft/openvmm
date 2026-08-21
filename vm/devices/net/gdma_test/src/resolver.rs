@@ -6,9 +6,9 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use gdma::GdmaDevice;
-use gdma::HwcEqInjector;
 use gdma::resolver::Error;
 use gdma::resolver::resolve_vports;
+use gdma::test_helpers::hwc_eq_injector;
 use gdma_defs::EqeDataReconfig;
 use gdma_defs::EqeVfReset;
 use gdma_defs::GDMA_EQE_HWC_RECONFIG_DATA;
@@ -30,7 +30,7 @@ use zerocopy::IntoBytes;
 ///
 /// Creates a standard GDMA device and spawns a detached background task that
 /// translates test requests into EQEs injected directly into the HWC EQ via
-/// [`gdma::HwcEqInjector`], which wraps the device's shared queue state.
+/// [`gdma::test_helpers::hwc_eq_injector`].
 pub struct GdmaTestDeviceResolver;
 
 declare_static_async_resolver! {
@@ -101,7 +101,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaTestDeviceHandle> for GdmaTes
             input.register_mmio,
         );
 
-        let injector: HwcEqInjector = device.hwc_eq_injector();
+        let inject_eqe = hwc_eq_injector(&device);
         let mut request_recv = resource.request_recv;
 
         input
@@ -111,7 +111,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaTestDeviceHandle> for GdmaTes
                 while let Some(rpc) = request_recv.next().await {
                     rpc.handle(async |request| {
                         let request = encode_request(request);
-                        injector.post(request.eqe_type(), request.data())
+                        inject_eqe(request.eqe_type(), request.data())
                     })
                     .await;
                 }
