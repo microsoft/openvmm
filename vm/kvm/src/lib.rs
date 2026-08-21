@@ -28,6 +28,7 @@ mod ioctl {
     use kvm_bindings::*;
     #[cfg(target_arch = "x86_64")]
     use nix::errno::Errno;
+    use nix::ioctl_none_bad;
     use nix::ioctl_read;
     use nix::ioctl_readwrite;
     use nix::ioctl_readwrite_bad;
@@ -98,6 +99,11 @@ mod ioctl {
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_debugregs, KVMIO, 0xa2, kvm_debugregs);
     ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, kvm_enable_cap);
+    // Shares its number with KVM_ENABLE_CAP above; the two differ in the direction and
+    // size bits of the request code, so both spellings of 0xa3 are distinct requests.
+    // This one carries no payload at all and returns the rate as its result.
+    #[cfg(target_arch = "x86_64")]
+    ioctl_none_bad!(kvm_get_tsc_khz, request_code_none!(KVMIO, 0xa3));
     #[cfg(target_arch = "x86_64")]
     ioctl_read!(kvm_get_xsave, KVMIO, 0xa4, kvm_xsave);
     #[cfg(target_arch = "x86_64")]
@@ -127,6 +133,11 @@ mod ioctl {
     );
     ioctl_readwrite!(kvm_create_device, KVMIO, 0xe0, kvm_create_device);
     ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, kvm_device_attr);
+    // KVM_GET_DEVICE_ATTR and KVM_HAS_DEVICE_ATTR are both _IOW: the struct itself is
+    // input either way, and a get returns its value through the user pointer the struct's
+    // `addr` field carries, not through the struct.
+    ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, kvm_device_attr);
+    ioctl_write_ptr!(kvm_has_device_attr, KVMIO, 0xe3, kvm_device_attr);
     ioctl_readwrite!(kvm_create_guest_memfd, KVMIO, 0xd4, kvm_create_guest_memfd);
     #[cfg(target_arch = "aarch64")]
     ioctl_readwrite_bad!(
@@ -366,6 +377,14 @@ pub enum Error {
     CreateDevice(#[source] nix::Error),
     #[error("SetDeviceAttr")]
     SetDeviceAttr(#[source] nix::Error),
+    #[error("GetTscKhz")]
+    GetTscKhz(#[source] nix::Error),
+    #[error("kvm reported an implausible guest tsc rate of {0} kHz")]
+    ImplausibleTscKhz(libc::c_int),
+    #[error("GetTscOffset")]
+    GetTscOffset(#[source] nix::Error),
+    #[error("SetTscOffset")]
+    SetTscOffset(#[source] nix::Error),
     #[error("CheckExtension")]
     CheckExtension(#[source] nix::Error),
     #[error("GetClock")]
@@ -1176,14 +1195,24 @@ impl Partition {
         Ok(())
     }
 
-    /// Gets the current kvmclock value.
-    pub fn get_clock_ns(&self) -> Result<kvm_clock_data> {
+    /// Gets the current kvmclock value, with the host counter it was sampled at when the
+    /// kernel reports one.
+    pub fn get_clock(&self) -> Result<ClockReading> {
         let mut clock = kvm_clock_data::default();
         // SAFETY: Calling IOCTL as documented, with no special requirements.
         unsafe {
             ioctl::kvm_get_clock(self.vm.as_raw_fd(), &mut clock).map_err(Error::GetClock)?;
         }
-        Ok(clock)
+        Ok(ClockReading {
+            clock_ns: clock.clock,
+            // Both of these are only meaningful when the kernel says so: the fields are
+            // left at whatever the caller passed in on the branch that does not sample
+            // them, so a caller reading one unconditionally gets a zero that looks like a
+            // reading. Decoded here rather than at the call sites so the flag bit and the
+            // field it guards stay together.
+            host_tsc: (clock.flags & KVM_CLOCK_HOST_TSC != 0).then_some(clock.host_tsc),
+            realtime_ns: (clock.flags & KVM_CLOCK_REALTIME != 0).then_some(clock.realtime),
+        })
     }
 
     /// Sets the current kvmclock value.
@@ -1198,6 +1227,25 @@ impl Partition {
         }
         Ok(())
     }
+}
+
+/// A reading of the partition's kvmclock.
+#[derive(Debug, Copy, Clone)]
+pub struct ClockReading {
+    /// The kvmclock, in nanoseconds.
+    pub clock_ns: u64,
+    /// The host timestamp counter at the instant the kernel sampled `clock_ns`, when the
+    /// kernel reported the pair.
+    ///
+    /// Present only on the masterclock branch of the kernel's clock read (`__get_kvmclock`
+    /// sets `KVM_CLOCK_HOST_TSC` there and computes `clock` from exactly this counter
+    /// value), which is why it is an option rather than a field: a caller that needs the
+    /// two as one observation has to know when the kernel is offering that and when it
+    /// has to measure the pairing itself.
+    pub host_tsc: Option<u64>,
+    /// Host wall-clock time at the same instant, in nanoseconds since the epoch, when the
+    /// kernel reported it.
+    pub realtime_ns: Option<u64>,
 }
 
 /// An in-kernel emulated device.
@@ -1724,6 +1772,99 @@ impl<'a> Processor<'a> {
                 },
             )
         }
+    }
+
+    /// Returns the rate the guest's timestamp counter runs at, in kHz.
+    ///
+    /// Asked of the vcpu rather than the vm so that the answer is the rate the GUEST
+    /// sees: where the hardware supports TSC scaling the two differ, and every conversion
+    /// between the counter and a wall-clock duration has to use the guest's rate to come
+    /// out right.
+    ///
+    /// A rate that is not strictly positive is an error rather than a cast. The ioctl
+    /// hands back a signed int, so a negative one widens into a rate near 4.29e9 kHz and
+    /// a zero divides or multiplies every conversion down to nothing; both give a caller
+    /// a number it cannot tell from a real one, and a scaling derived from either is
+    /// worse than no scaling at all. Returning the raw value keeps which of the two it
+    /// was in the error.
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_khz(&self) -> Result<u32> {
+        // SAFETY: the request carries no payload; the rate comes back as the result.
+        let khz = unsafe {
+            ioctl::kvm_get_tsc_khz(self.get().vcpu.as_raw_fd()).map_err(Error::GetTscKhz)?
+        };
+        if khz <= 0 {
+            return Err(Error::ImplausibleTscKhz(khz));
+        }
+        Ok(khz as u32)
+    }
+
+    /// Returns whether the kernel implements the vcpu TSC-offset attribute.
+    ///
+    /// ANY error is read as "not implemented", not only the `ENXIO` that a kernel older
+    /// than the attribute's 5.16 debut answers with in practice. Reporting the reason
+    /// would be reporting it to nobody: the probe exists so that the write is not
+    /// attempted blind, and no error it can return leaves a caller anything to do except
+    /// go without the attribute, so a `Result` would hand back a decision that cannot be
+    /// made differently. Callers that only want the TSC to move can degrade quietly on
+    /// `false`.
+    #[cfg(target_arch = "x86_64")]
+    pub fn supports_tsc_offset(&self) -> bool {
+        // SAFETY: KVM_HAS_DEVICE_ATTR reads only the struct; `addr` is unused for it.
+        unsafe {
+            ioctl::kvm_has_device_attr(
+                self.get().vcpu.as_raw_fd(),
+                &kvm_device_attr {
+                    group: KVM_VCPU_TSC_CTRL,
+                    attr: KVM_VCPU_TSC_OFFSET as u64,
+                    addr: 0,
+                    flags: 0,
+                },
+            )
+            .is_ok()
+        }
+    }
+
+    /// Returns the vcpu's current L1 TSC offset.
+    ///
+    /// The guest reads `scale(host TSC) + offset`, so this is the whole of what stands
+    /// between the host counter and the guest's view of it.
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_offset(&self) -> Result<u64> {
+        let mut offset = 0u64;
+        // SAFETY: the attribute's payload is a single u64, which is what `offset` is,
+        // and it outlives the call.
+        unsafe {
+            ioctl::kvm_get_device_attr(
+                self.get().vcpu.as_raw_fd(),
+                &kvm_device_attr {
+                    group: KVM_VCPU_TSC_CTRL,
+                    attr: KVM_VCPU_TSC_OFFSET as u64,
+                    addr: std::ptr::from_mut(&mut offset) as u64,
+                    flags: 0,
+                },
+            )
+            .map_err(Error::GetTscOffset)?;
+        }
+        Ok(offset)
+    }
+
+    /// Sets the vcpu's L1 TSC offset, so that the guest reads
+    /// `scale(host TSC) + offset`.
+    ///
+    /// Unlike a write to `MSR_IA32_TSC`, this lands verbatim: the MSR path infers what
+    /// userspace "meant" and substitutes the partition's current offset for a write of
+    /// zero, which makes a write of zero the one value it cannot deliver. Write the same
+    /// offset to every vcpu, in one pass, so they stay in a single TSC-matching
+    /// generation.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_tsc_offset(&self, offset: u64) -> Result<()> {
+        // SAFETY: the attribute's payload is a single u64, which is what `offset` is.
+        unsafe {
+            self.set_device_attr(KVM_VCPU_TSC_CTRL, KVM_VCPU_TSC_OFFSET, &offset, 0)
+                .map_err(Error::SetTscOffset)?;
+        }
+        Ok(())
     }
 
     pub fn runner(&self) -> VpRunner<'a> {
