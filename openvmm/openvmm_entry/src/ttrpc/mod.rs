@@ -738,7 +738,7 @@ impl VmService {
                         initrd,
                         cmdline: boot.kernel_cmdline,
                         enable_serial: true,
-                        snp_restricted_injection: false,
+                        isolation: openvmm_defs::config::LinuxIsolationConfig::None,
                         boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
                     },
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
