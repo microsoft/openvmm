@@ -539,7 +539,12 @@ impl VmManifestBuilder {
                 }
             }
             BaseChipsetType::EnlightenedLinuxDirect => {
-                result.chipset = BaseChipsetManifest::empty();
+                result.chipset = BaseChipsetManifest {
+                    // HACK: The current SNP direct-boot repro kernel requires
+                    // a CMOS RTC. Remove or gate this when it no longer does.
+                    with_generic_cmos_rtc: is_x86,
+                    ..BaseChipsetManifest::empty()
+                };
                 result.capabilities.with_ioapic = is_x86;
                 result.capabilities.with_psp = self.psp;
                 if is_x86 {

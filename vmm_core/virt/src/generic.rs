@@ -3,6 +3,7 @@
 
 mod partition_memory_map;
 
+pub use partition_memory_map::PartitionHostAccess;
 pub use partition_memory_map::PartitionMemoryMap;
 pub use vm_topology::processor::VpIndex;
 
@@ -409,8 +410,20 @@ pub struct HvConfig {
     pub vtl2: Option<Vtl2Config>,
 }
 
+/// Source of the initial virtual processor state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialVpStateSource {
+    /// The partition unit writes the loader-produced register state.
+    Registers,
+    /// The state is supplied through an imported isolation context.
+    ImportedContext,
+}
+
 /// Methods for manipulating a VM partition.
 pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
+    /// Returns the source of the initial virtual processor state.
+    fn initial_vp_state_source(&self) -> InitialVpStateSource;
+
     /// Returns a trait object for initial page imports during the initial start
     /// flow.
     fn supports_initial_page_acceptance(
@@ -784,6 +797,11 @@ impl From<VpStopped> for VpHaltReason {
 pub trait PartitionMemoryMapper {
     /// Returns a memory mapper for the partition backing `vtl`.
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap>;
+
+    /// Returns an interface for acquiring host access to memory.
+    fn host_access(&self) -> Option<Arc<dyn PartitionHostAccess>> {
+        None
+    }
 }
 
 pub trait Hv1 {

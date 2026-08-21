@@ -41,6 +41,8 @@ pub enum SnpError {
     TooManyCpuidEntries(usize),
     #[error("SNP launch is already in progress")]
     LaunchInProgress,
+    #[error("SNP launch is already complete")]
+    LaunchAlreadyFinished,
     #[error("SNP launch previously failed")]
     LaunchFailed,
     #[error("invalid SNP BSP state: {0}")]
@@ -81,7 +83,7 @@ impl KvmPartitionInner {
             match *state {
                 SnpLaunchState::NotStarted => *state = SnpLaunchState::Started,
                 SnpLaunchState::Started => return Err(SnpError::LaunchInProgress),
-                SnpLaunchState::Finished => return Ok(()),
+                SnpLaunchState::Finished => return Err(SnpError::LaunchAlreadyFinished),
                 SnpLaunchState::Failed => return Err(SnpError::LaunchFailed),
             }
         }

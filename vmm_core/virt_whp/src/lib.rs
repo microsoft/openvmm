@@ -603,6 +603,10 @@ impl virt::AcceptInitialPages for WhpPartition {
 }
 
 impl virt::Partition for WhpPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
         if whp::capabilities::reset_partition() {
             Some(self)

@@ -1400,7 +1400,12 @@ impl InitializedVm {
         let partition = Arc::new(partition);
 
         memory_manager
-            .attach_partition(Vtl::Vtl0, &partition.memory_mapper(Vtl::Vtl0), None)
+            .attach_partition(
+                Vtl::Vtl0,
+                &partition.memory_mapper(Vtl::Vtl0),
+                None,
+                partition.host_access(),
+            )
             .await
             .context("failed to attach memory to the partition")?;
 
@@ -1410,6 +1415,7 @@ impl InitializedVm {
                     Vtl::Vtl2,
                     &partition.memory_mapper(Vtl::Vtl2),
                     vtl2_memory_process,
+                    None,
                 )
                 .await
                 .context("failed to attach memory to VTL2")?;
@@ -3224,6 +3230,7 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
+                isolation,
                 boot_mode,
             } => {
                 match boot_mode {
@@ -3232,13 +3239,39 @@ impl LoadedVmInner {
                     }
                     openvmm_defs::config::LinuxDirectBootMode::Acpi => {}
                 }
+                let isolation = match (isolation, self.hypervisor_cfg.with_isolation) {
+                    (
+                        openvmm_defs::config::LinuxIsolationConfig::Snp {
+                            restricted_injection,
+                        },
+                        Some(openvmm_defs::config::IsolationType::Snp),
+                    ) => super::vm_loaders::linux::KernelIsolationConfig::Snp(
+                        super::vm_loaders::linux::SnpKernelConfig {
+                            c_bit: self
+                                .partition
+                                .caps()
+                                .snp_c_bit
+                                .context("missing SNP C-bit CPUID information")?,
+                            restricted_injection,
+                        },
+                    ),
+                    (
+                        openvmm_defs::config::LinuxIsolationConfig::None,
+                        Some(openvmm_defs::config::IsolationType::Snp),
+                    ) => anyhow::bail!("SNP partition requires SNP Linux loader configuration"),
+                    (openvmm_defs::config::LinuxIsolationConfig::Snp { .. }, _) => {
+                        anyhow::bail!("SNP Linux loader configuration requires SNP isolation")
+                    }
+                    (openvmm_defs::config::LinuxIsolationConfig::None, _) => {
+                        super::vm_loaders::linux::KernelIsolationConfig::None
+                    }
+                };
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: self.hypervisor_cfg.with_isolation,
-                    snp_c_bit: self.partition.caps().snp_c_bit,
+                    isolation,
                 };
                 super::vm_loaders::linux::load_linux_x86(
                     &kernel_config,
@@ -3273,17 +3306,20 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
+                isolation,
                 boot_mode,
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
 
+                if isolation != openvmm_defs::config::LinuxIsolationConfig::None {
+                    anyhow::bail!("SNP Linux loader configuration is not supported on aarch64");
+                }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: self.hypervisor_cfg.with_isolation,
-                    snp_c_bit: None,
+                    isolation: super::vm_loaders::linux::KernelIsolationConfig::None,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -4069,6 +4105,11 @@ impl LoadedVm {
     }
 
     async fn reset(&mut self, reload_firmware: bool) -> anyhow::Result<()> {
+        // TODO: Support reset in isolated partitions.
+        if reload_firmware && self.inner.hypervisor_cfg.with_isolation.is_some() {
+            anyhow::bail!("firmware reload reset is not supported for isolated VMs");
+        }
+
         let resume = self.pause().await;
 
         self.state_units.reset().await?;

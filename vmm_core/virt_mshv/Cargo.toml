@@ -24,6 +24,7 @@ x86defs.workspace = true
 pal.workspace = true
 pal_event.workspace = true
 inspect.workspace = true
+memory_range.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true
@@ -36,6 +37,10 @@ signal-hook.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

@@ -36,6 +36,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use virt::InitialPageImport;
 use virt::InitialRegs;
+use virt::InitialVpStateSource;
 #[cfg(feature = "dump")]
 use virt::VpIndex;
 use vm_topology::processor::ProcessorTopology;
@@ -55,6 +56,9 @@ pub struct PartitionUnit {
 /// Trait with the minimal methods needed to run the partition.
 #[async_trait]
 pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore {
+    /// Returns the source of the initial virtual processor state.
+    fn initial_vp_state_source(&self) -> InitialVpStateSource;
+
     /// Resets the partition.
     fn reset(&mut self) -> anyhow::Result<()>;
 
@@ -479,10 +483,15 @@ impl PartitionUnitRunner {
             self.needs_reset = false;
         }
 
-        self.vp_set
-            .set_initial_regs(vtl, state.clone(), vp_set::RegistersToSet::All)
-            .await
-            .map_err(InitialRegError::RegisterSet)?;
+        match self.partition.initial_vp_state_source() {
+            InitialVpStateSource::Registers => {
+                self.vp_set
+                    .set_initial_regs(vtl, state.clone(), vp_set::RegistersToSet::All)
+                    .await
+                    .map_err(InitialRegError::RegisterSet)?;
+            }
+            InitialVpStateSource::ImportedContext => {}
+        }
 
         self.initial_regs = Some(state);
         Ok(())
