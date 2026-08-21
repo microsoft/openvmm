@@ -169,7 +169,6 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmgs::Vmgs;
 use vmgs_broker::spawn_vmgs_broker;
-use vmgs_format::VMGS_HIBERNATION_FIRMWARE_MIN_SIZE;
 use vmgs_format::VmgsProvisioner;
 use vmgs_format::VmgsProvisioningMarker;
 use vmgs_format::VmgsProvisioningReason;
@@ -3855,7 +3854,7 @@ async fn new_underhill_vm(
                         CVM_ALLOWED,
                         firmware_size,
                         device_size,
-                        minimum_size = VMGS_HIBERNATION_FIRMWARE_MIN_SIZE,
+                        minimum_size = hibernate::VMGS_HIBERNATION_FIRMWARE_MIN_SIZE,
                         "VMGS backing store too small to preserve UEFI firmware across hibernation"
                     );
                 }

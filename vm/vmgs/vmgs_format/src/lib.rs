@@ -70,12 +70,6 @@ impl Display for FileId {
     }
 }
 
-/// The minimum overall VMGS backing-store size, in bytes, required before a UEFI
-/// firmware image snapshot ([`FileId::HIBERNATION_FIRMWARE`]) is stored for
-/// hibernation. This is a minimum overall size so that the firmware image fits
-/// alongside the other VMGS files, not just a tight fit of the image itself.
-pub const VMGS_HIBERNATION_FIRMWARE_MIN_SIZE: u64 = 32 * 1024 * 1024;
-
 pub const VMGS_VERSION_2_0: u32 = 0x00020000;
 pub const VMGS_VERSION_3_0: u32 = 0x00030000;
 

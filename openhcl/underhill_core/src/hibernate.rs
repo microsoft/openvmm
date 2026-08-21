@@ -13,7 +13,6 @@ use memory_range::MemoryRange;
 use std::fmt;
 use vmgs_broker::VmgsBrokerError;
 use vmgs_broker::VmgsClientError;
-use vmgs_format::VMGS_HIBERNATION_FIRMWARE_MIN_SIZE;
 
 /// The hibernate marker recorded in [`vmgs::FileId::HIBERNATION_TOKEN`],
 /// decoupled from its on-disk encoding.
@@ -158,6 +157,12 @@ pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<Token> 
         }
     }
 }
+
+/// The minimum overall VMGS backing-store size, in bytes, required before a UEFI
+/// firmware image snapshot ([`vmgs::FileId::HIBERNATION_FIRMWARE`]) is stored
+/// for hibernation. A minimum overall size so the image fits alongside the other
+/// VMGS files, not just a tight fit of the image itself.
+pub const VMGS_HIBERNATION_FIRMWARE_MIN_SIZE: u64 = 32 * 1024 * 1024;
 
 /// The result of attempting to store a firmware image into VMGS for hibernation.
 pub enum StoreFirmwareOutcome {
