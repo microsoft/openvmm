@@ -3701,6 +3701,10 @@ async fn new_underhill_vm(
     // firmware is overloaded (via the GET `LoadFirmware` host request) with the
     // hibernated version before it runs; on success that version becomes the
     // recorded token.
+    //
+    // Set when a hibernated firmware image is restored from VMGS on resume, so
+    // the cold-boot snapshot below can skip re-storing an image already in VMGS.
+    let mut firmware_loaded_from_vmgs = false;
     let current_hibernate_token = if !dps.general.hibernation_enabled
         || !matches!(firmware_type, FirmwareType::Uefi)
     {
@@ -3730,66 +3734,88 @@ async fn new_underhill_vm(
         // Consume any token, valid or corrupt, so it is not re-read next boot.
         hibernate::delete_token(vmgs_client).await;
         match resume_token {
-            Some(token @ hibernate::Token::Hibernated { .. })
-                if token != hibernate::Token::CURRENT =>
-            {
-                if !dps
-                    .general
-                    .management_vtl_features
-                    .load_firmware_supported()
+            // Clean prior power-off (NotHibernated) or no/unreadable token
+            // (None): a normal cold boot on the current firmware; no load needed.
+            Some(hibernate::Token::NotHibernated) | None => Some(hibernate::Token::CURRENT),
+            Some(token) => {
+                // Prefer restoring the exact firmware image snapshotted to VMGS
+                // at the original cold boot: it reproduces the hibernated
+                // firmware bit-for-bit without needing host support. Only if no
+                // usable image is stored do we fall back to the version-based
+                // logic (host overload, then the current firmware).
+                if restore_vtl0_firmware_from_vmgs(gm.vtl0(), &mut measured_vtl0_info, vmgs_client)
+                    .await
                 {
-                    // The host must advertise LoadFirmware support; without it
-                    // we can't overload, so resume on the current firmware.
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        resume = %token,
-                        "host does not support firmware overload (LoadFirmware); \
-                         resuming with the current firmware version despite a \
-                         hibernation token mismatch"
-                    );
-                    Some(hibernate::Token::CURRENT)
-                } else {
+                    firmware_loaded_from_vmgs = true;
                     tracing::info!(
                         CVM_ALLOWED,
                         resume = %token,
-                        current = %hibernate::Token::CURRENT,
-                        "hibernation resume under a different firmware version; requesting firmware overload"
+                        "restored the hibernated UEFI firmware image from VMGS"
                     );
-                    // If the overload succeeds VTL0 now runs the hibernated
-                    // version, so record it; otherwise fall back to the current one.
-                    if overload_vtl0_firmware(
-                        &get_client,
-                        u64::from(token),
-                        &mut measured_vtl0_info,
-                    )
-                    .await
-                    {
-                        Some(token)
-                    } else {
-                        Some(hibernate::Token::CURRENT)
+                    Some(token)
+                } else {
+                    match token {
+                        token @ hibernate::Token::Hibernated { .. }
+                            if token != hibernate::Token::CURRENT =>
+                        {
+                            if dps
+                                .general
+                                .management_vtl_features
+                                .load_firmware_supported()
+                            {
+                                tracing::info!(
+                                    CVM_ALLOWED,
+                                    resume = %token,
+                                    current = %hibernate::Token::CURRENT,
+                                    "hibernation resume under a different firmware version; requesting firmware overload"
+                                );
+                                // If the overload succeeds VTL0 now runs the
+                                // hibernated version, so record it; otherwise fall
+                                // back to the current one.
+                                if overload_vtl0_firmware(
+                                    &get_client,
+                                    u64::from(token),
+                                    &mut measured_vtl0_info,
+                                )
+                                .await
+                                {
+                                    Some(token)
+                                } else {
+                                    Some(hibernate::Token::CURRENT)
+                                }
+                            } else {
+                                tracing::warn!(
+                                    CVM_ALLOWED,
+                                    resume = %token,
+                                    "no stored firmware image and host does not support firmware \
+                                     overload (LoadFirmware); resuming with the current firmware \
+                                     version despite a hibernation token mismatch"
+                                );
+                                Some(hibernate::Token::CURRENT)
+                            }
+                        }
+                        hibernate::Token::Hibernated { .. } => {
+                            // The token matches the current firmware version.
+                            tracing::info!(
+                                CVM_ALLOWED,
+                                "hibernation resume under the current firmware version"
+                            );
+                            Some(hibernate::Token::CURRENT)
+                        }
+                        hibernate::Token::Other(raw) => {
+                            // An out-of-range/corrupt token value; ignore it.
+                            tracing::warn!(
+                                CVM_ALLOWED,
+                                raw,
+                                "ignoring unrecognized hibernate token; using the current firmware version"
+                            );
+                            Some(hibernate::Token::CURRENT)
+                        }
+                        // NotHibernated is handled by the outer arm.
+                        hibernate::Token::NotHibernated => Some(hibernate::Token::CURRENT),
                     }
                 }
             }
-            Some(hibernate::Token::Hibernated { .. }) => {
-                // Guarded above: the token matches the current firmware version.
-                tracing::info!(
-                    CVM_ALLOWED,
-                    "hibernation resume under the current firmware version"
-                );
-                Some(hibernate::Token::CURRENT)
-            }
-            Some(hibernate::Token::Other(raw)) => {
-                // An out-of-range/corrupt token value; ignore it.
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    raw,
-                    "ignoring unrecognized hibernate token; using the current firmware version"
-                );
-                Some(hibernate::Token::CURRENT)
-            }
-            // Clean prior power-off, or no/unreadable token (e.g. first boot):
-            // a normal cold boot on the current firmware.
-            Some(hibernate::Token::NotHibernated) | None => Some(hibernate::Token::CURRENT),
         }
     } else {
         // Hibernation was requested but there is no VMGS to persist the token,
@@ -3800,6 +3826,48 @@ async fn new_underhill_vm(
         );
         None
     };
+
+    // Snapshot the pristine UEFI firmware image now present in VTL0 memory into
+    // VMGS so a future hibernation resume can restore it bit-for-bit on a host
+    // that cannot overload the firmware itself. This runs after any firmware
+    // overload/restore above (so it captures the image the guest will actually
+    // run) and before `write_uefi_config` (in `load_firmware`) layers the
+    // dynamic config on top, regardless of the resolved token. Skipped for a
+    // servicing restore (its firmware already has dynamic config applied and is
+    // no longer pristine) and when the image was just restored from VMGS (it is
+    // already saved there).
+    if dps.general.hibernation_enabled && !is_restoring && !firmware_loaded_from_vmgs {
+        if let (Some(uefi_info), Some(vmgs_client)) = (
+            measured_vtl0_info
+                .as_ref()
+                .and_then(|info| info.supports_uefi.as_ref()),
+            vmgs_client.as_ref(),
+        ) {
+            match hibernate::store_firmware(gm.vtl0(), uefi_info.firmware_memory, vmgs_client).await
+            {
+                Ok(hibernate::StoreFirmwareOutcome::Stored) => {}
+                Ok(hibernate::StoreFirmwareOutcome::InsufficientSpace {
+                    firmware_size,
+                    device_size,
+                }) => {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        firmware_size,
+                        device_size,
+                        minimum_size = hibernate::VMGS_HIBERNATION_FIRMWARE_MIN_SIZE,
+                        "VMGS backing store too small to preserve UEFI firmware across hibernation"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "failed to store UEFI firmware image for hibernation"
+                    );
+                }
+            }
+        }
+    }
 
     // A Some token means hibernation is enabled and populated; pair it with a
     // VMGS client to drive token persistence at halt time.
@@ -4131,6 +4199,9 @@ async fn halt_task(
                             hibernate::Token::NotHibernated,
                         )
                         .await;
+                        // Drop any stored firmware image so a later boot does not
+                        // restore a stale one.
+                        hibernate::delete_firmware(&hibernate_halt.vmgs_client).await;
                     }
                     get_client.send_power_off()
                 }
@@ -4142,6 +4213,9 @@ async fn halt_task(
                             hibernate::Token::NotHibernated,
                         )
                         .await;
+                        // Drop any stored firmware image so a later boot does not
+                        // restore a stale one.
+                        hibernate::delete_firmware(&hibernate_halt.vmgs_client).await;
                     }
                     get_client.send_reset()
                 }
@@ -4172,6 +4246,112 @@ async fn wait_for_flush_logs(control_send: &Arc<Mutex<Option<mesh::Sender<Contro
         .map(|send| send.call(ControlRequest::FlushLogs, ctx));
     if let Some(call) = call {
         call.await.ok();
+    }
+}
+
+/// Restores a previously stored UEFI firmware image from VMGS back into VTL0
+/// guest memory when resuming a hibernated guest, so the firmware binary matches
+/// what was present when the guest hibernated. Preferred over a host firmware
+/// overload because it needs no host support. On x86_64 the restored image's SEC
+/// entry point may differ from the cold-boot image's, so VTL0's RIP is rebased
+/// to it (`load_firmware` later applies the updated measured UEFI context).
+/// Returns `true` if an image was restored.
+///
+/// This must be called *before* `write_uefi_config`, so that the current dynamic
+/// config is layered on top of the restored firmware image. Best-effort: on any
+/// failure the current firmware is left in place and `false` is returned.
+async fn restore_vtl0_firmware_from_vmgs(
+    gm: &GuestMemory,
+    measured_vtl0_info: &mut Option<MeasuredVtl0Info>,
+    vmgs_client: &vmgs_broker::VmgsClient,
+) -> bool {
+    let Some(firmware_memory) = measured_vtl0_info
+        .as_ref()
+        .and_then(|info| info.supports_uefi.as_ref())
+        .map(|uefi_info| uefi_info.firmware_memory)
+    else {
+        // Not a UEFI boot; nothing to restore.
+        return false;
+    };
+
+    // `read_firmware` requires the stored image to be exactly `region_len`, so
+    // no separate size check is needed here.
+    let region_len = firmware_memory.len();
+    let Some(firmware) = hibernate::read_firmware(vmgs_client, region_len).await else {
+        // No usable stored image; leave the current firmware in place.
+        return false;
+    };
+
+    // On x86_64, compute the restored image's SEC entry point before touching
+    // guest memory so a malformed image is a clean fallback (nothing written).
+    // The image is untrusted (may be corrupt): the entry point must land inside
+    // the firmware region and must not overflow.
+    #[cfg(guest_arch = "x86_64")]
+    let new_rip = {
+        let Some(new_rip) =
+            loader::uefi::get_sec_entry_point_offset(&firmware).and_then(|offset| {
+                firmware_memory
+                    .start()
+                    .checked_add(offset)
+                    .filter(|_| offset < region_len)
+            })
+        else {
+            tracing::warn!(
+                CVM_ALLOWED,
+                "stored UEFI firmware image has no valid SEC entry point; not restoring"
+            );
+            return false;
+        };
+        new_rip
+    };
+
+    if let Err(err) = gm.write_at(firmware_memory.start(), &firmware) {
+        tracing::error!(
+            CVM_ALLOWED,
+            error = &err as &dyn std::error::Error,
+            "failed to write restored UEFI firmware image into VTL0 memory"
+        );
+        return false;
+    }
+
+    // Rebase VTL0's RIP to the restored image's entry point; `load_firmware`
+    // applies the updated measured UEFI context to VTL0.
+    #[cfg(guest_arch = "x86_64")]
+    set_vtl0_uefi_rip(measured_vtl0_info, new_rip);
+
+    tracing::info!(
+        CVM_ALLOWED,
+        size_bytes = region_len,
+        "restored UEFI firmware image from VMGS for hibernation resume"
+    );
+    true
+}
+
+/// Rebase VTL0's initial RIP in the measured UEFI context to `new_rip`, so
+/// `load_firmware` starts VTL0 at the entry point of a firmware image swapped in
+/// at runtime (host overload or VMGS restore). A no-op if there is no measured
+/// UEFI context or RIP register.
+#[cfg(guest_arch = "x86_64")]
+fn set_vtl0_uefi_rip(measured_vtl0_info: &mut Option<MeasuredVtl0Info>, new_rip: u64) {
+    let Some(uefi_info) = measured_vtl0_info
+        .as_mut()
+        .and_then(|info| info.supports_uefi.as_mut())
+    else {
+        return;
+    };
+    let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
+    for reg in registers {
+        if let loader::importer::X86Register::Rip(rip) = reg {
+            if *rip != new_rip {
+                tracing::info!(
+                    CVM_ALLOWED,
+                    old_rip = *rip,
+                    new_rip,
+                    "rebased VTL0 RIP for hibernation firmware swap"
+                );
+                *rip = new_rip;
+            }
+        }
     }
 }
 
@@ -4211,13 +4391,17 @@ async fn overload_vtl0_firmware(
     // so point the measured UEFI context's RIP at the host-computed offset;
     // load_firmware later applies it to VTL0.
     #[cfg(guest_arch = "x86_64")]
-    if let Some(uefi_info) = measured_vtl0_info
-        .as_mut()
-        .and_then(|info| info.supports_uefi.as_mut())
-    {
-        if offset != 0 {
-            let base = uefi_info.firmware_memory.start();
-            let len = uefi_info.firmware_memory.len();
+    if offset != 0 {
+        if let Some((base, len)) = measured_vtl0_info
+            .as_ref()
+            .and_then(|info| info.supports_uefi.as_ref())
+            .map(|uefi_info| {
+                (
+                    uefi_info.firmware_memory.start(),
+                    uefi_info.firmware_memory.len(),
+                )
+            })
+        {
             // `offset` is host-provided (untrusted): the entry point must land
             // inside the measured firmware region and must not overflow.
             let Some(new_rip) = base.checked_add(offset).filter(|_| offset < len) else {
@@ -4230,20 +4414,7 @@ async fn overload_vtl0_firmware(
                 );
                 return false;
             };
-            let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
-            for reg in registers {
-                if let loader::importer::X86Register::Rip(rip) = reg {
-                    if *rip != new_rip {
-                        tracing::info!(
-                            CVM_ALLOWED,
-                            old_rip = *rip,
-                            new_rip,
-                            "rebased VTL0 RIP for overloaded firmware"
-                        );
-                        *rip = new_rip;
-                    }
-                }
-            }
+            set_vtl0_uefi_rip(measured_vtl0_info, new_rip);
         }
     }
     #[cfg(guest_arch = "aarch64")]

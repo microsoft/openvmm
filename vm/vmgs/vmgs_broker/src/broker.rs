@@ -56,6 +56,9 @@ pub enum VmgsBrokerRpc {
     WriteFileEncrypted(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
     DeleteFile(Rpc<BrokerFileId, Result<(), VmgsBrokerError>>),
+    // N.B. `MeshPayload` numbers fields by declaration order; append new RPCs
+    // here so existing ones keep their wire numbers across revisions.
+    DeviceSize(Rpc<(), u64>),
 }
 
 pub struct VmgsBrokerTask {
@@ -84,6 +87,7 @@ impl VmgsBrokerTask {
             }
             VmgsBrokerRpc::GetFileInfo(rpc) => rpc
                 .handle_sync(|file_id| self.vmgs.get_file_info(file_id.into()).map_err(Into::into)),
+            VmgsBrokerRpc::DeviceSize(rpc) => rpc.handle_sync(|()| self.vmgs.device_size()),
             VmgsBrokerRpc::ReadFile(rpc) => {
                 rpc.handle(async |file_id| {
                     self.vmgs

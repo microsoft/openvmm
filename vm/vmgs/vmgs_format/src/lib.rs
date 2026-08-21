@@ -58,6 +58,7 @@ open_enum! {
         PROVENANCE_DOC = 16,
         TPM_NVRAM_BACKUP = 17,
         PROVISIONING_MARKER = 18,
+        HIBERNATION_FIRMWARE = 20,
 
         EXTENDED_FILE_TABLE = 63,
     }
