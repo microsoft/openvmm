@@ -751,8 +751,8 @@ enum ErrorInner {
     #[error("VP register page is unavailable")]
     MissingRegisterPage,
     #[cfg(guest_arch = "x86_64")]
-    #[error("failed to map the SNP GHCB page")]
-    MapGhcbPage(#[source] io::Error),
+    #[error(transparent)]
+    Snp(#[from] arch::SnpError),
     #[error("vtl2 not supported")]
     Vtl2NotSupported,
     #[error("isolation not supported")]
@@ -767,51 +767,6 @@ enum ErrorInner {
     GetPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]
     SetPartitionProperty(#[source] KernelError),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("SNP launch is already in progress")]
-    SnpLaunchInProgress,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("SNP launch is already complete")]
-    SnpLaunchAlreadyFinished,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("SNP launch previously failed")]
-    SnpLaunchFailed,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("unsupported SNP initial page import type: {0:?}")]
-    UnsupportedSnpPageImportType(virt::InitialPageImportType),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("invalid SNP initial page range")]
-    InvalidSnpPageRange,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("missing SNP VMSA import")]
-    MissingSnpVmsa,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("multiple SNP VMSA imports")]
-    MultipleSnpVmsa,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("missing SNP CPUID import")]
-    MissingSnpCpuid,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("multiple SNP CPUID imports")]
-    MultipleSnpCpuid,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("too many SNP CPUID entries: {0}")]
-    TooManySnpCpuidEntries(usize),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("failed to query SNP CPUID")]
-    SnpCpuid(#[source] KernelError),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("failed to write SNP CPUID page")]
-    SnpGuestMemory(#[source] guestmem::GuestMemoryError),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("failed to map SNP guest memory")]
-    SnpMapGuestMemory(#[source] KernelError),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("failed to import SNP pages")]
-    ImportIsolatedPages(#[source] KernelError),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("failed to complete SNP isolated import")]
-    CompleteIsolatedImport(#[source] KernelError),
     #[error("register access error")]
     Register(#[source] KernelError),
     #[cfg(guest_arch = "x86_64")]
