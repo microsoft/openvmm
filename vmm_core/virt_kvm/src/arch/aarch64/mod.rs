@@ -885,6 +885,10 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
 }
 
 impl virt::Partition for KvmPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(
         &self,
     ) -> Option<&dyn virt::ResetPartition<Error = <Self as virt::Hv1>::Error>> {

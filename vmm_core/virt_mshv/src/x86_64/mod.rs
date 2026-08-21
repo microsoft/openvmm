@@ -522,8 +522,8 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 }
 
 impl virt::Partition for MshvPartition {
-    fn initial_regs_are_imported(&self) -> bool {
-        self.inner.isolation.initial_regs_are_imported()
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        self.inner.isolation.initial_vp_state_source()
     }
 
     fn supports_initial_page_acceptance(

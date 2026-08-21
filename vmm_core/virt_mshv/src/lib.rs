@@ -268,11 +268,11 @@ impl MshvIsolationState {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn initial_regs_are_imported(&self) -> bool {
-        if matches!(self, Self::Snp(_)) {
-            return true;
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        match self {
+            Self::None => virt::InitialVpStateSource::Registers,
+            Self::Snp(_) => virt::InitialVpStateSource::ImportedContext,
         }
-        false
     }
 
     #[cfg(guest_arch = "x86_64")]

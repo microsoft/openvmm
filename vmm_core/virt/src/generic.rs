@@ -512,13 +512,19 @@ pub struct HvConfig {
     pub vtl2: Option<Vtl2Config>,
 }
 
+/// Source of the initial virtual processor state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialVpStateSource {
+    /// The partition unit writes the loader-produced register state.
+    Registers,
+    /// The state is supplied through an imported isolation context.
+    ImportedContext,
+}
+
 /// Methods for manipulating a VM partition.
 pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
-    /// Returns whether initial VP state is supplied through an imported
-    /// isolation context instead of register writes.
-    fn initial_regs_are_imported(&self) -> bool {
-        false
-    }
+    /// Returns the source of the initial virtual processor state.
+    fn initial_vp_state_source(&self) -> InitialVpStateSource;
 
     /// Returns a trait object for initial page imports during the initial start
     /// flow.
