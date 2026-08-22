@@ -167,11 +167,12 @@ fn stringify_parameters(
     parameters
         .into_iter()
         .map(|(name, value)| {
+            let name = name.trim();
             anyhow::ensure!(
-                !name.trim().is_empty(),
+                !name.is_empty(),
                 "{context} contains an empty parameter name"
             );
-            Ok((name.clone(), scalar_to_string(&name, &value)?))
+            Ok((name.to_owned(), scalar_to_string(name, &value)?))
         })
         .collect()
 }
@@ -317,6 +318,24 @@ mod tests {
         .unwrap_err();
 
         assert!(format!("{error:#}").contains("must be a string, number, or boolean"));
+    }
+
+    #[test]
+    fn trims_parameter_names() -> anyhow::Result<()> {
+        let configs = selected_configs(
+            HostCapacity {
+                logical_processors: 16,
+                available_memory_bytes: 32 * GIB,
+            },
+            &ConfigSelection {
+                vm_sizes_json: None,
+                parameters_json: Some(r#"{" CpuCount ":6}"#.into()),
+            },
+        )?;
+
+        assert_eq!(configs[0].parameters["CpuCount"], "6");
+        assert!(!configs[0].parameters.contains_key(" CpuCount "));
+        Ok(())
     }
 
     #[test]

@@ -212,13 +212,13 @@ impl IntoPipeline for CheckinGatesCli {
         let mut vmm_tests_artifacts_linux_aarch64_tcg =
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxAarch64Tcg::default();
 
-        // Temporarily run VMM.Perf in all GitHub pipelines while validating the
-        // standalone jobs. Normal PR execution can be removed after validation.
+        // Run VMM.Perf after merge, or before merge through the opt-in release
+        // PR pipeline.
         let enable_vmm_perf = matches!(
             (backend_hint, config),
             (
                 PipelineBackendHint::Github,
-                PipelineConfig::Ci | PipelineConfig::Pr | PipelineConfig::PrRelease
+                PipelineConfig::Ci | PipelineConfig::PrRelease
             )
         );
         let mut use_vmm_perf_runner_gnu_x64 = None;
