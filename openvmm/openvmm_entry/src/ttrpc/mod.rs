@@ -54,6 +54,7 @@ use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
 use net_backend_resources::mac_address::MacAddress;
 use netvsp_resources::NetvspHandle;
+use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -104,6 +105,80 @@ use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
+
+#[cfg(guest_arch = "aarch64")]
+fn parse_aarch64_topology_overrides(
+    cfg: &vmservice::ProcessorAarch64Config,
+) -> Result<ArchTopologyConfig, anyhow::Error> {
+    use openvmm_defs::config as dc;
+    use vmservice::processor_aarch64_config as pc;
+
+    let gic_config = match &cfg.gic_config {
+        Some(pc::GicConfig::GicV2(v2)) => Some(dc::GicConfig::V2(Some(dc::GicV2Config {
+            gic_distributor_base: v2
+                .gic_distributor_base
+                .unwrap_or(dc::DEFAULT_GIC_DISTRIBUTOR_BASE),
+            cpu_interface_base: v2
+                .cpu_interface_base
+                .unwrap_or(dc::DEFAULT_GIC_REDISTRIBUTORS_BASE),
+        }))),
+        Some(pc::GicConfig::GicV3(v3)) => Some(dc::GicConfig::V3(Some(dc::GicV3Config {
+            gic_distributor_base: v3
+                .gic_distributor_base
+                .unwrap_or(dc::DEFAULT_GIC_DISTRIBUTOR_BASE),
+            gic_redistributors_base: v3
+                .gic_redistributors_base
+                .unwrap_or(dc::DEFAULT_GIC_REDISTRIBUTORS_BASE),
+        }))),
+        None => None,
+    };
+
+    let pmu_gsiv = match &cfg.pmu_gsiv_config {
+        Some(pc::PmuGsivConfig::GsivValue(gsiv)) => dc::PmuGsivConfig::Gsiv(*gsiv),
+        Some(pc::PmuGsivConfig::Disabled(_)) => dc::PmuGsivConfig::Disabled,
+        None => dc::PmuGsivConfig::Platform,
+    };
+
+    let gic_msi = match &cfg.gic_msi_config {
+        Some(pc::GicMsiConfig::MsiIts(_)) => dc::GicMsiConfig::Its,
+        Some(pc::GicMsiConfig::MsiV2m(v2m)) => dc::GicMsiConfig::V2m {
+            spi_count: v2m.spi_count,
+        },
+        None => dc::GicMsiConfig::Auto,
+    };
+
+    Ok(ArchTopologyConfig::Aarch64(dc::Aarch64TopologyConfig {
+        gic_config,
+        pmu_gsiv,
+        gic_msi,
+    }))
+}
+
+fn parse_arch_topology_overrides(
+    processor_cfg: Option<&vmservice::ProcessorConfig>,
+) -> Result<Option<ArchTopologyConfig>, anyhow::Error> {
+    use vmservice::processor_config::ArchConfig as ProtoArchConfig;
+
+    match processor_cfg.and_then(|cfg| cfg.arch_config.as_ref()) {
+        #[cfg(not(guest_arch = "x86_64"))]
+        Some(ProtoArchConfig::X86(_)) => {
+            bail!("x86 topology overrides not supported on current arch")
+        }
+        #[cfg(guest_arch = "x86_64")]
+        Some(ProtoArchConfig::X86(_x86cfg)) => {
+            Ok(None) // No overrides on type currently.
+        }
+        #[cfg(not(guest_arch = "aarch64"))]
+        Some(ProtoArchConfig::Aarch64(_)) => {
+            bail!("aarch64 topology overrides not supported on current arch")
+        }
+        #[cfg(guest_arch = "aarch64")]
+        Some(ProtoArchConfig::Aarch64(aarch64)) => {
+            Ok(Some(parse_aarch64_topology_overrides(aarch64)?))
+        }
+        None => Ok(None),
+    }
+}
 
 #[derive(mesh::MeshPayload)]
 pub struct Parameters {
@@ -876,6 +951,7 @@ impl VmService {
             .as_ref()
             .map(|c| c.processor_count)
             .unwrap_or(1);
+        let arch = parse_arch_topology_overrides(req_config.processor_config.as_ref())?;
 
         // Build the PCIe topology (root complexes, switches, and the devices
         // attached behind their ports).
@@ -902,7 +978,7 @@ impl VmService {
                 proc_count: config_proc_count,
                 vps_per_socket: None,
                 enable_smt: None,
-                arch: Default::default(),
+                arch,
             },
             hypervisor: HypervisorConfig {
                 with_hv: true,

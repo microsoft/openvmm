@@ -118,6 +118,77 @@ message ProcessorConfig {
     uint32 processor_count = 1;
     uint32 processor_weight = 2;
     uint32 processor_limit = 3;
+
+    // Optional arch specific topology overrides.
+    oneof arch_config {
+        ProcessorX86Config x86 = 4;
+        ProcessorAarch64Config aarch64 = 5;
+    }
+}
+
+// Reflects the overrides of the `X86TopologyConfig`.
+message ProcessorX86Config {
+}
+
+// Reflects the overrides of the `Aarch64TopologyConfig`.
+message ProcessorAarch64Config {
+    // GIC configuration for the VM.
+    oneof gic_config {
+        GicV2Config gic_v2 = 1;
+        GicV3Config gic_v3 = 2;
+    }
+
+    // Override the hypervisor's platform GSIV value for the PMU.
+    //
+    // Optional.
+    oneof pmu_gsiv_config {
+        // Use the specified GSIV value for the PMU.
+        uint32 gsiv_value = 3;
+        // Disable the PMU.
+        PmuGsivDisabled disabled = 4;
+    }
+
+    // MSI controller selection for aarch64 PCIe interrupt delivery.
+    //
+    // Optional.
+    //
+    // If left unset, automatically select the best available MSI controller:
+    // - `GicMsiItsConfig` when the hypervisor supports it,
+    // - otherwise `GicMsiV2mConfig`.
+    oneof gic_msi_config {
+        // Force GICv3 ITS for MSI delivery via LPIs.
+        GicMsiItsConfig msi_its = 5;
+        // Force GICv2m for MSI delivery via SPIs.
+        GicMsiV2mConfig msi_v2m = 6;
+    }
+}
+
+// GICv2-specific address configuration.
+message GicV2Config {
+    optional uint64 gic_distributor_base = 1;
+    optional uint64 cpu_interface_base = 2;
+}
+
+// GICv3-specific address configuration.
+message GicV3Config {
+    optional uint64 gic_distributor_base = 1;
+    optional uint64 gic_redistributors_base = 2;
+}
+
+// Represents the `PmuGsivConfig::Disabled` via field presence.
+message PmuGsivDisabled {}
+
+// GICv3-specific MSI delivery overrides.
+message GicMsiItsConfig {}
+
+// GICv2m-specific MSI delivery overrides.
+message GicMsiV2mConfig {
+    // Number of SPIs reserved for PCIe MSIs.
+    //
+    // Optional.
+    //
+    // When unset, will use a platform-specific default.
+    optional uint32 spi_count = 1;
 }
 
 message DevicesConfig {
