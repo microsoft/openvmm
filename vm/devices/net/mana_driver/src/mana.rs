@@ -176,8 +176,9 @@ impl<T: DeviceBacking> ManaDevice<T> {
         Ok(device)
     }
 
-    /// Saves the device's state for servicing
-    pub async fn save(self) -> (anyhow::Result<ManaDeviceSavedState>, T) {
+    /// Saves the device's state for servicing,
+    /// unless the device does not return state to save.
+    pub async fn save(self) -> (anyhow::Result<Option<ManaDeviceSavedState>>, T) {
         self.inspect_task.cancel().await;
         if let Some(hwc_task) = self.hwc_task {
             hwc_task.cancel().await;
@@ -187,16 +188,22 @@ impl<T: DeviceBacking> ManaDevice<T> {
             .expect("MANA device save failed, multiple references remain.");
         let mut driver = inner.gdma.into_inner();
 
-        if let Ok(saved_state) = driver.save().await {
-            let mana_saved_state = ManaDeviceSavedState { gdma: saved_state };
-
-            (Ok(mana_saved_state), driver.into_device())
-        } else {
-            tracing::error!("Failed to save MANA device state");
-            (
-                Err(anyhow::anyhow!("Failed to save MANA device state")),
-                driver.into_device(),
-            )
+        match driver.save().await {
+            Ok(Some(saved_state)) => {
+                let mana_saved_state = ManaDeviceSavedState { gdma: saved_state };
+                (Ok(Some(mana_saved_state)), driver.into_device())
+            }
+            Ok(None) => {
+                tracing::info!("MANA device save skipped");
+                (Ok(None), driver.into_device())
+            }
+            Err(err) => {
+                tracing::error!(
+                    err = err.as_ref() as &dyn std::error::Error,
+                    "Failed to save MANA device state"
+                );
+                (Err(err), driver.into_device())
+            }
         }
     }
 

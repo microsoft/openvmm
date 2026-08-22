@@ -529,20 +529,21 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
+    pub async fn save(&mut self) -> anyhow::Result<Option<GdmaDriverSavedState>> {
         if self.hwc_failure {
             anyhow::bail!("cannot save/restore after HWC failure");
         }
 
         if self.reset_request_pending.is_some() {
-            anyhow::bail!("cannot save/restore with HWC reset request pending");
+            tracing::info!("HWC reset request pending. Not returning any saved state.");
+            return Ok(None);
         }
 
         self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
 
-        Ok(GdmaDriverSavedState {
+        Ok(Some(GdmaDriverSavedState {
             mem: SavedMemoryState {
                 base_pfn: self.dma_buffer.pfns()[0],
                 len: self.dma_buffer.len(),
@@ -558,7 +559,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             num_msix: self.num_msix,
             min_queue_avail: self.min_queue_avail,
             link_toggle: self.link_toggle.clone(),
-        })
+        }))
     }
 
     pub fn init(device: &mut T) -> anyhow::Result<(<T as DeviceBacking>::Registers, RegMap)> {
