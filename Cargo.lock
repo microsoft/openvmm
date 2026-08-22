@@ -10663,6 +10663,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmm_perf"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs-err",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "test_with_tracing",
+ "tracing",
+ "tracing-subscriber",
+ "whp",
+]
+
+[[package]]
 name = "vmm_test_igvm_agent"
 version = "0.0.0"
 dependencies = [
