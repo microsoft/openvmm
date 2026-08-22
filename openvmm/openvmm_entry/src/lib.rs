@@ -1497,6 +1497,7 @@ async fn vm_config_from_command_line(
                         },
                     },
                     enable_battery: opt.battery,
+                    enable_hibernation: opt.hibernation,
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
@@ -1919,9 +1920,11 @@ async fn vm_config_from_command_line(
         );
     }
 
+    let hibernation_enabled = opt.hibernation;
     let mut cfg = Config {
         chipset,
         load_mode,
+        hibernation_enabled,
         floppy_disks,
         pcie_root_complexes,
         pcie_ecam_below_4gb: opt.pcie_ecam_below_4gb,

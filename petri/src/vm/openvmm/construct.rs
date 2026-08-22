@@ -119,6 +119,7 @@ impl PetriVmConfigOpenVmm {
             arch,
             host_log_levels,
             firmware,
+            hibernation_enabled,
             memory,
             proc_topology,
             vmgs,
@@ -146,6 +147,7 @@ impl PetriVmConfigOpenVmm {
         let setup = PetriVmConfigSetupCore {
             arch,
             firmware: &firmware,
+            hibernation_enabled,
             driver,
             logger: log_source,
             vmgs: &vmgs,
@@ -179,6 +181,7 @@ impl PetriVmConfigOpenVmm {
         );
 
         let mut load_mode = setup.load_firmware()?;
+        let hibernation_enabled = setup.hibernation_enabled;
 
         // If using pipette-as-init, replace the initrd with the pre-built
         // one that has pipette injected. run_core() guarantees that
@@ -640,6 +643,7 @@ impl PetriVmConfigOpenVmm {
         let config = Config {
             // Firmware
             load_mode,
+            hibernation_enabled,
             firmware_event_send: Some(firmware_event_send),
 
             // CPU and RAM
@@ -773,6 +777,7 @@ impl PetriVmConfigOpenVmm {
 struct PetriVmConfigSetupCore<'a> {
     arch: MachineArch,
     firmware: &'a Firmware,
+    hibernation_enabled: bool,
     driver: &'a DefaultDriver,
     logger: &'a PetriLogSource,
     vmgs: &'a PetriVmgsResource,
@@ -1182,6 +1187,7 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
+            enable_hibernation: self.hibernation_enabled,
             no_persistent_secrets: self.tpm_config.as_ref().is_some_and(|c| c.no_persistent_secrets),
             igvm_attest_test_config: None,
             test_gsp_by_id,

@@ -128,6 +128,8 @@ function New-CustomVM
 
         [bool] $VMBusMessageRedirection = $false,
 
+        [bool] $EnableHibernation = $false,
+
         [string] $FirmwareFile = $null,
 
         [string] $FirmwareParameters = $null,
@@ -233,6 +235,7 @@ function New-CustomVM
         GuestStateIsolationMode    = $GuestStateIsolationMode
         VMBusMessageRedirection    = $VMBusMessageRedirection
         SecureBootEnabled          = $SecureBootEnabled
+        EnableHibernation          = $EnableHibernation
         VirtualNumaEnabled         = $false
         UserSnapshotType           = 2 #disable
     }

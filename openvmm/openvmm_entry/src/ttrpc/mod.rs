@@ -885,9 +885,11 @@ impl VmService {
             BuiltPcieTopology::default()
         };
 
+        let hibernation_enabled = matches!(load_mode, LoadMode::Uefi { .. });
         let mut config = Config {
             // TODO: devices, other stuff
             load_mode,
+            hibernation_enabled,
             ide_disks: vec![],
             floppy_disks: vec![],
             pcie_root_complexes: pcie.root_complexes,

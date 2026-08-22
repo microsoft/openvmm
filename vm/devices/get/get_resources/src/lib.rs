@@ -87,6 +87,8 @@ pub mod ged {
         pub secure_boot_template: GuestSecureBootTemplateType,
         /// Enable battery.
         pub enable_battery: bool,
+        /// Enable hibernation.
+        pub enable_hibernation: bool,
         /// Suppress attestation and disable TPM state persistence.
         pub no_persistent_secrets: bool,
         /// Test configuration for IGVM Attest message.

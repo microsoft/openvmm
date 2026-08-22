@@ -186,6 +186,7 @@ impl Manifest {
     fn from_config(config: Config) -> Self {
         Self {
             load_mode: config.load_mode,
+            hibernation_enabled: config.hibernation_enabled,
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
@@ -230,6 +231,7 @@ impl Manifest {
 #[derive(MeshPayload)]
 pub struct Manifest {
     load_mode: LoadMode,
+    hibernation_enabled: bool,
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
@@ -803,6 +805,7 @@ struct LoadedVmInner {
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
 
     load_mode: LoadMode,
+    hibernation_enabled: bool,
     igvm_file: Option<IgvmFile>,
     next_igvm_file: Option<IgvmFile>,
     _vmgs_task: Option<Task<()>>,
@@ -1659,7 +1662,7 @@ impl InitializedVm {
                             chipset_high_mmio: chipset_mmio.high,
                             srat,
 
-                            hibernation_enabled: false,
+                            hibernation_enabled: cfg.hibernation_enabled,
                             initial_generation_id: {
                                 let mut generation_id = [0; 16];
                                 getrandom::fill(&mut generation_id).expect("rng failure");
@@ -3089,6 +3092,7 @@ impl InitializedVm {
                 chipset_capabilities: cfg.chipset_capabilities,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
+                hibernation_enabled: cfg.hibernation_enabled,
                 virtio_mmio_region,
                 virtio_mmio_irq,
                 chipset_mmio,
@@ -3391,6 +3395,7 @@ impl LoadedVmInner {
                     vmbus: enable_vmbus,
                     force_dma_bounce,
                     hv: enable_hv,
+                    hibernation: self.hibernation_enabled,
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
@@ -4054,6 +4059,7 @@ impl LoadedVm {
 
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
+            hibernation_enabled: self.inner.hibernation_enabled,
             floppy_disks: vec![],            // TODO
             ide_disks: vec![],               // TODO
             pcie_root_complexes: vec![],     // TODO

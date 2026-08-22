@@ -231,6 +231,8 @@ pub struct PetriVmConfig {
     pub host_log_levels: Option<OpenvmmLogConfig>,
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
+    /// Whether to enable guest hibernation support.
+    pub hibernation_enabled: bool,
     /// The amount of memory, in bytes, to assign to the VM
     pub memory: MemoryConfig,
     /// The processor topology for the VM
@@ -458,6 +460,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
+                hibernation_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -539,6 +542,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
+                hibernation_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -1526,6 +1530,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .openhcl_config_mut()
             .expect("VMBus redirection is only supported for OpenHCL firmware.")
             .vmbus_redirect = enable;
+        self
+    }
+
+    /// Enable guest hibernation support.
+    ///
+    /// Applies to any firmware type: for OpenHCL this sets the DPS
+    /// `enable_hibernation` flag; for OpenVMM UEFI/PCAT firmware it enables the
+    /// firmware's hibernation support.
+    pub fn with_hibernation_enabled(mut self, enable: bool) -> Self {
+        self.config.hibernation_enabled = enable;
         self
     }
 
