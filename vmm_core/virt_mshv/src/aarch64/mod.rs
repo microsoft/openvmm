@@ -605,6 +605,9 @@ impl MshvProcessor<'_> {
                     hvdef::HvArm64ResetType::REBOOT => {
                         return Err(VpHaltReason::Reset);
                     }
+                    hvdef::HvArm64ResetType::HIBERNATE => {
+                        return Err(VpHaltReason::Hibernate);
+                    }
                     _ => {
                         tracelimit::warn_ratelimited!(
                             reset_type = ?info.reset_type,

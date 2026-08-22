@@ -3,7 +3,7 @@
 
 //! Requests a platform hibernation from the guest.
 
-// UNSAFETY: Raw port I/O / SMC needed to request an ACPI/PSCI power transition.
+// UNSAFETY: Raw port I/O / HVC needed to request an ACPI/PSCI power transition.
 #![expect(unsafe_code)]
 
 /// Request hibernation from the platform and do not return.
@@ -30,11 +30,12 @@ pub fn hibernate() -> ! {
 
     #[cfg(target_arch = "aarch64")]
     // SAFETY: PSCI SYSTEM_OFF2 (0x8400_0015) with HIBERNATE_OFF (1) requests
-    // hibernation and does not return. x0/x1 are marked clobbered (and flags are
-    // not preserved) because an SMC may modify them if it unexpectedly returns.
+    // hibernation and does not return. The PSCI conduit is HVC (the platform
+    // advertises PSCI_USE_HVC); x0/x1 are marked clobbered (and flags are not
+    // preserved) because the call may modify them if it unexpectedly returns.
     unsafe {
         core::arch::asm!(
-            "smc #0",
+            "hvc #0",
             inlateout("x0") 0x8400_0015u64 => _,
             inlateout("x1") 1u64 => _,
             options(nomem, nostack),
