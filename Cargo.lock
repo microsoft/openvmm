@@ -5795,6 +5795,7 @@ dependencies = [
  "vmswitch",
  "vpci",
  "watchdog_core",
+ "x86defs",
  "zerocopy",
 ]
 

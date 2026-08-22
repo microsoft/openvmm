@@ -108,6 +108,22 @@ describes the source definitions.
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
+* `--igvm <FILE>`: Boot from an IGVM file.
+* `--igvm-personality <uefi|linux-direct>`: Select the chipset and
+  device shape for an IGVM boot without VTL2. This option is required with
+  `--igvm` unless `--vtl2` is present; there is no default for non-VTL2
+  boots. The personality does not select the isolation platform. Use
+  `--isolation` separately when required by the IGVM.
+
+  The `uefi` personality uses the Gen2 device shape, but firmware is loaded
+  from the IGVM. It does not select the normal external-UEFI load path. The
+  `linux-direct` personality enables Hyper-V enlightenments only when `--hv`
+  is also specified. The UEFI personality requires Hyper-V enlightenments and
+  fails explicitly on backend and isolation combinations that cannot provide
+  them.
+
+  With `--igvm --vtl2`, omit `--igvm-personality`. OpenVMM retains the
+  existing HCL-host device shape and VBS-compatible IGVM behavior.
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
   named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.

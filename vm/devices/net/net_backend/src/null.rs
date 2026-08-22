@@ -95,6 +95,11 @@ impl Endpoint for NullEndpoint {
             indirection_table_size: 128,
         }
     }
+
+    async fn set_data_path_to_guest_vf(&self, use_vf: bool) -> anyhow::Result<()> {
+        anyhow::ensure!(!use_vf, "Null endpoint cannot switch to a guest VF");
+        Ok(())
+    }
 }
 
 /// A queue that never sends or receives data.

@@ -3985,26 +3985,7 @@ jobs:
       run: |-
         flowey.exe e 21 flowey_lib_common::system_info 0
         flowey.exe e 21 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 8
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 9
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 12
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 14
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 15
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 13
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 3
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 11
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 4
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 5
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 6
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 1
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 2
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 0
-        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe v 21 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
-        ${{ runner.temp }}
-        EOF
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 21 flowey_lib_common::download_gh_release 0
@@ -4039,6 +4020,37 @@ jobs:
       run: |-
         flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+        flowey.exe v 21 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        ${{ runner.temp }}
+        EOF
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 8
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 9
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 12
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 14
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 15
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 13
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 11
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 4
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 5
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 6
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 0
+        flowey.exe e 21 flowey_core::pipeline::artifact::resolve 7
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack mu_msvm package (x64)
+      run: flowey.exe e 21 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 21 flowey_lib_common::download_gh_cli 0
@@ -4077,17 +4089,10 @@ jobs:
         flowey.exe e 21 flowey_lib_common::download_gh_artifact 0
         flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-test-initrd archives
-      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-      shell: bash
-    - name: unpack openvmm-test-linux archives
-      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey.exe e 21 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey.exe e 21 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -4103,8 +4108,8 @@ jobs:
       shell: bash
     - name: install vmm tests deps (windows)
       run: |-
-        flowey.exe e 21 flowey_lib_hvlite::install_vmm_tests_deps 0
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 21 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: running vmm_test prep_steps
       run: flowey.exe e 21 flowey_lib_hvlite::run_prep_steps 0
@@ -4120,12 +4125,12 @@ jobs:
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 21 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       shell: bash
     - name: summarize failing vmm tests
       run: |-
-        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
         flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+        flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
         flowey.exe e 21 flowey_lib_common::publish_test_results 0
         flowey.exe e 21 flowey_lib_common::publish_test_results 1
         flowey.exe v 21 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -4153,7 +4158,7 @@ jobs:
       name: 'publish test results: x64-windows-intel-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      run: flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 21 flowey_lib_common::cache 3
@@ -4274,26 +4279,7 @@ jobs:
       run: |-
         flowey.exe e 22 flowey_lib_common::system_info 0
         flowey.exe e 22 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 13
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 3
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 11
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 4
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 5
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 6
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 1
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 2
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 0
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 8
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 9
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 12
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 14
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 15
-        flowey.exe v 22 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
-        ${{ runner.temp }}
-        EOF
-        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 22 flowey_lib_common::download_gh_release 0
@@ -4328,6 +4314,37 @@ jobs:
       run: |-
         flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+        flowey.exe v 22 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        ${{ runner.temp }}
+        EOF
+        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 14
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 15
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 13
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 11
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 4
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 5
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 6
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 0
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 7
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 8
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 9
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 12
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack mu_msvm package (x64)
+      run: flowey.exe e 22 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 22 flowey_lib_common::download_gh_cli 0
@@ -4366,17 +4383,10 @@ jobs:
         flowey.exe e 22 flowey_lib_common::download_gh_artifact 0
         flowey.exe e 22 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-test-initrd archives
-      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-      shell: bash
-    - name: unpack openvmm-test-linux archives
-      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey.exe e 22 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey.exe e 22 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -4392,7 +4402,7 @@ jobs:
       run: flowey.exe e 22 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
       shell: bash
     - name: install vmm tests deps (windows)
-      run: flowey.exe e 22 flowey_lib_hvlite::install_vmm_tests_deps 0
+      run: flowey.exe e 22 flowey_lib_hvlite::install_vmm_tests_external_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -4402,12 +4412,12 @@ jobs:
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 22 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: summarize failing vmm tests
       run: |-
-        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
         flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+        flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
         flowey.exe e 22 flowey_lib_common::publish_test_results 0
         flowey.exe e 22 flowey_lib_common::publish_test_results 1
         flowey.exe v 22 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -4435,7 +4445,7 @@ jobs:
       name: 'publish test results: x64-windows-intel-mi-secure-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+      run: flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 22 flowey_lib_common::cache 3
@@ -4558,26 +4568,7 @@ jobs:
       run: |-
         flowey.exe e 23 flowey_lib_common::system_info 0
         flowey.exe e 23 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 8
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 9
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 12
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 14
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 15
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 13
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 3
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 11
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 4
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 5
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 6
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 1
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 2
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 0
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe v 23 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
-        ${{ runner.temp }}
-        EOF
-        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 23 flowey_lib_common::download_gh_release 0
@@ -4612,6 +4603,37 @@ jobs:
       run: |-
         flowey.exe e 23 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 23 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+        flowey.exe v 23 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        ${{ runner.temp }}
+        EOF
+        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 8
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 9
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 12
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 14
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 15
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 13
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 11
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 4
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 5
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 6
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 0
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 7
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack mu_msvm package (x64)
+      run: flowey.exe e 23 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 23 flowey_lib_common::download_gh_cli 0
@@ -4650,17 +4672,10 @@ jobs:
         flowey.exe e 23 flowey_lib_common::download_gh_artifact 0
         flowey.exe e 23 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-test-initrd archives
-      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-      shell: bash
-    - name: unpack openvmm-test-linux archives
-      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey.exe e 23 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey.exe e 23 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -4676,8 +4691,8 @@ jobs:
       shell: bash
     - name: install vmm tests deps (windows)
       run: |-
-        flowey.exe e 23 flowey_lib_hvlite::install_vmm_tests_deps 0
-        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 23 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: running vmm_test prep_steps
       run: flowey.exe e 23 flowey_lib_hvlite::run_prep_steps 0
@@ -4693,12 +4708,12 @@ jobs:
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 23 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       shell: bash
     - name: summarize failing vmm tests
       run: |-
-        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
         flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
         flowey.exe e 23 flowey_lib_common::publish_test_results 0
         flowey.exe e 23 flowey_lib_common::publish_test_results 1
         flowey.exe v 23 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -4726,7 +4741,7 @@ jobs:
       name: 'publish test results: x64-windows-intel-tdx-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      run: flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 23 flowey_lib_common::cache 3
@@ -4847,26 +4862,7 @@ jobs:
       run: |-
         flowey.exe e 24 flowey_lib_common::system_info 0
         flowey.exe e 24 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 8
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 9
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 12
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 14
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 15
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 13
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 3
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 11
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 4
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 5
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 6
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 1
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 2
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 0
-        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe v 24 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
-        ${{ runner.temp }}
-        EOF
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 24 flowey_lib_common::download_gh_release 0
@@ -4901,6 +4897,37 @@ jobs:
       run: |-
         flowey.exe e 24 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 24 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+        flowey.exe v 24 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        ${{ runner.temp }}
+        EOF
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 8
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 9
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 12
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 14
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 15
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 13
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 11
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 4
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 5
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 6
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 0
+        flowey.exe e 24 flowey_core::pipeline::artifact::resolve 7
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack mu_msvm package (x64)
+      run: flowey.exe e 24 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 24 flowey_lib_common::download_gh_cli 0
@@ -4939,17 +4966,10 @@ jobs:
         flowey.exe e 24 flowey_lib_common::download_gh_artifact 0
         flowey.exe e 24 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-test-initrd archives
-      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-      shell: bash
-    - name: unpack openvmm-test-linux archives
-      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey.exe e 24 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey.exe e 24 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey.exe e 24 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -4965,8 +4985,8 @@ jobs:
       shell: bash
     - name: install vmm tests deps (windows)
       run: |-
-        flowey.exe e 24 flowey_lib_hvlite::install_vmm_tests_deps 0
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 24 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: running vmm_test prep_steps
       run: flowey.exe e 24 flowey_lib_hvlite::run_prep_steps 0
@@ -4982,12 +5002,12 @@ jobs:
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 24 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       shell: bash
     - name: summarize failing vmm tests
       run: |-
-        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
         flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+        flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
         flowey.exe e 24 flowey_lib_common::publish_test_results 0
         flowey.exe e 24 flowey_lib_common::publish_test_results 1
         flowey.exe v 24 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -5015,7 +5035,7 @@ jobs:
       name: 'publish test results: x64-windows-amd-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      run: flowey.exe e 24 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 24 flowey_lib_common::cache 3
@@ -5136,26 +5156,7 @@ jobs:
       run: |-
         flowey.exe e 25 flowey_lib_common::system_info 0
         flowey.exe e 25 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 8
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 9
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 12
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 14
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 15
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 13
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 3
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 11
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 4
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 5
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 6
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 1
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 2
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 0
-        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe v 25 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
-        ${{ runner.temp }}
-        EOF
-        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 25 flowey_lib_common::download_gh_release 0
@@ -5190,6 +5191,37 @@ jobs:
       run: |-
         flowey.exe e 25 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 25 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+        flowey.exe v 25 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        ${{ runner.temp }}
+        EOF
+        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 8
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 9
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 12
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 14
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 15
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 13
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 11
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 4
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 5
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 6
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 0
+        flowey.exe e 25 flowey_core::pipeline::artifact::resolve 7
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack mu_msvm package (x64)
+      run: flowey.exe e 25 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 25 flowey_lib_common::download_gh_cli 0
@@ -5228,17 +5260,10 @@ jobs:
         flowey.exe e 25 flowey_lib_common::download_gh_artifact 0
         flowey.exe e 25 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-test-initrd archives
-      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-      shell: bash
-    - name: unpack openvmm-test-linux archives
-      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey.exe e 25 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey.exe e 25 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey.exe e 25 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -5254,8 +5279,8 @@ jobs:
       shell: bash
     - name: install vmm tests deps (windows)
       run: |-
-        flowey.exe e 25 flowey_lib_hvlite::install_vmm_tests_deps 0
-        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 25 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: running vmm_test prep_steps
       run: flowey.exe e 25 flowey_lib_hvlite::run_prep_steps 0
@@ -5271,12 +5296,12 @@ jobs:
     - name: stopping test_igvm_agent_rpc_server
       run: |-
         flowey.exe e 25 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       shell: bash
     - name: summarize failing vmm tests
       run: |-
-        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
         flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+        flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
         flowey.exe e 25 flowey_lib_common::publish_test_results 0
         flowey.exe e 25 flowey_lib_common::publish_test_results 1
         flowey.exe v 25 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -5304,7 +5329,7 @@ jobs:
       name: 'publish test results: x64-windows-amd-snp-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      run: flowey.exe e 25 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 25 flowey_lib_common::cache 3
@@ -5416,18 +5441,7 @@ jobs:
       run: |-
         flowey e 26 flowey_lib_common::system_info 0
         flowey e 26 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey e 26 flowey_core::pipeline::artifact::resolve 8
-        flowey e 26 flowey_core::pipeline::artifact::resolve 2
-        flowey e 26 flowey_core::pipeline::artifact::resolve 3
-        flowey e 26 flowey_core::pipeline::artifact::resolve 4
-        flowey e 26 flowey_core::pipeline::artifact::resolve 1
-        flowey e 26 flowey_core::pipeline::artifact::resolve 0
-        flowey e 26 flowey_core::pipeline::artifact::resolve 7
-        flowey v 26 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
-        ${{ runner.temp }}
-        EOF
-        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 26 flowey_lib_common::install_dist_pkg 0
@@ -5468,6 +5482,29 @@ jobs:
       run: |-
         flowey e 26 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey e 26 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+        flowey v 26 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        ${{ runner.temp }}
+        EOF
+        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey e 26 flowey_core::pipeline::artifact::resolve 8
+        flowey e 26 flowey_core::pipeline::artifact::resolve 2
+        flowey e 26 flowey_core::pipeline::artifact::resolve 3
+        flowey e 26 flowey_core::pipeline::artifact::resolve 4
+        flowey e 26 flowey_core::pipeline::artifact::resolve 1
+        flowey e 26 flowey_core::pipeline::artifact::resolve 0
+        flowey e 26 flowey_core::pipeline::artifact::resolve 7
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack mu_msvm package (x64)
+      run: flowey e 26 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey e 26 flowey_lib_common::download_gh_cli 0
@@ -5506,17 +5543,10 @@ jobs:
         flowey e 26 flowey_lib_common::download_gh_artifact 0
         flowey e 26 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-test-initrd archives
-      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-      shell: bash
-    - name: unpack openvmm-test-linux archives
-      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey e 26 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey e 26 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey e 26 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -5532,8 +5562,8 @@ jobs:
       shell: bash
     - name: install vmm tests deps (linux)
       run: |-
-        flowey e 26 flowey_lib_hvlite::install_vmm_tests_deps 0
-        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey e 26 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: running vmm_test prep_steps
       run: flowey e 26 flowey_lib_hvlite::run_prep_steps 0
@@ -5542,12 +5572,12 @@ jobs:
       run: |-
         flowey e 26 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 26 flowey_lib_common::run_cargo_nextest_run 1
-        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       shell: bash
     - name: summarize failing vmm tests
       run: |-
-        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
         flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+        flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
         flowey e 26 flowey_lib_common::publish_test_results 0
         flowey e 26 flowey_lib_common::publish_test_results 1
         flowey v 26 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -5575,7 +5605,7 @@ jobs:
       name: 'publish test results: x64-linux-amd-kvm-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      run: flowey e 26 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 26 flowey_lib_common::cache 3
@@ -5735,18 +5765,7 @@ jobs:
       run: |-
         flowey e 27 flowey_lib_common::system_info 0
         flowey e 27 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey e 27 flowey_core::pipeline::artifact::resolve 8
-        flowey e 27 flowey_core::pipeline::artifact::resolve 4
-        flowey e 27 flowey_core::pipeline::artifact::resolve 1
-        flowey e 27 flowey_core::pipeline::artifact::resolve 2
-        flowey e 27 flowey_core::pipeline::artifact::resolve 3
-        flowey e 27 flowey_core::pipeline::artifact::resolve 0
-        flowey e 27 flowey_core::pipeline::artifact::resolve 7
-        flowey v 27 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
-        ${{ runner.temp }}
-        EOF
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: checking if packages need to be installed
       run: flowey e 27 flowey_lib_common::install_dist_pkg 0
@@ -5787,6 +5806,29 @@ jobs:
       run: |-
         flowey e 27 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey e 27 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+        flowey v 27 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        ${{ runner.temp }}
+        EOF
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey e 27 flowey_core::pipeline::artifact::resolve 8
+        flowey e 27 flowey_core::pipeline::artifact::resolve 4
+        flowey e 27 flowey_core::pipeline::artifact::resolve 1
+        flowey e 27 flowey_core::pipeline::artifact::resolve 2
+        flowey e 27 flowey_core::pipeline::artifact::resolve 3
+        flowey e 27 flowey_core::pipeline::artifact::resolve 0
+        flowey e 27 flowey_core::pipeline::artifact::resolve 7
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack mu_msvm package (x64)
+      run: flowey e 27 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey e 27 flowey_lib_common::download_gh_cli 0
@@ -5825,17 +5867,10 @@ jobs:
         flowey e 27 flowey_lib_common::download_gh_artifact 0
         flowey e 27 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-test-initrd archives
-      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-      shell: bash
-    - name: unpack openvmm-test-linux archives
-      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey e 27 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey e 27 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey e 27 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -5851,8 +5886,8 @@ jobs:
       shell: bash
     - name: install vmm tests deps (linux)
       run: |-
-        flowey e 27 flowey_lib_hvlite::install_vmm_tests_deps 0
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey e 27 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: running vmm_test prep_steps
       run: flowey e 27 flowey_lib_hvlite::run_prep_steps 0
@@ -5861,12 +5896,12 @@ jobs:
       run: |-
         flowey e 27 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 27 flowey_lib_common::run_cargo_nextest_run 1
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       shell: bash
     - name: summarize failing vmm tests
       run: |-
-        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
         flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+        flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
         flowey e 27 flowey_lib_common::publish_test_results 0
         flowey e 27 flowey_lib_common::publish_test_results 1
         flowey v 27 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -5894,7 +5929,7 @@ jobs:
       name: 'publish test results: x64-linux-intel-mshv-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      run: flowey e 27 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 27 flowey_lib_common::cache 3
@@ -6058,21 +6093,7 @@ jobs:
       run: |-
         flowey.exe e 28 flowey_lib_common::system_info 0
         flowey.exe e 28 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 5
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 6
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 8
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 9
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 3
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 1
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 2
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 0
-        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 4
-        flowey.exe v 28 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
-        ${{ runner.temp }}
-        EOF
-        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 28 flowey_lib_common::download_gh_release 0
@@ -6107,6 +6128,32 @@ jobs:
       run: |-
         flowey.exe e 28 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
         flowey.exe e 28 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+        flowey.exe v 28 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        ${{ runner.temp }}
+        EOF
+        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 5
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 6
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 7
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 8
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 9
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 0
+        flowey.exe e 28 flowey_core::pipeline::artifact::resolve 4
+      shell: bash
+    - name: unpack openvmm-test-initrd archives
+      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
+      shell: bash
+    - name: unpack openvmm-test-linux archives
+      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
+      shell: bash
+    - name: unpack mu_msvm package (aarch64)
+      run: flowey.exe e 28 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey.exe e 28 flowey_lib_common::download_gh_cli 0
@@ -6145,17 +6192,10 @@ jobs:
         flowey.exe e 28 flowey_lib_common::download_gh_artifact 0
         flowey.exe e 28 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack openvmm-test-initrd archives
-      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-      shell: bash
-    - name: unpack openvmm-test-linux archives
-      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
-      shell: bash
-    - name: unpack mu_msvm package (aarch64)
-      run: flowey.exe e 28 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey.exe e 28 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey.exe e 28 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
     - name: setting up vmm_tests env
       run: |-
@@ -6167,26 +6207,19 @@ jobs:
     - name: generate nextest command
       run: flowey.exe e 28 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
-    - name: starting test_igvm_agent_rpc_server
-      run: flowey.exe e 28 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
-      shell: bash
     - name: install vmm tests deps (windows)
-      run: flowey.exe e 28 flowey_lib_hvlite::install_vmm_tests_deps 0
+      run: flowey.exe e 28 flowey_lib_hvlite::install_vmm_tests_external_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
         flowey.exe e 28 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 28 flowey_lib_common::run_cargo_nextest_run 1
-      shell: bash
-    - name: stopping test_igvm_agent_rpc_server
-      run: |-
-        flowey.exe e 28 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
       shell: bash
     - name: summarize failing vmm tests
       run: |-
-        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
         flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+        flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
         flowey.exe e 28 flowey_lib_common::publish_test_results 0
         flowey.exe e 28 flowey_lib_common::publish_test_results 1
         flowey.exe v 28 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -6214,7 +6247,7 @@ jobs:
       name: 'publish test results: aarch64-windows-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+      run: flowey.exe e 28 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 28 flowey_lib_common::cache 3
@@ -6244,7 +6277,7 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,aarch64-guest_test_uefi,aarch64-linux-musl-openvmm,aarch64-linux-musl-pipette,aarch64-linux-musl-tmk_vmm,aarch64-linux-vmm-tests-archive,aarch64-tmks,x64-linux-incubator}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,aarch64-guest_test_uefi,aarch64-linux-musl-openvmm,aarch64-linux-musl-pipette,aarch64-linux-musl-tmk_vmm,aarch64-linux-musl-vmm-tests-archive,aarch64-tmks,x64-linux-incubator}'
         path: ${{ runner.temp }}/used_artifacts/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
@@ -6267,7 +6300,7 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/aarch64-linux-musl-openvmm" | flowey v 29 'artifact_use_from_aarch64-linux-musl-openvmm' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/aarch64-linux-musl-pipette" | flowey v 29 'artifact_use_from_aarch64-linux-musl-pipette' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/aarch64-linux-musl-tmk_vmm" | flowey v 29 'artifact_use_from_aarch64-linux-musl-tmk_vmm' --is-raw-string update
-        echo "$AgentTempDirNormal/used_artifacts/aarch64-linux-vmm-tests-archive" | flowey v 29 'artifact_use_from_aarch64-linux-vmm-tests-archive' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/aarch64-linux-musl-vmm-tests-archive" | flowey v 29 'artifact_use_from_aarch64-linux-musl-vmm-tests-archive' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/aarch64-tmks" | flowey v 29 'artifact_use_from_aarch64-tmks' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-incubator" | flowey v 29 'artifact_use_from_x64-linux-incubator' --is-raw-string update
       shell: bash
@@ -6323,7 +6356,8 @@ jobs:
       run: |-
         flowey e 29 flowey_lib_common::system_info 0
         flowey e 29 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+        flowey e 29 flowey_core::pipeline::artifact::resolve 6
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 29 flowey_lib_common::download_gh_release 0
@@ -6357,12 +6391,9 @@ jobs:
     - name: unpack QEMU archive
       run: |-
         flowey e 29 flowey_lib_hvlite::resolve_openvmm_qemu 0
-        flowey e 29 flowey_core::pipeline::artifact::resolve 6
-        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
         flowey e 29 flowey_core::pipeline::artifact::resolve 4
-        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
-        flowey v 29 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+        flowey v 29 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
         ${{ runner.temp }}
         EOF
         flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
@@ -6378,16 +6409,11 @@ jobs:
     - name: installing packages
       run: flowey e 29 flowey_lib_common::install_dist_pkg 1
       shell: bash
-    - name: extract azcopy from archive
-      run: flowey e 29 flowey_lib_common::download_azcopy 0
+    - name: unpack mu_msvm package (aarch64)
+      run: flowey e 29 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: calculating required VMM tests disk images
-      run: flowey e 29 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
-      shell: bash
-    - name: downloading VMM test disk images
-      run: |-
-        flowey e 29 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
-        flowey e 29 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
+    - name: unpack openvmm-test-virtio-win archive
+      run: flowey e 29 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
       shell: bash
     - name: create gh cache dir
       run: flowey e 29 flowey_lib_common::download_gh_cli 0
@@ -6426,11 +6452,21 @@ jobs:
         flowey e 29 flowey_lib_common::download_gh_artifact 0
         flowey e 29 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
-    - name: unpack mu_msvm package (aarch64)
-      run: flowey e 29 flowey_lib_hvlite::download_uefi_mu_msvm 0
+    - name: setting up vmm_tests content dir
+      run: |-
+        flowey e 29 flowey_lib_hvlite::init_vmm_tests_content_dir 0
+        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
       shell: bash
-    - name: unpack openvmm-test-virtio-win archive
-      run: flowey e 29 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    - name: extract azcopy from archive
+      run: flowey e 29 flowey_lib_common::download_azcopy 0
+      shell: bash
+    - name: calculating required VMM tests disk images
+      run: flowey e 29 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
+      shell: bash
+    - name: downloading VMM test disk images
+      run: |-
+        flowey e 29 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
+        flowey e 29 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
       shell: bash
     - name: setting up vmm_tests env
       run: flowey e 29 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -6445,18 +6481,18 @@ jobs:
       run: flowey e 29 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: install vmm tests deps (linux)
-      run: flowey e 29 flowey_lib_hvlite::install_vmm_tests_deps 0
+      run: flowey e 29 flowey_lib_hvlite::install_vmm_tests_external_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
         flowey e 29 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 29 flowey_lib_common::run_cargo_nextest_run 1
-        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       shell: bash
     - name: summarize failing vmm tests
       run: |-
+        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
         flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
-        flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
         flowey e 29 flowey_lib_common::publish_test_results 0
         flowey e 29 flowey_lib_common::publish_test_results 1
         flowey v 29 'flowey_lib_common::publish_test_results:2:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar1
@@ -6484,7 +6520,7 @@ jobs:
       name: 'publish test results: aarch64-linux-tcg-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
-      run: flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 9
+      run: flowey e 29 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 29 flowey_lib_common::cache 3
@@ -8221,6 +8257,10 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-openvmm" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-openvmm' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-openvmm_vhost"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-openvmm_vhost" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-openvmm_vhost' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-vmm-perf-runner"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-vmm-perf-runner" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-vmm-perf-runner' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-vmm-tests-archive"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-vmm-tests-archive" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-vmm-tests-archive' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-ohcldiag-dev"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-ohcldiag-dev" | flowey v 8 'artifact_publish_from_aarch64-linux-ohcldiag-dev' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-openvmm"
@@ -8235,6 +8275,8 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgstool" | flowey v 8 'artifact_publish_from_aarch64-linux-vmgstool' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgstool-dev"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgstool-dev" | flowey v 8 'artifact_publish_from_aarch64-linux-vmgstool-dev' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmm-perf-runner"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmm-perf-runner" | flowey v 8 'artifact_publish_from_aarch64-linux-vmm-perf-runner' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmm-tests-archive"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmm-tests-archive" | flowey v 8 'artifact_publish_from_aarch64-linux-vmm-tests-archive' --is-raw-string update
       shell: bash
@@ -8315,7 +8357,7 @@ jobs:
     - name: symlink protoc
       run: |-
         flowey e 8 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-        flowey e 8 flowey_lib_hvlite::init_cross_build 0
+        flowey e 8 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build openvmm
       run: |-
@@ -8328,7 +8370,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 5
         flowey e 8 flowey_lib_hvlite::build_openvmm 0
         flowey e 8 flowey_core::pipeline::artifact::publish 0
-        flowey e 8 flowey_lib_hvlite::init_cross_build 2
+        flowey e 8 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build openvmm_vhost
       run: |-
@@ -8341,7 +8383,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 9
         flowey e 8 flowey_lib_hvlite::build_openvmm_vhost 0
         flowey e 8 flowey_core::pipeline::artifact::publish 1
-        flowey e 8 flowey_lib_hvlite::init_cross_build 5
+        flowey e 8 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build vmgstool
       run: |-
@@ -8354,7 +8396,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 18
         flowey e 8 flowey_lib_hvlite::build_vmgstool 0
         flowey e 8 flowey_core::pipeline::artifact::publish 2
-        flowey e 8 flowey_lib_hvlite::init_cross_build 4
+        flowey e 8 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build vmgstool
       run: |-
@@ -8367,7 +8409,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 16
         flowey e 8 flowey_lib_hvlite::build_vmgstool 1
         flowey e 8 flowey_core::pipeline::artifact::publish 3
-        flowey e 8 flowey_lib_hvlite::init_cross_build 3
+        flowey e 8 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgs_lib
       run: |-
@@ -8376,7 +8418,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::build_and_test_vmgs_lib 0
         flowey e 8 flowey_lib_hvlite::build_and_test_vmgs_lib 1
         flowey e 8 flowey_core::pipeline::artifact::publish 4
-        flowey e 8 flowey_lib_hvlite::init_cross_build 1
+        flowey e 8 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build igvmfilegen
       run: |-
@@ -8389,7 +8431,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 1
         flowey e 8 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 8 flowey_core::pipeline::artifact::publish 5
-        flowey e 8 flowey_lib_hvlite::init_cross_build 6
+        flowey e 8 flowey_lib_hvlite::init_cross_build 8
       shell: bash
     - name: cargo build ohcldiag-dev
       run: |-
@@ -8409,7 +8451,7 @@ jobs:
     - name: extract Aarch64 sysroot.tar.gz
       run: |-
         flowey e 8 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-        flowey e 8 flowey_lib_hvlite::init_cross_build 8
+        flowey e 8 flowey_lib_hvlite::init_cross_build 10
       shell: bash
     - name: cargo build openvmm
       run: |-
@@ -8422,7 +8464,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 7
         flowey e 8 flowey_lib_hvlite::build_openvmm 1
         flowey e 8 flowey_core::pipeline::artifact::publish 7
-        flowey e 8 flowey_lib_hvlite::init_cross_build 9
+        flowey e 8 flowey_lib_hvlite::init_cross_build 11
       shell: bash
     - name: cargo build openvmm_vhost
       run: |-
@@ -8435,7 +8477,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 11
         flowey e 8 flowey_lib_hvlite::build_openvmm_vhost 1
         flowey e 8 flowey_core::pipeline::artifact::publish 8
-        flowey e 8 flowey_lib_hvlite::init_cross_build 10
+        flowey e 8 flowey_lib_hvlite::init_cross_build 12
       shell: bash
     - name: cargo build prep_steps
       run: |-
@@ -8482,13 +8524,46 @@ jobs:
     - name: installing cargo-nextest
       run: |-
         flowey e 8 flowey_lib_common::install_cargo_nextest 0
-        flowey e 8 flowey_lib_hvlite::init_cross_build 7
+        flowey e 8 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: build + archive 'vmm_tests' nextests
       run: |-
         flowey e 8 flowey_lib_common::run_cargo_nextest_archive 0
         flowey e 8 flowey_lib_hvlite::build_nextest_vmm_tests 0
         flowey e 8 flowey_core::pipeline::artifact::publish 10
+        flowey e 8 flowey_lib_hvlite::init_cross_build 9
+      shell: bash
+    - name: build + archive 'vmm_tests' nextests
+      run: |-
+        flowey e 8 flowey_lib_common::run_cargo_nextest_archive 1
+        flowey e 8 flowey_lib_hvlite::build_nextest_vmm_tests 1
+        flowey e 8 flowey_core::pipeline::artifact::publish 11
+        flowey e 8 flowey_lib_hvlite::init_cross_build 7
+      shell: bash
+    - name: cargo build vmm_perf
+      run: |-
+        flowey e 8 flowey_lib_common::run_cargo_build 10
+        flowey e 8 flowey_lib_hvlite::run_cargo_build 19
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 9
+        flowey e 8 flowey_lib_hvlite::run_cargo_build 20
+        flowey e 8 flowey_lib_hvlite::build_vmm_perf 0
+        flowey e 8 flowey_core::pipeline::artifact::publish 12
+        flowey e 8 flowey_lib_hvlite::init_cross_build 13
+      shell: bash
+    - name: cargo build vmm_perf
+      run: |-
+        flowey e 8 flowey_lib_common::run_cargo_build 11
+        flowey e 8 flowey_lib_hvlite::run_cargo_build 21
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 8 flowey_lib_hvlite::run_cargo_build 22
+        flowey e 8 flowey_lib_hvlite::build_vmm_perf 1
+        flowey e 8 flowey_core::pipeline::artifact::publish 13
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 8 flowey_lib_common::cache 3
@@ -8513,6 +8588,18 @@ jobs:
       with:
         name: aarch64-linux-musl-openvmm_vhost
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-openvmm_vhost/
+        include-hidden-files: true
+    - name: 🌼📦 Publish aarch64-linux-musl-vmm-perf-runner
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: aarch64-linux-musl-vmm-perf-runner
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-vmm-perf-runner/
+        include-hidden-files: true
+    - name: 🌼📦 Publish aarch64-linux-musl-vmm-tests-archive
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: aarch64-linux-musl-vmm-tests-archive
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-vmm-tests-archive/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-ohcldiag-dev
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -8555,6 +8642,12 @@ jobs:
       with:
         name: aarch64-linux-vmgstool-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgstool-dev/
+        include-hidden-files: true
+    - name: 🌼📦 Publish aarch64-linux-vmm-perf-runner
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: aarch64-linux-vmm-perf-runner
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmm-perf-runner/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmm-tests-archive
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -8841,32 +8934,6 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 13
         flowey e 9 flowey_lib_hvlite::build_prep_steps 0
         flowey e 9 flowey_core::pipeline::artifact::publish 9
-        flowey e 9 flowey_lib_hvlite::init_cross_build 7
-      shell: bash
-    - name: cargo build vmm_perf
-      run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 10
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 19
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 9
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 20
-        flowey e 9 flowey_lib_hvlite::build_vmm_perf 0
-        flowey e 9 flowey_core::pipeline::artifact::publish 10
-        flowey e 9 flowey_lib_hvlite::init_cross_build 13
-      shell: bash
-    - name: cargo build vmm_perf
-      run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 11
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 21
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 10
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 22
-        flowey e 9 flowey_lib_hvlite::build_vmm_perf 1
-        flowey e 9 flowey_core::pipeline::artifact::publish 11
       shell: bash
     - name: create cargo-nextest cache dir
       run: |-
@@ -8907,13 +8974,39 @@ jobs:
       run: |-
         flowey e 9 flowey_lib_common::run_cargo_nextest_archive 0
         flowey e 9 flowey_lib_hvlite::build_nextest_vmm_tests 0
-        flowey e 9 flowey_core::pipeline::artifact::publish 12
+        flowey e 9 flowey_core::pipeline::artifact::publish 10
         flowey e 9 flowey_lib_hvlite::init_cross_build 9
       shell: bash
     - name: build + archive 'vmm_tests' nextests
       run: |-
         flowey e 9 flowey_lib_common::run_cargo_nextest_archive 1
         flowey e 9 flowey_lib_hvlite::build_nextest_vmm_tests 1
+        flowey e 9 flowey_core::pipeline::artifact::publish 11
+        flowey e 9 flowey_lib_hvlite::init_cross_build 7
+      shell: bash
+    - name: cargo build vmm_perf
+      run: |-
+        flowey e 9 flowey_lib_common::run_cargo_build 10
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 19
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 9
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 20
+        flowey e 9 flowey_lib_hvlite::build_vmm_perf 0
+        flowey e 9 flowey_core::pipeline::artifact::publish 12
+        flowey e 9 flowey_lib_hvlite::init_cross_build 13
+      shell: bash
+    - name: cargo build vmm_perf
+      run: |-
+        flowey e 9 flowey_lib_common::run_cargo_build 11
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 21
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 22
+        flowey e 9 flowey_lib_hvlite::build_vmm_perf 1
         flowey e 9 flowey_core::pipeline::artifact::publish 13
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
