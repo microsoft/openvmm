@@ -167,16 +167,18 @@ impl IntoPipeline for VmmPerfCli {
             deny_warnings: false,
             no_incremental: false,
         })
-        .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_run_vmm_perf::Params {
-            target: target.triple(),
-            profile: CommonProfile::from_release(release),
-            root_dir,
-            profiles,
-            vm_sizes_json,
-            parameters_json,
-            build_only,
-            done: ctx.new_done_handle(),
-        })
+        .dep_on(
+            |ctx| flowey_lib_hvlite::_jobs::local_build_and_run_vmm_perf::Params {
+                target: target.triple(),
+                profile: CommonProfile::from_release(release),
+                root_dir,
+                profiles,
+                vm_sizes_json,
+                parameters_json,
+                build_only,
+                done: ctx.new_done_handle(),
+            },
+        )
         .finish();
 
         Ok(pipeline)

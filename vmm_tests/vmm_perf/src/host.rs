@@ -142,6 +142,11 @@ fn available_memory_bytes() -> anyhow::Result<u64> {
     Ok(available)
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn available_memory_bytes() -> anyhow::Result<u64> {
+    anyhow::bail!("VMM.Perf supports Linux and Windows hosts only")
+}
+
 pub(crate) fn validate_requested_capacity(
     parameters: &BTreeMap<String, String>,
     capacity: HostCapacity,
@@ -248,6 +253,11 @@ fn available_disk_bytes(path: &Path) -> anyhow::Result<u64> {
     Ok(disk.available_space())
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn available_disk_bytes(_path: &Path) -> anyhow::Result<u64> {
+    anyhow::bail!("VMM.Perf supports Linux and Windows hosts only")
+}
+
 fn native_hypervisor_backend() -> anyhow::Result<&'static str> {
     #[cfg(target_os = "linux")]
     {
@@ -268,6 +278,11 @@ fn native_hypervisor_backend() -> anyhow::Result<&'static str> {
     #[cfg(target_os = "windows")]
     {
         Ok("whp")
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        anyhow::bail!("VMM.Perf supports Linux and Windows hosts only")
     }
 }
 
@@ -302,6 +317,9 @@ fn validate_host_environment(needs_sudo: bool) -> anyhow::Result<()> {
                 .context("failed to create a Windows Hypervisor Platform partition")?,
         );
     }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let _ = needs_sudo;
+
     Ok(())
 }
 
@@ -340,6 +358,11 @@ fn owner_for_restore() -> anyhow::Result<Option<(String, String)>> {
 #[cfg(target_os = "windows")]
 fn owner_for_restore() -> anyhow::Result<Option<(String, String)>> {
     Ok(None)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn owner_for_restore() -> anyhow::Result<Option<(String, String)>> {
+    anyhow::bail!("VMM.Perf supports Linux and Windows hosts only")
 }
 
 #[cfg(target_os = "linux")]

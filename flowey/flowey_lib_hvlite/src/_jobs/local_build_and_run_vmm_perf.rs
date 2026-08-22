@@ -59,12 +59,10 @@ impl SimpleFlowNode for Node {
         });
 
         if build_only {
-            ctx.emit_rust_step("finish VMM.Perf build", |ctx| {
-                openvmm.claim(ctx);
-                runner.claim(ctx);
-                done.claim(ctx);
-                |_| Ok(())
-            });
+            ctx.emit_side_effect_step(
+                [openvmm.into_side_effect(), runner.into_side_effect()],
+                [done],
+            );
         } else {
             ctx.req(crate::_jobs::run_vmm_perf::Params {
                 label: "vmm-perf".into(),

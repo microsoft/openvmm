@@ -226,25 +226,21 @@ impl IntoPipeline for CheckinGatesCli {
         let mut vmm_tests_artifacts_linux_aarch64_tcg =
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxAarch64Tcg::default();
 
-        // Keep VMM.Perf independent from the VMM-test runner while initially
-        // exercising its dedicated jobs on the GitHub PR pipeline.
+        // Run VMM.Perf after merge, or before merge through the opt-in release
+        // PR pipeline.
         let enable_vmm_perf = matches!(
             (backend_hint, config),
-            (PipelineBackendHint::Github, PipelineConfig::Pr)
+            (
+                PipelineBackendHint::Github,
+                PipelineConfig::Ci | PipelineConfig::PrRelease
+            )
         );
-        let (mut pub_vmm_perf_gnu, use_vmm_perf_gnu) = if enable_vmm_perf {
-            let (publish, use_artifact) = pipeline.new_typed_artifact("x64-linux-vmm-perf-runner");
-            (Some(publish), Some(use_artifact))
-        } else {
-            (None, None)
-        };
-        let (mut pub_vmm_perf_musl, use_vmm_perf_musl) = if enable_vmm_perf {
-            let (publish, use_artifact) =
-                pipeline.new_typed_artifact("x64-linux-musl-vmm-perf-runner");
-            (Some(publish), Some(use_artifact))
-        } else {
-            (None, None)
-        };
+        let (pub_vmm_perf_gnu, use_vmm_perf_gnu) =
+            pipeline.new_typed_artifact("x64-linux-vmm-perf-runner");
+        let (pub_vmm_perf_musl, use_vmm_perf_musl) =
+            pipeline.new_typed_artifact("x64-linux-musl-vmm-perf-runner");
+        let mut pub_vmm_perf_gnu = Some(pub_vmm_perf_gnu);
+        let mut pub_vmm_perf_musl = Some(pub_vmm_perf_musl);
         let mut use_vmm_perf_openvmm_gnu = None;
         let mut use_vmm_perf_openvmm_musl = None;
 
@@ -833,10 +829,8 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_openvmm_vhost_musl.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_prep_steps =
                         Some(use_prep_steps.clone());
-                    if enable_vmm_perf {
-                        use_vmm_perf_openvmm_gnu = Some(use_openvmm.clone());
-                        use_vmm_perf_openvmm_musl = Some(use_openvmm_musl.clone());
-                    }
+                    use_vmm_perf_openvmm_gnu = Some(use_openvmm.clone());
+                    use_vmm_perf_openvmm_musl = Some(use_openvmm_musl.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_linux_aarch64_tcg.use_openvmm =
@@ -980,24 +974,21 @@ impl IntoPipeline for CheckinGatesCli {
                 });
 
             if matches!(arch, CommonArch::X86_64) {
-                if let Some(publish) = pub_vmm_perf_gnu.take() {
-                    job = job.publish(publish, |vmm_perf| {
+                job = job
+                    .publish(pub_vmm_perf_gnu.take().unwrap(), |vmm_perf| {
                         flowey_lib_hvlite::build_vmm_perf::Request {
                             target: CommonTriple::X86_64_LINUX_GNU,
                             profile: CommonProfile::from_release(release),
                             vmm_perf,
                         }
-                    });
-                }
-                if let Some(publish) = pub_vmm_perf_musl.take() {
-                    job = job.publish(publish, |vmm_perf| {
+                    })
+                    .publish(pub_vmm_perf_musl.take().unwrap(), |vmm_perf| {
                         flowey_lib_hvlite::build_vmm_perf::Request {
                             target: CommonTriple::X86_64_LINUX_MUSL,
                             profile: CommonProfile::from_release(release),
                             vmm_perf,
                         }
                     });
-                }
             }
 
             // Hang building the linux VMM tests off this big linux job.
@@ -1805,18 +1796,13 @@ impl IntoPipeline for CheckinGatesCli {
                 .context("missing x64 Linux GNU OpenVMM artifact for VMM.Perf")?;
             let openvmm_musl = use_vmm_perf_openvmm_musl
                 .context("missing x64 Linux MUSL OpenVMM artifact for VMM.Perf")?;
-            let runner_gnu =
-                use_vmm_perf_gnu.context("missing x64 Linux GNU VMM.Perf runner artifact")?;
-            let runner_musl =
-                use_vmm_perf_musl.context("missing x64 Linux MUSL VMM.Perf runner artifact")?;
-
             for (label, platform, pool, openvmm, runner, hugetlb_pages) in [
                 (
                     "x64-linux-amd-kvm",
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     gh_pools::linux_amd_v7_1es(),
                     openvmm_gnu,
-                    runner_gnu,
+                    use_vmm_perf_gnu,
                     Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
                 ),
                 (
@@ -1824,7 +1810,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
                     gh_pools::linux_mshv_intel_v5_1es(),
                     openvmm_musl,
-                    runner_musl,
+                    use_vmm_perf_musl,
                     None,
                 ),
             ] {
