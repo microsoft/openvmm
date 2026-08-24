@@ -204,6 +204,17 @@ pub mod private {
     #[linkme::distributed_slice]
     pub static PATCH_FNS: [(PatchFn, &'static str, &'static str)] = [..];
 
+    // We need a dummy patch function to workaround a bug where flowey will
+    // fail to link with the following error when cross compiling for Windows
+    // MSVC from WSL:
+    // lld-link-14: error: relocation against symbol in discarded section
+    fn dummy_patch(_: &mut super::PatchManager<'_>) {}
+
+    // UNSAFETY: linkme uses manual link sections, which are unsafe.
+    #[expect(unsafe_code)]
+    #[linkme::distributed_slice(PATCH_FNS)]
+    static DUMMY_PATCH_FN: (PatchFn, &'static str, &'static str) = (dummy_patch, "dummy", "dummy");
+
     /// Register a patch function which can be used when emitting flows.
     ///
     /// The function must conform to the signature of [`PatchFn`]

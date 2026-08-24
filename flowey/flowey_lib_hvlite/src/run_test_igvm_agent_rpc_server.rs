@@ -15,11 +15,14 @@
 //!
 //! See also: stop_test_igvm_agent_rpc_server for cleanup after tests complete.
 
+use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
+        /// IGVM agent binary
+        pub test_igvm_agent_rpc_server: ReadVar<TestIgvmAgentRpcServerOutput>,
         /// Environment variables from init_vmm_tests_env (contains VMM_TESTS_CONTENT_DIR and TEST_OUTPUT_PATH)
         pub env: ReadVar<BTreeMap<String, String>>,
         /// Completion indicator - signals that the server is ready
@@ -38,6 +41,7 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
+            test_igvm_agent_rpc_server,
             env,
             done,
             previous_done,
@@ -53,10 +57,11 @@ impl SimpleFlowNode for Node {
         }
 
         ctx.emit_rust_step("starting test_igvm_agent_rpc_server", |ctx| {
+            let test_igvm_agent_rpc_server = test_igvm_agent_rpc_server.claim(ctx);
             let env = env.claim(ctx);
             done.claim(ctx);
             previous_done.claim(ctx);
-            move |rt| start_rpc_server(rt, env)
+            move |rt| start_rpc_server(rt, test_igvm_agent_rpc_server, env)
         });
 
         Ok(())
@@ -66,6 +71,7 @@ impl SimpleFlowNode for Node {
 #[cfg(windows)]
 fn start_rpc_server(
     rt: &mut RustRuntimeServices<'_>,
+    test_igvm_agent_rpc_server: ReadVar<TestIgvmAgentRpcServerOutput, VarClaimed>,
     env: ReadVar<BTreeMap<String, String>, VarClaimed>,
 ) -> anyhow::Result<()> {
     use std::os::windows::process::CommandExt;
@@ -73,22 +79,11 @@ fn start_rpc_server(
 
     let env = rt.read(env);
 
-    let test_content_dir = env
-        .get("VMM_TESTS_CONTENT_DIR")
-        .context("VMM_TESTS_CONTENT_DIR not set")?;
     let test_output_path = env
         .get("TEST_OUTPUT_PATH")
         .context("TEST_OUTPUT_PATH not set")?;
 
-    let exe = Path::new(test_content_dir).join("test_igvm_agent_rpc_server.exe");
-
-    if !exe.exists() {
-        log::info!(
-            "test_igvm_agent_rpc_server.exe not found at {}, skipping",
-            exe.display()
-        );
-        return Ok(());
-    }
+    let TestIgvmAgentRpcServerOutput { exe, .. } = rt.read(test_igvm_agent_rpc_server);
 
     // Create log file for server output
     let log_file_path = Path::new(test_output_path).join("test_igvm_agent_rpc_server.log");
@@ -150,6 +145,7 @@ fn start_rpc_server(
 #[cfg(not(windows))]
 fn start_rpc_server(
     _rt: &mut RustRuntimeServices<'_>,
+    _test_igvm_agent_rpc_server: ReadVar<TestIgvmAgentRpcServerOutput, VarClaimed>,
     _env: ReadVar<BTreeMap<String, String>, VarClaimed>,
 ) -> anyhow::Result<()> {
     // This should never be called - the node rejects non-Windows at construction time.

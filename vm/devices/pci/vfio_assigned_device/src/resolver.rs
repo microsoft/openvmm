@@ -128,11 +128,11 @@ pub struct VfioCdevDeviceResolver {
 impl VfioCdevDeviceResolver {
     /// Create a new cdev resolver, spawning the cdev dispatcher task.
     pub fn new(
-        spawner: impl pal_async::task::Spawn + 'static,
+        spawner: impl pal_async::driver::SpawnDriver,
         dma_mapper_client: DmaMapperClient,
     ) -> Self {
         // Arc the spawner so the dispatcher can spawn per-iommu manager tasks.
-        let spawner: Arc<dyn pal_async::task::Spawn> = Arc::new(spawner);
+        let spawner: Arc<dyn pal_async::driver::SpawnDriver> = Arc::new(spawner);
         let mut manager = crate::manager::VfioCdevManager::new(spawner.clone(), dma_mapper_client);
         let client = manager.client();
         let task = spawner.spawn("vfio-cdev-dispatch", manager.run());

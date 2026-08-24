@@ -2248,7 +2248,7 @@ async fn new_underhill_vm(
     );
 
     // Read measured config from VTL0 memory. When restoring, it is already gone.
-    let (firmware_type, measured_vtl0_info, load_kind) = {
+    let (firmware_type, mut measured_vtl0_info, load_kind) = {
         if let Some(firmware_type) = servicing_state.firmware_type {
             (firmware_type.into(), None, LoadKind::None)
         } else {
@@ -2559,7 +2559,7 @@ async fn new_underhill_vm(
         use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
         #[cfg(guest_arch = "x86_64")]
         use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
-        let base_template_json = match &dps.general.secure_boot_template {
+        let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
                 Some(secure_boot_templates::microsoft_windows())
@@ -2583,7 +2583,7 @@ async fn new_underhill_vm(
         .map(Into::into);
 
         let config = firmware_uefi_resources::UefiConfig {
-            base_template_json,
+            base_template,
             custom_uefi_json,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,
@@ -3696,10 +3696,29 @@ async fn new_underhill_vm(
     // cycle. On a servicing restore the VMGS token was already consumed at the
     // original cold boot, so recover it from saved state; otherwise read (and
     // consume) it from VMGS.
-    let current_hibernate_token = if !dps.general.hibernation_enabled {
+    //
+    // When resuming under a firmware version other than the current one, VTL0's
+    // firmware is overloaded (via the GET `LoadFirmware` host request) with the
+    // hibernated version before it runs; on success that version becomes the
+    // recorded token.
+    let current_hibernate_token = if !dps.general.hibernation_enabled
+        || !matches!(firmware_type, FirmwareType::Uefi)
+    {
+        // Hibernation is disabled, or this isn't a UEFI guest. Firmware overload
+        // is UEFI-only (gen-1/PCAT can hibernate but can't reload firmware), so
+        // there's no firmware version to pin — don't track a token.
         None
     } else if is_restoring {
-        // Older saved state may not carry hibernation state; treat as unknown.
+        // In the restore case, the VMGS token was already consumed at the
+        // original cold boot, so recover it from saved state.  Note that we must
+        // not attempt to overload the firmware here, because the firmware has
+        // already been loaded and is running.  If the firmware version has changed
+        // since the original cold boot, the firmware will have already been
+        // overloaded and the token in saved state will reflect that.  If the
+        // firmware version has not changed, the token in saved state will be the
+        // current firmware version (from the previous instance).  In either case,
+        // we can just use the token.
+        // N.B. Older saved state may not carry hibernation state; treat as unknown.
         Some(
             servicing_state
                 .hibernate
@@ -3707,24 +3726,71 @@ async fn new_underhill_vm(
                 .map_or(hibernate::Token::UNKNOWN, |h| h.token.into()),
         )
     } else if let Some(vmgs_client) = vmgs_client.as_ref() {
-        if let Some(token @ hibernate::Token::Hibernated { .. }) =
-            hibernate::read_token(vmgs_client).await
-        {
-            // A resume under a different firmware version; warn but don't honor
-            // it yet.
-            if token != hibernate::Token::CURRENT {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    resume = %token,
-                    current = %hibernate::Token::CURRENT,
-                    "hibernation resume token does not match the current firmware version"
-                );
-            }
-        }
+        let resume_token = hibernate::read_token(vmgs_client).await;
         // Consume any token, valid or corrupt, so it is not re-read next boot.
         hibernate::delete_token(vmgs_client).await;
-        // No overload support yet; always use the current firmware version.
-        Some(hibernate::Token::CURRENT)
+        match resume_token {
+            Some(token @ hibernate::Token::Hibernated { .. })
+                if token != hibernate::Token::CURRENT =>
+            {
+                if !dps
+                    .general
+                    .management_vtl_features
+                    .load_firmware_supported()
+                {
+                    // The host must advertise LoadFirmware support; without it
+                    // we can't overload, so resume on the current firmware.
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        resume = %token,
+                        "host does not support firmware overload (LoadFirmware); \
+                         resuming with the current firmware version despite a \
+                         hibernation token mismatch"
+                    );
+                    Some(hibernate::Token::CURRENT)
+                } else {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        resume = %token,
+                        current = %hibernate::Token::CURRENT,
+                        "hibernation resume under a different firmware version; requesting firmware overload"
+                    );
+                    // If the overload succeeds VTL0 now runs the hibernated
+                    // version, so record it; otherwise fall back to the current one.
+                    if overload_vtl0_firmware(
+                        &get_client,
+                        u64::from(token),
+                        &mut measured_vtl0_info,
+                    )
+                    .await
+                    {
+                        Some(token)
+                    } else {
+                        Some(hibernate::Token::CURRENT)
+                    }
+                }
+            }
+            Some(hibernate::Token::Hibernated { .. }) => {
+                // Guarded above: the token matches the current firmware version.
+                tracing::info!(
+                    CVM_ALLOWED,
+                    "hibernation resume under the current firmware version"
+                );
+                Some(hibernate::Token::CURRENT)
+            }
+            Some(hibernate::Token::Other(raw)) => {
+                // An out-of-range/corrupt token value; ignore it.
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    raw,
+                    "ignoring unrecognized hibernate token; using the current firmware version"
+                );
+                Some(hibernate::Token::CURRENT)
+            }
+            // Clean prior power-off, or no/unreadable token (e.g. first boot):
+            // a normal cold boot on the current firmware.
+            Some(hibernate::Token::NotHibernated) | None => Some(hibernate::Token::CURRENT),
+        }
     } else {
         // Hibernation was requested but there is no VMGS to persist the token,
         // so it cannot survive a power transition.
@@ -4107,6 +4173,95 @@ async fn wait_for_flush_logs(control_send: &Arc<Mutex<Option<mesh::Sender<Contro
     if let Some(call) = call {
         call.await.ok();
     }
+}
+
+/// Ask the host to overwrite VTL0's firmware image in guest RAM with the version
+/// identified by `token` (used on a hibernation resume under a different firmware
+/// version). On success, updates the measured UEFI context so VTL0 starts at the
+/// overloaded image's entry point and returns `true`. Best-effort: on failure
+/// the cold-boot image is left in place and `false` is returned.
+///
+/// The caller must only invoke this when the host has advertised the
+/// `load_firmware_supported` bit in `ManagementVtlFeatures`.
+async fn overload_vtl0_firmware(
+    get_client: &GuestEmulationTransportClient,
+    token: u64,
+    measured_vtl0_info: &mut Option<MeasuredVtl0Info>,
+) -> bool {
+    let offset = match get_client.load_firmware(token).await {
+        Ok(offset) => offset,
+        Err(err) => {
+            tracing::warn!(
+                CVM_ALLOWED,
+                error = &err as &dyn std::error::Error,
+                token,
+                "LoadFirmware host request for firmware overload failed"
+            );
+            return false;
+        }
+    };
+
+    tracing::info!(
+        CVM_ALLOWED,
+        token,
+        "overloaded VTL0 firmware via host LoadFirmware request"
+    );
+
+    // The overloaded image's entry point may differ from the cold-boot image's,
+    // so point the measured UEFI context's RIP at the host-computed offset;
+    // load_firmware later applies it to VTL0.
+    #[cfg(guest_arch = "x86_64")]
+    if let Some(uefi_info) = measured_vtl0_info
+        .as_mut()
+        .and_then(|info| info.supports_uefi.as_mut())
+    {
+        if offset != 0 {
+            let base = uefi_info.firmware_memory.start();
+            let len = uefi_info.firmware_memory.len();
+            // `offset` is host-provided (untrusted): the entry point must land
+            // inside the measured firmware region and must not overflow.
+            let Some(new_rip) = base.checked_add(offset).filter(|_| offset < len) else {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    offset,
+                    firmware_len = len,
+                    "host returned an out-of-range firmware entry-point offset; \
+                     ignoring overload and resuming with the current firmware"
+                );
+                return false;
+            };
+            let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
+            for reg in registers {
+                if let loader::importer::X86Register::Rip(rip) = reg {
+                    if *rip != new_rip {
+                        tracing::info!(
+                            CVM_ALLOWED,
+                            old_rip = *rip,
+                            new_rip,
+                            "rebased VTL0 RIP for overloaded firmware"
+                        );
+                        *rip = new_rip;
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(guest_arch = "aarch64")]
+    {
+        // `measured_vtl0_info` is only read on x86_64, to rebase VTL0's RIP.
+        let _ = measured_vtl0_info;
+        if offset != 0 {
+            // aarch64 has no entry-point offset; a non-zero value is a host
+            // protocol violation. Don't trust it, just surface it and ignore.
+            tracing::warn!(
+                CVM_ALLOWED,
+                offset,
+                "host returned a non-zero firmware entry-point offset on aarch64; ignoring"
+            );
+        }
+    }
+
+    true
 }
 
 async fn load_firmware(

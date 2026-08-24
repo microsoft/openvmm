@@ -1,37 +1,35 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Build `prep_steps` binaries
+//! Flowey building itself
 
-use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum PrepStepsOutput {
+pub enum FloweyHvliteOutput {
     LinuxBin {
-        #[serde(rename = "prep_steps")]
+        #[serde(rename = "flowey_hvlite")]
         bin: PathBuf,
-        #[serde(rename = "prep_steps.dbg")]
+        #[serde(rename = "flowey_hvlite.dbg")]
         dbg: Option<PathBuf>,
     },
     WindowsBin {
-        #[serde(rename = "prep_steps.exe")]
+        #[serde(rename = "flowey_hvlite.exe")]
         exe: PathBuf,
-        #[serde(rename = "prep_steps.pdb")]
+        #[serde(rename = "flowey_hvlite.pdb")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pdb: Option<PathBuf>,
     },
 }
 
-impl Artifact for PrepStepsOutput {}
+impl Artifact for FloweyHvliteOutput {}
 
 flowey_request! {
     pub struct Request {
         pub target: CommonTriple,
-        pub profile: CommonProfile,
-        pub prep_steps: WriteVar<PrepStepsOutput>,
+        pub flowey_hvlite: WriteVar<FloweyHvliteOutput>,
     }
 }
 
@@ -47,16 +45,15 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             target,
-            profile,
-            prep_steps,
+            flowey_hvlite,
         } = request;
 
         let output = ctx.reqv(|v| crate::run_cargo_build::Request {
-            crate_name: "prep_steps".into(),
-            out_name: "prep_steps".into(),
-            crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
-            profile: profile.into(),
+            crate_name: "flowey_hvlite".into(),
+            out_name: "flowey_hvlite".into(),
+            profile: crate::run_cargo_build::BuildProfile::Light,
             features: Default::default(),
+            crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
             target: target.as_triple(),
             no_split_dbg_info: false,
             extra_env: None,
@@ -64,21 +61,21 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        ctx.emit_minor_rust_step("report built prep_steps", |ctx| {
-            let prep_steps = prep_steps.claim(ctx);
+        ctx.emit_minor_rust_step("report built flowey_hvlite", |ctx| {
+            let flowey_hvlite = flowey_hvlite.claim(ctx);
             let output = output.claim(ctx);
             move |rt| {
                 let output = match rt.read(output) {
                     crate::run_cargo_build::CargoBuildOutput::WindowsBin { exe, pdb } => {
-                        PrepStepsOutput::WindowsBin { exe, pdb }
+                        FloweyHvliteOutput::WindowsBin { exe, pdb }
                     }
                     crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                        PrepStepsOutput::LinuxBin { bin, dbg }
+                        FloweyHvliteOutput::LinuxBin { bin, dbg }
                     }
                     _ => unreachable!(),
                 };
 
-                rt.write(prep_steps, &output);
+                rt.write(flowey_hvlite, &output);
             }
         });
 

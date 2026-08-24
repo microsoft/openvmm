@@ -17,6 +17,10 @@
 use anyhow::Context as _;
 use std::fs;
 use std::os::unix::prelude::*;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// iommufd ioctl type character (';' = 0x3B).
 const IOMMUFD_TYPE: u8 = b';';
@@ -322,6 +326,10 @@ struct IommuVdeviceAlloc {
 /// vEVENTQ type: ARM SMMUv3.
 pub const IOMMU_VEVENTQ_TYPE_ARM_SMMUV3: u32 = 1;
 
+/// `IommufdVeventHeader::flags`: the queue lost one or more events before this
+/// one. No event data follows a header carrying this flag.
+pub const IOMMU_VEVENTQ_FLAG_LOST_EVENTS: u32 = 1 << 0;
+
 #[repr(C)]
 struct IommuVeventqAlloc {
     size: u32,
@@ -335,7 +343,11 @@ struct IommuVeventqAlloc {
 }
 
 /// Header for each event in a vEVENTQ fd read.
+///
+/// `sequence` is monotonic over `[0, i32::MAX]`, wrapping back to 0. A gap of
+/// more than 1 between adjacent headers means the intervening events were lost.
 #[repr(C)]
+#[derive(Copy, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub struct IommufdVeventHeader {
     pub flags: u32,
     pub sequence: u32,
@@ -343,8 +355,12 @@ pub struct IommufdVeventHeader {
 
 /// ARM SMMUv3 virtual event record (256-bit, little-endian).
 ///
-/// Follows an `IommufdVeventHeader` in the vEVENTQ fd read stream.
+/// Follows an `IommufdVeventHeader` in the vEVENTQ fd read stream. The four
+/// quadwords are a verbatim SMMUv3 Event queue record, except that the kernel
+/// has rewritten the StreamID field to the virtual StreamID the vDevice was
+/// allocated with.
 #[repr(C)]
+#[derive(Copy, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub struct IommuVeventArmSmmuv3 {
     pub evt: [u64; 4],
 }

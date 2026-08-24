@@ -559,8 +559,8 @@ impl SmmuDevice {
     /// Handles page 1 register reads (offset >= 0x10000).
     fn read_page1_reg32(&self, offset: u32) -> u32 {
         match offset {
-            registers::EVENTQ_PROD_PAGE1 => self.shared_state.evtq_prod(),
-            registers::EVENTQ_CONS_PAGE1 => self.shared_state.evtq_cons(),
+            registers::EVENTQ_PROD_PAGE1 => self.shared_state.evtq_prod().into(),
+            registers::EVENTQ_CONS_PAGE1 => self.shared_state.evtq_cons().into(),
             registers::CMDQ_IRQ_CFG1_PAGE1 => self.cmdq_msi.data,
             registers::CMDQ_IRQ_CFG2_PAGE1 => self.cmdq_msi.attr,
             _ => {
@@ -585,8 +585,11 @@ impl SmmuDevice {
     fn write_page1_reg32(&mut self, offset: u32, value: u32) {
         match offset {
             registers::EVENTQ_PROD_PAGE1 => {
-                // EVTQ_PROD on page 1 is writable by the SMMU only (for
-                // writing events). Guest writes are ignored.
+                // §6.3.130: software may initialize PROD only while EVENTQEN
+                // and its immediate acknowledgment are clear.
+                if !self.cr0.eventqen() {
+                    self.shared_state.set_evtq_prod(value);
+                }
             }
             registers::EVENTQ_CONS_PAGE1 => {
                 self.shared_state.set_evtq_cons(value);
@@ -1383,6 +1386,8 @@ mod tests {
     use super::*;
     use crate::spec::events::EvtEntry;
     use crate::spec::registers::*;
+    use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
 
     const TEST_MMIO_BASE: u64 = 0x0900_0000;
 
@@ -1636,14 +1641,24 @@ mod tests {
     #[test]
     fn test_page1_register_access() {
         let mut dev = make_test_device();
+        let evtq_base = QueueBase::new().with_log2size(3);
+        write64(&mut dev, EVENTQ_BASE, evtq_base.into());
 
-        // EVTQ_CONS on page 1 is guest-writable.
-        write32_page1(&mut dev, EVENTQ_CONS_PAGE1, 42);
-        assert_eq!(read32_page1(&mut dev, EVENTQ_CONS_PAGE1), 42);
+        // §6.3.130: software initializes PROD while EVENTQEN and its ACK are
+        // both clear, including the overflow state.
+        let initialized_prod = (1 << 31) | 3;
+        write32_page1(&mut dev, EVENTQ_PROD_PAGE1, initialized_prod);
+        assert_eq!(read32_page1(&mut dev, EVENTQ_PROD_PAGE1), initialized_prod);
 
-        // EVTQ_PROD on page 1 is SMMU-writable only (guest writes ignored).
-        write32_page1(&mut dev, EVENTQ_PROD_PAGE1, 99);
-        assert_eq!(read32_page1(&mut dev, EVENTQ_PROD_PAGE1), 0);
+        // CONS is always writable, but bits above the configured wrap bit have
+        // no effect and read back as zero in this implementation.
+        write32_page1(&mut dev, EVENTQ_CONS_PAGE1, (1 << 19) | 3);
+        assert_eq!(read32_page1(&mut dev, EVENTQ_CONS_PAGE1), 3);
+
+        // Once EVENTQEN is acknowledged, PROD is read-only to software.
+        write32(&mut dev, CR0, Cr0::new().with_eventqen(true).into());
+        write32_page1(&mut dev, EVENTQ_PROD_PAGE1, 4);
+        assert_eq!(read32_page1(&mut dev, EVENTQ_PROD_PAGE1), initialized_prod);
     }
 
     #[test]
@@ -3532,8 +3547,72 @@ mod tests {
         let event = EvtEntry::translation_fault(99, 0xDEAD, false);
         dev.shared_state().write_event(event);
 
-        // PROD should NOT advance (event dropped).
+        // PROD's write index should NOT advance (event dropped); the discard
+        // also raises OVFLG in bit 31, covered by `test_evtq_overflow_*`.
+        const WR_MASK: u32 = (1 << 20) - 1;
+        assert_eq!(
+            read32_page1(&mut dev, EVENTQ_PROD_PAGE1) & WR_MASK,
+            max_entries
+        );
+    }
+
+    /// §7.4: discarding a record because the Event queue is full enters the
+    /// overflow condition, which is `EVENTQ_PROD.OVFLG != EVENTQ_CONS.OVACKFLG`
+    /// — not a Global Error.
+    #[test]
+    fn test_evtq_overflow_toggles_ovflg() {
+        const OVFLG: u32 = 1 << 31;
+        let mut dev = make_evtq_test_device();
+
+        let max_entries = 1u32 << TEST_EVTQ_LOG2SIZE;
+        for i in 0..max_entries {
+            dev.shared_state()
+                .write_event(EvtEntry::translation_fault(i, 0, false));
+        }
+        // A merely full queue has discarded nothing, so no overflow yet.
         assert_eq!(read32_page1(&mut dev, EVENTQ_PROD_PAGE1), max_entries);
+
+        dev.shared_state()
+            .write_event(EvtEntry::translation_fault(99, 0, false));
+        assert_eq!(
+            read32_page1(&mut dev, EVENTQ_PROD_PAGE1),
+            max_entries | OVFLG
+        );
+        // An Event queue access abort is a distinct condition (§7.2.2).
+        assert!(!Gerror::from(read32(&mut dev, GERROR)).eventq_abt_err());
+
+        // A second overflow cannot be indicated before the first is acked.
+        dev.shared_state()
+            .write_event(EvtEntry::translation_fault(100, 0, false));
+        assert_eq!(
+            read32_page1(&mut dev, EVENTQ_PROD_PAGE1),
+            max_entries | OVFLG
+        );
+
+        // Acknowledge by matching OVACKFLG (still leaving the queue full), and
+        // the next discard toggles the flag back.
+        write32_page1(&mut dev, EVENTQ_CONS_PAGE1, OVFLG);
+        dev.shared_state()
+            .write_event(EvtEntry::translation_fault(101, 0, false));
+        assert_eq!(read32_page1(&mut dev, EVENTQ_PROD_PAGE1), max_entries);
+    }
+
+    /// A fault the physical SMMU reported for an accelerated stream is written
+    /// to the guest's Event queue verbatim.
+    #[test]
+    fn test_record_accel_event() {
+        let mut dev = make_evtq_test_device();
+
+        let source = EvtEntry::translation_fault(0x1234, 0xDEAD_0000, true);
+        let record = <[u64; 4]>::read_from_bytes(source.as_bytes()).unwrap();
+        dev.shared_state().record_accel_event(record);
+
+        assert_eq!(read32_page1(&mut dev, EVENTQ_PROD_PAGE1), 1);
+        let written: EvtEntry = dev
+            .guest_memory
+            .read_plain(TEST_EVTQ_GPA)
+            .expect("read event");
+        assert_eq!(written.as_bytes(), source.as_bytes());
     }
 
     #[test]

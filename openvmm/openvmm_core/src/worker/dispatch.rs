@@ -1017,13 +1017,33 @@ impl InitializedVm {
             .await
             .unwrap();
 
-        // Pre-parse the igvm file early.
+        let partition_isolation = cfg
+            .hypervisor
+            .with_isolation
+            .map(Into::into)
+            .unwrap_or(virt::IsolationType::None);
+        // Pre-parse the IGVM file early so the backend can consume opaque
+        // isolation metadata before it creates memory regions or VPs.
         let igvm_file = if let LoadMode::Igvm { file, .. } = cfg.load_mode.boot_recipe() {
-            let igvm_file = super::vm_loaders::igvm::read_igvm_file(file)
-                .context("reading igvm file failed")?;
+            let igvm_file = super::vm_loaders::igvm::read_igvm_file(
+                file,
+                super::vm_loaders::igvm::igvm_isolation_type(partition_isolation),
+            )
+            .context("reading igvm file failed")?;
             Some(igvm_file)
         } else {
             None
+        };
+        let proto_partition_isolation = match partition_isolation {
+            virt::IsolationType::Snp => virt::ProtoPartitionIsolation::Snp(
+                igvm_file
+                    .as_ref()
+                    .map(super::vm_loaders::igvm::snp_isolation_config)
+                    .transpose()
+                    .context("reading IGVM SNP configuration failed")?
+                    .map(Box::new),
+            ),
+            isolation => isolation.into(),
         };
 
         let hv_config = if cfg.hypervisor.with_hv {
@@ -1103,11 +1123,7 @@ impl InitializedVm {
                 processor_topology: &processor_topology,
                 hv_config,
                 vmtime: &vmtime_source,
-                isolation: cfg
-                    .hypervisor
-                    .with_isolation
-                    .map(|typ| typ.into())
-                    .unwrap_or(virt::IsolationType::None),
+                isolation: proto_partition_isolation,
                 nested_virt: cfg.hypervisor.nested_virt,
                 #[cfg(guest_arch = "aarch64")]
                 device_assignment_msi_iova_range,
@@ -1232,8 +1248,13 @@ impl InitializedVm {
         });
 
         if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
-            if !cfg.load_mode.is_linux_direct_platform() {
-                anyhow::bail!("KVM SNP guest_memfd currently only supports direct Linux load mode");
+            if !matches!(
+                cfg.load_mode.boot_recipe(),
+                LoadMode::Linux { .. } | LoadMode::Igvm { .. }
+            ) {
+                anyhow::bail!(
+                    "KVM SNP guest_memfd currently only supports direct Linux or IGVM load mode"
+                );
             }
             if cfg.hypervisor.with_hv {
                 anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V enlightenments");
@@ -3418,6 +3439,12 @@ impl LoadedVmInner {
 
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
+                    igvm_isolation_type: super::vm_loaders::igvm::igvm_isolation_type(
+                        self.hypervisor_cfg
+                            .with_isolation
+                            .map(Into::into)
+                            .unwrap_or(virt::IsolationType::None),
+                    ),
                     gm: &self.gm,
                     processor_topology: &self.processor_topology,
                     mem_layout: &self.mem_layout,
@@ -3915,8 +3942,17 @@ impl LoadedVm {
         self.inner.next_igvm_file = None;
 
         // Load the new IGVM file into memory.
-        let igvm_file =
-            super::vm_loaders::igvm::read_igvm_file(file).context("reading igvm file failed")?;
+        let isolation = self
+            .inner
+            .hypervisor_cfg
+            .with_isolation
+            .map(Into::into)
+            .unwrap_or(virt::IsolationType::None);
+        let igvm_file = super::vm_loaders::igvm::read_igvm_file(
+            file,
+            super::vm_loaders::igvm::igvm_isolation_type(isolation),
+        )
+        .context("reading igvm file failed")?;
 
         self.inner.next_igvm_file = Some(igvm_file);
         Ok(())

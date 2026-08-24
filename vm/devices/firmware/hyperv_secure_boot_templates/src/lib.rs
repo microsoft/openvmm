@@ -16,7 +16,7 @@ macro_rules! include_templates {
         $(($fn_name:ident, $path:literal),)*
     ) => {
         $(
-            pub fn $fn_name() -> firmware_uefi_custom_vars::BaseTemplateJson {
+            pub fn $fn_name() -> firmware_uefi_custom_vars::BaseTemplate {
                 // DEVNOTE: in the future, it may be interesting to explore
                 // parsing the JSON at compile time, and then "baking" the
                 // parsed templates into the binary as a `const` value, instead
@@ -27,7 +27,9 @@ macro_rules! include_templates {
                 // in the final bin (given that much of the parsing + validation
                 // code is shared between both templates and user custom uefi
                 // JSON files), it may result in a nice .rodata size decrease.
-                include_bytes!(concat!(env!("OUT_DIR"), "/", $path)).to_vec().into()
+                firmware_uefi_custom_vars::BaseTemplate {
+                    json: include_bytes!(concat!(env!("OUT_DIR"), "/", $path)).to_vec().into(),
+                }
             }
         )*
 
@@ -36,8 +38,9 @@ macro_rules! include_templates {
             $(
                 #[test]
                 fn $fn_name() {
+                    let template = super::$fn_name();
                     hyperv_uefi_custom_vars_json::parse_template_json(
-                        super::$fn_name().as_bytes()
+                        template.json.as_bytes()
                     ).unwrap();
                 }
             )*
