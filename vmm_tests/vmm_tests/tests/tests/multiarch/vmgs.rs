@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use anyhow::Context;
 use petri::CommandError;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
@@ -16,11 +15,6 @@ use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
-use vmgs_format::VMGS_BYTES_PER_BLOCK;
-use vmgs_format::VMGS_DEFAULT_CAPACITY;
-use vmgs_format::VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE;
-use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
-use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
 use vmgs_resources::GuestStateEncryptionPolicy;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
@@ -157,18 +151,7 @@ async fn vmgstool_create<T: PetriVmmBackend>(
     Ok(())
 }
 
-/// Returns the capacity for a fresh VMGS plus one copy-on-write IGVM write.
-fn vmgs_capacity_for_igvm(igvm_size_upper_bound: u64) -> u64 {
-    const FILE_TABLE_COPIES_DURING_REWRITE: u64 = 2;
-
-    let block_size = u64::from(VMGS_BYTES_PER_BLOCK);
-    let payload_capacity = igvm_size_upper_bound.next_multiple_of(block_size);
-    let metadata_blocks = u64::from(VMGS_MIN_FILE_BLOCK_OFFSET)
-        + u64::from(VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE)
-        + FILE_TABLE_COPIES_DURING_REWRITE * u64::from(VMGS_FILE_TABLE_BLOCK_SIZE);
-
-    VMGS_DEFAULT_CAPACITY.max(payload_capacity + metadata_blocks * block_size)
-}
+const VMGS_CAPACITY: u64 = 64 * 1024 * 1024;
 
 /// Verifies `copy-igvmfile` by booting OpenHCL from the resulting VMGS.
 #[vmm_test(
@@ -185,21 +168,12 @@ async fn vmgstool_copy_igvmfile<T: PetriVmmBackend>(
     let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
 
-    // DLL length is the upper bound of the embedded IGVM, so that the PE resource parsing is owned by vmgstool
-    let vmgs_size = vmgs_capacity_for_igvm(
-        vmfw_dll
-            .get()
-            .metadata()
-            .context("failed to stat vmfw dll")?
-            .len(),
-    );
-
     let mut cmd = Command::new(vmgstool_path);
     cmd.arg("create")
         .arg("--filepath")
         .arg(&vmgs_path)
         .arg("--file-size")
-        .arg(vmgs_size.to_string());
+        .arg(VMGS_CAPACITY.to_string());
     run_host_cmd(cmd).await?;
 
     let mut cmd = Command::new(vmgstool_path);

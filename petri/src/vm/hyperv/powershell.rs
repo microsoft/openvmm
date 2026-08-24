@@ -343,7 +343,6 @@ impl HyperVNewCustomVMArgs {
     pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
         let available_properties = run_get_vssd_properties().await?;
         let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
-        self.enable_openhcl |= self.firmware_file.is_some();
         let is_openhcl = self.enable_openhcl;
 
         if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
@@ -2117,50 +2116,6 @@ pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Res
     .context("get_guest_state_file")?;
 
     Ok(PathBuf::from(output))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn openhcl_from_vmgs_sets_guest_feature_without_firmware_file() {
-        let ps_mod = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/vm/hyperv/hyperv.psm1");
-        let temp_dir = tempfile::tempdir().expect("failed to create temp directory");
-        let firmware_file = super::super::openhcl_firmware_path(true, true, temp_dir.path());
-        assert!(firmware_file.is_none());
-
-        let output = PowerShellBuilder::new()
-            .cmdlet("Import-Module")
-            .positional(&ps_mod)
-            .arg("ErrorAction", ps::RawVal::new("Stop"))
-            .next()
-            .cmdlet("$properties = @{}")
-            .next()
-            .cmdlet("Set-OpenHclVssdProperties")
-            .arg("VssdProperties", ps::RawVal::new("$properties"))
-            .arg("EnableOpenHCL", true)
-            .arg_opt("FirmwareFile", firmware_file)
-            .next()
-            .cmdlet("[PSCustomObject]@{ GuestFeatureSet = $properties['GuestFeatureSet']; HasFirmwareFile = $properties.ContainsKey('FirmwareFile') }")
-            .pipeline()
-            .cmdlet("ConvertTo-Json")
-            .flag("Compress")
-            .finish()
-            .build()
-            .output()
-            .expect("failed to run PowerShell");
-
-        assert!(
-            output.status.success(),
-            "PowerShell failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let properties: serde_json::Value =
-            serde_json::from_slice(&output.stdout).expect("invalid PowerShell JSON output");
-        assert_eq!(properties["GuestFeatureSet"], 0x00000201);
-        assert_eq!(properties["HasFirmwareFile"], false);
-    }
 }
 
 /// Sets the VTL2 settings (in the `Base` namespace) for a VM.

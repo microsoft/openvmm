@@ -53,7 +53,7 @@ pub struct BuildSelections {
     pub tmk_vmm_linux: bool,
     pub vmgstool: bool,
     pub vmgstool_dev: bool,
-    pub vmfirmwareigvm_cvm_x64: bool,
+    pub vmfirmwareigvm_cvm: bool,
     pub tpm_guest_tests_windows: bool,
     pub tpm_guest_tests_linux: bool,
     pub test_igvm_agent_rpc_server: bool,
@@ -279,11 +279,19 @@ impl SimpleFlowNode for Node {
                     openhcl_igvm_extras,
                 });
 
-                if build.vmfirmwareigvm_cvm_x64 && matches!(recipe, OpenhclIgvmRecipe::X64Cvm) {
+                if build.vmfirmwareigvm_cvm && matches!(recipe, OpenhclIgvmRecipe::X64Cvm) {
                     let igvm_bin = read_openhcl_igvm.map(ctx, |o| o.igvm_bin().to_path_buf());
-                    register_vmfirmwareigvm_cvm_x64 = Some(
-                        crate::build_vmfirmwareigvm_dll::cvm_x64_test_dll(ctx, igvm_bin),
-                    );
+                    register_vmfirmwareigvm_cvm_x64 =
+                        Some(ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
+                            arch: CommonArch::X86_64,
+                            igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::File(igvm_bin),
+                            resource_id: 13515,
+                            dll_version: ReadVar::from_static(
+                                crate::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
+                            ),
+                            internal_dll_name: petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64_FILE_NAME.into(),
+                            vmfirmwareigvm_dll: v,
+                        }));
                 }
 
                 register_openhcl_igvm_files.push(read_openhcl_igvm);

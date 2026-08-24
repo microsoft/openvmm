@@ -104,28 +104,6 @@ function Get-VmSasd
 # Hyper-V Configuration Cmdlets
 #
 
-function Set-OpenHclVssdProperties
-{
-    [CmdletBinding()]
-    Param (
-        [Parameter(Mandatory = $true)]
-        [hashtable] $VssdProperties,
-
-        [bool] $EnableOpenHCL = $false,
-
-        [string] $FirmwareFile = $null
-    )
-
-    if ($EnableOpenHCL -or $FirmwareFile) {
-        # A firmware file also implies the OpenHCL guest feature.
-        $VssdProperties["GuestFeatureSet"] = 0x00000201
-    }
-
-    if ($FirmwareFile) {
-        $VssdProperties["FirmwareFile"] = $FirmwareFile
-    }
-}
-
 # this function is optimized for performance and does minimal input validation
 function New-CustomVM
 {
@@ -282,7 +260,13 @@ function New-CustomVM
         $vssdProperties["GuestStateEncryptionPolicy"] = $GuestStateEncryptionPolicy
     }
 
-    Set-OpenHclVssdProperties -VssdProperties $vssdProperties -EnableOpenHCL $EnableOpenHCL -FirmwareFile $FirmwareFile
+    if ($EnableOpenHCL -or $FirmwareFile) {
+        $vssdProperties["GuestFeatureSet"] = 0x00000201
+    }
+
+    if ($FirmwareFile) {
+        $vssdProperties["FirmwareFile"] = $FirmwareFile
+    }
 
     if ($FirmwareParameters) {
         $vssdProperties["FirmwareParameters"] = [System.Text.Encoding]::UTF8.GetBytes($FirmwareParameters)

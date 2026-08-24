@@ -15,6 +15,7 @@ use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::build_vmfirmwareigvm_dll::VmfirmwareigvmDllOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::install_vmm_tests_deps::VmmTestsDepSelectionsLinux;
@@ -39,7 +40,7 @@ pub struct VmmTestsDepArtifacts {
     pub openhcl_standard: Option<ReadVar<OpenhclIgvmOutput>>,
     pub openhcl_standard_dev: Option<ReadVar<OpenhclIgvmOutput>>,
     pub openhcl_cvm: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub vmfirmwareigvm_cvm_x64_source: Option<ReadVar<OpenhclIgvmOutput>>,
+    pub vmfirmwareigvm_cvm_x64: Option<ReadVar<VmfirmwareigvmDllOutput>>,
     pub openhcl_linux_direct: Option<ReadVar<OpenhclIgvmOutput>>,
     pub tmks: Option<ReadVar<TmksOutput>>,
     pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
@@ -136,7 +137,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
-        ctx.import::<crate::build_vmfirmwareigvm_dll::Node>();
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
@@ -186,7 +186,7 @@ impl SimpleFlowNode for Node {
             openhcl_standard,
             openhcl_standard_dev,
             openhcl_cvm,
-            vmfirmwareigvm_cvm_x64_source,
+            vmfirmwareigvm_cvm_x64: register_vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct,
             tmks: register_tmks,
             tmk_vmm: register_tmk_vmm,
@@ -197,11 +197,6 @@ impl SimpleFlowNode for Node {
             tpm_guest_tests_linux: register_tpm_guest_tests_linux,
             test_igvm_agent_rpc_server: register_test_igvm_agent_rpc_server,
         } = dep_artifact_dirs;
-
-        let register_vmfirmwareigvm_cvm_x64 = vmfirmwareigvm_cvm_x64_source.map(|openhcl_cvm| {
-            let igvm_bin = openhcl_cvm.map(ctx, |o| o.igvm_bin().to_path_buf());
-            crate::build_vmfirmwareigvm_dll::cvm_x64_test_dll(ctx, igvm_bin)
-        });
 
         let register_openhcl_igvm_files = [
             openhcl_standard,

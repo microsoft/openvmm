@@ -202,6 +202,8 @@ impl IntoPipeline for CheckinGatesCli {
             pipeline.new_typed_artifact("aarch64-windows-vmm-tests-archive");
         let (pub_vmm_tests_archive_linux_aarch64, use_vmm_tests_archive_linux_aarch64) =
             pipeline.new_typed_artifact("aarch64-linux-vmm-tests-archive");
+        let (pub_vmfirmwareigvm_cvm_x64, use_vmfirmwareigvm_cvm_x64) =
+            pipeline.new_typed_artifact("x64-vmfirmwareigvm-cvm");
 
         // wrap each publish handle in an option, so downstream code can
         // `.take()` the handle when emitting the corresponding job
@@ -210,6 +212,7 @@ impl IntoPipeline for CheckinGatesCli {
         let mut pub_vmm_tests_archive_windows_x86 = Some(pub_vmm_tests_archive_windows_x86);
         let mut pub_vmm_tests_archive_windows_aarch64 = Some(pub_vmm_tests_archive_windows_aarch64);
         let mut pub_vmm_tests_archive_linux_aarch64 = Some(pub_vmm_tests_archive_linux_aarch64);
+        let mut pub_vmfirmwareigvm_cvm_x64 = Some(pub_vmfirmwareigvm_cvm_x64);
 
         // initialize the various "VmmTestsArtifactsBuilder" containers, which
         // are used to "skim off" various artifacts that the VMM test jobs
@@ -1007,6 +1010,7 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         let mut use_openhcl_igvm_files_mi_secure_x86 = BTreeMap::new();
+        let mut use_openhcl_cvm_for_vmfirmwareigvm_dll = None;
 
         // emit openhcl build job
         for (arch, mi_secure) in [
@@ -1064,6 +1068,10 @@ impl IntoPipeline for CheckinGatesCli {
                 (matches!(config, PipelineConfig::Ci) && !mi_secure)
                     .then(|| pipeline.new_typed_artifact(artifact_name_openhcl_baseline(arch)))
                     .unzip();
+            if arch == CommonArch::X86_64 && !mi_secure {
+                use_openhcl_cvm_for_vmfirmwareigvm_dll =
+                    use_openhcl_igvms.get(&OpenhclIgvmRecipe::X64Cvm).cloned();
+            }
 
             // skim off interesting artifacts required by the VMM tests job
             match (arch, mi_secure) {
@@ -1404,9 +1412,11 @@ impl IntoPipeline for CheckinGatesCli {
                         "missing required windows-amd-snp vmm_tests artifact: {missing}"
                     )
                 })?;
+            let use_vmfirmwareigvm_cvm_x64 = use_vmfirmwareigvm_cvm_x64.clone();
             Box::new(move |ctx| {
                 let mut artifacts = resolve(ctx);
-                artifacts.vmfirmwareigvm_cvm_x64_source = artifacts.openhcl_cvm.clone();
+                artifacts.vmfirmwareigvm_cvm_x64 =
+                    Some(ctx.use_typed_artifact(&use_vmfirmwareigvm_cvm_x64));
                 artifacts
             })
         };
@@ -1797,6 +1807,38 @@ impl IntoPipeline for CheckinGatesCli {
                 .finish();
 
             all_jobs.push(distro_build_job);
+        }
+
+        {
+            let use_openhcl_cvm = use_openhcl_cvm_for_vmfirmwareigvm_dll.unwrap();
+            let pub_vmfirmwareigvm_cvm_x64 = pub_vmfirmwareigvm_cvm_x64.take().unwrap();
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Windows,
+                    FlowArch::X86_64,
+                    "build vmfirmwareigvm cvm [x64-windows]",
+                )
+                .gh_set_pool(gh_pools::default_windows())
+                .ado_set_pool(ado_pools::default_windows())
+                .dep_on(
+                    move |ctx| flowey_lib_hvlite::build_vmfirmwareigvm_dll::Request {
+                        arch: CommonArch::X86_64,
+                        igvm_bin: flowey_lib_hvlite::build_vmfirmwareigvm_dll::IgvmInput::Openhcl(
+                            ctx.use_typed_artifact(&use_openhcl_cvm),
+                        ),
+                        resource_id: 13515,
+                        dll_version: ReadVar::from_static(
+                            flowey_lib_hvlite::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
+                        ),
+                        internal_dll_name:
+                            petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64_FILE_NAME
+                                .into(),
+                        vmfirmwareigvm_dll: ctx.publish_typed_artifact(pub_vmfirmwareigvm_cvm_x64),
+                    },
+                )
+                .finish();
+
+            all_jobs.push(job);
         }
 
         // all jobs depend on the quick-check gate

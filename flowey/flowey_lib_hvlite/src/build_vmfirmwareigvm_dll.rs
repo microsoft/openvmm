@@ -3,11 +3,19 @@
 
 //! Build an instance of `vmfirmwareigvm.dll`
 
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
-use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64_FILE_NAME;
 use std::collections::BTreeMap;
+
+pub const UNUSED_DLL_VERSION: (u16, u16, u16, u16) = (0, 0, 0, 0);
+
+#[derive(Serialize, Deserialize)]
+pub enum IgvmInput {
+    File(ReadVar<PathBuf>),
+    Openhcl(ReadVar<OpenhclIgvmOutput>),
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct VmfirmwareigvmDllOutput {
@@ -20,7 +28,7 @@ impl Artifact for VmfirmwareigvmDllOutput {}
 flowey_request! {
     pub struct Request {
         pub arch: CommonArch,
-        pub igvm_bin: ReadVar<PathBuf>,
+        pub igvm_bin: IgvmInput,
         /// ID to store the IGVM under within the `VMFW` resource type.
         pub resource_id: u32,
         /// (major, minor, patch, revision)
@@ -28,21 +36,6 @@ flowey_request! {
         pub internal_dll_name: String,
         pub vmfirmwareigvm_dll: WriteVar<VmfirmwareigvmDllOutput>,
     }
-}
-
-/// Builds the x64 CVM resource DLL under the SNP resource ID for the VMGS boot test.
-pub fn cvm_x64_test_dll(
-    ctx: &mut NodeCtx<'_>,
-    igvm_bin: ReadVar<PathBuf>,
-) -> ReadVar<VmfirmwareigvmDllOutput> {
-    ctx.reqv(|v| Request {
-        arch: CommonArch::X86_64,
-        igvm_bin,
-        resource_id: 13515,
-        dll_version: ReadVar::from_static((0, 0, 0, 0)),
-        internal_dll_name: LATEST_CVM_X64_FILE_NAME.into(),
-        vmfirmwareigvm_dll: v,
-    })
 }
 
 new_simple_flow_node!(struct Node);
@@ -63,6 +56,13 @@ impl SimpleFlowNode for Node {
             dll_version,
             vmfirmwareigvm_dll,
         } = request;
+
+        let igvm_bin = match igvm_bin {
+            IgvmInput::File(igvm_bin) => igvm_bin,
+            IgvmInput::Openhcl(openhcl_igvm) => {
+                openhcl_igvm.map(ctx, |o| o.igvm_bin().to_path_buf())
+            }
+        };
 
         let extra_env = ctx.emit_rust_stepv("determine vmfirmwareigvm_dll env vars", |ctx| {
             let igvm_bin = igvm_bin.claim(ctx);

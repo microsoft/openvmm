@@ -231,8 +231,6 @@ pub struct PetriVmConfig {
     pub host_log_levels: Option<OpenvmmLogConfig>,
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
-    /// Flag whether to load the paravisor IGVM from the VMGS guest firmware file
-    pub load_openhcl_from_vmgs: bool,
     /// The amount of memory, in bytes, to assign to the VM
     pub memory: MemoryConfig,
     /// The processor topology for the VM
@@ -460,7 +458,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
-                load_openhcl_from_vmgs: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -542,7 +539,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
-                load_openhcl_from_vmgs: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -1383,10 +1379,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Sets a custom OpenHCL IGVM file to use.
     pub fn with_custom_openhcl(mut self, artifact: ResolvedArtifact<impl IsOpenhclIgvm>) -> Self {
         match &mut self.config.firmware {
-            Firmware::OpenhclLinuxDirect { igvm_path, .. }
-            | Firmware::OpenhclPcat { igvm_path, .. }
-            | Firmware::OpenhclUefi { igvm_path, .. } => {
-                *igvm_path = artifact.erase();
+            Firmware::OpenhclLinuxDirect { igvm_firmware, .. }
+            | Firmware::OpenhclPcat { igvm_firmware, .. }
+            | Firmware::OpenhclUefi { igvm_firmware, .. } => {
+                *igvm_firmware = IgvmFirmwareSource::File(artifact.erase());
             }
             Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
                 panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
@@ -1395,13 +1391,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Boot the paravisor from the IGVM stored in the VMGS guest firmware file
+    /// Boot the paravisor from VMGS
     pub fn with_openhcl_from_vmgs(mut self) -> Self {
-        assert!(
-            self.config.firmware.is_openhcl(),
-            "Loading OpenHCL from VMGS is only supported for OpenHCL firmware."
-        );
-        self.config.load_openhcl_from_vmgs = true;
+        match &mut self.config.firmware {
+            Firmware::OpenhclLinuxDirect { igvm_firmware, .. }
+            | Firmware::OpenhclPcat { igvm_firmware, .. }
+            | Firmware::OpenhclUefi { igvm_firmware, .. } => {
+                *igvm_firmware = IgvmFirmwareSource::VmgsOrInBox;
+            }
+            Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
+                panic!("Loading OpenHCL from VMGS is only supported for OpenHCL firmware.")
+            }
+        }
         self
     }
 
@@ -2620,6 +2621,15 @@ pub enum PetriHardwareSealingPolicy {
     SignerPolicy,
 }
 
+/// Source for the IGVM firmware used to load OpenHCL.
+#[derive(Debug)]
+pub enum IgvmFirmwareSource {
+    /// Load the IGVM from the specified file.
+    File(ResolvedArtifact),
+    /// Load the IGVM from VMGS, falling back to the in-box firmware.
+    VmgsOrInBox,
+}
+
 /// Firmware to load into the test VM.
 // TODO: remove the guests from the firmware enum so that we don't pass them
 // to the VMM backend after we have already used them generically.
@@ -2634,8 +2644,8 @@ pub enum Firmware {
     },
     /// Boot Linux directly, without any firmware, with OpenHCL in VTL2.
     OpenhclLinuxDirect {
-        /// The path to the IGVM file to use.
-        igvm_path: ResolvedArtifact,
+        /// The source for the IGVM firmware.
+        igvm_firmware: IgvmFirmwareSource,
         /// OpenHCL configuration
         openhcl_config: OpenHclConfig,
     },
@@ -2654,8 +2664,8 @@ pub enum Firmware {
     OpenhclPcat {
         /// The guest OS the VM will boot into.
         guest: PcatGuest,
-        /// The path to the IGVM file to use.
-        igvm_path: ResolvedArtifact,
+        /// The source for the IGVM firmware.
+        igvm_firmware: IgvmFirmwareSource,
         /// The firmware to use.
         bios_firmware: ResolvedOptionalArtifact,
         /// The SVGA firmware to use.
@@ -2678,8 +2688,8 @@ pub enum Firmware {
         guest: UefiGuest,
         /// The isolation type of the VM.
         isolation: Option<IsolationType>,
-        /// The path to the IGVM file to use.
-        igvm_path: ResolvedArtifact,
+        /// The source for the IGVM firmware.
+        igvm_firmware: IgvmFirmwareSource,
         /// UEFI configuration
         uefi_config: UefiConfig,
         /// OpenHCL configuration
@@ -2792,7 +2802,9 @@ impl Firmware {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
         match arch {
             MachineArch::X86_64 => Firmware::OpenhclLinuxDirect {
-                igvm_path: resolver.require(LATEST_LINUX_DIRECT_TEST_X64).erase(),
+                igvm_firmware: IgvmFirmwareSource::File(
+                    resolver.require(LATEST_LINUX_DIRECT_TEST_X64).erase(),
+                ),
                 openhcl_config: Default::default(),
             },
             MachineArch::Aarch64 => todo!("Linux direct not yet supported on aarch64"),
@@ -2816,7 +2828,7 @@ impl Firmware {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
         Firmware::OpenhclPcat {
             guest,
-            igvm_path: resolver.require(LATEST_STANDARD_X64).erase(),
+            igvm_firmware: IgvmFirmwareSource::File(resolver.require(LATEST_STANDARD_X64).erase()),
             bios_firmware: resolver.try_require(PCAT_FIRMWARE_X64).erase(),
             svga_firmware: resolver.try_require(SVGA_FIRMWARE_X64).erase(),
             openhcl_config: OpenHclConfig {
@@ -2849,15 +2861,15 @@ impl Firmware {
         isolation: Option<IsolationType>,
     ) -> Self {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
-        let igvm_path = match arch {
+        let igvm_firmware = IgvmFirmwareSource::File(match arch {
             MachineArch::X86_64 if isolation.is_some() => resolver.require(LATEST_CVM_X64).erase(),
             MachineArch::X86_64 => resolver.require(LATEST_STANDARD_X64).erase(),
             MachineArch::Aarch64 => resolver.require(LATEST_STANDARD_AARCH64).erase(),
-        };
+        });
         Firmware::OpenhclUefi {
             guest,
             isolation,
-            igvm_path,
+            igvm_firmware,
             uefi_config: Default::default(),
             openhcl_config: Default::default(),
         }
@@ -3020,11 +3032,11 @@ impl Firmware {
     }
 
     #[cfg_attr(not(windows), expect(dead_code))]
-    fn openhcl_firmware(&self) -> Option<&Path> {
+    fn openhcl_firmware(&self) -> Option<&IgvmFirmwareSource> {
         match self {
-            Firmware::OpenhclLinuxDirect { igvm_path, .. }
-            | Firmware::OpenhclUefi { igvm_path, .. }
-            | Firmware::OpenhclPcat { igvm_path, .. } => Some(igvm_path.get()),
+            Firmware::OpenhclLinuxDirect { igvm_firmware, .. }
+            | Firmware::OpenhclUefi { igvm_firmware, .. }
+            | Firmware::OpenhclPcat { igvm_firmware, .. } => Some(igvm_firmware),
             Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
         }
     }

@@ -34,7 +34,9 @@ impl SimpleFlowNode for Node {
 
         let built_dll = ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
             arch,
-            igvm_bin: ReadVar::from_static(igvm_payload),
+            igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::File(ReadVar::from_static(
+                igvm_payload,
+            )),
             // custom-vmfirmwareigvm-dll pipeline uses resource ID 1.
             resource_id: 1,
             // fixed version to signal that this is a custom dll

@@ -834,7 +834,7 @@ impl ResolvedArtifactSelections {
             }
 
             petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64::GLOBAL_UNIQUE_ID => {
-                self.build.vmfirmwareigvm_cvm_x64 = true;
+                self.build.vmfirmwareigvm_cvm = true;
                 self.build.openhcl_cvm = true;
             }
 
