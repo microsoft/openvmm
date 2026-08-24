@@ -47,13 +47,13 @@ const HIBERNATE_TOKEN_CURRENT: [u8; 8] = [0x09, 0x01, 0, 0, 0, 0, 0, 0];
 ///
 /// This exercises the non-paravisor path: the guest's power request reaches the
 /// host emulation directly (x86_64 ACPI PM device, aarch64 reset intercept).
-#[vmm_test_with(
-    noagent,
-    configs(
-        openvmm_uefi_x64(guest_test_uefi_x64),
-        openvmm_uefi_aarch64(guest_test_uefi_aarch64)
-    )
-)]
+///
+/// Only x86_64 runs in CI. The aarch64 path is fully scaffolded (guest PSCI
+/// `SYSTEM_OFF2` in `guest_test_uefi`, `virt_whp` `InterceptSystemReset`, and the
+/// reset-intercept mapping), but the WHP-based aarch64-windows runner does not
+/// surface the hibernate intercept, so its config is omitted until the
+/// hypervisor delivers it.
+#[vmm_test_with(noagent, configs(openvmm_uefi_x64(guest_test_uefi_x64)))]
 async fn hibernate_halts<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config
         .with_windows_secure_boot_template()
@@ -79,12 +79,12 @@ async fn hibernate_halts<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 /// The guest requests hibernation; OpenHCL records the current firmware version
 /// in `HIBERNATION_TOKEN` before notifying the host, which then surfaces a
 /// hibernate halt. Afterwards the persisted token is read back from VMGS.
+///
+/// Only x86_64 runs in CI; see `hibernate_halts` for why the aarch64 config is
+/// omitted pending WHP hibernate-intercept support.
 #[vmm_test_with(
     noagent,
-    configs(
-        openvmm_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE],
-        openvmm_openhcl_uefi_aarch64(guest_test_uefi_aarch64)[VMGSTOOL_NATIVE]
-    )
+    configs(openvmm_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE])
 )]
 async fn hibernate_token<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
