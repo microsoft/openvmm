@@ -171,13 +171,14 @@ impl HypercallPlatformTrait for HvTestCtx {
         let inp_len = input.len().min(self.hvcall.input_page.buffer.len());
         let out_len = output.len().min(self.hvcall.output_page.buffer.len());
 
+        // Clear input/output page
+        self.hvcall.input_page.buffer.fill(0);
+        self.hvcall.output_page.buffer.fill(0);
+
         // Write to input page
         self.hvcall.input_page.buffer[0..inp_len].copy_from_slice(&input[0..inp_len]);
 
         let result = if out_len == 0 && inp_len <= 16 && cfg.fast_call {
-            // Clear rest of input page if inp_len < 16
-            self.hvcall.input_page.buffer[inp_len..16].fill(0);
-
             // Do a fast pass-by-register call
             self.hvcall.dispatch_hvcall_fast(code)
         } else {
