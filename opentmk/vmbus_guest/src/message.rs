@@ -192,7 +192,6 @@ impl CompletionSlot {
 pub struct CompletionHandle {
     key: CompletionKey,
     slot: Arc<CompletionSlot>,
-    table: Arc<CompletionTableInner>,
 }
 
 impl CompletionHandle {
@@ -217,21 +216,24 @@ impl CompletionHandle {
     }
 }
 
-impl Drop for CompletionHandle {
-    fn drop(&mut self) {
-        // The table only holds a `Weak`, so dropping this handle
-        // implicitly makes the slot unreachable (Weak::upgrade returns
-        // None) — but we still want to prune the map entry so
-        // `pending()` reflects reality. Remove only when this is the
-        // final strong reference to the slot.
-        if Arc::strong_count(&self.slot) == 1 {
-            let _ = self.table.entries.lock().remove(&self.key);
-        }
-    }
-}
+// Note: no `impl Drop for CompletionHandle`.
+//
+// The table only holds a `Weak<CompletionSlot>`, so dropping the
+// last handle implicitly makes `Weak::upgrade` return `None` on
+// subsequent `deliver` calls — no orphan-completion bug. The map
+// entry sticks around until [`CompletionTable::pending`] next runs,
+// which prunes dead entries via `retain(|_, w| w.strong_count() > 0)`.
+//
+// A previous Drop impl removed the map entry when the last handle
+// dropped. That removal was redundant with `pending()`'s prune, and
+// also worse: if a second `register(key)` had raced in between the
+// first handle being dropped and Drop running, the Drop would have
+// removed the map's entry pointing at the SECOND slot, orphaning
+// slot #2's live handle. See the plumbing code-review notes for
+// the full trace of that scenario.
 
 /// Guts of [`CompletionTable`] — kept behind an [`Arc`] so
-/// [`CompletionHandle::drop`] can reach the entries map without holding
+/// [`CompletionHandle`] can reach the entries map without holding
 /// a reference to the table itself.
 #[derive(Debug)]
 struct CompletionTableInner {
@@ -273,11 +275,7 @@ impl CompletionTable {
     pub fn register(&self, key: CompletionKey) -> CompletionHandle {
         let slot = Arc::new(CompletionSlot::new());
         self.inner.entries.lock().insert(key, Arc::downgrade(&slot));
-        CompletionHandle {
-            key,
-            slot,
-            table: self.inner.clone(),
-        }
+        CompletionHandle { key, slot }
     }
 
     /// Deliver the completion for `key` by handing off `response` bytes.

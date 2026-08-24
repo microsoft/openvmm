@@ -190,7 +190,7 @@ fn message_parse_rejects_wrong_type() {
 #[test]
 fn virt_to_phys_is_identity_today() {
     let x = 0xDEAD_BEEF_u64;
-    let ptr = &x as *const u64;
+    let ptr = core::ptr::from_ref::<u64>(&x);
     assert_eq!(crate::virt_to_phys(ptr), ptr as u64);
     // Null pointer is defined to map to 0 under a raw cast.
     let null_ptr: *const u8 = core::ptr::null();
@@ -1612,6 +1612,8 @@ mod synic_tests {
 
 mod ring_tests {
     use crate::Error;
+    use crate::protocol::GpaDirectHeader;
+    use crate::protocol::GpaRange;
     use crate::protocol::PacketDescriptor;
     use crate::protocol::PacketFlags;
     use crate::protocol::PacketType;
@@ -1914,8 +1916,6 @@ mod ring_tests {
     /// descriptor, GpaDirectHeader, GpaRange, PFN list, then payload.
     #[test]
     fn write_gpa_direct_layout() {
-        use crate::protocol::{GpaDirectHeader, GpaRange};
-
         let (send, recv) = pair(4096);
         let pfns = [0x1000u64, 0x1001, 0x1002];
         let byte_count = 3 * 4096;

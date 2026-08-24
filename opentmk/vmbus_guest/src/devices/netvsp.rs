@@ -1439,8 +1439,9 @@ impl Netvsp {
             flags,
             tid,
         )?;
-        let _ = need_signal;
-        self.channel.signal(ctx)?;
+        if need_signal {
+            self.channel.signal(ctx)?;
+        }
         log::info!("netvsp: RNDIS INITIALIZE sent (tid={:#x})", tid);
 
         // Wait for the two responses on the recv ring:
@@ -1590,8 +1591,11 @@ impl Netvsp {
                                 ty: None,
                                 reason: "encode V1_SEND_RNDIS_PKT_COMPLETE",
                             })?;
-                            self.send.write_completion(&comp_frame[..m], host_tid)?;
-                            self.channel.signal(ctx)?;
+                            let need_signal =
+                                self.send.write_completion(&comp_frame[..m], host_tid)?;
+                            if need_signal {
+                                self.channel.signal(ctx)?;
+                            }
                             log::info!(
                                 "netvsp: xfer-page COMP sent back (host_tid={:#x})",
                                 host_tid
@@ -1732,10 +1736,12 @@ impl Netvsp {
         let rndis_gpa = crate::virt_to_phys(rndis_ptr);
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
-        let _need_signal =
+        let need_signal =
             self.send
                 .write_gpa_direct(&pfns, offset, total_len, &nvsp_frame[..n], flags, tid)?;
-        self.channel.signal(ctx)?;
+        if need_signal {
+            self.channel.signal(ctx)?;
+        }
         log::info!(
             "netvsp: RNDIS SET packet_filter={:#x} sent (tid={:#x})",
             filter,
@@ -1835,8 +1841,10 @@ impl Netvsp {
                                 ty: None,
                                 reason: "encode SET-ack",
                             })?;
-                            self.send.write_completion(&cf[..m], host_tid)?;
-                            self.channel.signal(ctx)?;
+                            let need_signal = self.send.write_completion(&cf[..m], host_tid)?;
+                            if need_signal {
+                                self.channel.signal(ctx)?;
+                            }
                         }
                         _ => {
                             log::debug!(
@@ -2031,10 +2039,12 @@ impl Netvsp {
         let rndis_gpa = crate::virt_to_phys(rndis_ptr);
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
-        let _need_signal =
+        let need_signal =
             self.send
                 .write_gpa_direct(&pfns, offset, total_len, &nvsp_frame[..n], flags, tid)?;
-        self.channel.signal(ctx)?;
+        if need_signal {
+            self.channel.signal(ctx)?;
+        }
         // Register the buffer for reclaim BEFORE we might block on
         // the recv ring: any code path from here on that returns
         // early must not touch `rndis_ptr` (the tracker owns it now).
@@ -2224,8 +2234,10 @@ impl Netvsp {
                             ty: None,
                             reason: "encode V1_SEND_RNDIS_PKT_COMPLETE",
                         })?;
-                        self.send.write_completion(&comp_frame[..m], host_tid)?;
-                        self.channel.signal(ctx)?;
+                        let need_signal = self.send.write_completion(&comp_frame[..m], host_tid)?;
+                        if need_signal {
+                            self.channel.signal(ctx)?;
+                        }
                     }
                     crate::protocol::PacketType::VM_PKT_COMP => {
                         // Might be a completion for a fire-and-forget
@@ -2280,11 +2292,9 @@ impl Netvsp {
         let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
         let need_signal = self.send.write_inband(frame, flags, tid)?;
-        // Openvmm-style host reader wakes on empty→non-empty
-        // signal or on interrupt-mask 0 kicks. We always signal for
-        // safety on the small-batch handshake path.
-        let _ = need_signal;
-        self.channel.signal(ctx)?;
+        if need_signal {
+            self.channel.signal(ctx)?;
+        }
 
         // Spin the recv ring waiting for a VM_PKT_COMP with matching tid.
         let mut recv_buf = [0u8; 512];
@@ -2328,8 +2338,10 @@ impl Netvsp {
             return Err(Error::Rescinded);
         }
         let need_signal = self.send.write_inband(frame, PacketFlags::new(), 0)?;
-        let _ = need_signal;
-        self.channel.signal(ctx)
+        if need_signal {
+            self.channel.signal(ctx)?;
+        }
+        Ok(())
     }
 
     fn alloc_transaction_id(&mut self) -> u64 {
@@ -2365,8 +2377,10 @@ impl Netvsp {
             ty: None,
             reason: "encode xfer-page ack",
         })?;
-        self.send.write_completion(&cf[..m], host_tid)?;
-        self.channel.signal(ctx)?;
+        let need_signal = self.send.write_completion(&cf[..m], host_tid)?;
+        if need_signal {
+            self.channel.signal(ctx)?;
+        }
         Ok(())
     }
 

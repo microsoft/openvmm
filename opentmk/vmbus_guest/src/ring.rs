@@ -48,10 +48,15 @@
 //! let mut flags = PacketFlags::new();
 //! flags.set_request_completion(true);
 //! let need_signal = send.write_inband(payload, flags, /*tid=*/ 42)?;
-//! // Always signal after a successful write. The `bool` is
-//! // informational; the host's interrupt-mask + pending_send_sz
-//! // machinery already decides whether the signal is needed.
-//! channel.signal(&mut ctx)?;
+//! // `need_signal` (returned by every `write_*` method) is `true`
+//! // exactly when this write crossed the empty→non-empty transition
+//! // AND the peer hasn't masked interrupts. Signal only when it's
+//! // true — unconditional signalling wakes the host once per packet
+//! // and risks Hyper-V's DoS throttling (see the top-level note on
+//! // the writer signalling only on empty→non-empty).
+//! if need_signal {
+//!     channel.signal(&mut ctx)?;
+//! }
 //! # Ok::<_, vmbus_guest::Error>(())
 //! ```
 //!
@@ -101,6 +106,7 @@ use crate::protocol::PacketDescriptor;
 use crate::protocol::PacketType;
 use alloc::boxed::Box;
 use alloc::vec;
+use core::marker::PhantomData;
 use core::mem::size_of;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
@@ -447,8 +453,15 @@ fn available_data(write_idx: u32, read_idx: u32, ring_len: u32) -> u32 {
 }
 
 /// Writer half of a ring buffer.
+///
+/// Concurrency-unsafe on purpose: a ring is a single-producer /
+/// single-consumer channel, and the writer side owns the
+/// `pending_send_sz` protocol on the control page. The
+/// `PhantomData<*const ()>` marker makes `SendRing` `!Send + !Sync`
+/// so callers can't accidentally share a writer across threads.
 pub struct SendRing<M: RingMem> {
     mem: M,
+    _not_send_sync: PhantomData<*const ()>,
 }
 
 impl<M: RingMem> SendRing<M> {
@@ -465,7 +478,10 @@ impl<M: RingMem> SendRing<M> {
     pub fn new(mem: M) -> Self {
         ctrl_feature_bits(&mem).store(FEATURE_SUPPORTS_PENDING_SEND_SIZE, Ordering::Relaxed);
         ctrl_pending_send(&mem).store(0, Ordering::Relaxed);
-        Self { mem }
+        Self {
+            mem,
+            _not_send_sync: PhantomData,
+        }
     }
 
     /// Set the pending-send-size hint on our SendRing's control page.
@@ -613,7 +629,18 @@ impl<M: RingMem> SendRing<M> {
 
     /// Post a packet of arbitrary type. `ext_header` is placed between
     /// the descriptor and payload (used e.g. for GPA-direct headers).
-    /// Returns whether the caller should signal.
+    ///
+    /// # Return value
+    ///
+    /// Returns `Ok(true)` exactly when this write crossed the ring
+    /// from empty to non-empty **and** the peer hasn't masked
+    /// interrupts (`interrupt_mask == 0`). Callers should invoke
+    /// [`crate::channel::Channel::signal`] **only** on that transition
+    /// — signalling on every packet risks Hyper-V's DoS throttling
+    /// (see the module-level note on empty→non-empty signalling).
+    /// Returns `Ok(false)` on a successful write that doesn't cross
+    /// the transition (host already has data queued or has masked
+    /// interrupts).
     pub fn write_packet(
         &self,
         packet_type: PacketType,
@@ -742,8 +769,16 @@ impl<M: RingMem> SendRing<M> {
 }
 
 /// Reader half of a ring buffer.
+///
+/// Concurrency-unsafe on purpose: a ring is a single-producer /
+/// single-consumer channel, and the reader side owns the read-index
+/// publish that pairs with the writer's `pending_send_sz` protocol.
+/// The `PhantomData<*const ()>` marker makes `RecvRing` `!Send +
+/// !Sync` so callers can't accidentally share a reader across
+/// threads.
 pub struct RecvRing<M: RingMem> {
     mem: M,
+    _not_send_sync: PhantomData<*const ()>,
 }
 
 /// A packet returned by [`RecvRing::read`].
@@ -761,7 +796,10 @@ pub struct RecvPacket<'a> {
 impl<M: RingMem> RecvRing<M> {
     /// Construct a new recv ring over `mem`.
     pub fn new(mem: M) -> Self {
-        Self { mem }
+        Self {
+            mem,
+            _not_send_sync: PhantomData,
+        }
     }
 
     /// Backing memory.

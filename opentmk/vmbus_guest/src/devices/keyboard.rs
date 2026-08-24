@@ -290,8 +290,9 @@ impl Keyboard {
         let mut flags = crate::ring::PacketFlags::new();
         flags.set_request_completion(true);
         let need_signal = self.send.write_inband(payload, flags, 0)?;
-        let _ = need_signal;
-        self.channel.signal(ctx)?;
+        if need_signal {
+            self.channel.signal(ctx)?;
+        }
         Ok(())
     }
 

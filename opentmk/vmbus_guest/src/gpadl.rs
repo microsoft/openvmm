@@ -61,6 +61,7 @@ use crate::protocol::GpaRange;
 use crate::protocol::GpadlBody;
 use crate::protocol::GpadlHeader;
 use crate::protocol::GpadlId;
+use crate::protocol::GpadlTeardown;
 use crate::protocol::HEADER_SIZE;
 use crate::protocol::MAX_MESSAGE_SIZE;
 use crate::protocol::MessageHeader;
@@ -68,6 +69,8 @@ use crate::protocol::MessageType;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::mem::size_of_val;
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::Ordering;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::IntoBytes;
@@ -330,9 +333,6 @@ where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: crate::connection::MessagePump,
 {
-    use crate::protocol::GpadlTeardown;
-    use crate::protocol::MAX_MESSAGE_SIZE;
-
     let msg = GpadlTeardown {
         channel_id: handle.channel_id,
         gpadl_id: handle.gpadl_id,
@@ -392,8 +392,6 @@ pub fn teardown_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>
 /// Allocate a fresh `GpadlId`. Uses a process-wide atomic counter,
 /// starting at 1 so a zero id can be used as a sentinel.
 pub fn allocate_gpadl_id() -> GpadlId {
-    use core::sync::atomic::AtomicU32;
-    use core::sync::atomic::Ordering;
     static NEXT_ID: AtomicU32 = AtomicU32::new(1);
     GpadlId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
 }

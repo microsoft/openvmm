@@ -55,6 +55,8 @@
 use crate::Error;
 use crate::Result;
 use crate::hypercalls::set_vp_registers;
+#[cfg(target_os = "uefi")]
+use core::alloc::Layout;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvSynicSimpSiefp;
@@ -261,8 +263,6 @@ pub fn preallocate_synic_pages() -> Result<SynicPages> {
 /// way, the returned pointer is 4 KiB-aligned and zeroed.
 #[cfg(target_os = "uefi")]
 fn allocate_synic_pages() -> Result<SynicPages> {
-    use core::alloc::Layout;
-
     let layout = Layout::from_size_align(hvdef::HV_PAGE_SIZE_USIZE, hvdef::HV_PAGE_SIZE_USIZE)
         .map_err(|_| Error::Hypercall(opentmk_core::tmkdefs::TmkError::AllocationFailed))?;
 

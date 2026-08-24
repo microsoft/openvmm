@@ -163,15 +163,15 @@
 //!
 //! Two subtleties trip up first-time callers of the ring API:
 //!
-//! * **Signal after every write.** [`ring::SendRing::write_packet`]
-//!   (and its wrappers `write_inband`, `write_completion`,
-//!   `write_gpa_direct`) return `Ok(true)` on the exact
-//!   empty→non-empty transition. Callers should invoke
-//!   [`channel::Channel::signal`] whenever the write succeeds — the
-//!   vdev helpers already do this. If you're writing raw ring code,
-//!   don't rely on the `bool` for correctness; always signal, and let
-//!   the ring's `pending_send_sz` protocol take care of avoiding
-//!   spurious host wakes.
+//! * **Signal only on the empty→non-empty transition.**
+//!   [`ring::SendRing::write_packet`] (and its wrappers
+//!   `write_inband`, `write_completion`, `write_gpa_direct`) return
+//!   `Ok(true)` exactly when this write crossed the ring from empty
+//!   to non-empty **and** the host hasn't masked interrupts.
+//!   Signal via [`channel::Channel::signal`] only when the returned
+//!   `bool` is `true`. Signalling on every packet works, but wakes
+//!   the host once per packet and risks Hyper-V's DoS throttling.
+//!   The vdev helpers do the right thing already.
 //!
 //! * **Drain the recv ring frequently.** For any TX buffer that
 //!   references guest memory (netvsp uses GPA-direct), the host holds
