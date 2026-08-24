@@ -1773,27 +1773,16 @@ define_winevents!(
 ///
 /// Event IDs are not unique across providers, so the results are filtered by
 /// provider and ID here rather than trusting the ID filter alone.
-///
-/// `query_providers` additionally narrows what `Get-WinEvent` itself scans.
-/// Only providers whose channels are all guaranteed to exist belong here:
-/// naming a provider makes `Get-WinEvent` enumerate every channel the provider
-/// declares and report an error for any that is missing, which is why
-/// `Microsoft-Windows-Hyper-V-VMMS` (which declares the failover clustering
-/// channels) can't be listed.
 async fn hyperv_events(
     logs: &[&str],
-    query_providers: &[&str],
     events: &[WinEventId],
     vmid: &Guid,
     start_time: &Timestamp,
 ) -> anyhow::Result<Vec<WinEvent>> {
-    let mut ids: Vec<_> = events.iter().map(|e| e.id).collect();
-    ids.sort_unstable();
-    ids.dedup();
+    let ids: Vec<_> = events.iter().map(|e| e.id).collect();
 
     let vmid = vmid.to_string();
-    let mut found =
-        run_get_winevent(logs, query_providers, Some(start_time), Some(&vmid), &ids).await?;
+    let mut found = run_get_winevent(logs, &[], Some(start_time), Some(&vmid), &ids).await?;
     found.retain(|e| events.iter().any(|w| w.matches(e)));
     Ok(found)
 }
@@ -1803,14 +1792,7 @@ pub async fn hyperv_boot_events(
     vmid: &Guid,
     start_time: &Timestamp,
 ) -> anyhow::Result<Vec<WinEvent>> {
-    hyperv_events(
-        &[HYPERV_WORKER_TABLE],
-        &[HYPERV_CHIPSET_PROVIDER],
-        BOOT_EVENTS,
-        vmid,
-        start_time,
-    )
-    .await
+    hyperv_events(&[HYPERV_WORKER_TABLE], BOOT_EVENTS, vmid, start_time).await
 }
 
 /// Get Hyper-V halt event logs for a VM
@@ -1820,7 +1802,6 @@ pub async fn hyperv_halt_events(
 ) -> anyhow::Result<Vec<WinEvent>> {
     hyperv_events(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
-        &[],
         HALT_EVENTS,
         vmid,
         start_time,
