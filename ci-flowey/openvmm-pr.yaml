@@ -44,7 +44,7 @@ jobs:
     displayName: rustup (Linux)
   - bash: |
       set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
       ./rustup-init.exe -y --default-toolchain=1.95.0
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
@@ -417,11 +417,9 @@ jobs:
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 7
     displayName: cargo clippy
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 6
-    displayName: cargo clippy
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 8
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 6
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::init_cross_build 0
     displayName: cargo clippy
   - bash: |-
@@ -447,6 +445,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -467,87 +467,28 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 15 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::install_cargo_nextest 0
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::init_cross_build 1
-    displayName: installing cargo-nextest
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_build 1
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_build 2
-    displayName: cargo build xtask
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_split_debug_info 0
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_build 3
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_xtask 1
-    displayName: split debug symbols
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 0
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::init_cross_build 3
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 0
-    displayName: determine unit test exclusions
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 5
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 0
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 5
-      $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 0
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-musl-unit-tests-base' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar1)
-      testRunTitle: x64-linux-musl-unit-tests-base
-    displayName: 'publish test results: x64-linux-musl-unit-tests-base (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 2
-      $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 1
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 4
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 5
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 7
-      $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 4
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 6
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-musl-unit-tests-crypto-native' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar3)
-      testRunTitle: x64-linux-musl-unit-tests-crypto-native
-    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-native (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 4
-      $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 3
+    displayName: installing cargo-nextest
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 3
     displayName: generate nextest command
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 8
       $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 9
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 9
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 3
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 5
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 8
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 8
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 4
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-rust' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -565,11 +506,12 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 6
       $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 7
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 11
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 4
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 7
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 6
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 10
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 6
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-openssl' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -587,11 +529,12 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 10
       $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 11
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 1
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 5
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 9
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 10
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:10:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar6
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 8
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:10:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar6
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-symcrypt' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -609,11 +552,12 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 2
       $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 3
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 3
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 6
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 11
       $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 2
-      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 10
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-all' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -624,7 +568,67 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::init_cross_build 1
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_build 1
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_build 2
+    displayName: cargo build xtask
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_split_debug_info 0
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_build 3
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_xtask 1
+    displayName: split debug symbols
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 0
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 0
+    displayName: determine unit test exclusions
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 5
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 0
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 1
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 1
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 1
+      $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 0
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-musl-unit-tests-base' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar1)
+      testRunTitle: x64-linux-musl-unit-tests-base
+    displayName: 'publish test results: x64-linux-musl-unit-tests-base (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 2
+      $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 1
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 4
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 5
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 2
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 3
+      $(FLOWEY_BIN) e 15 flowey_lib_common::ado_task_publish_test_results 4
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 2
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-musl-unit-tests-crypto-native' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar3)
+      testRunTitle: x64-linux-musl-unit-tests-crypto-native
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-native (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 7
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
@@ -765,6 +769,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -785,7 +791,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 14 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -801,6 +807,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 8
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 9
+      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 3
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 5
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 8
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 4
@@ -823,6 +830,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 6
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 7
+      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 4
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 7
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 6
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 6
@@ -845,6 +853,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 2
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 3
+      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 5
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 9
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 2
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 8
@@ -881,6 +890,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 1
+      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 1
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 0
@@ -903,6 +913,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 4
       $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 5
+      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 2
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 3
       $(FLOWEY_BIN) e 14 flowey_lib_common::ado_task_publish_test_results 4
       $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 2
@@ -918,7 +929,7 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 1
+      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 6
       $(FLOWEY_BIN) e 14 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
@@ -951,7 +962,7 @@ jobs:
     displayName: rustup (Linux)
   - bash: |
       set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
       ./rustup-init.exe -y --default-toolchain=1.95.0
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
@@ -1096,6 +1107,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -1116,38 +1129,17 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 13 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::install_cargo_nextest 0
-      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::init_cross_build 1
-      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::run_cargo_nextest_run 2
-    displayName: installing cargo-nextest
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 1
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_nextest_run 4
-      $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_nextest_run 5
-      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 5
-      $(FLOWEY_BIN) e 13 flowey_lib_common::ado_task_publish_test_results 4
-      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
-      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-windows-unit-tests-crypto-rust' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar3)
-      testRunTitle: x64-windows-unit-tests-crypto-rust
-    displayName: 'publish test results: x64-windows-unit-tests-crypto-rust (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::init_cross_build 3
+    displayName: installing cargo-nextest
+  - bash: |-
+      set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_build 1
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::build_xtask 1
@@ -1155,6 +1147,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::init_cross_build 1
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::run_cargo_nextest_run 0
     displayName: determine unit test exclusions
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 2
@@ -1163,11 +1156,12 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 1
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::build_nextest_unit_tests 1
+      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 5
       $(FLOWEY_BIN) e 13 flowey_lib_common::ado_task_publish_test_results 0
-      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 4
+      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-windows-unit-tests-base' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -1185,11 +1179,12 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_nextest_run 2
       $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_nextest_run 3
-      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 3
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::build_nextest_unit_tests 2
+      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 13 flowey_lib_common::ado_task_publish_test_results 2
-      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
-      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-windows-unit-tests-crypto-native' nextest tests
   - task: PublishTestResults@2
     inputs:
@@ -1200,7 +1195,30 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::build_nextest_unit_tests 1
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::run_cargo_nextest_run 2
+      $(FLOWEY_BIN) e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 1
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_nextest_run 4
+      $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_nextest_run 5
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::build_nextest_unit_tests 3
+      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 3
+      $(FLOWEY_BIN) e 13 flowey_lib_common::ado_task_publish_test_results 4
+      $(FLOWEY_BIN) e 13 flowey_lib_common::publish_test_results 2
+      $FLOWEY_BIN v 13 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 13 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-windows-unit-tests-crypto-rust' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar3)
+      testRunTitle: x64-windows-unit-tests-crypto-rust
+    displayName: 'publish test results: x64-windows-unit-tests-crypto-rust (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::build_nextest_unit_tests 4
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
@@ -1783,6 +1801,185 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-openhcl-igvm-test-linux-direct-extras
     displayName: 🌼📦 Publish x64-openhcl-igvm-test-linux-direct-extras
     artifact: x64-openhcl-igvm-test-linux-direct-extras
+- job: job22
+  displayName: build vmfirmwareigvm cvm [x64-windows]
+  pool:
+    demands:
+    - ImageOverride -equals win-amd64-v2
+    name: openvmm-ado-amd-westus2-v6
+  dependsOn:
+  - job0
+  - job11
+  condition: and(succeeded(), not(canceled()))
+  variables:
+  - name: FLOWEY_TEMP_DIR
+    value: $(Build.StagingDirectory)/.flowey-internal
+  steps:
+  - bash: |
+      set -x
+      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+      . "$HOME/.cargo/env"
+      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
+    condition: eq(variables['Agent.OS'], 'Linux')
+    displayName: rustup (Linux)
+  - bash: |
+      set -x
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+      ./rustup-init.exe -y --default-toolchain=1.95.0
+      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
+    condition: eq(variables['Agent.OS'], 'Windows_NT')
+    displayName: rustup (Windows X64)
+  - bash: |
+      set -x
+      rustup show
+    displayName: Verify rustup installation
+  - checkout: self
+    fetchTags: false
+    fetchDepth: 1
+    path: flowey_bootstrap
+  - bash: CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+    workingDirectory: ../flowey_bootstrap
+    displayName: Build flowey
+  - bash: |
+      mkdir ./flowey_bootstrap_temp
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
+    workingDirectory: ../flowey_bootstrap
+    displayName: Stage flowey artifact
+  - task: CopyFiles@2
+    displayName: Copy flowey artifact
+    inputs:
+      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
+      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
+  - bash: rm -rf ./flowey_bootstrap_temp
+    workingDirectory: ../flowey_bootstrap
+    displayName: Cleanup staged flowey artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-openhcl-igvm-cvm
+    inputs:
+      artifact: x64-openhcl-igvm-cvm
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-openhcl-igvm-cvm
+  - bash: |
+      set -e
+      AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+      AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+      echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+      chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
+      FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey.exe"
+      echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+    displayName: Set flowey path
+  - bash: |-
+      ESCAPED_AGENT_TEMPDIR=$(
+      cat <<'EOF' | sed 's/\\/\\\\/g'
+      $(FLOWEY_TEMP_DIR)
+      EOF
+      )
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+    displayName: 🌼🔎 Self-check YAML
+  - bash: |
+      set -e
+      echo '"debug"' | $FLOWEY_BIN v 22 'FLOWEY_LOG' update
+      echo "$(FLOWEY_TEMP_DIR)/work" | $FLOWEY_BIN v 22 '_internal_WORKING_DIR' --is-raw-string update
+
+      cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 22 'verbose' update
+      ${{ parameters.verbose }}
+      EOF
+      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-vmfirmwareigvm-cvm"
+      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-vmfirmwareigvm-cvm" | $FLOWEY_BIN v 22 'artifact_publish_from_x64-vmfirmwareigvm-cvm' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-openhcl-igvm-cvm" | $FLOWEY_BIN v 22 'artifact_use_from_x64-openhcl-igvm-cvm' --is-raw-string update
+    displayName: 🌼🛫 Initialize job
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_common::install_rust 0
+    displayName: install Rust
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::install_rust 1
+      $(FLOWEY_BIN) e 22 flowey_lib_common::cfg_cargo_common_flags 0
+    displayName: detect active toolchain
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 22 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 22 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: check if openvmm needs to be cloned
+  - checkout: self
+    path: repo0
+    fetchTags: false
+    fetchDepth: 1
+    persistCredentials: $(floweyvar1)
+    submodules: recursive
+    displayName: checkout repo openvmm
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 22 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 22 flowey_lib_common::git_checkout 3
+    displayName: report cloned repo directories
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::system_info 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+    displayName: print system info
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+    displayName: set '-Dwarnings' in .cargo/config.toml
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_common::download_gh_release 0
+    displayName: create gh-release-download cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 22 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 22 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar3)
+      path: $(floweyvar2)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: gh-release-download'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 22 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 22 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_common::download_gh_release 1
+    displayName: download artifacts from github releases
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::resolve_protoc 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+    displayName: unpack protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+      $(FLOWEY_BIN) e 22 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::build_vmfirmwareigvm_dll 0
+    displayName: symlink protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::build_vmfirmwareigvm_dll 1
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::init_cross_build 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::run_cargo_build 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::run_cargo_build 1
+    displayName: determine vmfirmwareigvm_dll env vars
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 22 flowey_lib_common::run_cargo_build 0
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::run_cargo_build 2
+      $(FLOWEY_BIN) e 22 flowey_lib_hvlite::build_vmfirmwareigvm_dll 2
+      $(FLOWEY_BIN) e 22 flowey_core::pipeline::artifact::publish 0
+    displayName: cargo build vmfirmwareigvm_dll
+  - bash: $(FLOWEY_BIN) e 22 flowey_lib_common::cache 3
+    displayName: 'validate cache entry: gh-release-download'
+  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-vmfirmwareigvm-cvm
+    displayName: 🌼📦 Publish x64-vmfirmwareigvm-cvm
+    artifact: x64-vmfirmwareigvm-cvm
 - job: job10
   displayName: build openhcl [aarch64-linux]
   pool:
@@ -2014,8 +2211,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-openvmm" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-musl-openvmm' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-musl-openvmm_vhost"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-openvmm_vhost" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-musl-openvmm_vhost' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-musl-vmm-perf-runner"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-vmm-perf-runner" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-musl-vmm-perf-runner' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-musl-vmm-tests-archive"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-vmm-tests-archive" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-musl-vmm-tests-archive' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-ohcldiag-dev"
@@ -2032,8 +2227,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmgstool" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-vmgstool' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-vmgstool-dev"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmgstool-dev" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-vmgstool-dev' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-vmm-perf-runner"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmm-perf-runner" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-vmm-perf-runner' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-vmm-tests-archive"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmm-tests-archive" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-vmm-tests-archive' --is-raw-string update
     displayName: 🌼🛫 Initialize job
@@ -2185,7 +2378,7 @@ jobs:
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::build_igvmfilegen 0
       $(FLOWEY_BIN) e 9 flowey_core::pipeline::artifact::publish 5
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 8
+      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 7
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2204,7 +2397,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 10
+      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 9
     displayName: extract X86_64 sysroot.tar.gz
   - bash: |-
       set -e
@@ -2217,7 +2410,7 @@ jobs:
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_cargo_build 7
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::build_openvmm 1
       $(FLOWEY_BIN) e 9 flowey_core::pipeline::artifact::publish 7
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 11
+      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 10
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2230,7 +2423,7 @@ jobs:
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_cargo_build 11
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::build_openvmm_vhost 1
       $(FLOWEY_BIN) e 9 flowey_core::pipeline::artifact::publish 8
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 12
+      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 11
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2248,6 +2441,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -2268,7 +2463,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 9 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 9 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -2282,40 +2477,14 @@ jobs:
       $(FLOWEY_BIN) e 9 flowey_lib_common::run_cargo_nextest_archive 0
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::build_nextest_vmm_tests 0
       $(FLOWEY_BIN) e 9 flowey_core::pipeline::artifact::publish 10
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 9
+      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 8
     displayName: build + archive 'vmm_tests' nextests
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_common::run_cargo_nextest_archive 1
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::build_nextest_vmm_tests 1
       $(FLOWEY_BIN) e 9 flowey_core::pipeline::artifact::publish 11
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 7
     displayName: build + archive 'vmm_tests' nextests
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 9 flowey_lib_common::run_cargo_build 10
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_cargo_build 19
-    displayName: cargo build vmm_perf
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_split_debug_info 9
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_cargo_build 20
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::build_vmm_perf 0
-      $(FLOWEY_BIN) e 9 flowey_core::pipeline::artifact::publish 12
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 13
-    displayName: split debug symbols
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 9 flowey_lib_common::run_cargo_build 11
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_cargo_build 21
-    displayName: cargo build vmm_perf
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_split_debug_info 10
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::run_cargo_build 22
-      $(FLOWEY_BIN) e 9 flowey_lib_hvlite::build_vmm_perf 1
-      $(FLOWEY_BIN) e 9 flowey_core::pipeline::artifact::publish 13
-    displayName: split debug symbols
   - bash: $(FLOWEY_BIN) e 9 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
   - bash: $(FLOWEY_BIN) e 9 flowey_lib_common::cache 7
@@ -2329,9 +2498,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-openvmm_vhost
     displayName: 🌼📦 Publish x64-linux-musl-openvmm_vhost
     artifact: x64-linux-musl-openvmm_vhost
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-vmm-perf-runner
-    displayName: 🌼📦 Publish x64-linux-musl-vmm-perf-runner
-    artifact: x64-linux-musl-vmm-perf-runner
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-vmm-tests-archive
     displayName: 🌼📦 Publish x64-linux-musl-vmm-tests-archive
     artifact: x64-linux-musl-vmm-tests-archive
@@ -2356,9 +2522,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmgstool-dev
     displayName: 🌼📦 Publish x64-linux-vmgstool-dev
     artifact: x64-linux-vmgstool-dev
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmm-perf-runner
-    displayName: 🌼📦 Publish x64-linux-vmm-perf-runner
-    artifact: x64-linux-vmm-perf-runner
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmm-tests-archive
     displayName: 🌼📦 Publish x64-linux-vmm-tests-archive
     artifact: x64-linux-vmm-tests-archive
@@ -2404,10 +2567,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-openvmm' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-openvmm_vhost"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm_vhost" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-openvmm_vhost' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-vmm-perf-runner"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-vmm-perf-runner" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-vmm-perf-runner' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-vmm-tests-archive"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-vmm-tests-archive" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-vmm-tests-archive' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-ohcldiag-dev"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-ohcldiag-dev" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-ohcldiag-dev' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-openvmm"
@@ -2422,8 +2581,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmgstool" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-vmgstool' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-vmgstool-dev"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmgstool-dev" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-vmgstool-dev' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-vmm-perf-runner"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmm-perf-runner" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-vmm-perf-runner' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-vmm-tests-archive"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmm-tests-archive" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-vmm-tests-archive' --is-raw-string update
     displayName: 🌼🛫 Initialize job
@@ -2497,7 +2654,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 1
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 0
     displayName: symlink protoc
   - bash: |-
       set -e
@@ -2510,7 +2667,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 5
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openvmm 0
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 0
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 3
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 2
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2523,7 +2680,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 9
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openvmm_vhost 0
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 1
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 6
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 5
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2536,7 +2693,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 18
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_vmgstool 0
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 2
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 5
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 4
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2549,7 +2706,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 16
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_vmgstool 1
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 3
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 4
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 3
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2558,7 +2715,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_and_test_vmgs_lib 0
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_and_test_vmgs_lib 1
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 4
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 2
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 1
     displayName: cargo build vmgs_lib
   - bash: |-
       set -e
@@ -2571,7 +2728,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_igvmfilegen 0
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 5
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 8
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 6
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2590,7 +2747,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 10
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 8
     displayName: extract Aarch64 sysroot.tar.gz
   - bash: |-
       set -e
@@ -2603,7 +2760,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 7
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openvmm 1
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 7
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 11
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 9
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2616,7 +2773,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 11
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openvmm_vhost 1
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 8
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 12
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 10
     displayName: split debug symbols
   - bash: |-
       set -e
@@ -2634,6 +2791,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -2654,54 +2813,21 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 8 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::install_cargo_nextest 0
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 0
+      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 7
     displayName: installing cargo-nextest
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_nextest_archive 0
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_nextest_vmm_tests 0
       $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 10
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 9
     displayName: build + archive 'vmm_tests' nextests
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_nextest_archive 1
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_nextest_vmm_tests 1
-      $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 11
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 7
-    displayName: build + archive 'vmm_tests' nextests
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 10
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 19
-    displayName: cargo build vmm_perf
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 9
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 20
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_vmm_perf 0
-      $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 12
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::init_cross_build 13
-    displayName: split debug symbols
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::run_cargo_build 11
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 21
-    displayName: cargo build vmm_perf
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_split_debug_info 10
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::run_cargo_build 22
-      $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_vmm_perf 1
-      $(FLOWEY_BIN) e 8 flowey_core::pipeline::artifact::publish 13
-    displayName: split debug symbols
   - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
   - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::cache 7
@@ -2715,12 +2841,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm_vhost
     displayName: 🌼📦 Publish aarch64-linux-musl-openvmm_vhost
     artifact: aarch64-linux-musl-openvmm_vhost
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-vmm-perf-runner
-    displayName: 🌼📦 Publish aarch64-linux-musl-vmm-perf-runner
-    artifact: aarch64-linux-musl-vmm-perf-runner
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-vmm-tests-archive
-    displayName: 🌼📦 Publish aarch64-linux-musl-vmm-tests-archive
-    artifact: aarch64-linux-musl-vmm-tests-archive
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-ohcldiag-dev
     displayName: 🌼📦 Publish aarch64-linux-ohcldiag-dev
     artifact: aarch64-linux-ohcldiag-dev
@@ -2742,9 +2862,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmgstool-dev
     displayName: 🌼📦 Publish aarch64-linux-vmgstool-dev
     artifact: aarch64-linux-vmgstool-dev
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmm-perf-runner
-    displayName: 🌼📦 Publish aarch64-linux-vmm-perf-runner
-    artifact: aarch64-linux-vmm-perf-runner
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmm-tests-archive
     displayName: 🌼📦 Publish aarch64-linux-vmm-tests-archive
     artifact: aarch64-linux-vmm-tests-archive
@@ -2772,7 +2889,7 @@ jobs:
     displayName: rustup (Linux)
   - bash: |
       set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
       ./rustup-init.exe -y --default-toolchain=1.95.0
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
@@ -2977,6 +3094,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -2997,7 +3116,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 7 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 7 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -3044,7 +3163,7 @@ jobs:
     displayName: 🌼🧼 Redact bootstrap var db
   - publish: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
     displayName: 🌼🥾 Publish bootstrapped flowey
-    artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
+    artifact: _internal-flowey-bootstrap-x86_64-windows-uid-4
 - job: job6
   displayName: build artifacts (not for VMM tests) [x64-windows]
   pool:
@@ -3069,7 +3188,7 @@ jobs:
     displayName: rustup (Linux)
   - bash: |
       set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
       ./rustup-init.exe -y --default-toolchain=1.95.0
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
@@ -3134,8 +3253,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-ohcldiag-dev" | $FLOWEY_BIN v 6 'artifact_publish_from_x64-windows-ohcldiag-dev' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-windows-vmgs_lib"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmgs_lib" | $FLOWEY_BIN v 6 'artifact_publish_from_x64-windows-vmgs_lib' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-windows-vmm-perf-runner"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmm-perf-runner" | $FLOWEY_BIN v 6 'artifact_publish_from_x64-windows-vmm-perf-runner' --is-raw-string update
     displayName: 🌼🛫 Initialize job
   - bash: $(FLOWEY_BIN) e 6 flowey_lib_common::install_rust 0
     displayName: install Rust
@@ -3203,7 +3320,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 2
+      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 1
     displayName: symlink protoc
   - bash: |-
       set -e
@@ -3224,7 +3341,7 @@ jobs:
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_and_test_vmgs_lib 1
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_and_test_vmgs_lib 2
       $(FLOWEY_BIN) e 6 flowey_core::pipeline::artifact::publish 1
-      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 3
+      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 2
     displayName: test vmgs_lib
   - bash: |-
       set -e
@@ -3232,7 +3349,7 @@ jobs:
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_igvmfilegen 0
       $(FLOWEY_BIN) e 6 flowey_core::pipeline::artifact::publish 2
-      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 4
+      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 3
     displayName: cargo build igvmfilegen
   - bash: |-
       set -e
@@ -3240,15 +3357,7 @@ jobs:
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::run_cargo_build 2
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_ohcldiag_dev 0
       $(FLOWEY_BIN) e 6 flowey_core::pipeline::artifact::publish 3
-      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 1
     displayName: cargo build ohcldiag-dev
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 6 flowey_lib_common::run_cargo_build 4
-      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::run_cargo_build 4
-      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_vmm_perf 0
-      $(FLOWEY_BIN) e 6 flowey_core::pipeline::artifact::publish 4
-    displayName: cargo build vmm_perf
   - bash: $(FLOWEY_BIN) e 6 flowey_lib_common::cache 3
     displayName: 'validate cache entry: gh-release-download'
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-hypestv
@@ -3263,9 +3372,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmgs_lib
     displayName: 🌼📦 Publish x64-windows-vmgs_lib
     artifact: x64-windows-vmgs_lib
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmm-perf-runner
-    displayName: 🌼📦 Publish x64-windows-vmm-perf-runner
-    artifact: x64-windows-vmm-perf-runner
 - job: job5
   displayName: build artifacts (for VMM tests) [aarch64-windows]
   pool:
@@ -3290,7 +3396,7 @@ jobs:
     displayName: rustup (Linux)
   - bash: |
       set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
       ./rustup-init.exe -y --default-toolchain=1.95.0
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
@@ -3495,6 +3601,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -3515,7 +3623,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 5 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 5 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -3582,7 +3690,7 @@ jobs:
     displayName: rustup (Linux)
   - bash: |
       set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
       ./rustup-init.exe -y --default-toolchain=1.95.0
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
@@ -3647,8 +3755,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-ohcldiag-dev" | $FLOWEY_BIN v 4 'artifact_publish_from_aarch64-windows-ohcldiag-dev' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-windows-vmgs_lib"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-vmgs_lib" | $FLOWEY_BIN v 4 'artifact_publish_from_aarch64-windows-vmgs_lib' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-windows-vmm-perf-runner"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-vmm-perf-runner" | $FLOWEY_BIN v 4 'artifact_publish_from_aarch64-windows-vmm-perf-runner' --is-raw-string update
     displayName: 🌼🛫 Initialize job
   - bash: $(FLOWEY_BIN) e 4 flowey_lib_common::install_rust 0
     displayName: install Rust
@@ -3716,7 +3822,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 2
+      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 1
     displayName: symlink protoc
   - bash: |-
       set -e
@@ -3733,7 +3839,7 @@ jobs:
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 0
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 1
       $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 1
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 3
+      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 2
     displayName: cargo build vmgs_lib
   - bash: |-
       set -e
@@ -3741,7 +3847,7 @@ jobs:
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_igvmfilegen 0
       $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 2
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 4
+      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 3
     displayName: cargo build igvmfilegen
   - bash: |-
       set -e
@@ -3749,15 +3855,7 @@ jobs:
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::run_cargo_build 2
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_ohcldiag_dev 0
       $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 3
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 1
     displayName: cargo build ohcldiag-dev
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 4 flowey_lib_common::run_cargo_build 4
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::run_cargo_build 4
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_vmm_perf 0
-      $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 4
-    displayName: cargo build vmm_perf
   - bash: $(FLOWEY_BIN) e 4 flowey_lib_common::cache 3
     displayName: 'validate cache entry: gh-release-download'
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-hypestv
@@ -3772,9 +3870,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-vmgs_lib
     displayName: 🌼📦 Publish aarch64-windows-vmgs_lib
     artifact: aarch64-windows-vmgs_lib
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-vmm-perf-runner
-    displayName: 🌼📦 Publish aarch64-windows-vmm-perf-runner
-    artifact: aarch64-windows-vmm-perf-runner
 - job: job3
   displayName: build artifacts (shared VMM tests) [linux]
   pool:
@@ -4132,10 +4227,10 @@ jobs:
       artifact: aarch64-linux-musl-tmk_vmm
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-musl-tmk_vmm
   - task: DownloadPipelineArtifact@2
-    displayName: 🌼📦 Download aarch64-linux-musl-vmm-tests-archive
+    displayName: 🌼📦 Download aarch64-linux-vmm-tests-archive
     inputs:
-      artifact: aarch64-linux-musl-vmm-tests-archive
-      path: $(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-musl-vmm-tests-archive
+      artifact: aarch64-linux-vmm-tests-archive
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-vmm-tests-archive
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download aarch64-tmks
     inputs:
@@ -4168,7 +4263,7 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-musl-openvmm" | $FLOWEY_BIN v 20 'artifact_use_from_aarch64-linux-musl-openvmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-musl-pipette" | $FLOWEY_BIN v 20 'artifact_use_from_aarch64-linux-musl-pipette' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-musl-tmk_vmm" | $FLOWEY_BIN v 20 'artifact_use_from_aarch64-linux-musl-tmk_vmm' --is-raw-string update
-      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-musl-vmm-tests-archive" | $FLOWEY_BIN v 20 'artifact_use_from_aarch64-linux-musl-vmm-tests-archive' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-vmm-tests-archive" | $FLOWEY_BIN v 20 'artifact_use_from_aarch64-linux-vmm-tests-archive' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-tmks" | $FLOWEY_BIN v 20 'artifact_use_from_aarch64-tmks' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-incubator" | $FLOWEY_BIN v 20 'artifact_use_from_x64-linux-incubator' --is-raw-string update
     displayName: 🌼🛫 Initialize job
@@ -4176,6 +4271,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -4196,7 +4293,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 20 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: |-
       set -e
@@ -4223,8 +4320,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-      $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 6
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
     displayName: print system info
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
@@ -4256,9 +4352,12 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::resolve_openvmm_qemu 0
-      $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 6
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
-      $FLOWEY_BIN v 20 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $FLOWEY_BIN v 20 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
@@ -4272,15 +4371,6 @@ jobs:
     displayName: checking if packages need to be installed
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::install_dist_pkg 1
     displayName: installing packages
-  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::download_uefi_mu_msvm 0
-    displayName: unpack mu_msvm package (aarch64)
-  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
-    displayName: unpack openvmm-test-virtio-win archive
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::init_vmm_tests_content_dir 0
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-    displayName: setting up vmm_tests content dir
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_azcopy 0
     displayName: extract azcopy from archive
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
@@ -4290,6 +4380,10 @@ jobs:
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::download_uefi_mu_msvm 0
+    displayName: unpack mu_msvm package (aarch64)
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    displayName: unpack openvmm-test-virtio-win archive
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::init_vmm_tests_env 0
     displayName: setting up vmm_tests env
   - bash: |-
@@ -4300,17 +4394,18 @@ jobs:
     displayName: compute incubator target runner env
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::gen_cargo_nextest_run_cmd 0
     displayName: generate nextest command
-  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_hvlite::install_vmm_tests_deps 0
     displayName: install vmm tests deps (linux)
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 20 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
     displayName: run 'vmm_tests' nextest tests
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 20 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 0
@@ -4328,8 +4423,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 4
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 9
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -4359,7 +4453,7 @@ jobs:
     displayName: rustup (Linux)
   - bash: |
       set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
       ./rustup-init.exe -y --default-toolchain=1.95.0
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
@@ -4610,6 +4704,8 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -4630,7 +4726,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 19 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 2
+  - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
   - bash: |-
       set -e
@@ -4657,7 +4753,18 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 8
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 2
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 3
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 1
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 7
+      $FLOWEY_BIN v 19 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
     displayName: print system info
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::install_dist_pkg 0
     displayName: checking if packages need to be installed
@@ -4694,17 +4801,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
-      $FLOWEY_BIN v 19 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:2:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
-      $(Pipeline.Workspace)
-      EOF
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 8
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 2
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 1
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 0
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 7
     displayName: downloading VMM test disk images
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
     displayName: unpack openvmm-test-initrd archives
@@ -4714,11 +4810,6 @@ jobs:
     displayName: unpack mu_msvm package (x64)
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
     displayName: unpack openvmm-test-virtio-win archive
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::init_vmm_tests_content_dir 0
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-    displayName: setting up vmm_tests content dir
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::init_vmm_tests_env 0
@@ -4733,8 +4824,8 @@ jobs:
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::install_vmm_tests_external_deps 0
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::install_vmm_tests_deps 0
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: install vmm tests deps (linux)
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::run_prep_steps 0
     displayName: running vmm_test prep_steps
@@ -4742,10 +4833,11 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 19 flowey_lib_common::run_cargo_nextest_run 1
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
     displayName: run 'vmm_tests' nextest tests
   - bash: |-
       set -e
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 19 flowey_lib_common::ado_task_publish_test_results 0
@@ -4764,7 +4856,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 4
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::cache 3
@@ -4791,7 +4882,7 @@ jobs:
   - task: DownloadPipelineArtifact@2
     displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
+      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-4
       path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-guest_test_uefi
@@ -4914,6 +5005,80 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool-dev" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-vmgstool-dev' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmm-tests-archive" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-vmm-tests-archive' --is-raw-string update
     displayName: 🌼🛫 Initialize job
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 3
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 18 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 18 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 4
+    displayName: downloading cargo-nextest
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: check if openvmm needs to be cloned
+  - checkout: self
+    path: repo0
+    fetchTags: false
+    fetchDepth: 1
+    persistCredentials: $(floweyvar2)
+    submodules: recursive
+    displayName: checkout repo openvmm
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 3
+    displayName: report cloned repo directories
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 18 flowey_lib_common::system_info 0
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 8
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 9
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 14
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 15
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 13
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 3
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 6
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 1
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 2
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 7
+      $FLOWEY_BIN v 18 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+    displayName: print system info
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
   - bash: |-
@@ -4946,30 +5111,6 @@ jobs:
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::cleanup_leftover_hyperv_vms 0
-      $FLOWEY_BIN v 18 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:3:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
-      $(Pipeline.Workspace)
-      EOF
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 8
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 9
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 12
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 14
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 15
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 13
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 11
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 5
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 6
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 1
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 2
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 0
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 7
-    displayName: remove leftover Hyper-V VMs
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
     displayName: unpack openvmm-test-initrd archives
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
@@ -4980,67 +5121,11 @@ jobs:
     displayName: unpack openvmm-test-virtio-win archive
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::init_vmm_tests_content_dir 0
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-    displayName: setting up vmm_tests content dir
-  - bash: $(FLOWEY_BIN) e 18 flowey_lib_hvlite::init_vmm_tests_env 0
-    displayName: setting up vmm_tests env
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 0
-      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 1
-    displayName: create cargo-nextest cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: cargo-nextest'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 18 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 2
-    displayName: downloading cargo-nextest
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
-      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: check if openvmm needs to be cloned
-  - checkout: self
-    path: repo0
-    fetchTags: false
-    fetchDepth: 1
-    persistCredentials: $(floweyvar2)
-    submodules: recursive
-    displayName: checkout repo openvmm
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
-      $(Pipeline.Workspace)
-      EOF
-      $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 3
-    displayName: report cloned repo directories
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_common::system_info 0
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 16
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
-    displayName: print system info
+    displayName: setting up vmm_tests env
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -5048,8 +5133,8 @@ jobs:
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::install_vmm_tests_external_deps 0
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::install_vmm_tests_deps 0
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: install vmm tests deps (windows)
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_hvlite::run_prep_steps 0
     displayName: running vmm_test prep_steps
@@ -5063,11 +5148,12 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
     displayName: stopping test_igvm_agent_rpc_server
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 18 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 0
@@ -5085,8 +5171,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 4
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -5112,7 +5197,7 @@ jobs:
   - task: DownloadPipelineArtifact@2
     displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
+      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-4
       path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-guest_test_uefi
@@ -5235,6 +5320,80 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool-dev" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-vmgstool-dev' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmm-tests-archive" | $FLOWEY_BIN v 17 'artifact_use_from_x64-windows-vmm-tests-archive' --is-raw-string update
     displayName: 🌼🛫 Initialize job
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 3
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 17 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 17 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 4
+    displayName: downloading cargo-nextest
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: check if openvmm needs to be cloned
+  - checkout: self
+    path: repo0
+    fetchTags: false
+    fetchDepth: 1
+    persistCredentials: $(floweyvar2)
+    submodules: recursive
+    displayName: checkout repo openvmm
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 3
+    displayName: report cloned repo directories
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 17 flowey_lib_common::system_info 0
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 6
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 1
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 2
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 7
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 8
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 9
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 14
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 15
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 13
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 3
+      $FLOWEY_BIN v 17 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+    displayName: print system info
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
   - bash: |-
@@ -5267,30 +5426,6 @@ jobs:
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::cleanup_leftover_hyperv_vms 0
-      $FLOWEY_BIN v 17 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:3:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
-      $(Pipeline.Workspace)
-      EOF
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 9
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 12
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 14
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 15
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 13
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 11
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 5
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 6
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 1
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 2
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 0
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 7
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 8
-    displayName: remove leftover Hyper-V VMs
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
     displayName: unpack openvmm-test-initrd archives
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
@@ -5301,72 +5436,16 @@ jobs:
     displayName: unpack openvmm-test-virtio-win archive
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::init_vmm_tests_content_dir 0
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-    displayName: setting up vmm_tests content dir
-  - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::init_vmm_tests_env 0
-    displayName: setting up vmm_tests env
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 0
-      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 1
-    displayName: create cargo-nextest cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: cargo-nextest'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 17 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 2
-    displayName: downloading cargo-nextest
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
-      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: check if openvmm needs to be cloned
-  - checkout: self
-    path: repo0
-    fetchTags: false
-    fetchDepth: 1
-    persistCredentials: $(floweyvar2)
-    submodules: recursive
-    displayName: checkout repo openvmm
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
-      $(Pipeline.Workspace)
-      EOF
-      $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 3
-    displayName: report cloned repo directories
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_common::system_info 0
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 16
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
-    displayName: print system info
+    displayName: setting up vmm_tests env
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
     displayName: generate nextest command
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
     displayName: starting test_igvm_agent_rpc_server
-  - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+  - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::install_vmm_tests_deps 0
     displayName: install vmm tests deps (windows)
   - bash: |-
       set -e
@@ -5376,11 +5455,12 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: stopping test_igvm_agent_rpc_server
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 17 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 0
@@ -5398,8 +5478,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 4
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -5425,7 +5504,7 @@ jobs:
   - task: DownloadPipelineArtifact@2
     displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
+      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-4
       path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-guest_test_uefi
@@ -5548,6 +5627,80 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmgstool-dev" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-vmgstool-dev' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-vmm-tests-archive" | $FLOWEY_BIN v 16 'artifact_use_from_x64-windows-vmm-tests-archive' --is-raw-string update
     displayName: 🌼🛫 Initialize job
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 1
+      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 2
+      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 3
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 16 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 4
+    displayName: downloading cargo-nextest
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: check if openvmm needs to be cloned
+  - checkout: self
+    path: repo0
+    fetchTags: false
+    fetchDepth: 1
+    persistCredentials: $(floweyvar2)
+    submodules: recursive
+    displayName: checkout repo openvmm
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 3
+    displayName: report cloned repo directories
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::system_info 0
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 8
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 9
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 12
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 14
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 15
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 13
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 3
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 11
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 4
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 6
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 1
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 2
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 7
+      $FLOWEY_BIN v 16 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:0:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
+      $(Pipeline.Workspace)
+      EOF
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
+    displayName: print system info
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
   - bash: |-
@@ -5580,30 +5733,6 @@ jobs:
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::cleanup_leftover_hyperv_vms 0
-      $FLOWEY_BIN v 16 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:3:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
-      $(Pipeline.Workspace)
-      EOF
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 8
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 9
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 12
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 14
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 15
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 13
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 11
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 4
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 5
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 6
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 1
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 2
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 0
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 7
-    displayName: remove leftover Hyper-V VMs
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
     displayName: unpack openvmm-test-initrd archives
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
@@ -5614,67 +5743,11 @@ jobs:
     displayName: unpack openvmm-test-virtio-win archive
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::init_vmm_tests_content_dir 0
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-    displayName: setting up vmm_tests content dir
-  - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::init_vmm_tests_env 0
-    displayName: setting up vmm_tests env
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 0
-      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 1
-    displayName: create cargo-nextest cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: cargo-nextest'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 16 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 2
-    displayName: downloading cargo-nextest
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
-      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: check if openvmm needs to be cloned
-  - checkout: self
-    path: repo0
-    fetchTags: false
-    fetchDepth: 1
-    persistCredentials: $(floweyvar2)
-    submodules: recursive
-    displayName: checkout repo openvmm
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
-      $(Pipeline.Workspace)
-      EOF
-      $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 3
-    displayName: report cloned repo directories
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::system_info 0
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::init_vmm_tests_env 0
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 16
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
-    displayName: print system info
+    displayName: setting up vmm_tests env
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -5682,8 +5755,8 @@ jobs:
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::install_vmm_tests_external_deps 0
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::install_vmm_tests_deps 0
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: install vmm tests deps (windows)
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_prep_steps 0
     displayName: running vmm_test prep_steps
@@ -5697,11 +5770,12 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::stop_test_igvm_agent_rpc_server 0
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
     displayName: stopping test_igvm_agent_rpc_server
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 1
       $(FLOWEY_BIN) e 16 flowey_lib_common::ado_task_publish_test_results 0
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 0
@@ -5719,8 +5793,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 2
       $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 3
-      $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 4
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -5750,7 +5823,7 @@ jobs:
     displayName: rustup (Linux)
   - bash: |
       set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
       ./rustup-init.exe -y --default-toolchain=1.95.0
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')

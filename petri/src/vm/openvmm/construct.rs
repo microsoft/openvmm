@@ -9,6 +9,7 @@ use super::PetriVmResourcesOpenVmm;
 use crate::Drive;
 use crate::EfiDiagnosticsLogLevel;
 use crate::Firmware;
+use crate::IgvmFirmwareSource;
 use crate::IsolationType;
 use crate::MemoryConfig;
 use crate::OpenHclConfig;
@@ -121,7 +122,6 @@ impl PetriVmConfigOpenVmm {
             firmware,
             hibernation_enabled,
             ipmi_enabled,
-            load_openhcl_from_vmgs,
             memory,
             proc_topology,
             vmgs,
@@ -136,7 +136,10 @@ impl PetriVmConfigOpenVmm {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
         }
 
-        if load_openhcl_from_vmgs {
+        if matches!(
+            firmware.openhcl_firmware(),
+            Some(IgvmFirmwareSource::VmgsOrInBox)
+        ) {
             anyhow::bail!("loading OpenHCL from VMGS is only supported by the Hyper-V backend");
         }
 
@@ -1001,11 +1004,11 @@ impl PetriVmConfigSetupCore<'_> {
             (
                 MachineArch::X86_64,
                 Firmware::OpenhclLinuxDirect {
-                    igvm_path,
+                    igvm_firmware: IgvmFirmwareSource::File(igvm_path),
                     openhcl_config,
                 }
                 | Firmware::OpenhclUefi {
-                    igvm_path,
+                    igvm_firmware: IgvmFirmwareSource::File(igvm_path),
                     guest: _,       // load_boot_disk
                     isolation: _,   // new via Firmware::isolation
                     uefi_config: _, // config_openhcl_vmbus_devices
@@ -1097,7 +1100,7 @@ impl PetriVmConfigSetupCore<'_> {
                     }
                 });
 
-                let file = File::open(igvm_path.clone())
+                let file = File::open(igvm_path.get())
                     .context("failed to open openhcl firmware file")?
                     .into();
                 LoadMode::Igvm {
