@@ -1783,6 +1783,8 @@ async fn hyperv_events(
 
     let vmid = vmid.to_string();
     let mut found = run_get_winevent(logs, &[], Some(start_time), Some(&vmid), &ids).await?;
+    // Since the Get-Winevent search looks for all given event IDs from all given
+    // providers, we need to filter the results to only include the events we actually care about.
     found.retain(|e| events.iter().any(|w| w.matches(e)));
     Ok(found)
 }
