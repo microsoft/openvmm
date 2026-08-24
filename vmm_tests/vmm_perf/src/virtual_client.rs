@@ -28,6 +28,7 @@ pub(crate) struct VirtualClientRunRequest<'a> {
     pub(crate) output_dir: &'a Path,
     pub(crate) temp_dir: &'a Path,
     pub(crate) host: &'a HostEnvironment,
+    pub(crate) metadata: &'a BTreeMap<String, String>,
 }
 
 pub(crate) struct VirtualClientRun<'a> {
@@ -101,6 +102,9 @@ impl<'a> VirtualClientRun<'a> {
         .logger("summary")
         .log_to_file(true)
         .temp_dir(&directories.temp_dir);
+        for (name, value) in request.metadata {
+            command_builder = command_builder.metadata(name, value);
+        }
         for (name, value) in parameters {
             command_builder = command_builder.parameter(name, value);
         }

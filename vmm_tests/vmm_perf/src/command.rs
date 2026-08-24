@@ -22,6 +22,7 @@ pub(crate) struct VirtualClientCommandBuilder<'a> {
     virtual_client: &'a Path,
     profile: Option<VmmPerfProfile>,
     iterations: Option<u32>,
+    metadata: BTreeMap<String, String>,
     parameters: BTreeMap<String, String>,
     package_dir: Option<PathBuf>,
     log_dir: Option<&'a Path>,
@@ -46,6 +47,7 @@ impl<'a> VirtualClientCommandBuilder<'a> {
             virtual_client,
             profile: None,
             iterations: None,
+            metadata: BTreeMap::new(),
             parameters: BTreeMap::new(),
             package_dir: None,
             log_dir: None,
@@ -68,6 +70,11 @@ impl<'a> VirtualClientCommandBuilder<'a> {
 
     pub(crate) fn parameter(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.parameters.insert(name.into(), value.into());
+        self
+    }
+
+    pub(crate) fn metadata(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(name.into(), value.into());
         self
     }
 
@@ -140,6 +147,15 @@ impl<'a> VirtualClientCommandBuilder<'a> {
             format!("--log-dir={}", log_dir.display()),
             format!("--experiment-id={experiment_id}"),
         ];
+        if !self.metadata.is_empty() {
+            let metadata = self
+                .metadata
+                .into_iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join(",,,");
+            args.push(format!("--metadata={metadata}"));
+        }
         for (name, value) in self.parameters {
             args.push(format!("--parameters={name}={value}"));
         }

@@ -9,6 +9,9 @@ use super::host::HostEnvironment;
 use super::runtime::VmmPerfRuntime;
 use super::virtual_client::VirtualClientRun;
 use super::virtual_client::VirtualClientRunRequest;
+use anyhow::Context as _;
+use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -21,6 +24,7 @@ pub(crate) struct VmmPerfRunner {
     temp_dir: PathBuf,
     profiles: Vec<VmmPerfProfile>,
     configs: Vec<VmmPerfConfig>,
+    metadata: BTreeMap<String, String>,
 }
 
 impl VmmPerfRunner {
@@ -31,6 +35,7 @@ impl VmmPerfRunner {
         let host = HostEnvironment::detect()?;
         let profiles = cli.selected_profiles();
         let configs = selected_configs(host.capacity()?, &cli.config_selection())?;
+        let metadata = github_pipeline_metadata()?;
         let temp_dir = cli.temp_dir.unwrap_or_else(std::env::temp_dir);
         fs_err::create_dir_all(&temp_dir)?;
 
@@ -50,6 +55,7 @@ impl VmmPerfRunner {
             temp_dir,
             profiles,
             configs,
+            metadata,
         })
     }
 
@@ -87,6 +93,7 @@ impl VmmPerfRunner {
                     output_dir: &self.output_dir,
                     temp_dir: &self.temp_dir,
                     host: &self.host,
+                    metadata: &self.metadata,
                 })
                 .failure_summary()
                 .map(|summary| format!("{} / {summary}", profile.name()))
@@ -102,4 +109,52 @@ fn ensure_file(path: &Path, description: &str) -> anyhow::Result<()> {
         path.display()
     );
     Ok(())
+}
+
+fn github_pipeline_metadata() -> anyhow::Result<BTreeMap<String, String>> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+        return Ok(BTreeMap::new());
+    }
+
+    let github_sha = std::env::var("GITHUB_SHA")?;
+    let run_id = std::env::var("GITHUB_RUN_ID")?;
+    let run_number = std::env::var("GITHUB_RUN_NUMBER")?;
+    let event_name = std::env::var("GITHUB_EVENT_NAME")?;
+    let (commit_hash, pipeline_run) = if event_name.starts_with("pull_request") {
+        let event = github_pull_request_event()?;
+        (event.pull_request.head.sha, format!("pr-{}", event.number))
+    } else {
+        (github_sha, format!("ci-{run_number}"))
+    };
+
+    Ok(BTreeMap::from([
+        ("pipelineSource".into(), "OpenVMM".into()),
+        ("commitHash".into(), commit_hash),
+        ("pipelineRun".into(), pipeline_run),
+        ("pipelineRunId".into(), run_id),
+    ]))
+}
+
+#[derive(Deserialize)]
+struct GithubPullRequestEvent {
+    number: u64,
+    pull_request: GithubPullRequest,
+}
+
+#[derive(Deserialize)]
+struct GithubPullRequest {
+    head: GithubCommit,
+}
+
+#[derive(Deserialize)]
+struct GithubCommit {
+    sha: String,
+}
+
+fn github_pull_request_event() -> anyhow::Result<GithubPullRequestEvent> {
+    let event_path = std::env::var("GITHUB_EVENT_PATH")?;
+    let event = fs_err::read(&event_path)
+        .with_context(|| format!("failed to read GitHub event payload from {event_path}"))?;
+    serde_json::from_slice(&event)
+        .with_context(|| format!("failed to parse GitHub event payload from {event_path}"))
 }
