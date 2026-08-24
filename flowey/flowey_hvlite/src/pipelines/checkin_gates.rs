@@ -224,7 +224,6 @@ impl IntoPipeline for CheckinGatesCli {
         // specifying jobs, and not workflows.
         // There's more info in the following discussion:
         // <https://github.com/orgs/community/discussions/12395>
-        let mut all_jobs = Vec::new();
 
         // Quick check gate
         //
