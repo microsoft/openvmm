@@ -54,12 +54,21 @@
 
 use crate::Error;
 use crate::Result;
+use crate::hvsock::dispatch_connect_result;
 use crate::protocol::ChannelId;
+use crate::protocol::GpadlCreated;
 use crate::protocol::GpadlId;
+use crate::protocol::GpadlTorndown;
+use crate::protocol::Guid;
 use crate::protocol::HEADER_SIZE;
 use crate::protocol::MAX_MESSAGE_SIZE;
 use crate::protocol::MessageHeader;
 use crate::protocol::MessageType;
+use crate::protocol::ModifyChannelResponse;
+use crate::protocol::OfferChannel;
+use crate::protocol::OpenResult;
+use crate::protocol::RescindChannelOffer;
+use crate::protocol::TlConnectResult;
 use crate::protocol::VmbusMessage;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -317,23 +326,23 @@ pub fn completion_key_for(bytes: &[u8]) -> Result<Option<CompletionKey>> {
         MessageType::ALL_OFFERS_DELIVERED => Some(CompletionKey::AllOffersDelivered),
         MessageType::UNLOAD_COMPLETE => Some(CompletionKey::UnloadComplete),
         MessageType::OPEN_CHANNEL_RESULT => {
-            let msg: crate::protocol::OpenResult = parse(bytes)?;
+            let msg: OpenResult = parse(bytes)?;
             Some(CompletionKey::OpenChannelResult(msg.open_id))
         }
         MessageType::GPADL_CREATED => {
-            let msg: crate::protocol::GpadlCreated = parse(bytes)?;
+            let msg: GpadlCreated = parse(bytes)?;
             Some(CompletionKey::GpadlCreated(msg.gpadl_id))
         }
         MessageType::GPADL_TORNDOWN => {
-            let msg: crate::protocol::GpadlTorndown = parse(bytes)?;
+            let msg: GpadlTorndown = parse(bytes)?;
             Some(CompletionKey::GpadlTorndown(msg.gpadl_id))
         }
         MessageType::MODIFY_CHANNEL_RESPONSE => {
-            let msg: crate::protocol::ModifyChannelResponse = parse(bytes)?;
+            let msg: ModifyChannelResponse = parse(bytes)?;
             Some(CompletionKey::ModifyChannelResponse(msg.channel_id))
         }
         MessageType::TL_CONNECT_RESULT => {
-            let msg: crate::protocol::TlConnectResult = parse(bytes)?;
+            let msg: TlConnectResult = parse(bytes)?;
             Some(CompletionKey::TlConnectResult(guid_to_key(
                 &msg.endpoint_id,
             )))
@@ -344,7 +353,7 @@ pub fn completion_key_for(bytes: &[u8]) -> Result<Option<CompletionKey>> {
 }
 
 /// Pack a `Guid` into a `u128` so it can serve as an ordered map key.
-fn guid_to_key(g: &crate::protocol::Guid) -> u128 {
+fn guid_to_key(g: &Guid) -> u128 {
     let bytes = g.as_bytes();
     let mut out = [0u8; 16];
     out.copy_from_slice(bytes);
@@ -358,12 +367,12 @@ fn guid_to_key(g: &crate::protocol::Guid) -> u128 {
 /// (rescind handling).
 pub trait MessageSink {
     /// Called when the host delivers an `OfferChannel`.
-    fn offer(&mut self, offer: &crate::protocol::OfferChannel);
+    fn offer(&mut self, offer: &OfferChannel);
     /// Called when the host delivers a `RescindChannelOffer`.
-    fn rescind(&mut self, rescind: &crate::protocol::RescindChannelOffer);
+    fn rescind(&mut self, rescind: &RescindChannelOffer);
     /// Called when the host delivers a `TlConnectResult` (routed as a
     /// completion too — the sink sees a copy).
-    fn tl_connect_result(&mut self, _result: &crate::protocol::TlConnectResult) {}
+    fn tl_connect_result(&mut self, _result: &TlConnectResult) {}
 }
 
 /// Dispatch a single message (starting at a `MessageHeader`) to the
@@ -384,20 +393,20 @@ pub fn route_message<S: MessageSink + ?Sized>(
     let ty = peek_header(bytes)?;
     match ty {
         MessageType::OFFER_CHANNEL => {
-            let offer: crate::protocol::OfferChannel = parse(bytes)?;
+            let offer: OfferChannel = parse(bytes)?;
             sink.offer(&offer);
         }
         MessageType::RESCIND_CHANNEL_OFFER => {
-            let rescind: crate::protocol::RescindChannelOffer = parse(bytes)?;
+            let rescind: RescindChannelOffer = parse(bytes)?;
             sink.rescind(&rescind);
         }
         _ => {}
     }
     if let Some(key) = completion_key_for(bytes)? {
         if let MessageType::TL_CONNECT_RESULT = ty {
-            let result: crate::protocol::TlConnectResult = parse(bytes)?;
+            let result: TlConnectResult = parse(bytes)?;
             sink.tl_connect_result(&result);
-            crate::hvsock::dispatch_connect_result(&result);
+            dispatch_connect_result(&result);
         }
         match table.deliver(key, bytes.to_vec()) {
             Ok(()) | Err(Error::OrphanCompletion) => {}

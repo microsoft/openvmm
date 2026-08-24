@@ -13,7 +13,10 @@
 
 use crate::Error;
 use crate::Result;
+use crate::protocol::HV_MESSAGE_TYPE_CHANNEL;
+use alloc::vec;
 use alloc::vec::Vec;
+use core::hint::spin_loop;
 use core::mem::size_of;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
@@ -27,6 +30,7 @@ use hvdef::hypercall::PostMessage;
 use hvdef::hypercall::SignalEvent;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
+use opentmk_core::tmkdefs::TmkError;
 use zerocopy::IntoBytes;
 
 /// Post a message to the specified VMBus connection.
@@ -59,7 +63,7 @@ pub fn post_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     let mut msg = PostMessage {
         connection_id,
         padding: 0,
-        message_type: crate::protocol::HV_MESSAGE_TYPE_CHANNEL,
+        message_type: HV_MESSAGE_TYPE_CHANNEL,
         payload_size: payload.len() as u32,
         payload: [0; 240],
     };
@@ -84,10 +88,7 @@ pub fn post_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
                 }
                 return Ok(());
             }
-            Err(
-                e @ (opentmk_core::tmkdefs::TmkError::InsufficientBuffers
-                | opentmk_core::tmkdefs::TmkError::InsufficientMemory),
-            ) => {
+            Err(e @ (TmkError::InsufficientBuffers | TmkError::InsufficientMemory)) => {
                 // Transient — the per-VP message queue is full or the
                 // hypervisor is under memory pressure. Both are the
                 // same class of resource-exhaustion status Linux's
@@ -105,7 +106,7 @@ pub fn post_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
                 let shift = attempt.min(POST_MESSAGE_BACKOFF_MAX_SHIFT);
                 let iters = POST_MESSAGE_BACKOFF_ITERS.saturating_mul(1usize << shift);
                 for _ in 0..iters {
-                    core::hint::spin_loop();
+                    spin_loop();
                 }
                 continue;
             }
@@ -115,9 +116,7 @@ pub fn post_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
             }
         }
     }
-    Err(Error::Hypercall(
-        opentmk_core::tmkdefs::TmkError::InsufficientBuffers,
-    ))
+    Err(Error::Hypercall(TmkError::InsufficientBuffers))
 }
 
 /// Number of attempts (including the first) before giving up on a
@@ -252,7 +251,7 @@ pub fn get_vp_registers<C: HypercallPlatformTrait<Config = HyperVHypercallConfig
     }
 
     // Output layout: one `HvRegisterValue` (16 bytes) per register.
-    let mut output = alloc::vec![0u8; names.len() * size_of::<HvRegisterValue>()];
+    let mut output = vec![0u8; names.len() * size_of::<HvRegisterValue>()];
 
     ctx.hypercall(
         HypercallCode::HvCallGetVpRegisters.0 as u64,

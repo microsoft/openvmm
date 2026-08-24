@@ -56,9 +56,21 @@
 
 use crate::Error;
 use crate::Result;
+use crate::connection::MessagePump;
+use crate::connection::OfferCollector;
+use crate::connection::connection;
+use crate::hypercalls::post_message;
+use crate::interrupt::SimpPump;
+use crate::message::CompletionKey;
+use crate::message::CompletionTable;
+use crate::message::MessageSink;
+use crate::message::completion_table;
+use crate::message::encode;
+use crate::message::parse;
 use crate::protocol::ChannelId;
 use crate::protocol::GpaRange;
 use crate::protocol::GpadlBody;
+use crate::protocol::GpadlCreated;
 use crate::protocol::GpadlHeader;
 use crate::protocol::GpadlId;
 use crate::protocol::GpadlTeardown;
@@ -66,7 +78,9 @@ use crate::protocol::HEADER_SIZE;
 use crate::protocol::MAX_MESSAGE_SIZE;
 use crate::protocol::MessageHeader;
 use crate::protocol::MessageType;
+use crate::synic::synic_pages;
 use alloc::vec::Vec;
+use core::cmp::min;
 use core::mem::size_of;
 use core::mem::size_of_val;
 use core::sync::atomic::AtomicU32;
@@ -189,7 +203,7 @@ pub fn encode_gpadl_messages(
     let mut messages: Vec<Vec<u8>> = Vec::new();
 
     // Header message.
-    let header_take = core::cmp::min(range_payload.len(), HEADER_RANGE_CAPACITY_BYTES);
+    let header_take = min(range_payload.len(), HEADER_RANGE_CAPACITY_BYTES);
     {
         let header = GpadlHeader {
             channel_id,
@@ -207,7 +221,7 @@ pub fn encode_gpadl_messages(
     // Body messages.
     let mut cursor = header_take;
     while cursor < range_payload.len() {
-        let take = core::cmp::min(range_payload.len() - cursor, BODY_RANGE_CAPACITY_BYTES);
+        let take = min(range_payload.len() - cursor, BODY_RANGE_CAPACITY_BYTES);
         let body = GpadlBody { rsvd: 0, gpadl_id };
         let mut msg = Vec::with_capacity(HEADER_SIZE + size_of::<GpadlBody>() + take);
         msg.extend_from_slice(MessageHeader::new(MessageType::GPADL_BODY).as_bytes());
@@ -255,7 +269,7 @@ pub fn establish_gpadl_partial<C: HypercallPlatformTrait<Config = HyperVHypercal
     let msgs = encode_gpadl_messages(channel_id, gpadl_id, /*range_count=*/ 1, &payload);
     let conn_id = connection_id_from_state()?;
     for m in &msgs.messages {
-        crate::hypercalls::post_message(ctx, conn_id, m)?;
+        post_message(ctx, conn_id, m)?;
     }
     Ok(GpadlHandle {
         channel_id,
@@ -271,9 +285,9 @@ pub fn establish_gpadl_partial<C: HypercallPlatformTrait<Config = HyperVHypercal
 /// wraps it with the process-wide table and SIMP pump.
 pub fn establish_gpadl_with<C, P>(
     ctx: &mut C,
-    table: &crate::message::CompletionTable,
+    table: &CompletionTable,
     pump: &mut P,
-    sink: &mut dyn crate::message::MessageSink,
+    sink: &mut dyn MessageSink,
     channel_id: ChannelId,
     gpadl_id: GpadlId,
     total_bytes: u32,
@@ -281,7 +295,7 @@ pub fn establish_gpadl_with<C, P>(
 ) -> Result<GpadlHandle>
 where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
-    P: crate::connection::MessagePump,
+    P: MessagePump,
 {
     if !(total_bytes as u64).is_multiple_of(hvdef::HV_PAGE_SIZE) {
         return Err(Error::Parse {
@@ -300,15 +314,15 @@ where
     let payload = build_single_range_payload(total_bytes, pfns);
     let msgs = encode_gpadl_messages(channel_id, gpadl_id, 1, &payload);
 
-    let handle = table.register(crate::message::CompletionKey::GpadlCreated(gpadl_id));
+    let handle = table.register(CompletionKey::GpadlCreated(gpadl_id));
     let conn_id = connection_id_from_state()?;
     for m in &msgs.messages {
-        crate::hypercalls::post_message(ctx, conn_id, m)?;
+        post_message(ctx, conn_id, m)?;
     }
 
     pump.poll_until(ctx, &handle, sink)?;
     let bytes = handle.take_response().ok_or(Error::Timeout)?;
-    let created: crate::protocol::GpadlCreated = crate::message::parse(&bytes)?;
+    let created: GpadlCreated = parse(&bytes)?;
     if created.status != 0 {
         return Err(Error::Parse {
             ty: Some(MessageType::GPADL_CREATED),
@@ -324,26 +338,24 @@ where
 /// Post `GpadlTeardown` for `handle` and wait for `GpadlTorndown`.
 pub fn teardown_gpadl_with<C, P>(
     ctx: &mut C,
-    table: &crate::message::CompletionTable,
+    table: &CompletionTable,
     pump: &mut P,
-    sink: &mut dyn crate::message::MessageSink,
+    sink: &mut dyn MessageSink,
     handle: GpadlHandle,
 ) -> Result<()>
 where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
-    P: crate::connection::MessagePump,
+    P: MessagePump,
 {
     let msg = GpadlTeardown {
         channel_id: handle.channel_id,
         gpadl_id: handle.gpadl_id,
     };
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
-    let used = crate::message::encode(&msg, &mut buf);
-    let completion = table.register(crate::message::CompletionKey::GpadlTorndown(
-        handle.gpadl_id,
-    ));
+    let used = encode(&msg, &mut buf);
+    let completion = table.register(CompletionKey::GpadlTorndown(handle.gpadl_id));
     let conn_id = connection_id_from_state()?;
-    crate::hypercalls::post_message(ctx, conn_id, &buf[..used])?;
+    post_message(ctx, conn_id, &buf[..used])?;
     pump.poll_until(ctx, &completion, sink)?;
     if !completion.completed() {
         return Err(Error::Timeout);
@@ -359,10 +371,10 @@ pub fn establish_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>
     total_bytes: u32,
     pfns: &[u64],
 ) -> Result<GpadlHandle> {
-    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
-    let table = crate::message::completion_table();
-    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
-    let mut sink = crate::connection::OfferCollector::default();
+    let pages = synic_pages().ok_or(Error::VersionMismatch)?;
+    let table = completion_table();
+    let mut pump = SimpPump::new(pages.simp_gpa);
+    let mut sink = OfferCollector::default();
     let gpadl_id = allocate_gpadl_id();
     establish_gpadl_with(
         ctx,
@@ -382,10 +394,10 @@ pub fn teardown_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>
     ctx: &mut C,
     handle: GpadlHandle,
 ) -> Result<()> {
-    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
-    let table = crate::message::completion_table();
-    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
-    let mut sink = crate::connection::OfferCollector::default();
+    let pages = synic_pages().ok_or(Error::VersionMismatch)?;
+    let table = completion_table();
+    let mut pump = SimpPump::new(pages.simp_gpa);
+    let mut sink = OfferCollector::default();
     teardown_gpadl_with(ctx, table, &mut pump, &mut sink, handle)
 }
 
@@ -399,7 +411,7 @@ pub fn allocate_gpadl_id() -> GpadlId {
 /// Retrieve the currently negotiated post-message connection id from
 /// [`crate::connection`], failing if none has been negotiated yet.
 fn connection_id_from_state() -> Result<u32> {
-    let guard = crate::connection::connection();
+    let guard = connection();
     match &*guard {
         Some(state) => Ok(state.post_message_connection_id),
         None => Err(Error::VersionMismatch),

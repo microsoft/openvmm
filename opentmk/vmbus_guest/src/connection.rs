@@ -66,10 +66,15 @@
 
 use crate::Error;
 use crate::Result;
+use crate::hypercalls::post_message;
+use crate::interrupt::SimpPump;
 use crate::message::CompletionHandle;
 use crate::message::CompletionKey;
 use crate::message::CompletionTable;
 use crate::message::MessageSink;
+use crate::message::completion_table;
+use crate::message::encode;
+use crate::message::parse;
 use crate::protocol::FeatureFlags;
 use crate::protocol::Guid;
 use crate::protocol::HEADER_SIZE;
@@ -79,6 +84,7 @@ use crate::protocol::MAX_MESSAGE_SIZE;
 use crate::protocol::MessageHeader;
 use crate::protocol::MessageType;
 use crate::protocol::OfferChannel;
+use crate::protocol::RequestOffers;
 use crate::protocol::RescindChannelOffer;
 use crate::protocol::TargetInfo;
 use crate::protocol::TlConnectResult;
@@ -90,6 +96,7 @@ use crate::protocol::VersionResponse;
 use crate::protocol::VersionResponse2;
 use crate::protocol::VersionResponse3;
 use crate::synic::VMBUS_SINT;
+use crate::synic::synic_pages;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use opentmk_core::context::HypercallPlatformTrait;
@@ -219,18 +226,18 @@ pub struct ParsedVersionResponse {
 ///
 /// `bytes` is expected to start at the vmbus `MessageHeader`.
 pub fn parse_version_response(bytes: &[u8]) -> Result<ParsedVersionResponse> {
-    let base: VersionResponse = crate::message::parse(bytes)?;
+    let base: VersionResponse = parse(bytes)?;
     let body_len = bytes.len() - HEADER_SIZE;
 
     let (supported_features, p2c, c2p) = if body_len >= size_of::<VersionResponse3>() {
-        let v3: VersionResponse3 = crate::message::parse(bytes)?;
+        let v3: VersionResponse3 = parse(bytes)?;
         (
             FeatureFlags::from_bits(v3.version_response2.supported_features),
             v3.parent_to_child_monitor_page_gpa,
             v3.child_to_parent_monitor_page_gpa,
         )
     } else if body_len >= size_of::<VersionResponse2>() {
-        let v2: VersionResponse2 = crate::message::parse(bytes)?;
+        let v2: VersionResponse2 = parse(bytes)?;
         (FeatureFlags::from_bits(v2.supported_features), 0, 0)
     } else {
         (FeatureFlags::new(), 0, 0)
@@ -324,7 +331,7 @@ where
         };
         let payload =
             encode_initiate_contact(version, client, advertised_flags, *MONITOR_PAGES.lock());
-        crate::hypercalls::post_message(ctx, initial_connection_id(version), &payload)?;
+        post_message(ctx, initial_connection_id(version), &payload)?;
 
         // Timeout on this version doesn't fail the whole negotiation —
         // fall through to the next entry in the ladder. Only an outright
@@ -387,8 +394,8 @@ where
     let handle = table.register(CompletionKey::AllOffersDelivered);
 
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
-    let used = crate::message::encode(&crate::protocol::RequestOffers, &mut buf);
-    crate::hypercalls::post_message(ctx, connection_id, &buf[..used])?;
+    let used = encode(&RequestOffers, &mut buf);
+    post_message(ctx, connection_id, &buf[..used])?;
 
     pump.poll_until(ctx, &handle, sink)?;
     Ok(())
@@ -416,9 +423,9 @@ pub const CLIENT_ID: Guid = Guid {
 pub fn initiate<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
 ) -> Result<()> {
-    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
-    let table = crate::message::completion_table();
-    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
+    let pages = synic_pages().ok_or(Error::VersionMismatch)?;
+    let table = completion_table();
+    let mut pump = SimpPump::new(pages.simp_gpa);
     let state = negotiate_version(
         ctx,
         table,
@@ -435,10 +442,10 @@ pub fn initiate<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
 pub fn request_offers<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
 ) -> Result<Vec<OfferChannel>> {
-    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
+    let pages = synic_pages().ok_or(Error::VersionMismatch)?;
     let state = connection().clone().ok_or(Error::VersionMismatch)?;
-    let table = crate::message::completion_table();
-    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
+    let table = completion_table();
+    let mut pump = SimpPump::new(pages.simp_gpa);
     let mut sink = OfferCollector::default();
     request_offers_with(
         ctx,
@@ -468,8 +475,8 @@ where
     let handle = table.register(CompletionKey::UnloadComplete);
 
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
-    let used = crate::message::encode(&Unload, &mut buf);
-    crate::hypercalls::post_message(ctx, state.post_message_connection_id, &buf[..used])?;
+    let used = encode(&Unload, &mut buf);
+    post_message(ctx, state.post_message_connection_id, &buf[..used])?;
 
     pump.poll_until(ctx, &handle, sink)?;
     *CONNECTION.lock() = None;
@@ -480,9 +487,9 @@ where
 pub fn unload<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
 ) -> Result<()> {
-    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
-    let table = crate::message::completion_table();
-    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
+    let pages = synic_pages().ok_or(Error::VersionMismatch)?;
+    let table = completion_table();
+    let mut pump = SimpPump::new(pages.simp_gpa);
     let mut sink = OfferCollector::default();
     unload_with(ctx, table, &mut pump, &mut sink)
 }

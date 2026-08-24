@@ -18,6 +18,8 @@
 
 use crate::Error;
 use crate::Result;
+use crate::connection::connection;
+use crate::hypercalls::post_message;
 use crate::protocol::Guid;
 use crate::protocol::HEADER_SIZE;
 use crate::protocol::MessageHeader;
@@ -115,9 +117,7 @@ pub fn send_hvsock_connect<C: HypercallPlatformTrait<Config = HyperVHypercallCon
     service: Guid,
     silo: Option<Guid>,
 ) -> Result<()> {
-    let state = crate::connection::connection()
-        .clone()
-        .ok_or(Error::VersionMismatch)?;
+    let state = connection().clone().ok_or(Error::VersionMismatch)?;
     let payload = encode_tl_connect_request(state.selected_version, endpoint, service, silo);
-    crate::hypercalls::post_message(ctx, state.post_message_connection_id, &payload)
+    post_message(ctx, state.post_message_connection_id, &payload)
 }

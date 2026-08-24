@@ -17,6 +17,7 @@
 #![expect(missing_docs)]
 
 use bitfield_struct::bitfield;
+use core::fmt;
 use core::mem::size_of;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
@@ -376,8 +377,8 @@ impl UserDefinedData {
     }
 }
 
-impl core::fmt::Debug for UserDefinedData {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for UserDefinedData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.0.iter().all(|&b| b == 0) {
             write!(f, "UserDefinedData([<all-zeroes>])")
         } else {

@@ -55,22 +55,31 @@
 //! ```
 //!
 //! [`SimpPump`] implements
-//! [`MessagePump::poll_until`](crate::connection::MessagePump::poll_until),
+//! [`MessagePump`] via `MessagePump::poll_until`,
 //! which returns [`crate::Error::Timeout`] after `max_retries` empty
 //! reads — the guest never blocks indefinitely.
 
 use crate::Error;
 use crate::Result;
+use crate::connection::MessagePump;
 use crate::hypercalls::set_vp_register;
 use crate::message::CompletionHandle;
 use crate::message::CompletionTable;
 use crate::message::MessageSink;
+#[cfg(target_os = "uefi")]
+use crate::message::completion_table;
 use crate::message::route_message;
 #[cfg_attr(
     not(target_os = "uefi"),
     expect(unused_imports, reason = "used only in the UEFI SIMP-pump impl")
 )]
 use crate::synic::VMBUS_SINT;
+#[cfg(target_os = "uefi")]
+use core::hint::spin_loop;
+#[cfg(target_os = "uefi")]
+use core::slice::from_raw_parts_mut;
+use core::sync::atomic::Ordering;
+use core::sync::atomic::fence;
 use hvdef::HV_MESSAGE_PAYLOAD_SIZE;
 use hvdef::HV_MESSAGE_SIZE;
 use hvdef::HvMessageType;
@@ -163,7 +172,7 @@ pub fn read_slot(slot: &[u8]) -> Result<Option<SlotView<'_>>> {
 pub fn clear_slot(slot: &mut [u8]) {
     assert!(slot.len() >= HV_MESSAGE_SIZE);
     slot[0..4].copy_from_slice(&HvMessageType::HvMessageTypeNone.0.to_le_bytes());
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    fence(Ordering::SeqCst);
 }
 
 /// Issue an end-of-message write via `HvCallSetVpRegisters`.
@@ -290,14 +299,14 @@ impl SimpPump {
 }
 
 #[cfg(target_os = "uefi")]
-impl crate::connection::MessagePump for SimpPump {
+impl MessagePump for SimpPump {
     fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
         handle: &CompletionHandle,
         sink: &mut dyn MessageSink,
     ) -> Result<()> {
-        let table = crate::message::completion_table();
+        let table = completion_table();
         let mut peek_count: usize = 0;
         for i in 0..self.max_retries {
             // SAFETY: `simp_gpa` is a live guest page programmed into
@@ -306,7 +315,7 @@ impl crate::connection::MessagePump for SimpPump {
             // slice.
             #[expect(unsafe_code, reason = "raw SIMP page access")]
             let slot = unsafe {
-                core::slice::from_raw_parts_mut(
+                from_raw_parts_mut(
                     (self.simp_gpa as *mut u8).add(slot_offset(VMBUS_SINT)),
                     HV_MESSAGE_SIZE,
                 )
@@ -325,7 +334,7 @@ impl crate::connection::MessagePump for SimpPump {
                 return Ok(());
             }
             if !drained {
-                core::hint::spin_loop();
+                spin_loop();
             }
         }
         log::warn!("poll_until: max_retries hit (peek_count={peek_count})");
@@ -334,7 +343,7 @@ impl crate::connection::MessagePump for SimpPump {
 }
 
 #[cfg(not(target_os = "uefi"))]
-impl crate::connection::MessagePump for SimpPump {
+impl MessagePump for SimpPump {
     fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         _ctx: &mut C,

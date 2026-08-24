@@ -102,12 +102,15 @@
 
 use crate::Error;
 use crate::Result;
+use crate::protocol::GpaDirectHeader;
+use crate::protocol::GpaRange;
 use crate::protocol::PacketDescriptor;
 use crate::protocol::PacketType;
 use alloc::boxed::Box;
 use alloc::vec;
 use core::marker::PhantomData;
 use core::mem::size_of;
+use core::slice::from_raw_parts;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering;
@@ -337,7 +340,7 @@ impl RingMem for RawRingMem {
         // valid for `CONTROL_WORD_COUNT` `AtomicU32`s and outlives us.
         #[expect(unsafe_code, reason = "materialise slice over control page")]
         unsafe {
-            core::slice::from_raw_parts(self.control, CONTROL_WORD_COUNT)
+            from_raw_parts(self.control, CONTROL_WORD_COUNT)
         }
     }
 
@@ -603,11 +606,11 @@ impl<M: RingMem> SendRing<M> {
             });
         }
         let mut ext_buf = [0u8; 16 + 8 * MAX_PFNS];
-        let hdr = crate::protocol::GpaDirectHeader {
+        let hdr = GpaDirectHeader {
             reserved: 0,
             range_count: 1,
         };
-        let rng = crate::protocol::GpaRange {
+        let rng = GpaRange {
             byte_count,
             byte_offset,
         };

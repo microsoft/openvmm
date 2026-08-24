@@ -110,12 +110,30 @@ use crate::Error;
 use crate::Result;
 use crate::channel::Channel;
 use crate::channel::ChannelState;
+use crate::channel::open_channel;
+use crate::gpadl::GpadlHandle;
+use crate::gpadl::establish_gpadl;
+use crate::protocol::ChannelId;
 use crate::protocol::Guid;
+use crate::protocol::OfferChannel;
+use crate::protocol::PacketType;
+use crate::protocol::TransferPageHeader;
+use crate::protocol::TransferPageRange;
 use crate::ring::PacketFlags;
 use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
 use crate::ring::SendRing;
+use crate::virt_to_phys;
+use alloc::alloc::alloc_zeroed;
+use alloc::alloc::dealloc;
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::alloc::Layout;
+use core::hint::spin_loop;
+use core::ops::BitOr;
+use core::ops::BitOrAssign;
+use core::ptr::copy_nonoverlapping;
+use core::slice::from_raw_parts;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use opentmk_core::context::HypercallPlatformTrait;
@@ -353,7 +371,7 @@ pub struct Nvsp1MsgSendNdisVersion {
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct Nvsp1MsgSendBuffer {
     /// GPADL handle for the buffer (from
-    /// `crate::gpadl::establish_gpadl`).
+    /// `establish_gpadl`).
     pub gpadl_handle: u32,
     /// Buffer identifier — [`NETVSC_RECEIVE_BUFFER_ID`] or
     /// [`NETVSC_SEND_BUFFER_ID`].
@@ -484,14 +502,14 @@ impl NdisCapabilities {
     }
 }
 
-impl core::ops::BitOr<u64> for NdisCapabilities {
+impl BitOr<u64> for NdisCapabilities {
     type Output = Self;
     fn bitor(self, rhs: u64) -> Self {
         Self(self.0 | rhs)
     }
 }
 
-impl core::ops::BitOrAssign<u64> for NdisCapabilities {
+impl BitOrAssign<u64> for NdisCapabilities {
     fn bitor_assign(&mut self, rhs: u64) {
         self.0 |= rhs;
     }
@@ -742,7 +760,7 @@ pub struct OwnedBuf {
     /// Size in bytes (multiple of 4096).
     pub len: usize,
     /// Registered GPADL id for this buffer.
-    pub gpadl: crate::gpadl::GpadlHandle,
+    pub gpadl: GpadlHandle,
 }
 
 // SAFETY: `OwnedBuf` is only ever accessed by the single-threaded
@@ -798,12 +816,12 @@ pub struct Netvsp {
     /// (both wait and fire-and-forget modes) and drained by
     /// [`Self::drain_inbound`] and the completion-wait loop inside
     /// `send_ethernet`. Each entry owns the backing allocation and
-    /// is freed via `alloc::alloc::dealloc` when the matching
+    /// is freed via `dealloc` when the matching
     /// completion arrives.
     ///
     /// Bounded at [`PENDING_TX_MAX`] — bursts beyond that must be
     /// interleaved with [`Self::flush_tx`] or [`Self::drain_inbound`].
-    pending_tx: alloc::collections::VecDeque<PendingTx>,
+    pending_tx: VecDeque<PendingTx>,
 }
 
 /// A raw pointer + layout for a TX RNDIS buffer that's been handed
@@ -812,7 +830,7 @@ pub struct Netvsp {
 struct PendingTx {
     tid: u64,
     ptr: *mut u8,
-    layout: core::alloc::Layout,
+    layout: Layout,
 }
 
 /// Reasonable default retry budget for ring-buffer completion polling.
@@ -842,7 +860,7 @@ impl Netvsp {
     /// called before any other message is sent.
     pub fn open<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         ctx: &mut C,
-        offer: &crate::protocol::OfferChannel,
+        offer: &OfferChannel,
     ) -> Result<Self> {
         // Layout of the 18-page ring region, in order:
         //   pages 0     : send control page
@@ -851,21 +869,20 @@ impl Netvsp {
         //   pages 10..=17: recv data
         const TOTAL_PAGES: usize = 2 * (1 + RING_DATA_PAGES);
         const REGION_BYTES: usize = TOTAL_PAGES * 4096;
-        let layout =
-            core::alloc::Layout::from_size_align(REGION_BYTES, 4096).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "netvsp ring layout invalid",
-            })?;
+        let layout = Layout::from_size_align(REGION_BYTES, 4096).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "netvsp ring layout invalid",
+        })?;
         // SAFETY: alignment and size are validated above. Never freed.
         #[expect(unsafe_code, reason = "raw page-aligned allocation for GPADL")]
-        let base = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        let base = unsafe { alloc_zeroed(layout) };
         if base.is_null() {
             return Err(Error::Parse {
                 ty: None,
                 reason: "netvsp ring allocation failed",
             });
         }
-        let base_gpa = crate::virt_to_phys(base);
+        let base_gpa = virt_to_phys(base);
         log::info!(
             "netvsp: ring region at GPA {:#x} ({} bytes)",
             base_gpa,
@@ -876,8 +893,7 @@ impl Netvsp {
         for i in 0..TOTAL_PAGES {
             pfns.push((base_gpa + (i * 4096) as u64) >> 12);
         }
-        let gpadl =
-            crate::gpadl::establish_gpadl(ctx, offer.channel_id, REGION_BYTES as u32, &pfns)?;
+        let gpadl = establish_gpadl(ctx, offer.channel_id, REGION_BYTES as u32, &pfns)?;
         log::info!(
             "netvsp: ring GPADL established id={:?} for channel {:?}",
             gpadl.id(),
@@ -913,7 +929,7 @@ impl Netvsp {
 
         // Open the channel. `send_data_pages` matches our layout so
         // the host knows where the send ring ends and recv begins.
-        let channel = crate::channel::open_channel(
+        let channel = open_channel(
             ctx,
             offer,
             gpadl,
@@ -935,7 +951,7 @@ impl Netvsp {
             send_buf: None,
             send_section_size: 0,
             send_section_count: 0,
-            pending_tx: alloc::collections::VecDeque::new(),
+            pending_tx: VecDeque::new(),
         })
     }
 
@@ -1355,15 +1371,14 @@ impl Netvsp {
         // Allocate a page-aligned RNDIS message buffer. Total is
         // small (8 + 16 = 24 bytes) but we take a whole page for
         // clean GPA-direct addressing.
-        let rndis_layout =
-            core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "rndis buffer layout",
-            })?;
+        let rndis_layout = Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "rndis buffer layout",
+        })?;
         // SAFETY: layout is a validated single-page allocation.
         // Kept alive at least until we've received the completion.
         #[expect(unsafe_code, reason = "page-aligned RNDIS message allocation")]
-        let rndis_ptr = unsafe { alloc::alloc::alloc_zeroed(rndis_layout) };
+        let rndis_ptr = unsafe { alloc_zeroed(rndis_layout) };
         if rndis_ptr.is_null() {
             return Err(Error::Parse {
                 ty: None,
@@ -1390,8 +1405,8 @@ impl Netvsp {
         // combined write is 24 bytes.
         #[expect(unsafe_code, reason = "copy RNDIS bytes into own buffer")]
         unsafe {
-            core::ptr::copy_nonoverlapping(hdr_bytes.as_ptr(), rndis_ptr, hdr_bytes.len());
-            core::ptr::copy_nonoverlapping(
+            copy_nonoverlapping(hdr_bytes.as_ptr(), rndis_ptr, hdr_bytes.len());
+            copy_nonoverlapping(
                 req_bytes.as_ptr(),
                 rndis_ptr.add(hdr_bytes.len()),
                 req_bytes.len(),
@@ -1400,7 +1415,7 @@ impl Netvsp {
         let rndis_total_bytes = (hdr_bytes.len() + req_bytes.len()) as u32;
         log::info!(
             "netvsp: rndis buffer at GPA {:#x}, {} bytes",
-            crate::virt_to_phys(rndis_ptr),
+            virt_to_phys(rndis_ptr),
             rndis_total_bytes
         );
 
@@ -1425,7 +1440,7 @@ impl Netvsp {
         let tid = self.alloc_transaction_id();
         let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
-        let rndis_gpa = crate::virt_to_phys(rndis_ptr);
+        let rndis_gpa = virt_to_phys(rndis_ptr);
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
         if self.channel.state() != ChannelState::Open {
@@ -1458,24 +1473,23 @@ impl Netvsp {
             match self.recv.read(&mut buf) {
                 Ok(pkt) => {
                     match pkt.descriptor.packet_type {
-                        crate::protocol::PacketType::VM_PKT_COMP
-                            if pkt.descriptor.transaction_id == tid =>
-                        {
+                        PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
                             log::info!("netvsp: got V1_SEND_RNDIS_PKT_COMPLETE (tid={:#x})", tid);
                             got_nvsp_comp = true;
                         }
-                        crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                        PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
                             // Parse: pkt.buf starts at ext_header,
                             // then payload. buf[..ext_header_len] is
                             // the transfer-page header + ranges.
                             let ext_len = pkt.ext_header_len;
                             let host_tid = pkt.descriptor.transaction_id;
                             let (xhdr, _) =
-                                crate::protocol::TransferPageHeader::read_from_prefix(&buf)
-                                    .map_err(|_| Error::Parse {
+                                TransferPageHeader::read_from_prefix(&buf).map_err(|_| {
+                                    Error::Parse {
                                         ty: None,
                                         reason: "parse TransferPageHeader",
-                                    })?;
+                                    }
+                                })?;
                             log::info!(
                                 "netvsp: xfer-page packet: set_id={:#x} range_count={} host_tid={:#x}",
                                 xhdr.transfer_page_set_id,
@@ -1499,12 +1513,11 @@ impl Netvsp {
                                 continue;
                             }
                             // First range describes the RNDIS message.
-                            let (range0, _) =
-                                crate::protocol::TransferPageRange::read_from_prefix(&buf[8..])
-                                    .map_err(|_| Error::Parse {
-                                        ty: None,
-                                        reason: "parse TransferPageRange",
-                                    })?;
+                            let (range0, _) = TransferPageRange::read_from_prefix(&buf[8..])
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse TransferPageRange",
+                                })?;
                             log::info!(
                                 "netvsp: xfer-page range0: offset={:#x} count={}",
                                 range0.byte_offset,
@@ -1522,7 +1535,7 @@ impl Netvsp {
                             // we own; single-threaded UEFI.
                             #[expect(unsafe_code, reason = "read RNDIS response from recv buffer")]
                             let rndis_msg = unsafe {
-                                core::slice::from_raw_parts(
+                                from_raw_parts(
                                     recv_base.add(range0.byte_offset as usize),
                                     range0.byte_count as usize,
                                 )
@@ -1616,7 +1629,7 @@ impl Netvsp {
                     }
                 }
                 Err(Error::RingEmpty) => {
-                    core::hint::spin_loop();
+                    spin_loop();
                 }
                 Err(e) => return Err(e),
             }
@@ -1659,14 +1672,13 @@ impl Netvsp {
         let recv_base = recv_buf.ptr;
         let recv_len = recv_buf.len;
 
-        let rndis_layout =
-            core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "set_pkt_filter buffer layout",
-            })?;
+        let rndis_layout = Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "set_pkt_filter buffer layout",
+        })?;
         // SAFETY: page-sized page-aligned request.
         #[expect(unsafe_code, reason = "page-aligned RNDIS SET buffer")]
-        let rndis_ptr = unsafe { alloc::alloc::alloc_zeroed(rndis_layout) };
+        let rndis_ptr = unsafe { alloc_zeroed(rndis_layout) };
         if rndis_ptr.is_null() {
             return Err(Error::Parse {
                 ty: None,
@@ -1696,13 +1708,13 @@ impl Netvsp {
         // = 8 + 20 + 4 = 32 << 4096.
         #[expect(unsafe_code, reason = "copy RNDIS bytes into own buffer")]
         unsafe {
-            core::ptr::copy_nonoverlapping(rndis_hdr.as_bytes().as_ptr(), rndis_ptr, hdr_size);
-            core::ptr::copy_nonoverlapping(
+            copy_nonoverlapping(rndis_hdr.as_bytes().as_ptr(), rndis_ptr, hdr_size);
+            copy_nonoverlapping(
                 set_req.as_bytes().as_ptr(),
                 rndis_ptr.add(hdr_size),
                 req_size,
             );
-            core::ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 filter.to_le_bytes().as_ptr(),
                 rndis_ptr.add(hdr_size + req_size),
                 info_size,
@@ -1733,7 +1745,7 @@ impl Netvsp {
         let tid = self.alloc_transaction_id();
         let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
-        let rndis_gpa = crate::virt_to_phys(rndis_ptr);
+        let rndis_gpa = virt_to_phys(rndis_ptr);
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
         let need_signal =
@@ -1757,30 +1769,30 @@ impl Netvsp {
             match self.recv.read(&mut buf) {
                 Ok(pkt) => {
                     match pkt.descriptor.packet_type {
-                        crate::protocol::PacketType::VM_PKT_COMP
-                            if pkt.descriptor.transaction_id == tid =>
-                        {
+                        PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
                             log::info!("netvsp: RNDIS SET nvsp-comp received");
                             got_nvsp_comp = true;
                         }
-                        crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                        PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
                             let host_tid = pkt.descriptor.transaction_id;
                             let (xhdr, _) =
-                                crate::protocol::TransferPageHeader::read_from_prefix(&buf)
-                                    .map_err(|_| Error::Parse {
+                                TransferPageHeader::read_from_prefix(&buf).map_err(|_| {
+                                    Error::Parse {
                                         ty: None,
                                         reason: "parse TransferPageHeader",
-                                    })?;
+                                    }
+                                })?;
                             if xhdr.range_count == 0 {
                                 self.ack_xfer_page(ctx, host_tid)?;
                                 continue;
                             }
                             let (r0, _) =
-                                crate::protocol::TransferPageRange::read_from_prefix(&buf[8..])
-                                    .map_err(|_| Error::Parse {
+                                TransferPageRange::read_from_prefix(&buf[8..]).map_err(|_| {
+                                    Error::Parse {
                                         ty: None,
                                         reason: "parse TransferPageRange",
-                                    })?;
+                                    }
+                                })?;
                             if (r0.byte_offset as usize + r0.byte_count as usize) > recv_len {
                                 self.ack_xfer_page(ctx, host_tid)?;
                                 continue;
@@ -1788,7 +1800,7 @@ impl Netvsp {
                             // SAFETY: bounds-checked; single-threaded.
                             #[expect(unsafe_code, reason = "read RNDIS SET response from recv")]
                             let rndis_msg = unsafe {
-                                core::slice::from_raw_parts(
+                                from_raw_parts(
                                     recv_base.add(r0.byte_offset as usize),
                                     r0.byte_count as usize,
                                 )
@@ -1858,7 +1870,7 @@ impl Netvsp {
                         return Ok(());
                     }
                 }
-                Err(Error::RingEmpty) => core::hint::spin_loop(),
+                Err(Error::RingEmpty) => spin_loop(),
                 Err(e) => return Err(e),
             }
         }
@@ -1933,14 +1945,13 @@ impl Netvsp {
         //   [0..8)   RndisMessageHeader
         //   [8..44)  RndisPacket (36 bytes)
         //   [44..)   Ethernet frame
-        let rndis_layout =
-            core::alloc::Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "rndis buffer layout",
-            })?;
+        let rndis_layout = Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "rndis buffer layout",
+        })?;
         // SAFETY: validated single-page layout, single-threaded UEFI.
         #[expect(unsafe_code, reason = "page-aligned RNDIS message allocation")]
-        let rndis_ptr = unsafe { alloc::alloc::alloc_zeroed(rndis_layout) };
+        let rndis_ptr = unsafe { alloc_zeroed(rndis_layout) };
         if rndis_ptr.is_null() {
             return Err(Error::Parse {
                 ty: None,
@@ -1976,13 +1987,13 @@ impl Netvsp {
         // check above.
         #[expect(unsafe_code, reason = "copy RNDIS message parts into own buffer")]
         unsafe {
-            core::ptr::copy_nonoverlapping(rndis_hdr.as_bytes().as_ptr(), rndis_ptr, hdr_size);
-            core::ptr::copy_nonoverlapping(
+            copy_nonoverlapping(rndis_hdr.as_bytes().as_ptr(), rndis_ptr, hdr_size);
+            copy_nonoverlapping(
                 rndis_pkt.as_bytes().as_ptr(),
                 rndis_ptr.add(hdr_size),
                 pkt_size,
             );
-            core::ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 frame.as_ptr(),
                 rndis_ptr.add(hdr_size + pkt_size),
                 frame.len(),
@@ -2015,7 +2026,7 @@ impl Netvsp {
             // SAFETY: we own `rndis_ptr` and no aliasing has occurred.
             #[expect(unsafe_code, reason = "reclaim allocation on early exit")]
             unsafe {
-                alloc::alloc::dealloc(rndis_ptr, rndis_layout);
+                dealloc(rndis_ptr, rndis_layout);
             }
             return Err(Error::Rescinded);
         }
@@ -2028,7 +2039,7 @@ impl Netvsp {
                 // SAFETY: we own `rndis_ptr` and no aliasing has occurred.
                 #[expect(unsafe_code, reason = "reclaim allocation on early exit")]
                 unsafe {
-                    alloc::alloc::dealloc(rndis_ptr, rndis_layout);
+                    dealloc(rndis_ptr, rndis_layout);
                 }
                 return Err(Error::RingFull);
             }
@@ -2036,7 +2047,7 @@ impl Netvsp {
         let tid = self.alloc_transaction_id();
         let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
-        let rndis_gpa = crate::virt_to_phys(rndis_ptr);
+        let rndis_gpa = virt_to_phys(rndis_ptr);
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
         let need_signal =
@@ -2076,9 +2087,7 @@ impl Netvsp {
             match self.recv.read(&mut buf) {
                 Ok(pkt) => {
                     match pkt.descriptor.packet_type {
-                        crate::protocol::PacketType::VM_PKT_COMP
-                            if pkt.descriptor.transaction_id == tid =>
-                        {
+                        PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
                             // Our completion — parse status, free our
                             // buffer, return.
                             let (_hdr, body) =
@@ -2101,12 +2110,12 @@ impl Netvsp {
                             }
                             return Ok(());
                         }
-                        crate::protocol::PacketType::VM_PKT_COMP => {
+                        PacketType::VM_PKT_COMP => {
                             // A completion for a previous fire-and-
                             // forget — reap the associated buffer.
                             let _ = self.free_completed_tx(pkt.descriptor.transaction_id);
                         }
-                        crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                        PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
                             // An inbound Ethernet delivery. We MUST
                             // ack it so the host can reclaim the
                             // transfer-page range; skipping the ack
@@ -2128,7 +2137,7 @@ impl Netvsp {
                         }
                     }
                 }
-                Err(Error::RingEmpty) => core::hint::spin_loop(),
+                Err(Error::RingEmpty) => spin_loop(),
                 Err(e) => return Err(e),
             }
         }
@@ -2164,29 +2173,29 @@ impl Netvsp {
         for _ in 0..iters {
             match self.recv.read(&mut buf) {
                 Ok(pkt) => match pkt.descriptor.packet_type {
-                    crate::protocol::PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                    PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
                         let host_tid = pkt.descriptor.transaction_id;
-                        let (xhdr, _) = crate::protocol::TransferPageHeader::read_from_prefix(&buf)
-                            .map_err(|_| Error::Parse {
-                                ty: None,
-                                reason: "parse TransferPageHeader",
+                        let (xhdr, _) =
+                            TransferPageHeader::read_from_prefix(&buf).map_err(|_| {
+                                Error::Parse {
+                                    ty: None,
+                                    reason: "parse TransferPageHeader",
+                                }
                             })?;
                         for i in 0..xhdr.range_count as usize {
                             let range_off = 8 + i * 8;
-                            let (r, _) = crate::protocol::TransferPageRange::read_from_prefix(
-                                &buf[range_off..],
-                            )
-                            .map_err(|_| Error::Parse {
-                                ty: None,
-                                reason: "parse TransferPageRange",
-                            })?;
+                            let (r, _) = TransferPageRange::read_from_prefix(&buf[range_off..])
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse TransferPageRange",
+                                })?;
                             if (r.byte_offset as usize + r.byte_count as usize) > recv_len {
                                 continue;
                             }
                             // SAFETY: bounds-checked above; single-threaded.
                             #[expect(unsafe_code, reason = "read from recv buffer")]
                             let msg = unsafe {
-                                core::slice::from_raw_parts(
+                                from_raw_parts(
                                     recv_base.add(r.byte_offset as usize),
                                     r.byte_count as usize,
                                 )
@@ -2239,7 +2248,7 @@ impl Netvsp {
                             self.channel.signal(ctx)?;
                         }
                     }
-                    crate::protocol::PacketType::VM_PKT_COMP => {
+                    PacketType::VM_PKT_COMP => {
                         // Might be a completion for a fire-and-forget
                         // (or previously-abandoned) `send_ethernet`
                         // TX buffer we're still holding — try to
@@ -2260,7 +2269,7 @@ impl Netvsp {
                     if max_polls == 0 {
                         break;
                     }
-                    core::hint::spin_loop();
+                    spin_loop();
                 }
                 Err(e) => return Err(e),
             }
@@ -2301,7 +2310,7 @@ impl Netvsp {
         for _ in 0..max_polls {
             match self.recv.read(&mut recv_buf) {
                 Ok(pkt) => {
-                    if pkt.descriptor.packet_type == crate::protocol::PacketType::VM_PKT_COMP
+                    if pkt.descriptor.packet_type == PacketType::VM_PKT_COMP
                         && pkt.descriptor.transaction_id == tid
                     {
                         // Copy payload out and return.
@@ -2318,7 +2327,7 @@ impl Netvsp {
                     );
                 }
                 Err(Error::RingEmpty) => {
-                    core::hint::spin_loop();
+                    spin_loop();
                 }
                 Err(e) => return Err(e),
             }
@@ -2391,13 +2400,13 @@ impl Netvsp {
         if let Some(idx) = self.pending_tx.iter().position(|p| p.tid == tid) {
             let entry = self.pending_tx.remove(idx).unwrap();
             // SAFETY: `entry.ptr` was returned by
-            // `alloc::alloc::alloc_zeroed(entry.layout)` in
+            // `alloc_zeroed(entry.layout)` in
             // `send_ethernet` and has not been referenced by any
             // other code since. The paired host completion means
             // the host is done with the pages.
             #[expect(unsafe_code, reason = "free completed TX buffer")]
             unsafe {
-                alloc::alloc::dealloc(entry.ptr, entry.layout);
+                dealloc(entry.ptr, entry.layout);
             }
             true
         } else {
@@ -2440,10 +2449,10 @@ impl Netvsp {
 /// pointer + gpadl handle.
 ///
 /// `size` must be a multiple of 4096. Uses opentmk's static heap via
-/// `alloc::alloc::alloc_zeroed`.
+/// `alloc_zeroed`.
 fn allocate_gpadl_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
-    channel_id: crate::protocol::ChannelId,
+    channel_id: ChannelId,
     size: usize,
 ) -> Result<OwnedBuf> {
     if !size.is_multiple_of(4096) || size == 0 {
@@ -2452,7 +2461,7 @@ fn allocate_gpadl_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfi
             reason: "GPADL buffer size must be a positive multiple of 4096",
         });
     }
-    let layout = core::alloc::Layout::from_size_align(size, 4096).map_err(|_| Error::Parse {
+    let layout = Layout::from_size_align(size, 4096).map_err(|_| Error::Parse {
         ty: None,
         reason: "GPADL buffer layout invalid",
     })?;
@@ -2460,21 +2469,21 @@ fn allocate_gpadl_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfi
     // The pointer is never freed — the host holds it for the
     // lifetime of the channel.
     #[expect(unsafe_code, reason = "page-aligned allocation for GPADL registration")]
-    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    let ptr = unsafe { alloc_zeroed(layout) };
     if ptr.is_null() {
         return Err(Error::Parse {
             ty: None,
             reason: "GPADL buffer allocation failed",
         });
     }
-    let base_gpa = crate::virt_to_phys(ptr);
+    let base_gpa = virt_to_phys(ptr);
 
     let pfn_count = size / 4096;
     let mut pfns: Vec<u64> = Vec::with_capacity(pfn_count);
     for i in 0..pfn_count {
         pfns.push((base_gpa + (i * 4096) as u64) >> 12);
     }
-    let gpadl = crate::gpadl::establish_gpadl(ctx, channel_id, size as u32, &pfns)?;
+    let gpadl = establish_gpadl(ctx, channel_id, size as u32, &pfns)?;
     Ok(OwnedBuf {
         ptr,
         len: size,

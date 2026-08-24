@@ -71,10 +71,27 @@
 
 use crate::Error;
 use crate::Result;
+use crate::connection::MessagePump;
+use crate::connection::OfferCollector;
+use crate::connection::connection;
 use crate::gpadl::GpadlHandle;
+use crate::hypercalls::post_message;
+use crate::hypercalls::signal_event;
+use crate::interrupt::SimpPump;
+use crate::message::CompletionKey;
+use crate::message::CompletionTable;
+use crate::message::MessageSink;
+use crate::message::completion_table;
+use crate::message::encode;
+use crate::message::parse;
 use crate::protocol::ChannelId;
+use crate::protocol::CloseChannel;
 use crate::protocol::FeatureFlags;
+use crate::protocol::GpadlId;
+use crate::protocol::HEADER_SIZE;
 use crate::protocol::MAX_MESSAGE_SIZE;
+use crate::protocol::MessageHeader;
+use crate::protocol::MessageType;
 use crate::protocol::OfferChannel;
 use crate::protocol::OpenChannel;
 use crate::protocol::OpenChannel2;
@@ -82,9 +99,14 @@ use crate::protocol::OpenChannelFlags;
 use crate::protocol::OpenResult;
 use crate::protocol::RelIdReleased;
 use crate::protocol::UserDefinedData;
+use crate::protocol::VmbusMessage;
 pub use crate::ring::PacketFlags;
 pub use crate::ring::RecvPacket;
+use crate::synic::synic_pages;
 use alloc::vec::Vec;
+use core::mem::size_of;
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::Ordering;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::IntoBytes;
@@ -166,15 +188,13 @@ impl Channel {
         if self.state != ChannelState::Open {
             return Err(Error::Rescinded);
         }
-        crate::hypercalls::signal_event(ctx, self.connection_id, 0)
+        signal_event(ctx, self.connection_id, 0)
     }
 }
 
 /// Allocate a fresh 32-bit `open_id`. Uses a process-wide atomic
 /// counter, starting at 1 so a zero id can be used as a sentinel.
 pub fn allocate_open_id() -> u32 {
-    use core::sync::atomic::AtomicU32;
-    use core::sync::atomic::Ordering;
     static NEXT_ID: AtomicU32 = AtomicU32::new(1);
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
@@ -185,7 +205,7 @@ pub fn allocate_open_id() -> u32 {
 pub fn encode_open_channel(
     channel_id: ChannelId,
     open_id: u32,
-    ring_gpadl: crate::protocol::GpadlId,
+    ring_gpadl: GpadlId,
     target_vp: u32,
     downstream_page_offset: u32,
     connection_id: u32,
@@ -193,12 +213,6 @@ pub fn encode_open_channel(
     flags: OpenChannelFlags,
     negotiated: FeatureFlags,
 ) -> Vec<u8> {
-    use crate::protocol::HEADER_SIZE;
-    use crate::protocol::MessageHeader;
-    use crate::protocol::MessageType;
-    use crate::protocol::VmbusMessage;
-    use core::mem::size_of;
-
     let base = OpenChannel {
         channel_id,
         open_id,
@@ -243,9 +257,9 @@ pub fn encode_open_channel(
 ///   power-of-two).
 pub fn open_channel_with<C, P>(
     ctx: &mut C,
-    table: &crate::message::CompletionTable,
+    table: &CompletionTable,
     pump: &mut P,
-    sink: &mut dyn crate::message::MessageSink,
+    sink: &mut dyn MessageSink,
     offer: &OfferChannel,
     ring_gpadl: GpadlHandle,
     send_data_pages: u32,
@@ -254,11 +268,9 @@ pub fn open_channel_with<C, P>(
 ) -> Result<Channel>
 where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
-    P: crate::connection::MessagePump,
+    P: MessagePump,
 {
-    let state = crate::connection::connection()
-        .clone()
-        .ok_or(Error::VersionMismatch)?;
+    let state = connection().clone().ok_or(Error::VersionMismatch)?;
 
     let open_id = allocate_open_id();
     let downstream_page_offset = 1 + send_data_pages;
@@ -278,14 +290,14 @@ where
         state.feature_flags,
     );
 
-    let completion = table.register(crate::message::CompletionKey::OpenChannelResult(open_id));
-    crate::hypercalls::post_message(ctx, state.post_message_connection_id, &payload)?;
+    let completion = table.register(CompletionKey::OpenChannelResult(open_id));
+    post_message(ctx, state.post_message_connection_id, &payload)?;
     pump.poll_until(ctx, &completion, sink)?;
     let bytes = completion.take_response().ok_or(Error::Timeout)?;
-    let result: OpenResult = crate::message::parse(&bytes)?;
+    let result: OpenResult = parse(&bytes)?;
     if result.status != 0 {
         return Err(Error::Parse {
-            ty: Some(crate::protocol::MessageType::OPEN_CHANNEL_RESULT),
+            ty: Some(MessageType::OPEN_CHANNEL_RESULT),
             reason: "host returned non-success OpenResult status",
         });
     }
@@ -308,10 +320,7 @@ pub fn close_channel_with<C>(ctx: &mut C, channel: Channel) -> Result<()>
 where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
 {
-    use crate::protocol::CloseChannel;
-    let state = crate::connection::connection()
-        .clone()
-        .ok_or(Error::VersionMismatch)?;
+    let state = connection().clone().ok_or(Error::VersionMismatch)?;
 
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
 
@@ -322,15 +331,15 @@ where
         let close = CloseChannel {
             channel_id: channel.channel_id,
         };
-        let used = crate::message::encode(&close, &mut buf);
-        crate::hypercalls::post_message(ctx, state.post_message_connection_id, &buf[..used])?;
+        let used = encode(&close, &mut buf);
+        post_message(ctx, state.post_message_connection_id, &buf[..used])?;
     }
 
     let rel = RelIdReleased {
         channel_id: channel.channel_id,
     };
-    let used = crate::message::encode(&rel, &mut buf);
-    crate::hypercalls::post_message(ctx, state.post_message_connection_id, &buf[..used])?;
+    let used = encode(&rel, &mut buf);
+    post_message(ctx, state.post_message_connection_id, &buf[..used])?;
 
     Ok(())
 }
@@ -349,10 +358,10 @@ pub fn open_channel<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     connection_id: u32,
     event_flag: u16,
 ) -> Result<Channel> {
-    let pages = crate::synic::synic_pages().ok_or(Error::VersionMismatch)?;
-    let table = crate::message::completion_table();
-    let mut pump = crate::interrupt::SimpPump::new(pages.simp_gpa);
-    let mut sink = crate::connection::OfferCollector::default();
+    let pages = synic_pages().ok_or(Error::VersionMismatch)?;
+    let table = completion_table();
+    let mut pump = SimpPump::new(pages.simp_gpa);
+    let mut sink = OfferCollector::default();
     open_channel_with(
         ctx,
         table,

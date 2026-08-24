@@ -32,9 +32,12 @@ use crate::Error;
 use crate::Result;
 use crate::channel::Channel;
 use crate::channel::ChannelState;
+use crate::protocol::Guid;
+use crate::ring::PacketFlags;
 use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
 use crate::ring::SendRing;
+use core::hint::spin_loop;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::FromBytes;
@@ -44,7 +47,7 @@ use zerocopy::KnownLayout;
 
 /// `f912ad6d-2b17-48ea-bd65-f927a61c7684` — VMBus interface GUID for
 /// the Hyper-V synthetic keyboard.
-pub const INTERFACE_GUID: crate::protocol::Guid = crate::protocol::Guid {
+pub const INTERFACE_GUID: Guid = Guid {
     data1: 0xf912ad6d,
     data2: 0x2b17,
     data3: 0x48ea,
@@ -207,7 +210,7 @@ impl Keyboard {
                 }
                 log::debug!("keyboard: unexpected packet while waiting for response: {packet:?}");
             }
-            core::hint::spin_loop();
+            spin_loop();
         }
         Err(Error::Timeout)
     }
@@ -254,7 +257,7 @@ impl Keyboard {
                 Some(other) => {
                     log::debug!("keyboard: non-event packet {other:?}");
                 }
-                None => core::hint::spin_loop(),
+                None => spin_loop(),
             }
         }
         Ok(count)
@@ -287,7 +290,7 @@ impl Keyboard {
         // `drivers/input/serio/hyperv-keyboard.c` sends with
         // `VM_PKT_DATA_INBAND` +
         // `VMBUS_DATA_PACKET_FLAG_COMPLETION_REQUESTED`.
-        let mut flags = crate::ring::PacketFlags::new();
+        let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
         let need_signal = self.send.write_inband(payload, flags, 0)?;
         if need_signal {

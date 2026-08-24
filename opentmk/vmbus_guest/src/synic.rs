@@ -54,7 +54,12 @@
 
 use crate::Error;
 use crate::Result;
+use crate::hypercalls::get_vp_registers;
 use crate::hypercalls::set_vp_registers;
+#[cfg(target_os = "uefi")]
+use crate::virt_to_phys;
+#[cfg(target_os = "uefi")]
+use alloc::alloc::alloc_zeroed;
 #[cfg(target_os = "uefi")]
 use core::alloc::Layout;
 use hvdef::HvRegisterName;
@@ -64,6 +69,8 @@ use hvdef::HvSynicSint;
 use hvdef::hypercall::HvInputVtl;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
+#[cfg(target_os = "uefi")]
+use opentmk_core::tmkdefs::TmkError;
 use spin::Mutex;
 
 /// Standard SINT index reserved for VMBus (matches
@@ -182,7 +189,7 @@ pub fn program_synic_registers<C: HypercallPlatformTrait<Config = HyperVHypercal
     // Read the four registers back to confirm the hypervisor
     // actually accepted our values. Any mismatch means the
     // hypervisor silently munged the write.
-    let readback = crate::hypercalls::get_vp_registers(
+    let readback = get_vp_registers(
         ctx,
         HvInputVtl::CURRENT_VTL,
         &[
@@ -264,30 +271,26 @@ pub fn preallocate_synic_pages() -> Result<SynicPages> {
 #[cfg(target_os = "uefi")]
 fn allocate_synic_pages() -> Result<SynicPages> {
     let layout = Layout::from_size_align(hvdef::HV_PAGE_SIZE_USIZE, hvdef::HV_PAGE_SIZE_USIZE)
-        .map_err(|_| Error::Hypercall(opentmk_core::tmkdefs::TmkError::AllocationFailed))?;
+        .map_err(|_| Error::Hypercall(TmkError::AllocationFailed))?;
 
     // SAFETY: `layout` is non-zero-size and validly aligned; the
     // returned pointers must be checked against null. We zero via
     // `alloc_zeroed` so no uninitialised bytes are handed to the
     // hypervisor.
     #[expect(unsafe_code, reason = "raw page allocation for hypervisor pages")]
-    let simp_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    let simp_ptr = unsafe { alloc_zeroed(layout) };
     if simp_ptr.is_null() {
-        return Err(Error::Hypercall(
-            opentmk_core::tmkdefs::TmkError::AllocationFailed,
-        ));
+        return Err(Error::Hypercall(TmkError::AllocationFailed));
     }
     #[expect(unsafe_code, reason = "raw page allocation for hypervisor pages")]
-    let siefp_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    let siefp_ptr = unsafe { alloc_zeroed(layout) };
     if siefp_ptr.is_null() {
-        return Err(Error::Hypercall(
-            opentmk_core::tmkdefs::TmkError::AllocationFailed,
-        ));
+        return Err(Error::Hypercall(TmkError::AllocationFailed));
     }
 
     Ok(SynicPages {
-        simp_gpa: crate::virt_to_phys(simp_ptr),
-        siefp_gpa: crate::virt_to_phys(siefp_ptr),
+        simp_gpa: virt_to_phys(simp_ptr),
+        siefp_gpa: virt_to_phys(siefp_ptr),
     })
 }
 
