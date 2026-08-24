@@ -59,6 +59,10 @@ async fn hibernate_halts<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
         .with_windows_secure_boot_template()
         .with_hibernation_enabled(true)
         .with_custom_uefi_json(HIBERNATE_ACTION_JSON)
+        // Seeding custom UEFI NVRAM leaves the boot order empty, so force the
+        // firmware to fall back to the guest_test_uefi removable-media loader
+        // (required on aarch64, where the fallback is otherwise skipped).
+        .with_default_boot_always_attempt(true)
         .run_without_agent()
         .await?;
 
@@ -112,6 +116,10 @@ async fn hibernate_token<T: PetriVmmBackend>(
     let mut vm = config
         .with_windows_secure_boot_template()
         .with_hibernation_enabled(true)
+        // The seeded CUSTOM_UEFI leaves the boot order empty, so force the
+        // firmware to fall back to the guest_test_uefi removable-media loader
+        // (required on aarch64, where the fallback is otherwise skipped).
+        .with_default_boot_always_attempt(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_persistent_vmgs(&vmgs_path)
         .run_without_agent()
