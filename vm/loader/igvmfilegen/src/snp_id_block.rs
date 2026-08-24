@@ -59,6 +59,28 @@ const SNP_ECDSA_CURVE_P384: u32 = 2;
 const SNP_ECC_KEY_SIZE_BYTES: usize = 48;
 const SNP_ECC_COMPONENT_SIZE_BYTES: usize = 72;
 
+/// Identity fields included in an SNP ID block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SnpImageIdentity {
+    family_id: [u8; 16],
+    image_id: [u8; 16],
+}
+
+impl SnpImageIdentity {
+    /// The OpenHCL SNP image identity.
+    pub(crate) const OPENHCL: Self = Self::new(SNP_FAMILY_ID, SNP_IMAGE_ID);
+
+    /// The identity used by the direct-Linux SNP test image.
+    pub(crate) const LINUX_DIRECT: Self = Self::new(*b"OpenVMM SNP test", *b"linux-direct\0\0\0\0");
+
+    const fn new(family_id: [u8; 16], image_id: [u8; 16]) -> Self {
+        Self {
+            family_id,
+            image_id,
+        }
+    }
+}
+
 /// Build the SNP ID block signing payload for an IGVM file.
 ///
 /// Called by `manifest` to emit `<base>-snp.idblock`. The returned bytes are
@@ -69,12 +91,22 @@ const SNP_ECC_COMPONENT_SIZE_BYTES: usize = 72;
 /// measurement, `policy` comes from the file's `GuestPolicy`, and `guest_svn`
 /// from the manifest.
 pub fn id_block_signing_payload(ld: &[u8], guest_svn: u32, policy: u64) -> anyhow::Result<Vec<u8>> {
+    id_block_signing_payload_with_identity(ld, guest_svn, policy, SnpImageIdentity::OPENHCL)
+}
+
+/// Build an SNP ID block signing payload with an explicit image identity.
+pub(crate) fn id_block_signing_payload_with_identity(
+    ld: &[u8],
+    guest_svn: u32,
+    policy: u64,
+    identity: SnpImageIdentity,
+) -> anyhow::Result<Vec<u8>> {
     let ld: [u8; SHA_384_OUTPUT_SIZE_BYTES] =
         ld.try_into().context("SNP launch digest is not 48 bytes")?;
     let id_block = SnpPspIdBlock {
         ld,
-        family_id: SNP_FAMILY_ID,
-        image_id: SNP_IMAGE_ID,
+        family_id: identity.family_id,
+        image_id: identity.image_id,
         version: 0x1,
         guest_svn,
         policy,
@@ -106,11 +138,16 @@ pub fn guest_policy(igvm_file: &IgvmFile, compatibility_mask: u32) -> Option<u64
 /// * `igvm_data` - Input IGVM file; must contain an SEV-SNP platform header and
 ///   a matching [`IgvmInitializationHeader::GuestPolicy`].
 /// * `guest_svn` - Guest security version number to embed.
+/// * `identity` - Family and image identifiers to embed.
 ///
 /// # Errors
 /// Returns an error if the file has no SEV-SNP platform, already contains an
 /// SNP ID block, lacks an SNP measurement/guest policy, or if signing fails.
-pub fn add_snp_id_block_temp_key(igvm_data: &[u8], guest_svn: u32) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn add_snp_id_block_temp_key(
+    igvm_data: &[u8],
+    guest_svn: u32,
+    identity: SnpImageIdentity,
+) -> anyhow::Result<Vec<u8>> {
     let igvm_file =
         IgvmFile::new_from_binary(igvm_data, None).context("parsing input IGVM file")?;
     let (compatibility_mask, policy) = snp_context(&igvm_file)?;
@@ -120,8 +157,8 @@ pub fn add_snp_id_block_temp_key(igvm_data: &[u8], guest_svn: u32) -> anyhow::Re
 
     let psp_id_block = SnpPspIdBlock {
         ld,
-        family_id: SNP_FAMILY_ID,
-        image_id: SNP_IMAGE_ID,
+        family_id: identity.family_id,
+        image_id: identity.image_id,
         version: 0x1,
         guest_svn,
         policy,
@@ -819,7 +856,8 @@ mod tests {
             .digest
             .clone();
 
-        let out = add_snp_id_block_temp_key(&igvm_data, 7).expect("add SNP ID block");
+        let out = add_snp_id_block_temp_key(&igvm_data, 7, SnpImageIdentity::LINUX_DIRECT)
+            .expect("add SNP ID block");
         assert_eq!(count_id_blocks(&out), 1);
 
         let parsed = IgvmFile::new_from_binary(&out, None).expect("valid output");
@@ -827,12 +865,20 @@ mod tests {
             .directives()
             .iter()
             .find_map(|h| match h {
-                IgvmDirectiveHeader::SnpIdBlock { ld, guest_svn, .. } => Some((*ld, *guest_svn)),
+                IgvmDirectiveHeader::SnpIdBlock {
+                    ld,
+                    family_id,
+                    image_id,
+                    guest_svn,
+                    ..
+                } => Some((*ld, *family_id, *image_id, *guest_svn)),
                 _ => None,
             })
             .expect("id block present");
         assert_eq!(id_block.0.as_slice(), ref_ld.as_slice());
-        assert_eq!(id_block.1, 7);
+        assert_eq!(id_block.1, SnpImageIdentity::LINUX_DIRECT.family_id);
+        assert_eq!(id_block.2, SnpImageIdentity::LINUX_DIRECT.image_id);
+        assert_eq!(id_block.3, 7);
 
         // The measurement of the patched file must be unchanged.
         let after_ld = IgvmSerializer::new(&parsed)
@@ -848,8 +894,9 @@ mod tests {
     #[test]
     fn add_snp_id_block_rejects_double_add() {
         let igvm_data = build_snp_igvm(0x1);
-        let once = add_snp_id_block_temp_key(&igvm_data, 1).expect("first add");
-        let err = add_snp_id_block_temp_key(&once, 1).unwrap_err();
+        let once =
+            add_snp_id_block_temp_key(&igvm_data, 1, SnpImageIdentity::OPENHCL).expect("first add");
+        let err = add_snp_id_block_temp_key(&once, 1, SnpImageIdentity::OPENHCL).unwrap_err();
         assert!(
             format!("{err:#}").contains("already contains an SNP ID block"),
             "unexpected error: {err:#}"
@@ -879,7 +926,7 @@ mod tests {
         let mut data = Vec::new();
         igvm.serialize(&mut data).unwrap();
 
-        let err = add_snp_id_block_temp_key(&data, 1).unwrap_err();
+        let err = add_snp_id_block_temp_key(&data, 1, SnpImageIdentity::OPENHCL).unwrap_err();
         assert!(format!("{err:#}").to_lowercase().contains("platform"));
     }
 

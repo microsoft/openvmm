@@ -106,6 +106,9 @@ struct KvmPartitionInner {
     sev: Option<std::fs::File>,
     #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
+    snp_config: Option<snp::KvmSnpConfig>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
     snp_launch_state: Mutex<SnpLaunchState>,
     memory: Mutex<KvmMemoryRangeState>,
     memory_backing_mode: KvmMemoryBackingMode,

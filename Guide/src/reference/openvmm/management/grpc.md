@@ -21,13 +21,11 @@ For example, to accept ttrpc clients only:
 
 Here is a list of supported RPCs:
 
-```admonish danger title="Disclaimer"
-The following list is not exhaustive, and may be out of date. The most up to
-date reference is the [`vmservice.proto`] file.
-
-Moreover, many APIs defined in the `.proto` file may not be fully wired up yet.
-
-In other words: This API is _very_ WIP, and user discretion is advised.
+```admonish note title="API reference"
+The API continues to evolve, and compatibility between releases is not
+guaranteed. The [`vmservice.proto`] file is the authoritative API definition.
+The list below summarizes the available RPCs; some definitions may be added
+before their implementation is connected end to end.
 ```
 
 * CreateVM

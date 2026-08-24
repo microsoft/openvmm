@@ -36,6 +36,7 @@ acpi.workspace = true
 cxl_spec.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
+x86defs.workspace = true
 hyperv_dump.workspace = true
 ide_resources.workspace = true
 igvm = { workspace = true, features = ["corim"] }

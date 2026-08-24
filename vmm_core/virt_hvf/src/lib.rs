@@ -115,6 +115,10 @@ impl virt::Hypervisor for HvfHypervisor {
         &'a mut self,
         config: virt::ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
+        if config.isolation.is_isolated() {
+            return Err(anyhow::anyhow!("HVF does not support isolated partitions").into());
+        }
+
         let mut ipa_bit_length = 0;
         // SAFETY: `ipa_bit_length` is a valid out parameter.
         unsafe { abi::hv_vm_config_get_default_ipa_size(&mut ipa_bit_length) }

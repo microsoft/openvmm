@@ -710,6 +710,15 @@ options:
     #[clap(long, conflicts_with("kernel"), value_name = "FILE")]
     pub igvm: Option<PathBuf>,
 
+    /// select the chipset and device personality for a non-VTL2 IGVM
+    #[clap(
+        long,
+        requires("igvm"),
+        conflicts_with_all = ["vtl2", "uefi", "pcat"],
+        value_enum
+    )]
+    pub igvm_personality: Option<IgvmPersonalityCli>,
+
     /// specify igvm vtl2 relocation type
     /// (absolute=\<addr\>, disable, auto=\<filesize,or memory size\>, vtl2=\<filesize,or memory size\>,)
     #[clap(long, requires("igvm"), default_value = "auto=filesize", value_parser = parse_vtl2_relocation)]
@@ -1396,6 +1405,14 @@ impl Options {
             {
                 anyhow::bail!("SNP isolation currently does not support hugetlb memory");
             }
+        }
+        Ok(())
+    }
+
+    /// Validates IGVM personality selection.
+    pub fn validate_igvm_options(&self) -> anyhow::Result<()> {
+        if self.igvm.is_some() && !self.vtl2 && self.igvm_personality.is_none() {
+            anyhow::bail!("--igvm-personality is required for non-VTL2 IGVM boots");
         }
         Ok(())
     }
@@ -2797,6 +2814,12 @@ pub enum GicMsiCli {
 pub enum IsolationCli {
     Vbs,
     Snp,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, ValueEnum)]
+pub enum IgvmPersonalityCli {
+    Uefi,
+    LinuxDirect,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -4986,6 +5009,86 @@ mod tests {
         .unwrap();
 
         opt.validate_isolation_options().unwrap();
+    }
+
+    #[test]
+    fn test_igvm_personality_required_without_vtl2() {
+        let opt = Options::try_parse_from(["openvmm", "--igvm", "guest.igvm"]).unwrap();
+        assert_eq!(
+            opt.validate_igvm_options().unwrap_err().to_string(),
+            "--igvm-personality is required for non-VTL2 IGVM boots"
+        );
+    }
+
+    #[test]
+    fn test_igvm_personality_values() {
+        for (value, expected) in [
+            ("uefi", IgvmPersonalityCli::Uefi),
+            ("linux-direct", IgvmPersonalityCli::LinuxDirect),
+        ] {
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--igvm",
+                "guest.igvm",
+                "--igvm-personality",
+                value,
+            ])
+            .unwrap();
+            opt.validate_igvm_options().unwrap();
+            assert_eq!(opt.igvm_personality, Some(expected));
+        }
+
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--igvm",
+                "guest.igvm",
+                "--igvm-personality",
+                "pcat",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_vtl2_igvm_keeps_implicit_hcl_personality() {
+        let opt =
+            Options::try_parse_from(["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"]).unwrap();
+        opt.validate_igvm_options().unwrap();
+        assert_eq!(opt.igvm_personality, None);
+    }
+
+    #[test]
+    fn test_igvm_personality_conflicts_with_vtl2() {
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--igvm",
+                "guest.igvm",
+                "--hv",
+                "--vtl2",
+                "--igvm-personality",
+                "linux-direct",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_igvm_personality_conflicts_with_external_firmware() {
+        for firmware in ["--uefi", "--pcat"] {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "linux-direct",
+                    firmware,
+                ])
+                .is_err()
+            );
+        }
     }
 
     #[test]

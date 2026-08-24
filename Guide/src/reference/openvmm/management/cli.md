@@ -1,13 +1,23 @@
 # CLI
 
-```admonish danger title="Disclaimer"
-The following list is not exhaustive, and may be out of date.
-
-The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html),
-as well as the generated CLI help (via `cargo run -- --help`).
+```admonish note title="CLI compatibility and reference"
+The CLI is not a stable compatibility interface and may change between
+releases. This page summarizes OpenVMM's command-line options. The generated
+`openvmm --help` output is authoritative for the binary being run, and the
+[`Options` rustdoc](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html)
+describes the source definitions.
 ```
 
-* `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints the concise identity. `--version` also prints the upstream product version, build kind, full Git revision when available, and build target. An ordinary checkout reports `MAJOR.MINOR.PATCH+g<SHORT_REVISION>`. This includes an exact checkout of an `openvmm-vMAJOR.MINOR.PATCH` release tag. A checkout detected with tracked changes appends `.dirty`; staged changes refresh this reliably, while an unstaged-only transition may remain cached until another build-script input changes. A Git-free source tree reports `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the product version as `MAJOR.MINOR.PATCH.0`.
+* `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints
+  the concise identity. `--version` also prints the upstream product version,
+  full Git revision when available, and build target. An ordinary checkout
+  reports `MAJOR.MINOR.PATCH+g<SHORT_REVISION>`. This includes an exact
+  checkout of an `openvmm-vMAJOR.MINOR.PATCH` release tag. A checkout detected
+  with tracked changes appends `.dirty`; staged changes refresh this reliably,
+  while an unstaged-only transition may remain cached until another
+  build-script input changes. A Git-free source tree reports
+  `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the
+  product version as `MAJOR.MINOR.PATCH.0`.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
@@ -98,6 +108,22 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
+* `--igvm <FILE>`: Boot from an IGVM file.
+* `--igvm-personality <uefi|linux-direct>`: Select the chipset and
+  device shape for an IGVM boot without VTL2. This option is required with
+  `--igvm` unless `--vtl2` is present; there is no default for non-VTL2
+  boots. The personality does not select the isolation platform. Use
+  `--isolation` separately when required by the IGVM.
+
+  The `uefi` personality uses the Gen2 device shape, but firmware is loaded
+  from the IGVM. It does not select the normal external-UEFI load path. The
+  `linux-direct` personality enables Hyper-V enlightenments only when `--hv`
+  is also specified. The UEFI personality requires Hyper-V enlightenments and
+  fails explicitly on backend and isolation combinations that cannot provide
+  them.
+
+  With `--igvm --vtl2`, omit `--igvm-personality`. OpenVMM retains the
+  existing HCL-host device shape and VBS-compatible IGVM behavior.
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
   named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.

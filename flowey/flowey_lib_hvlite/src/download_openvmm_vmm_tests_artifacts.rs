@@ -232,6 +232,7 @@ Otherwise, press anything else with <enter> to cancel the run.
 
                         if !skip_prompt && is_terminal {
                             // Only display the prompt for 30s before timing out
+                            // TODO: fix this on windows (it immediately returns)
                             let result = crossterm::event::poll(std::time::Duration::from_secs(30));
                             match result {
                                 Ok(true) => {

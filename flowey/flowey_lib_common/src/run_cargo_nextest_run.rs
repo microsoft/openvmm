@@ -314,7 +314,7 @@ impl FlowNodeWithConfig for Node {
                         .current_dir(&working_dir);
 
                     let mut child = command.spawn().with_context(|| {
-                        format!("failed to spawn '{}'", &cmd.commands[0].0.to_string_lossy())
+                        format!("failed to spawn '{}'", cmd.commands[0].0.to_string_lossy())
                     })?;
 
                     let status = child.wait()?;

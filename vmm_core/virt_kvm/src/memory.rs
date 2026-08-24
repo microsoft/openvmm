@@ -313,6 +313,22 @@ impl KvmPartitionInner {
         }
     }
 
+    /// Marks an IGVM-provided range shared before SNP launch.
+    ///
+    /// KVM private memory starts with private attributes. Shared IGVM page
+    /// imports must clear those attributes and discard stale private backing
+    /// before launch updates begin.
+    #[cfg(guest_arch = "x86_64")]
+    pub(crate) fn set_initial_shared_memory(&self, range: MemoryRange) -> Result<(), MemoryError> {
+        let segments = {
+            let state = self.memory.lock();
+            guest_memfd_range_segments(range, &state.ranges)?
+        };
+        self.kvm
+            .set_memory_attributes(range.start(), range.len(), 0)?;
+        self.discard_stale_private_memory_backing(&segments, false, "SNP")
+    }
+
     /// Applies a guest-requested SNP shared/private state change.
     ///
     /// `page_count` is always expressed in 4-KiB pages by

@@ -7,6 +7,9 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+use igvm_defs::PAGE_SIZE_4K;
+use page_table::IdentityMapSize;
+use page_table::x64::X64_PTE_ADDRESS_BIT_RANGE;
 use product_policy::ProductPolicy;
 use serde::Deserialize;
 use serde::Serialize;
@@ -121,6 +124,17 @@ pub enum Image {
     /// Load the Linux kernel.
     /// TODO: Currently, this only works with underhill.
     Linux(LinuxImage),
+    /// Load Linux directly into a self-contained SNP guest.
+    SnpLinuxDirect {
+        /// The Linux image to load.
+        linux: LinuxImage,
+        /// The number of virtual processors in the guest.
+        processor_count: u32,
+        /// The number of pages in the guest.
+        memory_page_count: u64,
+        /// The page-table address bit used as the SNP encryption bit.
+        c_bit_position: u8,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -149,9 +163,75 @@ impl Image {
             .chain(if uefi { Some(ResourceType::Uefi) } else { None })
             .chain(linux.iter().flat_map(|linux| linux.required_resources()))
             .collect(),
-            Image::Linux(ref linux) => linux.required_resources(),
+            Image::Linux(ref linux) | Image::SnpLinuxDirect { ref linux, .. } => {
+                linux.required_resources()
+            }
         }
     }
+
+    /// Validate constraints intrinsic to this image configuration.
+    pub fn validate(&self) -> Result<(), ImageValidationError> {
+        if let Image::SnpLinuxDirect {
+            processor_count,
+            memory_page_count,
+            c_bit_position,
+            ..
+        } = *self
+        {
+            if processor_count == 0 {
+                return Err(ImageValidationError::ZeroProcessorCount);
+            }
+            if memory_page_count == 0 {
+                return Err(ImageValidationError::ZeroMemoryPageCount);
+            }
+
+            let memory_byte_count = memory_page_count
+                .checked_mul(PAGE_SIZE_4K)
+                .ok_or(ImageValidationError::MemoryByteCountTooLarge { memory_page_count })?;
+            if u32::try_from(memory_byte_count).is_err() {
+                return Err(ImageValidationError::MemoryByteCountTooLarge { memory_page_count });
+            }
+
+            // The Linux startup page tables identity-map the lower 4 GiB and
+            // set the C-bit by ORing it into each PTE. The bit must therefore
+            // be outside that mapped address range as well as inside the
+            // architectural PTE address field.
+            let valid_c_bit = X64_PTE_ADDRESS_BIT_RANGE.contains(&c_bit_position)
+                && (1u64 << c_bit_position) >= IdentityMapSize::Size4Gb.address_space_size();
+            if !valid_c_bit {
+                return Err(ImageValidationError::InvalidCBitPosition { c_bit_position });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Error returned when an image configuration contains invalid intrinsic fields.
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+pub enum ImageValidationError {
+    /// The image requests no virtual processors.
+    #[error("processor_count must be nonzero")]
+    ZeroProcessorCount,
+    /// The image requests no guest memory.
+    #[error("memory_page_count must be nonzero")]
+    ZeroMemoryPageCount,
+    /// The requested memory byte count cannot be represented by an IGVM
+    /// required-memory directive.
+    #[error("memory_page_count {memory_page_count} has a byte count that does not fit in u32")]
+    MemoryByteCountTooLarge {
+        /// The invalid number of 4-KiB pages.
+        memory_page_count: u64,
+    },
+    /// The SNP C-bit overlaps the identity map or lies outside the x64 PTE
+    /// address field.
+    #[error(
+        "c_bit_position {c_bit_position} overlaps the 4-GiB identity map or lies outside the x64 PTE address field"
+    )]
+    InvalidCBitPosition {
+        /// The invalid C-bit position.
+        c_bit_position: u8,
+    },
 }
 
 impl LinuxImage {
@@ -332,6 +412,155 @@ impl Resources {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn snp_linux_direct_image(
+        use_initrd: bool,
+        processor_count: u32,
+        memory_page_count: u64,
+        c_bit_position: u8,
+    ) -> Image {
+        Image::SnpLinuxDirect {
+            linux: LinuxImage {
+                use_initrd,
+                command_line: CString::new("console=ttyS0").unwrap(),
+            },
+            processor_count,
+            memory_page_count,
+            c_bit_position,
+        }
+    }
+
+    #[test]
+    fn parse_snp_linux_direct_manifest() {
+        let config: Config =
+            serde_json::from_str(include_str!("../../manifests/snp-linux-direct.json")).unwrap();
+
+        assert!(matches!(config.guest_arch, GuestArch::X64));
+        let [guest] = config.guest_configs.as_slice() else {
+            panic!("expected one guest config");
+        };
+        assert_eq!(guest.guest_svn, 1);
+        assert_eq!(guest.max_vtl, 0);
+        match &guest.isolation_type {
+            ConfigIsolationType::Snp {
+                shared_gpa_boundary_bits,
+                policy,
+                enable_debug,
+                injection_type,
+                secure_avic,
+            } => {
+                assert_eq!(*shared_gpa_boundary_bits, None);
+                assert_eq!(*policy, 196608);
+                assert!(*enable_debug);
+                assert!(matches!(injection_type, SnpInjectionType::Normal));
+                assert!(matches!(secure_avic, SecureAvicType::Disabled));
+            }
+
+            isolation_type => panic!("unexpected isolation type: {isolation_type:?}"),
+        }
+        match &guest.image {
+            Image::SnpLinuxDirect {
+                linux,
+                processor_count,
+                memory_page_count,
+                c_bit_position,
+            } => {
+                assert!(linux.use_initrd);
+                assert_eq!(
+                    linux.command_line.as_bytes(),
+                    b"console=ttyS0 earlyprintk=serial earlycon panic=-1"
+                );
+                assert_eq!(*processor_count, 1);
+                assert_eq!(*memory_page_count, 40960);
+                assert_eq!(*c_bit_position, 51);
+                guest.image.validate().unwrap();
+            }
+            image => panic!("unexpected image: {image:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_vp_snp_linux_direct_manifest() {
+        let config: Config = serde_json::from_str(include_str!(
+            "../../manifests/snp-linux-direct-multi-vp.json"
+        ))
+        .unwrap();
+        let [guest] = config.guest_configs.as_slice() else {
+            panic!("expected one guest config");
+        };
+        let Image::SnpLinuxDirect {
+            processor_count, ..
+        } = &guest.image
+        else {
+            panic!("expected SNP Linux-direct image");
+        };
+        assert_eq!(*processor_count, 2);
+        guest.image.validate().unwrap();
+    }
+
+    #[test]
+    fn snp_linux_direct_required_resources_with_initrd() {
+        let image = snp_linux_direct_image(true, 1, 40960, 51);
+
+        assert_eq!(
+            image.required_resources(),
+            vec![ResourceType::LinuxKernel, ResourceType::LinuxInitrd]
+        );
+    }
+
+    #[test]
+    fn snp_linux_direct_required_resources_without_initrd() {
+        let image = snp_linux_direct_image(false, 1, 40960, 51);
+
+        assert_eq!(image.required_resources(), vec![ResourceType::LinuxKernel]);
+    }
+
+    #[test]
+    fn snp_linux_direct_rejects_zero_memory() {
+        let image = snp_linux_direct_image(false, 1, 0, 51);
+
+        assert_eq!(
+            image.validate(),
+            Err(ImageValidationError::ZeroMemoryPageCount)
+        );
+    }
+
+    #[test]
+    fn snp_linux_direct_rejects_oversized_memory() {
+        let memory_page_count = u64::from(u32::MAX) / PAGE_SIZE_4K + 1;
+        let image = snp_linux_direct_image(false, 1, memory_page_count, 51);
+
+        assert_eq!(
+            image.validate(),
+            Err(ImageValidationError::MemoryByteCountTooLarge { memory_page_count })
+        );
+    }
+
+    #[test]
+    fn snp_linux_direct_rejects_invalid_c_bit_positions() {
+        for c_bit_position in [11, 31, 52] {
+            let image = snp_linux_direct_image(false, 1, 40960, c_bit_position);
+
+            assert_eq!(
+                image.validate(),
+                Err(ImageValidationError::InvalidCBitPosition { c_bit_position })
+            );
+        }
+
+        snp_linux_direct_image(false, 1, 40960, 32)
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn snp_linux_direct_rejects_zero_processors() {
+        let image = snp_linux_direct_image(false, 0, 40960, 51);
+
+        assert_eq!(
+            image.validate(),
+            Err(ImageValidationError::ZeroProcessorCount)
+        );
+    }
 
     #[test]
     fn non_absolute_path_new() {

@@ -40,8 +40,8 @@ required.
 
 ```admonish note
 The version stays at the released value after publication. Commits made
-afterwards report `<VERSION>+g<COMMIT>` and are identifiable as
-development builds, so there is no second commit to "reopen" the
+afterwards report `<VERSION>+g<COMMIT>` and are identifiable by the
+appended commit, so there is no second commit to "reopen" the
 version.
 ```
 
