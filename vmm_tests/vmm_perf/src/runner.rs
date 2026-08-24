@@ -35,7 +35,7 @@ impl VmmPerfRunner {
         let host = HostEnvironment::detect()?;
         let profiles = cli.selected_profiles();
         let configs = selected_configs(host.capacity()?, &cli.config_selection())?;
-        let metadata = github_pipeline_metadata()?;
+        let metadata = github_pipeline_metadata();
         let temp_dir = cli.temp_dir.unwrap_or_else(std::env::temp_dir);
         fs_err::create_dir_all(&temp_dir)?;
 
@@ -111,11 +111,21 @@ fn ensure_file(path: &Path, description: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn github_pipeline_metadata() -> anyhow::Result<BTreeMap<String, String>> {
+fn github_pipeline_metadata() -> BTreeMap<String, String> {
     if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
-        return Ok(BTreeMap::new());
+        return BTreeMap::new();
     }
 
+    read_github_pipeline_metadata().unwrap_or_else(|err| {
+        tracing::warn!(
+            error = format!("{err:#}"),
+            "GitHub pipeline metadata is unavailable; continuing without it"
+        );
+        BTreeMap::new()
+    })
+}
+
+fn read_github_pipeline_metadata() -> anyhow::Result<BTreeMap<String, String>> {
     let github_sha = std::env::var("GITHUB_SHA")?;
     let run_id = std::env::var("GITHUB_RUN_ID")?;
     let run_number = std::env::var("GITHUB_RUN_NUMBER")?;
