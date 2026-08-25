@@ -5,14 +5,17 @@ use crate::comms::SerialCommsServer;
 use crate::deserializer::Deserializer;
 use crate::deserializer::syzlang::SyzlangDeserializer;
 use crate::functions::FunctionRegistry;
+use crate::functions::FuzzFunction;
 use crate::functions::hyperv;
 #[cfg(target_arch = "x86_64")]
 use crate::functions::io_port;
+use crate::functions::netvsp;
 use crate::prelude::*;
 use crate::serial::OpenTmkSerialIo;
 use crate::serial::SerialIo;
 use crate::serial::SerialPort;
 
+use cfg_if::cfg_if;
 use opentmk_exec_packet::OpenTMKAckPacket;
 use opentmk_exec_packet::OpenTMKConfigurationPacket;
 use opentmk_exec_packet::OpenTMKErrorPacket;
@@ -69,22 +72,30 @@ impl<T: SerialIo> Executor<T> {
 
     pub fn register_fuzz_functions(&mut self) {
         let mut fn_registry = self.fn_registry.lock();
+        cfg_if!{
+            if #[cfg(target_arch = "x86_64")] {
+                static REGISTRY_ARCH: &[(&str, FuzzFunction)] = &[
+                    ("port_write8", io_port::write_ioport_u8),
+                    ("port_write16", io_port::write_ioport_u16),
+                    ("port_write32", io_port::write_ioport_u32),
+                    ("port_read8", io_port::read_ioport_u8),
+                    ("port_read16", io_port::read_ioport_u16),
+                    ("port_read32", io_port::read_ioport_u32),
+                ];
+            } else {
+                static REGISTRY_ARCH: &[(&str, FuzzFunction)] = &[];
+            }
+        }
 
-        #[cfg(target_arch = "x86_64")]
-        static REGISTRY: &[(&str, crate::functions::FuzzFunction)] = &[
-            ("port_write8", io_port::write_ioport_u8),
-            ("port_write16", io_port::write_ioport_u16),
-            ("port_write32", io_port::write_ioport_u32),
-            ("port_read8", io_port::read_ioport_u8),
-            ("port_read16", io_port::read_ioport_u16),
-            ("port_read32", io_port::read_ioport_u32),
+        static REGISTRY: &[(&str, FuzzFunction)] = &[
             ("hvcall", hyperv::hvcall),
+            ("send_nvsp", netvsp::send_nvsp),
+            ("send_rndis", netvsp::send_rndis),
+            ("open_channel", netvsp::open_channel),
+            ("renew_buffer", netvsp::renew_buffer),
         ];
 
-        #[cfg(target_arch = "aarch64")]
-        static REGISTRY: &[(&str, crate::functions::FuzzFunction)] = &[("hvcall", hyperv::hvcall)];
-
-        for (name, func) in REGISTRY {
+        for (name, func) in REGISTRY_ARCH.iter().chain(REGISTRY) {
             fn_registry.register(name, *func);
         }
     }

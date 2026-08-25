@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cfg-if.workspace = true
 hvdef.workspace = true
 log.workspace = true
 opentmk_core.workspace = true
@@ -16,6 +17,7 @@ postcard = { workspace = true, features = ["alloc"] }
 opentmk_exec_packet.workspace = true
 opentmk_decoder.workspace = true
 uefi = { workspace = true, features = ["alloc"] }
+vmbus_guest.workspace = true
 
 [lints]
 workspace = true

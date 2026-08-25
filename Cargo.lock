@@ -5732,6 +5732,7 @@ dependencies = [
 name = "opentmk_executor"
 version = "0.0.0"
 dependencies = [
+ "cfg-if",
  "hvdef",
  "log",
  "opentmk_core",
@@ -5740,6 +5741,7 @@ dependencies = [
  "postcard",
  "spin",
  "uefi",
+ "vmbus_guest",
  "zerocopy",
 ]
 

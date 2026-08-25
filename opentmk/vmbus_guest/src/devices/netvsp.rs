@@ -2277,6 +2277,360 @@ impl Netvsp {
         Ok(count)
     }
 
+    /// Send a raw, caller-provided NVSP message frame as a
+    /// `VM_PKT_DATA_INBAND` packet on the netvsp channel.
+    ///
+    /// This is the low-level primitive backing the fuzzer's
+    /// `send_nvsp` call: the bytes in `frame` are transmitted
+    /// verbatim, so a fuzzer can drive arbitrary (well-formed or
+    /// malformed) NVSP messages at the host. When `completion` is set
+    /// the completion-requested flag is set and we spin for the
+    /// matching `VM_PKT_COMP`, discarding its payload; otherwise the
+    /// packet is fire-and-forget.
+    pub fn send_nvsp_raw<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        frame: &[u8],
+        completion: bool,
+    ) -> Result<()> {
+        if frame.is_empty() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send_nvsp_raw: empty frame",
+            });
+        }
+        if completion {
+            let _ = self.send_and_await(ctx, frame, DEFAULT_MAX_POLLS)?;
+            Ok(())
+        } else {
+            self.send_no_completion(ctx, frame)
+        }
+    }
+
+    /// Send a raw, caller-provided RNDIS message wrapped in an NVSP
+    /// `V1_SEND_RNDIS_PKT`, delivered to the host via GPA-direct.
+    ///
+    /// This backs the fuzzer's `send_rndis` call: `rndis` is the
+    /// complete RNDIS message (starting with its
+    /// `RndisMessageHeader`), copied verbatim into a fresh
+    /// page-aligned buffer whose GPA range is handed to the host.
+    /// `channel_type` selects [`RMC_DATA`] vs [`RMC_CONTROL`]. When
+    /// `completion` is set we wait for the
+    /// `V1_SEND_RNDIS_PKT_COMPLETE` and free the buffer; otherwise
+    /// the buffer is tracked in `pending_tx` and reclaimed lazily by
+    /// a later drain.
+    pub fn send_rndis_raw<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        channel_type: u32,
+        rndis: &[u8],
+        completion: bool,
+    ) -> Result<()> {
+        /// Max RNDIS payload the fuzzer may hand us. Bounds the
+        /// per-call GPA-direct allocation and stays within the
+        /// ring's 32-PFN GPA-direct limit.
+        const MAX_RNDIS_LEN: usize = 16 * 4096;
+        if rndis.is_empty() || rndis.len() > MAX_RNDIS_LEN {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send_rndis_raw: payload size out of range",
+            });
+        }
+        if self.channel.state() != ChannelState::Open {
+            return Err(Error::Rescinded);
+        }
+
+        // Page-aligned buffer sized to hold the whole message.
+        let pages = rndis.len().div_ceil(4096);
+        let alloc_size = pages * 4096;
+        let rndis_layout = Layout::from_size_align(alloc_size, 4096).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "send_rndis_raw: buffer layout",
+        })?;
+        // SAFETY: validated non-zero page-aligned layout, single-
+        // threaded UEFI.
+        #[expect(unsafe_code, reason = "page-aligned RNDIS message allocation")]
+        let rndis_ptr = unsafe { alloc_zeroed(rndis_layout) };
+        if rndis_ptr.is_null() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send_rndis_raw: buffer alloc failed",
+            });
+        }
+        // SAFETY: `rndis_ptr` is a valid `alloc_size >= rndis.len()`
+        // allocation.
+        #[expect(unsafe_code, reason = "copy caller RNDIS bytes into own buffer")]
+        unsafe {
+            copy_nonoverlapping(rndis.as_ptr(), rndis_ptr, rndis.len());
+        }
+
+        // Build the NVSP wrapper.
+        let nvsp_res = self.version_typed().and_then(|version| {
+            let mut nvsp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+            let n = encode_message(
+                msg_type::V1_SEND_RNDIS_PKT,
+                &Nvsp1MsgSendRndisPacket {
+                    channel_type,
+                    send_buf_section_index: NETVSC_INVALID_INDEX,
+                    send_buf_section_size: 0,
+                },
+                version,
+                &mut nvsp_frame,
+            )
+            .map_err(|_| Error::Parse {
+                ty: None,
+                reason: "encode SEND_RNDIS_PKT (raw)",
+            })?;
+            Ok((nvsp_frame, n))
+        });
+        let (nvsp_frame, n) = match nvsp_res {
+            Ok(v) => v,
+            Err(e) => {
+                // SAFETY: we own `rndis_ptr`, no aliasing occurred.
+                #[expect(unsafe_code, reason = "reclaim allocation on early exit")]
+                unsafe {
+                    dealloc(rndis_ptr, rndis_layout);
+                }
+                return Err(e);
+            }
+        };
+
+        // Cap the outstanding-TX queue like `send_ethernet`.
+        if self.pending_tx.len() >= PENDING_TX_MAX {
+            let _ = self.drain_inbound(ctx, PENDING_TX_MAX, |_| {});
+            if self.pending_tx.len() >= PENDING_TX_MAX {
+                // SAFETY: we own `rndis_ptr`, no aliasing occurred.
+                #[expect(unsafe_code, reason = "reclaim allocation on early exit")]
+                unsafe {
+                    dealloc(rndis_ptr, rndis_layout);
+                }
+                return Err(Error::RingFull);
+            }
+        }
+
+        // Build the PFN list per-page (robust to non-contiguous
+        // physical backing), then post via GPA-direct. Always request
+        // completion so we can track and eventually free the buffer.
+        let mut pfns = Vec::with_capacity(pages);
+        for i in 0..pages {
+            // SAFETY: offset stays within the `alloc_size` allocation.
+            #[expect(unsafe_code, reason = "per-page virt->phys translation")]
+            let page_ptr = unsafe { rndis_ptr.add(i * 4096) };
+            pfns.push(virt_to_phys(page_ptr) >> 12);
+        }
+        let tid = self.alloc_transaction_id();
+        let mut flags = PacketFlags::new();
+        flags.set_request_completion(true);
+        let need_signal = self.send.write_gpa_direct(
+            &pfns,
+            0,
+            rndis.len() as u32,
+            &nvsp_frame[..n],
+            flags,
+            tid,
+        )?;
+        if need_signal {
+            self.channel.signal(ctx)?;
+        }
+        // The tracker owns `rndis_ptr` from here on.
+        self.pending_tx.push_back(PendingTx {
+            tid,
+            ptr: rndis_ptr,
+            layout: rndis_layout,
+        });
+
+        if !completion {
+            // Fire-and-forget: opportunistic non-blocking drain so
+            // the recv ring doesn't starve host TX completions.
+            let _ = self.drain_inbound(ctx, 0, |_| {});
+            return Ok(());
+        }
+
+        // Wait for our V1_SEND_RNDIS_PKT_COMPLETE (matching tid),
+        // reaping other completions and acking xfer-page arrivals.
+        let mut buf = [0u8; 4096];
+        for _ in 0..DEFAULT_MAX_POLLS {
+            match self.recv.read(&mut buf) {
+                Ok(pkt) => match pkt.descriptor.packet_type {
+                    PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
+                        let _ = self.free_completed_tx(tid);
+                        return Ok(());
+                    }
+                    PacketType::VM_PKT_COMP => {
+                        let _ = self.free_completed_tx(pkt.descriptor.transaction_id);
+                    }
+                    PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
+                        let host_tid = pkt.descriptor.transaction_id;
+                        self.ack_xfer_page(ctx, host_tid)?;
+                    }
+                    _ => {}
+                },
+                Err(Error::RingEmpty) => spin_loop(),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::Timeout)
+    }
+
+    /// Revoke and re-establish the receive buffer, reusing the
+    /// existing GPADL registration (no new allocation).
+    ///
+    /// Backs the fuzzer's `renew_buffer` call for the receive buffer.
+    /// Sends `V1_REVOKE_RECV_BUF` (fire-and-forget per protocol) then
+    /// re-sends `V1_SEND_RECV_BUF` with the same GPADL handle and
+    /// awaits the completion, refreshing the cached section geometry.
+    pub fn renew_recv_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+    ) -> Result<()> {
+        let gpadl_handle = match &self.recv_buf {
+            Some(b) => b.gpadl.id().0,
+            None => {
+                return Err(Error::Parse {
+                    ty: None,
+                    reason: "renew_recv_buffer requires establish_recv_buffer first",
+                });
+            }
+        };
+
+        let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+        let n = encode_message(
+            msg_type::V1_REVOKE_RECV_BUF,
+            &Nvsp1MsgRevokeRecvBuf {
+                id: NETVSC_RECEIVE_BUFFER_ID,
+                pad: 0,
+            },
+            self.version_typed()?,
+            &mut frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode REVOKE_RECV_BUF",
+        })?;
+        self.send_no_completion(ctx, &frame[..n])?;
+        self.recv_section_size = 0;
+        self.recv_section_count = 0;
+
+        let n = encode_message(
+            msg_type::V1_SEND_RECV_BUF,
+            &Nvsp1MsgSendBuffer {
+                gpadl_handle,
+                id: NETVSC_RECEIVE_BUFFER_ID,
+                pad: 0,
+            },
+            self.version_typed()?,
+            &mut frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode SEND_RECV_BUF (renew)",
+        })?;
+        let response = self.send_and_await(ctx, &frame[..n], DEFAULT_MAX_POLLS)?;
+        let (ty, body) = parse_header(&response).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "parse SEND_RECV_BUF_COMPLETE header (renew)",
+        })?;
+        if ty != msg_type::V1_SEND_RECV_BUF_COMPLETE {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "expected SEND_RECV_BUF_COMPLETE (renew)",
+            });
+        }
+        let (parsed, _) =
+            Nvsp1MsgSendRecvBufComplete::read_from_prefix(body).map_err(|_| Error::Parse {
+                ty: None,
+                reason: "parse SEND_RECV_BUF_COMPLETE body (renew)",
+            })?;
+        if parsed.status != status::SUCCESS || parsed.num_sections != 1 {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "recv-buf renew non-success / bad num_sections",
+            });
+        }
+        let sec = &parsed.sections[0];
+        self.recv_section_size = sec.sub_alloc_size;
+        self.recv_section_count = sec.num_sub_allocs;
+        Ok(())
+    }
+
+    /// Revoke and re-establish the send buffer, reusing the existing
+    /// GPADL registration (no new allocation).
+    ///
+    /// Backs the fuzzer's `renew_buffer` call for the send buffer.
+    pub fn renew_send_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+    ) -> Result<()> {
+        let gpadl_handle = match &self.send_buf {
+            Some(b) => b.gpadl.id().0,
+            None => {
+                return Err(Error::Parse {
+                    ty: None,
+                    reason: "renew_send_buffer requires establish_send_buffer first",
+                });
+            }
+        };
+
+        let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
+        // The revoke body is a bare id+pad; reuse the recv-buf revoke
+        // struct with the send-buffer id.
+        let n = encode_message(
+            msg_type::V1_REVOKE_SEND_BUF,
+            &Nvsp1MsgRevokeRecvBuf {
+                id: NETVSC_SEND_BUFFER_ID,
+                pad: 0,
+            },
+            self.version_typed()?,
+            &mut frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode REVOKE_SEND_BUF",
+        })?;
+        self.send_no_completion(ctx, &frame[..n])?;
+        self.send_section_size = 0;
+        self.send_section_count = 0;
+
+        let n = encode_message(
+            msg_type::V1_SEND_SEND_BUF,
+            &Nvsp1MsgSendBuffer {
+                gpadl_handle,
+                id: NETVSC_SEND_BUFFER_ID,
+                pad: 0,
+            },
+            self.version_typed()?,
+            &mut frame,
+        )
+        .map_err(|_| Error::Parse {
+            ty: None,
+            reason: "encode SEND_SEND_BUF (renew)",
+        })?;
+        let response = self.send_and_await(ctx, &frame[..n], DEFAULT_MAX_POLLS)?;
+        let (ty, body) = parse_header(&response).map_err(|_| Error::Parse {
+            ty: None,
+            reason: "parse SEND_SEND_BUF_COMPLETE header (renew)",
+        })?;
+        if ty != msg_type::V1_SEND_SEND_BUF_COMPLETE {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "expected SEND_SEND_BUF_COMPLETE (renew)",
+            });
+        }
+        let (parsed, _) =
+            Nvsp1MsgSendSendBufComplete::read_from_prefix(body).map_err(|_| Error::Parse {
+                ty: None,
+                reason: "parse SEND_SEND_BUF_COMPLETE body (renew)",
+            })?;
+        if parsed.status != status::SUCCESS || parsed.section_size == 0 {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "send-buf renew non-success / zero section_size",
+            });
+        }
+        self.send_section_size = parsed.section_size;
+        Ok(())
+    }
+
     /// Recover the underlying channel for closing.
     pub fn into_channel(self) -> Channel {
         self.channel
