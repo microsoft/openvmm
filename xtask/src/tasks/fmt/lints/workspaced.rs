@@ -171,7 +171,7 @@ impl Lint for WorkspacedManifest {
     }
 
     fn exit_workspace(&mut self, content: &mut Lintable<DocumentMut>) {
-        // Any members or dependencies that we expected to see but didn't are errors,
+        // Any workspace members that we expected to see but didn't are errors,
         // unless we're only checking diffs, in which case we know we'll miss crates.
         if !self.only_diffed {
             for member in self.members.iter() {
