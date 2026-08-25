@@ -1,0 +1,27 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+enum ScsiDiskType {
+    SCSI_DISK_UNSPECIFIED   = 0;
+    SCSI_DISK_TYPE_VHD1     = 1;
+    SCSI_DISK_TYPE_VHDX     = 2;
+    SCSI_DISK_TYPE_PHYSICAL = 3;
+}
+
+message ScsiController {
+    repeated ScsiDisk scsi_disks = 1;
+}
+
+message ScsiDisk {
+    reserved 1;
+    reserved "controller";
+    uint32 lun        = 2;
+    string host_path  = 3;
+    ScsiDiskType type = 4;
+    bool read_only    = 5;
+}

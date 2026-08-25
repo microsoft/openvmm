@@ -1,0 +1,18 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+// Represents VM state.
+enum VmState {
+    VM_STATE_UNSPECIFIED = 0;
+    VM_STATE_CRASHED     = 1; // Crashed, or in an unknown state.
+    VM_STATE_PAUSED      = 2;
+    VM_STATE_RUNNING     = 3;
+    VM_STATE_HALTED      = 4; // Powered off.
+    VM_STATE_SAVED       = 5;
+    VM_STATE_TORN_DOWN   = 6;
+}

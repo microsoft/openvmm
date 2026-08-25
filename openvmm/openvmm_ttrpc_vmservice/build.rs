@@ -11,5 +11,14 @@ fn main() {
         .compile_protos(&["src/vmservice.proto"], &["src"])
         .unwrap();
 
-    println!("cargo:rerun-if-changed=src/vmservice.proto");
+    // TODO: std::fs::read_dir to (recursively) enumerate all `src/**/*.proto` files
+    // Tell cargo to recompile if any of these proto files are changed
+    let _ = [
+        "src/vmservice.proto",
+        "src/vmservice.events.proto",
+        "src/vmservice.resource.proto",
+        "src/vmservice.scsi.proto",
+        "src/vmservice.state.proto",
+    ]
+    .map(|f| println!("cargo:rerun-if-changed={f}"));
 }

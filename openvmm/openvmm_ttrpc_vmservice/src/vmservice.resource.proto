@@ -1,0 +1,25 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+enum VmResourceOperationType {
+    VM_RESOURCE_OPERATION_TYPE_UNSPECIFIED = 0;
+    VM_RESOURCE_OPERATION_TYPE_ADD         = 1;
+    VM_RESOURCE_OPERATION_TYPE_REMOVE      = 2;
+    VM_RESOURCE_OPERATION_TYPE_UPDATE      = 3;
+}
+
+enum VmResourceType {
+    VM_RESOURCE_TYPE_UNSPECIFIED = 0;
+    VM_RESOURCE_TYPE_VPMEM       = 1;
+    VM_RESOURCE_TYPE_SCSI        = 2;
+    VM_RESOURCE_TYPE_VPCI        = 3;
+    VM_RESOURCE_TYPE_PLAN9       = 4;
+    VM_RESOURCE_TYPE_VMNIC       = 5;
+    VM_RESOURCE_TYPE_MEMORY      = 6;
+    VM_RESOURCE_TYPE_PROCESSOR   = 7;
+}

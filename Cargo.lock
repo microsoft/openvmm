@@ -6093,6 +6093,7 @@ dependencies = [
  "mesh_rpc",
  "prost",
  "prost-build",
+ "prost-types",
 ]
 
 [[package]]

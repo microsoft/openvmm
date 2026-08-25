@@ -1,0 +1,97 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+
+import "vmservice.resource.proto";
+import "vmservice.state.proto";
+
+// Subscribe to the events from the specified VM.
+message SubscribeVmEventsRequest {
+    // Event ID to start the stream on.
+    // Leave empty to subscribe to only the latest events.
+    optional uint64 event_id = 1;
+
+    // Include events for general VM errors.
+    optional bool include_error_events = 2;
+    // Include events for VM service operations.
+    optional bool include_service_events = 3;
+    // Include events for VM resource operations.
+    optional bool include_resource_event = 4;
+    // Include events for VM requests.
+    optional bool include_request_events = 5;
+}
+
+enum VmEventInitiator {
+    VM_EVENT_INITIATOR_UNSPECIFIED = 0;
+    VM_EVENT_INITIATOR_SERVICE     = 1;
+    VM_EVENT_INITIATOR_GUEST       = 2;
+}
+
+message StackTrace {
+    google.protobuf.Timestamp timestamp = 1;
+    string source                       = 2;
+    string message                      = 3;
+    repeated google.protobuf.Any data   = 4;
+}
+
+// VmErrorEvent describes an error that occurred in the VM or service.
+message VmErrorEvent {
+    // error code (e.g., an HRESULT or exit status), if applicable
+    optional uint64 error_code = 1;
+    // an error string, if applicable
+    optional string error_message   = 2;
+    repeated StackTrace stack_trace = 3;
+}
+
+// VmServiceEvent describes an event associated with the VM service.
+message VmServiceEvent {
+    enum VmServiceEventType {
+        VM_SERVICE_EVENT_TYPE_UNSPECIFIED = 0;
+        // Host initiated VM service quit.
+        VM_SERVICE_EVENT_TYPE_QUIT = 1;
+        // Unrecoverable error in VM server or worker process.
+        // Should be preceded by a VmErrorEvent.
+        VM_SERVICE_EVENT_TYPE_CRASH = 2;
+    }
+
+    VmServiceEventType type = 1;
+}
+
+// VmStateEvent describes a VM state change.
+message VmStateEvent {
+    VmState state              = 1;
+    VmEventInitiator initiator = 2;
+}
+
+// VmResourceEvent describes an event assoicated with a particular VM resource.
+message VmResourceEvent {
+    VmEventInitiator initiator        = 1;
+    VmResourceOperationType operation = 2;
+    VmResourceType resource           = 3;
+    google.protobuf.Any settings      = 4;
+}
+
+message VmEvent {
+    // ID of the event sent on the stream.
+    // Stable across VmEvent streams.
+    uint64 event_id                     = 1;
+    google.protobuf.Timestamp timestamp = 2;
+
+    string log_id = 3;
+
+    // payload contains the event data.
+    // The payload type may match the EventType field, or could be an Error.
+    oneof payload {
+        VmErrorEvent error       = 4;
+        VmServiceEvent service   = 5;
+        VmStateEvent power_state = 6;
+        VmResourceEvent resource = 7;
+    }
+}

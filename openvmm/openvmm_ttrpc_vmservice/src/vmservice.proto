@@ -1,6 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// TODO:
+// Rename VM, PCIE, SCSI, VPMEM, etc., to snake case (Vm, Pcie, Scsi, Vpmem, ...):
+//
+//   > In all cases, treat abbreviations as though they are single words
+//
+// https://protobuf.dev/programming-guides/style/#identifier
+
 syntax = 'proto3';
 
 package vmservice;
@@ -8,51 +15,95 @@ option go_package = "vmservice";
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+import "vmservice.events.proto";
+import "vmservice.resource.proto";
+import "vmservice.scsi.proto";
+import "vmservice.state.proto";
 
 service VM {
-    // CreateVM will create the virtual machine with the configuration in the
-    // CreateVMRequest. The virtual machine will be in a paused state power wise
-    // after CreateVM. ResumeVM can be called to transition the VM into a running state.
-    rpc CreateVM(CreateVMRequest) returns (google.protobuf.Empty);
+    //
+    // Service management
+    //
 
-    // TeardownVM will release all associated resources from the VM and unblock the WaitVM call.
-    rpc TeardownVM(google.protobuf.Empty) returns (google.protobuf.Empty);
-
-    // PauseVM will, if the virtual machine power state is in a running state, transition
-    // the state to paused. This is the same state power wise that the VM should be in after
-    // an initial CreateVM call.
-    rpc PauseVM(google.protobuf.Empty) returns (google.protobuf.Empty);
-
-    // ResumeVM is used to transition a vm to a running state. This can be used to resume a VM that
-    // has had PauseVM called on it, or to start a VM that was created with CreateVM.
-    rpc ResumeVM(google.protobuf.Empty) returns (google.protobuf.Empty);
-
-    // WaitVM will block until the VM is either in a halted state or has had all of it's resources freed
-    // via TeardownVM.
-    rpc WaitVM(google.protobuf.Empty) returns (google.protobuf.Empty);
-
-    // CapabilitiesVM will return what capabilities the virtstack supports. This includes
+    // ServiceCapabilities will return what capabilities the virtstack supports. This includes
     // what guest operating systems are supported, what resources are supported, and if hot
     // add/hot remove of a resource is supported.
-    rpc CapabilitiesVM(google.protobuf.Empty) returns (CapabilitiesVMResponse);
+    rpc ServiceCapabilities(google.protobuf.Empty) returns (ServiceCapabilitiesResponse);
 
-    // PropertiesVM will take in a list of properties that the virtstack will return
+    // Quit will shutdown the process hosting the VM server.
+    rpc QuitService(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    //
+    // VM lifecycle & management
+    //
+
+    // CreateVm will create the virtual machine with the configuration in the CreateVmRequest.
+    // The virtual machine will be in a paused state, power wise, after CreateVm.
+    // ResumeVm can be called to transition the VM into a running state.
+    //
+    // Additionally, the server will send a VM_STATE_PAUSED VmEvent on the SubscribeVmEvents
+    // stream to indicate completion of VM creation.
+    rpc CreateVm(CreateVmRequest) returns (google.protobuf.Empty);
+
+    // TeardownVm will release all associated resources from the VM, and close the event stream
+    // created via a SubscribeVmEvents call.
+    rpc TeardownVm(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // Pause will, if the virtual machine power state is in a running state, transition
+    // the state to paused.
+    // This is the same state, power wise, that the VM should be in after an initial Create call.
+    rpc PauseVm(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // Resume is used to transition a VM to a running state.
+    // This can be used to resume a VM that has had Pause called on it,
+    // or to start a VM that was created with Create.
+    //
+    // The call returns once the VM starts running.
+    // The SubscribeVmEvents should be monitored for changes to VM state.
+    rpc ResumeVm(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // SubscribeVMEvents will block until the VM is has its all of it's resources freed via TeardownVm,
+    // returning a stream events describing VM state transitions and other changes.
+    rpc SubscribeVmEvents(SubscribeVmEventsRequest) returns (stream VmEvent);
+
+    // VmProperties will take in a list of properties that the virtstack will return
     // statistics for (memory, processors).
-    rpc PropertiesVM(PropertiesVMRequest) returns (PropertiesVMResponse);
+    rpc VmProperties(VmPropertiesRequest) returns (VmPropertiesResponse);
 
-    // ModifyResource is a generic call to modify (add/remove/update) resources for a VM.
+    // ModifyVmResource is a generic call to modify (add/remove/update) resources for a VM.
     // This includes things such as block devices, network adapters, and pci devices.
-    rpc ModifyResource(ModifyResourceRequest) returns (google.protobuf.Empty);
+    rpc ModifyVmResource(ModifyVmResourceRequest) returns (google.protobuf.Empty);
 
-    // AddPcieDevice hot-adds a PCIe device behind a named port (a root port or
+    // AddVmPcieDevice hot-adds a PCIe device behind a named port (a root port or
     // switch downstream port declared in the topology).
-    rpc AddPcieDevice(AddPcieDeviceRequest) returns (google.protobuf.Empty);
+    rpc AddVmPcieDevice(AddVmPcieDeviceRequest) returns (google.protobuf.Empty);
 
-    // RemovePcieDevice hot-removes the PCIe device behind the named port.
-    rpc RemovePcieDevice(RemovePcieDeviceRequest) returns (google.protobuf.Empty);
+    // RemoveVmPcieDevice hot-removes the PCIe device behind the named port.
+    rpc RemoveVmPcieDevice(RemoveVmPcieDeviceRequest) returns (google.protobuf.Empty);
+}
 
-    // Quit will shutdown the process hosting the ttrpc server.
-    rpc Quit(google.protobuf.Empty) returns (google.protobuf.Empty);
+//
+// Service management
+//
+
+enum GuestOs {
+    GUEST_OS_UNSPECIFIED = 0;
+    GUEST_OS_WINDOWS     = 1;
+    GUEST_OS_LINUX       = 2;
+}
+
+message ServiceCapabilitiesResponse {
+    message SupportedResource {
+        bool Add                = 1;
+        bool Remove             = 2;
+        bool Update             = 3;
+        VmResourceType resource = 4;
+    }
+
+    repeated SupportedResource supported_resources = 1;
+    repeated GuestOs supported_guest_os            = 2;
 }
 
 // Note: VTL assignment is not modeled yet; all devices are assumed to be VTL0.
@@ -60,9 +111,10 @@ service VM {
 //
 // VM lifecycle request/response
 //
+
 message DirectBoot {
-    string kernel_path = 1;
-    string initrd_path = 2;
+    string kernel_path    = 1;
+    string initrd_path    = 2;
     string kernel_cmdline = 3;
 }
 
@@ -103,33 +155,35 @@ message UEFI {
 }
 
 message MemoryConfig {
-    uint64 memory_mb = 1;
-    bool allow_overcommit = 2;
-    bool deferred_commit = 3;
-    bool hot_hint = 4;
-    bool cold_hint = 5;
-    bool cold_discard_hint = 6;
-    uint64 low_mmio_gap_in_mb = 7;
+    uint64 memory_mb            = 1;
+    bool allow_overcommit       = 2;
+    bool deferred_commit        = 3;
+    bool hot_hint               = 4;
+    bool cold_hint              = 5;
+    bool cold_discard_hint      = 6;
+    uint64 low_mmio_gap_in_mb   = 7;
     uint64 high_mmio_base_in_mb = 8;
-    uint64 high_mmio_gap_in_mb = 9;
+    uint64 high_mmio_gap_in_mb  = 9;
 }
 
 message ProcessorConfig {
-    uint32 processor_count = 1;
+    uint32 processor_count  = 1;
     uint32 processor_weight = 2;
-    uint32 processor_limit = 3;
+    uint32 processor_limit  = 3;
 }
 
 message DevicesConfig {
-    repeated SCSIDisk scsi_disks = 1;
-    repeated VPMEMDisk vpmem_disks = 2;
-    repeated NICConfig nic_config = 3;
+    // SCSI disks, mapped by the SCSI controller GUID to add them under.
+    // An empty string will denote a default GUID controller (e.g., ba6163d9-04a1-4d29-b605-72e2ffb1dc7f).
+    map<string, ScsiDisk> scsi_disks = 1;
+    repeated VPMEMDisk vpmem_disks   = 2;
+    repeated NICConfig nic_config    = 3;
     // When we know what information we need to assign a pci device on Linux,
     // have a oneof here named PCIDevice with WindowsPCIDevice and LinuxPCIDevice
     // housed.
     repeated WindowsPCIDevice windows_device = 4;
-    repeated VirtioFSConfig virtiofs_config = 5;
-    VirtioConsoleConfig virtio_console = 6;
+    repeated VirtioFSConfig virtiofs_config  = 5;
+    VirtioConsoleConfig virtio_console       = 6;
 }
 
 // An endpoint PCIe device function. Attached behind a port in the topology
@@ -139,9 +193,9 @@ message PcieDeviceKind {
         // A virtio device function.
         VirtioDevice virtio = 1;
         // An NVMe controller.
-        NvmeConfig   nvme   = 2;
+        NvmeConfig nvme = 2;
         // A host PCI device assigned to the guest via VFIO.
-        VfioDevice   vfio   = 3;
+        VfioDevice vfio = 3;
     }
 }
 
@@ -151,18 +205,18 @@ message PcieDeviceKind {
 message VirtioDevice {
     oneof kind {
         // virtio-blk block device.
-        VirtioBlk     blk        = 1;
+        VirtioBlk blk = 1;
         // virtio-net network device.
-        VirtioNet     net        = 2;
+        VirtioNet net = 2;
         // virtio-rng entropy device.
-        VirtioRng     rng        = 3;
+        VirtioRng rng = 3;
         // virtio-vsock socket device.
-        VirtioVsock   vsock      = 4;
+        VirtioVsock vsock = 4;
         // virtio-console serial device.
-        VirtioConsole console    = 5;
+        VirtioConsole console = 5;
         // A virtio device whose datapath is backed by an external vhost-user
         // process (e.g. vhost-user-blk / vhost-user-fs).
-        VhostUser     vhost_user = 6;
+        VhostUser vhost_user = 6;
     }
 }
 
@@ -206,7 +260,7 @@ message FileDisk {
     // Path to the backing file.
     string path = 1;
     // Bypass the OS page cache (O_DIRECT).
-    bool   direct = 2;
+    bool direct = 2;
 }
 
 // virtio-blk block device configuration.
@@ -233,9 +287,9 @@ message VirtioNet {
 message NicBackend {
     oneof kind {
         // DirectIO backend bound to a host switch/port.
-        DioBackend      dio      = 1;
+        DioBackend dio = 1;
         // Host TAP device backend.
-        TapBackend      tap      = 2;
+        TapBackend tap = 2;
         // Built-in user-mode (consomme) network backend.
         ConsommeBackend consomme = 3;
     }
@@ -253,9 +307,9 @@ message VhostUser {
 message VhostUserDevice {
     oneof kind {
         // vhost-user-blk block device.
-        VhostUserBlk     blk   = 1;
+        VhostUserBlk blk = 1;
         // vhost-user-fs filesystem device.
-        VhostUserFs      fs    = 2;
+        VhostUserFs fs = 2;
         // A generic vhost-user device identified by numeric virtio device ID.
         VhostUserGeneric other = 3;
     }
@@ -345,7 +399,7 @@ message VfioBarAddress {
 // Virtual NUMA topology.
 message NumaConfig {
     // NUMA nodes. A node's index in this list is its node ID.
-    repeated NumaNode     nodes     = 1;
+    repeated NumaNode nodes = 1;
     // Inter-node distances for the ACPI SLIT. Missing pairs default to
     // 10 (local) / 20 (cross-node).
     repeated NumaDistance distances = 2;
@@ -378,14 +432,14 @@ message NodeMemoryConfig {
     // Host physical NUMA node to bind to (Linux mbind). Absent => OS default.
     optional uint32 host_numa_node = 2;
     // Pre-populate (prefetch) the backing memory.
-    bool prefetch              = 3;
+    bool prefetch = 3;
     // Use private anonymous memory instead of shared file-backed memory.
-    bool private_memory        = 4;
+    bool private_memory = 4;
     // Mark this node's RAM as transparent-hugepage eligible. Unset => enabled
     // by default. Set to false to opt out.
     optional bool transparent_hugepages = 5;
     // Allocate from explicit hugetlb pages.
-    bool hugepages             = 6;
+    bool hugepages = 6;
     // Hugetlb page size in bytes (requires hugepages). Absent => default.
     optional uint64 hugepage_size_bytes = 7;
 }
@@ -428,23 +482,23 @@ message PcieGenericInitiator {
 // A PCIe root complex.
 message PcieRootComplex {
     // Root complex name (used to reference it).
-    string name      = 1;
+    string name = 1;
     // PCI segment number (u16).
-    uint32 segment   = 2;
+    uint32 segment = 2;
     // Lowest valid bus number (u8).
     uint32 start_bus = 3;
     // Highest valid bus number (u8).
-    uint32 end_bus   = 4;
+    uint32 end_bus = 4;
     // Low (32-bit) MMIO window size, in bytes.
-    uint64 low_mmio  = 5;
+    uint64 low_mmio = 5;
     // High (64-bit) MMIO window size, in bytes.
     uint64 high_mmio = 6;
     // Pin the low MMIO window base address. Absent => auto-assigned.
-    optional uint64 low_mmio_base  = 7;
+    optional uint64 low_mmio_base = 7;
     // Pin the high MMIO window base address. Absent => auto-assigned.
     optional uint64 high_mmio_base = 8;
     // Keep assigned BARs pinned at their addresses.
-    bool   preserve_bars = 9;
+    bool preserve_bars = 9;
     // NUMA node this root complex is associated with. Absent => none.
     optional uint32 node = 10;
     // Root ports on this complex.
@@ -457,7 +511,7 @@ message PciePort {
     // Port name, used to target runtime hot-add (AddPcieDevice).
     string name = 1;
     // Allow runtime hot-plug into this port.
-    bool   hotplug = 2;
+    bool hotplug = 2;
     // What is attached behind this port. Absent => empty port (available for
     // hotplug if `hotplug` is set).
     PcieAttachment attached = 3;
@@ -483,7 +537,7 @@ message PcieAttachment {
         // An endpoint device.
         PcieDeviceKind device = 1;
         // A nested PCIe switch.
-        PcieSwitch     switch = 2;
+        PcieSwitch switch = 2;
     }
 }
 
@@ -510,13 +564,13 @@ message VMConfig {
         GuestPowerAction watchdog = 4;
     }
 
-    MemoryConfig memory_config = 1;
+    MemoryConfig memory_config       = 1;
     ProcessorConfig processor_config = 2;
-    DevicesConfig devices_config = 3;
-    SerialConfig serial_config = 4;
+    DevicesConfig devices_config     = 3;
+    SerialConfig serial_config       = 4;
     oneof BootConfig {
         DirectBoot direct_boot = 5;
-        UEFI uefi = 6;
+        UEFI uefi              = 6;
     }
     WindowsOptions windows_options = 7;
     // Field 8 was previously map<string, string> extra_data.
@@ -555,120 +609,73 @@ message HVSocketConfig {
     string path = 1;
 }
 
-message CreateVMRequest {
+message CreateVmRequest {
     VMConfig config = 1;
     // Optional ID to be used by the VM service in log messages. It's up to the
     // server/virtstack to make use of this field. Useful for debugging to be able to
     // correlate events in the virtstack for a given vm that the client launched.
-    string log_id = 2;
+    optional string log_id = 2;
 }
 
 message MemoryStats {
     uint64 working_set_bytes = 1;
-    uint64 available_memory = 2;
-    uint64 reserved_memory = 3;
-    uint64 assigned_memory = 4;
+    uint64 available_memory  = 2;
+    uint64 reserved_memory   = 3;
+    uint64 assigned_memory   = 4;
 }
 
 message ProcessorStats {
     uint64 total_runtime_ns = 1;
 }
 
-message PropertiesVMRequest {
+message VmPropertiesRequest {
     enum PropertiesType {
-        Memory = 0;
-        Processor = 1;
+        VM_PROPERTIES_TYPE_UNSPECIFIED = 0;
+        VM_PROPERTIES_TYPE_MEMORY      = 1;
+        VM_PROPERTIES_TYPE_PROCESSOR   = 2;
     }
     repeated PropertiesType types = 1;
 }
 
-enum VmState {
-    Uninitialized = 0;
-    Paused = 1;
-    Running = 2;
-    Halted = 3;
-}
-
-message PropertiesVMResponse {
-    MemoryStats memory_stats = 1;
+message VmPropertiesResponse {
+    MemoryStats memory_stats       = 1;
     ProcessorStats processor_stats = 2;
-    VmState state = 3;
+    VmState state                  = 3;
     // Set when state is Halted.
     optional string halt_reason = 4;
-}
-
-message CapabilitiesVMResponse {
-    enum Resource {
-        Vpmem = 0;
-        Scsi = 1;
-        Vpci = 2;
-        Plan9 = 3;
-        VMNic = 4;
-        Memory = 5;
-        Processor = 6;
-    }
-
-    message SupportedResource {
-        bool Add = 1;
-        bool Remove = 2;
-        bool Update = 3;
-        Resource resource = 4;
-    }
-
-    enum SupportedGuestOS {
-        Windows = 0;
-        Linux = 1;
-    }
-    repeated SupportedResource supported_resources = 1;
-    repeated SupportedGuestOS supported_guest_os = 2;
 }
 
 //
 // Modify existing VM request/response
 //
-enum ModifyType {
-    ADD = 0;
-    REMOVE = 1;
-    UPDATE = 2;
-}
 
-enum DiskType {
-    SCSI_DISK_TYPE_VHD1 = 0;
-    SCSI_DISK_TYPE_VHDX = 1;
-    SCSI_DISK_TYPE_PHYSICAL = 2;
-}
-
-message SCSIDisk {
-    uint32 controller = 1;
-    uint32 lun = 2;
-    string host_path = 3;
-    DiskType type = 4;
-    bool read_only = 5;
+enum VpmemDiskType {
+    VPMEM_DISK_UNSPECIFIED = 0;
 }
 
 message VPMEMDisk {
-    string host_path = 1;
-    DiskType type = 2;
-    bool read_only = 3;
+    string host_path   = 1;
+    VpmemDiskType type = 2;
+    bool read_only     = 3;
 }
 
 message NICConfig {
-    string nic_id = 1; // GUID
-    string mac_address = 3; // 12-34-56-78-9A-BC
+    string nic_id           = 1; // GUID
+    string mac_address      = 3; // 12-34-56-78-9A-BC
     string legacy_switch_id = 4; // GUID, used only with legacy_port_id below
     // Optional friendly name for the adapter. Might be useful to show up in logs.
     string nic_name = 5;
     oneof backend {
-        string legacy_port_id = 2; // legacy, GUID, Windows only
-        DioBackend dio = 6;
-        TapBackend tap = 7;
+        string legacy_port_id    = 2; // legacy, GUID, Windows only
+        DioBackend dio           = 6;
+        TapBackend tap           = 7;
         ConsommeBackend consomme = 8;
     }
 }
 
 message DioBackend {
-    string switch_id = 1;   // GUID
-    string port_id = 2;     // GUID
+    string switch_id = 1; // GUID
+    string port_id   = 2; // GUID
 }
 
 message TapBackend {
@@ -710,7 +717,7 @@ message WindowsPCIDevice {
 }
 
 message VirtioFSConfig {
-    string tag = 1;
+    string tag       = 1;
     string root_path = 2;
 }
 
@@ -734,19 +741,25 @@ message ModifyProcessorRequest {
 
 message ModifyProcessorConfigRequest {
     uint32 processor_weight = 1;
-    uint32 processor_limit = 2;
+    uint32 processor_limit  = 2;
 }
 
-message ModifyResourceRequest {
-    ModifyType type = 1;
+message ModifyScsiDiskRequest {
+    // GUID of the SCSI controller device
+    string controller = 1;
+    ScsiDisk disk     = 2;
+}
+
+message ModifyVmResourceRequest {
+    VmResourceOperationType type = 1;
     oneof resource {
-        ModifyProcessorRequest processor = 2;
+        ModifyProcessorRequest processor              = 2;
         ModifyProcessorConfigRequest processor_config = 3;
-        ModifyMemoryRequest memory = 4;
-        SCSIDisk scsi_disk = 5;
-        VPMEMDisk vpmem_disk = 6;
-        NICConfig nic_config = 7;
-        WindowsPCIDevice windows_device = 8;
+        ModifyMemoryRequest memory                    = 4;
+        ModifyScsiDiskRequest scsi_disk               = 5;
+        VPMEMDisk vpmem_disk                          = 6;
+        NICConfig nic_config                          = 7;
+        WindowsPCIDevice windows_device               = 8;
     }
 }
 
@@ -754,7 +767,7 @@ message ModifyResourceRequest {
 // PCIe device hot add/remove request/response
 //
 // Request to hot-add a PCIe device behind an existing port.
-message AddPcieDeviceRequest {
+message AddVmPcieDeviceRequest {
     // Name of the PCIe port to plug the device into: a root port or switch
     // downstream port declared in the topology.
     string port_name = 1;
@@ -763,7 +776,7 @@ message AddPcieDeviceRequest {
 }
 
 // Request to hot-remove the PCIe device behind a port.
-message RemovePcieDeviceRequest {
+message RemoveVmPcieDeviceRequest {
     // Name of the PCIe port whose device should be removed.
     string port_name = 1;
 }

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Rust binadings to the `vmservice.proto` TTRPC API
+//! Rust bindings to the `vmservice.proto` TTRPC API
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
@@ -12,5 +12,6 @@
 // automated tools do not remove them.
 use mesh_rpc as _;
 use prost as _;
+use prost_types as _;
 
 include!(concat!(env!("OUT_DIR"), "/vmservice.rs"));

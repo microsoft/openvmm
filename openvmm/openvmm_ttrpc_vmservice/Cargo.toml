@@ -11,6 +11,7 @@ mesh.workspace = true
 mesh_rpc.workspace = true
 
 prost.workspace = true
+prost-types.workspace = true
 
 [build-dependencies]
 mesh_build.workspace = true
