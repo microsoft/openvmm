@@ -533,7 +533,9 @@ impl virt::Partition for MshvPartition {
     }
 
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
-        Some(self)
+        // TODO: Support resetting SNP launch state and rebuilding the protected
+        // guest before advertising reset support.
+        self.inner.isolation.snp().is_none().then_some(self)
     }
 
     fn doorbell_registration(
