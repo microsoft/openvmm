@@ -105,6 +105,10 @@ pub struct BootInit<'a> {
 }
 
 pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
+    const DEFAULT_REGISTRATION_GRANULARITY: u64 = 1 << 30;
+    const SNP_PUD_REGISTRATION_GRANULARITY: u64 = 1 << 30;
+    const SNP_PMD_REGISTRATION_GRANULARITY: u64 = 1 << 21;
+
     let mut validated_ranges = Vec::new();
 
     let acceptor = if params.isolation.is_isolated() {
@@ -235,11 +239,14 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         tracing::debug!("Building VTL0 memory map");
         let vtl0_mapping = {
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
-            GuestMemoryMapping::builder(0)
-                .dma_base_address(None)
+            let mut builder = GuestMemoryMapping::builder(0);
+            builder.dma_base_address(None);
+            if params.isolation == IsolationType::Snp {
                 // Configure the registrar now, but do not register until all
                 // aliases have been mapped.
-                .for_kernel_access(params.isolation == IsolationType::Snp)
+                builder.for_kernel_access(SNP_PMD_REGISTRATION_GRANULARITY);
+            }
+            builder
                 .use_permissions_bitmaps(if use_vtl1 { Some(true) } else { None })
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
@@ -340,12 +347,14 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         });
 
         if params.isolation == IsolationType::Snp {
-            // The kernel can now create PUD-sized backing for aligned 1-GB
-            // ranges before the zeroing pass faults in the private mapping.
+            // Register all VTL0 memory, starting with contiguous 1 GB ranges, and then 2 MB ranges for any remaining edges.
             let _span = tracing::info_span!("register_vtl0_memory", CVM_ALLOWED).entered();
             vtl0_mapping
-                .register_all_memory()
+                .register_all_aligned_memory(SNP_PUD_REGISTRATION_GRANULARITY, true)
                 .context("failed to eagerly register SNP VTL0 memory")?;
+            vtl0_mapping
+                .register_all_aligned_memory(SNP_PMD_REGISTRATION_GRANULARITY, false)
+                .context("failed to register SNP VTL0 memory edges")?;
         }
         let vtl0_mapping = Arc::new(vtl0_mapping);
 
@@ -528,7 +537,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
             Arc::new(
                 GuestMemoryMapping::builder(base_address)
-                    .for_kernel_access(true)
+                    .for_kernel_access(DEFAULT_REGISTRATION_GRANULARITY)
                     .dma_base_address(Some(base_address))
                     .ignore_registration_failure(params.boot_init.is_none())
                     .build_without_bitmap(&gpa_fd, params.mem_layout)
@@ -572,7 +581,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 let _span = tracing::info_span!("map_vtl1_memory", CVM_ALLOWED).entered();
                 Some(Arc::new(
                     GuestMemoryMapping::builder(0)
-                        .for_kernel_access(true)
+                        .for_kernel_access(DEFAULT_REGISTRATION_GRANULARITY)
                         .dma_base_address(Some(0))
                         .ignore_registration_failure(params.boot_init.is_none())
                         .build_without_bitmap(&gpa_fd, params.mem_layout)
