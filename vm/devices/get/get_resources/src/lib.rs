@@ -87,8 +87,6 @@ pub mod ged {
         pub secure_boot_template: GuestSecureBootTemplateType,
         /// Enable battery.
         pub enable_battery: bool,
-        /// Enable hibernation.
-        pub enable_hibernation: bool,
         /// Suppress attestation and disable TPM state persistence.
         pub no_persistent_secrets: bool,
         /// Test configuration for IGVM Attest message.
@@ -99,6 +97,10 @@ pub mod ged {
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
         /// Force UEFI to bounce-buffer all DMA traffic.
         pub force_dma_bounce_enabled: bool,
+        /// Enable hibernation.
+        // Keep at the end: `MeshPayload` numbers fields by declaration order, so
+        // new fields must be appended to preserve wire compatibility.
+        pub enable_hibernation: bool,
     }
 
     /// The firmware and chipset configuration for the guest.
