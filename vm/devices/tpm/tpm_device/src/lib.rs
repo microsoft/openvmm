@@ -101,11 +101,22 @@ const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 // blob.
 const LEGACY_VTPM_SIZE: usize = 16 * 1024;
 const STANDARD_VTPM_SIZE: usize = 32 * 1024;
+// The 1.85 reference implementation is compiled for a 128kB NVRAM region.
+const LARGE_VTPM_SIZE: usize = 128 * 1024;
 
-// Default vTPM NVRAM size provisioned for a new VMGS.
-pub const DEFAULT_VTPM_SIZE: usize = ms_tpm_20_ref::NV_MEMORY_SIZE;
+/// Default vTPM NVRAM size provisioned for a new VMGS.
+///
+/// Each reference implementation is compiled for a fixed NVRAM size and reads
+/// and writes anywhere in that range, so this must match the library in use.
+pub const fn default_vtpm_size(version: TpmVersion) -> usize {
+    match version {
+        TpmVersion::V138 => ms_tpm_20_ref::NV_MEMORY_SIZE,
+        TpmVersion::V185 => ms_tcg_tpm_sys::NV_MEMORY_SIZE,
+    }
+}
 
-static_assertions::const_assert_eq!(DEFAULT_VTPM_SIZE, STANDARD_VTPM_SIZE);
+static_assertions::const_assert_eq!(ms_tpm_20_ref::NV_MEMORY_SIZE, STANDARD_VTPM_SIZE);
+static_assertions::const_assert_eq!(ms_tcg_tpm_sys::NV_MEMORY_SIZE, LARGE_VTPM_SIZE);
 
 /// Operation types for provisioning telemetry.
 #[expect(clippy::enum_variant_names)]
@@ -333,6 +344,13 @@ impl TpmEngine for TpmRefLib {
                 .map_err(TpmEngineError::from_error),
         }
     }
+
+    fn max_nv_index_size(&self) -> u16 {
+        match self {
+            TpmRefLib::V138(_) => tpm_lib::TPM_V138_MAX_NV_INDEX_SIZE,
+            TpmRefLib::V185(_) => tpm_lib::TPM_V185_MAX_NV_INDEX_SIZE,
+        }
+    }
 }
 
 #[derive(InspectMut)]
@@ -439,6 +457,14 @@ pub enum TpmErrorKind {
         version: TpmVersion,
         nvram_size: usize,
     },
+    #[error(
+        "TPM {version:?} requires exactly {expected} bytes of vTPM state, but got {nvram_size} bytes"
+    )]
+    MismatchedVtpmSize {
+        version: TpmVersion,
+        nvram_size: usize,
+        expected: usize,
+    },
 }
 
 struct TpmPlatformCallbacks {
@@ -507,7 +533,7 @@ impl Tpm {
 
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
 
-        let nvram_size = nvram_size.unwrap_or(DEFAULT_VTPM_SIZE);
+        let nvram_size = nvram_size.unwrap_or(default_vtpm_size(version));
 
         // Legacy (sub-32kB) vTPM state was provisioned by vtpmservice and is
         // only understood by the 1.38 reference implementation. Reject it up
@@ -2277,13 +2303,13 @@ mod tests {
         );
     }
 
-    /// A 16kB blob can be present even when the reported NVRAM size is 32kB,
+    /// A 16kB blob can be present even when the reported NVRAM size is correct,
     /// due to a previous size-reporting bug, so the blob itself is gated too.
     #[async_test]
     async fn test_legacy_nvram_blob_rejected_for_v185() {
         let Err(err) = new_test_tpm(
             TpmVersion::V185,
-            Some(STANDARD_VTPM_SIZE),
+            Some(default_vtpm_size(TpmVersion::V185)),
             Some(vec![0; LEGACY_VTPM_SIZE]),
         )
         .await
@@ -2311,6 +2337,39 @@ mod tests {
                 .await
                 .is_ok(),
             "legacy nvram size is supported by 1.38"
+        );
+    }
+
+    /// Each library is compiled for a fixed NVRAM size and cannot be handed a
+    /// different one, so the per-version default must match the library in use.
+    #[async_test]
+    async fn test_default_nvram_size_initializes_both_versions() {
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            assert!(
+                new_test_tpm(version, None, None).await.is_ok(),
+                "default nvram size must initialize {version:?}"
+            );
+        }
+    }
+
+    /// The 1.85 library is compiled for a 128kB region. A 32kB one does not fail
+    /// cleanly inside the library, so it must be rejected here.
+    #[async_test]
+    async fn test_standard_nvram_size_rejected_for_v185() {
+        let Err(err) = new_test_tpm(TpmVersion::V185, Some(STANDARD_VTPM_SIZE), None).await else {
+            panic!("32kB nvram size must be rejected for 1.85");
+        };
+
+        assert!(
+            matches!(
+                err.0,
+                TpmErrorKind::MismatchedVtpmSize {
+                    version: TpmVersion::V185,
+                    nvram_size: STANDARD_VTPM_SIZE,
+                    expected: LARGE_VTPM_SIZE,
+                }
+            ),
+            "unexpected error: {err:?}"
         );
     }
 

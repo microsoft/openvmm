@@ -1464,7 +1464,7 @@ async fn write_provisioning_marker(vmgs: &mut Vmgs, tpm_version: TpmVersion) -> 
             TpmVersion::V185 => tpm_protocol::TPM_V185_VERSION,
         }
         .to_string(),
-        tpm_nvram_size: tpm_device::DEFAULT_VTPM_SIZE,
+        tpm_nvram_size: tpm_device::default_vtpm_size(tpm_version),
         akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
         akcert_attrs: format!(
             "0x{:x}",

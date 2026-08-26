@@ -44,6 +44,10 @@ impl TpmEngine for TestTpmPlatform {
             .map(|_| ())
             .map_err(TpmEngineError::from_error)
     }
+
+    fn max_nv_index_size(&self) -> u16 {
+        test_tpm::MAX_NV_INDEX_SIZE
+    }
 }
 
 const TPM_AZURE_EK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x010001);
@@ -1377,7 +1381,7 @@ fn test_read_public() {
 #[test]
 fn test_nv_define_space() {
     let nv_index = TPM_NV_INDEX_AIK_CERT;
-    let nv_index_size = MAX_NV_INDEX_SIZE;
+    let nv_index_size = test_tpm::MAX_NV_INDEX_SIZE;
 
     let mut tpm_engine_helper = create_tpm_engine_helper();
     restart_tpm_engine(&mut tpm_engine_helper, false, true);
@@ -1404,7 +1408,7 @@ fn test_nv_define_space() {
 #[test]
 fn test_nv_read_public() {
     let nv_index = TPM_NV_INDEX_AIK_CERT;
-    let nv_index_size = MAX_NV_INDEX_SIZE;
+    let nv_index_size = test_tpm::MAX_NV_INDEX_SIZE;
 
     let mut tpm_engine_helper = create_tpm_engine_helper();
     restart_tpm_engine(&mut tpm_engine_helper, false, true);
@@ -1445,7 +1449,7 @@ fn test_nv_read_public() {
 #[test]
 fn test_nv_read_write() {
     let nv_index = TPM_NV_INDEX_AIK_CERT;
-    let nv_index_size = MAX_NV_INDEX_SIZE;
+    let nv_index_size = test_tpm::MAX_NV_INDEX_SIZE;
 
     let mut tpm_engine_helper = create_tpm_engine_helper();
     restart_tpm_engine(&mut tpm_engine_helper, false, true);
@@ -1541,7 +1545,7 @@ fn test_nv_read_write() {
 #[test]
 fn test_nv_undefine_space() {
     let nv_index = TPM_NV_INDEX_AIK_CERT;
-    let nv_index_size = MAX_NV_INDEX_SIZE;
+    let nv_index_size = test_tpm::MAX_NV_INDEX_SIZE;
 
     let mut tpm_engine_helper = create_tpm_engine_helper();
     restart_tpm_engine(&mut tpm_engine_helper, false, true);

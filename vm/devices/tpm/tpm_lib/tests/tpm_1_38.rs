@@ -9,6 +9,7 @@ mod test_tpm_backend {
     pub(crate) use ms_tpm_20_ref::PlatformCallbacks;
 
     pub(crate) type TestTpmPlatform = ms_tpm_20_ref::MsTpm20RefPlatform;
+    pub(crate) const MAX_NV_INDEX_SIZE: u16 = crate::tpm_lib::TPM_V138_MAX_NV_INDEX_SIZE;
     pub(crate) const USE_LEGACY_PREPROVISIONED_STATE: bool = true;
 }
 
