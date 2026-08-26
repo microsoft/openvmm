@@ -1799,7 +1799,7 @@ pub fn get_provenance_claims(prov_file: &[u8]) -> Result<VmgsProvisioner, Error>
     );
     let signer = format!(
         "did:x509:0:sha256:{}:subject:{}",
-        hex::encode(digest).to_uppercase(),
+        hex::encode_upper(digest),
         sn
     );
     let vmgsid = jwt.jwt.body.vmgsid;
