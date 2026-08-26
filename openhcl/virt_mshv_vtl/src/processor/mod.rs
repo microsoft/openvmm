@@ -99,7 +99,6 @@ pub struct UhProcessor<'a, T: Backing> {
     partition: &'a UhPartitionInner,
     #[inspect(skip)]
     idle_control: Option<&'a mut IdleControl>,
-    #[inspect(skip)]
     kernel_returns: u64,
     #[inspect(hex, iter_by_index)]
     crash_reg: [u64; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
@@ -589,15 +588,22 @@ impl UhVpInner {
 impl<T: Backing> UhProcessor<'_, T> {
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
         resp.child("stats", |req| {
-            // Get all the VP stats and just grab this VP's.
-            if let Ok(stats) = hcl::stats::vp_stats() {
-                let stats = &stats[self.vp_index().index() as usize];
-                req.respond()
-                    .counter("vtl_transitions", stats.vtl_transitions)
-                    .counter(
-                        "spurious_exits",
-                        stats.vtl_transitions.saturating_sub(self.kernel_returns),
-                    );
+            // Get all the VP stats and just grab this VP's. Note that the
+            // kernel indexes these by Linux CPU number, not VP index.
+            match hcl::stats::vp_stats() {
+                Err(err) => req.value(format!("{:?}", err)),
+                Ok(stats) => match stats.get(self.inner.cpu_index as usize) {
+                    // Report nothing rather than a misleading zero.
+                    None => req.value("no stats for this cpu"),
+                    Some(stats) => {
+                        req.respond()
+                            .counter("vtl_transitions", stats.vtl_transitions)
+                            .counter(
+                                "spurious_exits",
+                                stats.vtl_transitions.saturating_sub(self.kernel_returns),
+                            );
+                    }
+                },
             }
         })
         .field(
