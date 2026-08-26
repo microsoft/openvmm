@@ -3952,10 +3952,12 @@ async fn new_underhill_vm(
 
 fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), anyhow::Error> {
     let General {
+        // TODO
+        tpm_version: _,
+
         // Attested to
         secure_boot_enabled,
         tpm_enabled: _,
-        tpm_version: _,
         com1_enabled: _,
         com1_vmbus_redirector: _,
         com2_enabled: _,
