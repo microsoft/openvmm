@@ -78,6 +78,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
+        ctx.import::<crate::cleanup_leftover_hyperv_vms::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_external_deps::Node>();
@@ -120,6 +121,11 @@ impl SimpleFlowNode for Node {
         let disk_images_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
+        let needs_hyperv = matches!(
+            &external_deps,
+            VmmTestsExternalDeps::Windows(w) if w.hyperv
+        );
+
         ctx.config(crate::install_vmm_tests_external_deps::Config {
             selections: Some(external_deps),
             auto_install: None,
@@ -127,6 +133,12 @@ impl SimpleFlowNode for Node {
 
         let installed_deps = ctx.reqv(crate::install_vmm_tests_external_deps::Request::Install);
         let mut pre_run_deps = vec![installed_deps.clone()];
+
+        // A cancelled or killed job leaves its Hyper-V VMs running, holding
+        // open the differencing disks petri put in the test content dir. Sweep
+        // them before anything reads from or writes to that directory.
+        let leftover_vms_removed = needs_hyperv
+            .then(|| ctx.reqv(|done| crate::cleanup_leftover_hyperv_vms::Request { done }));
 
         let needs_incubator = incubator_profile.is_some();
         let needs_prep_steps = !prep_steps_variants.is_empty();
@@ -156,6 +168,11 @@ impl SimpleFlowNode for Node {
                     }
                     .map(ctx, |w| PathBuf::from(w).join("test"))
                 });
+
+                let test_content_dir = match &leftover_vms_removed {
+                    Some(removed) => test_content_dir.depending_on(ctx, removed),
+                    None => test_content_dir,
+                };
 
                 let nextest_vmm_tests_archive = built_artifacts
                     .nextest_vmm_tests_archive
@@ -191,6 +208,11 @@ impl SimpleFlowNode for Node {
                 test_content_dir,
                 needs_test_igvm_agent_rpc_server,
             } => {
+                let test_content_dir = match &leftover_vms_removed {
+                    Some(removed) => test_content_dir.depending_on(ctx, removed),
+                    None => test_content_dir,
+                };
+
                 let (nextest_vmm_tests_archive, nextest_vmm_tests_archive_write) = ctx.new_var();
                 let (incubator, incubator_write) = needs_incubator.then(|| ctx.new_var()).unzip();
                 let (prep_steps, prep_steps_write) =

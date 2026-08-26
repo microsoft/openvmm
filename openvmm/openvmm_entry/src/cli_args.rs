@@ -340,6 +340,10 @@ Examples:
     #[clap(long)]
     pub isolation: Option<IsolationCli>,
 
+    /// enable restricted interrupt injection for SNP Linux direct boot
+    #[clap(long)]
+    pub snp_restricted_injection: bool,
+
     /// the hybrid vsock listener path
     #[clap(long, value_name = "PATH", alias = "vsock-path")]
     pub vmbus_vsock_path: Option<String>,
@@ -1393,6 +1397,23 @@ impl Options {
 
     /// Validates isolation-specific command-line option combinations.
     pub fn validate_isolation_options(&self) -> anyhow::Result<()> {
+        if self.snp_restricted_injection && !matches!(self.isolation, Some(IsolationCli::Snp)) {
+            anyhow::bail!("--snp-restricted-injection requires --isolation snp");
+        }
+        if self.snp_restricted_injection
+            && self
+                .hypervisor
+                .as_deref()
+                .and_then(|value| value.split(':').next())
+                != Some("mshv")
+        {
+            anyhow::bail!("--snp-restricted-injection requires --hypervisor mshv");
+        }
+        if self.snp_restricted_injection
+            && (self.uefi || self.pcat || self.igvm.is_some() || self.restore_snapshot.is_some())
+        {
+            anyhow::bail!("--snp-restricted-injection requires Linux direct boot");
+        }
         if matches!(self.isolation, Some(IsolationCli::Snp)) {
             if self.uefi {
                 anyhow::bail!("SNP isolation currently only supports Linux direct boot");
@@ -4988,6 +5009,70 @@ mod tests {
                 "SNP isolation currently does not support hugetlb memory"
             );
         }
+    }
+
+    #[test]
+    fn test_restricted_injection_requires_snp() {
+        let opt = Options::try_parse_from(["openvmm", "--snp-restricted-injection"]).unwrap();
+
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "--snp-restricted-injection requires --isolation snp"
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--isolation",
+            "snp",
+            "--snp-restricted-injection",
+        ])
+        .unwrap();
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "--snp-restricted-injection requires --hypervisor mshv"
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--hypervisor",
+            "mshv",
+            "--isolation",
+            "snp",
+            "--snp-restricted-injection",
+        ])
+        .unwrap();
+        opt.validate_isolation_options().unwrap();
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--hypervisor",
+            "mshv",
+            "--isolation",
+            "snp",
+            "--snp-restricted-injection",
+            "--pcat",
+        ])
+        .unwrap();
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "--snp-restricted-injection requires Linux direct boot"
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--hypervisor",
+            "mshv",
+            "--isolation",
+            "snp",
+            "--snp-restricted-injection",
+            "--restore-snapshot",
+            "snapshot",
+        ])
+        .unwrap();
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "--snp-restricted-injection requires Linux direct boot"
+        );
     }
 
     #[test]

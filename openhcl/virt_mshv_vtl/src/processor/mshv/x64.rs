@@ -670,7 +670,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         };
         UhHypercallHandler::MSHV_DISPATCHER.dispatch(
             guest_memory,
-            hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
+            hv1_hypercall::X64RegisterIo::new(handler, is_64bit, true),
         );
     }
 

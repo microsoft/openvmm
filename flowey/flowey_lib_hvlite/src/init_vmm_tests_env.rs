@@ -124,9 +124,10 @@ impl SimpleFlowNode for Node {
                 fs_err::create_dir(&test_log_dir)?;
                 env.insert("TEST_OUTPUT_PATH".into(), converted_log_dir);
 
-                if !temp_dir.exists() {
-                    fs_err::create_dir(&temp_dir)?
+                if temp_dir.exists() {
+                    fs_err::remove_dir_all(&temp_dir)?;
                 };
+                fs_err::create_dir(&temp_dir)?;
 
                 if matches!(rt.platform().kind(), FlowPlatformKind::Windows) || windows_via_wsl2 {
                     env.insert("TEMP".into(), converted_temp_dir.clone());

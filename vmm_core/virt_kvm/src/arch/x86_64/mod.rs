@@ -755,8 +755,14 @@ impl ResetPartition for KvmPartition {
 }
 
 impl Partition for KvmPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
-        Some(self)
+        // TODO: Support resetting SNP launch state and rebuilding the protected
+        // guest before advertising reset support.
+        self.inner.sev.is_none().then_some(self)
     }
 
     fn supports_initial_page_acceptance(
