@@ -31,6 +31,7 @@ use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
+use cli_args::IgvmPersonalityCli;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
@@ -86,6 +87,7 @@ use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
@@ -225,12 +227,41 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
         .collect()
 }
 
+fn base_chipset_type(opt: &Options) -> BaseChipsetType {
+    if opt.igvm.is_some() {
+        match opt.igvm_personality {
+            None => BaseChipsetType::HclHost,
+            Some(IgvmPersonalityCli::Uefi) => BaseChipsetType::HypervGen2Uefi,
+            Some(IgvmPersonalityCli::LinuxDirect)
+                if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) =>
+            {
+                BaseChipsetType::EnlightenedLinuxDirect
+            }
+            Some(IgvmPersonalityCli::LinuxDirect) if opt.hv => {
+                BaseChipsetType::HyperVGen2LinuxDirect
+            }
+            Some(IgvmPersonalityCli::LinuxDirect) => BaseChipsetType::UnenlightenedLinuxDirect,
+        }
+    } else if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
+        BaseChipsetType::EnlightenedLinuxDirect
+    } else if opt.pcat {
+        BaseChipsetType::HypervGen1
+    } else if opt.uefi {
+        BaseChipsetType::HypervGen2Uefi
+    } else if opt.hv {
+        BaseChipsetType::HyperVGen2LinuxDirect
+    } else {
+        BaseChipsetType::UnenlightenedLinuxDirect
+    }
+}
+
 async fn vm_config_from_command_line(
     spawner: impl Spawn,
     mesh: &VmmMesh,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
     opt.validate_isolation_options()?;
+    opt.validate_igvm_options()?;
 
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
 
@@ -1140,22 +1171,7 @@ async fn vm_config_from_command_line(
 
     let has_com3 = serial2_cfg.is_some();
 
-    let mut chipset = VmManifestBuilder::new(
-        if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
-            BaseChipsetType::EnlightenedLinuxDirect
-        } else if opt.igvm.is_some() {
-            BaseChipsetType::HclHost
-        } else if opt.pcat {
-            BaseChipsetType::HypervGen1
-        } else if opt.uefi {
-            BaseChipsetType::HypervGen2Uefi
-        } else if opt.hv {
-            BaseChipsetType::HyperVGen2LinuxDirect
-        } else {
-            BaseChipsetType::UnenlightenedLinuxDirect
-        },
-        arch,
-    );
+    let mut chipset = VmManifestBuilder::new(base_chipset_type(opt), arch);
 
     if framebuffer.is_some() {
         chipset = chipset.with_framebuffer();
@@ -1182,12 +1198,12 @@ async fn vm_config_from_command_line(
         );
     }
 
-    let (base_template_json, custom_uefi_json) = {
+    let (base_template, custom_uefi_json) = {
         #[cfg(guest_arch = "aarch64")]
         use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
         #[cfg(guest_arch = "x86_64")]
         use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
-        let base_template_json = opt.secure_boot_template.map(|template| match template {
+        let base_template = opt.secure_boot_template.map(|template| match template {
             SecureBootTemplateCli::Windows => secure_boot_templates::microsoft_windows(),
             SecureBootTemplateCli::UefiCa => secure_boot_templates::microsoft_uefi_ca(),
         });
@@ -1203,10 +1219,12 @@ async fn vm_config_from_command_line(
             None => None,
         };
 
-        (base_template_json, custom_uefi_json)
+        (base_template, custom_uefi_json)
     };
 
-    if opt.uefi && opt.igvm.is_none() && !opt.pcat {
+    if (opt.uefi && opt.igvm.is_none() && !opt.pcat)
+        || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi))
+    {
         let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
@@ -1219,7 +1237,7 @@ async fn vm_config_from_command_line(
         };
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
-            base_template_json,
+            base_template,
             custom_uefi_json,
             opt.secure_boot,
             log_level,
@@ -1253,12 +1271,19 @@ async fn vm_config_from_command_line(
             .context("failed to open igvm file")?
             .into();
         let cmdline = opt.cmdline.join(" ");
-        with_hv = true;
+        with_hv = match opt.igvm_personality {
+            None | Some(IgvmPersonalityCli::Uefi) => true,
+            Some(IgvmPersonalityCli::LinuxDirect) => opt.hv,
+        };
 
         load_mode = LoadMode::Igvm {
             file,
             cmdline,
-            vtl2_base_address: opt.igvm_vtl2_relocation_type,
+            vtl2_base_address: if opt.vtl2 {
+                opt.igvm_vtl2_relocation_type
+            } else {
+                Vtl2BaseAddressType::File
+            },
             com_serial: has_com3.then(|| SerialInformation {
                 io_port: ComPort::Com3.io_port(),
                 irq: ComPort::Com3.irq().into(),
@@ -1355,6 +1380,13 @@ async fn vm_config_from_command_line(
             initrd: initrd.map(Into::into),
             cmdline,
             enable_serial: any_serial_configured,
+            isolation: if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
+                openvmm_defs::config::LinuxIsolationConfig::Snp {
+                    restricted_injection: opt.snp_restricted_injection,
+                }
+            } else {
+                openvmm_defs::config::LinuxIsolationConfig::None
+            },
             boot_mode: if opt.device_tree {
                 openvmm_defs::config::LinuxDirectBootMode::DeviceTree
             } else {
@@ -2049,8 +2081,11 @@ fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if !matches!(cfg.load_mode, LoadMode::Linux { .. }) {
-        anyhow::bail!("SNP isolation currently only supports Linux direct boot");
+    if !matches!(
+        cfg.load_mode,
+        LoadMode::Linux { .. } | LoadMode::Igvm { .. }
+    ) {
+        anyhow::bail!("SNP isolation currently only supports Linux direct or IGVM boot");
     }
     if cfg.hypervisor.with_hv {
         anyhow::bail!("SNP isolation currently does not support Hyper-V enlightenments");
@@ -2981,5 +3016,71 @@ impl DiagInspector {
 impl InspectMut for DiagInspector {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         self.start().send(req.defer());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use test_with_tracing::test;
+
+    #[test]
+    fn maps_igvm_personalities_to_chipsets() {
+        for (args, expected) in [
+            (
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "uefi",
+                ],
+                BaseChipsetType::HypervGen2Uefi,
+            ),
+            (
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "linux-direct",
+                ],
+                BaseChipsetType::UnenlightenedLinuxDirect,
+            ),
+            (
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "linux-direct",
+                    "--hv",
+                ],
+                BaseChipsetType::HyperVGen2LinuxDirect,
+            ),
+            (
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "linux-direct",
+                    "--isolation",
+                    "snp",
+                ],
+                BaseChipsetType::EnlightenedLinuxDirect,
+            ),
+            (
+                vec!["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"],
+                BaseChipsetType::HclHost,
+            ),
+        ] {
+            let opt = Options::try_parse_from(args).unwrap();
+            assert!(
+                std::mem::discriminant(&base_chipset_type(&opt))
+                    == std::mem::discriminant(&expected)
+            );
+        }
     }
 }

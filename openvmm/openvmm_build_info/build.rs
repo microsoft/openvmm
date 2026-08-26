@@ -115,12 +115,10 @@ fn main() {
     };
     let long_version = format!(
         "{}\n\
-         build:   {}\n\
          version: {product_version}\n\
          commit:  {revision}\n\
          target:  {target}",
         version.version,
-        version.kind.description(),
     );
 
     println!("cargo:rustc-env=OPENVMM_VERSION={}", version.version);

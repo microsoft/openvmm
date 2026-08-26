@@ -408,7 +408,7 @@ enum ResolvedIommu {
     None,
     /// Arm SMMUv3 resources, one per instance.
     #[cfg(guest_arch = "aarch64")]
-    Smmu(Vec<smmu_wiring::ResolvedSmmuResources>),
+    Smmu(smmu_wiring::ResolvedSmmu),
     /// AMD IOMMU resources, one per instance.
     #[cfg(guest_arch = "x86_64")]
     AmdVi(Vec<amd_iommu_wiring::ResolvedIommuResources>),
@@ -673,7 +673,6 @@ fn build_aarch64_topology(
     let gic_msi = if let Some(count) = v2m_spi_count {
         GicMsiController::V2m(GicV2mInfo {
             frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-            doorbell_base: openvmm_defs::config::DEFAULT_GIC_V2M_DOORBELL_BASE,
             spi_base: spi_layout
                 .v2m_spi_base
                 .expect("v2m base must be allocated when v2m_spi_count is Some"),
@@ -707,6 +706,49 @@ fn build_aarch64_topology(
         processor_topology: builder.build(config.proc_count)?,
         spi_layout,
     })
+}
+
+#[cfg(guest_arch = "aarch64")]
+fn resolve_device_assignment_msi_iova_range(
+    policy: virt::DeviceAssignmentMsiIova,
+) -> Option<MemoryRange> {
+    match policy {
+        virt::DeviceAssignmentMsiIova::Unsupported => None,
+        virt::DeviceAssignmentMsiIova::Fixed(range) => Some(range),
+        virt::DeviceAssignmentMsiIova::Configurable => {
+            Some(openvmm_defs::config::DEFAULT_DEVICE_ASSIGNMENT_MSI_IOVA_RANGE)
+        }
+    }
+}
+
+#[cfg(all(test, guest_arch = "aarch64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_device_assignment_msi_iova_range_is_preserved() {
+        let range = MemoryRange::new(0x0800_0000..0x0810_0000);
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Fixed(range)),
+            Some(range)
+        );
+    }
+
+    #[test]
+    fn configurable_device_assignment_msi_iova_range_uses_openvmm_default() {
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Configurable),
+            Some(openvmm_defs::config::DEFAULT_DEVICE_ASSIGNMENT_MSI_IOVA_RANGE)
+        );
+    }
+
+    #[test]
+    fn unsupported_device_assignment_msi_iova_has_no_range() {
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Unsupported),
+            None
+        );
+    }
 }
 
 /// A VM that has been loaded and can be run.
@@ -969,13 +1011,33 @@ impl InitializedVm {
             .await
             .unwrap();
 
-        // Pre-parse the igvm file early.
+        let partition_isolation = cfg
+            .hypervisor
+            .with_isolation
+            .map(Into::into)
+            .unwrap_or(virt::IsolationType::None);
+        // Pre-parse the IGVM file early so the backend can consume opaque
+        // isolation metadata before it creates memory regions or VPs.
         let igvm_file = if let LoadMode::Igvm { file, .. } = &cfg.load_mode {
-            let igvm_file = super::vm_loaders::igvm::read_igvm_file(file)
-                .context("reading igvm file failed")?;
+            let igvm_file = super::vm_loaders::igvm::read_igvm_file(
+                file,
+                super::vm_loaders::igvm::igvm_isolation_type(partition_isolation),
+            )
+            .context("reading igvm file failed")?;
             Some(igvm_file)
         } else {
             None
+        };
+        let proto_partition_isolation = match partition_isolation {
+            virt::IsolationType::Snp => virt::ProtoPartitionIsolation::Snp(
+                igvm_file
+                    .as_ref()
+                    .map(super::vm_loaders::igvm::snp_isolation_config)
+                    .transpose()
+                    .context("reading IGVM SNP configuration failed")?
+                    .map(Box::new),
+            ),
+            isolation => isolation.into(),
         };
 
         let hv_config = if cfg.hypervisor.with_hv {
@@ -1046,17 +1108,19 @@ impl InitializedVm {
             anyhow::bail!("the selected hypervisor does not support nested virtualization");
         }
 
+        #[cfg(guest_arch = "aarch64")]
+        let device_assignment_msi_iova_range =
+            resolve_device_assignment_msi_iova_range(platform_info.device_assignment_msi_iova);
+
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
                 hv_config,
                 vmtime: &vmtime_source,
-                isolation: cfg
-                    .hypervisor
-                    .with_isolation
-                    .map(|typ| typ.into())
-                    .unwrap_or(virt::IsolationType::None),
+                isolation: proto_partition_isolation,
                 nested_virt: cfg.hypervisor.nested_virt,
+                #[cfg(guest_arch = "aarch64")]
+                device_assignment_msi_iova_range,
             })
             .context("failed to create the prototype partition")?;
 
@@ -1159,7 +1223,11 @@ impl InitializedVm {
         #[cfg(guest_arch = "aarch64")]
         let resolved_iommu = match &resolved_layout.iommu_ranges {
             ResolvedIommuRanges::Smmu(ranges) => {
-                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(ranges, &spi_layout))
+                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
+                    ranges,
+                    &spi_layout,
+                    device_assignment_msi_iova_range,
+                ))
             }
             _ => ResolvedIommu::None,
         };
@@ -1174,8 +1242,13 @@ impl InitializedVm {
         });
 
         if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
-            if !matches!(cfg.load_mode, LoadMode::Linux { .. }) {
-                anyhow::bail!("KVM SNP guest_memfd currently only supports direct Linux load mode");
+            if !matches!(
+                cfg.load_mode,
+                LoadMode::Linux { .. } | LoadMode::Igvm { .. }
+            ) {
+                anyhow::bail!(
+                    "KVM SNP guest_memfd currently only supports direct Linux or IGVM load mode"
+                );
             }
             if cfg.hypervisor.with_hv {
                 anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V enlightenments");
@@ -1348,7 +1421,12 @@ impl InitializedVm {
         let partition = Arc::new(partition);
 
         memory_manager
-            .attach_partition(Vtl::Vtl0, &partition.memory_mapper(Vtl::Vtl0), None)
+            .attach_partition(
+                Vtl::Vtl0,
+                &partition.memory_mapper(Vtl::Vtl0),
+                None,
+                partition.host_access(),
+            )
             .await
             .context("failed to attach memory to the partition")?;
 
@@ -1358,6 +1436,7 @@ impl InitializedVm {
                     Vtl::Vtl2,
                     &partition.memory_mapper(Vtl::Vtl2),
                     vtl2_memory_process,
+                    None,
                 )
                 .await
                 .context("failed to attach memory to VTL2")?;
@@ -2349,6 +2428,9 @@ impl InitializedVm {
             // Register the VFIO cdev + iommufd resolver for devices opened
             // via the cdev interface. Spawns a VfioCdevManager task that
             // shares IOAS contexts across devices with the same --iommu ID.
+            // Devices behind an accel-capable SMMU carry their nesting
+            // context in the per-device DmaTarget, so no separate side-channel
+            // is needed.
             let cdev_resolver = vfio_assigned_device::resolver::VfioCdevDeviceResolver::new(
                 driver_source.builder().build("vfio-cdev-mgr"),
                 dma_mapper_client,
@@ -2370,17 +2452,31 @@ impl InitializedVm {
         // and MSI writes through the emulated SMMUv3.
         #[cfg(guest_arch = "aarch64")]
         let smmu_devices = {
-            let resolved: &[smmu_wiring::ResolvedSmmuResources] = match &resolved_iommu {
-                ResolvedIommu::Smmu(resources) => resources,
-                _ => &[],
+            let acpi_available = match &cfg.load_mode {
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                    ..
+                } => false,
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    ..
+                }
+                | LoadMode::Uefi { .. }
+                | LoadMode::Pcat { .. }
+                | LoadMode::Igvm { .. }
+                | LoadMode::None => true,
             };
-            smmu_wiring::setup_smmu(
-                &cfg.pcie_root_complexes,
-                resolved,
-                &pcie_host_bridges,
-                &chipset_builder,
-                &gm,
-            )?
+            match &resolved_iommu {
+                ResolvedIommu::Smmu(resolved) => smmu_wiring::setup_smmu(
+                    &cfg.pcie_root_complexes,
+                    resolved,
+                    &mut pcie_host_bridges,
+                    &chipset_builder,
+                    &gm,
+                    acpi_available,
+                )?,
+                _ => smmu_wiring::SmmuDevicesResult::default(),
+            }
         };
 
         // Instantiate an AMD IOMMU on each root complex listed in
@@ -3155,6 +3251,7 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
+                isolation,
                 boot_mode,
             } => {
                 match boot_mode {
@@ -3163,13 +3260,39 @@ impl LoadedVmInner {
                     }
                     openvmm_defs::config::LinuxDirectBootMode::Acpi => {}
                 }
+                let isolation = match (isolation, self.hypervisor_cfg.with_isolation) {
+                    (
+                        openvmm_defs::config::LinuxIsolationConfig::Snp {
+                            restricted_injection,
+                        },
+                        Some(openvmm_defs::config::IsolationType::Snp),
+                    ) => super::vm_loaders::linux::KernelIsolationConfig::Snp(
+                        super::vm_loaders::linux::SnpKernelConfig {
+                            c_bit: self
+                                .partition
+                                .caps()
+                                .snp_c_bit
+                                .context("missing SNP C-bit CPUID information")?,
+                            restricted_injection,
+                        },
+                    ),
+                    (
+                        openvmm_defs::config::LinuxIsolationConfig::None,
+                        Some(openvmm_defs::config::IsolationType::Snp),
+                    ) => anyhow::bail!("SNP partition requires SNP Linux loader configuration"),
+                    (openvmm_defs::config::LinuxIsolationConfig::Snp { .. }, _) => {
+                        anyhow::bail!("SNP Linux loader configuration requires SNP isolation")
+                    }
+                    (openvmm_defs::config::LinuxIsolationConfig::None, _) => {
+                        super::vm_loaders::linux::KernelIsolationConfig::None
+                    }
+                };
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: self.hypervisor_cfg.with_isolation,
-                    snp_c_bit: self.partition.caps().snp_c_bit,
+                    isolation,
                 };
                 super::vm_loaders::linux::load_linux_x86(
                     &kernel_config,
@@ -3204,17 +3327,20 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
+                isolation,
                 boot_mode,
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
 
+                if isolation != openvmm_defs::config::LinuxIsolationConfig::None {
+                    anyhow::bail!("SNP Linux loader configuration is not supported on aarch64");
+                }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: self.hypervisor_cfg.with_isolation,
-                    snp_c_bit: None,
+                    isolation: super::vm_loaders::linux::KernelIsolationConfig::None,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -3343,6 +3469,12 @@ impl LoadedVmInner {
 
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
+                    igvm_isolation_type: super::vm_loaders::igvm::igvm_isolation_type(
+                        self.hypervisor_cfg
+                            .with_isolation
+                            .map(Into::into)
+                            .unwrap_or(virt::IsolationType::None),
+                    ),
                     gm: &self.gm,
                     processor_topology: &self.processor_topology,
                     mem_layout: &self.mem_layout,
@@ -3840,8 +3972,17 @@ impl LoadedVm {
         self.inner.next_igvm_file = None;
 
         // Load the new IGVM file into memory.
-        let igvm_file =
-            super::vm_loaders::igvm::read_igvm_file(file).context("reading igvm file failed")?;
+        let isolation = self
+            .inner
+            .hypervisor_cfg
+            .with_isolation
+            .map(Into::into)
+            .unwrap_or(virt::IsolationType::None);
+        let igvm_file = super::vm_loaders::igvm::read_igvm_file(
+            file,
+            super::vm_loaders::igvm::igvm_isolation_type(isolation),
+        )
+        .context("reading igvm file failed")?;
 
         self.inner.next_igvm_file = Some(igvm_file);
         Ok(())

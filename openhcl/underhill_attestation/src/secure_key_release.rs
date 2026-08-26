@@ -134,8 +134,8 @@ pub struct VmgsEncryptionKeys {
     pub ingress_rsa_kek: Option<RsaKeyPair>,
     /// Optional DiskEncryptionSettings key used by key rotation.
     pub wrapped_des_key: Option<Vec<u8>>,
-    /// Optional TCB version used by hardware key sealing.
-    pub tcb_version: Option<u64>,
+    /// Optional SVN material used by hardware key sealing.
+    pub key_derivation_svn: Option<tee_call::KeyDerivationSvn>,
 }
 
 /// Request the VMGS encryption keys via host call-outs with optional retry logic.
@@ -207,7 +207,7 @@ pub async fn request_vmgs_encryption_keys(
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: Some(ingress_rsa_kek),
                 wrapped_des_key,
-                tcb_version: result.tcb_version,
+                key_derivation_svn: result.key_derivation_svn,
             })
         }
         Err(

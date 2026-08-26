@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::pipelines::vmm_tests_run_target::VmmTestsRunTargetCli;
 use cca_tests::CcaTestsCli;
 use flowey::pipeline::prelude::*;
 use restore_packages::RestorePackagesCli;
@@ -16,6 +17,7 @@ pub mod custom_vmfirmwareigvm_dll;
 pub mod openvmm_source_release;
 pub mod restore_packages;
 pub mod vmm_tests_run;
+pub mod vmm_tests_run_target;
 
 #[derive(clap::Subcommand)]
 #[expect(clippy::large_enum_variant)]
@@ -42,6 +44,9 @@ pub enum OpenvmmPipelines {
 
     /// Build and run VMM tests with automatic artifact discovery
     VmmTestsRun(VmmTestsRunCli),
+
+    /// Run VMM tests on a target system with artifacts built by `VmmTestsRun`.
+    VmmTestsRunTarget(VmmTestsRunTargetCli),
 
     /// Build and run CCA tests with installation of emulation environment supported
     CcaTests(CcaTestsCli),
@@ -85,6 +90,7 @@ impl IntoPipeline for OpenvmmPipelines {
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::VmmTestsRunTarget(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::CcaTests(cmd) => cmd.into_pipeline(pipeline_hint),
         }
     }

@@ -885,6 +885,10 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
 }
 
 impl virt::Partition for KvmPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(
         &self,
     ) -> Option<&dyn virt::ResetPartition<Error = <Self as virt::Hv1>::Error>> {
@@ -1128,6 +1132,9 @@ impl virt::Hypervisor for Kvm {
             platform_gsiv: None,
             supports_gic_v3: self.supports_gic_v3,
             supports_its: self.supports_its,
+            device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Fixed(
+                memory_range::MemoryRange::new(0x0800_0000..0x0810_0000),
+            ),
         }
     }
 

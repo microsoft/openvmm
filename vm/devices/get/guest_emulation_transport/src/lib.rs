@@ -777,4 +777,15 @@ mod tests {
 
         get.test_ged_client.test_save_guest_vtl2_state().await;
     }
+
+    #[async_test]
+    async fn test_load_firmware(driver: DefaultDriver) {
+        // LoadFirmware is a REV2 host request whose availability the host
+        // advertises via the `load_firmware_supported` DPS feature bit; the
+        // transport itself just issues the request and returns the entry offset.
+        let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
+
+        let entry_offset = get.client.load_firmware(0x0107).await.unwrap();
+        assert_eq!(entry_offset, 0);
+    }
 }

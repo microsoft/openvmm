@@ -100,6 +100,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
 
         let management_vtl_features = get_protocol::dps_json::ManagementVtlFeatures::new()
             .with_strict_encryption_policy(guest_state_encryption_policy.is_strict())
+            .with_load_firmware_supported(true)
             .with_tx_only_serial_port(resource.serial_tx_only);
 
         let guest_state_encryption_policy = match guest_state_encryption_policy {

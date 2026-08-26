@@ -404,7 +404,7 @@ impl PetriVmConfigOpenVmm {
             use firmware_uefi_resources::x64_secure_boot_templates;
 
             let uefi_cfg = firmware.uefi_config();
-            let base_template_json =
+            let base_template =
                 uefi_cfg
                     .and_then(|c| c.secure_boot_template)
                     .map(|template| match (arch, template) {
@@ -448,7 +448,7 @@ impl PetriVmConfigOpenVmm {
                     MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
                     MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
-                base_template_json,
+                base_template,
                 custom_uefi_json,
                 secure_boot,
                 log_level,
@@ -911,6 +911,7 @@ impl PetriVmConfigSetupCore<'_> {
                     initrd: Some(initrd),
                     cmdline,
                     enable_serial: self.enable_serial,
+                    isolation: openvmm_defs::config::LinuxIsolationConfig::None,
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
                 }
             }

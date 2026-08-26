@@ -177,7 +177,9 @@ pub enum HardwareSealingPolicy {
 #[serde(transparent)]
 pub struct ManagementVtlFeatures {
     pub strict_encryption_policy: bool,
-    pub _reserved1: bool,
+    /// The host supports the `LOAD_FIRMWARE` host request (VTL0 firmware
+    /// overload). Bit 1 (`0x00000002`).
+    pub load_firmware_supported: bool,
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,

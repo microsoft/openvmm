@@ -127,6 +127,8 @@ mod ioctl {
     );
     ioctl_readwrite!(kvm_create_device, KVMIO, 0xe0, kvm_create_device);
     ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, kvm_device_attr);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, kvm_device_attr);
     ioctl_readwrite!(kvm_create_guest_memfd, KVMIO, 0xd4, kvm_create_guest_memfd);
     #[cfg(target_arch = "aarch64")]
     ioctl_readwrite_bad!(
@@ -366,6 +368,8 @@ pub enum Error {
     CreateDevice(#[source] nix::Error),
     #[error("SetDeviceAttr")]
     SetDeviceAttr(#[source] nix::Error),
+    #[error("GetDeviceAttr")]
+    GetDeviceAttr(#[source] nix::Error),
     #[error("CheckExtension")]
     CheckExtension(#[source] nix::Error),
     #[error("GetClock")]
@@ -449,6 +453,24 @@ impl Kvm {
                 .map_err(Error::GetMceCapSupported)?;
         }
         Ok(cap)
+    }
+
+    /// Returns the VMSA feature bits supported by KVM for SEV guests.
+    #[cfg(target_arch = "x86_64")]
+    pub fn supported_sev_vmsa_features(&self) -> Result<u64> {
+        let mut value = 0u64;
+        let attr = kvm_device_attr {
+            group: KVM_X86_GRP_SEV,
+            attr: u64::from(KVM_X86_SEV_VMSA_FEATURES),
+            addr: std::ptr::from_mut(&mut value) as u64,
+            flags: 0,
+        };
+        // SAFETY: `attr.addr` points to `value` for the duration of the ioctl.
+        unsafe {
+            ioctl::kvm_get_device_attr(self.as_fd().as_raw_fd(), &attr)
+                .map_err(Error::GetDeviceAttr)?;
+        }
+        Ok(value)
     }
 
     /// Returns the Hyper-V CPUID values that KVM supports for guest
@@ -640,8 +662,11 @@ impl Partition {
     }
 
     #[cfg(target_arch = "x86_64")]
-    pub fn sev_snp_init(&self, sev: BorrowedFd<'_>) -> Result<()> {
-        let mut init = kvm_sev_init::default();
+    pub fn sev_snp_init(&self, sev: BorrowedFd<'_>, vmsa_features: u64) -> Result<()> {
+        let mut init = kvm_sev_init {
+            vmsa_features,
+            ..Default::default()
+        };
         let mut command = kvm_sev_cmd {
             id: sev_cmd_id_KVM_SEV_INIT2,
             data: std::ptr::from_mut(&mut init) as u64,

@@ -1,13 +1,23 @@
 # CLI
 
-```admonish danger title="Disclaimer"
-The following list is not exhaustive, and may be out of date.
-
-The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html),
-as well as the generated CLI help (via `cargo run -- --help`).
+```admonish note title="CLI compatibility and reference"
+The CLI is not a stable compatibility interface and may change between
+releases. This page summarizes OpenVMM's command-line options. The generated
+`openvmm --help` output is authoritative for the binary being run, and the
+[`Options` rustdoc](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html)
+describes the source definitions.
 ```
 
-* `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints the concise identity. `--version` also prints the upstream product version, build kind, full Git revision when available, and build target. An ordinary checkout reports `MAJOR.MINOR.PATCH+g<SHORT_REVISION>`. This includes an exact checkout of an `openvmm-vMAJOR.MINOR.PATCH` release tag. A checkout detected with tracked changes appends `.dirty`; staged changes refresh this reliably, while an unstaged-only transition may remain cached until another build-script input changes. A Git-free source tree reports `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the product version as `MAJOR.MINOR.PATCH.0`.
+* `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints
+  the concise identity. `--version` also prints the upstream product version,
+  full Git revision when available, and build target. An ordinary checkout
+  reports `MAJOR.MINOR.PATCH+g<SHORT_REVISION>`. This includes an exact
+  checkout of an `openvmm-vMAJOR.MINOR.PATCH` release tag. A checkout detected
+  with tracked changes appends `.dirty`; staged changes refresh this reliably,
+  while an unstaged-only transition may remain cached until another
+  build-script input changes. A Git-free source tree reports
+  `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the
+  product version as `MAJOR.MINOR.PATCH.0`.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
@@ -79,13 +89,23 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --hypervisor kvm
   ```
 * `--isolation <MODE>`: Enable a confidential or isolated VM mode.
-  Supported modes include `vbs` and, for `x86_64` guests on KVM, `snp`.
+  Supported modes include `vbs` and, for `x86_64` guests on KVM or MSHV,
+  `snp`.
 
   SNP support is currently limited to Linux direct boot and is intended for
-  bring-up. It does not support UEFI, Hyper-V enlightenments, VTL2, VMBus,
-  or hugetlb-backed memory. In addition to the minimal emulated chipset and
-  serial console, optional devices are limited to virtio devices attached
-  through PCIe.
+  bring-up. MSHV SNP can expose Hyper-V enlightenments with `--hv --no-vmbus`;
+  VMBus devices remain unsupported. SNP does not support UEFI, VTL2, or
+  hugetlb-backed memory. In addition to the minimal emulated chipset and serial
+  console, optional devices are limited to virtio devices attached through
+  PCIe.
+* `--snp-restricted-injection`: Enable restricted interrupt injection in the
+  loader-generated SNP VMSA. This bring-up option has no default and requires
+  `--hypervisor mshv --isolation snp` with Linux direct boot. KVM SNP does not
+  support this option.
+* `--hypervisor mshv:snp_disable_cpuid_offload=true`: Disable MSHV handling of
+  SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
+  offloading enabled. This diagnostic parameter is meaningful only with
+  `--isolation snp`.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and
@@ -98,6 +118,22 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
+* `--igvm <FILE>`: Boot from an IGVM file.
+* `--igvm-personality <uefi|linux-direct>`: Select the chipset and
+  device shape for an IGVM boot without VTL2. This option is required with
+  `--igvm` unless `--vtl2` is present; there is no default for non-VTL2
+  boots. The personality does not select the isolation platform. Use
+  `--isolation` separately when required by the IGVM.
+
+  The `uefi` personality uses the Gen2 device shape, but firmware is loaded
+  from the IGVM. It does not select the normal external-UEFI load path. The
+  `linux-direct` personality enables Hyper-V enlightenments only when `--hv`
+  is also specified. The UEFI personality requires Hyper-V enlightenments and
+  fails explicitly on backend and isolation combinations that cannot provide
+  them.
+
+  With `--igvm --vtl2`, omit `--igvm-personality`. OpenVMM retains the
+  existing HCL-host device shape and VBS-compatible IGVM behavior.
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
   named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.
@@ -459,8 +495,9 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 `--smmu` enables an emulated Arm SMMUv3 IOMMU for a named PCIe root
 complex. The flag is repeatable — use one `--smmu` per root complex that
-should have an SMMU. Devices behind a covered root complex get software
-IOVA→GPA translation for DMA and MSI addresses.
+should have an SMMU. Devices behind a covered root complex get IOVA→GPA
+translation for DMA and MSI addresses. See
+[Arm SMMUv3](../../emulated/iommu/smmuv3.md) for the device reference.
 
 The syntax is a comma-separated key/value list:
 
@@ -469,15 +506,20 @@ The syntax is a comma-separated key/value list:
 ```
 
 - `rc=<name>` (required): the PCIe root complex this SMMU covers.
-- `accel` (optional): enable hardware-accelerated (iommufd-nested)
-  translation, delegating stage-1 walks to the host IOMMU. See the note
-  below — this is not yet wired up and currently fails at startup.
+- `accel` (optional): delegate stage-1 translation to the host IOMMU via
+  iommufd nesting, so VFIO-assigned devices behind this root complex are
+  translated in hardware. Requires ACPI, a nesting-capable host SMMUv3, and
+  that the devices use the `--iommu` cdev path with a single shared context.
+  Without it, assigning a VFIO device behind an SMMU is rejected.
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
-  `auto` (the default) advertises a fixed 48 bits, which covers typical
-  configurations. Very large RAM or an explicitly pinned high MMIO/ECAM
-  base can exceed this, requiring an explicit larger `oas=` (e.g. `oas=52`).
-  A fixed `N` must be one of the SMMUv3-legal encodings: `32`, `36`, `40`,
-  `42`, `44`, `48`, or `52`.
+  `auto` (the default) starts at 48 bits, which covers typical configurations.
+  Under `accel`, a device attached before VM start changes it to the physical
+  SMMU's OAS. VM start freezes the advertised value, so later hotplug validates
+  against it rather than changing it. Very large RAM or an explicitly pinned
+  high MMIO/ECAM base can exceed 48 bits, requiring an explicit larger `oas=`
+  (e.g. `oas=52`). A fixed `N` must be one of the SMMUv3-legal encodings: `32`,
+  `36`, `40`, `42`, `44`, `48`, or `52`, and cannot exceed the physical
+  SMMU's OAS under `accel`.
 
 ```sh
 # Enable an emulated SMMU on root complex rc0
@@ -488,16 +530,10 @@ The syntax is a comma-separated key/value list:
 
 # Pin the output address size to 48 bits
 --smmu rc=rc0,oas=48
-```
 
-```admonish warning
-`accel` is accepted by the parser but the acceleration backend is not yet
-implemented: requesting it fails during SMMU setup rather than silently
-falling back to emulated translation.
-
-VFIO devices therefore cannot currently be placed behind an SMMU-covered
-root complex, because host passthrough requires the (not-yet-available)
-iommufd nested translation path.
+# Assign a VFIO device behind an accelerated SMMU
+--smmu rc=rc0,accel --iommu id=iommu0 \
+  --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 ```
 
 ### AMD IOMMU (x86_64 only)

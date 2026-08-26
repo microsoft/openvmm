@@ -1086,6 +1086,26 @@ pub struct SnpPspIdBlock {
     pub policy: u64,
 }
 
+/// ECDSA signature components used by an SNP ID block.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SnpIdBlockSignature {
+    /// ECDSA R component.
+    pub r: [u8; 72],
+    /// ECDSA S component.
+    pub s: [u8; 72],
+}
+
+/// Public key used by an SNP ID block.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SnpIdBlockPublicKey {
+    /// Elliptic curve identifier.
+    pub curve: u32,
+    /// Public key X coordinate.
+    pub qx: [u8; 72],
+    /// Public key Y coordinate.
+    pub qy: [u8; 72],
+}
+
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct SevStatusMsr {

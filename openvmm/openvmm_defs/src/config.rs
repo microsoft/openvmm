@@ -79,12 +79,11 @@ pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
 /// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
 pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
 
-/// Base address of the GIC v2m MSI doorbell used for passthrough on the
-/// MSHV root/arm64 backend. Registered with the hypervisor as
-/// GITS_TRANSLATER_BASE_ADDRESS.
-/// The hypervisor shadows a ~64 KiB region at this base,
-/// so it uses the Hyper-V convention address 0xEFF6_8000.
-pub const DEFAULT_GIC_V2M_DOORBELL_BASE: u64 = 0xEFF6_8000;
+/// Default device-assignment MSI IOVA reservation for a physical SMMU
+/// implementation that lets the VMM select the range. The base follows the
+/// Hyper-V convention; 1 MiB matches Linux's Arm SMMU reservation size.
+pub const DEFAULT_DEVICE_ASSIGNMENT_MSI_IOVA_RANGE: MemoryRange =
+    MemoryRange::new(0xEFF6_8000..0xF006_8000);
 
 /// Base address of the GICv3 ITS MMIO region. Must be 64 KiB aligned,
 /// below the v2m frame address, and not overlap other devices.
@@ -119,6 +118,18 @@ pub enum LinuxDirectBootMode {
     Acpi,
 }
 
+/// Isolation-specific settings for Linux direct boot.
+#[derive(MeshPayload, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxIsolationConfig {
+    /// No isolation-specific loader configuration.
+    None,
+    /// AMD SEV-SNP loader configuration.
+    Snp {
+        /// Enables restricted interrupt injection in the SNP VMSA.
+        restricted_injection: bool,
+    },
+}
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -126,6 +137,7 @@ pub enum LoadMode {
         initrd: Option<File>,
         cmdline: String,
         enable_serial: bool,
+        isolation: LinuxIsolationConfig,
         boot_mode: LinuxDirectBootMode,
     },
     Uefi {
