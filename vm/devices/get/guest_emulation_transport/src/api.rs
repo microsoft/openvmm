@@ -33,6 +33,7 @@ pub mod platform_settings {
     use get_protocol::dps_json::GuestStateLifetime;
     use get_protocol::dps_json::HardwareSealingPolicy;
     use get_protocol::dps_json::ManagementVtlFeatures;
+    use get_protocol::dps_json::TpmVersion;
     use guid::Guid;
     use inspect::Inspect;
 
@@ -139,6 +140,8 @@ pub mod platform_settings {
         pub force_dma_bounce_enabled: bool,
         #[inspect(debug)]
         pub hardware_sealing_policy: HardwareSealingPolicy,
+        #[inspect(debug)]
+        pub tpm_version: TpmVersion,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]

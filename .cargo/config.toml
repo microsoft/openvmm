@@ -39,6 +39,12 @@ X86_64_UNKNOWN_LINUX_MUSL_TPM_LIB_DIR = { value = ".packages/extracted/x86_64-sy
 AARCH64_UNDERHILL_LINUX_MUSL_TPM_LIB_DIR = { value = ".packages/extracted/aarch64-sysroot/tpm-oss-openssl/lib", relative = true }
 AARCH64_UNKNOWN_LINUX_MUSL_TPM_LIB_DIR = { value = ".packages/extracted/aarch64-sysroot/tpm-oss-openssl/lib", relative = true }
 
+# Tell ms-tcg-tpm-sys where to get the prebuilt libtpm.
+X86_64_UNDERHILL_LINUX_MUSL_TCG_TPM_LIB_DIR = { value = ".packages/extracted/x86_64-sysroot/tcg-tpm-symcrypt/lib", relative = true }
+X86_64_UNKNOWN_LINUX_MUSL_TCG_TPM_LIB_DIR = { value = ".packages/extracted/x86_64-sysroot/tcg-tpm-symcrypt/lib", relative = true }
+AARCH64_UNDERHILL_LINUX_MUSL_TCG_TPM_LIB_DIR = { value = ".packages/extracted/aarch64-sysroot/tcg-tpm-symcrypt/lib", relative = true }
+AARCH64_UNKNOWN_LINUX_MUSL_TCG_TPM_LIB_DIR = { value = ".packages/extracted/aarch64-sysroot/tcg-tpm-symcrypt/lib", relative = true }
+
 # Tell cc-rs where the Underhill compilers are.
 CC_aarch64_underhill_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }
 CC_aarch64_unknown_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }

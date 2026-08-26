@@ -131,6 +131,7 @@ use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
 use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
@@ -3061,6 +3062,10 @@ async fn new_underhill_vm(
             name: "tpm".to_owned(),
             resource: RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
+                    version: match dps.general.tpm_version {
+                        get_protocol::dps_json::TpmVersion::V138 => TpmVersion::V138,
+                        get_protocol::dps_json::TpmVersion::V185 => TpmVersion::V185,
+                    },
                     ppi_store,
                     nvram_store,
                     refresh_tpm_seeds: platform_attestation_data
@@ -3944,6 +3949,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         // Attested to
         secure_boot_enabled,
         tpm_enabled: _,
+        tpm_version: _,
         com1_enabled: _,
         com1_vmbus_redirector: _,
         com2_enabled: _,

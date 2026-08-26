@@ -42,6 +42,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use logger::TpmLogEvent;
 use logger::TpmLogger;
+use ms_tcg_tpm_sys::MsTpm185Platform;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
 use std::future::Future;
@@ -58,6 +59,7 @@ use tpm_protocol::tpm20proto;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
 use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
@@ -228,31 +230,108 @@ struct AkCertRequest {
     fut: Pin<AkCertRequestFuture>,
 }
 
-/// Implementation of [`ms_tpm_20_ref::PlatformCallbacks::monotonic_timer`]
+/// Callback used to implement the monotonic timer for a TPM library.
 pub type MonotonicTimer = Box<dyn Send + FnMut() -> std::time::Duration>;
 
-/// Wrapper around [`MsTpm20RefPlatform`] that implements [`TpmEngine`].
-struct MsTpm20RefEngine(MsTpm20RefPlatform);
+#[derive(Debug, Error)]
+pub enum TpmLibraryError {
+    #[error(transparent)]
+    V138(#[from] ms_tpm_20_ref::Error),
+    #[error(transparent)]
+    V185(#[from] ms_tcg_tpm_sys::Error),
+}
 
-impl MsTpm20RefEngine {
-    fn new(inner: MsTpm20RefPlatform) -> Self {
-        Self(inner)
-    }
-
-    fn inner_mut(&mut self) -> &mut MsTpm20RefPlatform {
-        &mut self.0
+impl TpmLibraryError {
+    fn is_mismatched_blob_size(&self) -> bool {
+        matches!(
+            self,
+            Self::V138(ms_tpm_20_ref::Error::NvMem(
+                ms_tpm_20_ref::NvError::MismatchedBlobSize
+            )) | Self::V185(ms_tcg_tpm_sys::Error::NvMem(
+                ms_tcg_tpm_sys::NvError::MismatchedBlobSize
+            ))
+        )
     }
 }
 
-impl TpmEngine for MsTpm20RefEngine {
+/// Wrapper around TPM libraries that implements [`TpmEngine`].
+enum TpmRefLib {
+    V138(MsTpm20RefPlatform),
+    V185(MsTpm185Platform),
+}
+
+impl TpmRefLib {
+    fn new(
+        version: TpmVersion,
+        callbacks: TpmPlatformCallbacks,
+        nvram_size: usize,
+    ) -> Result<Self, TpmLibraryError> {
+        match version {
+            TpmVersion::V138 => MsTpm20RefPlatform::initialize(
+                Box::new(callbacks),
+                ms_tpm_20_ref::InitKind::ColdInitWithSize(nvram_size),
+            )
+            .map(Self::V138)
+            .map_err(Into::into),
+            TpmVersion::V185 => MsTpm185Platform::initialize(
+                Box::new(callbacks),
+                ms_tcg_tpm_sys::InitKind::ColdInitWithSize(nvram_size),
+            )
+            .map(Self::V185)
+            .map_err(Into::into),
+        }
+    }
+
+    fn reset(&mut self, nvram: Option<&[u8]>) -> Result<(), TpmLibraryError> {
+        match self {
+            Self::V138(inner) => inner.reset(nvram).map_err(Into::into),
+            Self::V185(inner) => inner.reset(nvram).map_err(Into::into),
+        }
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        match self {
+            Self::V138(inner) => inner.save_state(),
+            Self::V185(inner) => inner.save_state(),
+        }
+    }
+
+    fn restore_state(&mut self, state: Vec<u8>) -> Result<(), TpmLibraryError> {
+        match self {
+            Self::V138(inner) => inner.restore_state(state).map_err(Into::into),
+            Self::V185(inner) => inner.restore_state(state).map_err(Into::into),
+        }
+    }
+
+    fn set_cancel_flag(&mut self, enabled: bool) {
+        match self {
+            Self::V138(inner) => inner.set_cancel_flag(enabled),
+            Self::V185(inner) => inner.set_cancel_flag(enabled),
+        }
+    }
+
+    fn version(&self) -> TpmVersion {
+        match self {
+            Self::V138(_) => TpmVersion::V138,
+            Self::V185(_) => TpmVersion::V185,
+        }
+    }
+}
+
+impl TpmEngine for TpmRefLib {
     fn execute_command(
         &mut self,
         command: &mut [u8],
         response: &mut [u8],
     ) -> Result<(), TpmEngineError> {
-        MsTpm20RefPlatform::execute_command(self.inner_mut(), command, response)
-            .map(|_| ())
-            .map_err(TpmEngineError::from_error)
+        match self {
+            TpmRefLib::V138(inner) => MsTpm20RefPlatform::execute_command(inner, command, response)
+                .map(|_| ())
+                .map_err(TpmEngineError::from_error),
+            TpmRefLib::V185(inner) => MsTpm185Platform::execute_command(inner, command, response)
+                .map(|_| ())
+                .map_err(TpmEngineError::from_error),
+        }
     }
 }
 
@@ -282,7 +361,7 @@ pub struct Tpm {
 
     // Sub-emulators
     #[inspect(skip)]
-    tpm_engine_helper: TpmEngineHelper<MsTpm20RefEngine>,
+    tpm_engine_helper: TpmEngineHelper<TpmRefLib>,
 
     // Runtime book-keeping
     command_buffer: [u8; TPM_PAGE_SIZE],
@@ -325,11 +404,11 @@ pub enum TpmErrorKind {
     #[error("failed to deserialized Ppi state")]
     InvalidPpiState,
     #[error("failed to instantiate TPM")]
-    InstantiateTpm(#[source] ms_tpm_20_ref::Error),
+    InstantiateTpm(#[source] TpmLibraryError),
     #[error("failed to reset TPM without Nvram state")]
-    ResetTpmWithoutState(#[source] ms_tpm_20_ref::Error),
+    ResetTpmWithoutState(#[source] TpmLibraryError),
     #[error("failed to reset TPM with Nvram state")]
-    ResetTpmWithState(#[source] ms_tpm_20_ref::Error),
+    ResetTpmWithState(#[source] TpmLibraryError),
     #[error("failed to initialize TPM engine")]
     InitializeTpmEngine(#[source] tpm_lib::Error),
     #[error("failed to clear TPM platform context")]
@@ -352,6 +431,14 @@ pub enum TpmErrorKind {
     },
     #[error("failed to set pcr banks")]
     SetPcrBanks(#[source] tpm_lib::Error),
+    #[error(
+        "TPM {version:?} does not support the legacy {nvram_size} byte vTPM state; \
+         only TPM V138 can be used with vTPM state smaller than {STANDARD_VTPM_SIZE} bytes"
+    )]
+    LegacyVtpmStateUnsupported {
+        version: TpmVersion,
+        nvram_size: usize,
+    },
 }
 
 struct TpmPlatformCallbacks {
@@ -366,7 +453,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 
     fn get_crypt_random(&mut self, buf: &mut [u8]) -> ms_tpm_20_ref::DynResult<usize> {
-        getrandom::fill(buf).expect("rng failure");
+        getrandom::fill(buf)?;
         Ok(buf.len())
     }
 
@@ -379,8 +466,29 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 }
 
+impl ms_tcg_tpm_sys::PlatformCallbacks for TpmPlatformCallbacks {
+    fn commit_nv_state(&mut self, state: &[u8]) -> ms_tcg_tpm_sys::DynResult<()> {
+        *self.pending_nvram.lock() = state.to_vec();
+        Ok(())
+    }
+
+    fn get_crypt_random(&mut self, buf: &mut [u8]) -> ms_tcg_tpm_sys::DynResult<usize> {
+        getrandom::fill(buf)?;
+        Ok(buf.len())
+    }
+
+    fn monotonic_timer(&mut self) -> std::time::Duration {
+        (self.monotonic_timer)()
+    }
+
+    fn get_unique_value(&self) -> &'static [u8] {
+        b"openvmm vtpm"
+    }
+}
+
 impl Tpm {
     pub async fn new(
+        version: TpmVersion,
         register_layout: TpmRegisterLayout,
         mem: GuestMemory,
         ppi_store: Box<dyn NonVolatileStore>,
@@ -401,16 +509,29 @@ impl Tpm {
 
         let nvram_size = nvram_size.unwrap_or(DEFAULT_VTPM_SIZE);
 
-        let tpm_engine = MsTpm20RefPlatform::initialize(
-            Box::new(TpmPlatformCallbacks {
+        // Legacy (sub-32kB) vTPM state was provisioned by vtpmservice and is
+        // only understood by the 1.38 reference implementation. Reject it up
+        // front rather than handing it to a newer library, which would fail
+        // later with a confusing out-of-range NVRAM access.
+        if version != TpmVersion::V138 && nvram_size < STANDARD_VTPM_SIZE {
+            return Err(TpmErrorKind::LegacyVtpmStateUnsupported {
+                version,
+                nvram_size,
+            }
+            .into());
+        }
+
+        let tpm_engine = TpmRefLib::new(
+            version,
+            TpmPlatformCallbacks {
                 pending_nvram: pending_nvram.clone(),
                 monotonic_timer,
-            }),
-            ms_tpm_20_ref::InitKind::ColdInitWithSize(nvram_size),
+            },
+            nvram_size,
         )
         .map_err(TpmErrorKind::InstantiateTpm)?;
 
-        let tpm_engine_helper = TpmEngineHelper::new(MsTpm20RefEngine::new(tpm_engine));
+        let tpm_engine_helper = TpmEngineHelper::new(tpm_engine);
 
         let io_region = if register_layout == TpmRegisterLayout::IoPort {
             Some((
@@ -505,7 +626,6 @@ impl Tpm {
         guest_secret_key: Option<Vec<u8>>,
         is_confidential_vm: bool,
     ) -> Result<(), TpmError> {
-        use ms_tpm_20_ref::NvError;
         struct TpmQuirks {
             force_ak_regen: bool,
             large_vtpm_blob: bool,
@@ -521,19 +641,33 @@ impl Tpm {
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
             if let Some(mut blob) = existing_nvmem_blob {
+                // The legacy quirks below only apply to state provisioned by
+                // vtpmservice, which always ran the 1.38 reference
+                // implementation. Newer libraries cannot interpret such a blob,
+                // so reject it instead of letting them read past its end.
+                let is_v138 = self.tpm_engine_helper.tpm_engine.version() == TpmVersion::V138;
+                if !is_v138 && blob.len() < STANDARD_VTPM_SIZE {
+                    self.logger
+                        .log_event_and_flush(TpmLogEvent::InvalidState)
+                        .await;
+
+                    return Err(TpmErrorKind::LegacyVtpmStateUnsupported {
+                        version: self.tpm_engine_helper.tpm_engine.version(),
+                        nvram_size: blob.len(),
+                    }
+                    .into());
+                }
+
                 // Previous versions before this code had a bug where sizes
                 // smaller than 32K would be reported as 32K. Fixup the blob so
                 // that the TPM nvram is consistent - this code can be removed
                 // once the fix for reporting the NVRAM size correctly is
                 // everywhere.
-                recover::recover_blob(&mut blob);
-                if let Err(e) = self
-                    .tpm_engine_helper
-                    .tpm_engine
-                    .inner_mut()
-                    .reset(Some(&blob))
-                {
-                    if let ms_tpm_20_ref::Error::NvMem(NvError::MismatchedBlobSize) = e {
+                if is_v138 {
+                    recover::recover_blob(&mut blob);
+                }
+                if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
+                    if e.is_mismatched_blob_size() {
                         self.logger
                             .log_event_and_flush(TpmLogEvent::InvalidState)
                             .await;
@@ -551,7 +685,7 @@ impl Tpm {
                         || is_confidential_vm,
 
                     // If this is a small vTPM blob, potentially fixup the AK cert.
-                    fixup_16k_ak_cert: blob.len() == LEGACY_VTPM_SIZE,
+                    fixup_16k_ak_cert: is_v138 && blob.len() == LEGACY_VTPM_SIZE,
 
                     large_vtpm_blob: blob.len() >= STANDARD_VTPM_SIZE,
                 }
@@ -1000,7 +1134,6 @@ impl Tpm {
         if response_code == tpm20proto::ResponseCode::Success as u32 {
             self.tpm_engine_helper
                 .tpm_engine
-                .inner_mut()
                 .reset(None)
                 .map_err(TpmErrorKind::ResetTpmWithoutState)?;
             self.tpm_engine_helper
@@ -1333,7 +1466,6 @@ impl ChangeDeviceState for Tpm {
 
         self.tpm_engine_helper
             .tpm_engine
-            .inner_mut()
             .reset(None)
             .expect("failed to reset TPM");
         self.tpm_engine_helper
@@ -1493,7 +1625,6 @@ impl MmioIntercept for Tpm {
                 self.control_area.cancel = if val == 0 { 0 } else { 1 };
                 self.tpm_engine_helper
                     .tpm_engine
-                    .inner_mut()
                     .set_cancel_flag(self.control_area.cancel == 1);
             }
             ControlArea::OFFSET_OF_START => {
@@ -1744,6 +1875,7 @@ mod save_restore {
 
     mod state {
         use mesh::payload::Protobuf;
+        use tpm_resources::TpmVersion;
         use vmcore::save_restore::SavedStateRoot;
 
         const RSA_2K_MODULUS_SIZE: usize = 256;
@@ -1815,6 +1947,8 @@ mod save_restore {
             pub ppi_state: SavedPpiState,
             #[mesh(5)]
             pub tpm_state_blob: Vec<u8>,
+            #[mesh(6)]
+            pub version: Option<TpmVersion>,
             // Experimental fields to avoid breaking changes
             // TODO CVM: Remove the explicit numbering once live servicing design is finialized
             #[mesh(60)]
@@ -1829,7 +1963,12 @@ mod save_restore {
     #[derive(Error, Debug)]
     pub enum TpmRestoreError {
         #[error("failed to restore tpm library runtime state")]
-        TpmRuntimeLib(#[source] ms_tpm_20_ref::Error),
+        TpmRuntimeLib(#[source] TpmLibraryError),
+        #[error("saved TPM version {saved:?} does not match configured TPM version {configured:?}")]
+        VersionMismatch {
+            saved: TpmVersion,
+            configured: TpmVersion,
+        },
     }
 
     #[derive(Error, Debug)]
@@ -1917,10 +2056,11 @@ mod save_restore {
                 current_io_command: self.current_io_command.map(|x| x.0),
                 requested_locality: self.requested_locality,
                 ppi_state,
-                tpm_state_blob: self.tpm_engine_helper.tpm_engine.inner_mut().save_state(),
+                tpm_state_blob: self.tpm_engine_helper.tpm_engine.save_state(),
                 auth_value: self.auth_value,
                 keys,
                 allow_ak_cert_renewal: Some(self.allow_ak_cert_renewal),
+                version: Some(self.tpm_engine_helper.tpm_engine.version()),
             };
 
             Ok(saved_state)
@@ -1936,7 +2076,21 @@ mod save_restore {
                 auth_value,
                 keys,
                 allow_ak_cert_renewal,
+                version,
             } = state;
+
+            // Default to 138 for back compat
+            let saved_version = version.unwrap_or(TpmVersion::V138);
+            let configured_version = self.tpm_engine_helper.tpm_engine.version();
+            if saved_version != configured_version {
+                return Err(RestoreError::Other(
+                    TpmRestoreError::VersionMismatch {
+                        saved: saved_version,
+                        configured: configured_version,
+                    }
+                    .into(),
+                ));
+            }
 
             self.control_area = {
                 let state::SavedControlArea {
@@ -1986,7 +2140,6 @@ mod save_restore {
             self.requested_locality = requested_locality;
             self.tpm_engine_helper
                 .tpm_engine
-                .inner_mut()
                 .restore_state(tpm_state_blob)
                 .map_err(TpmRestoreError::TpmRuntimeLib)
                 .map_err(|e| RestoreError::Other(e.into()))?;
@@ -2056,6 +2209,7 @@ mod tests {
         }
     }
 
+    // TODO: Create version of this for V185
     #[async_test]
     async fn test_fix_corrupted_vmgs() {
         let tpm_state_blob = include_bytes!("../../test_data/vTpmState-corrupt.blob");
@@ -2068,6 +2222,7 @@ mod tests {
         let monotonic_timer = Box::new(|| std::time::Duration::new(0, 0));
 
         let mut tpm = Tpm::new(
+            TpmVersion::V138,
             TpmRegisterLayout::IoPort,
             gm,
             ppi_store,
@@ -2099,5 +2254,92 @@ mod tests {
             .find_nv_index(TPM_NV_INDEX_MITIGATED)
             .expect("find_nv_index should succeed")
             .expect("mitigation marker NV index present");
+    }
+
+    /// Legacy sub-32kB vTPM state is only supported by the 1.38 reference
+    /// implementation, so a newer TPM must refuse it rather than handing it to
+    /// a library that cannot interpret it.
+    #[async_test]
+    async fn test_legacy_nvram_size_rejected_for_v185() {
+        let Err(err) = new_test_tpm(TpmVersion::V185, Some(LEGACY_VTPM_SIZE), None).await else {
+            panic!("legacy nvram size must be rejected");
+        };
+
+        assert!(
+            matches!(
+                err.0,
+                TpmErrorKind::LegacyVtpmStateUnsupported {
+                    version: TpmVersion::V185,
+                    nvram_size: LEGACY_VTPM_SIZE,
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// A 16kB blob can be present even when the reported NVRAM size is 32kB,
+    /// due to a previous size-reporting bug, so the blob itself is gated too.
+    #[async_test]
+    async fn test_legacy_nvram_blob_rejected_for_v185() {
+        let Err(err) = new_test_tpm(
+            TpmVersion::V185,
+            Some(STANDARD_VTPM_SIZE),
+            Some(vec![0; LEGACY_VTPM_SIZE]),
+        )
+        .await
+        else {
+            panic!("legacy nvram blob must be rejected");
+        };
+
+        assert!(
+            matches!(
+                err.0,
+                TpmErrorKind::LegacyVtpmStateUnsupported {
+                    version: TpmVersion::V185,
+                    nvram_size: LEGACY_VTPM_SIZE,
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// The 1.38 implementation must keep accepting legacy state.
+    #[async_test]
+    async fn test_legacy_nvram_size_allowed_for_v138() {
+        assert!(
+            new_test_tpm(TpmVersion::V138, Some(LEGACY_VTPM_SIZE), None)
+                .await
+                .is_ok(),
+            "legacy nvram size is supported by 1.38"
+        );
+    }
+
+    async fn new_test_tpm(
+        version: TpmVersion,
+        nvram_size: Option<usize>,
+        nvram_blob: Option<Vec<u8>>,
+    ) -> Result<Tpm, TpmError> {
+        let mut nvram_store = EphemeralNonVolatileStore::new_boxed();
+        if let Some(blob) = nvram_blob {
+            nvram_store.persist(blob).await.unwrap();
+        }
+
+        Tpm::new(
+            version,
+            TpmRegisterLayout::IoPort,
+            GuestMemory::allocate(0x10000),
+            EphemeralNonVolatileStore::new_boxed(),
+            nvram_store,
+            nvram_size,
+            Box::new(|| std::time::Duration::new(0, 0)),
+            false,
+            false,
+            TpmAkCertType::None,
+            None,
+            None,
+            false,
+            guid::guid!("00000000-0000-0000-0000-000000000000"),
+        )
+        .await
     }
 }

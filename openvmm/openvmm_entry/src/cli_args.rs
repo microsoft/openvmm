@@ -878,9 +878,14 @@ Examples:
     #[clap(long, requires("uefi"))]
     pub disable_frontpage: bool,
 
-    /// add a vtpm device
-    #[clap(long)]
-    pub tpm: bool,
+    /// add a vtpm device, optionally selecting version 138 or 185 (default: 185)
+    #[clap(
+        long,
+        value_name = "VERSION",
+        num_args = 0..=1,
+        default_missing_value = "185"
+    )]
+    pub tpm: Option<TpmVersionCli>,
 
     /// the mesh worker host name.
     ///
@@ -1593,6 +1598,17 @@ impl FromStr for VirtioPmemArgs {
 pub enum SecureBootTemplateCli {
     Windows,
     UefiCa,
+}
+
+/// TPM reference implementation version selected by `--tpm`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum TpmVersionCli {
+    /// TPM reference implementation version 1.38.
+    #[value(name = "138", alias = "1.38")]
+    V138,
+    /// TPM reference implementation version 1.85.
+    #[value(name = "185", alias = "1.85")]
+    V185,
 }
 
 fn parse_memory(s: &str) -> anyhow::Result<u64> {
@@ -5180,6 +5196,30 @@ mod tests {
     fn test_pidfile_option_parsed() {
         let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
         assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
+
+    #[test]
+    fn test_tpm_version_option() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert_eq!(opt.tpm, None);
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm", "--uefi"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
+        assert!(opt.uefi);
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm", "138"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm=185"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm", "1.38"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
+
+        assert!(Options::try_parse_from(["openvmm", "--tpm", "137"]).is_err());
     }
 
     #[test]
