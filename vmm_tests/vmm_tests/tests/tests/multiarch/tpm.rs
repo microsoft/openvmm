@@ -1247,6 +1247,9 @@ pub(crate) async fn use_hw_unseal_impl<T, S, U: PetriVmmBackend>(
 /// Unlike the 1.38 variant, this does not start from a legacy 16k vTPM blob:
 /// such state is only supported by the 1.38 reference implementation, so this
 /// test uses a freshly provisioned (32k) VMGS instead.
+///
+/// TODO: v1.85 is expected to provision a 128k blob; revisit this once the
+/// larger NVRAM size is confirmed to be fully supported.
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],

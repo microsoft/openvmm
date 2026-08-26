@@ -1453,13 +1453,17 @@ fn guest_memory_access_self_test(
 }
 
 /// Write a diagnostic provisioning marker to a newly-created VMGS file.
-async fn write_provisioning_marker(vmgs: &mut Vmgs) -> anyhow::Result<()> {
+async fn write_provisioning_marker(vmgs: &mut Vmgs, tpm_version: TpmVersion) -> anyhow::Result<()> {
     let marker = VmgsProvisioningMarker {
         provisioner: VmgsProvisioner::OpenHcl,
         reason: vmgs
             .provisioning_reason()
             .unwrap_or(VmgsProvisioningReason::Unknown),
-        tpm_version: tpm_protocol::TPM_DEFAULT_VERSION.to_string(),
+        tpm_version: match tpm_version {
+            TpmVersion::V138 => tpm_protocol::TPM_V138_VERSION,
+            TpmVersion::V185 => tpm_protocol::TPM_V185_VERSION,
+        }
+        .to_string(),
         tpm_nvram_size: tpm_device::DEFAULT_VTPM_SIZE,
         akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
         akcert_attrs: format!(
@@ -1873,9 +1877,14 @@ async fn new_underhill_vm(
         }
     };
 
+    let tpm_version = match dps.general.tpm_version {
+        get_protocol::dps_json::TpmVersion::V138 => TpmVersion::V138,
+        get_protocol::dps_json::TpmVersion::V185 => TpmVersion::V185,
+    };
+
     if let Some((_, ref mut vmgs)) = vmgs {
         if vmgs.was_provisioned_this_boot() {
-            let result = write_provisioning_marker(vmgs).await;
+            let result = write_provisioning_marker(vmgs, tpm_version).await;
 
             if let Err(err) = result {
                 tracing::warn!(
@@ -3062,10 +3071,7 @@ async fn new_underhill_vm(
             name: "tpm".to_owned(),
             resource: RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
-                    version: match dps.general.tpm_version {
-                        get_protocol::dps_json::TpmVersion::V138 => TpmVersion::V138,
-                        get_protocol::dps_json::TpmVersion::V185 => TpmVersion::V185,
-                    },
+                    version: tpm_version,
                     ppi_store,
                     nvram_store,
                     refresh_tpm_seeds: platform_attestation_data
