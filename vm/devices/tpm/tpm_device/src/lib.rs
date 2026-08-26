@@ -457,14 +457,6 @@ pub enum TpmErrorKind {
         version: TpmVersion,
         nvram_size: usize,
     },
-    #[error(
-        "TPM {version:?} requires exactly {expected} bytes of vTPM state, but got {nvram_size} bytes"
-    )]
-    MismatchedVtpmSize {
-        version: TpmVersion,
-        nvram_size: usize,
-        expected: usize,
-    },
 }
 
 struct TpmPlatformCallbacks {
@@ -2353,24 +2345,17 @@ mod tests {
     }
 
     /// The 1.85 library is compiled for a 128kB region. A 32kB one does not fail
-    /// cleanly inside the library, so it must be rejected here.
+    /// cleanly inside the library, so it must be rejected rather than used.
     #[async_test]
     async fn test_standard_nvram_size_rejected_for_v185() {
         let Err(err) = new_test_tpm(TpmVersion::V185, Some(STANDARD_VTPM_SIZE), None).await else {
             panic!("32kB nvram size must be rejected for 1.85");
         };
 
-        assert!(
-            matches!(
-                err.0,
-                TpmErrorKind::MismatchedVtpmSize {
-                    version: TpmVersion::V185,
-                    nvram_size: STANDARD_VTPM_SIZE,
-                    expected: LARGE_VTPM_SIZE,
-                }
-            ),
-            "unexpected error: {err:?}"
-        );
+        match err.0 {
+            TpmErrorKind::InstantiateTpm(ref e) if e.is_mismatched_blob_size() => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     async fn new_test_tpm(
