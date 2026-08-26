@@ -80,27 +80,21 @@ mod tests {
     #[derive(Default)]
     struct TestGic {
         level: Mutex<Vec<(u32, bool)>>,
-        pulses: Mutex<Vec<u32>>,
     }
 
     impl ControlGic for TestGic {
         fn set_spi_irq(&self, irq_id: u32, high: bool) {
             self.level.lock().push((irq_id, high));
         }
-
-        fn pulse_spi_irq(&self, irq_id: u32) {
-            self.pulses.lock().push(irq_id);
-        }
     }
 
     #[test]
-    fn msi_delivery_uses_spi_pulse_semantics() {
+    fn msi_delivery_pulses_spi_line() {
         let gic = Arc::new(TestGic::default());
         let device = GicSoftwareDevice::new(gic.clone());
 
         device.signal_msi(None, 0, 40);
 
-        assert_eq!(*gic.pulses.lock(), [40]);
-        assert!(gic.level.lock().is_empty());
+        assert_eq!(*gic.level.lock(), [(40, true), (40, false)]);
     }
 }

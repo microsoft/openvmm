@@ -36,11 +36,12 @@ pub trait ControlGic: Send + Sync {
 
     /// Delivers an edge-like GICv3 SPI without leaving a line asserted.
     ///
-    /// The default delegates to `set_spi_irq` for host-backed implementations.
-    /// Software models that retain line state should override this to latch
-    /// Pending without changing the line level.
+    /// The default pulses host-backed line interfaces by asserting and then
+    /// deasserting. Software models that retain line state should override this
+    /// to latch Pending without changing the line level.
     fn pulse_spi_irq(&self, irq_id: u32) {
         self.set_spi_irq(irq_id, true);
+        self.set_spi_irq(irq_id, false);
     }
 }
 
