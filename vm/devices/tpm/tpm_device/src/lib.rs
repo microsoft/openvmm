@@ -248,7 +248,7 @@ impl TpmLibraryError {
             Self::V138(ms_tpm_20_ref::Error::NvMem(
                 ms_tpm_20_ref::NvError::MismatchedBlobSize
             )) | Self::V185(ms_tcg_tpm_sys::Error::NvMem(
-                ms_tcg_tpm_sys::NvError::MismatchedBlobSize
+                ms_tcg_tpm_sys::NvError::MismatchedBlobSize { .. }
             ))
         )
     }
