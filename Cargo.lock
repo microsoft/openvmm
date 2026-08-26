@@ -4064,6 +4064,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipmi_kcs"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "vmcore",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

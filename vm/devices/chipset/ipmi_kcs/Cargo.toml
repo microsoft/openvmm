@@ -1,0 +1,18 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "ipmi_kcs"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mesh.workspace = true
+thiserror.workspace = true
+vmcore.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

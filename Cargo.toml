@@ -30,6 +30,8 @@ members = [
   "vmm_tests/vmm_perf",
   # hyper-v tooling
   "hyperv/tools/hypestv",
+  # standalone device crates
+  "vm/devices/chipset/ipmi_kcs",
   # fuzzing
   "support/inspect/fuzz",
   "support/mesh/mesh_protobuf/fuzz",
