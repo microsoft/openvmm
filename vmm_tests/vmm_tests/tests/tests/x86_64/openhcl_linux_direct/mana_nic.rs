@@ -145,7 +145,12 @@ async fn mana_nic_vf_reconfig(
     let sh = agent.unix_shell();
 
     mana.inject_vf_reset(revoke_vtl0_vf).await?;
-    cmd!(sh, "sleep 5").run().await?;
+    cmd!(
+        sh,
+        "timeout 30 sh -c 'until [ \"$(basename \"$(readlink /sys/class/net/eth0/master)\")\" = eth1 ] && [ \"$(cat /sys/class/net/eth1/carrier)\" = 1 ] && ping -c 1 -W 1 -I eth1 10.0.0.1 >/dev/null 2>&1; do sleep 1; done'"
+    )
+    .run()
+    .await?;
     validate_mana_nic(&agent, true).await?;
 
     mana.shutdown().await?;
