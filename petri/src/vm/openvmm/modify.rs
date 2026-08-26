@@ -696,4 +696,11 @@ impl ManaTestControl {
             )
             .await
     }
+
+    /// Shuts down test control after all preceding requests have completed.
+    pub async fn shutdown(self) -> Result<(), mesh::rpc::RpcError> {
+        self.request_send
+            .call(|rpc| rpc, GdmaTestRequest::Shutdown)
+            .await
+    }
 }

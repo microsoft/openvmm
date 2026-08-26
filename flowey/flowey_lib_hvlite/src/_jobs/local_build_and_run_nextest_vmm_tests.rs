@@ -283,7 +283,7 @@ impl SimpleFlowNode for Node {
                     target: target.clone(),
                     profile: CommonProfile::from_release(release),
                     // FIXME: this relies on openvmm default features
-                    features: [].into(),
+                    features: [crate::build_openvmm::OpenvmmFeature::TestUtilities].into(),
                 },
                 openvmm: v,
             });

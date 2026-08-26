@@ -128,6 +128,7 @@ pub mod test_helpers {
     use super::VportConfig;
     use super::queues;
     use gdma_resources::VportDefinition;
+    use std::sync::Arc;
     use vm_resource::ResourceResolver;
 
     /// Resolves vport definitions for a test GDMA device.
@@ -140,8 +141,12 @@ pub mod test_helpers {
 
     /// Returns a function that injects EQEs into the hardware channel EQ.
     pub fn hwc_eq_injector(device: &GdmaDevice) -> impl Fn(u8, &[u8]) + Send + Sync + 'static {
-        let queues = device.queues.clone();
-        move |ty, data| queues.post_eq(queues::ID_OFFSET as u32, ty, data)
+        let queues = Arc::downgrade(&device.queues);
+        move |ty, data| {
+            if let Some(queues) = queues.upgrade() {
+                queues.post_eq(queues::ID_OFFSET as u32, ty, data)
+            }
+        }
     }
 }
 

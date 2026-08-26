@@ -25,6 +25,7 @@ default = [
 gdb = ["openvmm_resources/gdb"]
 vendored_crypto = ["crypto/vendored"]
 tpm = ["openvmm_resources/tpm"]
+test_utilities = ["openvmm_resources/test_utilities"]
 virt_hvf = ["openvmm_resources/virt_hvf", "openvmm_hypervisors/virt_hvf"]
 virt_kvm = ["openvmm_resources/virt_kvm", "openvmm_hypervisors/virt_kvm"]
 virt_mshv = ["openvmm_resources/virt_mshv", "openvmm_hypervisors/virt_mshv"]

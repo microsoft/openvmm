@@ -28,9 +28,10 @@ use zerocopy::IntoBytes;
 
 /// Resource resolver for [`GdmaTestDeviceHandle`].
 ///
-/// Creates a standard GDMA device and spawns a detached background task that
-/// translates test requests into EQEs injected directly into the HWC EQ via
-/// [`gdma::test_helpers::hwc_eq_injector`].
+/// Creates a standard GDMA device and spawns a background task that translates
+/// test requests into EQEs injected directly into the HWC EQ via
+/// [`gdma::test_helpers::hwc_eq_injector`]. The task exits when test control is
+/// shut down.
 pub struct GdmaTestDeviceResolver;
 
 declare_static_async_resolver! {
@@ -61,6 +62,7 @@ impl EncodedTestRequest {
 
 fn encode_request(request: GdmaTestRequest) -> EncodedTestRequest {
     match request {
+        GdmaTestRequest::Shutdown => unreachable!("shutdown requests are handled by the loop"),
         GdmaTestRequest::VfReset { revoke_vtl0_vf } => {
             EncodedTestRequest::VfReset(EqeVfReset::new().with_revoke_vtl0_vf(revoke_vtl0_vf))
         }
@@ -113,11 +115,19 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaTestDeviceHandle> for GdmaTes
             .simple()
             .spawn("gdma-test-control", async move {
                 while let Some(rpc) = request_recv.next().await {
+                    let mut shutdown = false;
                     rpc.handle(async |request| {
-                        let request = encode_request(request);
-                        inject_eqe(request.eqe_type(), request.data())
+                        if matches!(request, GdmaTestRequest::Shutdown) {
+                            shutdown = true;
+                        } else {
+                            let request = encode_request(request);
+                            inject_eqe(request.eqe_type(), request.data())
+                        }
                     })
                     .await;
+                    if shutdown {
+                        break;
+                    }
                 }
             })
             .detach();

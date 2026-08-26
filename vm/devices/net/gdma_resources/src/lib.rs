@@ -41,6 +41,8 @@ impl ResourceId<PciDeviceHandleKind> for GdmaTestDeviceHandle {
 /// A test request for an emulated GDMA device.
 #[derive(MeshPayload)]
 pub enum GdmaTestRequest {
+    /// Shut down the test-control channel.
+    Shutdown,
     /// Request that the VF be reconfigured.
     VfReset {
         /// Whether OpenHCL should revoke the VTL0 VF during reset.

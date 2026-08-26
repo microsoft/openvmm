@@ -645,6 +645,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::CREATE_RAM_GPA_RANGE => self.handle_create_ram_gpa_range(message_buf)?,
             HostRequests::RESET_RAM_GPA_RANGE => self.handle_reset_ram_gpa_range(message_buf)?,
             HostRequests::LOAD_FIRMWARE => self.handle_load_firmware(message_buf)?,
+            #[cfg(feature = "test_utilities")]
+            HostRequests::VPCI_DEVICE_CONTROL => self.handle_vpci_device_control(message_buf)?,
             _ => {
                 tracing::error!(message_id = ?header.message_id(), "unexpected message");
                 return Err(Error::InvalidSequence);

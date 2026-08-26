@@ -1008,6 +1008,12 @@ impl PetriVmConfigSetupCore<'_> {
                         // data on the floor during boot.
                         let mut vtl0_cmdline = format!("rdinit=/bin/sh {vsock_blacklist}");
                         if let Some(additional_command_line) = vtl0_kernel_command_line {
+                            anyhow::ensure!(
+                                !additional_command_line
+                                    .chars()
+                                    .any(|c| matches!(c, '\'' | '"')),
+                                "VTL0 kernel command line cannot contain quotes"
+                            );
                             vtl0_cmdline.push(' ');
                             vtl0_cmdline.push_str(additional_command_line);
                         }
