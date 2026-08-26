@@ -1,11 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Download the mutable VMM.Perf runtime package.
+//! Download the pinned VMM.Perf runtime package.
 
 use crate::common::CommonArch;
+use anyhow::Context as _;
 use flowey::node::prelude::*;
+use sha2::Digest as _;
+use sha2::Sha256;
 use std::collections::BTreeMap;
+use std::io::Read as _;
+use std::path::Path;
+
+// Update the version and both hashes together from the latest successful
+// definition 200014 build whose source branch is exactly refs/heads/main.
+const VMM_PERF_RUNTIME_VERSION: &str = "20260820.6";
+const VMM_PERF_RUNTIME_X64_SHA256: &str =
+    "f21aadb6aee15ba67b2abd5abe352af9839476b817d45f8460bcfd0bf330eda4";
+const VMM_PERF_RUNTIME_ARM64_SHA256: &str =
+    "55dc87439f339f082ed272a5e2c20626ee0ac7679bf5530545dbf76cd2218c7a";
 
 flowey_request! {
     pub enum Request {
@@ -46,12 +59,14 @@ impl FlowNode for Node {
         let persistent_dir = ctx.persistent_dir();
 
         for (arch, outputs) in requests_by_arch {
-            let filename = match arch {
-                CommonArch::X86_64 => "vmm-perf-linux-x64.tar.gz",
-                CommonArch::Aarch64 => "vmm-perf-linux-arm64.tar.gz",
+            let (filename, expected_sha256) = match arch {
+                CommonArch::X86_64 => ("vmm-perf-linux-x64.tar.gz", VMM_PERF_RUNTIME_X64_SHA256),
+                CommonArch::Aarch64 => {
+                    ("vmm-perf-linux-arm64.tar.gz", VMM_PERF_RUNTIME_ARM64_SHA256)
+                }
             };
             let url = format!(
-                "https://vmmperfartifactpublic.blob.core.windows.net/perfpackage/stable/{filename}"
+                "https://vmmperfartifactpublic.blob.core.windows.net/perfpackage/{VMM_PERF_RUNTIME_VERSION}/{filename}"
             );
 
             ctx.emit_rust_step(
@@ -68,23 +83,52 @@ impl FlowNode for Node {
                     let outputs = outputs.claim(ctx);
                     move |rt| {
                         let cache_dir = if let Some(dir) = persistent_dir {
-                            rt.read(dir).join("vmm-perf")
+                            rt.read(dir)
                         } else {
-                            rt.sh.current_dir().join("vmm-perf")
-                        };
+                            rt.sh.current_dir()
+                        }
+                        .join("vmm-perf")
+                        .join(VMM_PERF_RUNTIME_VERSION);
                         fs_err::create_dir_all(&cache_dir)?;
                         let archive = cache_dir.join(filename);
                         let azcopy = rt.read(azcopy);
 
-                        flowey::shell_cmd!(
-                            rt,
-                            "{azcopy} copy
-                                {url}
-                                {archive}
-                                --overwrite ifSourceNewer
-                                --skip-version-check"
-                        )
-                        .run()?;
+                        if archive.exists()
+                            && let Err(err) = verify_sha256(&archive, expected_sha256)
+                        {
+                            log::warn!(
+                                "discarding invalid cached VMM.Perf runtime {}: {err:#}",
+                                archive.display()
+                            );
+                            fs_err::remove_file(&archive).with_context(|| {
+                                format!(
+                                    "failed to remove invalid cached VMM.Perf runtime {}",
+                                    archive.display()
+                                )
+                            })?;
+                        }
+
+                        if !archive.exists() {
+                            flowey::shell_cmd!(
+                                rt,
+                                "{azcopy} copy
+                                    {url}
+                                    {archive}
+                                    --overwrite ifSourceNewer
+                                    --skip-version-check"
+                            )
+                            .run()?;
+                        }
+
+                        verify_sha256(&archive, expected_sha256).or_else(|err| {
+                            fs_err::remove_file(&archive).with_context(|| {
+                                format!(
+                                    "failed to remove VMM.Perf runtime with an invalid checksum: {}",
+                                    archive.display()
+                                )
+                            })?;
+                            Err(err)
+                        })?;
 
                         for output in outputs {
                             rt.write(output, &archive.absolute()?);
@@ -95,6 +139,57 @@ impl FlowNode for Node {
             );
         }
 
+        Ok(())
+    }
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
+    let mut file = fs_err::File::open(path)
+        .with_context(|| format!("failed to open VMM.Perf runtime {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read VMM.Perf runtime {}", path.display()))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    let actual = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    anyhow::ensure!(
+        actual == expected,
+        "VMM.Perf runtime SHA-256 mismatch for {}: expected {expected}, found {actual}",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_sha256;
+
+    #[test]
+    fn verifies_runtime_sha256() -> anyhow::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let archive = scratch.path().join("runtime.tar.gz");
+        std::fs::write(&archive, [])?;
+
+        verify_sha256(
+            &archive,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )?;
+        let error = verify_sha256(
+            &archive,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("SHA-256 mismatch"));
         Ok(())
     }
 }

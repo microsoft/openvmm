@@ -29,7 +29,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::build_openvmm::Node>();
         ctx.import::<crate::build_vmm_perf::Node>();
-        ctx.import::<crate::_jobs::run_vmm_perf::Node>();
+        ctx.import::<crate::_jobs::setup_and_run_vmm_perf::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -64,7 +64,7 @@ impl SimpleFlowNode for Node {
                 [done],
             );
         } else {
-            ctx.req(crate::_jobs::run_vmm_perf::Params {
+            ctx.req(crate::_jobs::setup_and_run_vmm_perf::Params {
                 label: "vmm-perf".into(),
                 runner,
                 openvmm,

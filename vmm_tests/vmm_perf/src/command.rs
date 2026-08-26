@@ -217,11 +217,12 @@ pub(crate) fn run_command(
         .stderr
         .take()
         .context("VMM.Perf VirtualClient stderr was not piped")?;
+    let stdout_log = Arc::clone(&log_file);
     let stderr_log = Arc::clone(&log_file);
 
     std::thread::scope(|scope| {
         let stdout_task =
-            scope.spawn(move || log_process_output("stdout", stdout, config_name, log_file));
+            scope.spawn(move || log_process_output("stdout", stdout, config_name, stdout_log));
         let stderr_task =
             scope.spawn(move || log_process_output("stderr", stderr, config_name, stderr_log));
         let status = child
@@ -239,9 +240,16 @@ pub(crate) fn run_command(
                 "VMM.Perf VirtualClient stderr logging thread panicked"
             )),
         };
+        let flush_result = log_file.lock().flush().with_context(|| {
+            format!(
+                "failed to flush VMM.Perf console log {}",
+                console_log_path.display()
+            )
+        });
         let status = status?;
         stdout_result?;
         stderr_result?;
+        flush_result?;
         Ok(status)
     })
 }
@@ -275,9 +283,6 @@ fn log_process_output(
         let mut log_file = log_file.lock();
         writeln!(log_file, "[{stream_name}] {line}")
             .with_context(|| format!("failed to write VMM.Perf {stream_name} console output"))?;
-        log_file.flush().with_context(|| {
-            format!("failed to flush VMM.Perf {stream_name} console log output")
-        })?;
     }
 }
 

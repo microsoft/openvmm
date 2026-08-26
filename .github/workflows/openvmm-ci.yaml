@@ -6434,17 +6434,17 @@ jobs:
     - name: download VMM.Perf runtime (x64)
       run: |-
         flowey e 28 flowey_lib_hvlite::download_vmm_perf_runtime 0
-        flowey v 28 'flowey_lib_hvlite::_jobs::run_vmm_perf:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        flowey v 28 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
         ${{ runner.temp }}
         EOF
-        flowey e 28 flowey_lib_hvlite::_jobs::run_vmm_perf 1
-        flowey e 28 flowey_lib_hvlite::_jobs::run_vmm_perf 2
-        flowey e 28 flowey_lib_hvlite::_jobs::run_vmm_perf 3
+        flowey e 28 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 1
+        flowey e 28 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 2
+        flowey e 28 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 3
       shell: bash
     - name: run VMM.Perf
       run: |-
         flowey e 28 flowey_lib_hvlite::run_vmm_perf 0
-        flowey e 28 flowey_lib_hvlite::_jobs::run_vmm_perf 4
+        flowey e 28 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 4
         flowey e 28 flowey_lib_common::publish_test_results 3
         flowey e 28 flowey_lib_common::publish_test_results 4
         flowey v 28 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar2
@@ -6458,7 +6458,7 @@ jobs:
       name: 'publish test results: x64-linux-amd-kvm-vmm-perf (results)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report VMM.Perf result
-      run: flowey e 28 flowey_lib_hvlite::_jobs::run_vmm_perf 5
+      run: flowey e 28 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 5
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 28 flowey_lib_common::cache 3
@@ -6606,17 +6606,17 @@ jobs:
     - name: download VMM.Perf runtime (x64)
       run: |-
         flowey e 29 flowey_lib_hvlite::download_vmm_perf_runtime 0
-        flowey v 29 'flowey_lib_hvlite::_jobs::run_vmm_perf:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        flowey v 29 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
         ${{ runner.temp }}
         EOF
-        flowey e 29 flowey_lib_hvlite::_jobs::run_vmm_perf 1
-        flowey e 29 flowey_lib_hvlite::_jobs::run_vmm_perf 2
-        flowey e 29 flowey_lib_hvlite::_jobs::run_vmm_perf 3
+        flowey e 29 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 1
+        flowey e 29 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 2
+        flowey e 29 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 3
       shell: bash
     - name: run VMM.Perf
       run: |-
         flowey e 29 flowey_lib_hvlite::run_vmm_perf 0
-        flowey e 29 flowey_lib_hvlite::_jobs::run_vmm_perf 4
+        flowey e 29 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 4
         flowey e 29 flowey_lib_common::publish_test_results 3
         flowey e 29 flowey_lib_common::publish_test_results 4
         flowey v 29 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar2
@@ -6630,7 +6630,7 @@ jobs:
       name: 'publish test results: x64-linux-intel-mshv-vmm-perf (results)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report VMM.Perf result
-      run: flowey e 29 flowey_lib_hvlite::_jobs::run_vmm_perf 5
+      run: flowey e 29 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 5
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 29 flowey_lib_common::cache 3

@@ -229,6 +229,10 @@ fn validate_name(name: &str) -> anyhow::Result<String> {
         "VMM.Perf configuration name cannot be empty"
     );
     anyhow::ensure!(
+        !matches!(name, "." | ".."),
+        "VMM.Perf configuration name cannot be '.' or '..'"
+    );
+    anyhow::ensure!(
         name.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
         "VMM.Perf configuration name {name:?} may contain only ASCII letters, numbers, '-', '_', or '.'"
@@ -250,6 +254,7 @@ mod tests {
     use super::ConfigSelection;
     use super::VmmPerfProfile;
     use super::selected_configs;
+    use super::validate_name;
     use crate::host::HostCapacity;
     use std::collections::BTreeMap;
     use test_with_tracing::test;
@@ -335,6 +340,15 @@ mod tests {
 
         assert_eq!(configs[0].parameters["CpuCount"], "6");
         assert!(!configs[0].parameters.contains_key(" CpuCount "));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_special_path_component_names() -> anyhow::Result<()> {
+        for name in [".", "..", " . ", " .. "] {
+            assert!(validate_name(name).is_err());
+        }
+        assert_eq!(validate_name("config..large")?, "config..large");
         Ok(())
     }
 

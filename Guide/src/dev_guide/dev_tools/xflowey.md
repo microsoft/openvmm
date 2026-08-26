@@ -19,7 +19,7 @@ Some particularly notable pipelines:
 
 Run all Linux x64 VMM.Perf profiles with:
 
-```text
+```bash
 cargo xflowey vmm-perf
 ```
 
@@ -29,13 +29,13 @@ different root directory with the same `temp` and `results` layout.
 
 To run one profile:
 
-```text
+```bash
 cargo xflowey vmm-perf --profile fio
 ```
 
 To run explicit VM sizes:
 
-```text
+```bash
 cargo xflowey vmm-perf \
   --profile fio \
   --vmm-perf-vmsizes 'CpuCount=2,MemoryMB=4096' \

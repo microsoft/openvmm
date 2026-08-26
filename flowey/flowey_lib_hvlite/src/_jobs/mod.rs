@@ -37,5 +37,5 @@ pub mod local_run_nextest_vmm_tests;
 pub mod local_update_cca_emu;
 pub mod publish_openvmm_gh_release;
 pub mod publish_vmgstool_gh_release;
-pub mod run_vmm_perf;
+pub mod setup_and_run_vmm_perf;
 pub mod test_local_flowey_build_igvm;

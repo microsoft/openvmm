@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Run and publish a standalone VMM.Perf job.
+//! Set up, run, and publish a standalone VMM.Perf job.
 
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_vmm_perf::VmmPerfOutput;

@@ -223,8 +223,8 @@ impl IntoPipeline for CheckinGatesCli {
         );
         let mut use_vmm_perf_runner_gnu_x64 = None;
         let mut use_vmm_perf_runner_musl_x64 = None;
-        let mut use_vmm_perf_openvmm_gnu = None;
-        let mut use_vmm_perf_openvmm_musl = None;
+        let mut use_vmm_perf_openvmm_gnu_x64 = None;
+        let mut use_vmm_perf_openvmm_musl_x64 = None;
 
         // We need to maintain a list of all jobs, so we can hang the "all good"
         // job off of them. This is requires because github status checks only allow
@@ -816,8 +816,8 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_vmm_tests_archive_musl.clone());
                     use_vmm_perf_runner_gnu_x64 = Some(use_vmm_perf_gnu);
                     use_vmm_perf_runner_musl_x64 = Some(use_vmm_perf_musl);
-                    use_vmm_perf_openvmm_gnu = Some(use_openvmm.clone());
-                    use_vmm_perf_openvmm_musl = Some(use_openvmm_musl.clone());
+                    use_vmm_perf_openvmm_gnu_x64 = Some(use_openvmm.clone());
+                    use_vmm_perf_openvmm_musl_x64 = Some(use_openvmm_musl.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_linux_aarch64_tcg.use_openvmm =
@@ -1814,9 +1814,9 @@ impl IntoPipeline for CheckinGatesCli {
                 use_vmm_perf_runner_gnu_x64.context("missing x64 Linux GNU VMM.Perf runner")?;
             let runner_musl =
                 use_vmm_perf_runner_musl_x64.context("missing x64 Linux MUSL VMM.Perf runner")?;
-            let openvmm_gnu = use_vmm_perf_openvmm_gnu
+            let openvmm_gnu = use_vmm_perf_openvmm_gnu_x64
                 .context("missing x64 Linux GNU OpenVMM artifact for VMM.Perf")?;
-            let openvmm_musl = use_vmm_perf_openvmm_musl
+            let openvmm_musl = use_vmm_perf_openvmm_musl_x64
                 .context("missing x64 Linux MUSL OpenVMM artifact for VMM.Perf")?;
             for (label, platform, pool, openvmm, runner, hugetlb_pages) in [
                 (
@@ -1845,17 +1845,19 @@ impl IntoPipeline for CheckinGatesCli {
                     .gh_set_pool(pool)
                     .with_timeout_in_minutes(120)
                     .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
-                    .dep_on(|ctx| flowey_lib_hvlite::_jobs::run_vmm_perf::Params {
-                        label: format!("{label}-vmm-perf"),
-                        runner: ctx.use_typed_artifact(&runner),
-                        openvmm: ctx.use_typed_artifact(&openvmm),
-                        profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
-                        vm_sizes_json: None,
-                        parameters_json: None,
-                        root_dir: None,
-                        hugetlb_2mb_overcommit_pages: hugetlb_pages,
-                        done: ctx.new_done_handle(),
-                    })
+                    .dep_on(
+                        |ctx| flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf::Params {
+                            label: format!("{label}-vmm-perf"),
+                            runner: ctx.use_typed_artifact(&runner),
+                            openvmm: ctx.use_typed_artifact(&openvmm),
+                            profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
+                            vm_sizes_json: None,
+                            parameters_json: None,
+                            root_dir: None,
+                            hugetlb_2mb_overcommit_pages: hugetlb_pages,
+                            done: ctx.new_done_handle(),
+                        },
+                    )
                     .finish();
                 all_jobs.push(job);
             }
