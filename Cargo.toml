@@ -559,7 +559,7 @@ x509-cert = { version = "0.3.0-rc.4", default-features = false }
 # TPM 1.38
 ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
 # TPM 1.85
-ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "88e11179dc5bd6e77e4917f8dd69bacf7076ae99", default-features = false }
+ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "508a8d045eddd733c85cb8caa05695a2883164ff", default-features = false }
 
 # --- Data structures / collections ---
 arrayvec = { version = "0.7", default-features = false }
