@@ -97,13 +97,12 @@ fn socket_family(socket: &socket2::Socket) -> Result<IpVersion, consomme::BindEr
 }
 
 pub struct ConsommeEndpoint {
-    endpoint_state: Arc<Mutex<Option<EndpointState>>>,
+    endpoint_state: Arc<Mutex<EndpointState>>,
     /// In-process state updates, which cannot cross a process boundary.
     state_update_recv: Option<mesh::Receiver<StateUpdateRequest>>,
     /// Serializable requests originating either in-process or remotely.
     request_recv: Option<mesh::Receiver<ConsommeRequest>>,
-    /// Requests buffered while the queue owns the consomme state, applied in
-    /// order on the next queue restart.
+    /// Requests buffered until an endpoint queue is available.
     pending: VecDeque<PendingRequest>,
 }
 
@@ -151,6 +150,12 @@ pub struct PortForwardConfig {
 struct EndpointState {
     consomme: Consomme,
     port_forwards: Vec<PortForwardConfig>,
+    queue_runtime: Option<QueueRuntime>,
+}
+
+struct QueueRuntime {
+    driver: Arc<dyn Driver>,
+    wake_send: mesh::Sender<()>,
 }
 
 impl ConsommeEndpoint {
@@ -199,10 +204,11 @@ impl ConsommeEndpoint {
         state_update_recv: Option<mesh::Receiver<StateUpdateRequest>>,
     ) -> Self {
         ConsommeEndpoint {
-            endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
+            endpoint_state: Arc::new(Mutex::new(EndpointState {
                 consomme: Consomme::new(state),
                 port_forwards: ports,
-            }))),
+                queue_runtime: None,
+            })),
             state_update_recv,
             request_recv,
             pending: VecDeque::new(),
@@ -227,15 +233,47 @@ impl ConsommeEndpoint {
         });
         received
     }
+
+    /// Applies all pending requests once a queue has supplied an I/O driver.
+    fn process_pending(&mut self) -> bool {
+        if self.pending.is_empty() {
+            return false;
+        }
+
+        let wake_send = {
+            let mut state = self.endpoint_state.lock();
+            let Some(queue_runtime) = &state.queue_runtime else {
+                return false;
+            };
+            let driver = queue_runtime.driver.clone();
+            let wake_send = queue_runtime.wake_send.clone();
+            let pending = std::mem::take(&mut self.pending);
+            let mut client = ClientNoPool {
+                driver: driver.as_ref(),
+            };
+            let mut consomme = state.consomme.access(&mut client);
+            for request in pending {
+                match request {
+                    PendingRequest::Request(request) => process_request(&mut consomme, request),
+                    PendingRequest::StateUpdate(rpc) => {
+                        rpc.handle_sync(|f| {
+                            f(consomme.get_mut().params_mut());
+                            consomme.get_mut().clear_local_addr_map();
+                            consomme.update_dns_nameservers()
+                        });
+                    }
+                }
+            }
+            wake_send
+        };
+        wake_send.send(());
+        true
+    }
 }
 
 impl InspectMut for ConsommeEndpoint {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        if let Some(consomme) = &mut *self.endpoint_state.lock() {
-            consomme.consomme.inspect_mut(req);
-        } else {
-            req.respond();
-        }
+        self.endpoint_state.lock().consomme.inspect_mut(req);
     }
 }
 
@@ -431,9 +469,18 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     ) -> anyhow::Result<()> {
         assert_eq!(config.len(), 1);
         let config = config.into_iter().next().unwrap();
+        let driver: Arc<dyn Driver> = Arc::from(config.driver);
+        let (wake_send, wake_recv) = mesh::channel();
+        {
+            let mut state = self.endpoint_state.lock();
+            assert!(state.queue_runtime.is_none(), "queue is already active");
+            state.queue_runtime = Some(QueueRuntime {
+                driver: driver.clone(),
+                wake_send,
+            });
+        }
         let mut queue = Box::new(ConsommeQueue {
-            slot: self.endpoint_state.clone(),
-            endpoint_state: self.endpoint_state.lock().take(),
+            endpoint_state: self.endpoint_state.clone(),
             state: QueueState {
                 rx_avail: VecDeque::new(),
                 rx_ready: VecDeque::new(),
@@ -442,10 +489,10 @@ impl net_backend::Endpoint for ConsommeEndpoint {
                 tx_scratch: Vec::new(),
             },
             stats: Default::default(),
-            driver: config.driver,
+            driver,
+            wake_recv,
         });
-        let port_forwards =
-            std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
+        let port_forwards = std::mem::take(&mut self.endpoint_state.lock().port_forwards);
         let bind_result: Result<Vec<_>, _> = queue.with_consomme_no_pool(|c| {
             c.refresh_driver();
             let mut bound: Vec<(IpProtocol, IpVersion, u16)> = Vec::new();
@@ -479,26 +526,9 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             Ok(bound)
         });
 
-        // Apply requests buffered while the queue owned the Consomme state (see
-        // `wait_for_endpoint_action`). This runs regardless of whether the
-        // static port-forward binding above succeeded, so the buffered RPCs
-        // always complete here instead of stalling until some unrelated future
-        // request triggers the next restart.
-        let pending = std::mem::take(&mut self.pending);
-        queue.with_consomme_no_pool(|c| {
-            for request in pending {
-                match request {
-                    PendingRequest::Request(request) => process_request(c, request),
-                    PendingRequest::StateUpdate(rpc) => {
-                        rpc.handle_sync(|f| {
-                            f(c.get_mut().params_mut());
-                            c.get_mut().clear_local_addr_map();
-                            c.update_dns_nameservers()
-                        });
-                    }
-                }
-            }
-        });
+        // Complete requests that arrived before the queue supplied its driver.
+        // Do this even if an initial port bind failed so those RPCs do not stall.
+        self.process_pending();
 
         bind_result?;
 
@@ -507,7 +537,10 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     }
 
     async fn stop(&mut self) {
-        assert!(self.endpoint_state.lock().is_some());
+        assert!(
+            self.endpoint_state.lock().queue_runtime.is_none(),
+            "queue has not been dropped"
+        );
     }
 
     fn is_ordered(&self) -> bool {
@@ -525,30 +558,32 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
-        std::future::poll_fn(|cx| {
-            if self.drain_channels(cx) && !self.pending.is_empty() {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
-        EndpointAction::RestartRequired
+        loop {
+            std::future::poll_fn(|cx| {
+                if self.drain_channels(cx) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            self.process_pending();
+        }
     }
 }
 
 pub struct ConsommeQueue {
-    slot: Arc<Mutex<Option<EndpointState>>>,
-    endpoint_state: Option<EndpointState>,
+    endpoint_state: Arc<Mutex<EndpointState>>,
     state: QueueState,
     stats: Stats,
-    driver: Box<dyn Driver>,
+    driver: Arc<dyn Driver>,
+    wake_recv: mesh::Receiver<()>,
 }
 
 impl InspectMut for ConsommeQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
-            .merge(&mut self.endpoint_state.as_mut().unwrap().consomme)
+            .merge(&mut self.endpoint_state.lock().consomme)
             .field("rx_avail", self.state.rx_avail.len())
             .field("rx_ready", self.state.rx_ready.len())
             .field("tx_avail", self.state.tx_avail.len())
@@ -559,7 +594,7 @@ impl InspectMut for ConsommeQueue {
 
 impl Drop for ConsommeQueue {
     fn drop(&mut self) {
-        *self.slot.lock() = self.endpoint_state.take();
+        self.endpoint_state.lock().queue_runtime = None;
     }
 }
 
@@ -570,11 +605,10 @@ impl ConsommeQueue {
     {
         f(&mut self
             .endpoint_state
-            .as_mut()
-            .unwrap()
+            .lock()
             .consomme
             .access(&mut ClientNoPool {
-                driver: &self.driver,
+                driver: self.driver.as_ref(),
             }))
     }
 
@@ -582,17 +616,14 @@ impl ConsommeQueue {
     where
         F: FnOnce(&mut consomme::Access<'_, Client<'_>>) -> R,
     {
-        f(&mut self
-            .endpoint_state
-            .as_mut()
-            .unwrap()
-            .consomme
-            .access(&mut Client {
+        f(
+            &mut self.endpoint_state.lock().consomme.access(&mut Client {
                 state: &mut self.state,
                 stats: &mut self.stats,
-                driver: &self.driver,
+                driver: self.driver.as_ref(),
                 pool,
-            }))
+            }),
+        )
     }
 }
 
@@ -701,6 +732,8 @@ fn process_request(
 
 impl net_backend::Queue for ConsommeQueue {
     fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
+        while let Poll::Ready(Ok(())) = self.wake_recv.poll_recv(cx) {}
+
         while let Some(head) = self.state.tx_avail.front() {
             let TxSegmentType::Head(meta) = &head.ty else {
                 unreachable!()
@@ -929,7 +962,11 @@ impl consomme::Client for Client<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use net_backend::Endpoint as _;
     use net_backend_resources::consomme::HostPort;
+    use std::future::Future;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
 
     fn cfg(guest_port: u16) -> HostPortConfig {
         HostPortConfig {
@@ -1011,8 +1048,36 @@ mod tests {
         assert!(ep.drain_channels(&mut cx));
         assert_eq!(ep.pending.len(), 1);
 
-        // Nothing new, even though `pending` is non-empty: no re-trigger (this
-        // is what stops the frontend's restart-coalescing loop from spinning).
+        // Nothing new, even though `pending` is non-empty: no duplicate read.
         assert!(!ep.drain_channels(&mut cx));
+    }
+
+    #[test]
+    fn control_request_is_processed_without_endpoint_action() {
+        let updated = Arc::new(AtomicBool::new(false));
+        pal_async::DefaultPool::run_with(async |driver| {
+            let (mut ep, control) = ConsommeEndpoint::new_dynamic(ConsommeParams::new().unwrap());
+            let mut queues = Vec::new();
+            ep.get_queues(
+                vec![QueueConfig {
+                    driver: Box::new(driver),
+                }],
+                None,
+                &mut queues,
+            )
+            .await
+            .unwrap();
+
+            let updated_for_request = updated.clone();
+            let update: ConsommeParamsUpdateFn = Box::new(move |_| {
+                updated_for_request.store(true, Ordering::Relaxed);
+            });
+            control.state_update_send.send(Rpc::detached(update));
+
+            let mut wait = std::pin::pin!(ep.wait_for_endpoint_action());
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(wait.as_mut().poll(&mut cx).is_pending());
+            assert!(updated.load(Ordering::Relaxed));
+        });
     }
 }
