@@ -25,6 +25,7 @@ use inspect_counters::Counter;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PolledSocket;
+use parking_lot::Mutex;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetAddress;
@@ -53,6 +54,7 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::net::UdpSocket;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
@@ -67,7 +69,7 @@ use crate::windows as platform;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
-    listeners: HashMap<PortForwardKey, UdpListener>,
+    listeners: Arc<Mutex<HashMap<PortForwardKey, UdpListener>>>,
     timeout: Duration,
 }
 
@@ -75,9 +77,56 @@ impl Udp {
     pub fn new(timeout: Duration) -> Self {
         Self {
             connections: HashMap::new(),
-            listeners: HashMap::new(),
+            listeners: Arc::new(Mutex::new(HashMap::new())),
             timeout,
         }
+    }
+
+    pub(crate) fn listener_control(&self) -> UdpListenerControl {
+        UdpListenerControl {
+            listeners: self.listeners.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct UdpListenerControl {
+    listeners: Arc<Mutex<HashMap<PortForwardKey, UdpListener>>>,
+}
+
+impl UdpListenerControl {
+    pub(crate) fn bind(
+        &self,
+        driver: &dyn super::Driver,
+        socket: Socket,
+        guest_port: u16,
+    ) -> Result<(), BindError> {
+        let socket: UdpSocket = socket.into();
+        let socket = PolledSocket::new(driver, socket).map_err(BindError::Io)?;
+        let host_addr = socket.get().local_addr().map_err(BindError::Io)?;
+        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        let mut listeners = self.listeners.lock();
+        if listeners.contains_key(&key) {
+            return Err(BindError::PortAlreadyBound(guest_port));
+        }
+        listeners.insert(
+            key,
+            UdpListener {
+                socket: Some(socket),
+                host_addr,
+                guest_port,
+                stats: Default::default(),
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn unbind(&self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        self.listeners
+            .lock()
+            .remove(&PortForwardKey::new(family, port))
+            .map(|_| ())
+            .ok_or(BindError::PortNotBound)
     }
 }
 
@@ -88,13 +137,16 @@ impl InspectMut for Udp {
             let key = addr.to_string();
             resp.field_mut(&key, conn);
         }
-        for (key, listener) in &mut self.listeners {
-            resp.field_mut(&format!("listener:{key}"), listener);
-        }
+        resp.field(
+            "listeners",
+            inspect::adhoc(|req| {
+                Inspect::inspect(&inspect::iter_by_key(&*self.listeners.lock()), req)
+            }),
+        );
     }
 }
 
-#[derive(InspectMut)]
+#[derive(Inspect, InspectMut)]
 struct UdpListener {
     #[inspect(skip)]
     socket: Option<PolledSocket<UdpSocket>>,
@@ -312,13 +364,15 @@ impl<T: Client> Access<'_, T> {
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
 
-        for listener in self.inner.udp.listeners.values_mut() {
-            listener.poll_listener(
-                cx,
-                &mut self.inner.state,
-                self.client,
-                &self.inner.udp.connections,
-            );
+        if let Some(mut listeners) = self.inner.udp.listeners.try_lock() {
+            for listener in listeners.values_mut() {
+                listener.poll_listener(
+                    cx,
+                    &mut self.inner.state,
+                    self.client,
+                    &self.inner.udp.connections,
+                );
+            }
         }
 
         while let Poll::Ready(Some(response)) = self.inner.dns.poll_udp_response(cx) {
@@ -346,7 +400,7 @@ impl<T: Client> Access<'_, T> {
                 }
             }
         });
-        self.inner.udp.listeners.retain(|key, listener| {
+        self.inner.udp.listeners.lock().retain(|key, listener| {
             let socket = listener.socket.take().unwrap().into_inner();
             match PolledSocket::new(self.client.driver(), socket) {
                 Ok(socket) => {
@@ -459,7 +513,9 @@ impl<T: Client> Access<'_, T> {
             // This packet is destined for a local address. If the port matches a listener,
             // translate it so that the connection loops back to the expected destination.
             let key = PortForwardKey::from_socket_addr(dst_sock_addr, dst_sock_addr.port());
-            if let Some(listener) = self.inner.udp.listeners.get(&key) {
+            if let Some(listeners) = self.inner.udp.listeners.try_lock()
+                && let Some(listener) = listeners.get(&key)
+            {
                 dst_sock_addr.set_port(listener.host_addr.port());
             }
         }
@@ -573,38 +629,15 @@ impl<T: Client> Access<'_, T> {
     /// Binds to the specified host IP and port for forwarding inbound UDP
     /// packets to the guest.
     pub fn bind_udp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
-        let socket: UdpSocket = socket.into();
-        let socket = PolledSocket::new(self.client.driver(), socket).map_err(BindError::Io)?;
-        let host_addr = socket.get().local_addr().map_err(BindError::Io)?;
-        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
-        if self.inner.udp.listeners.contains_key(&key) {
-            return Err(BindError::PortAlreadyBound(guest_port));
-        }
-        self.inner.udp.listeners.insert(
-            key,
-            UdpListener {
-                socket: Some(socket),
-                host_addr,
-                guest_port,
-                stats: Default::default(),
-            },
-        );
-        Ok(())
+        self.inner
+            .udp
+            .listener_control()
+            .bind(self.client.driver(), socket, guest_port)
     }
 
     /// Unbinds from the specified guest port and IP family.
     pub fn unbind_udp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
-        if self
-            .inner
-            .udp
-            .listeners
-            .remove(&PortForwardKey::new(family, port))
-            .is_some()
-        {
-            Ok(())
-        } else {
-            Err(BindError::PortNotBound)
-        }
+        self.inner.udp.listener_control().unbind(family, port)
     }
 
     fn handle_dns(
@@ -935,6 +968,7 @@ mod tests {
                 .inner
                 .udp
                 .listeners
+                .lock()
                 .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
             "listener should be registered"
         );
@@ -1054,6 +1088,7 @@ mod tests {
                 .inner
                 .udp
                 .listeners
+                .lock()
                 .contains_key(&PortForwardKey::new(IpVersion::Ipv6, guest_port)),
             "IPv6 listener should remain registered"
         );
