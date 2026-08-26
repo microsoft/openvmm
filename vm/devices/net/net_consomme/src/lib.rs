@@ -98,6 +98,8 @@ fn socket_family(socket: &socket2::Socket) -> Result<IpVersion, consomme::BindEr
 
 pub struct ConsommeEndpoint {
     endpoint_state: Arc<Mutex<Option<EndpointState>>>,
+    /// Listener control capability available while a queue owns the endpoint.
+    listener_control: Option<consomme::ListenerControl>,
     /// In-process state updates, which cannot cross a process boundary.
     state_update_recv: Option<mesh::Receiver<StateUpdateRequest>>,
     /// Serializable requests originating either in-process or remotely.
@@ -198,34 +200,56 @@ impl ConsommeEndpoint {
         request_recv: Option<mesh::Receiver<ConsommeRequest>>,
         state_update_recv: Option<mesh::Receiver<StateUpdateRequest>>,
     ) -> Self {
+        let consomme = Consomme::new(state);
         ConsommeEndpoint {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
-                consomme: Consomme::new(state),
+                consomme,
                 port_forwards: ports,
             }))),
+            listener_control: None,
             state_update_recv,
             request_recv,
             pending: VecDeque::new(),
         }
     }
 
-    /// Drains available requests from both channels into `pending`, registering
-    /// wakers for channels with nothing ready. Returns whether any new request
-    /// was read.
+    /// Drains available requests, applying listener-only requests directly and
+    /// buffering requests that need queue-owned state. Registers wakers for
+    /// channels with nothing ready and returns whether a restart is needed.
     fn drain_channels(&mut self, cx: &mut Context<'_>) -> bool {
-        let Self {
-            state_update_recv,
-            request_recv,
-            pending,
-            ..
-        } = self;
-        let mut received = drain_receiver(state_update_recv, cx, "state update", |request| {
-            pending.push_back(PendingRequest::StateUpdate(request))
-        });
-        received |= drain_receiver(request_recv, cx, "request", |request| {
-            pending.push_back(PendingRequest::Request(request))
-        });
-        received
+        let mut restart_required =
+            drain_receiver(&mut self.state_update_recv, cx, "state update", |request| {
+                self.pending.push_back(PendingRequest::StateUpdate(request))
+            });
+        loop {
+            let polled = self.request_recv.as_mut().map(|recv| recv.poll_recv(cx));
+            match polled {
+                Some(Poll::Ready(Ok(request))) => {
+                    if let Some(listener_control) = &self.listener_control {
+                        match process_listener_request(listener_control, request) {
+                            Ok(()) => {}
+                            Err(request) => {
+                                self.pending.push_back(PendingRequest::Request(request));
+                                restart_required = true;
+                            }
+                        }
+                    } else {
+                        self.pending.push_back(PendingRequest::Request(request));
+                        restart_required = true;
+                    }
+                }
+                Some(Poll::Ready(Err(err))) => {
+                    tracing::warn!(
+                        err = &err as &dyn std::error::Error,
+                        channel = "request",
+                        "consomme request channel closed"
+                    );
+                    self.request_recv = None;
+                }
+                Some(Poll::Pending) | None => break,
+            }
+        }
+        restart_required
     }
 }
 
@@ -431,6 +455,16 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     ) -> anyhow::Result<()> {
         assert_eq!(config.len(), 1);
         let config = config.into_iter().next().unwrap();
+        let driver: Arc<dyn Driver> = config.driver.into();
+        let listener_control_inner = self
+            .endpoint_state
+            .lock()
+            .as_ref()
+            .unwrap()
+            .consomme
+            .listener_control_inner();
+        let listener_control =
+            consomme::ListenerControl::new(driver.clone(), listener_control_inner);
         let mut queue = Box::new(ConsommeQueue {
             slot: self.endpoint_state.clone(),
             endpoint_state: self.endpoint_state.lock().take(),
@@ -442,7 +476,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
                 tx_scratch: Vec::new(),
             },
             stats: Default::default(),
-            driver: config.driver,
+            driver,
         });
         let port_forwards =
             std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
@@ -488,7 +522,11 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         queue.with_consomme_no_pool(|c| {
             for request in pending {
                 match request {
-                    PendingRequest::Request(request) => process_request(c, request),
+                    PendingRequest::Request(request) => {
+                        if let Err(request) = process_listener_request(&listener_control, request) {
+                            process_request(c, request);
+                        }
+                    }
                     PendingRequest::StateUpdate(rpc) => {
                         rpc.handle_sync(|f| {
                             f(c.get_mut().params_mut());
@@ -502,12 +540,14 @@ impl net_backend::Endpoint for ConsommeEndpoint {
 
         bind_result?;
 
+        self.listener_control = Some(listener_control);
         queues.push(queue);
         Ok(())
     }
 
     async fn stop(&mut self) {
         assert!(self.endpoint_state.lock().is_some());
+        self.listener_control = None;
     }
 
     fn is_ordered(&self) -> bool {
@@ -526,7 +566,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
         std::future::poll_fn(|cx| {
-            if self.drain_channels(cx) && !self.pending.is_empty() {
+            if self.drain_channels(cx) {
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -542,7 +582,7 @@ pub struct ConsommeQueue {
     endpoint_state: Option<EndpointState>,
     state: QueueState,
     stats: Stats,
-    driver: Box<dyn Driver>,
+    driver: Arc<dyn Driver>,
 }
 
 impl InspectMut for ConsommeQueue {
@@ -598,7 +638,7 @@ impl ConsommeQueue {
 
 /// Execute a port bind: create a socket and forward it to the consomme stack.
 fn execute_bind(
-    consomme: &mut consomme::Access<'_, impl consomme::Client>,
+    listener_control: &consomme::ListenerControl,
     cfg: HostPortConfig,
 ) -> anyhow::Result<()> {
     use net_backend_resources::consomme::HostPort;
@@ -629,8 +669,8 @@ fn execute_bind(
         None => None,
     };
     let result = match protocol {
-        IpProtocol::Tcp => consomme.bind_tcp_port(socket, cfg.guest_port),
-        IpProtocol::Udp => consomme.bind_udp_port(socket, cfg.guest_port),
+        IpProtocol::Tcp => listener_control.bind_tcp_port(socket, cfg.guest_port),
+        IpProtocol::Udp => listener_control.bind_udp_port(socket, cfg.guest_port),
     };
     result.context("failed to bind port")?;
     if let Some((sender, port)) = dynamic_port {
@@ -641,7 +681,7 @@ fn execute_bind(
 
 /// Execute a port unbind.
 fn execute_unbind(
-    consomme: &mut consomme::Access<'_, impl consomme::Client>,
+    listener_control: &consomme::ListenerControl,
     cfg: &HostPortConfig,
 ) -> anyhow::Result<()> {
     let protocol: IpProtocol = cfg.protocol.clone().into();
@@ -650,37 +690,50 @@ fn execute_unbind(
         Some(HostIpAddress::Ipv6(_)) => IpVersion::Ipv6,
     };
     let result = match protocol {
-        IpProtocol::Tcp => consomme.unbind_tcp_port(family, cfg.guest_port),
-        IpProtocol::Udp => consomme.unbind_udp_port(family, cfg.guest_port),
+        IpProtocol::Tcp => listener_control.unbind_tcp_port(family, cfg.guest_port),
+        IpProtocol::Udp => listener_control.unbind_udp_port(family, cfg.guest_port),
     };
     result.context("failed to unbind port")
 }
 
-/// Handle a request that may have originated in-process or remotely.
-fn process_request(
-    consomme: &mut consomme::Access<'_, impl consomme::Client>,
+/// Handles a listener-only request without accessing the queue-owned state.
+/// Returns requests that require a queue restart unchanged.
+fn process_listener_request(
+    listener_control: &consomme::ListenerControl,
     request: ConsommeRequest,
-) {
+) -> Result<(), ConsommeRequest> {
     match request {
         ConsommeRequest::Bind(rpc) => {
             rpc.handle_failable_sync(
                 |cfg| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let guest_port = cfg.guest_port;
-                    execute_bind(consomme, cfg)?;
+                    execute_bind(listener_control, cfg)?;
                     tracing::info!(guest_port, "port forward bound");
                     Ok(())
                 },
             );
+            Ok(())
         }
         ConsommeRequest::Unbind(rpc) => {
             rpc.handle_failable_sync(
                 |cfg| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                    execute_unbind(consomme, &cfg)?;
+                    execute_unbind(listener_control, &cfg)?;
                     tracing::info!(guest_port = cfg.guest_port, "port forward unbound");
                     Ok(())
                 },
             );
+            Ok(())
         }
+        request => Err(request),
+    }
+}
+
+/// Handles a request that needs access to the queue-owned Consomme state.
+fn process_request(
+    consomme: &mut consomme::Access<'_, impl consomme::Client>,
+    request: ConsommeRequest,
+) {
+    match request {
         ConsommeRequest::CreateVirtualAddress(rpc) => {
             rpc.handle_sync(|destination| {
                 consomme
@@ -695,6 +748,9 @@ fn process_request(
                     .get_mut()
                     .add_dns_record(StaticDnsRecord::A(cfg.record), &cfg.name)
             });
+        }
+        ConsommeRequest::Bind(_) | ConsommeRequest::Unbind(_) => {
+            unreachable!("listener request was not handled by the endpoint")
         }
     }
 }

@@ -67,6 +67,7 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
+use std::sync::Arc;
 use std::task::Context;
 use std::time::Duration;
 use thiserror::Error;
@@ -120,6 +121,52 @@ pub struct Consomme {
     icmp: icmp::Icmp,
     dns: dns_resolver::DnsResolver,
     host_has_ipv6: bool,
+}
+
+/// Control handle for listener-only operations that do not access connection
+/// or packet-processing state.
+#[derive(Clone)]
+pub struct ListenerControl {
+    driver: Arc<dyn Driver>,
+    inner: ListenerControlInner,
+}
+
+/// Cloneable listener registry retained across queue restarts.
+#[derive(Clone)]
+pub struct ListenerControlInner {
+    tcp: tcp::TcpListenerControl,
+    udp: udp::UdpListenerControl,
+}
+
+impl ListenerControl {
+    /// Creates a listener control handle using `driver` to register sockets.
+    pub fn new(driver: Arc<dyn Driver>, inner: ListenerControlInner) -> Self {
+        Self { driver, inner }
+    }
+
+    /// Binds a TCP listener to forward connections to the guest.
+    pub fn bind_tcp_port(&self, socket: socket2::Socket, guest_port: u16) -> Result<(), BindError> {
+        self.inner
+            .tcp
+            .bind(self.driver.as_ref(), socket, guest_port)
+    }
+
+    /// Binds a UDP listener to forward packets to the guest.
+    pub fn bind_udp_port(&self, socket: socket2::Socket, guest_port: u16) -> Result<(), BindError> {
+        self.inner
+            .udp
+            .bind(self.driver.as_ref(), socket, guest_port)
+    }
+
+    /// Unbinds a TCP listener.
+    pub fn unbind_tcp_port(&self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        self.inner.tcp.unbind(family, port)
+    }
+
+    /// Unbinds a UDP listener.
+    pub fn unbind_udp_port(&self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        self.inner.udp.unbind(family, port)
+    }
 }
 
 #[derive(Inspect)]
@@ -903,6 +950,14 @@ impl Consomme {
         Access {
             inner: self,
             client,
+        }
+    }
+
+    /// Returns the listener registry used to create control handles.
+    pub fn listener_control_inner(&self) -> ListenerControlInner {
+        ListenerControlInner {
+            tcp: self.tcp.listener_control(),
+            udp: self.udp.listener_control(),
         }
     }
 }

@@ -1066,6 +1066,7 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
                 .inner
                 .tcp
                 .listeners
+                .lock()
                 .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
             "listener should be registered"
         );
@@ -1356,6 +1357,7 @@ async fn test_tcp_bind_same_port_different_families(driver: DefaultDriver) {
             .inner
             .tcp
             .listeners
+            .lock()
             .contains_key(&PortForwardKey::new(IpVersion::Ipv6, guest_port)),
         "IPv6 listener should remain registered"
     );
