@@ -90,8 +90,16 @@ async fn service_main_inner(
     set_status(service::ServiceState::Running)?;
 
     let run = async {
-        let agent = Agent::new(driver, transport).await?;
-        agent.run().await
+        loop {
+            let agent = Agent::new(driver.clone(), transport).await?;
+            match agent.run().await {
+                Ok(_) => eprintln!("Pipette disconnected, reconnecting..."),
+                Err(err) => {
+                    eprintln!("Pipette agent failed: {:#}", err);
+                    break Err(err);
+                }
+            }
+        }
     };
 
     let stop = async {
