@@ -6788,6 +6788,7 @@ name = "prep_steps"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "fs-err",
  "gptman",
  "guid",
  "openvmm_defs",
