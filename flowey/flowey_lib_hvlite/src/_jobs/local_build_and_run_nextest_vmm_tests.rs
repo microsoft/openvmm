@@ -847,7 +847,6 @@ pub(crate) fn init_artifacts_dir(
     skip_vhd_prompt: bool,
 ) -> anyhow::Result<()> {
     let vmm_test_artifacts_dir = test_content_dir.join("images");
-    fs_err::create_dir_all(&vmm_test_artifacts_dir)?;
     ctx.config(crate::download_openvmm_vmm_tests_artifacts::Config {
         custom_cache_dir: Some(vmm_test_artifacts_dir.clone()),
         skip_prompt: Some(skip_vhd_prompt),

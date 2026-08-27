@@ -550,6 +550,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cca_tests"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_vmm_test",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

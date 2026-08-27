@@ -103,6 +103,8 @@ impl FlowNode for Node {
                 let mut exclude = [
                     // Skip VMM tests, they get run in a different step.
                     "vmm_tests",
+                    // Skip CCA tests, they aren't setup to run in CI yet
+                    "cca_tests",
                     // Skip guest_test_uefi, as it's a no_std UEFI crate
                     "guest_test_uefi",
                     // Exclude various proc_macro crates, since they don't compile successfully

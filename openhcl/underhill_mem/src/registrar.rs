@@ -14,10 +14,8 @@
 //! when a VA might leak out of a `GuestMemory` object and possibly be passed to
 //! a kernel routine.
 //!
-//! This is done by registering memory in 1-GB chunks. Fully aligned chunks can
-//! use PUD mappings in the kernel, while unaligned RAM edges automatically fall
-//! back to smaller mappings. We track whether a given chunk has been registered
-//! via a small bitmap.
+//! Memory is registered in caller-selected chunks. We track whether a given
+//! chunk has been registered via a small bitmap.
 
 use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
@@ -28,7 +26,9 @@ use std::ops::Range;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::Ordering::Release;
+use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::memory::MemoryRangeWithNode;
 
 const PAGE_SIZE: u64 = guestmem::PAGE_SIZE as u64;
 
@@ -39,7 +39,9 @@ pub struct MemoryRegistrar<T> {
     state: Mutex<RegistrarState>,
     register: T,
     ram: Vec<MemoryRange>,
+    ram_with_node: Vec<MemoryRangeWithNode>,
     registration_offset: u64,
+    granularity: u64,
 }
 
 impl<T> Inspect for MemoryRegistrar<T> {
@@ -51,6 +53,7 @@ impl<T> Inspect for MemoryRegistrar<T> {
                     .count()
             })
             .field("chunk_count", self.chunk_count)
+            .field("granularity", self.granularity)
             .hex("registration_offset", self.registration_offset);
     }
 }
@@ -60,12 +63,29 @@ struct RegistrarState {
     failed: Bitmap,
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub(crate) enum RegisterAllError {
+    #[error("failed to register memory starting at {address:#x}")]
+    RegistrationFailed { address: u64 },
+    #[error(
+        "VTL0 RAM span {span} has unregistrable edge {edge} in virtual NUMA node {vnode} range \
+         {node_range}; kernel registration requires {alignment:#x}-aligned span boundaries"
+    )]
+    UnalignedMemory {
+        span: MemoryRange,
+        edge: MemoryRange,
+        vnode: u32,
+        node_range: MemoryRange,
+        alignment: u64,
+    },
+}
+
 #[derive(Debug)]
 struct Bitmap(Vec<AtomicU64>);
 
 impl Bitmap {
-    fn new(address_space_size: u64) -> Self {
-        let chunks = address_space_size.div_ceil(GRANULARITY);
+    fn new(address_space_size: u64, granularity: u64) -> Self {
+        let chunks = address_space_size.div_ceil(granularity);
         let words = chunks.div_ceil(64);
         let mut v = Vec::new();
         v.resize_with(words as usize, AtomicU64::default);
@@ -107,29 +127,67 @@ impl<T: Fn(MemoryRange) -> Result<(), E>, E: 'static + std::error::Error> Regist
     }
 }
 
-/// Register in 1-GB chunks so aligned RAM can use PUD mappings.
-const GRANULARITY: u64 = 1 << 30;
-
 impl<T: RegisterMemory> MemoryRegistrar<T> {
-    pub fn new(layout: &MemoryLayout, registration_offset: u64, register: T) -> Self {
+    pub fn new(
+        layout: &MemoryLayout,
+        registration_offset: u64,
+        granularity: u64,
+        register: T,
+    ) -> Self {
+        assert!(granularity.is_power_of_two());
+        assert!(granularity >= PAGE_SIZE);
         let address_space_size = layout.ram().last().unwrap().range.end();
 
+        let mut ram: Vec<MemoryRange> = Vec::new();
+        for range in layout.ram().iter().map(|entry| entry.range) {
+            if let Some(previous) = ram.last_mut()
+                && previous.end() == range.start()
+            {
+                *previous = MemoryRange::new(previous.start()..range.end());
+            } else {
+                ram.push(range);
+            }
+        }
+
         Self {
-            chunk_count: address_space_size.div_ceil(GRANULARITY),
-            registered: Bitmap::new(address_space_size),
+            chunk_count: address_space_size.div_ceil(granularity),
+            registered: Bitmap::new(address_space_size, granularity),
             state: Mutex::new(RegistrarState {
-                failed: Bitmap::new(address_space_size),
+                failed: Bitmap::new(address_space_size, granularity),
             }),
             register,
-            ram: layout.ram().iter().map(|r| r.range).collect(),
+            ram,
+            ram_with_node: layout.ram().to_vec(),
             registration_offset,
+            granularity,
         }
     }
 
-    fn chunks(range: MemoryRange) -> Range<u64> {
-        let start = range.start() / GRANULARITY;
-        let end = range.end().div_ceil(GRANULARITY);
+    fn chunks(&self, range: MemoryRange) -> Range<u64> {
+        let start = range.start() / self.granularity;
+        let end = range.end().div_ceil(self.granularity);
         start..end
+    }
+
+    fn register_range(&self, state: &mut RegistrarState, range: MemoryRange) -> Result<(), u64> {
+        let registered_range = MemoryRange::new(
+            self.registration_offset + range.start()..self.registration_offset + range.end(),
+        );
+        tracing::info!(CVM_ALLOWED, range = %registered_range, "registering memory");
+        if let Err(err) = self.register.register_range(registered_range) {
+            tracing::error!(
+                CVM_ALLOWED,
+                range = %registered_range,
+                registration_offset = self.registration_offset,
+                error = &err as &dyn std::error::Error,
+                "failed to register memory"
+            );
+            for chunk in self.chunks(range) {
+                state.failed.set_mut(chunk, true);
+            }
+            return Err(range.start());
+        }
+        Ok(())
     }
 
     pub fn register(&self, address: u64, len: u64) -> Result<(), u64> {
@@ -140,7 +198,7 @@ impl<T: RegisterMemory> MemoryRegistrar<T> {
 
         // Check if the range is already registered.
         'check_registered: {
-            for chunk in Self::chunks(requested_range) {
+            for chunk in self.chunks(requested_range) {
                 if !self.registered.get(chunk) {
                     break 'check_registered;
                 }
@@ -152,55 +210,120 @@ impl<T: RegisterMemory> MemoryRegistrar<T> {
         // memory at a time, so in practice there should only be one chunk
         // anyway.
         let mut state = self.state.lock();
-        for chunk in Self::chunks(requested_range) {
+        for chunk in self.chunks(requested_range) {
             if self.registered.get(chunk) {
                 continue;
             }
             if state.failed.get_mut(chunk) {
-                return Err(chunk * GRANULARITY);
+                return Err(chunk * self.granularity);
             }
             // Register the full chunk, bounded by the RAM regions. This could
             // be more efficient, but again, we expect there to only be one
             // chunk in practice.
-            let full_range = MemoryRange::new(chunk * GRANULARITY..(chunk + 1) * GRANULARITY);
+            let full_range =
+                MemoryRange::new(chunk * self.granularity..(chunk + 1) * self.granularity);
             for range in overlapping_ranges([full_range], self.ram.iter().copied()) {
-                let range = MemoryRange::new(
-                    self.registration_offset + range.start()
-                        ..self.registration_offset + range.end(),
-                );
-                tracing::info!(CVM_ALLOWED, %range, "registering memory");
-                if let Err(err) = self.register.register_range(range) {
-                    tracing::error!(CVM_ALLOWED,
-                        %range,
-                        registration_offset = self.registration_offset,
-                        error = &err as &dyn std::error::Error,
-                        "failed to register memory"
-                    );
-                    state.failed.set_mut(chunk, true);
-                    return Err(range.start());
-                }
+                self.register_range(&mut state, range)?;
             }
             self.registered.set(chunk, true);
         }
         Ok(())
     }
 
-    /// Register every RAM range in the address space.
-    pub fn register_all(&self) -> Result<(), u64> {
-        let address_space_size = self.ram.last().unwrap().end();
-        self.register(0, address_space_size)
+    /// Register every complete `alignment`-aligned RAM subrange in the address space.
+    ///
+    /// If `ignore_unaligned_ranges` is false, fail if any RAM remains outside
+    /// the aligned subranges.
+    pub fn register_all_aligned(
+        &self,
+        alignment: u64,
+        ignore_unaligned_ranges: bool,
+    ) -> Result<(), RegisterAllError> {
+        assert!(alignment.is_power_of_two());
+        assert!(alignment >= self.granularity);
+
+        let mut state = self.state.lock();
+        for &span in &self.ram {
+            let aligned_range = span.aligned_subrange(alignment);
+            let unaligned_edge = if ignore_unaligned_ranges {
+                None
+            } else if aligned_range.is_empty() {
+                Some(span)
+            } else if span.start() != aligned_range.start() {
+                Some(MemoryRange::new(span.start()..aligned_range.start()))
+            } else if span.end() != aligned_range.end() {
+                Some(MemoryRange::new(aligned_range.end()..span.end()))
+            } else {
+                None
+            };
+            if let Some(edge) = unaligned_edge {
+                let entry = self
+                    .ram_with_node
+                    .iter()
+                    .find(|entry| entry.range.overlaps(&edge))
+                    .expect("edge belongs to a RAM range");
+                return Err(RegisterAllError::UnalignedMemory {
+                    span,
+                    edge,
+                    vnode: entry.vnode,
+                    node_range: entry.range,
+                    alignment,
+                });
+            }
+
+            if aligned_range.is_empty() {
+                continue;
+            }
+
+            let mut unregistered_run_start = None;
+
+            for chunk in self.chunks(aligned_range) {
+                if state.failed.get_mut(chunk) {
+                    return Err(RegisterAllError::RegistrationFailed {
+                        address: chunk * self.granularity,
+                    });
+                }
+                if self.registered.get(chunk) {
+                    if let Some(start) = unregistered_run_start.take() {
+                        self.register_range(
+                            &mut state,
+                            MemoryRange::new(start..chunk * self.granularity),
+                        )
+                        .map_err(|address| RegisterAllError::RegistrationFailed { address })?;
+                        for registered_chunk in start / self.granularity..chunk {
+                            self.registered.set(registered_chunk, true);
+                        }
+                    }
+                } else {
+                    unregistered_run_start.get_or_insert(chunk * self.granularity);
+                }
+            }
+
+            if let Some(start) = unregistered_run_start {
+                let range = MemoryRange::new(start..aligned_range.end());
+                self.register_range(&mut state, range)
+                    .map_err(|address| RegisterAllError::RegistrationFailed { address })?;
+                for chunk in self.chunks(range) {
+                    self.registered.set(chunk, true);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::MemoryRegistrar;
-    use crate::registrar::GRANULARITY;
+    use super::RegisterAllError;
     use memory_range::MemoryRange;
+    use std::cell::Cell;
     use std::cell::RefCell;
     use std::convert::Infallible;
     use vm_topology::memory::MemoryLayout;
     use vm_topology::memory::MemoryRangeWithNode;
+
+    const GRANULARITY: u64 = 1 << 30;
 
     #[test]
     fn test_registrar() {
@@ -218,7 +341,7 @@ mod tests {
 
         let offset = 1 << 50;
         let ranges = RefCell::new(Vec::new());
-        let registrar = MemoryRegistrar::new(&layout, offset, |range| {
+        let registrar = MemoryRegistrar::new(&layout, offset, GRANULARITY, |range| {
             println!("registering {:#x?}", range);
             ranges.borrow_mut().push(range);
             Ok::<_, Infallible>(())
@@ -264,10 +387,103 @@ mod tests {
     }
 
     #[test]
-    fn test_register_all_preserves_aligned_interior() {
+    fn test_register_all_aligned_rejects_unaligned_edges_at_minimum_granularity() {
         let layout = MemoryLayout::new_from_ranges(
             &[MemoryRangeWithNode {
                 range: MemoryRange::new(0x10000..2 * GRANULARITY + 0x20000),
+                vnode: 7,
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let ranges = RefCell::new(Vec::new());
+        let registrar = MemoryRegistrar::new(&layout, 0, GRANULARITY, |range| {
+            ranges.borrow_mut().push(range);
+            Ok::<_, Infallible>(())
+        });
+
+        assert_eq!(
+            registrar.register_all_aligned(GRANULARITY, false),
+            Err(RegisterAllError::UnalignedMemory {
+                span: MemoryRange::new(0x10000..2 * GRANULARITY + 0x20000),
+                edge: MemoryRange::new(0x10000..GRANULARITY),
+                vnode: 7,
+                node_range: MemoryRange::new(0x10000..2 * GRANULARITY + 0x20000),
+                alignment: GRANULARITY,
+            })
+        );
+
+        assert!(ranges.take().is_empty());
+    }
+
+    #[test]
+    fn test_register_all_aligned_reports_repro_suffix_and_numa_node() {
+        const PMD_GRANULARITY: u64 = 1 << 21;
+        let span = MemoryRange::new(0x80000000..0xd8150000);
+        let layout = MemoryLayout::new_from_ranges(
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0x80000000..0xc0000000),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0xc0000000..0xd8150000),
+                    vnode: 1,
+                },
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let registrar =
+            MemoryRegistrar::new(&layout, 0, PMD_GRANULARITY, |_| Ok::<_, Infallible>(()));
+
+        assert_eq!(
+            registrar.register_all_aligned(PMD_GRANULARITY, false),
+            Err(RegisterAllError::UnalignedMemory {
+                span,
+                edge: MemoryRange::new(0xd8000000..0xd8150000),
+                vnode: 1,
+                node_range: MemoryRange::new(0xc0000000..0xd8150000),
+                alignment: PMD_GRANULARITY,
+            })
+        );
+    }
+
+    #[test]
+    fn test_register_all_aligned_rejects_span_smaller_than_granularity() {
+        let span = MemoryRange::new(0x10000..0x20000);
+        let layout = MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: span,
+                vnode: 2,
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let registrar = MemoryRegistrar::new(&layout, 0, GRANULARITY, |_| Ok::<_, Infallible>(()));
+
+        assert_eq!(
+            registrar.register_all_aligned(GRANULARITY, false),
+            Err(RegisterAllError::UnalignedMemory {
+                span,
+                edge: span,
+                vnode: 2,
+                node_range: span,
+                alignment: GRANULARITY,
+            })
+        );
+    }
+
+    #[test]
+    fn test_register_all_aligned_uses_smaller_pages_for_edges() {
+        const SMALL_GRANULARITY: u64 = 1 << 21;
+
+        let layout = MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::new(SMALL_GRANULARITY..2 * GRANULARITY + SMALL_GRANULARITY),
                 vnode: 0,
             }],
             &[],
@@ -275,25 +491,33 @@ mod tests {
         .unwrap();
 
         let ranges = RefCell::new(Vec::new());
-        let registrar = MemoryRegistrar::new(&layout, 0, |range| {
+        let registrar = MemoryRegistrar::new(&layout, 0, SMALL_GRANULARITY, |range| {
             ranges.borrow_mut().push(range);
             Ok::<_, Infallible>(())
         });
 
-        registrar.register_all().unwrap();
+        registrar.register_all_aligned(GRANULARITY, true).unwrap();
+        registrar
+            .register_all_aligned(SMALL_GRANULARITY, false)
+            .unwrap();
+
+        assert_eq!(registrar.register(SMALL_GRANULARITY, 0x1000), Ok(()));
+        assert_eq!(registrar.register(2 * GRANULARITY, 0x1000), Ok(()));
 
         assert_eq!(
             ranges.take(),
             [
-                MemoryRange::new(0x10000..GRANULARITY),
                 MemoryRange::new(GRANULARITY..2 * GRANULARITY),
-                MemoryRange::new(2 * GRANULARITY..2 * GRANULARITY + 0x20000),
+                MemoryRange::new(SMALL_GRANULARITY..GRANULARITY),
+                MemoryRange::new(2 * GRANULARITY..2 * GRANULARITY + SMALL_GRANULARITY),
             ]
         );
     }
 
     #[test]
-    fn test_register_all_multiple_ranges_with_gap() {
+    fn test_register_all_aligned_multiple_ranges_with_gap() {
+        const SMALL_GRANULARITY: u64 = 1 << 16;
+
         // A mix of RAM ranges with unbacked gaps between them: one spanning a
         // chunk boundary, one contained in a single chunk, one spanning
         // several whole chunks, and one crossing a boundary with unaligned ends.
@@ -325,26 +549,101 @@ mod tests {
         .unwrap();
 
         let ranges = RefCell::new(Vec::new());
-        let registrar = MemoryRegistrar::new(&layout, 0, |range| {
+        let registrar = MemoryRegistrar::new(&layout, 0, SMALL_GRANULARITY, |range| {
             ranges.borrow_mut().push(range);
             Ok::<_, Infallible>(())
         });
 
-        registrar.register_all().unwrap();
+        registrar.register_all_aligned(GRANULARITY, true).unwrap();
 
         assert_eq!(
             ranges.take(),
-            [
-                MemoryRange::new(0x10000..GRANULARITY),
-                MemoryRange::new(GRANULARITY..GRANULARITY + 0x20000),
-                MemoryRange::new(3 * GRANULARITY + 0x10000..3 * GRANULARITY + 0x30000),
-                MemoryRange::new(4 * GRANULARITY + 0x40000..4 * GRANULARITY + 0x50000),
-                MemoryRange::new(5 * GRANULARITY..6 * GRANULARITY),
-                MemoryRange::new(6 * GRANULARITY..7 * GRANULARITY),
-                MemoryRange::new(7 * GRANULARITY..8 * GRANULARITY),
-                MemoryRange::new(9 * GRANULARITY + 0x30000..10 * GRANULARITY),
-                MemoryRange::new(10 * GRANULARITY..10 * GRANULARITY + 0x10000),
-            ]
+            [MemoryRange::new(5 * GRANULARITY..8 * GRANULARITY)]
         );
+    }
+
+    #[test]
+    fn test_register_all_aligned_coalesces_large_aligned_range() {
+        const SMALL_GRANULARITY: u64 = 1 << 21;
+
+        let layout = MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::new(0..3 * GRANULARITY),
+                vnode: 0,
+            }],
+            &[],
+        )
+        .unwrap();
+
+        let ranges = RefCell::new(Vec::new());
+        let registrar = MemoryRegistrar::new(&layout, 0, SMALL_GRANULARITY, |range| {
+            ranges.borrow_mut().push(range);
+            Ok::<_, Infallible>(())
+        });
+
+        registrar.register_all_aligned(GRANULARITY, false).unwrap();
+
+        assert_eq!(ranges.take(), [MemoryRange::new(0..3 * GRANULARITY)]);
+    }
+
+    #[test]
+    fn test_register_all_aligned_merges_adjacent_numa_ranges() {
+        let layout = MemoryLayout::new_from_ranges(
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..GRANULARITY / 2),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(GRANULARITY / 2..GRANULARITY),
+                    vnode: 1,
+                },
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let ranges = RefCell::new(Vec::new());
+        let registrar = MemoryRegistrar::new(&layout, 0, 1 << 21, |range| {
+            ranges.borrow_mut().push(range);
+            Ok::<_, Infallible>(())
+        });
+
+        registrar.register_all_aligned(GRANULARITY, false).unwrap();
+
+        assert_eq!(ranges.take(), [MemoryRange::new(0..GRANULARITY)]);
+    }
+
+    #[test]
+    fn test_failed_subrange_does_not_mark_chunk_registered() {
+        let layout = MemoryLayout::new_from_ranges(
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..0x10000),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0x20000..0x30000),
+                    vnode: 0,
+                },
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let calls = Cell::new(0);
+        let registrar = MemoryRegistrar::new(&layout, 0, GRANULARITY, |_| {
+            let call = calls.get();
+            calls.set(call + 1);
+            if call == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("registration failure"))
+            }
+        });
+
+        assert!(registrar.register(0, 1).is_err());
+        assert!(registrar.register(0, 1).is_err());
+        assert_eq!(calls.get(), 2);
     }
 }
