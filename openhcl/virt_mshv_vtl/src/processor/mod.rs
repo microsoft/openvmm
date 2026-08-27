@@ -588,16 +588,24 @@ impl UhVpInner {
 impl<T: Backing> UhProcessor<'_, T> {
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
         resp.child("stats", |req| {
+            let mut resp = req.respond();
             // Get all the VP stats and just grab this VP's. Note that the
             // kernel indexes these by Linux CPU number, not VP index.
             match hcl::stats::vp_stats() {
-                Err(err) => req.value(format!("{:?}", err)),
-                Ok(stats) => match stats.get(self.inner.cpu_index as usize) {
-                    // Report nothing rather than a misleading zero.
-                    None => req.value("no stats for this cpu"),
+                Err(err) => {
+                    resp.field("error", inspect::AsDebug(&err));
+                }
+                // The kernel omits offline CPUs, so report nothing rather than
+                // a misleading zero.
+                Ok(stats) => match stats
+                    .get(self.inner.cpu_index as usize)
+                    .and_then(Option::as_ref)
+                {
+                    None => {
+                        resp.field("error", "no stats for this cpu");
+                    }
                     Some(stats) => {
-                        req.respond()
-                            .counter("vtl_transitions", stats.vtl_transitions)
+                        resp.counter("vtl_transitions", stats.vtl_transitions)
                             .counter(
                                 "spurious_exits",
                                 stats.vtl_transitions.saturating_sub(self.kernel_returns),
