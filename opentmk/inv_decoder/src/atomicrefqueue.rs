@@ -84,7 +84,7 @@ impl<T> AtomicRefQueue<T> {
 // Add tests for the AtomicRefQueue, ensuring that the vector is correctly populated and that
 // the pop_ref method returns the correct entries, and stops when the vector is all marked.
 #[cfg(test)]
-#[allow(non_snake_case)]
+#[expect(non_snake_case)]
 mod tests {
 
     use super::*;

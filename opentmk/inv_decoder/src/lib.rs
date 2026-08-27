@@ -1143,7 +1143,7 @@ mod tests {
         results: Arc<TestcaseResults>,
     ) -> DecodedProgram<'static, 'static> {
         let noop_exec: Arc<Executor<'static>> =
-            Arc::new(|_: &DecodedProgram, _: InputCase| InputResult::default());
+            Arc::new(|_: &DecodedProgram<'_, '_>, _: InputCase| InputResult::default());
         DecodedProgram {
             instr_vec: Arc::new(AtomicRefQueue::new(vec![])),
             mem: Arc::new(Mutex::new(mem)),
@@ -1256,7 +1256,7 @@ mod tests {
         let captured_arg = Arc::new(AtomicU64::new(0));
         let captured_clone = captured_arg.clone();
         let exec_fn: Arc<Executor<'static>> =
-            Arc::new(move |_: &DecodedProgram, input: InputCase| -> InputResult {
+            Arc::new(move |_: &DecodedProgram<'_, '_>, input: InputCase| -> InputResult {
                 captured_clone.store(input.args[0], Ordering::SeqCst);
                 InputResult {
                     code: 0,
@@ -1307,7 +1307,7 @@ mod tests {
         let was_called = Arc::new(AtomicBool::new(false));
         let was_called_clone = was_called.clone();
         let exec_fn: Arc<Executor<'static>> =
-            Arc::new(move |_: &DecodedProgram, _: InputCase| -> InputResult {
+            Arc::new(move |_: &DecodedProgram<'_, '_>, _: InputCase| -> InputResult {
                 was_called_clone.store(true, Ordering::SeqCst);
                 InputResult::default()
             });
