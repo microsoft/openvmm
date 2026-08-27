@@ -603,6 +603,10 @@ impl virt::AcceptInitialPages for WhpPartition {
 }
 
 impl virt::Partition for WhpPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
         if whp::capabilities::reset_partition() {
             Some(self)
@@ -831,6 +835,8 @@ pub enum Error {
     NestedVirtIncompatibleWithVtl2,
     #[error("nested_virt is incompatible with isolation")]
     NestedVirtIncompatibleWithIsolation,
+    #[error("WHP does not support {0:?} isolation")]
+    IsolationNotSupported(IsolationType),
 }
 
 trait WhpResultExt<T> {
@@ -875,6 +881,11 @@ impl virt::Hypervisor for Whp {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<WhpProtoPartition<'a>, Error> {
+        let isolation = config.isolation.isolation_type();
+        if !matches!(isolation, IsolationType::None | IsolationType::Vbs) {
+            return Err(Error::IsolationNotSupported(isolation));
+        }
+
         let user_mode_apic = self.user_mode_apic;
         let offload_enlightenments = self.offload_enlightenments;
         let nested_virt = config.nested_virt;
@@ -1309,7 +1320,7 @@ impl WhpPartitionInner {
             vtl0_alias_map_offset,
             monitor_page: MonitorPage::new(),
             hvstate,
-            isolation: proto_config.isolation,
+            isolation: proto_config.isolation.isolation_type(),
             #[cfg(guest_arch = "aarch64")]
             gic_msi: proto_config.processor_topology.gic_msi(),
             synic_ports: Default::default(),
@@ -1700,9 +1711,9 @@ impl VtlPartition {
 
             assert!(!with_overlays);
 
-            match config.isolation {
+            match config.isolation.isolation_type() {
                 IsolationType::Vbs => {}
-                ty => unimplemented!("isolation type unsupported: {ty:?}"),
+                ty => return Err(Error::IsolationNotSupported(ty)),
             }
 
             Box::new(memory::vtl2_mapper::VtlMemoryMapper::new(

@@ -8,6 +8,8 @@
 //! in via `INCUBATOR_*` environment variables (see the `incubator` crate's CLI,
 //! whose options each have a matching `env =` fallback).
 
+use crate::build_incubator::IncubatorOutput;
+use crate::build_incubator::IncubatorProfileNameOrPath;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -62,9 +64,9 @@ fn add_incubator_target_runner_env(
 flowey_request! {
     pub struct Request {
         /// Path to the incubator binary.
-        pub incubator_bin: ReadVar<PathBuf>,
+        pub incubator: ReadVar<IncubatorOutput>,
         /// Path to the incubator profile TOML file.
-        pub profile_path: ReadVar<PathBuf>,
+        pub incubator_profile: IncubatorProfileNameOrPath,
         /// Path to the guest kernel image. If omitted, incubator auto-detects it.
         pub kernel: Option<ReadVar<PathBuf>>,
         /// Path to the base initrd. If omitted, incubator auto-detects it.
@@ -102,8 +104,8 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
-            incubator_bin,
-            profile_path,
+            incubator,
+            incubator_profile,
             kernel,
             initrd,
             repo_root,
@@ -116,23 +118,22 @@ impl SimpleFlowNode for Node {
         } = request;
 
         ctx.emit_rust_step("compute incubator target runner env", |ctx| {
-            let incubator_bin = incubator_bin.claim(ctx);
-            let profile_path = profile_path.claim(ctx);
+            let incubator = incubator.claim(ctx);
             let kernel = kernel.claim(ctx);
             let initrd = initrd.claim(ctx);
             let repo_root = repo_root.claim(ctx);
-            let test_content_dir = test_content_dir.claim(ctx);
+            let test_content_dir: ReadVar<PathBuf, VarClaimed> = test_content_dir.claim(ctx);
             let extra_share_paths = extra_share_paths.claim(ctx);
             let extra_env = extra_env.claim(ctx);
             let qemu_binary = qemu_binary.claim(ctx);
             let nextest_env = nextest_env.claim(ctx);
 
             move |rt| {
-                let incubator_bin = rt.read(incubator_bin).absolute()?;
-                let profile_path = rt.read(profile_path).absolute()?;
+                let repo_root = rt.read(repo_root).absolute()?;
+                let incubator_bin = rt.read(incubator).bin.absolute()?;
+                let profile_path = incubator_profile.resolve(&repo_root).absolute()?;
                 let kernel = kernel.map(|v| rt.read(v).absolute()).transpose()?;
                 let initrd = initrd.map(|v| rt.read(v).absolute()).transpose()?;
-                let repo_root = rt.read(repo_root).absolute()?;
                 let test_content_dir = rt.read(test_content_dir).absolute()?;
                 let extra_share_paths = rt
                     .read(extra_share_paths)

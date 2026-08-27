@@ -245,12 +245,6 @@ impl ResolvedFileControlBlock {
             Ok(decrypted)
         }
     }
-
-    fn clear_encryption(&mut self) {
-        self.nonce.zero();
-        self.authentication_tag.zero();
-        self.encryption_key.zero();
-    }
 }
 
 enum RefOrOwned<'a> {
@@ -778,8 +772,6 @@ impl Vmgs {
         // generate and encrypt the extended file table
         if let Some(res) = files.get_mut(&FileId::EXTENDED_FILE_TABLE) {
             if state.encrypted_and_unlocked() {
-                // clear encryption key so we don't try to decrypt with the old key
-                res.fcb.clear_encryption();
                 let new_extended_file_table = state.make_extended_file_table()?;
                 res.encrypt_from(new_extended_file_table.as_bytes())?;
             }
@@ -1083,6 +1075,9 @@ impl Vmgs {
                 fcb.encryption_key.copy_from_slice(&metadata_key);
                 temp_state.datastore_keys[i].copy_from_slice(encryption_key);
                 temp_state.active_datastore_key_index = Some(i);
+                temp_state
+                    .unused_metadata_key
+                    .copy_from_slice(&metadata_key);
             }
             None => {
                 tracing::error!(

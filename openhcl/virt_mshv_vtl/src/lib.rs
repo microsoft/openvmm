@@ -898,6 +898,10 @@ impl UhPartition {
 }
 
 impl virt::Partition for UhPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Self::Error>> {
         None
     }

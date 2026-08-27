@@ -711,6 +711,9 @@ struct IoasManager {
     /// Next accelerated-state ID (unique within this manager).
     #[inspect(skip)]
     next_accel_state_id: u64,
+    /// Spawns and polls the per-vIOMMU vEVENTQ tasks.
+    #[inspect(skip)]
+    driver: Arc<dyn pal_async::driver::SpawnDriver>,
     #[inspect(skip)]
     recv: mesh::Receiver<IoasManagerRpc>,
 }
@@ -757,6 +760,7 @@ impl IoasManager {
         iommu_id: String,
         iommufd: File,
         dma_mapper_client: &DmaMapperClient,
+        driver: Arc<dyn pal_async::driver::SpawnDriver>,
         recv: mesh::Receiver<IoasManagerRpc>,
     ) -> anyhow::Result<Self> {
         let ctx = Arc::new(vfio_sys::iommufd::IommufdCtx::from_file(iommufd));
@@ -790,6 +794,7 @@ impl IoasManager {
             devices: Vec::new(),
             next_device_id: 0,
             next_accel_state_id: 0,
+            driver,
             recv,
         })
     }
@@ -863,6 +868,8 @@ impl IoasManager {
                             devid,
                             parent.clone(),
                             viommu_id,
+                            &vsmmu,
+                            self.driver.as_ref(),
                         )
                         .context("failed to create SMMU accel state")?,
                     );
@@ -1075,8 +1082,9 @@ pub(crate) struct VfioCdevManager {
     vsmmu_associations: VsmmuAssociations,
     /// DMA mapper client, cloned for each new per-iommu manager.
     dma_mapper_client: DmaMapperClient,
-    /// Spawner for per-iommu manager tasks.
-    spawner: Arc<dyn pal_async::task::Spawn>,
+    /// Spawner for per-iommu manager tasks, and driver for the vEVENTQ fds
+    /// they poll.
+    spawner: Arc<dyn pal_async::driver::SpawnDriver>,
     /// Per-iommu manager tasks (kept alive).
     tasks: Vec<pal_async::task::Task<()>>,
     recv: mesh::Receiver<VfioCdevManagerRpc>,
@@ -1157,7 +1165,7 @@ impl VfioCdevManagerClient {
 impl VfioCdevManager {
     /// Create a new cdev dispatcher.
     pub fn new(
-        spawner: Arc<dyn pal_async::task::Spawn>,
+        spawner: Arc<dyn pal_async::driver::SpawnDriver>,
         dma_mapper_client: DmaMapperClient,
     ) -> Self {
         Self {
@@ -1244,6 +1252,7 @@ impl VfioCdevManager {
                     iommu_id.clone(),
                     iommufd,
                     &self.dma_mapper_client,
+                    self.spawner.clone(),
                     ioas_recv,
                 )
                 .await

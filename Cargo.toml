@@ -23,6 +23,7 @@ members = [
   "tmk/simple_tmk",
   # VMM tests
   "vmm_tests/prep_steps",
+  "vmm_tests/cca_tests",
   "vmm_tests/vmm_tests",
   # Performance tests
   "petri/burette",

@@ -80,7 +80,15 @@ impl FlowNodeWithConfig for Node {
             }
             true
         };
-        let custom_disk_policy = config.custom_disk_policy;
+        let custom_disk_policy = match ctx.backend() {
+            FlowBackend::Local => config.custom_disk_policy,
+            // default to strict policy in CI
+            _ => Some(
+                config
+                    .custom_disk_policy
+                    .unwrap_or(CustomDiskPolicy::Strict),
+            ),
+        };
         let custom_cache_dir = config.custom_cache_dir;
 
         let persistent_dir = ctx.persistent_dir();
@@ -98,11 +106,24 @@ impl FlowNodeWithConfig for Node {
             move |rt| {
                 let output_folder = if let Some(dir) = custom_cache_dir {
                     dir
+                } else if let Some(dir) =
+                    std::env::var_os("VMM_TEST_IMAGES").and_then(|v| (!v.is_empty()).then_some(v))
+                {
+                    PathBuf::from(dir)
                 } else if let Some(dir) = persistent_dir {
                     rt.read(dir)
                 } else {
                     std::env::current_dir()?
                 };
+
+                if output_folder.exists() && !output_folder.is_dir() {
+                    anyhow::bail!(
+                        "output dir path exists but is not a directory: {}",
+                        output_folder.display()
+                    );
+                }
+
+                fs_err::create_dir_all(&output_folder)?;
 
                 rt.write(write_output_folder, &output_folder.absolute()?);
 
@@ -232,6 +253,7 @@ Otherwise, press anything else with <enter> to cancel the run.
 
                         if !skip_prompt && is_terminal {
                             // Only display the prompt for 30s before timing out
+                            // TODO: fix this on windows (it immediately returns)
                             let result = crossterm::event::poll(std::time::Duration::from_secs(30));
                             match result {
                                 Ok(true) => {

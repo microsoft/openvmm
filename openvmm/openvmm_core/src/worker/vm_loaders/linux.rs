@@ -8,7 +8,6 @@ use loader::importer::X86Register;
 use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
 use memory_range::MemoryRange;
-use openvmm_defs::config::IsolationType;
 use std::ffi::CString;
 use std::io::Seek;
 use thiserror::Error;
@@ -34,8 +33,6 @@ pub enum Error {
     Dt(#[source] DtError),
     #[error("failed to write EFI/ACPI tables to guest memory")]
     Efi(#[source] guestmem::GuestMemoryError),
-    #[error("missing SNP C-bit CPUID information")]
-    MissingSnpCBit,
     #[error("failed to finalize SNP VMSA")]
     SnpVmsa(#[source] anyhow::Error),
 }
@@ -54,8 +51,20 @@ pub struct KernelConfig<'a> {
     pub initrd: &'a Option<std::fs::File>,
     pub cmdline: &'a str,
     pub mem_layout: &'a MemoryLayout,
-    pub isolation: Option<IsolationType>,
-    pub snp_c_bit: Option<u8>,
+    pub isolation: KernelIsolationConfig,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum KernelIsolationConfig {
+    None,
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    Snp(SnpKernelConfig),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SnpKernelConfig {
+    pub c_bit: u8,
+    pub restricted_injection: bool,
 }
 
 // Bring-up hack for SNP Linux direct boot. Without a bootshim or firmware to
@@ -150,13 +159,11 @@ pub fn load_linux_x86(
     });
 
     let cmdline = CString::new(cfg.cmdline).unwrap();
-    let snp_boot = if cfg.isolation == Some(IsolationType::Snp) {
-        Some(loader::linux::SnpBootConfig {
-            c_bit: cfg.snp_c_bit.ok_or(Error::MissingSnpCBit)?,
-        })
-    } else {
-        None
+    let snp = match cfg.isolation {
+        KernelIsolationConfig::None => None,
+        KernelIsolationConfig::Snp(snp) => Some(snp),
     };
+    let snp_boot = snp.map(|snp| loader::linux::SnpBootConfig { c_bit: snp.c_bit });
 
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
 
@@ -174,9 +181,15 @@ pub fn load_linux_x86(
     )
     .map_err(Error::Loader)?;
 
-    if cfg.isolation == Some(IsolationType::Snp) {
+    if let Some(snp) = snp {
         loader
-            .finalize_snp_vmsa(caps, bsp)
+            .finalize_snp_vmsa(
+                caps,
+                bsp,
+                virt::x86::snp::SnpVmsaConfig {
+                    restricted_injection: snp.restricted_injection,
+                },
+            )
             .map_err(Error::SnpVmsa)?;
     }
 
@@ -184,7 +197,7 @@ pub fn load_linux_x86(
         regs,
         mut page_imports,
     } = loader.initial_regs_and_page_imports();
-    if cfg.isolation == Some(IsolationType::Snp) {
+    if snp.is_some() {
         complete_snp_direct_ram_imports(
             &mut page_imports,
             cfg.mem_layout.ram().iter().map(|range| range.range),

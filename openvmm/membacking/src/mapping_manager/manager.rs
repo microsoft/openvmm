@@ -141,6 +141,7 @@ impl MappingManagerClient {
     /// to touch guest memory, or a DMA target. They never own the memory, and
     /// soft large pages are not applied to them: in soft-large-page mode a
     /// secondary mapper only ever gets 4 KB pages.
+    /// Returns a VA mapper for this guest memory.
     ///
     /// When `eager` is true, the mapper receives all existing mappings
     /// immediately and gets new ones pushed synchronously. File-backed

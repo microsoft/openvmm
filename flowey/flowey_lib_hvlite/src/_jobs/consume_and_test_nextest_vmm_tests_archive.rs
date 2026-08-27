@@ -3,121 +3,68 @@
 
 //! Run a pre-built cargo-nextest based VMM tests archive.
 
-use crate::build_guest_test_uefi::GuestTestUefiOutput;
-use crate::build_incubator::IncubatorOutput;
-use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
-use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
-use crate::build_openvmm::OpenvmmOutput;
-use crate::build_openvmm_vhost::OpenvmmVhostOutput;
-use crate::build_pipette::PipetteOutput;
-use crate::build_prep_steps::PrepStepsOutput;
-use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
-use crate::build_tmk_vmm::TmkVmmOutput;
-use crate::build_tmks::TmksOutput;
-use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
-use crate::build_vmgstool::VmgstoolOutput;
-use crate::install_vmm_tests_deps::VmmTestsDepSelections;
-use crate::install_vmm_tests_deps::VmmTestsDepSelectionsLinux;
-use crate::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
+use crate::build_incubator::IncubatorProfileNameOrPath;
+use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts;
+use crate::init_vmm_tests_env::PetriParams;
+use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use vmm_test_images::KnownTestArtifacts;
 
-#[derive(Serialize, Deserialize, Default)]
-pub struct VmmTestsDepArtifacts {
-    /// Incubator binary (bundling its profiles directory) used to run tests
-    /// inside an emulated VM (e.g. QEMU TCG). Only set when running via
-    /// [`Params::incubator_profile`].
-    pub incubator: Option<ReadVar<IncubatorOutput>>,
-    pub openvmm: Option<ReadVar<OpenvmmOutput>>,
-    pub openvmm_vhost: Option<ReadVar<OpenvmmVhostOutput>>,
-    pub pipette_windows: Option<ReadVar<PipetteOutput>>,
-    pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
-    pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
-    pub prep_steps: Option<ReadVar<PrepStepsOutput>>,
-    pub openhcl_standard: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub openhcl_standard_dev: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub openhcl_cvm: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub openhcl_linux_direct: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub tmks: Option<ReadVar<TmksOutput>>,
-    pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
-    pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
-    pub vmgstool: Option<ReadVar<VmgstoolOutput>>,
-    pub vmgstool_dev: Option<ReadVar<VmgstoolOutput>>,
-    pub tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
-    pub tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
-    pub test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
-}
-
-pub type ResolveVmmTestsDepArtifacts =
-    Box<dyn Fn(&mut flowey::pipeline::prelude::PipelineJobCtx<'_>) -> VmmTestsDepArtifacts>;
-
-#[macro_export]
-macro_rules! vmm_tests_artifact_builder {
-    (
-        $name:ty,
-        (
-            $($artifact:ident => $output:ty),* $(,)?
-        )
-    ) => {
-        ::paste::paste! {
-            #[derive(Default, Clone)]
-            pub struct $name {
-                $(pub [<use_ $artifact>]: Option<::flowey::pipeline::prelude::UseTypedArtifact<$output>>,)*
-            }
-
-            impl $name {
-                pub fn finish(self) -> Result<::flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::ResolveVmmTestsDepArtifacts, &'static str> {
-                    let $name {
-                        $([<use_ $artifact>],)*
-                    } = self;
-
-                    $(let [<use_ $artifact>] = [<use_ $artifact>].ok_or(stringify!($artifact))?;)*
-
-                    Ok(Box::new(move |ctx| ::flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::VmmTestsDepArtifacts {
-                        $($artifact: Some(ctx.use_typed_artifact(&[<use_ $artifact>])),)*
-                        .. Default::default()
-                    }))
-                }
-            }
-        }
-    };
+#[expect(clippy::large_enum_variant)]
+#[derive(Serialize, Deserialize)]
+pub enum TestContentConfig {
+    Initialized {
+        /// Location of the initialized test content
+        test_content_dir: ReadVar<PathBuf>,
+        /// Whether to start the test IGVM agent server before running the tests
+        needs_test_igvm_agent_rpc_server: bool,
+    },
+    Uninitialized {
+        /// Provide a location where test content should be staged
+        ///
+        /// Optionally for CI, required for local.
+        test_content_dir: Option<ReadVar<PathBuf>>,
+        /// Built artifacts used by the tests
+        built_artifacts: VmmTestsBuiltArtifacts,
+        /// Whether to download release IGVM files
+        needs_release_igvm: bool,
+    },
 }
 
 flowey_request! {
     pub struct Params {
         /// Friendly label for report JUnit test results
         pub junit_test_label: String,
-        /// Existing VMM tests archive
-        pub nextest_vmm_tests_archive: ReadVar<NextestVmmTestsArchive>,
         /// What target VMM tests were compiled for (determines required deps).
         pub target: target_lexicon::Triple,
         /// Nextest profile to use when running the source code
         pub nextest_profile: NextestProfile,
         /// Nextest test filter expression.
         pub nextest_filter_expr: Option<String>,
-        /// Artifacts corresponding to required test dependencies
-        pub dep_artifact_dirs: VmmTestsDepArtifacts,
+        /// Information about the test content directory to use for the tests
+        pub test_content_config: TestContentConfig,
         /// Test artifacts to download
-        pub test_artifacts: Vec<KnownTestArtifacts>,
+        pub downloaded_artifacts: Vec<KnownTestArtifacts>,
         /// Which prep_steps variants to run before tests (e.g. "standard", "no-vmbus").
         /// Empty means no prep steps are needed.
         pub prep_steps_variants: Vec<String>,
-        /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
-        pub hugetlb_2mb_overcommit_pages: Option<u64>,
-
+        /// External dependencies necessary to run the VMM tests
+        pub external_deps: VmmTestsExternalDeps,
         /// If set, run tests inside an incubator using the named profile,
-        /// instead of directly on the host. The profile name (without the
-        /// `.toml` extension) is resolved against the profiles directory
-        /// bundled in the incubator artifact supplied via
-        /// [`VmmTestsDepArtifacts::incubator`] (e.g. "aarch64-tcg-pcie").
-        pub incubator_profile: Option<String>,
-
+        /// instead of directly on the host.
+        pub incubator_profile: Option<IncubatorProfileNameOrPath>,
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
         /// Run the tests this number of times
         pub repetitions: std::num::NonZeroU64,
+        /// Parameters to pass to Petri via environment variables
+        pub petri_params: PetriParams,
+        /// Whether to use the test content dir as the repo root
+        ///
+        /// This is useful for running tests on machines without a local clone.
+        pub test_content_dir_as_repo_root: bool,
 
         pub done: WriteVar<SideEffect>,
     }
@@ -131,10 +78,12 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
+        ctx.import::<crate::cleanup_leftover_hyperv_vms::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
-        ctx.import::<crate::install_vmm_tests_deps::Node>();
+        ctx.import::<crate::install_vmm_tests_external_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
+        ctx.import::<crate::init_vmm_tests_content_dir::Node>();
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
@@ -144,157 +93,180 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<crate::write_incubator_target_runner::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
+        ctx.import::<crate::resolve_vmm_tests_pipeline_artifacts::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             junit_test_label,
-            nextest_vmm_tests_archive,
             target,
             nextest_profile,
             nextest_filter_expr,
-            dep_artifact_dirs,
-            test_artifacts,
+            test_content_config,
+            downloaded_artifacts,
             prep_steps_variants,
-            hugetlb_2mb_overcommit_pages,
+            external_deps,
             incubator_profile,
             fail_job_on_test_fail,
             repetitions,
+            petri_params,
+            test_content_dir_as_repo_root,
             done,
         } = request;
 
-        // use a test content dir with
-        // - short path name to avoid issues with long paths
-        // - relative to github.workspace so that the correct disk is used on CI machines.
-        let test_content_dir = match ctx.backend() {
-            FlowBackend::Local => panic!("local backend not supported"),
-            FlowBackend::Ado => ctx.get_ado_variable(AdoRuntimeVar::PIPELINE_WORKSPACE),
-            FlowBackend::Github => ctx.get_gh_context_var().global().runner_temp(),
-        }
-        .map(ctx, |w| PathBuf::from(w).join("test"));
-
-        let VmmTestsDepArtifacts {
-            incubator: register_incubator,
-            openvmm: register_openvmm,
-            openvmm_vhost: register_openvmm_vhost,
-            pipette_windows: register_pipette_windows,
-            pipette_linux_musl: register_pipette_linux_musl,
-            guest_test_uefi: register_guest_test_uefi,
-            prep_steps: register_prep_steps,
-            openhcl_standard,
-            openhcl_standard_dev,
-            openhcl_cvm,
-            openhcl_linux_direct,
-            tmks: register_tmks,
-            tmk_vmm: register_tmk_vmm,
-            tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
-            vmgstool: register_vmgstool,
-            vmgstool_dev: register_vmgstool_dev,
-            tpm_guest_tests_windows: register_tpm_guest_tests_windows,
-            tpm_guest_tests_linux: register_tpm_guest_tests_linux,
-            test_igvm_agent_rpc_server: register_test_igvm_agent_rpc_server,
-        } = dep_artifact_dirs;
-
-        let register_openhcl_igvm_files = [
-            openhcl_standard,
-            openhcl_standard_dev,
-            openhcl_cvm,
-            openhcl_linux_direct,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-
-        ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
+        ctx.req(
+            crate::download_openvmm_vmm_tests_artifacts::Request::Download(downloaded_artifacts),
+        );
 
         let disk_images_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
-        let prepare_vhost_vsock = incubator_profile.is_none()
-            && matches!(
-                target.operating_system,
-                target_lexicon::OperatingSystem::Linux
-            )
-            && matches!(target.architecture, target_lexicon::Architecture::X86_64);
+        let needs_hyperv = matches!(
+            &external_deps,
+            VmmTestsExternalDeps::Windows(w) if w.hyperv
+        );
 
-        ctx.config(crate::install_vmm_tests_deps::Config {
-            selections: Some(match target.operating_system {
-                target_lexicon::OperatingSystem::Windows => {
-                    VmmTestsDepSelections::Windows(VmmTestsDepSelectionsWindows {
-                        hyperv: true,
-                        whp: true,
-                        // this is currently manually set on CVM runners
-                        hardware_isolation: false,
-                    })
-                }
-                target_lexicon::OperatingSystem::Linux => {
-                    VmmTestsDepSelections::Linux(VmmTestsDepSelectionsLinux {
-                        hugetlb_2mb_overcommit_pages,
-                        prepare_vhost_vsock,
-                    })
-                }
-                os => anyhow::bail!("unsupported target operating system: {os}"),
-            }),
+        ctx.config(crate::install_vmm_tests_external_deps::Config {
+            selections: Some(external_deps),
             auto_install: None,
         });
 
-        let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
-        let release_igvm_files = if !matches!(ctx.backend(), FlowBackend::Ado) {
-            Some(ctx.reqv(
-                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
-                    arch,
-                    release_igvm_files: v,
-                    release_version:
-                        crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
-                },
-            ))
-        } else {
-            None
+        let installed_deps = ctx.reqv(crate::install_vmm_tests_external_deps::Request::Install);
+        let mut pre_run_deps = vec![installed_deps.clone()];
+
+        // A cancelled or killed job leaves its Hyper-V VMs running, holding
+        // open the differencing disks petri put in the test content dir. Sweep
+        // them before anything reads from or writes to that directory.
+        let leftover_vms_removed = needs_hyperv
+            .then(|| ctx.reqv(|done| crate::cleanup_leftover_hyperv_vms::Request { done }));
+
+        let needs_incubator = incubator_profile.is_some();
+        let needs_prep_steps = !prep_steps_variants.is_empty();
+
+        let (
+            test_content_dir,
+            nextest_vmm_tests_archive,
+            incubator,
+            prep_steps,
+            test_igvm_agent_rpc_server,
+        ) = match test_content_config {
+            TestContentConfig::Uninitialized {
+                test_content_dir,
+                mut built_artifacts,
+                needs_release_igvm,
+            } => {
+                // use a test content dir with
+                // - short path name to avoid issues with long paths
+                // - relative to github.workspace so that the correct disk is used on CI machines.
+                let test_content_dir = test_content_dir.unwrap_or_else(|| {
+                    match ctx.backend() {
+                        FlowBackend::Local => {
+                            panic!("must specify test_content_dir with local backend")
+                        }
+                        FlowBackend::Ado => ctx.get_ado_variable(AdoRuntimeVar::PIPELINE_WORKSPACE),
+                        FlowBackend::Github => ctx.get_gh_context_var().global().runner_temp(),
+                    }
+                    .map(ctx, |w| PathBuf::from(w).join("test"))
+                });
+
+                let test_content_dir = match &leftover_vms_removed {
+                    Some(removed) => test_content_dir.depending_on(ctx, removed),
+                    None => test_content_dir,
+                };
+
+                let nextest_vmm_tests_archive = built_artifacts
+                    .nextest_vmm_tests_archive
+                    .take()
+                    .expect("nextest_vmm_tests_archive is always required");
+                let incubator = built_artifacts.incubator.take();
+                let prep_steps = built_artifacts.prep_steps.take();
+                // clone instead of take here since petri expects the test igvm
+                // agent to be present in the test content dir even though it doesn't use it
+                let test_igvm_agent_rpc_server = built_artifacts.test_igvm_agent_rpc_server.clone();
+
+                let initialized = ctx.reqv(|v| crate::init_vmm_tests_content_dir::Request {
+                    test_content_dir: test_content_dir.clone(),
+                    vmm_tests_target: target.clone(),
+                    built_artifacts,
+                    is_repo_root: test_content_dir_as_repo_root,
+                    needs_release_igvm,
+                    done: v,
+                });
+
+                let test_content_dir = test_content_dir.depending_on(ctx, &initialized);
+                pre_run_deps.push(initialized);
+
+                (
+                    test_content_dir,
+                    nextest_vmm_tests_archive,
+                    incubator,
+                    prep_steps,
+                    test_igvm_agent_rpc_server,
+                )
+            }
+            TestContentConfig::Initialized {
+                test_content_dir,
+                needs_test_igvm_agent_rpc_server,
+            } => {
+                let test_content_dir = match &leftover_vms_removed {
+                    Some(removed) => test_content_dir.depending_on(ctx, removed),
+                    None => test_content_dir,
+                };
+
+                let (nextest_vmm_tests_archive, nextest_vmm_tests_archive_write) = ctx.new_var();
+                let (incubator, incubator_write) = needs_incubator.then(|| ctx.new_var()).unzip();
+                let (prep_steps, prep_steps_write) =
+                    needs_prep_steps.then(|| ctx.new_var()).unzip();
+                let (test_igvm_agent_rpc_server, test_igvm_agent_rpc_server_write) =
+                    needs_test_igvm_agent_rpc_server
+                        .then(|| ctx.new_var())
+                        .unzip();
+
+                ctx.req(crate::resolve_vmm_tests_pipeline_artifacts::Request {
+                    test_content_dir: test_content_dir.clone(),
+                    vmm_tests_target: target.clone(),
+                    nextest_vmm_tests_archive: nextest_vmm_tests_archive_write,
+                    incubator: incubator_write,
+                    prep_steps: prep_steps_write,
+                    test_igvm_agent_rpc_server: test_igvm_agent_rpc_server_write,
+                });
+
+                (
+                    test_content_dir,
+                    nextest_vmm_tests_archive,
+                    incubator,
+                    prep_steps,
+                    test_igvm_agent_rpc_server,
+                )
+            }
         };
 
-        let installed_deps = ctx.reqv(crate::install_vmm_tests_deps::Request::Install);
-        let mut pre_run_deps = vec![installed_deps.clone()];
+        let openvmm_repo_path = if test_content_dir_as_repo_root {
+            test_content_dir.clone()
+        } else {
+            ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir)
+        };
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: test_content_dir.clone(),
             vmm_tests_target: target.clone(),
-            register_openvmm,
-            register_openvmm_vhost,
-            register_pipette_windows,
-            register_pipette_linux_musl,
-            register_guest_test_uefi,
-            register_tmks,
-            register_tmk_vmm,
-            register_tmk_vmm_linux_musl,
-            register_vmgstool,
-            register_vmgstool_dev,
-            register_tpm_guest_tests_windows,
-            register_tpm_guest_tests_linux,
-            register_test_igvm_agent_rpc_server,
             disk_images_dir: Some(disk_images_dir),
-            register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
+            petri_params,
             get_env: v,
-            release_igvm_files,
-            use_relative_paths: false,
-            disable_remote_artifacts: true,
-            reuse_prepped_vhds: false,
-            require_2mb_hugetlb: hugetlb_2mb_overcommit_pages.is_some(),
         });
 
-        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
         let nextest_config_file = openvmm_repo_path
             .clone()
             .map(ctx, |p| p.join(".config").join("nextest.toml"));
 
         let igvm_agent_env = extra_env.clone();
 
-        let extra_env = if let Some(profile_name) = incubator_profile {
-            let incubator = register_incubator.ok_or_else(|| {
-                anyhow::anyhow!("incubator profile was set but no incubator artifact was provided")
-            })?;
+        let extra_env = if let Some(incubator_profile) = incubator_profile {
+            let incubator = incubator
+                .expect("incubator profile was set but no incubator artifact was provided");
 
             let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
 
@@ -317,20 +289,13 @@ impl SimpleFlowNode for Node {
                 )
             });
 
-            // Resolve the incubator binary and the selected profile from the
-            // incubator artifact (which bundles the profiles directory).
-            let incubator_bin = incubator.clone().map(ctx, |o| o.bin);
-            let profile_path = incubator.map(ctx, move |o| {
-                o.profiles.join(format!("{profile_name}.toml"))
-            });
-
             let nextest_archive = nextest_vmm_tests_archive
                 .clone()
                 .map(ctx, |x| x.archive_file);
 
             ctx.reqv(|v| crate::write_incubator_target_runner::Request {
-                incubator_bin,
-                profile_path,
+                incubator,
+                incubator_profile,
                 kernel: Some(kernel),
                 initrd: Some(initrd),
                 repo_root: openvmm_repo_path.clone(),
@@ -345,8 +310,8 @@ impl SimpleFlowNode for Node {
             extra_env
         };
 
-        if !prep_steps_variants.is_empty() {
-            let prep_steps = register_prep_steps
+        if needs_prep_steps {
+            let prep_steps = prep_steps
                 .expect("Prep steps variants requested but missing binary")
                 .depending_on(ctx, &installed_deps);
             for variant in &prep_steps_variants {
@@ -357,8 +322,8 @@ impl SimpleFlowNode for Node {
                     done,
                 }));
             }
-        } else if let Some(register_prep_steps) = register_prep_steps {
-            register_prep_steps.claim_unused(ctx);
+        } else if let Some(prep_steps) = prep_steps {
+            prep_steps.claim_unused(ctx);
         }
 
         let repetitions = repetitions.get();
@@ -373,9 +338,10 @@ impl SimpleFlowNode for Node {
             let previous_done = all_log_dirs
                 .last()
                 .map(|x: &ReadVar<PathBuf>| x.clone().into_side_effect());
-            if matches!(ctx.platform(), FlowPlatform::Windows) {
+            if let Some(test_igvm_agent_rpc_server) = test_igvm_agent_rpc_server.clone() {
                 pre_run_deps_iteration.push(ctx.reqv(|done| {
                     crate::run_test_igvm_agent_rpc_server::Request {
+                        test_igvm_agent_rpc_server,
                         env: igvm_agent_env.clone(),
                         done,
                         previous_done,
@@ -401,7 +367,7 @@ impl SimpleFlowNode for Node {
 
             // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
             // This ensures we clean up the background process.
-            let rpc_server_stopped = matches!(ctx.platform(), FlowPlatform::Windows).then(|| {
+            let rpc_server_stopped = test_igvm_agent_rpc_server.is_some().then(|| {
                 ctx.reqv(|done| crate::stop_test_igvm_agent_rpc_server::Request {
                     after_tests: results.clone().into_side_effect(),
                     done,

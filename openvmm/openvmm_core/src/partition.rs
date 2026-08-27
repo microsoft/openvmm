@@ -70,6 +70,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets the [`PartitionMemoryMap`] interface for `vtl`.
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap>;
 
+    /// Gets the host-access interface, if the partition requires it.
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>>;
+
     /// Requests an MSI be delivered to `vtl`.
     #[cfg(guest_arch = "x86_64")]
     fn request_msi(&self, vtl: Vtl, request: MsiRequest);
@@ -194,11 +197,19 @@ where
     }
 
     fn into_vm_partition(self: Arc<Self>) -> WrappedPartition {
-        WrappedPartition(self)
+        let initial_vp_state_source = Partition::initial_vp_state_source(self.as_ref());
+        WrappedPartition {
+            partition: self,
+            initial_vp_state_source,
+        }
     }
 
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap> {
         self.memory_mapper(vtl)
+    }
+
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>> {
+        PartitionMemoryMapper::host_access(self)
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -263,25 +274,33 @@ where
 
 /// Wrapper struct that implements [`VmPartition`].
 #[derive(InspectMut)]
-#[inspect(transparent)]
-pub struct WrappedPartition(Arc<dyn BasicPartitionStateAccess>);
+pub struct WrappedPartition {
+    #[inspect(flatten)]
+    partition: Arc<dyn BasicPartitionStateAccess>,
+    #[inspect(skip)]
+    initial_vp_state_source: virt::InitialVpStateSource,
+}
 
 #[async_trait]
 impl VmPartition for WrappedPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        self.initial_vp_state_source
+    }
+
     fn reset(&mut self) -> anyhow::Result<()> {
-        self.0.reset()
+        self.partition.reset()
     }
 
     fn scrub_vtl(&mut self, vtl: Vtl) -> anyhow::Result<()> {
-        self.0.scrub_vtl(vtl)
+        self.partition.scrub_vtl(vtl)
     }
 
     fn accept_initial_pages(&mut self, pages: Vec<InitialPageImport>) -> anyhow::Result<()> {
-        self.0.accept_initial_pages(pages)
+        self.partition.accept_initial_pages(pages)
     }
 
     fn guest_os_id(&self) -> u64 {
-        self.0.guest_os_id()
+        self.partition.guest_os_id()
     }
 }
 
@@ -289,11 +308,11 @@ impl SaveRestore for WrappedPartition {
     type SavedState = VmSavedState;
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        self.0.save().map_err(SaveError::Other)
+        self.partition.save().map_err(SaveError::Other)
     }
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-        self.0.restore(state).map_err(RestoreError::Other)
+        self.partition.restore(state).map_err(RestoreError::Other)
     }
 }
 

@@ -15,6 +15,7 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvInputVtl;
 use spin::Mutex;
 
+use crate::context::HypercallPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VtlPlatformTrait;
 use crate::platform::hyperv::arch::hypercall::HvCall;
@@ -80,7 +81,7 @@ pub(crate) fn vtl_transform(vtl: Vtl) -> HvInputVtl {
 
 #[cfg_attr(target_arch = "aarch64", expect(dead_code))] // xtask-fmt allow-target-arch sys-crate
 impl HvTestCtx {
-    /// Construct an *un-initialised* test context.  
+    /// Construct an *un-initialised* test context.
     /// Call [`HvTestCtx::init`] before using the value.
     pub const fn new() -> Self {
         HvTestCtx {
@@ -90,9 +91,9 @@ impl HvTestCtx {
         }
     }
 
-    /// Perform the one-time initialisation sequence:  
-    /// – initialise the hypercall page,  
-    /// – discover the VP count and create command queues,  
+    /// Perform the one-time initialisation sequence:
+    /// – initialise the hypercall page,
+    /// – discover the VP count and create command queues,
     /// – record the current VTL.
     pub fn init(&mut self, vtl: Vtl) -> TmkResult<()> {
         self.hvcall.initialize();
@@ -113,7 +114,7 @@ impl HvTestCtx {
         HvTestCtx::exec_handler(Vtl::Vtl0);
     }
 
-    /// Busy-loop executor that runs on every VP.  
+    /// Busy-loop executor that runs on every VP.
     /// Extracts commands from the per-VP queue and executes them in the
     /// appropriate VTL, switching VTLs when necessary.
     fn exec_handler(vtl: Vtl) {
@@ -152,6 +153,61 @@ impl HvTestCtx {
             }
         }
     }
+}
+
+impl HypercallPlatformTrait for HvTestCtx {
+    type Config = HyperVHypercallConfig;
+
+    fn hypercall(
+        &mut self,
+        code: u64,
+        input: &[u8],
+        output: &mut [u8],
+        cfg: Self::Config,
+    ) -> TmkResult<()> {
+        let code =
+            hvdef::HypercallCode(code.try_into().ok().ok_or(TmkError::InvalidHypercallCode)?);
+
+        let inp_len = input.len().min(self.hvcall.input_page.buffer.len());
+        let out_len = output.len().min(self.hvcall.output_page.buffer.len());
+
+        // Clear input/output page
+        self.hvcall.input_page.buffer.fill(0);
+        self.hvcall.output_page.buffer.fill(0);
+
+        // Write to input page
+        self.hvcall.input_page.buffer[0..inp_len].copy_from_slice(&input[0..inp_len]);
+
+        let result = if out_len == 0 && inp_len <= 16 && cfg.fast_call {
+            // Do a fast pass-by-register call
+            self.hvcall.dispatch_hvcall_fast(code)
+        } else {
+            // Do a normal call
+            let result =
+                self.hvcall
+                    .dispatch_hvcall_ex(code, cfg.rep_start, cfg.rep_count, cfg.size);
+
+            // Write to output buffer if we have any to write
+            output[0..out_len].copy_from_slice(&self.hvcall.output_page.buffer[0..out_len]);
+            result
+        };
+
+        Ok(result.result()?)
+    }
+}
+
+/// Collection of parameters for Hyper-V hypercalls.
+#[derive(Default)]
+pub struct HyperVHypercallConfig {
+    /// A repetition start index used for some hypercalls.
+    pub rep_start: Option<usize>,
+    /// A repetition count used for some hypercalls.
+    pub rep_count: Option<usize>,
+    /// A size value used for some hypercalls.
+    pub size: Option<usize>,
+    /// Whether to hint that we want to attempt to pass the arguments by
+    /// register as a fast call (two input fields, zero output fields)
+    pub fast_call: bool,
 }
 
 impl From<hvdef::HvError> for TmkError {

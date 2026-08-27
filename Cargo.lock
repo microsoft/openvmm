@@ -550,6 +550,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cca_tests"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_vmm_test",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5795,6 +5807,7 @@ dependencies = [
  "vmswitch",
  "vpci",
  "watchdog_core",
+ "x86defs",
  "zerocopy",
 ]
 
@@ -5995,6 +6008,7 @@ dependencies = [
  "build_rs_guest_arch",
  "fs-err",
  "hypervisor_resources",
+ "test_with_tracing",
  "virt_mshv",
  "virt_whp",
  "vm_resource",
@@ -7801,6 +7815,7 @@ dependencies = [
  "pci_core",
  "thiserror 2.0.16",
  "tracelimit",
+ "tracing",
  "vmcore",
  "zerocopy",
 ]
@@ -9342,6 +9357,7 @@ dependencies = [
  "vfio_sys",
  "vm_resource",
  "vmcore",
+ "zerocopy",
 ]
 
 [[package]]
@@ -9367,6 +9383,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "vfio-bindings",
+ "zerocopy",
 ]
 
 [[package]]
@@ -9602,6 +9619,7 @@ dependencies = [
  "hvdef",
  "inspect",
  "libc",
+ "memory_range",
  "mshv-bindings",
  "mshv-ioctls",
  "pal",
@@ -9609,6 +9627,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "signal-hook",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",

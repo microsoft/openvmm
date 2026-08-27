@@ -18,6 +18,10 @@ use crate::memory::private_memory_range_from_slots;
 use std::os::fd::AsFd;
 use thiserror::Error;
 use virt::InitialPageImportType;
+use zerocopy::FromBytes;
+use zerocopy::FromZeros;
+
+pub(crate) const KVM_SNP_VMSA_GPA: u64 = 0xffff_ffff_f000;
 
 #[derive(Debug, Error)]
 pub enum SnpError {
@@ -41,10 +45,28 @@ pub enum SnpError {
     TooManyCpuidEntries(usize),
     #[error("SNP launch is already in progress")]
     LaunchInProgress,
+    #[error("SNP launch is already complete")]
+    LaunchAlreadyFinished,
     #[error("SNP launch previously failed")]
     LaunchFailed,
     #[error("invalid SNP BSP state: {0}")]
     InvalidBspState(&'static str),
+    #[error("SNP IGVM must contain exactly one BSP VMSA context")]
+    InvalidIgvmTopology,
+    #[error("SNP IGVM VMSA import markers do not match the supplied VP contexts")]
+    InvalidIgvmVmsaImports,
+    #[error("SNP IGVM VMSA GPA {0:#x} is not supported by KVM")]
+    InvalidVmsaGpa(u64),
+    #[error("invalid SNP IGVM VMSA: {0}")]
+    InvalidIgvmVmsa(&'static str),
+    #[error("KVM does not support SNP VMSA feature bits {0:#x}")]
+    UnsupportedVmsaFeatures(u64),
+    #[error("SNP IGVM requests unsupported highest VTL {0}")]
+    UnsupportedVtl(u8),
+    #[error("SNP IGVM requests unsupported shared GPA boundary {0:#x}")]
+    UnsupportedSharedGpaBoundary(u64),
+    #[error("KVM does not support SNP IGVM relocation")]
+    IgvmRelocationUnsupported,
     #[error("KVM SNP operation failed")]
     Kvm(#[from] kvm::Error),
     #[error(transparent)]
@@ -64,6 +86,74 @@ pub(crate) enum SnpLaunchState {
     Failed,
 }
 
+#[derive(Debug)]
+pub(crate) struct KvmSnpVpConfig {
+    pub(crate) gpa: u64,
+    pub(crate) vmsa: x86defs::snp::SevVmsa,
+}
+
+#[derive(Debug)]
+pub(crate) struct KvmSnpConfig {
+    pub(crate) generic: virt::SnpConfig,
+    pub(crate) bsp: KvmSnpVpConfig,
+    pub(crate) vmsa_features: u64,
+}
+
+fn parse_vmsa_page(context: &virt::SnpVpContext) -> Result<KvmSnpVpConfig, SnpError> {
+    let (vmsa, _) = x86defs::snp::SevVmsa::read_from_prefix(context.page.as_ref())
+        .map_err(|_| SnpError::InvalidIgvmVmsa("invalid VMSA page size"))?;
+    Ok(KvmSnpVpConfig {
+        gpa: context.gpa,
+        vmsa,
+    })
+}
+
+pub(crate) fn prepare_snp_config(
+    config: virt::SnpConfig,
+    supported_vmsa_features: u64,
+) -> Result<KvmSnpConfig, SnpError> {
+    if config.highest_vtl != 0 {
+        return Err(SnpError::UnsupportedVtl(config.highest_vtl));
+    }
+    if config.shared_gpa_boundary != 0 {
+        return Err(SnpError::UnsupportedSharedGpaBoundary(
+            config.shared_gpa_boundary,
+        ));
+    }
+    if config.has_relocation {
+        return Err(SnpError::IgvmRelocationUnsupported);
+    }
+    let [context] = config.vp_contexts.as_slice() else {
+        return Err(SnpError::InvalidIgvmTopology);
+    };
+    if !context.vp_index.is_bsp() {
+        return Err(SnpError::InvalidIgvmTopology);
+    }
+
+    // KVM_SEV_INIT2 needs the VM-wide VMSA feature bits before any vCPUs
+    // exist. The IGVM describes only the BSP; KVM synthesizes AP VMSAs from
+    // the reset state configured by this backend.
+    let bsp = parse_vmsa_page(context)?;
+    if bsp.vmsa.sev_features.vtom() || bsp.vmsa.virtual_tom != 0 {
+        return Err(SnpError::InvalidIgvmVmsa("vTOM is not supported"));
+    }
+    // KVM_SEV_INIT2 takes the feature bits that configure the VMSA, excluding
+    // the SNP-active bit stored in the VMSA itself. KVM adds that bit when it
+    // initializes an SNP VM.
+    let vmsa_features = u64::from(bsp.vmsa.sev_features.with_snp(false));
+    let unsupported_features = vmsa_features & !supported_vmsa_features;
+    if unsupported_features != 0 {
+        return Err(SnpError::UnsupportedVmsaFeatures(unsupported_features));
+    }
+    validate_snp_igvm_vmsa_state(&bsp.vmsa)?;
+
+    Ok(KvmSnpConfig {
+        generic: config,
+        bsp,
+        vmsa_features,
+    })
+}
+
 impl virt::AcceptInitialPages for KvmPartition {
     type Error = KvmError;
 
@@ -81,7 +171,7 @@ impl KvmPartitionInner {
             match *state {
                 SnpLaunchState::NotStarted => *state = SnpLaunchState::Started,
                 SnpLaunchState::Started => return Err(SnpError::LaunchInProgress),
-                SnpLaunchState::Finished => return Ok(()),
+                SnpLaunchState::Finished => return Err(SnpError::LaunchAlreadyFinished),
                 SnpLaunchState::Failed => return Err(SnpError::LaunchFailed),
             }
         }
@@ -107,23 +197,46 @@ impl KvmPartitionInner {
         pages: &[virt::InitialPageImport],
     ) -> Result<(), SnpError> {
         let sev = self.sev.as_ref().ok_or(SnpError::IsolationNotSupported)?;
-        self.apply_snp_vmsa(pages)?;
+        if let Some(config) = &self.snp_config {
+            validate_vp_context_imports(pages, &config.generic)?;
+        } else {
+            self.apply_snp_vmsa(pages)?;
+        }
         self.kvm.check_sev_snp_launch_extensions()?;
         let mut launch_start = kvm::kvm_sev_snp_launch_start {
-            // TODO: This debug-capable policy is for bring-up.
-            policy: (1 << 19) | (1 << 17) | (1 << 16),
+            policy: self
+                .snp_config
+                .as_ref()
+                .map_or((1 << 19) | (1 << 17) | (1 << 16), |config| {
+                    config.generic.policy
+                }),
             ..Default::default()
         };
         tracing::debug!(policy = launch_start.policy, "KVM_SEV_SNP_LAUNCH_START");
         self.kvm
             .sev_snp_launch_start(sev.as_fd(), &mut launch_start)?;
 
-        let memory = self.memory.lock();
         for page in pages {
+            if page.import_type == InitialPageImportType::Shared {
+                self.set_initial_shared_memory(page.range)?;
+                continue;
+            }
+            if self.snp_config.is_some() && page.import_type == InitialPageImportType::VpContext {
+                // KVM synthesizes and measures IGVM VMSAs from vCPU register
+                // state during launch finish.
+                continue;
+            }
+
             let kvm_page_type = crate::arch::snp::snp_launch_page_type(page.import_type)?;
 
-            let private_range = private_memory_range_from_slots(page.range, &memory.ranges)
-                .map_err(map_snp_private_range_error)?;
+            // Each import may cover a coalesced range, so this lock is taken
+            // once per import rather than once per 4-KiB page. Keep it scoped
+            // around the lookup because shared-range handling also takes it.
+            let private_range = {
+                let memory = self.memory.lock();
+                private_memory_range_from_slots(page.range, &memory.ranges)
+                    .map_err(map_snp_private_range_error)?
+            };
             if page.import_type == InitialPageImportType::Cpuid {
                 tracing::debug!(
                     gpa = page.range.start(),
@@ -131,12 +244,18 @@ impl KvmPartitionInner {
                     cpuid_entries = self.bsp_cpuid.len(),
                     "writing SNP CPUID page"
                 );
-                write_snp_cpuid_page(private_range.hva, page.range.len(), &self.bsp_cpuid)?;
+                let (xcr0, xss) = self
+                    .snp_config
+                    .as_ref()
+                    .map_or((1, 0), |config| (config.bsp.vmsa.xcr0, config.bsp.vmsa.xss));
+                write_snp_cpuid_page(
+                    private_range.hva,
+                    page.range.len(),
+                    &self.bsp_cpuid,
+                    xcr0,
+                    xss,
+                )?;
             }
-            // IGVM page data with no file payload represents a normal private
-            // page containing zeroes, not an SNP hardware ZERO page. Do not
-            // infer the page type from contents; add an explicit import type if
-            // IGVM gains native hardware-zero-page semantics.
             let gpa = page.range.start();
             tracing::trace!(
                 gpa,
@@ -245,6 +364,11 @@ impl KvmPartitionInner {
         for vp in &self.vps {
             let vp_info = vp.vp_info();
             let kvm_vp = self.kvm.vp(vp_info.apic_id);
+            if let Some(config) = &self.snp_config
+                && vp_info.base.vp_index.is_bsp()
+            {
+                set_snp_igvm_vmsa_state(&kvm_vp, &config.bsp.vmsa)?;
+            }
             let sregs = kvm_vp.get_sregs()?;
 
             let xcr0 = kvm_vp.get_xcr0()?;
@@ -259,6 +383,243 @@ impl KvmPartitionInner {
 
         Ok(())
     }
+}
+
+/// Verifies that loader-generated VP-context markers match the contexts
+/// extracted from the IGVM before partition construction.
+///
+/// KVM skips these marked pages during launch updates because it constructs
+/// and measures VMSAs from vCPU state during launch finish.
+fn validate_vp_context_imports(
+    pages: &[virt::InitialPageImport],
+    config: &virt::SnpConfig,
+) -> Result<(), SnpError> {
+    let mut imports = pages
+        .iter()
+        .filter(|page| page.import_type == InitialPageImportType::VpContext);
+    for context in &config.vp_contexts {
+        let Some(import) = imports.next() else {
+            return Err(SnpError::InvalidIgvmVmsaImports);
+        };
+        if import.range.start() != context.gpa || import.range.len() != hvdef::HV_PAGE_SIZE {
+            return Err(SnpError::InvalidIgvmVmsaImports);
+        }
+    }
+    if imports.next().is_some() {
+        return Err(SnpError::InvalidIgvmVmsaImports);
+    }
+
+    Ok(())
+}
+
+fn segment_from_vmsa(segment: x86defs::snp::SevSelector) -> kvm::kvm_segment {
+    kvm::kvm_segment {
+        base: segment.base,
+        limit: segment.limit,
+        selector: segment.selector,
+        type_: (segment.attrib & 0xf) as u8,
+        present: ((segment.attrib >> 7) & 1) as u8,
+        dpl: ((segment.attrib >> 5) & 3) as u8,
+        db: ((segment.attrib >> 10) & 1) as u8,
+        s: ((segment.attrib >> 4) & 1) as u8,
+        l: ((segment.attrib >> 9) & 1) as u8,
+        g: ((segment.attrib >> 11) & 1) as u8,
+        avl: ((segment.attrib >> 8) & 1) as u8,
+        unusable: 0,
+        padding: 0,
+    }
+}
+
+fn table_from_vmsa(table: x86defs::snp::SevSelector) -> kvm::kvm_dtable {
+    kvm::kvm_dtable {
+        base: table.base,
+        limit: table
+            .limit
+            .try_into()
+            .expect("SNP IGVM VMSA table limits were validated"),
+        padding: [0; 3],
+    }
+}
+
+/// Rejects VMSA fields that this register-based KVM launch path cannot import.
+///
+/// KVM constructs the measured VMSA from its vCPU state, so silently ignoring
+/// a file-provided field would produce a different initial context.
+fn validate_snp_igvm_vmsa_state(vmsa: &x86defs::snp::SevVmsa) -> Result<(), SnpError> {
+    if u16::try_from(vmsa.gdtr.limit).is_err() || u16::try_from(vmsa.idtr.limit).is_err() {
+        return Err(SnpError::InvalidIgvmVmsa(
+            "descriptor table limit exceeds KVM representation",
+        ));
+    }
+
+    let mut supported = x86defs::snp::SevVmsa::new_zeroed();
+    supported.es = vmsa.es;
+    supported.cs = vmsa.cs;
+    supported.ss = vmsa.ss;
+    supported.ds = vmsa.ds;
+    supported.fs = vmsa.fs;
+    supported.gs = vmsa.gs;
+    supported.gdtr = vmsa.gdtr;
+    supported.ldtr = vmsa.ldtr;
+    supported.idtr = vmsa.idtr;
+    supported.tr = vmsa.tr;
+    supported.efer = vmsa.efer;
+    supported.xss = vmsa.xss;
+    supported.cr4 = vmsa.cr4;
+    supported.cr3 = vmsa.cr3;
+    supported.cr0 = vmsa.cr0;
+    supported.dr7 = vmsa.dr7;
+    supported.dr6 = vmsa.dr6;
+    supported.rflags = vmsa.rflags;
+    supported.rip = vmsa.rip;
+    supported.dr0 = vmsa.dr0;
+    supported.dr1 = vmsa.dr1;
+    supported.dr2 = vmsa.dr2;
+    supported.dr3 = vmsa.dr3;
+    supported.rsp = vmsa.rsp;
+    supported.rax = vmsa.rax;
+    supported.star = vmsa.star;
+    supported.lstar = vmsa.lstar;
+    supported.cstar = vmsa.cstar;
+    supported.sfmask = vmsa.sfmask;
+    supported.kernel_gs_base = vmsa.kernel_gs_base;
+    supported.sysenter_cs = vmsa.sysenter_cs;
+    supported.sysenter_esp = vmsa.sysenter_esp;
+    supported.sysenter_eip = vmsa.sysenter_eip;
+    supported.cr2 = vmsa.cr2;
+    supported.pat = vmsa.pat;
+    supported.spec_ctrl = vmsa.spec_ctrl;
+    supported.tsc_aux = vmsa.tsc_aux;
+    supported.rcx = vmsa.rcx;
+    supported.rdx = vmsa.rdx;
+    supported.rbx = vmsa.rbx;
+    supported.rbp = vmsa.rbp;
+    supported.rsi = vmsa.rsi;
+    supported.rdi = vmsa.rdi;
+    supported.r8 = vmsa.r8;
+    supported.r9 = vmsa.r9;
+    supported.r10 = vmsa.r10;
+    supported.r11 = vmsa.r11;
+    supported.r12 = vmsa.r12;
+    supported.r13 = vmsa.r13;
+    supported.r14 = vmsa.r14;
+    supported.r15 = vmsa.r15;
+    supported.sev_features = vmsa.sev_features;
+    supported.xcr0 = vmsa.xcr0;
+    supported.x87dp = vmsa.x87dp;
+    supported.mxcsr = vmsa.mxcsr;
+    supported.x87_fsw = vmsa.x87_fsw;
+    supported.x87_fcw = vmsa.x87_fcw;
+    supported.x87_op = vmsa.x87_op;
+    supported.x87_rip = vmsa.x87_rip;
+
+    if &supported != vmsa {
+        return Err(SnpError::InvalidIgvmVmsa(
+            "contains state that KVM cannot import",
+        ));
+    }
+
+    Ok(())
+}
+
+fn snp_igvm_vmsa_msrs(vmsa: &x86defs::snp::SevVmsa) -> Vec<(u32, u64)> {
+    let mut msrs = vec![
+        (x86defs::X86X_MSR_CR_PAT, vmsa.pat),
+        (x86defs::X86X_MSR_XSS, vmsa.xss),
+    ];
+    msrs.extend(
+        [
+            (x86defs::X86X_MSR_STAR, vmsa.star),
+            (x86defs::X86X_MSR_LSTAR, vmsa.lstar),
+            (x86defs::X86X_MSR_CSTAR, vmsa.cstar),
+            (x86defs::X86X_MSR_SFMASK, vmsa.sfmask),
+            (x86defs::X64_MSR_KERNEL_GS_BASE, vmsa.kernel_gs_base),
+            (x86defs::X86X_MSR_SYSENTER_CS, vmsa.sysenter_cs),
+            (x86defs::X86X_MSR_SYSENTER_ESP, vmsa.sysenter_esp),
+            (x86defs::X86X_MSR_SYSENTER_EIP, vmsa.sysenter_eip),
+            (x86defs::X86X_MSR_SPEC_CTRL, vmsa.spec_ctrl),
+            (x86defs::X86X_MSR_TSC_AUX, u64::from(vmsa.tsc_aux)),
+        ]
+        .into_iter()
+        .filter(|(_, value)| *value != 0),
+    );
+    msrs
+}
+
+fn snp_igvm_vmsa_xsave(vmsa: &x86defs::snp::SevVmsa) -> [u8; 4096] {
+    let mut xsave = [0; 4096];
+    xsave[0..2].copy_from_slice(&vmsa.x87_fcw.to_le_bytes());
+    xsave[2..4].copy_from_slice(&vmsa.x87_fsw.to_le_bytes());
+    xsave[4] = vmsa.x87_ftw as u8;
+    xsave[6..8].copy_from_slice(&vmsa.x87_op.to_le_bytes());
+    xsave[8..16].copy_from_slice(&vmsa.x87_rip.to_le_bytes());
+    xsave[16..24].copy_from_slice(&vmsa.x87dp.to_le_bytes());
+    xsave[24..28].copy_from_slice(&vmsa.mxcsr.to_le_bytes());
+
+    let xstate_bv = vmsa.xcr0 & (x86defs::xsave::XFEATURE_X87 | x86defs::xsave::XFEATURE_SSE);
+    let header = x86defs::xsave::XSAVE_LEGACY_LEN;
+    xsave[header..header + size_of::<u64>()].copy_from_slice(&xstate_bv.to_le_bytes());
+    xsave
+}
+
+fn set_snp_igvm_vmsa_state(
+    kvm_vp: &kvm::Processor<'_>,
+    vmsa: &x86defs::snp::SevVmsa,
+) -> Result<(), SnpError> {
+    let regs = kvm::kvm_regs {
+        rax: vmsa.rax,
+        rbx: vmsa.rbx,
+        rcx: vmsa.rcx,
+        rdx: vmsa.rdx,
+        rsi: vmsa.rsi,
+        rdi: vmsa.rdi,
+        rsp: vmsa.rsp,
+        rbp: vmsa.rbp,
+        r8: vmsa.r8,
+        r9: vmsa.r9,
+        r10: vmsa.r10,
+        r11: vmsa.r11,
+        r12: vmsa.r12,
+        r13: vmsa.r13,
+        r14: vmsa.r14,
+        r15: vmsa.r15,
+        rip: vmsa.rip,
+        rflags: vmsa.rflags,
+    };
+    let mut sregs = kvm_vp.get_sregs()?;
+    sregs.cs = segment_from_vmsa(vmsa.cs);
+    sregs.ds = segment_from_vmsa(vmsa.ds);
+    sregs.es = segment_from_vmsa(vmsa.es);
+    sregs.fs = segment_from_vmsa(vmsa.fs);
+    sregs.gs = segment_from_vmsa(vmsa.gs);
+    sregs.ss = segment_from_vmsa(vmsa.ss);
+    sregs.tr = segment_from_vmsa(vmsa.tr);
+    sregs.ldt = segment_from_vmsa(vmsa.ldtr);
+    sregs.gdt = table_from_vmsa(vmsa.gdtr);
+    sregs.idt = table_from_vmsa(vmsa.idtr);
+    sregs.cr0 = vmsa.cr0;
+    sregs.cr2 = vmsa.cr2;
+    sregs.cr3 = vmsa.cr3;
+    sregs.cr4 = vmsa.cr4;
+    sregs.cr8 = 0;
+    sregs.efer = vmsa.efer & !x86defs::X64_EFER_SVME;
+    sregs.interrupt_bitmap = [0; 4];
+
+    kvm_vp.set_regs(&regs)?;
+    kvm_vp.set_sregs(&sregs)?;
+    kvm_vp.set_debug_regs(&kvm::DebugRegisters {
+        db: [vmsa.dr0, vmsa.dr1, vmsa.dr2, vmsa.dr3],
+        dr6: vmsa.dr6,
+        dr7: vmsa.dr7,
+    })?;
+    kvm_vp.set_xcr0(vmsa.xcr0)?;
+    kvm_vp.set_msrs(&snp_igvm_vmsa_msrs(vmsa))?;
+
+    // Validation rejects live x87, XMM, YMM, PKRU, and CET state that this
+    // register-based KVM launch path cannot import.
+    let xsave = snp_igvm_vmsa_xsave(vmsa);
+    kvm_vp.set_xsave(&xsave)?;
+    Ok(())
 }
 
 /// Validates the BSP state that KVM will seal into the initial VMSA.
@@ -328,6 +689,8 @@ fn write_snp_cpuid_page(
     page: *mut u8,
     page_len: u64,
     cpuid: &[kvm::kvm_cpuid_entry2],
+    initial_xcr0: u64,
+    initial_xss: u64,
 ) -> Result<(), SnpError> {
     if page_len < (SNP_CPUID_TABLE_HEADER_SIZE + SNP_CPUID_COUNT_MAX * SNP_CPUID_FN_SIZE) as u64 {
         return Err(SnpError::InvalidLaunchRange);
@@ -358,7 +721,7 @@ fn write_snp_cpuid_page(
             == x86defs::cpuid::CpuidFunction::ExtendedStateEnumeration.0
             && (cpuid.index == 0 || cpuid.index == 1);
         let (xcr0, xss) = if initial_xsave_leaf {
-            (1_u64, 0_u64)
+            (initial_xcr0, initial_xss)
         } else {
             (0_u64, 0_u64)
         };
@@ -396,7 +759,9 @@ fn sanitize_snp_cpuid_entry(entry: &mut kvm::kvm_cpuid_entry2) {
 /// Converts a generic private-slot lookup failure into the SNP launch error.
 fn map_snp_private_range_error(err: MemoryError) -> SnpError {
     match err {
-        MemoryError::InvalidPrivateMemoryRange => SnpError::InvalidLaunchRange,
+        MemoryError::InvalidPrivateMemoryRange | MemoryError::InvalidMapGpaRange => {
+            SnpError::InvalidLaunchRange
+        }
         err => SnpError::Memory(err),
     }
 }
@@ -404,6 +769,248 @@ fn map_snp_private_range_error(err: MemoryError) -> SnpError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
+
+    fn valid_vmsa_page_at_rip(features: x86defs::snp::SevFeatures, rip: u64) -> Box<[u8; 4096]> {
+        let mut vmsa = x86defs::snp::SevVmsa::new_zeroed();
+        vmsa.efer = x86defs::X64_EFER_SVME
+            | x86defs::X64_EFER_LME
+            | x86defs::X64_EFER_LMA
+            | x86defs::X64_EFER_NXE;
+        vmsa.cr4 = x86defs::X64_CR4_MCE | x86defs::X64_CR4_PAE;
+        vmsa.cr3 = (1 << 51) | 0x1000;
+        vmsa.cr0 = x86defs::X64_CR0_ET | x86defs::X64_CR0_PE | x86defs::X64_CR0_PG;
+        vmsa.dr7 = 0x400;
+        vmsa.dr6 = 0xffff_0ff0;
+        vmsa.rflags = 2;
+        vmsa.rip = rip;
+        vmsa.sev_features = features;
+        vmsa.xcr0 = 1;
+        vmsa.x87_fcw = x86defs::xsave::INIT_FCW;
+        vmsa.mxcsr = x86defs::xsave::DEFAULT_MXCSR;
+
+        let mut page = [0; 4096];
+        page[..size_of::<x86defs::snp::SevVmsa>()].copy_from_slice(vmsa.as_bytes());
+        Box::new(page)
+    }
+
+    fn valid_vmsa_page(features: x86defs::snp::SevFeatures) -> Box<[u8; 4096]> {
+        valid_vmsa_page_at_rip(features, 0x100000)
+    }
+
+    fn vmsa_mut(page: &mut [u8; 4096]) -> &mut x86defs::snp::SevVmsa {
+        x86defs::snp::SevVmsa::mut_from_prefix(page).unwrap().0
+    }
+
+    fn vp_context(vp_index: u32, page: Box<[u8; 4096]>) -> virt::SnpVpContext {
+        virt::SnpVpContext {
+            gpa: KVM_SNP_VMSA_GPA,
+            vp_index: virt::VpIndex::new(vp_index),
+            page,
+        }
+    }
+
+    fn snp_config_with_contexts(vp_contexts: Vec<virt::SnpVpContext>) -> virt::SnpConfig {
+        virt::SnpConfig {
+            policy: 0x30000,
+            highest_vtl: 0,
+            shared_gpa_boundary: 0,
+            has_relocation: false,
+            vp_contexts,
+            id_block: None,
+        }
+    }
+
+    fn snp_config(page: Box<[u8; 4096]>) -> virt::SnpConfig {
+        snp_config_with_contexts(vec![vp_context(0, page)])
+    }
+
+    fn page_import(gpa: u64, import_type: InitialPageImportType) -> virt::InitialPageImport {
+        virt::InitialPageImport {
+            range: memory_range::MemoryRange::new(gpa..gpa + hvdef::HV_PAGE_SIZE),
+            import_type,
+            tag: "test",
+        }
+    }
+
+    #[test]
+    fn validates_kvm_igvm_vmsa_import_markers() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        let config = snp_config(valid_vmsa_page(features));
+        let pages = [
+            page_import(0x1000, InitialPageImportType::Normal),
+            page_import(KVM_SNP_VMSA_GPA, InitialPageImportType::VpContext),
+        ];
+
+        validate_vp_context_imports(&pages, &config).unwrap();
+
+        let missing = [page_import(0x1000, InitialPageImportType::Normal)];
+        assert!(matches!(
+            validate_vp_context_imports(&missing, &config),
+            Err(SnpError::InvalidIgvmVmsaImports)
+        ));
+    }
+
+    #[test]
+    fn accepts_vmsa_before_measured_pages() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        let config = snp_config(valid_vmsa_page(features));
+        let pages = [
+            page_import(KVM_SNP_VMSA_GPA, InitialPageImportType::VpContext),
+            page_import(0x1000, InitialPageImportType::Normal),
+        ];
+
+        validate_vp_context_imports(&pages, &config).unwrap();
+    }
+
+    #[test]
+    fn propagates_supported_nonzero_vmsa_features() {
+        let features = x86defs::snp::SevFeatures::new()
+            .with_snp(true)
+            .with_restrict_injection(true);
+        let supported = u64::from(features.with_snp(false));
+        let prepared =
+            prepare_snp_config(snp_config(valid_vmsa_page(features)), supported).unwrap();
+        assert_eq!(prepared.vmsa_features, supported);
+
+        assert!(matches!(
+            prepare_snp_config(
+                snp_config(valid_vmsa_page(features)),
+                0,
+            ),
+            Err(SnpError::UnsupportedVmsaFeatures(bits)) if bits == supported
+        ));
+    }
+
+    #[test]
+    fn preserves_supported_vmsa_msrs() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        let mut page = valid_vmsa_page(features);
+        {
+            let vmsa = vmsa_mut(&mut page);
+            vmsa.pat = 1;
+            vmsa.xss = 2;
+            vmsa.star = 3;
+            vmsa.lstar = 4;
+            vmsa.cstar = 5;
+            vmsa.sfmask = 6;
+            vmsa.kernel_gs_base = 7;
+            vmsa.sysenter_cs = 8;
+            vmsa.sysenter_esp = 9;
+            vmsa.sysenter_eip = 10;
+            vmsa.spec_ctrl = 11;
+            vmsa.tsc_aux = 12;
+        }
+
+        let prepared = prepare_snp_config(snp_config(page), u64::MAX).unwrap();
+        assert_eq!(
+            snp_igvm_vmsa_msrs(&prepared.bsp.vmsa),
+            vec![
+                (x86defs::X86X_MSR_CR_PAT, 1),
+                (x86defs::X86X_MSR_XSS, 2),
+                (x86defs::X86X_MSR_STAR, 3),
+                (x86defs::X86X_MSR_LSTAR, 4),
+                (x86defs::X86X_MSR_CSTAR, 5),
+                (x86defs::X86X_MSR_SFMASK, 6),
+                (x86defs::X64_MSR_KERNEL_GS_BASE, 7),
+                (x86defs::X86X_MSR_SYSENTER_CS, 8),
+                (x86defs::X86X_MSR_SYSENTER_ESP, 9),
+                (x86defs::X86X_MSR_SYSENTER_EIP, 10),
+                (x86defs::X86X_MSR_SPEC_CTRL, 11),
+                (x86defs::X86X_MSR_TSC_AUX, 12),
+            ]
+        );
+    }
+
+    #[test]
+    fn writes_supported_vmsa_xsave_state() {
+        let mut vmsa = x86defs::snp::SevVmsa::new_zeroed();
+        vmsa.xcr0 = x86defs::xsave::XFEATURE_X87 | x86defs::xsave::XFEATURE_SSE;
+        vmsa.x87_fcw = 0x123;
+        vmsa.x87_fsw = 0x456;
+        vmsa.x87_op = 0x789;
+        vmsa.x87_rip = 0x1234_5678;
+        vmsa.x87dp = 0x8765_4321;
+        vmsa.mxcsr = 0x1f80;
+
+        let xsave = snp_igvm_vmsa_xsave(&vmsa);
+        assert_eq!(&xsave[0..2], &vmsa.x87_fcw.to_le_bytes());
+        assert_eq!(&xsave[2..4], &vmsa.x87_fsw.to_le_bytes());
+        assert_eq!(&xsave[6..8], &vmsa.x87_op.to_le_bytes());
+        assert_eq!(&xsave[8..16], &vmsa.x87_rip.to_le_bytes());
+        assert_eq!(&xsave[16..24], &vmsa.x87dp.to_le_bytes());
+        assert_eq!(&xsave[24..28], &vmsa.mxcsr.to_le_bytes());
+        let header = x86defs::xsave::XSAVE_LEGACY_LEN;
+        assert_eq!(
+            &xsave[header..header + size_of::<u64>()],
+            &vmsa.xcr0.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn rejects_vmsa_state_kvm_cannot_import() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        for update in [
+            |vmsa: &mut x86defs::snp::SevVmsa| vmsa.pkru = 1,
+            |vmsa: &mut x86defs::snp::SevVmsa| vmsa.x87_ftw = 1,
+        ] {
+            let mut page = valid_vmsa_page(features);
+            update(vmsa_mut(&mut page));
+            assert!(matches!(
+                prepare_snp_config(snp_config(page), u64::MAX),
+                Err(SnpError::InvalidIgvmVmsa(
+                    "contains state that KVM cannot import"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_vmsa_table_limit_kvm_cannot_represent() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        for update in [
+            |vmsa: &mut x86defs::snp::SevVmsa| vmsa.gdtr.limit = u32::from(u16::MAX) + 1,
+            |vmsa: &mut x86defs::snp::SevVmsa| vmsa.idtr.limit = u32::from(u16::MAX) + 1,
+        ] {
+            let mut page = valid_vmsa_page(features);
+            update(vmsa_mut(&mut page));
+            assert!(matches!(
+                prepare_snp_config(snp_config(page), u64::MAX),
+                Err(SnpError::InvalidIgvmVmsa(
+                    "descriptor table limit exceeds KVM representation"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_multiple_vp_contexts() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        assert!(matches!(
+            prepare_snp_config(
+                snp_config_with_contexts(vec![
+                    vp_context(0, valid_vmsa_page(features)),
+                    vp_context(1, valid_vmsa_page(features)),
+                ]),
+                u64::MAX,
+            ),
+            Err(SnpError::InvalidIgvmTopology)
+        ));
+    }
+
+    #[test]
+    fn rejects_non_bsp_vmsa_context() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        assert!(matches!(
+            prepare_snp_config(
+                snp_config_with_contexts(vec![vp_context(1, valid_vmsa_page(features))]),
+                u64::MAX,
+            ),
+            Err(SnpError::InvalidIgvmTopology)
+        ));
+    }
 
     #[test]
     fn write_snp_cpuid_page_writes_linux_table_and_xsave_inputs() {
@@ -429,7 +1036,7 @@ mod tests {
             },
         ];
 
-        write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid).unwrap();
+        write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid, 1, 0).unwrap();
 
         assert_eq!(u32::from_le_bytes(page[0..4].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(page[16..20].try_into().unwrap()), 1);
@@ -470,7 +1077,7 @@ mod tests {
             },
         ];
 
-        write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid).unwrap();
+        write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid, 1, 0).unwrap();
 
         assert_eq!(u32::from_le_bytes(page[0..4].try_into().unwrap()), 1);
         assert_eq!(
@@ -494,7 +1101,7 @@ mod tests {
             ..Default::default()
         });
 
-        write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid).unwrap();
+        write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid, 1, 0).unwrap();
         assert_eq!(
             u32::from_le_bytes(page[0..4].try_into().unwrap()),
             SNP_CPUID_COUNT_MAX as u32
@@ -502,7 +1109,7 @@ mod tests {
 
         cpuid.last_mut().unwrap().eax = 1;
         assert!(matches!(
-            write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid),
+            write_snp_cpuid_page(page.as_mut_ptr(), page.len() as u64, &cpuid, 1, 0),
             Err(SnpError::TooManyCpuidEntries(count)) if count == SNP_CPUID_COUNT_MAX + 1
         ));
     }

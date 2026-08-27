@@ -18,6 +18,7 @@ use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
+use crate::SnpError;
 use crate::SnpLaunchState;
 use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
@@ -148,9 +149,9 @@ impl virt::Hypervisor for Kvm {
 
     fn new_partition<'a>(
         &mut self,
-        config: ProtoPartitionConfig<'a>,
+        mut config: ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
-        match config.isolation {
+        match config.isolation.isolation_type() {
             virt::IsolationType::None => {}
             virt::IsolationType::Snp => {
                 if config.hv_config.is_some() {
@@ -172,7 +173,6 @@ impl virt::Hypervisor for Kvm {
         // Query which MCE capability bits this host allows us to set so that
         // bind() can advertise CMCI to the guest where supported (Intel).
         let supported_mce_cap = self.kvm.supported_mce_cap()?;
-
         // Determine the CPU vendor from CPUID leaf 0.
         let vendor = supported_cpuid
             .iter()
@@ -371,13 +371,33 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let sev = match config.isolation {
+        let snp_config = match &mut config.isolation {
+            virt::ProtoPartitionIsolation::None => None,
+            virt::ProtoPartitionIsolation::Snp(snp_config) => {
+                if let Some(snp_config) = snp_config.take() {
+                    Some(crate::snp::prepare_snp_config(
+                        *snp_config,
+                        self.kvm.supported_sev_vmsa_features()?,
+                    )?)
+                } else {
+                    None
+                }
+            }
+            virt::ProtoPartitionIsolation::Vbs
+            | virt::ProtoPartitionIsolation::Tdx
+            | virt::ProtoPartitionIsolation::Cca => {
+                return Err(KvmError::IsolationNotSupported);
+            }
+        };
+        let isolation = config.isolation.isolation_type();
+
+        let sev = match isolation {
             virt::IsolationType::Snp => Some(
                 OpenOptions::new()
                     .read(true)
                     .write(true)
                     .open("/dev/sev")
-                    .map_err(crate::snp::SnpError::OpenSev)?,
+                    .map_err(SnpError::OpenSev)?,
             ),
             virt::IsolationType::None => None,
             virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
@@ -385,7 +405,7 @@ impl virt::Hypervisor for Kvm {
             }
         };
 
-        let vm = match config.isolation {
+        let vm = match isolation {
             virt::IsolationType::None => self.kvm.new_vm(kvm::VmType::Default)?,
             virt::IsolationType::Snp => {
                 let vm = self.kvm.new_vm(kvm::VmType::Snp)?;
@@ -396,16 +416,21 @@ impl virt::Hypervisor for Kvm {
                 unreachable!()
             }
         };
-        if let Some(sev) = &sev {
-            vm.sev_snp_init(sev.as_fd())?;
-        }
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
 
+        if let Some(sev) = &sev {
+            vm.sev_snp_init(
+                sev.as_fd(),
+                snp_config.as_ref().map_or(0, |config| config.vmsa_features),
+            )?;
+        }
+
         Ok(KvmProtoPartition {
             vm,
             sev,
+            snp_config,
             config,
             cpuid: cpuid_entries,
             nested_virt,
@@ -418,6 +443,7 @@ impl virt::Hypervisor for Kvm {
 pub struct KvmProtoPartition<'a> {
     vm: kvm::Partition,
     sev: Option<std::fs::File>,
+    snp_config: Option<crate::snp::KvmSnpConfig>,
     config: ProtoPartitionConfig<'a>,
     cpuid: CpuidLeafSet,
     nested_virt: bool,
@@ -439,6 +465,12 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        if let Some(config) = &self.snp_config
+            && config.bsp.gpa != crate::snp::KVM_SNP_VMSA_GPA
+        {
+            return Err(SnpError::InvalidVmsaGpa(config.bsp.gpa).into());
+        }
+
         // Build topology leaves using the base cpuid before consuming it.
         let mut topology_leaves = Vec::new();
         virt::x86::topology::topology_cpuid(
@@ -515,7 +547,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             .map(|range| range.range)
             .chain(config.mem_layout.vtl2_range())
             .collect();
-        let memory_backing_mode = match self.config.isolation {
+        let memory_backing_mode = match self.config.isolation.isolation_type() {
             virt::IsolationType::None => KvmMemoryBackingMode::Userspace,
             virt::IsolationType::Snp => {
                 KvmMemoryBackingMode::guest_memfd(&self.vm, ram_ranges.iter().copied(), true)?
@@ -528,6 +560,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             sev: self.sev,
+            snp_config: self.snp_config,
             snp_launch_state: Mutex::new(SnpLaunchState::NotStarted),
             memory: Default::default(),
             memory_backing_mode,
@@ -722,8 +755,14 @@ impl ResetPartition for KvmPartition {
 }
 
 impl Partition for KvmPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
-        Some(self)
+        // TODO: Support resetting SNP launch state and rebuilding the protected
+        // guest before advertising reset support.
+        self.inner.sev.is_none().then_some(self)
     }
 
     fn supports_initial_page_acceptance(

@@ -3,6 +3,7 @@
 
 mod partition_memory_map;
 
+pub use partition_memory_map::PartitionHostAccess;
 pub use partition_memory_map::PartitionMemoryMap;
 pub use vm_topology::processor::VpIndex;
 
@@ -233,6 +234,108 @@ pub struct InitialPageImport {
     pub tag: &'static str,
 }
 
+/// An opaque SNP virtual processor context.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct SnpVpContext {
+    /// The guest physical address associated with the context.
+    pub gpa: u64,
+    /// The virtual processor described by the context.
+    pub vp_index: VpIndex,
+    /// The complete 4-KiB VMSA page.
+    pub page: Box<[u8; 4096]>,
+}
+
+/// SNP ID block and authentication data supplied by an IGVM file.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct SnpIdBlock {
+    /// Whether the author key is enabled.
+    pub author_key_enabled: u8,
+    /// The launch digest supplied by the IGVM file.
+    pub launch_digest: [u8; 48],
+    /// The guest family identifier.
+    pub family_id: [u8; 16],
+    /// The guest image identifier.
+    pub image_id: [u8; 16],
+    /// The ID-block format version.
+    pub version: u32,
+    /// The guest security version number.
+    pub guest_svn: u32,
+    /// The ID-key algorithm.
+    pub id_key_algorithm: u32,
+    /// The author-key algorithm.
+    pub author_key_algorithm: u32,
+    /// The ID-block signature.
+    pub id_key_signature: x86defs::snp::SnpIdBlockSignature,
+    /// The ID public key.
+    pub id_public_key: x86defs::snp::SnpIdBlockPublicKey,
+    /// The author-key signature.
+    pub author_key_signature: x86defs::snp::SnpIdBlockSignature,
+    /// The author public key.
+    pub author_public_key: x86defs::snp::SnpIdBlockPublicKey,
+}
+
+/// Backend-neutral SNP launch configuration extracted from an IGVM file.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct SnpConfig {
+    /// The SNP guest policy.
+    pub policy: u64,
+    /// The highest VTL requested by the selected IGVM platform.
+    pub highest_vtl: u8,
+    /// The shared GPA boundary requested by the selected IGVM platform.
+    pub shared_gpa_boundary: u64,
+    /// Whether the IGVM contains relocation metadata.
+    pub has_relocation: bool,
+    /// Opaque virtual processor contexts in file order.
+    pub vp_contexts: Vec<SnpVpContext>,
+    /// Optional ID block and authentication data.
+    pub id_block: Option<SnpIdBlock>,
+}
+
+/// Isolation configuration needed before a backend creates a partition.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub enum ProtoPartitionIsolation {
+    /// No isolation.
+    None,
+    /// Hypervisor-based isolation.
+    Vbs,
+    /// AMD SEV-SNP, optionally with launch configuration from an IGVM file.
+    Snp(Option<Box<SnpConfig>>),
+    /// Intel Trust Domain Extensions.
+    Tdx,
+    /// Arm Confidential Compute Architecture.
+    Cca,
+}
+
+impl ProtoPartitionIsolation {
+    /// Returns the simple isolation classification.
+    pub fn isolation_type(&self) -> IsolationType {
+        match self {
+            Self::None => IsolationType::None,
+            Self::Vbs => IsolationType::Vbs,
+            Self::Snp(_) => IsolationType::Snp,
+            Self::Tdx => IsolationType::Tdx,
+            Self::Cca => IsolationType::Cca,
+        }
+    }
+
+    /// Returns whether the partition is isolated.
+    pub fn is_isolated(&self) -> bool {
+        self.isolation_type().is_isolated()
+    }
+}
+
+impl From<IsolationType> for ProtoPartitionIsolation {
+    fn from(value: IsolationType) -> Self {
+        match value {
+            IsolationType::None => Self::None,
+            IsolationType::Vbs => Self::Vbs,
+            IsolationType::Snp => Self::Snp(None),
+            IsolationType::Tdx => Self::Tdx,
+            IsolationType::Cca => Self::Cca,
+        }
+    }
+}
+
 /// Prototype partition creation configuration.
 pub struct ProtoPartitionConfig<'a> {
     /// The set of VPs to create.
@@ -241,8 +344,8 @@ pub struct ProtoPartitionConfig<'a> {
     pub hv_config: Option<HvConfig>,
     /// VM time access.
     pub vmtime: &'a VmTimeSource,
-    /// Isolation type for this partition.
-    pub isolation: IsolationType,
+    /// Isolation type and optional backend configuration for this partition.
+    pub isolation: ProtoPartitionIsolation,
     /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
     /// its own hypervisor.
     ///
@@ -409,8 +512,20 @@ pub struct HvConfig {
     pub vtl2: Option<Vtl2Config>,
 }
 
+/// Source of the initial virtual processor state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialVpStateSource {
+    /// The partition unit writes the loader-produced register state.
+    Registers,
+    /// The state is supplied through an imported isolation context.
+    ImportedContext,
+}
+
 /// Methods for manipulating a VM partition.
 pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
+    /// Returns the source of the initial virtual processor state.
+    fn initial_vp_state_source(&self) -> InitialVpStateSource;
+
     /// Returns a trait object for initial page imports during the initial start
     /// flow.
     fn supports_initial_page_acceptance(
@@ -784,6 +899,11 @@ impl From<VpStopped> for VpHaltReason {
 pub trait PartitionMemoryMapper {
     /// Returns a memory mapper for the partition backing `vtl`.
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap>;
+
+    /// Returns an interface for acquiring host access to memory.
+    fn host_access(&self) -> Option<Arc<dyn PartitionHostAccess>> {
+        None
+    }
 }
 
 pub trait Hv1 {
