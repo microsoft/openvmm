@@ -102,7 +102,7 @@ impl<T: SerialIo> SerialCommsServer<T> {
         }
 
         self.connected = true;
-        log::info!("Serial Comms sucessfully connected");
+        log::info!("Serial Comms successfully connected");
 
         Ok(())
     }

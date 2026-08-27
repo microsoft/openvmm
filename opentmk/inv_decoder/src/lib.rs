@@ -1255,15 +1255,16 @@ mod tests {
 
         let captured_arg = Arc::new(AtomicU64::new(0));
         let captured_clone = captured_arg.clone();
-        let exec_fn: Arc<Executor<'static>> =
-            Arc::new(move |_: &DecodedProgram<'_, '_>, input: InputCase| -> InputResult {
+        let exec_fn: Arc<Executor<'static>> = Arc::new(
+            move |_: &DecodedProgram<'_, '_>, input: InputCase| -> InputResult {
                 captured_clone.store(input.args[0], Ordering::SeqCst);
                 InputResult {
                     code: 0,
                     name: String::new(),
                     is_success: true,
                 }
-            });
+            },
+        );
 
         let mem: Box<dyn SafeMemoryMap> = Box::new([0u8; 8]);
         let prog = DecodedProgram {
@@ -1306,11 +1307,12 @@ mod tests {
 
         let was_called = Arc::new(AtomicBool::new(false));
         let was_called_clone = was_called.clone();
-        let exec_fn: Arc<Executor<'static>> =
-            Arc::new(move |_: &DecodedProgram<'_, '_>, _: InputCase| -> InputResult {
+        let exec_fn: Arc<Executor<'static>> = Arc::new(
+            move |_: &DecodedProgram<'_, '_>, _: InputCase| -> InputResult {
                 was_called_clone.store(true, Ordering::SeqCst);
                 InputResult::default()
-            });
+            },
+        );
 
         let mem: Box<dyn SafeMemoryMap> = Box::new([0u8; 8]);
         let prog = DecodedProgram {
