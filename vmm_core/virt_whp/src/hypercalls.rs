@@ -1659,6 +1659,41 @@ mod x86 {
 
                     tracing::trace!(?vsm_config, "set VsmPartitionConfig");
                 }
+                HvX64RegisterName::GuestVsmPartitionConfig => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid guest vsm partition config set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // Since guest VSM is unsupported, the only configuration
+                    // that can be applied is the one `get_vp_register` already
+                    // reports. VTL2 writes this to revoke guest VSM, which is
+                    // already the case, so accept that and reject anything that
+                    // would grant the guest a VTL.
+                    if hvdef::HvRegisterGuestVsmPartitionConfig::from(value.as_u64()).maximum_vtl()
+                        != 0
+                    {
+                        return Err(HvError::InvalidParameter);
+                    }
+                }
+                HvX64RegisterName::PmTimerAssist => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid pm timer assist set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // TODO: the assist is not implemented.
+                    return Err(HvError::InvalidParameter);
+                }
+                HvX64RegisterName::RegisterPage => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid register page set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // TODO: the VTL2 register page is not implemented.
+                    return Err(HvError::InvalidParameter);
+                }
                 HvX64RegisterName::DeliverabilityNotifications => {
                     if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl0 {
                         tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid set deliverability notification register");
