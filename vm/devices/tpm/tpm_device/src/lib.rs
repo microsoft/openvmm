@@ -527,18 +527,6 @@ impl Tpm {
 
         let nvram_size = nvram_size.unwrap_or(default_vtpm_size(version));
 
-        // Legacy (sub-32kB) vTPM state was provisioned by vtpmservice and is
-        // only understood by the 1.38 reference implementation. Reject it up
-        // front rather than handing it to a newer library, which would fail
-        // later with a confusing out-of-range NVRAM access.
-        if version != TpmVersion::V138 && nvram_size < STANDARD_VTPM_SIZE {
-            return Err(TpmErrorKind::LegacyVtpmStateUnsupported {
-                version,
-                nvram_size,
-            }
-            .into());
-        }
-
         let tpm_engine = TpmRefLib::new(
             version,
             TpmPlatformCallbacks {
@@ -658,32 +646,15 @@ impl Tpm {
                 .await
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
-            if let Some(mut blob) = existing_nvmem_blob {
-                // The legacy quirks below only apply to state provisioned by
-                // vtpmservice, which always ran the 1.38 reference
-                // implementation. Newer libraries cannot interpret such a blob,
-                // so reject it instead of letting them read past its end.
-                let is_v138 = self.tpm_engine_helper.tpm_engine.version() == TpmVersion::V138;
-                if !is_v138 && blob.len() < STANDARD_VTPM_SIZE {
-                    self.logger
-                        .log_event_and_flush(TpmLogEvent::InvalidState)
-                        .await;
-
-                    return Err(TpmErrorKind::LegacyVtpmStateUnsupported {
-                        version: self.tpm_engine_helper.tpm_engine.version(),
-                        nvram_size: blob.len(),
-                    }
-                    .into());
-                }
-
+            if self.tpm_engine_helper.tpm_engine.version() == TpmVersion::V138
+                && let Some(mut blob) = existing_nvmem_blob
+            {
                 // Previous versions before this code had a bug where sizes
                 // smaller than 32K would be reported as 32K. Fixup the blob so
                 // that the TPM nvram is consistent - this code can be removed
                 // once the fix for reporting the NVRAM size correctly is
                 // everywhere.
-                if is_v138 {
-                    recover::recover_blob(&mut blob);
-                }
+                recover::recover_blob(&mut blob);
                 if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
                     if e.is_mismatched_blob_size() {
                         self.logger
@@ -703,7 +674,7 @@ impl Tpm {
                         || is_confidential_vm,
 
                     // If this is a small vTPM blob, potentially fixup the AK cert.
-                    fixup_16k_ak_cert: is_v138 && blob.len() == LEGACY_VTPM_SIZE,
+                    fixup_16k_ak_cert: blob.len() == LEGACY_VTPM_SIZE,
 
                     large_vtpm_blob: blob.len() >= STANDARD_VTPM_SIZE,
                 }
