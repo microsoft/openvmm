@@ -212,12 +212,13 @@ impl IntoPipeline for CheckinGatesCli {
         let mut vmm_tests_artifacts_linux_aarch64_tcg =
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxAarch64Tcg::default();
 
-        // Run VMM.Perf after merge and in PR validation.
+        // Run VMM.Perf after merge, or before merge through the opt-in release
+        // PR pipeline.
         let enable_vmm_perf = matches!(
             (backend_hint, config),
             (
                 PipelineBackendHint::Github,
-                PipelineConfig::Ci | PipelineConfig::Pr | PipelineConfig::PrRelease
+                PipelineConfig::Ci | PipelineConfig::PrRelease
             )
         );
         let mut use_vmm_perf_runner_gnu_x64 = None;
