@@ -1881,6 +1881,7 @@ async fn new_underhill_vm(
         get_protocol::dps_json::TpmVersion::V138 => TpmVersion::V138,
         get_protocol::dps_json::TpmVersion::V185 => TpmVersion::V185,
     };
+    let tpm_nvram_id = tpm_version.to_nvram_vmgs_file_id();
 
     if let Some((_, ref mut vmgs)) = vmgs {
         if vmgs.was_provisioned_this_boot() {
@@ -1902,7 +1903,7 @@ async fn new_underhill_vm(
     // access the VMGS file.
     let tpm_size = vmgs
         .as_ref()
-        .and_then(|(_, vmgs)| vmgs.get_file_info(vmgs::FileId::TPM_NVRAM).ok())
+        .and_then(|(_, vmgs)| vmgs.get_file_info(tpm_nvram_id).ok())
         .map(|info| info.valid_bytes as usize);
 
     // Determine if the VTL0 alias map is in use.
@@ -3016,7 +3017,7 @@ async fn new_underhill_vm(
 
             (
                 VmgsFileHandle::new(vmgs::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(vmgs::FileId::TPM_NVRAM, true).into_resource(),
+                VmgsFileHandle::new(tpm_nvram_id, true).into_resource(),
             )
         };
 

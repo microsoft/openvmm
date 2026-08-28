@@ -8629,6 +8629,7 @@ dependencies = [
  "inspect",
  "mesh",
  "vm_resource",
+ "vmgs_format",
 ]
 
 [[package]]

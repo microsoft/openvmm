@@ -54,6 +54,16 @@ pub enum TpmVersion {
     V185,
 }
 
+impl TpmVersion {
+    /// Convert to the corresponding VMGS file ID for the TPM NVRAM file.
+    pub fn to_nvram_vmgs_file_id(self) -> vmgs_format::FileId {
+        match self {
+            TpmVersion::V138 => vmgs_format::FileId::TPM_NVRAM,
+            TpmVersion::V185 => vmgs_format::FileId::TPM_185_NVRAM,
+        }
+    }
+}
+
 /// A resource kind for AK cert renewal helpers.
 pub enum RequestAkCertKind {}
 

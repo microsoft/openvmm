@@ -1262,6 +1262,11 @@ impl PetriVmConfigSetupCore<'_> {
                 MachineArch::Aarch64 => TpmRegisterLayout::Mmio,
             };
 
+            let tpm_version = match version {
+                PetriTpmVersion::V185 => TpmVersion::V185,
+                PetriTpmVersion::V138 => TpmVersion::V138,
+            };
+
             let (ppi_store, nvram_store) = if self.vmgs.disk().is_none() || *no_persistent_secrets {
                 (
                     EphemeralNonVolatileStoreHandle.into_resource(),
@@ -1270,7 +1275,7 @@ impl PetriVmConfigSetupCore<'_> {
             } else {
                 (
                     VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                    VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
+                    VmgsFileHandle::new(tpm_version.to_nvram_vmgs_file_id(), true).into_resource(),
                 )
             };
 
@@ -1278,10 +1283,7 @@ impl PetriVmConfigSetupCore<'_> {
                 name: "tpm".to_string(),
                 resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                     device: TpmDeviceHandle {
-                        version: match version {
-                            PetriTpmVersion::V185 => TpmVersion::V185,
-                            PetriTpmVersion::V138 => TpmVersion::V138,
-                        },
+                        version: tpm_version,
                         ppi_store,
                         nvram_store,
                         refresh_tpm_seeds: false,

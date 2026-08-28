@@ -1535,10 +1535,15 @@ async fn vm_config_from_command_line(
             TpmRegisterLayout::Mmio
         };
 
+        let tpm_version = match tpm_version {
+            TpmVersionCli::V138 => TpmVersion::V138,
+            TpmVersionCli::V185 => TpmVersion::V185,
+        };
+
         let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
             (
                 VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
+                VmgsFileHandle::new(tpm_version.to_nvram_vmgs_file_id(), true).into_resource(),
             )
         } else {
             (
@@ -1551,10 +1556,7 @@ async fn vm_config_from_command_line(
             name: "tpm".to_string(),
             resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
-                    version: match tpm_version {
-                        TpmVersionCli::V138 => TpmVersion::V138,
-                        TpmVersionCli::V185 => TpmVersion::V185,
-                    },
+                    version: tpm_version,
                     ppi_store,
                     nvram_store,
                     nvram_size: None,
