@@ -605,6 +605,17 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
             .ignore_status()
             .run()
             .await;
+        let _ = cmd!(shell, "wevtutil.exe")
+            .args([
+                "qe",
+                "Microsoft-Windows-Kernel-Boot/Operational",
+                "/c:50",
+                "/rd:true",
+                "/f:text",
+            ])
+            .ignore_status()
+            .run()
+            .await;
         anyhow::bail!("guest VSM did not start after reboot. systeminfo:\n{output_str}");
     }
 
