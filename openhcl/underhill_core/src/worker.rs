@@ -197,6 +197,49 @@ pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new(
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
+/// Device admission settings delivered over the `DevicePolicy` VTL2 settings
+/// namespace.
+///
+/// This is untrusted host input. Parsing is strict: an unrecognised version or
+/// malformed JSON is an error, and callers treat an error as "enable nothing".
+/// Unknown fields are accepted so the schema can grow, but they never widen
+/// what an older paravisor admits.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DevicePolicySettings {
+    version: u32,
+    /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the filter.
+    #[serde(default)]
+    nvidia_vpci_relay_allowed: bool,
+}
+
+impl DevicePolicySettings {
+    /// Highest schema version this build understands.
+    const SUPPORTED_VERSION: u32 = 1;
+
+    fn parse(bytes: &[u8]) -> Result<Self, anyhow::Error> {
+        // Bound the input so a hostile host cannot force a large allocation.
+        const MAX_LEN: usize = 64 * 1024;
+        if bytes.len() > MAX_LEN {
+            anyhow::bail!("device policy too large: {} bytes", bytes.len());
+        }
+        // Tolerate a UTF-8 BOM. The payload is authored by host tooling, and
+        // Windows PowerShell writes a BOM by default; it is not valid JSON, so
+        // strip it rather than fail on a very likely integration mistake.
+        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+        let settings: Self =
+            serde_json::from_slice(bytes).context("failed to parse device policy")?;
+        if settings.version != Self::SUPPORTED_VERSION {
+            anyhow::bail!("unsupported device policy version {}", settings.version);
+        }
+        Ok(settings)
+    }
+}
+
+// NVIDIA PCI vendor ID (used to relay NVIDIA GPUs and NVLink/NVSwitch fabric
+// devices to Azure Local confidential guests).
+const NVIDIA_VPCI_VENDOR_ID: u16 = 0x10DE;
+
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
@@ -314,6 +357,9 @@ pub struct UnderhillEnvCfg {
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
     pub enable_vpci_relay: Option<bool>,
+    /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the VPCI
+    /// relay's device filter, overriding the host's DPS value
+    pub nvidia_vpci_relay_allowed: Option<bool>,
     /// Disable proxy interrupt redirection
     pub disable_proxy_redirect: bool,
     /// Disable lower VTL timer virtualization
@@ -1737,6 +1783,43 @@ async fn new_underhill_vm(
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
     }
 
+    // Device admission settings delivered via the `DevicePolicy` VTL2 settings
+    // namespace. Unlike the OpenHCL command line, VTL2 settings are honoured on
+    // hardware-isolated guests, so this is the channel that works on a release
+    // paravisor without a host-stack change.
+    //
+    // Untrusted host input: a missing, malformed, or unrecognised payload
+    // enables nothing.
+    let device_policy_allows_nvidia = dps
+        .general
+        .vtl2_settings
+        .as_ref()
+        .and_then(|s| s.device_policy.as_deref())
+        .is_some_and(|bytes| match DevicePolicySettings::parse(bytes) {
+            Ok(policy) => policy.nvidia_vpci_relay_allowed,
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "ignoring malformed DevicePolicy settings"
+                );
+                false
+            }
+        });
+
+    // Whether the NVIDIA GPU and NVLink/NVSwitch allow-list entries are
+    // installed: the host must opt in through one of the supported channels,
+    // and the VPCI relay must be running. This is an enablement gate -- it does
+    // not indicate that such a device is present or attached.
+    //
+    // This single value gates both the relay allow-list entries and the
+    // attestation claim that reports them. Do not re-derive either from a
+    // different set of conditions: if the two can disagree, the host can widen
+    // the filter while attestation reports that it did not.
+    let enable_nvidia_vpci_relay = enable_vpci_relay
+        && env_cfg
+            .nvidia_vpci_relay_allowed
+            .unwrap_or(dps.general.nvidia_vpci_relay_allowed || device_policy_allows_nvidia);
+
     // Construct chipset MMIO ranges from the positional convention in the
     // device tree: [0] = low (below 4 GiB), [1] = high (above RAM).
     let mut chipset_mmio = ChipsetMmioRanges {
@@ -2121,6 +2204,14 @@ async fn new_underhill_vm(
         || dps.general.com2_vmbus_redirector;
     let interactive_console =
         console_enabled && !dps.general.management_vtl_features.tx_only_serial_port();
+    // Value of the legacy `filtered-vpci-devices-allowed` attestation claim.
+    // Despite the name this does not track whether the VPCI relay is running:
+    // it omits `enable_vpci_relay`. Do not reuse it to describe relay state.
+    // It is left as-is because it feeds the hardware-derived key KDF, so
+    // redefining it would rotate sealing keys for existing guests.
+    let filtered_vpci_devices_allowed =
+        with_vmbus_relay && dps.general.vpci_boot_enabled && isolation.is_isolated();
+
     let attestation_vm_config = AttestationVmConfig {
         current_time: None,
         // TODO CVM: Support vmgs provisioning config
@@ -2133,9 +2224,12 @@ async fn new_underhill_vm(
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
         hardware_sealing_policy,
-        filtered_vpci_devices_allowed: with_vmbus_relay
-            && dps.general.vpci_boot_enabled
-            && isolation.is_isolated(),
+        filtered_vpci_devices_allowed,
+        // Reported only when the relay is permitted to admit these devices, and
+        // omitted entirely otherwise so that the runtime claims (and hence the
+        // sealing key derivation) are unchanged for guests not using this
+        // feature.
+        nvidia_vpci_relay_allowed: enable_nvidia_vpci_relay.then_some(true),
         vm_unique_id: dps.general.bios_guid.to_string(),
         vmgs_provisioner: prov_claims.clone(),
     };
@@ -3406,6 +3500,37 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
+                // Gated on the same value that drives the attestation claim, so
+                // the filter cannot be widened without saying so.
+                if enable_nvidia_vpci_relay {
+                    // Datacenter GPUs (e.g. H100/H200/B200/B300) are headless and
+                    // enumerate as a 3D controller (class 0x0302), not VGA.
+                    relay.add_allowed_device(AllowedDevice {
+                        vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
+                        device_id: None,
+                        revision_id: None,
+                        prog_if: None,
+                        sub_class: Some(Subclass::DISPLAY_CONTROLLER_3D),
+                        base_class: Some(ClassCode::DISPLAY_CONTROLLER),
+                        sub_vendor_id: None,
+                        sub_system_id: None,
+                    });
+
+                    // HGX clusters additionally expose NVSwitch NVLink-fabric
+                    // devices, which enumerate as an "other" PCI bridge (class
+                    // 0x0680) rather than a display controller.
+                    relay.add_allowed_device(AllowedDevice {
+                        vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
+                        device_id: None,
+                        revision_id: None,
+                        prog_if: None,
+                        sub_class: Some(Subclass::BRIDGE_OTHER),
+                        base_class: Some(ClassCode::BRIDGE),
+                        sub_vendor_id: None,
+                        sub_system_id: None,
+                    });
+                }
+
                 vpci_relay = Some(relay);
             }
 
@@ -3973,6 +4098,13 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         always_relay_host_mmio: _,
         imc_enabled: _,
 
+        // Only widens the set of devices the VPCI relay will re-expose to the
+        // guest. Relayed devices DMA solely into shared memory and cannot reach
+        // guest-private memory or lower a VTL, so this does not weaken
+        // isolation; the guest is responsible for attesting any device it
+        // chooses to trust.
+        nvidia_vpci_relay_allowed: _,
+
         // PXE not supported today
         pxe_ip_v6: _,
         media_present_enabled_by_default: _,
@@ -4425,4 +4557,58 @@ impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResol
 
 mesh_worker::register_workers! {
     chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenHclRemoteDynamicResolvers>
+}
+
+#[cfg(test)]
+mod device_policy_tests {
+    use super::DevicePolicySettings;
+
+    #[test]
+    fn device_policy_settings_parse() {
+        // Enabled.
+        let p = DevicePolicySettings::parse(br#"{"version":1,"nvidia_vpci_relay_allowed":true}"#)
+            .unwrap();
+        assert!(p.nvidia_vpci_relay_allowed);
+
+        // Field omitted defaults to disabled.
+        let p = DevicePolicySettings::parse(br#"{"version":1}"#).unwrap();
+        assert!(!p.nvidia_vpci_relay_allowed);
+
+        // Explicitly disabled.
+        let p = DevicePolicySettings::parse(br#"{"version":1,"nvidia_vpci_relay_allowed":false}"#)
+            .unwrap();
+        assert!(!p.nvidia_vpci_relay_allowed);
+
+        // A UTF-8 BOM is tolerated: Windows PowerShell writes one by default,
+        // and it is not valid JSON.
+        let p = DevicePolicySettings::parse(
+            b"\xEF\xBB\xBF{\"version\":1,\"nvidia_vpci_relay_allowed\":true}",
+        )
+        .unwrap();
+        assert!(p.nvidia_vpci_relay_allowed);
+    }
+
+    /// Untrusted host input: every malformed form must error rather than panic,
+    /// and callers treat an error as "enable nothing".
+    #[test]
+    fn device_policy_settings_reject_bad_input() {
+        for bad in [
+            &b""[..],
+            b"not json",
+            b"{}",                                                 // missing version
+            br#"{"version":2,"nvidia_vpci_relay_allowed":true}"#,  // wrong version
+            br#"{"version":1,"unknown":1}"#,                       // unknown field
+            br#"{"version":1,"nvidia_vpci_relay_allowed":"yes"}"#, // wrong type
+        ] {
+            assert!(
+                DevicePolicySettings::parse(bad).is_err(),
+                "should have rejected {:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+
+        // Oversized input is rejected without allocating a parse.
+        let big = vec![b'a'; 64 * 1024 + 1];
+        assert!(DevicePolicySettings::parse(&big).is_err());
+    }
 }

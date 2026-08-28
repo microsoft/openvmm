@@ -324,6 +324,7 @@ impl GuestEmulationTransportClient {
                 psp_enabled: json.v2.dynamic.enable_psp,
                 vmbus_redirection_enabled: json.v2.r#static.vmbus_redirection_enabled,
                 always_relay_host_mmio: json.v2.r#static.always_relay_host_mmio,
+                nvidia_vpci_relay_allowed: json.v2.r#static.nvidia_vpci_relay_allowed,
                 vtl2_settings,
                 watchdog_enabled: json.v2.r#static.watchdog_enabled,
                 num_lock_enabled: json.v2.r#static.num_lock_enabled,

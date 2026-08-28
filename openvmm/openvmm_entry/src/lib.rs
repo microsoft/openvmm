@@ -1484,6 +1484,7 @@ async fn vm_config_from_command_line(
                     serial_tx_only: opt.serial_tx_only,
                     vtl2_settings: Some(prost::Message::encode_to_vec(&vtl2_settings)),
                     vmbus_redirection: opt.vmbus_redirect,
+                    nvidia_vpci_relay_allowed: opt.nvidia_vpci_relay_allowed,
                     vmgs,
                     framebuffer: opt
                         .vtl2_gfx

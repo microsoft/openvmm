@@ -893,6 +893,11 @@ Examples:
     #[clap(long, requires("vtl2"))]
     pub vmbus_redirect: bool,
 
+    /// allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the VTL 2
+    /// VPCI relay's device filter.
+    #[clap(long, requires("vtl2"))]
+    pub nvidia_vpci_relay_allowed: bool,
+
     /// limit the maximum protocol version allowed by vmbus; used for testing purposes
     #[clap(long, value_parser = vmbus_core::parse_vmbus_version)]
     pub vmbus_max_version: Option<u32>,
