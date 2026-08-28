@@ -1877,11 +1877,28 @@ async fn new_underhill_vm(
         }
     };
 
-    let tpm_version = match dps.general.tpm_version {
-        get_protocol::dps_json::TpmVersion::V138 => TpmVersion::V138,
-        get_protocol::dps_json::TpmVersion::V185 => TpmVersion::V185,
+    let tpm_hint_version = match dps.general.tpm_version {
+        Some(get_protocol::dps_json::GetTpmVersion::V138) => TpmVersion::V138,
+        Some(get_protocol::dps_json::GetTpmVersion::V185) => TpmVersion::V185,
+        None => TpmVersion::V138,
     };
+    let tpm_version = if let Some((_, ref vmgs)) = vmgs {
+        if vmgs.check_file_allocated(TpmVersion::V185.to_nvram_vmgs_file_id()) {
+            TpmVersion::V185
+        } else if vmgs.check_file_allocated(TpmVersion::V138.to_nvram_vmgs_file_id()) {
+            TpmVersion::V138
+        } else {
+            tpm_hint_version
+        }
+    } else {
+        tpm_hint_version
+    };
+
     let tpm_nvram_id = tpm_version.to_nvram_vmgs_file_id();
+    let tpm_size = vmgs
+        .as_ref()
+        .and_then(|(_, vmgs)| vmgs.get_file_info(tpm_nvram_id).ok())
+        .map(|info| info.valid_bytes as usize);
 
     if let Some((_, ref mut vmgs)) = vmgs {
         if vmgs.was_provisioned_this_boot() {
@@ -1896,15 +1913,6 @@ async fn new_underhill_vm(
             }
         }
     }
-
-    // Get TPM data size from VMGS. This is used by the TPM device later to
-    // initialize it with the correct size. VMGS file control blocks are saved
-    // and restored during servicing, so this is cached and doesn't directly
-    // access the VMGS file.
-    let tpm_size = vmgs
-        .as_ref()
-        .and_then(|(_, vmgs)| vmgs.get_file_info(tpm_nvram_id).ok())
-        .map(|info| info.valid_bytes as usize);
 
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =

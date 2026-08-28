@@ -29,11 +29,11 @@ pub mod platform_settings {
     pub use get_protocol::dps_json::PcatBootDevice;
 
     use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
+    use get_protocol::dps_json::GetTpmVersion;
     use get_protocol::dps_json::GuestStateEncryptionPolicy;
     use get_protocol::dps_json::GuestStateLifetime;
     use get_protocol::dps_json::HardwareSealingPolicy;
     use get_protocol::dps_json::ManagementVtlFeatures;
-    use get_protocol::dps_json::TpmVersion;
     use guid::Guid;
     use inspect::Inspect;
 
@@ -141,7 +141,7 @@ pub mod platform_settings {
         #[inspect(debug)]
         pub hardware_sealing_policy: HardwareSealingPolicy,
         #[inspect(debug)]
-        pub tpm_version: TpmVersion,
+        pub tpm_version: Option<GetTpmVersion>,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]

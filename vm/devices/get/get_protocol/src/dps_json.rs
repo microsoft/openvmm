@@ -173,12 +173,11 @@ pub enum HardwareSealingPolicy {
 
 /// Version of the Microsoft TPM reference implementation to expose to the
 /// guest.
-#[derive(Debug, Copy, Clone, Deserialize, Serialize, Default)]
-pub enum TpmVersion {
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+pub enum GetTpmVersion {
     /// TPM reference implementation version 1.85
     V185,
     /// TPM reference implementation version 1.38
-    #[default]
     V138,
 }
 
@@ -259,7 +258,7 @@ pub struct HclDevicePlatformSettingsV2Static {
     #[serde(default)]
     pub hardware_sealing_policy_id: HardwareSealingPolicy,
     #[serde(default)]
-    pub tpm_version: TpmVersion,
+    pub tpm_version: Option<GetTpmVersion>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
