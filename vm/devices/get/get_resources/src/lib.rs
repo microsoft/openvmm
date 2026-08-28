@@ -70,7 +70,7 @@ pub mod ged {
         /// Enable vmbus redirection.
         pub vmbus_redirection: bool,
         /// The TPM reference implementation version to expose to the guest.
-        pub tpm_version: Option<TpmVersion>,
+        pub tpm_version: Option<GedTpmVersion>,
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
         /// The disk to back the GET's VMGS interface.
@@ -160,7 +160,7 @@ pub mod ged {
 
     /// The TPM reference implementation version to expose to the guest.
     #[derive(MeshPayload, Clone, Debug, Copy)]
-    pub enum TpmVersion {
+    pub enum GedTpmVersion {
         /// TPM reference implementation version 1.85
         V185,
         /// TPM reference implementation version 1.38

@@ -1173,8 +1173,8 @@ impl PetriVmConfigSetupCore<'_> {
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
             tpm_version: self.tpm_config.map(|c| match c.version {
-                PetriTpmVersion::V185 => get_resources::ged::TpmVersion::V185,
-                PetriTpmVersion::V138 => get_resources::ged::TpmVersion::V138,
+                PetriTpmVersion::V185 => get_resources::ged::GedTpmVersion::V185,
+                PetriTpmVersion::V138 => get_resources::ged::GedTpmVersion::V138,
             }),
             firmware_event_send: Some(firmware_event_send.clone()),
             secure_boot_enabled: *secure_boot_enabled,
