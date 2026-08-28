@@ -67,15 +67,15 @@ impl SimpleFlowNode for Node {
                 .ok_or_else(|| anyhow::anyhow!("local VMM.Perf runs require a root directory"))?,
             FlowBackend::Ado => ctx
                 .get_ado_variable(AdoRuntimeVar::PIPELINE_WORKSPACE)
-                .map(ctx, |root| PathBuf::from(root).join("vmm-perf")),
+                .map(ctx, |root| PathBuf::from(root).join("vp")),
             FlowBackend::Github => ctx
                 .get_gh_context_var()
                 .global()
                 .runner_temp()
-                .map(ctx, |root| PathBuf::from(root).join("vmm-perf")),
+                .map(ctx, |root| PathBuf::from(root).join("vp")),
         };
         let output_dir = job_root.clone().map(ctx, |root| root.join("results"));
-        let temp_dir = Some(job_root.map(ctx, |root| root.join("temp")));
+        let temp_dir = Some(job_root.map(ctx, |root| root.join("t")));
 
         let result = ctx.reqv(|v| crate::run_vmm_perf::Request {
             runner,

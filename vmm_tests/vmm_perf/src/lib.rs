@@ -19,7 +19,7 @@ mod virtual_client;
 use clap::Parser as _;
 
 /// Parses CLI arguments and runs all requested VMM.Perf profiles/configurations.
-pub fn main() -> anyhow::Result<()> {
+pub fn run() -> anyhow::Result<()> {
     cli::init_tracing();
     runner::VmmPerfRunner::new(cli::Cli::parse())?.run()
 }

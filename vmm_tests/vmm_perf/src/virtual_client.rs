@@ -28,7 +28,7 @@ pub(crate) struct VirtualClientRunRequest<'a> {
     pub(crate) output_dir: &'a Path,
     pub(crate) temp_dir: &'a Path,
     pub(crate) host: &'a HostEnvironment,
-    pub(crate) metadata: &'a BTreeMap<String, String>,
+    pub(crate) metadata: Option<&'a BTreeMap<String, String>>,
 }
 
 pub(crate) struct VirtualClientRun<'a> {
@@ -102,8 +102,10 @@ impl<'a> VirtualClientRun<'a> {
         .logger("summary")
         .log_to_file(true)
         .temp_dir(&directories.temp_dir);
-        for (name, value) in request.metadata {
-            command_builder = command_builder.metadata(name, value);
+        if let Some(metadata) = request.metadata {
+            for (name, value) in metadata {
+                command_builder = command_builder.metadata(name, value);
+            }
         }
         for (name, value) in parameters {
             command_builder = command_builder.parameter(name, value);
@@ -252,7 +254,7 @@ impl RunDirectories {
 
         fs_err::create_dir_all(temp_root)?;
         let work = tempfile::Builder::new()
-            .prefix(&format!("vmm-perf-{}-{config_name}-", profile.name()))
+            .prefix(temp_dir_prefix(profile))
             .tempdir_in(temp_root)?;
         let data_dir = work.path().join("data");
         let temp_dir = work.path().join("temp");
@@ -305,6 +307,14 @@ impl RunDirectories {
             }
         }
         paths
+    }
+}
+
+fn temp_dir_prefix(profile: VmmPerfProfile) -> &'static str {
+    match profile {
+        VmmPerfProfile::Fio => "f-",
+        VmmPerfProfile::Iperf3 => "i-",
+        VmmPerfProfile::BootTime => "b-",
     }
 }
 

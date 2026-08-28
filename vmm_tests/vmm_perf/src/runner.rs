@@ -24,7 +24,7 @@ pub(crate) struct VmmPerfRunner {
     temp_dir: PathBuf,
     profiles: Vec<VmmPerfProfile>,
     configs: Vec<VmmPerfConfig>,
-    metadata: BTreeMap<String, String>,
+    metadata: Option<BTreeMap<String, String>>,
 }
 
 impl VmmPerfRunner {
@@ -93,7 +93,7 @@ impl VmmPerfRunner {
                     output_dir: &self.output_dir,
                     temp_dir: &self.temp_dir,
                     host: &self.host,
-                    metadata: &self.metadata,
+                    metadata: self.metadata.as_ref(),
                 })
                 .failure_summary()
                 .map(|summary| format!("{} / {summary}", profile.name()))
@@ -111,18 +111,20 @@ fn ensure_file(path: &Path, description: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn github_pipeline_metadata() -> BTreeMap<String, String> {
+fn github_pipeline_metadata() -> Option<BTreeMap<String, String>> {
     if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
-        return BTreeMap::new();
+        return None;
     }
 
-    read_github_pipeline_metadata().unwrap_or_else(|err| {
-        tracing::warn!(
-            error = format!("{err:#}"),
-            "GitHub pipeline metadata is unavailable; continuing without it"
-        );
-        BTreeMap::new()
-    })
+    read_github_pipeline_metadata()
+        .map(Some)
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                error = format!("{err:#}"),
+                "GitHub pipeline metadata is unavailable; continuing without it"
+            );
+            None
+        })
 }
 
 fn read_github_pipeline_metadata() -> anyhow::Result<BTreeMap<String, String>> {

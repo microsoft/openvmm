@@ -283,6 +283,9 @@ fn log_process_output(
         let mut log_file = log_file.lock();
         writeln!(log_file, "[{stream_name}] {line}")
             .with_context(|| format!("failed to write VMM.Perf {stream_name} console output"))?;
+        log_file
+            .flush()
+            .with_context(|| format!("failed to flush VMM.Perf {stream_name} console output"))?;
     }
 }
 

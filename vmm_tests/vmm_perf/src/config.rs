@@ -34,24 +34,28 @@ impl VmmPerfProfile {
         }
     }
 
-    pub(crate) fn file(self) -> &'static str {
-        if cfg!(target_os = "windows") {
-            match self {
-                Self::Fio => "PERF-OPENVMM-WHP-FIO.json",
-                Self::Iperf3 => "PERF-OPENVMM-WHP-IPERF3.json",
-                Self::BootTime => "PERF-OPENVMM-WHP-BOOTTIME.json",
-            }
-        } else {
-            match (std::env::consts::ARCH, self) {
-                ("x86_64", Self::Fio) => "PERF-OPENVMM-X64-FIO.json",
-                ("x86_64", Self::Iperf3) => "PERF-OPENVMM-X64-IPERF3.json",
-                ("x86_64", Self::BootTime) => "PERF-OPENVMM-X64-BOOTTIME.json",
-                ("aarch64", Self::Fio) => "PERF-OPENVMM-ARM64-FIO.json",
-                ("aarch64", Self::Iperf3) => "PERF-OPENVMM-ARM64-IPERF3.json",
-                ("aarch64", Self::BootTime) => "PERF-OPENVMM-ARM64-BOOTTIME.json",
-                _ => unreachable!("unsupported VMM.Perf host architecture"),
-            }
-        }
+    pub(crate) fn file(self) -> String {
+        self.file_for(std::env::consts::ARCH, std::env::consts::OS)
+    }
+
+    fn file_for(self, architecture: &str, operating_system: &str) -> String {
+        let architecture = match architecture {
+            "x86_64" => "X64",
+            "aarch64" => "ARM64",
+            _ => unreachable!("unsupported VMM.Perf host architecture"),
+        };
+        let platform = match operating_system {
+            "linux" => "LINUX",
+            "windows" => "WIN",
+            _ => unreachable!("unsupported VMM.Perf host operating system"),
+        };
+        let boot_mode = "UEFI";
+        let profile = match self {
+            Self::Fio => "FIO",
+            Self::Iperf3 => "IPERF3",
+            Self::BootTime => "BOOTTIME",
+        };
+        format!("PERF-OPENVMM-{architecture}-{platform}-{boot_mode}-{profile}.json")
     }
 }
 
@@ -353,18 +357,27 @@ mod tests {
     }
 
     #[test]
-    fn profile_file_names_match_host_backend_expectations() {
-        let profile = VmmPerfProfile::Fio;
-        if cfg!(target_os = "windows") {
-            assert_eq!(profile.file(), "PERF-OPENVMM-WHP-FIO.json");
-        } else {
+    fn builds_profile_file_names_for_supported_platforms() {
+        for (profile, suffix) in [
+            (VmmPerfProfile::Fio, "FIO"),
+            (VmmPerfProfile::Iperf3, "IPERF3"),
+            (VmmPerfProfile::BootTime, "BOOTTIME"),
+        ] {
             assert_eq!(
-                profile.file(),
-                match std::env::consts::ARCH {
-                    "x86_64" => "PERF-OPENVMM-X64-FIO.json",
-                    "aarch64" => "PERF-OPENVMM-ARM64-FIO.json",
-                    _ => unreachable!("unsupported VMM.Perf host architecture"),
-                }
+                profile.file_for("x86_64", "linux"),
+                format!("PERF-OPENVMM-X64-LINUX-UEFI-{suffix}.json")
+            );
+            assert_eq!(
+                profile.file_for("aarch64", "linux"),
+                format!("PERF-OPENVMM-ARM64-LINUX-UEFI-{suffix}.json")
+            );
+            assert_eq!(
+                profile.file_for("x86_64", "windows"),
+                format!("PERF-OPENVMM-X64-WIN-UEFI-{suffix}.json")
+            );
+            assert_eq!(
+                profile.file_for("aarch64", "windows"),
+                format!("PERF-OPENVMM-ARM64-WIN-UEFI-{suffix}.json")
             );
         }
     }

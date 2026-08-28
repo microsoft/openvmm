@@ -68,14 +68,7 @@ fn extract_runtime(archive: &Path) -> anyhow::Result<PathBuf> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("VMM.Perf archive filename is not valid UTF-8")?;
-    let cache_name = archive_name
-        .strip_suffix(".tar.gz")
-        .or_else(|| archive_name.strip_suffix(".tar"))
-        .with_context(|| {
-            format!(
-                "unsupported VMM.Perf archive format for {archive_name}; expected .tar.gz or .tar"
-            )
-        })?;
+    let cache_name = archive_cache_name(archive_name)?;
     let cache_dir = archive_parent.join(format!("{cache_name}-extracted"));
     let archive_signature = archive_signature(archive)?;
 
@@ -89,30 +82,28 @@ fn extract_runtime(archive: &Path) -> anyhow::Result<PathBuf> {
         fs_err::remove_dir_all(&cache_dir)?;
     }
 
-    let staging = archive_parent.join(format!(
-        ".vmm-perf-runtime-extracting-{}",
-        std::process::id()
-    ));
-    if staging.exists() {
-        fs_err::remove_dir_all(&staging)?;
-    }
-    fs_err::create_dir_all(&staging)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".vmm-perf-runtime-extracting-")
+        .tempdir_in(archive_parent)
+        .context("failed to create VMM.Perf runtime extraction staging directory")?;
 
     let status = Command::new("tar")
         .args(["-xf"])
         .arg(archive)
         .arg("-C")
-        .arg(&staging)
+        .arg(staging.path())
         .status()
         .context("failed to launch tar for VMM.Perf runtime extraction")?;
     anyhow::ensure!(status.success(), "failed to extract VMM.Perf runtime");
-    find_runtime_dir(&staging)?;
-    fs_err::write(staging.join(ARCHIVE_SIGNATURE_FILE), &archive_signature)?;
+    find_runtime_dir(staging.path())?;
+    fs_err::write(
+        staging.path().join(ARCHIVE_SIGNATURE_FILE),
+        &archive_signature,
+    )?;
 
-    match fs_err::rename(&staging, &cache_dir) {
+    match fs_err::rename(staging.path(), &cache_dir) {
         Ok(()) => {}
         Err(err) if cache_dir.exists() => {
-            fs_err::remove_dir_all(&staging)?;
             anyhow::ensure!(
                 fs_err::read_to_string(cache_dir.join(ARCHIVE_SIGNATURE_FILE))
                     .is_ok_and(|signature| signature == archive_signature),
@@ -126,6 +117,18 @@ fn extract_runtime(archive: &Path) -> anyhow::Result<PathBuf> {
     }
 
     find_runtime_dir(&cache_dir)
+}
+
+fn archive_cache_name(archive_name: &str) -> anyhow::Result<&str> {
+    archive_name
+        .strip_suffix(".tar.gz")
+        .or_else(|| archive_name.strip_suffix(".tar"))
+        .or_else(|| archive_name.strip_suffix(".zip"))
+        .with_context(|| {
+            format!(
+                "unsupported VMM.Perf archive format for {archive_name}; expected .tar.gz, .tar, or .zip"
+            )
+        })
 }
 
 pub(crate) fn archive_signature(archive: &Path) -> anyhow::Result<String> {
@@ -209,11 +212,30 @@ fn ensure_file(path: &Path, description: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::archive_cache_name;
     use super::archive_signature;
     use super::find_runtime_dir;
     use super::virtual_client_name;
     use crate::test_support;
     use test_with_tracing::test;
+
+    #[test]
+    fn derives_cache_names_from_supported_archives() -> anyhow::Result<()> {
+        assert_eq!(
+            archive_cache_name("vmm-perf-linux-x64.tar.gz")?,
+            "vmm-perf-linux-x64"
+        );
+        assert_eq!(
+            archive_cache_name("vmm-perf-linux-x64.tar")?,
+            "vmm-perf-linux-x64"
+        );
+        assert_eq!(
+            archive_cache_name("vmm-perf-win-x64.zip")?,
+            "vmm-perf-win-x64"
+        );
+        assert!(archive_cache_name("vmm-perf-win-x64.7z").is_err());
+        Ok(())
+    }
 
     #[test]
     fn finds_single_runtime_directory() -> anyhow::Result<()> {

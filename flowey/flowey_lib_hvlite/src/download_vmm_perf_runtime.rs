@@ -14,11 +14,11 @@ use std::path::Path;
 
 // Update the version and both hashes together from the latest successful
 // definition 200014 build whose source branch is exactly refs/heads/main.
-const VMM_PERF_RUNTIME_VERSION: &str = "20260820.6";
+const VMM_PERF_RUNTIME_VERSION: &str = "20260828.1";
 const VMM_PERF_RUNTIME_X64_SHA256: &str =
-    "f21aadb6aee15ba67b2abd5abe352af9839476b817d45f8460bcfd0bf330eda4";
+    "57a3ed767587f1d7ed9ce4de04562f712e2c56c3a05da1aa2b34d2a22e43b314";
 const VMM_PERF_RUNTIME_ARM64_SHA256: &str =
-    "55dc87439f339f082ed272a5e2c20626ee0ac7679bf5530545dbf76cd2218c7a";
+    "e2dce7becb6eeb44ba82e23a724d2b7ae9eb3c8a56029614edf935a53f4fda72";
 
 flowey_request! {
     pub enum Request {

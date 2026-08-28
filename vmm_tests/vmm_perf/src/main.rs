@@ -4,5 +4,5 @@
 //! Binary entry point for the standalone VMM.Perf runner.
 
 fn main() -> anyhow::Result<()> {
-    vmm_perf::main()
+    vmm_perf::run()
 }
