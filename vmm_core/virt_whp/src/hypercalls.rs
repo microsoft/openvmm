@@ -1669,10 +1669,8 @@ mod x86 {
                     // that can be applied is the one `get_vp_register` already
                     // reports. VTL2 writes this to revoke guest VSM, which is
                     // already the case, so accept that and reject anything that
-                    // would grant the guest a VTL.
-                    if hvdef::HvRegisterGuestVsmPartitionConfig::from(value.as_u64()).maximum_vtl()
-                        != 0
-                    {
+                    // would grant the guest a VTL, or do anything else.
+                    if value.as_u64() != 0 {
                         return Err(HvError::InvalidParameter);
                     }
                 }
