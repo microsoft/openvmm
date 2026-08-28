@@ -8,7 +8,6 @@
 use guid::Guid;
 use inspect::Inspect;
 use mesh::MeshPayload;
-use mesh::payload::Protobuf;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceKind;
@@ -47,14 +46,11 @@ impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {
 }
 
 /// Version of the Microsoft TPM reference implementation to use.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf)]
-#[mesh(package = "tpm")]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, MeshPayload)]
 pub enum TpmVersion {
     /// TPM reference implementation version 1.38
-    #[mesh(1)]
     V138,
     /// TPM reference implementation version 1.85
-    #[mesh(2)]
     V185,
 }
 

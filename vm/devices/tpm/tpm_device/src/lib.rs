@@ -1893,11 +1893,28 @@ mod save_restore {
 
     mod state {
         use mesh::payload::Protobuf;
-        use tpm_resources::TpmVersion;
         use vmcore::save_restore::SavedStateRoot;
 
         const RSA_2K_MODULUS_SIZE: usize = 256;
         const RSA_2K_EXPONENT_SIZE: usize = 3;
+
+        #[derive(Protobuf, Debug, PartialEq, Eq, Clone, Copy)]
+        #[mesh(package = "tpm")]
+        pub enum SavedTpmVersion {
+            #[mesh(1)]
+            V138,
+            #[mesh(2)]
+            V185,
+        }
+
+        impl From<tpm_resources::TpmVersion> for SavedTpmVersion {
+            fn from(version: tpm_resources::TpmVersion) -> Self {
+                match version {
+                    tpm_resources::TpmVersion::V138 => SavedTpmVersion::V138,
+                    tpm_resources::TpmVersion::V185 => SavedTpmVersion::V185,
+                }
+            }
+        }
 
         #[derive(Protobuf)]
         #[mesh(package = "tpm")]
@@ -1966,7 +1983,7 @@ mod save_restore {
             #[mesh(5)]
             pub tpm_state_blob: Vec<u8>,
             #[mesh(6)]
-            pub version: Option<TpmVersion>,
+            pub version: Option<SavedTpmVersion>,
             // Experimental fields to avoid breaking changes
             // TODO CVM: Remove the explicit numbering once live servicing design is finialized
             #[mesh(60)]
@@ -1984,7 +2001,7 @@ mod save_restore {
         TpmRuntimeLib(#[source] TpmLibraryError),
         #[error("saved TPM version {saved:?} does not match configured TPM version {configured:?}")]
         VersionMismatch {
-            saved: TpmVersion,
+            saved: state::SavedTpmVersion,
             configured: TpmVersion,
         },
     }
@@ -2078,7 +2095,7 @@ mod save_restore {
                 auth_value: self.auth_value,
                 keys,
                 allow_ak_cert_renewal: Some(self.allow_ak_cert_renewal),
-                version: Some(self.tpm_engine_helper.tpm_engine.version()),
+                version: Some(self.tpm_engine_helper.tpm_engine.version().into()),
             };
 
             Ok(saved_state)
@@ -2098,9 +2115,9 @@ mod save_restore {
             } = state;
 
             // Default to 138 for back compat
-            let saved_version = version.unwrap_or(TpmVersion::V138);
+            let saved_version = version.unwrap_or(state::SavedTpmVersion::V138);
             let configured_version = self.tpm_engine_helper.tpm_engine.version();
-            if saved_version != configured_version {
+            if saved_version != state::SavedTpmVersion::from(configured_version) {
                 return Err(RestoreError::Other(
                     TpmRestoreError::VersionMismatch {
                         saved: saved_version,
