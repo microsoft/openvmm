@@ -2516,8 +2516,11 @@ async fn new_underhill_vm(
         } else {
             anyhow::bail!("unsupported guest architecture")
         },
-    )
-    .with_platform_pm_timer_assist();
+    );
+
+    if !isolation.is_hardware_isolated() {
+        chipset = chipset.with_platform_pm_timer_assist();
+    }
 
     if with_serial {
         chipset = chipset.with_serial(serial_inputs);
