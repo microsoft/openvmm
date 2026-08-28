@@ -434,7 +434,7 @@ impl PowerManagementDevice {
 
     fn enable_acpi_mode(&mut self, default_pio_dynamic: u16) {
         tracing::debug!("ACPI mode enabled");
-        self.rt.pio_dynamic.map(default_pio_dynamic);
+        self.update_dynamic_pio_mappings(Some(default_pio_dynamic));
         self.state.control = CONTROL_SCI_ENABLE_MASK;
     }
 
@@ -458,8 +458,6 @@ impl PowerManagementDevice {
         self.rt.acpi_interrupt.set_level(level)
     }
 
-    /// (used by the PIIX4 wrapper device)
-    ///
     /// Remap dynamic registers based on config in the PCI config space
     #[inline(always)]
     pub fn update_dynamic_pio_mappings(&mut self, pio_dynamic_addr: Option<u16>) {
@@ -507,7 +505,7 @@ impl ChangeDeviceState for PowerManagementDevice {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        self.rt.pio_dynamic.unmap();
+        self.update_dynamic_pio_mappings(None);
         self.rt.acpi_interrupt.set_level(false);
         self.state = PmState::new();
         if let Some(acpi_mode) = self.enable_acpi_mode {
