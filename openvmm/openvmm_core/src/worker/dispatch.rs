@@ -1163,24 +1163,26 @@ impl InitializedVm {
             .filter(|(bus, _)| matches!(bus, VirtioBus::Mmio))
             .count();
 
-        // On aarch64 Linux direct boot, start RAM at 1 GiB to avoid the low GPA
+        // On aarch64, place the bulk of RAM at 1 GiB to avoid the low GPA
         // region (128 MiB–129 MiB) that iommufd reserves for the host MSI
         // doorbell in IOVA space. Without this gap, iommufd identity-mapped DMA
         // for passthrough devices fails because it cannot allocate IOVAs in
         // that range.
         //
-        // FUTURE: this needs to be present for UEFI as well, but UEFI cannot
-        // only boot from low memory. Either:
-        //  1. Fix Linux to allow configuring the reserved IOVA range.
-        //  2. Fix UEFI to allow booting from >0.
-        //  3. Install a little bit of low memory, enough for UEFI to get to DXE
-        //     (which can run anywhere.)
-        let ram_start_address =
-            if cfg!(guest_arch = "aarch64") && matches!(cfg.load_mode, LoadMode::Linux { .. }) {
-                1024 * 1024 * 1024 // 1 GiB
-            } else {
+        // Linux direct boot can run entirely above 1 GiB. UEFI requires RAM at
+        // GPA 0 to reach DXE, so retain a small low window and resume bulk RAM
+        // at 1 GiB, leaving the MSI doorbell range unbacked.
+        let (ram_start_address, low_ram_window_size) = if cfg!(guest_arch = "aarch64") {
+            let start = 1024 * 1024 * 1024;
+            let low_window = if matches!(cfg.load_mode, LoadMode::Linux { .. }) {
                 0
+            } else {
+                32 * 1024 * 1024
             };
+            (start, low_window)
+        } else {
+            (0, 0)
+        };
 
         let vtl2_framebuffer_size = if cfg.vtl2_gfx {
             cfg.framebuffer
@@ -1198,6 +1200,7 @@ impl InitializedVm {
             pcie_ecam_below_4gb: cfg.pcie_ecam_below_4gb,
             vtl2_layout,
             ram_start_address,
+            low_ram_window_size,
             vtl2_framebuffer_size,
             physical_address_size,
         })
