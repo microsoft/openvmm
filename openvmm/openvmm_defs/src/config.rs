@@ -61,8 +61,6 @@ pub struct Config {
     pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
-    /// Whether the guest firmware should enable hibernation (S4) support.
-    pub hibernation_enabled: bool,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
@@ -144,10 +142,14 @@ pub enum LoadMode {
         enable_vmbus: bool,
         force_dma_bounce: bool,
         enable_hv: bool,
+        /// Whether the guest firmware should enable hibernation (S4) support.
+        hibernation_enabled: bool,
     },
     Pcat {
         firmware: RomFileLocation,
         boot_order: [PcatBootDevice; 4],
+        /// Whether the guest firmware should enable hibernation (S4) support.
+        hibernation_enabled: bool,
     },
     Igvm {
         file: File,

@@ -806,6 +806,7 @@ impl VmService {
                         default_boot_always_attempt: false,
                         force_dma_bounce: false,
                         enable_hv: true,
+                        hibernation_enabled: true,
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
                     Some((base_template, uefi.secure_boot_enabled)),
@@ -885,11 +886,9 @@ impl VmService {
             BuiltPcieTopology::default()
         };
 
-        let hibernation_enabled = matches!(load_mode, LoadMode::Uefi { .. });
         let mut config = Config {
             // TODO: devices, other stuff
             load_mode,
-            hibernation_enabled,
             ide_disks: vec![],
             floppy_disks: vec![],
             pcie_root_complexes: pcie.root_complexes,

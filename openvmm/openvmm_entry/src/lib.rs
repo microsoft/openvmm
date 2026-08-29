@@ -1278,6 +1278,7 @@ async fn vm_config_from_command_line(
                 .pcat_boot_order
                 .map(|x| x.0)
                 .unwrap_or(DEFAULT_PCAT_BOOT_ORDER),
+            hibernation_enabled: opt.hibernation,
         };
     } else if opt.uefi {
         use openvmm_defs::config::UefiConsoleMode;
@@ -1317,6 +1318,7 @@ async fn vm_config_from_command_line(
             enable_vmbus: !opt.no_vmbus,
             force_dma_bounce: opt.uefi_force_dma_bounce,
             enable_hv: !opt.no_hv,
+            hibernation_enabled: opt.hibernation,
         };
     } else {
         // Linux Direct
@@ -1895,11 +1897,9 @@ async fn vm_config_from_command_line(
         );
     }
 
-    let hibernation_enabled = opt.hibernation;
     let mut cfg = Config {
         chipset,
         load_mode,
-        hibernation_enabled,
         floppy_disks,
         pcie_root_complexes,
         pcie_ecam_below_4gb: opt.pcie_ecam_below_4gb,

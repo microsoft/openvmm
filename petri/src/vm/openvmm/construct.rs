@@ -181,7 +181,6 @@ impl PetriVmConfigOpenVmm {
         );
 
         let mut load_mode = setup.load_firmware()?;
-        let hibernation_enabled = setup.hibernation_enabled;
 
         // If using pipette-as-init, replace the initrd with the pre-built
         // one that has pipette injected. run_core() guarantees that
@@ -643,7 +642,6 @@ impl PetriVmConfigOpenVmm {
         let config = Config {
             // Firmware
             load_mode,
-            hibernation_enabled,
             firmware_event_send: Some(firmware_event_send),
 
             // CPU and RAM
@@ -933,6 +931,7 @@ impl PetriVmConfigSetupCore<'_> {
                 LoadMode::Pcat {
                     firmware,
                     boot_order: DEFAULT_PCAT_BOOT_ORDER,
+                    hibernation_enabled: self.hibernation_enabled,
                 }
             }
             (
@@ -976,6 +975,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_vmbus: !self.no_vmbus,
                     force_dma_bounce: *force_dma_bounce,
                     enable_hv: !self.no_hv,
+                    hibernation_enabled: self.hibernation_enabled,
                 }
             }
             (
