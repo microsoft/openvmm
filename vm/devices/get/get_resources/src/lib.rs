@@ -98,8 +98,6 @@ pub mod ged {
         /// Force UEFI to bounce-buffer all DMA traffic.
         pub force_dma_bounce_enabled: bool,
         /// Enable hibernation.
-        // Keep at the end: `MeshPayload` numbers fields by declaration order, so
-        // new fields must be appended to preserve wire compatibility.
         pub enable_hibernation: bool,
     }
 
