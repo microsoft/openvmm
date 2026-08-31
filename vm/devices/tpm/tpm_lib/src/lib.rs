@@ -64,7 +64,7 @@ const MAX_NV_BUFFER_SIZE: usize = MAX_DIGEST_BUFFER_SIZE;
 /// Maximum NV index size supported by the TPM v1.38 reference implementation.
 pub const TPM_V138_MAX_NV_INDEX_SIZE: u16 = 4096;
 /// Maximum NV index size supported by the TPM v1.85 reference implementation.
-pub const TPM_V185_MAX_NV_INDEX_SIZE: u16 = 8500;
+pub const TPM_V185_MAX_NV_INDEX_SIZE: u16 = 16 * 1024;
 // Scale this with maximum attestation payload
 pub(crate) const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
 
