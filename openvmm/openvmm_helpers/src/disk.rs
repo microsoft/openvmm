@@ -108,7 +108,7 @@ pub async fn open_disk_type(
             #[cfg(not(windows))]
             {
                 ensure_no_direct(".qcow2")?;
-                disklayer_qcow2::chain::open_qcow2_chain(path).await?
+                disklayer_qcow2::chain::open_qcow2_chain(path, read_only).await?
             }
         }
         Some("iso") if !read_only => {

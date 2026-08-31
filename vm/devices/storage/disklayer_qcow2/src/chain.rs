@@ -20,20 +20,24 @@ use vm_resource::kind::DiskHandleKind;
 /// # Errors
 ///
 /// Returns an error if the file cannot be opened.
-pub async fn open_qcow2_chain(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
-    open_qcow2_chain_explicit(&[path]).await
+pub async fn open_qcow2_chain(
+    path: &Path,
+    read_only: bool,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
+    open_qcow2_chain_explicit(&[path], read_only).await
 }
 
 /// Open a qcow2 chain from an explicit list of file paths.
 ///
 /// `paths` must be ordered from **leaf** (child, index 0) to **base**
-/// (parent, last index). All files are opened for read+write.
+/// (parent, last index).
 ///
 /// # Errors
 ///
 /// Returns an error if `paths` is empty or any file cannot be opened.
 pub async fn open_qcow2_chain_explicit(
     paths: &[&Path],
+    read_only: bool,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
     anyhow::ensure!(!paths.is_empty(), "qcow2 chain must have at least one file");
 
@@ -41,12 +45,12 @@ pub async fn open_qcow2_chain_explicit(
     for (i, path) in paths.iter().enumerate() {
         let file = std::fs::OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(!read_only)
             .open(path)
             .with_context(|| format!("failed to open qcow2 layer {}: {}", i, path.display()))?;
         let handle = Qcow2DiskLayerHandle {
             file,
-            read_only: false,
+            read_only,
         };
         layers.push(DiskLayerDescription::from(handle.into_resource()));
     }

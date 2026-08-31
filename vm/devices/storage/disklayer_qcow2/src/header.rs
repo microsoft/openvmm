@@ -73,7 +73,9 @@ fn read_be_u32(input: &mut &[u8]) -> anyhow::Result<u32> {
     let (int_bytes, rest) = input.split_at(size_of::<u32>());
     *input = rest;
 
-    Ok(u32::from_be_bytes(int_bytes.try_into().unwrap()))
+    Ok(u32::from_be_bytes(
+        int_bytes.try_into().context("failed to convert bytes to u32")?,
+    ))
 }
 
 fn read_be_u64(input: &mut &[u8]) -> anyhow::Result<u64> {
@@ -81,7 +83,9 @@ fn read_be_u64(input: &mut &[u8]) -> anyhow::Result<u64> {
     let (int_bytes, rest) = input.split_at(size_of::<u64>());
     *input = rest;
 
-    Ok(u64::from_be_bytes(int_bytes.try_into().unwrap()))
+    Ok(u64::from_be_bytes(
+        int_bytes.try_into().context("failed to convert bytes to u64")?,
+    ))
 }
 
 impl Qcow2Header {
