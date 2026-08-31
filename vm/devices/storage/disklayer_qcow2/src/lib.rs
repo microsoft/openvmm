@@ -99,12 +99,10 @@ impl LayerIo for Qcow2Layer {
         sector: u64,
         mut marker: SectorMarker<'_>,
     ) -> Result<(), DiskError> {
-        use guestmem::MemoryWrite;
-        let _ = buffers.writer().zero(0)?;
-        let start_sector = sector;
-        let sector_count = buffers.len() / self.sector_size as usize;
-        marker.set_range(start_sector..start_sector + sector_count as u64);
-        Ok(())
+        let _ = (buffers, sector, marker);
+        Err(DiskError::Io(std::io::Error::other(
+            "qcow2 reads are not implemented yet",
+        )))
     }
 
     async fn write(

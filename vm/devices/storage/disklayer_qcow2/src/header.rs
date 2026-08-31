@@ -1,6 +1,9 @@
-use anyhow::Context;
-use std::io::Read;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 
+use anyhow::Context;
+use core::mem::size_of;
+use std::io::Read;
 const QCOW2_MAGIC: u32 = 0x514649FB; // "QFI\xfb" as a big-endian u32
 
 /// The standard header, defines values used by both V2 and V3
@@ -61,7 +64,7 @@ fn read_be_u8(input: &mut &[u8]) -> anyhow::Result<u8> {
     let (int_bytes, rest) = input.split_at(size_of::<u8>());
     *input = rest;
 
-    Ok(u8::from_be_bytes(int_bytes.try_into().unwrap()))
+    Ok(u8::from_be_bytes([int_bytes[0]]))
 }
 
 fn read_be_u32(input: &mut &[u8]) -> anyhow::Result<u32> {
