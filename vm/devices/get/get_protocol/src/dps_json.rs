@@ -175,10 +175,10 @@ pub enum HardwareSealingPolicy {
 /// guest.
 #[derive(Debug, Copy, Clone, Deserialize, Serialize)]
 pub enum GetTpmVersion {
-    /// TPM reference implementation version 1.85
-    V185,
     /// TPM reference implementation version 1.38
     V138,
+    /// TPM reference implementation version 1.85
+    V185,
 }
 
 /// Management VTL Feature Flags

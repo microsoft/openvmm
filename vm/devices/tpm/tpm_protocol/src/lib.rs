@@ -68,10 +68,10 @@ pub fn platform_akcert_attributes() -> TpmaNvBits {
 }
 
 /// vTPM version string for the 1.38 reference implementation.
-pub const TPM_V138_VERSION: &str = "1.38";
+pub const TPM_V138_VERSION: &str = "138";
 
 /// vTPM version string for the 1.85 reference implementation.
-pub const TPM_V185_VERSION: &str = "1.85";
+pub const TPM_V185_VERSION: &str = "185";
 
 /// Default NVRAM index size provisioned for AKCert.
 pub const TPM_DEFAULT_AKCERT_SIZE: usize = 4096;

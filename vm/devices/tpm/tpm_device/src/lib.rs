@@ -646,15 +646,19 @@ impl Tpm {
                 .await
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
-            if self.tpm_engine_helper.tpm_engine.version() == TpmVersion::V138
-                && let Some(mut blob) = existing_nvmem_blob
-            {
-                // Previous versions before this code had a bug where sizes
-                // smaller than 32K would be reported as 32K. Fixup the blob so
-                // that the TPM nvram is consistent - this code can be removed
-                // once the fix for reporting the NVRAM size correctly is
-                // everywhere.
-                recover::recover_blob(&mut blob);
+            if let Some(mut blob) = existing_nvmem_blob {
+                if matches!(
+                    self.tpm_engine_helper.tpm_engine.version(),
+                    TpmVersion::V138
+                ) {
+                    // Previous versions before this code had a bug where sizes
+                    // smaller than 32K would be reported as 32K. Fixup the blob so
+                    // that the TPM nvram is consistent - this code can be removed
+                    // once the fix for reporting the NVRAM size correctly is
+                    // everywhere.
+                    recover::recover_blob(&mut blob);
+                }
+
                 if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
                     if e.is_mismatched_blob_size() {
                         self.logger
