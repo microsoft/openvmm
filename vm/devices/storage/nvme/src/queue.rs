@@ -80,6 +80,17 @@ impl DoorbellMemory {
         Ok(())
     }
 
+    /// Restore the doorbell store to its power-on state: a fresh internal
+    /// host-side buffer with no guest-backed shadow-doorbell mapping.
+    ///
+    /// Called on controller reset. A shadow-doorbell mapping installed by
+    /// Doorbell Buffer Config otherwise survives the reset, so after the guest
+    /// tears the controller down and reboots, the controller writes shadow
+    /// event_idx into a guest address the rebooted guest has already reused.
+    pub fn reset(&mut self) {
+        *self = Self::new(self.wakers.len() as u16);
+    }
+
     pub fn try_write(&self, db_id: u16, value: u32) -> Result<(), InvalidDoorbell> {
         if (db_id as usize) >= self.wakers.len() {
             return Err(InvalidDoorbell);
