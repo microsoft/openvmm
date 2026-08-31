@@ -1093,14 +1093,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         // Auto-prepare the initrd with pipette injected if needed.
         // This centralizes the injection logic so backends only ever
         // receive a prebuilt_initrd path.
-        let _prepared_initrd_guard;
-        if self.uses_pipette_as_init() && self.prebuilt_initrd.is_none() {
-            let tmp = self.prepare_initrd()?;
-            self.prebuilt_initrd = Some(tmp.to_path_buf());
-            _prepared_initrd_guard = Some(tmp);
-        } else {
-            _prepared_initrd_guard = None;
-        }
+        let _prepared_initrd_guard =
+            if self.uses_pipette_as_init() && self.prebuilt_initrd.is_none() {
+                let tmp = self.prepare_initrd()?;
+                self.prebuilt_initrd = Some(tmp.to_path_buf());
+                Some(tmp)
+            } else {
+                None
+            };
 
         tracing::debug!(builder = ?self);
 

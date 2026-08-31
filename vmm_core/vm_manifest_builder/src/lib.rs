@@ -961,6 +961,16 @@ impl VmChipsetResult {
                     .claim_pio("gameport", 0x201..=0x201)
                     .into_resource(),
             },
+            // Guests probe for an 8-bit SuperIO chip at the legacy index/data
+            // pair. These ports alias the top of the Hyper-V firmware devices'
+            // register window, which only decodes dword accesses, so the
+            // firmware devices leave them unclaimed.
+            ChipsetDeviceHandle {
+                name: "missing-superio".to_owned(),
+                resource: MissingDevHandle::new()
+                    .claim_pio("superio", 0x2e..=0x2f)
+                    .into_resource(),
+            },
         ]);
 
         if pcat_missing {

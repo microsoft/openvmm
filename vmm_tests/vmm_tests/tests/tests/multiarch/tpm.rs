@@ -427,7 +427,7 @@ pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
 
     ensure!(
         output.contains("AK certificate matches expected value"),
-        format!("{output}")
+        output
     );
 
     agent.power_off().await?;
@@ -502,7 +502,7 @@ pub(crate) async fn tpm_ak_cert_retry_impl<T>(
 
     ensure!(
         output.contains("AK certificate matches expected value"),
-        format!("{output}")
+        output
     );
 
     agent.power_off().await?;

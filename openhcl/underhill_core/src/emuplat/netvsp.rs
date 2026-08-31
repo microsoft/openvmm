@@ -598,9 +598,7 @@ impl HclNetworkVFManagerWorker {
         // Explicitly update save state mac filter settings in case of errors or
         // if VTL2 is no longer present.
         if !vtl2_device_present || guest_notification_result.is_err() {
-            for direction_to_vtl0 in &mut *self.save_state.direction_to_vtl0.lock() {
-                *direction_to_vtl0 = Some(false);
-            }
+            self.save_state.direction_to_vtl0.lock().fill(Some(false));
         }
         // Pick a `Present` vPCI bus control to revoke against: try the caller-supplied
         // bus first, then fall back to the worker's current bus.

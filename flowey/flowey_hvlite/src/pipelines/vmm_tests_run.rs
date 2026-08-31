@@ -196,9 +196,6 @@ impl IntoPipeline for VmmTestsRunCli {
             incubator,
         } = self;
 
-        // vmm-tests-run does not support the cca tests
-        let filter = format!("({filter}) & !binary(cca)");
-
         // When --incubator is set, --target must also be specified
         // to indicate the cross-compilation target for the incubator.
         if incubator.is_some() && target.is_none() {

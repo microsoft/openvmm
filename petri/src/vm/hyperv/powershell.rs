@@ -1940,12 +1940,16 @@ pub async fn run_remove_vm_scsi_controller(
 }
 
 /// Run Get-VmScreenshot commandlet
+///
+/// Returns `None` if the VM currently has no active video head, which happens
+/// routinely while the guest is switching video modes or before the firmware
+/// has brought up a framebuffer.
 pub async fn run_get_vm_screenshot(
     vmid: &Guid,
     image: &mut Vec<u8>,
     ps_mod: &Path,
     temp_bin_path: &Path,
-) -> anyhow::Result<VmScreenshotMeta> {
+) -> anyhow::Result<Option<VmScreenshotMeta>> {
     // execute wmi via powershell
     let output = run_host_cmd(
         PowerShellBuilder::new()
@@ -1965,8 +1969,12 @@ pub async fn run_get_vm_screenshot(
 
     // parse output
     let (x, y) = output.split_once(',').context("invalid dimensions")?;
-    let x = x.parse().context("invalid x dimension")?;
-    let y = y.parse().context("invalid y dimension")?;
+    let (Ok(x), Ok(y)) = (x.trim().parse::<u16>(), y.trim().parse::<u16>()) else {
+        return Ok(None);
+    };
+    if x == 0 || y == 0 {
+        return Ok(None);
+    }
     let (widthsize, heightsize) = (x as usize, y as usize);
     let mut image_rgb565 = fs_err::read(temp_bin_path)?;
 
@@ -1997,11 +2005,11 @@ pub async fn run_get_vm_screenshot(
         out_pixel[2] = in_pixel[0] << 3;
     }
 
-    Ok(VmScreenshotMeta {
+    Ok(Some(VmScreenshotMeta {
         color: image::ExtendedColorType::Rgb8,
         width: x,
         height: y,
-    })
+    }))
 }
 
 /// Run Set-TurnOffOnGuestRestart commandlet

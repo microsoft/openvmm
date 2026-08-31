@@ -106,27 +106,24 @@ fn resolve_paravisor_tmk_artifacts(
     resolver: &petri::ArtifactResolver<'_>,
     arch: MachineArch,
 ) -> (ResolvedArtifact, ResolvedArtifact, ResolvedArtifact) {
-    let igvm_path;
-    let tmk_vmm;
-
-    match arch {
-        MachineArch::X86_64 => {
-            igvm_path = resolver
+    let (igvm_path, tmk_vmm) = match arch {
+        MachineArch::X86_64 => (
+            resolver
                 .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64)
-                .erase();
-            tmk_vmm = resolver
+                .erase(),
+            resolver
                 .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64_MUSL)
-                .erase();
-        }
-        MachineArch::Aarch64 => {
-            igvm_path = resolver
+                .erase(),
+        ),
+        MachineArch::Aarch64 => (
+            resolver
                 .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64)
-                .erase();
-            tmk_vmm = resolver
+                .erase(),
+            resolver
                 .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64_MUSL)
-                .erase();
-        }
-    }
+                .erase(),
+        ),
+    };
 
     (igvm_path, tmk_vmm, resolve_simple_tmk(resolver, arch))
 }

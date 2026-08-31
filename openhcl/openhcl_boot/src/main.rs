@@ -196,15 +196,6 @@ fn build_kernel_command_line(
     ];
 
     const X86_KERNEL_PARAMETERS: &[&str] = &[
-        // Disable pcid support. This is a temporary fix to allow
-        // Underhill to run nested inside AMD VMs. Otherwise, the
-        // Underhill kernel tries to start APs with PCID bits set in CR3
-        // without the PCIDE bit set in CR4, which is an invalid
-        // VP state (according to the mshv nested implementation).
-        //
-        // TODO: remove this once we figure out the root cause and apply
-        // a workaround/fix elsewhere.
-        "clearcpuid=pcid",
         // Disable all attempts to use an IOMMU, including swiotlb.
         "iommu=off",
         // Don't probe for a PCI bus. PCI devices currently come from VPCI. When

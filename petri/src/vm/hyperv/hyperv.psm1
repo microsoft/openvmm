@@ -1063,6 +1063,14 @@ function Get-VmScreenshot
     $x = $videoHead.CurrentHorizontalResolution
     $y = $videoHead.CurrentVerticalResolution
 
+    # A VM with no active video head has nothing to capture. Report zero
+    # dimensions rather than calling into WMI, which would just throw.
+    if (($null -eq $x) -or ($null -eq $y) -or ($x -eq 0) -or ($y -eq 0))
+    {
+        [IO.File]::WriteAllBytes($Path, @())
+        return "0,0"
+    }
+
     # Get screenshot
     $image = $vmms | Invoke-CimMethod -MethodName "GetVirtualSystemThumbnailImage" -Arguments @{
         TargetSystem = $vmcs
