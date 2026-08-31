@@ -1761,18 +1761,15 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "blocking",
  "disk_backend",
  "disk_backend_resources",
  "disk_layered",
  "guestmem",
- "guid",
  "inspect",
  "pal_async",
  "scsi_buffers",
  "storage_tests",
  "tempfile",
- "thiserror 2.0.16",
  "vm_resource",
 ]
 

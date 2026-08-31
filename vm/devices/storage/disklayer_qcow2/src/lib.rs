@@ -19,18 +19,27 @@ pub mod chain;
 mod header;
 pub mod resolver;
 mod table;
+#[cfg(test)]
+mod tests;
 
+use core::cmp::min;
 use disk_backend::DiskError;
 use disk_backend::UnmapBehavior;
 use disk_layered::LayerIo;
 use disk_layered::SectorMarker;
+use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
+use std::io::Read;
 use std::io::Seek;
 
 use crate::header::Qcow2Header;
+use crate::table::ClusterAddress;
 use crate::table::L1Entry;
+use crate::table::L2Entry;
 use crate::table::read_l1_table;
+use crate::table::read_l2_table;
+use crate::table::split_guest_offset;
 
 const SECTOR_SIZE: u32 = 512;
 
@@ -55,7 +64,11 @@ impl Qcow2Layer {
     ///
     /// NOTE: `sector_count` is passed by the caller until format parsing is
     /// implemented.
-    pub fn new(mut file: std::fs::File, header: Qcow2Header, read_only: bool) -> anyhow::Result<Self> {
+    pub fn new(
+        mut file: std::fs::File,
+        header: Qcow2Header,
+        read_only: bool,
+    ) -> anyhow::Result<Self> {
         let sector_count = header.size_bytes / SECTOR_SIZE as u64;
 
         use std::io::Read;
@@ -118,10 +131,72 @@ impl LayerIo for Qcow2Layer {
         sector: u64,
         mut marker: SectorMarker<'_>,
     ) -> Result<(), DiskError> {
-        let _ = (buffers, sector, marker);
-        Err(DiskError::Io(std::io::Error::other(
-            "qcow2 reads are not implemented yet",
-        )))
+        let offset = sector * SECTOR_SIZE as u64;
+        let len = buffers.len();
+        let cluster_size = self.header.cluster_size() as usize;
+        let l2_entries = self.header.l2_entries_per_table() as usize;
+
+        let mut file = self.file.try_clone().map_err(DiskError::Io)?;
+
+        let mut byte_off = offset;
+        let end = offset + len as u64;
+        while byte_off < end {
+            let addr: ClusterAddress = split_guest_offset(&self.header, byte_off);
+            if addr.l1_index as usize >= self.l1_table.len() {
+                return Err(DiskError::IllegalBlock);
+            }
+
+            let l1_entry = &self.l1_table[addr.l1_index as usize];
+            if l1_entry.l2_offset == 0 {
+                // Unallocated L2 table; the whole cluster falls through.
+                byte_off += cluster_size as u64 - addr.in_cluster_offset;
+                continue;
+            }
+
+            // TODO: Add L2 table caching for performance.
+            let mut l2_bytes = vec![0u8; l2_entries * 8];
+            file.seek(std::io::SeekFrom::Start(l1_entry.l2_offset))
+                .map_err(DiskError::Io)?;
+            file.read_exact(&mut l2_bytes).map_err(DiskError::Io)?;
+            let mut l2_slice = l2_bytes.as_slice();
+            let l2_table = read_l2_table(&mut l2_slice, l2_entries as u32)
+                .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
+            let l2_entry: &L2Entry = &l2_table[addr.l2_index as usize];
+
+            if l2_entry.cluster_offset == 0 {
+                // Unallocated cluster; falls through to the next layer.
+                byte_off += cluster_size as u64 - addr.in_cluster_offset;
+                continue;
+            }
+            if l2_entry.compressed {
+                return Err(DiskError::InvalidInput);
+            }
+
+            let bytes_in_cluster = min(
+                (end - byte_off) as usize,
+                cluster_size - addr.in_cluster_offset as usize,
+            );
+            let file_offset = l2_entry.cluster_offset + addr.in_cluster_offset;
+
+            let mut data = vec![0u8; bytes_in_cluster];
+            file.seek(std::io::SeekFrom::Start(file_offset))
+                .map_err(DiskError::Io)?;
+            file.read_exact(&mut data).map_err(DiskError::Io)?;
+
+            let buf_off = (byte_off - offset) as usize;
+            buffers
+                .subrange(buf_off, bytes_in_cluster)
+                .writer()
+                .write(&data)?;
+
+            let start_sector = byte_off / SECTOR_SIZE as u64;
+            let sector_count = bytes_in_cluster as u64 / SECTOR_SIZE as u64;
+            marker.set_range(start_sector..start_sector + sector_count);
+
+            byte_off += bytes_in_cluster as u64;
+        }
+
+        Ok(())
     }
 
     async fn write(
