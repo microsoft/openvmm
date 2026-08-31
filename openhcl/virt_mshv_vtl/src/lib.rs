@@ -323,10 +323,17 @@ impl BackingShared {
     }
 }
 
+/// Lower-VTL entry policies supplied to the `mshv_vtl` run ioctl.
+///
+/// The driver snapshots both policies when the ioctl begins. It starts with
+/// [`Self::first`] and switches to [`Self::second`] after an interrupt-only
+/// lower-VTL exit that does not need to return to user mode.
 #[derive(InspectMut, Copy, Clone)]
 struct EnterModes {
+    /// Policy for the first lower-VTL entry after invoking the run ioctl.
     #[inspect(mut)]
     first: EnterMode,
+    /// Policy for subsequent in-kernel reentries after an interrupt-only exit.
     #[inspect(mut)]
     second: EnterMode,
 }
@@ -348,10 +355,24 @@ impl From<EnterModes> for hcl::protocol::EnterModes {
     }
 }
 
+/// Controls how the `mshv_vtl` driver enters a lower VTL.
+///
+/// The kernel applies the selected policy both to the initial entry and, when
+/// configured as the reentry policy, after an interrupt returns control to
+/// VTL2 without requiring an exit to user mode.
 #[derive(InspectMut, Copy, Clone)]
 enum EnterMode {
+    /// Enters the lower VTL directly from the VP thread without stopping the
+    /// VTL2 scheduler tick.
     Fast,
+    /// Marks the VP thread idle, stops the VTL2 scheduler tick, and enters the
+    /// lower VTL directly from that thread. This avoids a scheduler handoff,
+    /// but an in-kernel reentry does not give other runnable VTL2 tasks an
+    /// opportunity to run first.
     PlayIdle,
+    /// Parks the VP thread and delegates lower-VTL entry to the VTL2 idle
+    /// thread. This lets runnable VTL2 work run before reentry, but delays the
+    /// lower VTL until the CPU reaches the idle loop.
     IdleToVtl0,
 }
 
