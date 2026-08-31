@@ -90,7 +90,7 @@ impl Stream for KmsgStream {
                         kmsg_defs::UNDERHILL_INIT_KMSG_FACILITY => {
                             // Don't log debug init messages.
                             // TODO: Support configuring this dynamically.
-                            if entry.level > kmsg_defs::LOGLEVEL_NOTICE {
+                            if entry.level > kmsg_defs::LOGLEVEL_INFO {
                                 continue;
                             }
                             // Use a separate target for the init process messages.
@@ -121,7 +121,7 @@ impl Stream for KmsgStream {
                             // user-mode facilities are logged as is,
                             // but don't log too many.
                             // TODO: Support configuring this dynamically.
-                            if entry.level > kmsg_defs::LOGLEVEL_NOTICE {
+                            if entry.level > kmsg_defs::LOGLEVEL_INFO {
                                 continue;
                             }
                             ("kmsg", entry.level, entry.message)
