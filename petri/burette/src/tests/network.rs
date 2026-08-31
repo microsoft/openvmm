@@ -56,6 +56,10 @@ pub struct NetworkTest {
     pub nic: NicBackend,
     /// Which network backend to use.
     pub backend: NetBackend,
+    /// Number of parallel iperf3 streams for the TCP tests. `1` preserves
+    /// the single-stream behavior; larger values open many concurrent
+    /// connections to exercise the high-connection-count regime.
+    pub parallel: u32,
     /// If set, record per-phase perf traces in this directory.
     pub perf_dir: Option<std::path::PathBuf>,
 }
@@ -410,7 +414,15 @@ impl NetworkTest {
             .await;
 
         // Run guest iperf3 client.
-        run_guest_iperf3_client(&state.agent, host_ip, port, &mode, metric_name).await?;
+        run_guest_iperf3_client(
+            &state.agent,
+            host_ip,
+            port,
+            &mode,
+            self.parallel,
+            metric_name,
+        )
+        .await?;
 
         // Collect JSON from the helper.
         let json = json_future.await.context("iperf3 helper RPC failed")?;
@@ -434,23 +446,38 @@ async fn run_guest_iperf3_client(
     host_ip: &str,
     port: u16,
     mode: &IperfMode,
+    parallel: u32,
     metric_name: &str,
 ) -> anyhow::Result<()> {
     let mut sh = agent.unix_shell();
     sh.chroot("/perf");
     let port_str = port.to_string();
+
+    let parallel_args: Vec<String> = match mode {
+        IperfMode::TcpTx | IperfMode::TcpRx if parallel > 1 => {
+            vec!["-P".to_string(), parallel.to_string()]
+        }
+        _ => Vec::new(),
+    };
+
     match mode {
         IperfMode::TcpTx => {
-            cmd!(sh, "iperf3 -c {host_ip} -p {port_str} -t 10 -J")
-                .ignore_status()
-                .run()
-                .await
+            cmd!(
+                sh,
+                "iperf3 -c {host_ip} -p {port_str} -t 10 -J {parallel_args...}"
+            )
+            .ignore_status()
+            .run()
+            .await
         }
         IperfMode::TcpRx => {
-            cmd!(sh, "iperf3 -c {host_ip} -p {port_str} -t 10 -R -J")
-                .ignore_status()
-                .run()
-                .await
+            cmd!(
+                sh,
+                "iperf3 -c {host_ip} -p {port_str} -t 10 -R -J {parallel_args...}"
+            )
+            .ignore_status()
+            .run()
+            .await
         }
         IperfMode::UdpTx => {
             cmd!(sh, "iperf3 -c {host_ip} -p {port_str} -t 10 -u -b 0 -J")
