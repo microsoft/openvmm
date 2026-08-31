@@ -34,14 +34,14 @@ slow-timeout = { period = "10m", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = 'package(~vmm_tests) and test(very_heavy)'
 # Extra heavy tests have even more VPs. Internal runners fail when 32vp tests
-# are not run one at a time.
+# are not run one at a time. Default "very_heavy" topology is 32 VPs.
 threads-required = 32
 
 [[profile.default.overrides]]
 filter = 'package(~vmm_tests) and test(heavy) and not (test(very_heavy))'
 # Require more threads for heavy tests with more VPs to avoid unreliability
-# due to contention on the physical cores.
-threads-required = 4
+# due to contention on the physical cores. Default "heavy" topology is 16 VPs.
+threads-required = 12
 
 [[profile.default.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
