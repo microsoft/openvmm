@@ -9,13 +9,16 @@
 //! # Modules
 //!
 //! - [`chain`] — qcow2 chain opening helpers
+//! - [`header`] — qcow2 on-disk header parsing
 //! - [`resolver`] — resource resolver for qcow2 disk layers
+//! - [`table`] — qcow2 L1/L2 table entry parsing
 
 #![forbid(unsafe_code)]
 
 pub mod chain;
-pub mod header;
+mod header;
 pub mod resolver;
+mod table;
 
 use disk_backend::DiskError;
 use disk_backend::UnmapBehavior;
@@ -23,8 +26,13 @@ use disk_layered::LayerIo;
 use disk_layered::SectorMarker;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
+use std::io::Seek;
 
 use crate::header::Qcow2Header;
+use crate::table::L1Entry;
+use crate::table::read_l1_table;
+
+const SECTOR_SIZE: u32 = 512;
 
 /// A qcow2 disk layer implementing [`LayerIo`].
 ///
@@ -35,9 +43,11 @@ use crate::header::Qcow2Header;
 pub struct Qcow2Layer {
     #[inspect(skip)]
     file: std::fs::File,
-    sector_size: u32,
+    header: Qcow2Header,
     sector_count: u64,
     read_only: bool,
+    #[inspect(skip)]
+    l1_table: Vec<L1Entry>,
 }
 
 impl Qcow2Layer {
@@ -45,14 +55,23 @@ impl Qcow2Layer {
     ///
     /// NOTE: `sector_count` is passed by the caller until format parsing is
     /// implemented.
-    pub fn new(file: std::fs::File, header: Qcow2Header, read_only: bool) -> Self {
-        let sector_count = header.size_bytes / 512;
-        Self {
+    pub fn new(mut file: std::fs::File, header: Qcow2Header, read_only: bool) -> anyhow::Result<Self> {
+        let sector_count = header.size_bytes / SECTOR_SIZE as u64;
+
+        use std::io::Read;
+        file.seek(std::io::SeekFrom::Start(header.l1_table_offset))?;
+        let mut l1_bytes = vec![0u8; header.l1_size as usize * 8];
+        file.read_exact(&mut l1_bytes)?;
+        let mut l1_slice = l1_bytes.as_slice();
+        let l1_table = read_l1_table(&mut l1_slice, header.l1_size)?;
+
+        Ok(Self {
             file,
-            sector_size: 512,
+            header,
             sector_count,
             read_only,
-        }
+            l1_table,
+        })
     }
 }
 
@@ -66,7 +85,7 @@ impl LayerIo for Qcow2Layer {
     }
 
     fn sector_size(&self) -> u32 {
-        self.sector_size
+        SECTOR_SIZE
     }
 
     fn disk_id(&self) -> Option<[u8; 16]> {
@@ -74,7 +93,7 @@ impl LayerIo for Qcow2Layer {
     }
 
     fn physical_sector_size(&self) -> u32 {
-        self.sector_size
+        SECTOR_SIZE
     }
 
     fn is_fua_respected(&self) -> bool {

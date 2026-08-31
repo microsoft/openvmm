@@ -1773,7 +1773,6 @@ dependencies = [
  "storage_tests",
  "tempfile",
  "thiserror 2.0.16",
- "vhdx",
  "vm_resource",
 ]
 

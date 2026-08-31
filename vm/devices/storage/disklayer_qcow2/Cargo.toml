@@ -18,7 +18,6 @@ guid.workspace = true
 inspect.workspace = true
 scsi_buffers.workspace = true
 thiserror.workspace = true
-vhdx.workspace = true
 vm_resource.workspace = true
 
 [dev-dependencies]

@@ -8,8 +8,8 @@
 
 use anyhow::Context;
 use disk_backend_resources::DiskLayerDescription;
-use disk_backend_resources::layer::Qcow2DiskLayerHandle;
 use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::layer::Qcow2DiskLayerHandle;
 use std::path::Path;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -48,10 +48,7 @@ pub async fn open_qcow2_chain_explicit(
             .write(!read_only)
             .open(path)
             .with_context(|| format!("failed to open qcow2 layer {}: {}", i, path.display()))?;
-        let handle = Qcow2DiskLayerHandle {
-            file,
-            read_only,
-        };
+        let handle = Qcow2DiskLayerHandle { file, read_only };
         layers.push(DiskLayerDescription::from(handle.into_resource()));
     }
 

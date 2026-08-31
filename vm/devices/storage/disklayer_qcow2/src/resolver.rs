@@ -3,7 +3,8 @@
 
 //! Resource resolver for Qcow2 disk layers.
 
-use crate::{Qcow2Layer, header::Qcow2Header};
+use crate::Qcow2Layer;
+use crate::header::Qcow2Header;
 use async_trait::async_trait;
 use disk_backend_resources::layer::Qcow2DiskLayerHandle;
 use disk_layered::resolve::ResolveDiskLayerParameters;
@@ -34,18 +35,17 @@ impl AsyncResolveResource<DiskLayerHandleKind, Qcow2DiskLayerHandle> for Qcow2Di
     async fn resolve(
         &self,
         _resolver: &ResourceResolver,
-        mut resource: Qcow2DiskLayerHandle,
+        Qcow2DiskLayerHandle { file, .. }: Qcow2DiskLayerHandle,
         input: ResolveDiskLayerParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let read_only = resource.read_only || input.read_only;
-
-        resource.file.seek(std::io::SeekFrom::Start(0))?;
-        let header = Qcow2Header::from_file(&mut resource.file)?;
-        resource.file.seek(std::io::SeekFrom::Start(0))?;
+        let mut file = file;
+        file.seek(std::io::SeekFrom::Start(0))?;
+        let header = Qcow2Header::from_file(&mut file)?;
+        file.seek(std::io::SeekFrom::Start(0))?;
         Ok(ResolvedDiskLayer::new(Qcow2Layer::new(
-            resource.file,
+            file,
             header,
-            read_only,
-        )))
+            input.read_only,
+        )?))
     }
 }

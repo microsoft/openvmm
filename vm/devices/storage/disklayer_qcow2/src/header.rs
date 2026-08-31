@@ -3,11 +3,13 @@
 
 use anyhow::Context;
 use core::mem::size_of;
+use inspect::Inspect;
 use std::io::Read;
+
 const QCOW2_MAGIC: u32 = 0x514649FB; // "QFI\xfb" as a big-endian u32
 
 /// The standard header, defines values used by both V2 and V3
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Inspect)]
 pub struct Qcow2Header {
     /// Version number (valid values are 2 and 3)
     pub header_version: u32,
@@ -38,22 +40,22 @@ pub struct Qcow2Header {
 }
 
 /// An extended version of the standard header, has the extra fields for V3
-#[derive(Debug, Clone)]
-pub struct QcowV3Header{
+#[derive(Debug, Clone, Inspect)]
+pub struct QcowV3Header {
     /// Bitmask of incompatible features. An implementation must fail to open an image if an unknown bit is set
     pub incompatible_features: u64,
     /// Bitmask of compatible features. An implementation can safely ignore any unknown bits that are set
     pub compatible_features: u64,
-    /// Bitmask of auto-clear features. An implementation may only write to an image with unknown auto-clear 
+    /// Bitmask of auto-clear features. An implementation may only write to an image with unknown auto-clear
     /// features if it clears the respective bits from this field first
     pub autoclear_features: u64,
-    /// Describes the width of a reference count block entry 
+    /// Describes the width of a reference count block entry
     /// For version 2 images, the order is always assumed to be 4
     pub refcount_order: u32,
     /// Length of the header structure in bytes
     /// For version 2 images, the length is always assumed to be 72 bytes
     pub header_length: u32,
-    /// Defines the compression method used for compressed clusters. All compressed clusters in an image 
+    /// Defines the compression method used for compressed clusters. All compressed clusters in an image
     /// use the same compression type
     pub compression_type: Option<u8>,
 }
@@ -74,7 +76,9 @@ fn read_be_u32(input: &mut &[u8]) -> anyhow::Result<u32> {
     *input = rest;
 
     Ok(u32::from_be_bytes(
-        int_bytes.try_into().context("failed to convert bytes to u32")?,
+        int_bytes
+            .try_into()
+            .context("failed to convert bytes to u32")?,
     ))
 }
 
@@ -84,7 +88,9 @@ fn read_be_u64(input: &mut &[u8]) -> anyhow::Result<u64> {
     *input = rest;
 
     Ok(u64::from_be_bytes(
-        int_bytes.try_into().context("failed to convert bytes to u64")?,
+        int_bytes
+            .try_into()
+            .context("failed to convert bytes to u64")?,
     ))
 }
 
@@ -120,7 +126,7 @@ impl Qcow2Header {
             extended_version3_header: None,
         };
 
-        if this.header_version == 3{
+        if this.header_version == 3 {
             let mut header = [0u8; 32]; // Length of rest of V3 Header
             file.read_exact(&mut header)
                 .context("failed to read qcow2 header")?;
@@ -168,7 +174,10 @@ impl Qcow2Header {
 
     fn read_backing_file_size(header: &mut &[u8]) -> anyhow::Result<u32> {
         let file_size = read_be_u32(header)?;
-        anyhow::ensure!(file_size <= 1023, "Backing file size too long for a qcow2 image");
+        anyhow::ensure!(
+            file_size <= 1023,
+            "Backing file size too long for a qcow2 image"
+        );
         Ok(file_size)
     }
 
@@ -198,7 +207,20 @@ impl Qcow2Header {
 
     fn read_refcount_order(header: &mut &[u8]) -> anyhow::Result<u32> {
         let refcount_order = read_be_u32(header)?;
-        anyhow::ensure!(refcount_order <= 6, "refcount_order may not exceed 6 in the qcow2 header");
+        anyhow::ensure!(
+            refcount_order <= 6,
+            "refcount_order may not exceed 6 in the qcow2 header"
+        );
         Ok(refcount_order)
+    }
+
+    /// Total size of each cluster
+    pub fn cluster_size(&self) -> u64 {
+        1 << self.cluster_bits
+    }
+
+    /// Number of 8-byte entries in one L2 table (an L2 table is exactly one cluster).
+    pub fn l2_entries_per_table(&self) -> u64 {
+        self.cluster_size() / 8
     }
 }
