@@ -537,7 +537,7 @@ rsa = { version = "0.10.0-rc.18", default-features = false }
 sha1 = { version = "0.11.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
 signature = { version = "3.0.0", default-features = false }
-symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
+symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", rev = "2d83888206139cb8cc522ea3617a1870674ac8a0" }
 x509-cert = { version = "0.3.0-rc.4", default-features = false }
 
 # --- Data structures / collections ---
