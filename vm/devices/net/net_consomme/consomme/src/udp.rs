@@ -104,6 +104,7 @@ struct UdpListener {
     /// The guest port to forward received packets to.
     guest_port: u16,
     stats: Stats,
+    gso_size: Option<u16>,
 }
 
 #[derive(InspectMut)]
@@ -462,6 +463,41 @@ impl<T: Client> Access<'_, T> {
             if let Some(listener) = self.inner.udp.listeners.get(&key) {
                 dst_sock_addr.set_port(listener.host_addr.port());
             }
+
+            // Guest reply from a published port to a local client: send from the listener's
+            // host socket so the reply's source matches the published port. A per-connection
+            // socket would use an ephemeral port, which a connected client rejects.
+            let src_key = PortForwardKey::from_socket_addr(guest_addr, guest_addr.port());
+            if let Some(listener) = self.inner.udp.listeners.get_mut(&src_key) {
+                if let Some(socket) = listener.socket.as_ref() {
+                    let socket = socket.get();
+                    if listener.gso_size != checksum.gso {
+                        platform::set_udp_gso_size(socket, checksum.gso.unwrap_or(0))
+                            .map_err(DropReason::Io)?;
+                        listener.gso_size = checksum.gso;
+                    }
+                    let result = platform::send_to(
+                        socket,
+                        udp_packet.payload(),
+                        &dst_sock_addr,
+                        checksum.gso,
+                    );
+                    return match result {
+                        Ok(_) => {
+                            listener.stats.tx_packets.increment();
+                            Ok(())
+                        }
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                            listener.stats.tx_dropped.increment();
+                            Err(DropReason::SendBufferFull)
+                        }
+                        Err(err) => {
+                            listener.stats.tx_errors.increment();
+                            Err(DropReason::Io(err))
+                        }
+                    };
+                }
+            }
         }
 
         let conn = self.get_or_insert(guest_addr, Some(frame.src_addr))?;
@@ -587,6 +623,7 @@ impl<T: Client> Access<'_, T> {
                 host_addr,
                 guest_port,
                 stats: Default::default(),
+                gso_size: None,
             },
         );
         Ok(())
@@ -975,6 +1012,82 @@ mod tests {
             udp.dst_port(),
             guest_port,
             "forwarded packet should target the guest port"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn test_udp_reply_source_port(driver: DefaultDriver) {
+        // A guest reply from a published port must egress from the listener's host socket so its
+        // source matches the published port.
+        let driver = Arc::new(driver);
+        let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
+        let mut client = TestClient::new(driver.clone());
+
+        let guest_mac = consomme.params_mut().client_mac;
+        let gateway_mac = consomme.params_mut().gateway_mac;
+        let guest_ip: Ipv4Address = consomme.params_mut().client_ip;
+
+        // Bind a listener socket on an ephemeral host port for `guest_port`.
+        let listener_socket =
+            Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        listener_socket
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+        let host_addr: SocketAddr = listener_socket.local_addr().unwrap().as_socket().unwrap();
+        let guest_port = 7777;
+
+        // A host client socket that will receive the guest's reply.
+        let host_client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        host_client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let client_port = host_client.local_addr().unwrap().port();
+
+        let mut access = consomme.access(&mut client);
+        access
+            .bind_udp_port(listener_socket, guest_port)
+            .expect("bind should succeed");
+
+        // Build a guest-originated UDP datagram whose source is the published guest port and whose
+        // destination is the host client on loopback (a local address).
+        let target_ip: Ipv4Address = Ipv4Addr::LOCALHOST;
+        let payload = b"reply";
+        let mut buffer =
+            vec![0u8; ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
+        buffer[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN..].copy_from_slice(payload);
+        let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
+        let packet_len = build_udp_packet(
+            &mut eth_frame,
+            IpAddress::Ipv4(guest_ip),
+            IpAddress::Ipv4(target_ip),
+            guest_port,
+            client_port,
+            payload.len(),
+            guest_mac,
+            gateway_mac,
+        );
+
+        let _ = access.send(&buffer[..packet_len], &ChecksumState::NONE);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        access.poll(&mut cx);
+
+        // The reply must reuse the listener; no per-connection socket should be created.
+        assert_eq!(
+            access.udp_connection_count(),
+            0,
+            "reply should not create a new UDP connection"
+        );
+
+        // The host client must receive the reply from the published host port.
+        let mut recv_buf = [0u8; 64];
+        let (n, src) = host_client
+            .recv_from(&mut recv_buf)
+            .expect("client should receive the reply");
+        assert_eq!(&recv_buf[..n], payload);
+        assert_eq!(
+            src.port(),
+            host_addr.port(),
+            "reply source port must match the published host port"
         );
     }
 
