@@ -101,15 +101,8 @@ pub async fn open_disk_type(
             }
         }
         Some("qcow2") => {
-            #[cfg(windows)]
-            {
-                anyhow::bail!("Qcow2 not supported on Windows");
-            }
-            #[cfg(not(windows))]
-            {
-                ensure_no_direct(".qcow2")?;
-                disklayer_qcow2::chain::open_qcow2_chain(path, read_only).await?
-            }
+            ensure_no_direct(".qcow2")?;
+            disklayer_qcow2::chain::open_qcow2_chain(path, read_only).await?
         }
         Some("iso") if !read_only => {
             anyhow::bail!("iso file cannot be opened as read/write")
