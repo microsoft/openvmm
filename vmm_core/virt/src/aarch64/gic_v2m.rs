@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! GIC v2m MSI frame support for delivering PCIe MSIs as SPI assertions.
+//! GIC v2m MSI frame support for delivering PCIe MSIs as SPI pulses.
 
 use crate::irqcon::ControlGic;
 use aarch64defs::gic::GicV2mRegister;
@@ -11,14 +11,14 @@ use std::sync::Arc;
 use vm_topology::processor::aarch64::GicV2mInfo;
 
 /// A [`SignalMsi`] implementation that decodes GIC v2m-style MSIs and delivers
-/// them as SPI assertions via [`ControlGic`].
+/// them as SPI pulses via [`ControlGic`].
 ///
 /// When a device fires an MSI it writes the assigned GIC interrupt ID to the
 /// SETSPI_NS register inside the v2m frame (`frame_base + 0x0040`). The host
 /// intercepts that write (or for software devices, synthesises it) and calls
 /// [`signal_msi`](SignalMsi::signal_msi) with `address = frame_base + 0x0040`
 /// and `data = interrupt_id`. This struct validates the address and SPI range
-/// then calls [`ControlGic::set_spi_irq`].
+/// then calls [`ControlGic::pulse_spi_irq`].
 pub struct GicV2mSignalMsi {
     /// Address of the v2m SETSPI_NS doorbell, i.e. `frame_base + 0x0040`.
     setspi_addr: u64,
@@ -52,6 +52,6 @@ impl SignalMsi for GicV2mSignalMsi {
             tracelimit::warn_ratelimited!(data, "MSI data (SPI ID) outside v2m SPI range");
             return;
         }
-        self.irqcon.set_spi_irq(data, true);
+        self.irqcon.pulse_spi_irq(data);
     }
 }
