@@ -57,10 +57,14 @@ fn build_fixture() -> Vec<u8> {
     img
 }
 
-fn open_layer(path: &std::path::Path) -> Qcow2Layer {
-    let mut file = std::fs::File::open(path).unwrap();
+fn open_layer(path: &std::path::Path, read_only: bool) -> Qcow2Layer {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(!read_only)
+        .open(path)
+        .unwrap();
     let header = Qcow2Header::from_file(&mut file).unwrap();
-    Qcow2Layer::new(file, header, true).unwrap()
+    Qcow2Layer::new(file, header, read_only).unwrap()
 }
 
 #[async_test]
@@ -69,7 +73,7 @@ async fn read_allocated_cluster() {
     let path = dir.path().join("test.qcow2");
     std::fs::write(&path, build_fixture()).unwrap();
 
-    let layer = open_layer(&path);
+    let layer = open_layer(&path, true);
     let disk = LayeredDisk::new(
         true,
         vec![LayerConfiguration {
@@ -97,7 +101,7 @@ async fn read_unallocated_is_zero() {
     let path = dir.path().join("test.qcow2");
     std::fs::write(&path, build_fixture()).unwrap();
 
-    let layer = open_layer(&path);
+    let layer = open_layer(&path, true);
     let disk = Disk::new(
         LayeredDisk::new(
             true,
@@ -124,4 +128,130 @@ async fn read_unallocated_is_zero() {
     let mut buf = vec![0xFFu8; 512];
     mem.read_at(0, &mut buf).unwrap();
     assert_eq!(buf, vec![0u8; 512]);
+}
+
+#[async_test]
+async fn write_unallocated_allocates_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_fixture()).unwrap();
+
+    // Sector 8 is in cluster 1, which is unallocated in the fixture's L2
+    // table. Writing it should allocate a fresh data cluster and persist the
+    // new L1/L2 metadata back to disk.
+    let pattern: Vec<u8> = (0..512u16).map(|i| (i * 7 % 256) as u8).collect();
+
+    let layer = open_layer(&path, false);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mem = GuestMemory::allocate(512);
+    mem.write_at(0, &pattern).unwrap();
+    let owned = OwnedRequestBuffers::linear(0, 512, true);
+    disk.write_vectored(&owned.buffer(&mem), 8, false).await.unwrap();
+
+    // Read it back through the same disk.
+    let mut buf = vec![0u8; 512];
+    mem.write_at(0, &vec![0u8; 512]).unwrap();
+    disk.read_vectored(&owned.buffer(&mem), 8).await.unwrap();
+    mem.read_at(0, &mut buf).unwrap();
+    assert_eq!(buf, pattern);
+    drop(disk);
+
+    // Re-open the file fresh to confirm the allocation was persisted.
+    let layer2 = open_layer(&path, false);
+    let disk2 = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer2),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mem2 = GuestMemory::allocate(512);
+    let owned2 = OwnedRequestBuffers::linear(0, 512, true);
+    disk2.read_vectored(&owned2.buffer(&mem2), 8).await.unwrap();
+    let mut buf2 = vec![0u8; 512];
+    mem2.read_at(0, &mut buf2).unwrap();
+    assert_eq!(buf2, pattern);
+}
+
+#[async_test]
+async fn write_overwrites_existing_cluster() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_fixture()).unwrap();
+
+    // Sector 0 is in cluster 0, which the fixture pre-allocates with the
+    // (i % 251) pattern. Overwrite it with a distinct pattern, then verify the
+    // overwritten sector changed while an adjacent, untouched sector in the
+    // same cluster still holds the original fixture data.
+    let new_pattern: Vec<u8> = (0..512u16).map(|i| (i as u8).wrapping_add(200)).collect();
+
+    let layer = open_layer(&path, false);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mem = GuestMemory::allocate(512);
+    mem.write_at(0, &new_pattern).unwrap();
+    let owned = OwnedRequestBuffers::linear(0, 512, true);
+    disk.write_vectored(&owned.buffer(&mem), 0, false).await.unwrap();
+    drop(disk);
+
+    // Re-open and check both sectors from a clean state.
+    let layer2 = open_layer(&path, false);
+    let disk2 = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer2),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Sector 0: the newly written pattern.
+    let mut buf = vec![0u8; 512];
+    let owned0 = OwnedRequestBuffers::linear(0, 512, true);
+    disk2.read_vectored(&owned0.buffer(&mem), 0).await.unwrap();
+    mem.read_at(0, &mut buf).unwrap();
+    assert_eq!(buf, new_pattern);
+
+    // Sector 1: untouched by the write, still the fixture pattern.
+    disk2.read_vectored(&owned0.buffer(&mem), 1).await.unwrap();
+    mem.read_at(0, &mut buf).unwrap();
+    let expected: Vec<u8> = (0..512u16).map(|i| ((512 + i) % 251) as u8).collect();
+    assert_eq!(buf, expected);
 }
