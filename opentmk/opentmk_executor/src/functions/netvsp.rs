@@ -37,6 +37,13 @@ use vmbus_guest::devices::netvsp::{self, Netvsp, RMC_CONTROL, RMC_DATA, rndis};
 /// `VM_PKT_COMP`). When clear, the send is fire-and-forget.
 const FLAG_REQUEST_COMPLETION: u64 = 0x1;
 
+/// Upper bound on a fuzzer-supplied message length before we allocate
+/// a staging buffer for it. The length arrives as untrusted fuzz input,
+/// so an unbounded `vec![0u8; len]` would panic with a capacity
+/// overflow (or exhaust the heap) on a garbage value. Matches the
+/// `MAX_RNDIS_LEN` cap enforced deeper in the guest netvsp driver.
+const MAX_FUZZ_MSG_LEN: usize = 16 * 4096;
+
 /// Receive-buffer size established during session bring-up (16 MiB —
 /// the conventional netvsc receive buffer size).
 const RECV_BUFFER_SIZE: usize = 16 * 1024 * 1024;
@@ -154,6 +161,11 @@ pub fn send_nvsp(
     let completion = (flags & FLAG_REQUEST_COMPLETION) != 0;
 
     run_logged(|| {
+        if pkt_len > MAX_FUZZ_MSG_LEN {
+            return Err(format!(
+                "send_nvsp: pkt_len {pkt_len} exceeds max {MAX_FUZZ_MSG_LEN}"
+            ));
+        }
         let mut frame = vec![0u8; pkt_len];
         if pkt_len > 0 {
             mem.try_read_mem(pkt, &mut frame)
@@ -191,6 +203,11 @@ pub fn send_rndis(
     run_logged(|| {
         if rndis_len == 0 {
             return Err(String::from("send_rndis: empty RNDIS message"));
+        }
+        if rndis_len > MAX_FUZZ_MSG_LEN {
+            return Err(format!(
+                "send_rndis: rndis_len {rndis_len} exceeds max {MAX_FUZZ_MSG_LEN}"
+            ));
         }
         let mut msg = vec![0u8; rndis_len];
         mem.try_read_mem(rndis_ptr, &mut msg)
