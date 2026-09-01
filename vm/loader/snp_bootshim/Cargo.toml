@@ -1,0 +1,18 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "snp_bootshim"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+loader_defs.workspace = true
+minimal_rt.workspace = true
+x86defs.workspace = true
+
+[build-dependencies]
+minimal_rt_build.workspace = true
+
+[lints]
+workspace = true
