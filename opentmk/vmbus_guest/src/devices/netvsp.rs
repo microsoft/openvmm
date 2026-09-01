@@ -837,6 +837,16 @@ struct PendingTx {
 /// Roughly a few seconds of spinning on modern hardware.
 const DEFAULT_MAX_POLLS: usize = 100_000_000;
 
+/// Completion-poll budget for the fuzzer-facing raw send paths
+/// (`send_nvsp_raw`, `send_rndis_raw`, `renew_*_buffer`). Much smaller
+/// than [`DEFAULT_MAX_POLLS`] (~0.25s vs ~5s) because malformed fuzz
+/// input routinely gets no host completion, and a single testcase may
+/// chain many such sends. The agent must answer within the fuzzer's
+/// 20s TCP read window, so a large per-send timeout would blow the
+/// whole testcase budget on the first few sends. A real completion for
+/// a well-formed send arrives far faster than this bound.
+const FUZZ_SEND_MAX_POLLS: usize = 5_000_000;
+
 /// Soft cap on in-flight TX buffers awaiting completion. Sized to
 /// keep the outstanding heap footprint bounded at ~2 MiB (512 × 4 KiB)
 /// under a stress burst. When we reach the cap, `send_ethernet` will
@@ -2300,7 +2310,7 @@ impl Netvsp {
             });
         }
         if completion {
-            let _ = self.send_and_await(ctx, frame, DEFAULT_MAX_POLLS)?;
+            let _ = self.send_and_await(ctx, frame, FUZZ_SEND_MAX_POLLS)?;
             Ok(())
         } else {
             self.send_no_completion(ctx, frame)
@@ -2449,7 +2459,7 @@ impl Netvsp {
         // Wait for our V1_SEND_RNDIS_PKT_COMPLETE (matching tid),
         // reaping other completions and acking xfer-page arrivals.
         let mut buf = [0u8; 4096];
-        for _ in 0..DEFAULT_MAX_POLLS {
+        for _ in 0..FUZZ_SEND_MAX_POLLS {
             match self.recv.read(&mut buf) {
                 Ok(pkt) => match pkt.descriptor.packet_type {
                     PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
@@ -2525,7 +2535,7 @@ impl Netvsp {
             ty: None,
             reason: "encode SEND_RECV_BUF (renew)",
         })?;
-        let response = self.send_and_await(ctx, &frame[..n], DEFAULT_MAX_POLLS)?;
+        let response = self.send_and_await(ctx, &frame[..n], FUZZ_SEND_MAX_POLLS)?;
         let (ty, body) = parse_header(&response).map_err(|_| Error::Parse {
             ty: None,
             reason: "parse SEND_RECV_BUF_COMPLETE header (renew)",
@@ -2605,7 +2615,7 @@ impl Netvsp {
             ty: None,
             reason: "encode SEND_SEND_BUF (renew)",
         })?;
-        let response = self.send_and_await(ctx, &frame[..n], DEFAULT_MAX_POLLS)?;
+        let response = self.send_and_await(ctx, &frame[..n], FUZZ_SEND_MAX_POLLS)?;
         let (ty, body) = parse_header(&response).map_err(|_| Error::Parse {
             ty: None,
             reason: "parse SEND_SEND_BUF_COMPLETE header (renew)",
