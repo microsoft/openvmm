@@ -1989,6 +1989,16 @@ async fn build_virtio_device(
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
+        Kind::Fs(vmservice::VirtioFsConfig { tag, root_path }) => {
+            virtio_resources::fs::VirtioFsHandle {
+                tag,
+                fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+                    root_path,
+                    mount_options: String::new(),
+                },
+            }
+            .into_resource()
+        }
     })
 }
 

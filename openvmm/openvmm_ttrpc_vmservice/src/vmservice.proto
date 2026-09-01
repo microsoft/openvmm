@@ -203,6 +203,8 @@ message VirtioDevice {
         // A virtio device whose datapath is backed by an external vhost-user
         // process (e.g. vhost-user-blk / vhost-user-fs).
         VhostUser     vhost_user = 6;
+        // Built-in virtio-fs filesystem device.
+        VirtioFSConfig fs        = 7;
     }
 }
 

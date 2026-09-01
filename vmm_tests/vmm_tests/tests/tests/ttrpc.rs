@@ -152,7 +152,9 @@ fn test_ttrpc_interface(
             let com1_path = tempdir.path().join(format!("com1-{i}.sock"));
             let console_path = tempdir.path().join(format!("console-{i}.sock"));
             let virtiofs_root = tempdir.path().join(format!("virtiofs-{i}"));
+            let hotplug_virtiofs_root = tempdir.path().join(format!("hotplug-virtiofs-{i}"));
             std::fs::create_dir_all(&virtiofs_root)?;
+            std::fs::create_dir_all(&hotplug_virtiofs_root)?;
             let hvsocket_path = tempdir.path().join(format!("hvsocket-{i}"));
             let pipette_listener = if i == 0 {
                 let path = format!(
@@ -458,9 +460,8 @@ fn test_ttrpc_interface(
                 );
             }
 
-            // On iteration 0, hot-add a virtio-rng device to the empty
-            // hotplug-capable port and then hot-remove it, exercising the
-            // AddPcieDevice/RemovePcieDevice RPCs.
+            // On iteration 0, exercise AddPcieDevice/RemovePcieDevice with
+            // both a simple virtio device and one with a host backend.
             if i == 0 {
                 client
                     .call()
@@ -470,6 +471,34 @@ fn test_ttrpc_interface(
                             port_name: "rphp".to_string(),
                             device: Some(virtio_device(vmservice::virtio_device::Kind::Rng(
                                 vmservice::VirtioRng {},
+                            ))),
+                        },
+                    )
+                    .await
+                    .unwrap();
+
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::RemovePcieDevice,
+                        vmservice::RemovePcieDeviceRequest {
+                            port_name: "rphp".to_string(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::AddPcieDevice,
+                        vmservice::AddPcieDeviceRequest {
+                            port_name: "rphp".to_string(),
+                            device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
+                                vmservice::VirtioFsConfig {
+                                    tag: "hotplugfs".to_string(),
+                                    root_path: hotplug_virtiofs_root.to_string_lossy().into(),
+                                },
                             ))),
                         },
                     )
