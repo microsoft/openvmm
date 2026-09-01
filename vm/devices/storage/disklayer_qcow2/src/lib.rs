@@ -175,17 +175,13 @@ impl LayerIo for Qcow2Layer {
 
             let l1_entry = &l1_table[addr.l1_index as usize];
             if l1_entry.l2_offset == 0 {
-                // Unallocated; zero the covered portion of the request.
-                let zero_n = min(
+                // Unallocated in this layer: do not mark sectors as present so lower layers
+                // (or LayeredDisk's final zero-fill) can provide the data.
+                let skip_n = min(
                     (end - byte_off) as usize,
                     cluster_size - addr.in_cluster_offset as usize,
                 );
-                let buf_off = (byte_off - offset) as usize;
-                buffers.subrange(buf_off, zero_n).writer().zero(zero_n)?;
-                let start_sector = byte_off / SECTOR_SIZE as u64;
-                let sector_count = zero_n as u64 / SECTOR_SIZE as u64;
-                marker.set_range(start_sector..start_sector + sector_count);
-                byte_off += zero_n as u64;
+                byte_off += skip_n as u64;
                 continue;
             }
 
@@ -258,7 +254,11 @@ impl LayerIo for Qcow2Layer {
         buffers: &RequestBuffers<'_>,
         sector: u64,
         _fua: bool,
-    ) -> Result<(), DiskError> {
+) -> Result<(), DiskError> {
+        if self.read_only {
+            return Err(DiskError::ReadOnly);
+        }
+
         let offset = sector * SECTOR_SIZE as u64;
         let len = buffers.len();
         let cluster_size = self.header.cluster_size() as usize;

@@ -144,9 +144,15 @@ impl RefcountTable {
             self.entries[table_index] = block_offset;
             let f = file.clone();
             let entry_offset = self.table_offset + table_index as u64 * 8;
-            unblock(move || f.write_at(&block_offset.to_be_bytes(), entry_offset))
-                .await
-                .map_err(DiskError::Io)?;
+            unblock(move || -> std::io::Result<()> {
+                let n = f.write_at(&block_offset.to_be_bytes(), entry_offset)?;
+                if n != 8 {
+                    return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "short write"));
+                }
+                Ok(())
+            })
+            .await
+            .map_err(DiskError::Io)?;
 
             // The new block is itself referenced once, by the refcount table.
             to_increment.push(block_offset / self.cluster_size);
@@ -205,8 +211,8 @@ impl RefcountTable {
             let n = f.read_at(&mut buf, block_offset)?;
             if n != buf.len() {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "short write",
+                    std::io::ErrorKind::UnexpectedEof,
+                    "short read",
                 ));
             }
             Ok(buf)
@@ -214,7 +220,6 @@ impl RefcountTable {
         .await
         .map_err(DiskError::Io)?;
         Ok(buf
-            .clone()
             .chunks_exact(2)
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
             .collect())

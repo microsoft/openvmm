@@ -43,12 +43,18 @@ pub async fn open_qcow2_chain_explicit(
 
     let mut layers = Vec::new();
     for (i, path) in paths.iter().enumerate() {
+        let is_leaf = i == 0;
+        let layer_read_only = !is_leaf || read_only;
+
         let file = std::fs::OpenOptions::new()
             .read(true)
-            .write(!read_only)
+            .write(!layer_read_only)
             .open(path)
             .with_context(|| format!("failed to open qcow2 layer {}: {}", i, path.display()))?;
-        let handle = Qcow2DiskLayerHandle { file, read_only };
+        let handle = Qcow2DiskLayerHandle {
+            file,
+            read_only: layer_read_only,
+        };
         layers.push(DiskLayerDescription::from(handle.into_resource()));
     }
 
