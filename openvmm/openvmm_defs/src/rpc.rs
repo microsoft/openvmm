@@ -40,6 +40,10 @@ pub enum VmRpc {
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a PCIe device from a named port at runtime.
     RemovePcieDevice(FailableRpc<String, ()>),
+    /// Hot-add a VPCI device at runtime, returning its instance ID.
+    AddVpciDevice(FailableRpc<(DeviceVtl, Resource<PciDeviceHandleKind>), Guid>),
+    /// Hot-remove a dynamically added VPCI device by instance ID.
+    RemoveVpciDevice(FailableRpc<Guid, ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     ///
     /// The worker pauses the VM internally, collects state, and restores
@@ -82,6 +86,8 @@ impl fmt::Debug for VmRpc {
             VmRpc::UpdateCliParams(_) => "UpdateCliParams",
             VmRpc::AddPcieDevice(_) => "AddPcieDevice",
             VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",
+            VmRpc::AddVpciDevice(_) => "AddVpciDevice",
+            VmRpc::RemoveVpciDevice(_) => "RemoveVpciDevice",
             VmRpc::DumpState(_) => "DumpState",
         };
         f.pad(s)

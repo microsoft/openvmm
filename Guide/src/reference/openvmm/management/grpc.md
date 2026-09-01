@@ -36,6 +36,21 @@ before their implementation is connected end to end.
 * CapabilitiesVM
 * PropertiesVM
 * ModifyResource
+* AddPcieDevice
+* RemovePcieDevice
+* AddVpciDevice
+* RemoveVpciDevice
 * Quit
+
+`AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
+The VM must have Hyper-V enlightenments and VMBus enabled, and the host
+hypervisor backend must support virtual devices. The response contains an
+instance ID that identifies the device for `RemoveVpciDevice`. Up to 64
+dynamically added VPCI devices may exist in a VM at once. Removing an unknown
+or previously removed instance ID returns an error.
+
+Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
+hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
+hotplug semantics or a non-VPCI host backend is required.
 
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto

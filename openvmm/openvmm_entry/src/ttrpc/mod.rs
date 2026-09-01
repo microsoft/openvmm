@@ -672,6 +672,14 @@ impl VmService {
                 let r = self.remove_pcie_device(request);
                 self.start_rpc(response, r);
             }
+            vmservice::Vm::AddVpciDevice(request, response) => {
+                let r = self.add_vpci_device(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::RemoveVpciDevice(request, response) => {
+                let r = self.remove_vpci_device(request);
+                self.start_rpc(response, r);
+            }
         }
         HandleAction::None
     }
@@ -1339,6 +1347,50 @@ impl VmService {
         Ok(async move { recv.await.map_err(anyhow::Error::from) })
     }
 
+    fn add_vpci_device(
+        &self,
+        request: vmservice::AddVpciDeviceRequest,
+    ) -> anyhow::Result<
+        futures::future::BoxFuture<'static, anyhow::Result<vmservice::AddVpciDeviceResponse>>,
+    > {
+        let worker_rpc = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .clone();
+        let registry = self.registry.clone();
+        Ok(async move {
+            let resource =
+                build_pcie_device(request.device.context("missing device")?, &registry).await?;
+            let instance_id = worker_rpc
+                .call_failable(VmRpc::AddVpciDevice, (DeviceVtl::Vtl0, resource))
+                .await
+                .map_err(anyhow::Error::from)?;
+            Ok::<_, anyhow::Error>(vmservice::AddVpciDeviceResponse {
+                instance_id: instance_id.to_string(),
+            })
+        }
+        .boxed())
+    }
+
+    fn remove_vpci_device(
+        &self,
+        request: vmservice::RemoveVpciDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let instance_id = request
+            .instance_id
+            .parse()
+            .context("invalid VPCI instance ID")?;
+        let recv = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .call_failable(VmRpc::RemoveVpciDevice, instance_id);
+        Ok(async move { recv.await.map_err(anyhow::Error::from) })
+    }
+
     fn modify_resource(
         &self,
         request: vmservice::ModifyResourceRequest,
@@ -1990,6 +2042,16 @@ async fn build_virtio_device(
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
         Kind::Fs(vmservice::VirtioFsConfig { tag, root_path }) => {
+            const VIRTIO_FS_TAG_LEN: usize = 36;
+            anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
+            anyhow::ensure!(
+                tag.len() <= VIRTIO_FS_TAG_LEN,
+                "virtio-fs tag exceeds the {VIRTIO_FS_TAG_LEN}-byte protocol limit"
+            );
+            anyhow::ensure!(
+                !root_path.is_empty(),
+                "virtio-fs root path must not be empty"
+            );
             virtio_resources::fs::VirtioFsHandle {
                 tag,
                 fs: virtio_resources::fs::VirtioFsBackend::HostFs {

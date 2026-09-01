@@ -51,6 +51,14 @@ service VM {
     // RemovePcieDevice hot-removes the PCIe device behind the named port.
     rpc RemovePcieDevice(RemovePcieDeviceRequest) returns (google.protobuf.Empty);
 
+    // AddVpciDevice hot-adds a PCI device over the Hyper-V VPCI transport.
+    // A VM may have up to 64 dynamically added VPCI devices.
+    rpc AddVpciDevice(AddVpciDeviceRequest) returns (AddVpciDeviceResponse);
+
+    // RemoveVpciDevice hot-removes a dynamically added VPCI device. Removing
+    // an unknown or previously removed instance ID returns an error.
+    rpc RemoveVpciDevice(RemoveVpciDeviceRequest) returns (google.protobuf.Empty);
+
     // Quit will shutdown the process hosting the ttrpc server.
     rpc Quit(google.protobuf.Empty) returns (google.protobuf.Empty);
 }
@@ -808,4 +816,22 @@ message AddPcieDeviceRequest {
 message RemovePcieDeviceRequest {
     // Name of the PCIe port whose device should be removed.
     string port_name = 1;
+}
+
+// Request to hot-add a PCI device over VPCI.
+message AddVpciDeviceRequest {
+    // The device to attach. VTL assignment is not modeled; this targets VTL0.
+    PcieDeviceKind device = 1;
+}
+
+// Response identifying a dynamically added VPCI device.
+message AddVpciDeviceResponse {
+    // VPCI instance ID. Pass this to RemoveVpciDevice to remove the device.
+    string instance_id = 1;
+}
+
+// Request to hot-remove a dynamically added VPCI device.
+message RemoveVpciDeviceRequest {
+    // Instance ID returned by AddVpciDevice.
+    string instance_id = 1;
 }
