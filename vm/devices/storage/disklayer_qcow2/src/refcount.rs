@@ -147,7 +147,10 @@ impl RefcountTable {
             unblock(move || -> std::io::Result<()> {
                 let n = f.write_at(&block_offset.to_be_bytes(), entry_offset)?;
                 if n != 8 {
-                    return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "short write"));
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "short write",
+                    ));
                 }
                 Ok(())
             })

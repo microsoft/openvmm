@@ -91,7 +91,8 @@ impl Qcow2Layer {
 
         let mut refcounts = RefcountTable::new(&header)?;
         if header.refcount_table_offset != 0 && header.refcount_table_clusters != 0 {
-            let table_bytes_len = header.refcount_table_clusters as usize * header.cluster_size() as usize;
+            let table_bytes_len =
+                header.refcount_table_clusters as usize * header.cluster_size() as usize;
             let mut table_bytes = vec![0u8; table_bytes_len];
             file.read_at(&mut table_bytes, header.refcount_table_offset)?;
             refcounts.set_table_bytes(&table_bytes);
@@ -254,7 +255,7 @@ impl LayerIo for Qcow2Layer {
         buffers: &RequestBuffers<'_>,
         sector: u64,
         _fua: bool,
-) -> Result<(), DiskError> {
+    ) -> Result<(), DiskError> {
         if self.read_only {
             return Err(DiskError::ReadOnly);
         }

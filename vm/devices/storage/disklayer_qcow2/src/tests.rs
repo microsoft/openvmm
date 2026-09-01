@@ -174,7 +174,9 @@ async fn write_unallocated_allocates_and_persists() {
     let mem = GuestMemory::allocate(512);
     mem.write_at(0, &pattern).unwrap();
     let owned = OwnedRequestBuffers::linear(0, 512, true);
-    disk.write_vectored(&owned.buffer(&mem), 8, false).await.unwrap();
+    disk.write_vectored(&owned.buffer(&mem), 8, false)
+        .await
+        .unwrap();
 
     // Read it back through the same disk.
     let mut buf = vec![0u8; 512];
@@ -237,7 +239,9 @@ async fn write_updates_refcounts() {
     let mem = GuestMemory::allocate(512);
     mem.write_at(0, &pattern).unwrap();
     let owned = OwnedRequestBuffers::linear(0, 512, true);
-    disk.write_vectored(&owned.buffer(&mem), 8, false).await.unwrap();
+    disk.write_vectored(&owned.buffer(&mem), 8, false)
+        .await
+        .unwrap();
     drop(disk);
 
     // Read the raw refcount block (cluster 5) from the file on disk.
@@ -285,7 +289,9 @@ async fn write_overwrites_existing_cluster() {
     let mem = GuestMemory::allocate(512);
     mem.write_at(0, &new_pattern).unwrap();
     let owned = OwnedRequestBuffers::linear(0, 512, true);
-    disk.write_vectored(&owned.buffer(&mem), 0, false).await.unwrap();
+    disk.write_vectored(&owned.buffer(&mem), 0, false)
+        .await
+        .unwrap();
     drop(disk);
 
     // Re-open and check both sectors from a clean state.
