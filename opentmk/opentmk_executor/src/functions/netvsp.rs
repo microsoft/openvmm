@@ -118,6 +118,22 @@ fn with_session<R>(f: impl FnOnce(&mut NetvspSession) -> Result<R, String>) -> R
     f(session)
 }
 
+/// Run a fuzzer-handler body, logging any runtime error instead of
+/// surfacing it as a handler error.
+///
+/// A runtime failure inside a handler (a malformed fuzzing input, a
+/// guest-memory read fault, or a netvsp device-side timeout) must not
+/// abort the campaign, so the handler logs it and reports success.
+/// Parameter decoding is still validated with `?` by the caller *before*
+/// this is reached, since a bad parameter count/type indicates a
+/// fuzzer/grammar bug worth failing on.
+fn run_logged(f: impl FnOnce() -> Result<(), String>) -> Result<FuzzFunctionVariable, String> {
+    if let Err(e) = f() {
+        log::error!("{e}");
+    }
+    Ok(FuzzFunctionVariable::Void)
+}
+
 /// `send_nvsp(pkt, pkt_len, flags)` — post a raw NVSP message inband.
 ///
 /// * `pkt`     — pointer to the NVSP message bytes.
@@ -133,18 +149,19 @@ pub fn send_nvsp(
     let flags = flags.expect_int("flags")?;
     let completion = (flags & FLAG_REQUEST_COMPLETION) != 0;
 
-    let mut frame = vec![0u8; pkt_len];
-    if pkt_len > 0 {
-        mem.try_read_mem(pkt, &mut frame)
-            .map_err(|e| format!("send_nvsp: failed to read input: {e}"))?;
-    }
+    run_logged(|| {
+        let mut frame = vec![0u8; pkt_len];
+        if pkt_len > 0 {
+            mem.try_read_mem(pkt, &mut frame)
+                .map_err(|e| format!("send_nvsp: failed to read input: {e}"))?;
+        }
 
-    with_session(|s| {
-        s.nic
-            .send_nvsp_raw(&mut s.ctx, &frame, completion)
-            .map_err(|e| format!("send_nvsp: {e:?}"))
-    })?;
-    Ok(FuzzFunctionVariable::Void)
+        with_session(|s| {
+            s.nic
+                .send_nvsp_raw(&mut s.ctx, &frame, completion)
+                .map_err(|e| format!("send_nvsp: {e:?}"))
+        })
+    })
 }
 
 /// `send_rndis(rndis, rndis_len, flags)` — wrap a raw RNDIS message in
@@ -167,30 +184,32 @@ pub fn send_rndis(
     let flags = flags.expect_int("flags")?;
     let completion = (flags & FLAG_REQUEST_COMPLETION) != 0;
 
-    if rndis_len == 0 {
-        return Err(String::from("send_rndis: empty RNDIS message"));
-    }
-    let mut msg = vec![0u8; rndis_len];
-    mem.try_read_mem(rndis_ptr, &mut msg)
-        .map_err(|e| format!("send_rndis: failed to read input: {e}"))?;
+    run_logged(|| {
+        if rndis_len == 0 {
+            return Err(String::from("send_rndis: empty RNDIS message"));
+        }
+        let mut msg = vec![0u8; rndis_len];
+        mem.try_read_mem(rndis_ptr, &mut msg)
+            .map_err(|e| format!("send_rndis: failed to read input: {e}"))?;
 
-    // Derive channel type from the RNDIS message type (first u32 LE):
-    // data packets ride RMC_DATA, everything else RMC_CONTROL. Short
-    // (<4 byte) messages have no parseable type — default to control.
-    let channel_type = if msg.len() >= 4
-        && u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]) == rndis::MESSAGE_TYPE_PACKET_MSG
-    {
-        RMC_DATA
-    } else {
-        RMC_CONTROL
-    };
+        // Derive channel type from the RNDIS message type (first u32 LE):
+        // data packets ride RMC_DATA, everything else RMC_CONTROL. Short
+        // (<4 byte) messages have no parseable type — default to control.
+        let channel_type = if msg.len() >= 4
+            && u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]])
+                == rndis::MESSAGE_TYPE_PACKET_MSG
+        {
+            RMC_DATA
+        } else {
+            RMC_CONTROL
+        };
 
-    with_session(|s| {
-        s.nic
-            .send_rndis_raw(&mut s.ctx, channel_type, &msg, completion)
-            .map_err(|e| format!("send_rndis: {e:?}"))
-    })?;
-    Ok(FuzzFunctionVariable::Void)
+        with_session(|s| {
+            s.nic
+                .send_rndis_raw(&mut s.ctx, channel_type, &msg, completion)
+                .map_err(|e| format!("send_rndis: {e:?}"))
+        })
+    })
 }
 
 /// `open_channel()` — ensure the netvsp session is established.
@@ -202,8 +221,7 @@ pub fn open_channel(
     vars: Vec<FuzzFunctionVariable>,
 ) -> Result<FuzzFunctionVariable, String> {
     let [] = vars.verify_num_params()?;
-    with_session(|_| Ok(()))?;
-    Ok(FuzzFunctionVariable::Void)
+    run_logged(|| with_session(|_| Ok(())))
 }
 
 /// `renew_buffer(is_send_buffer)` — revoke and re-establish a buffer.
@@ -218,16 +236,17 @@ pub fn renew_buffer(
     let [is_send_buffer] = vars.verify_num_params()?;
     let is_send_buffer = is_send_buffer.expect_int("is_send_buffer")? != 0;
 
-    with_session(|s| {
-        if is_send_buffer {
-            s.nic
-                .renew_send_buffer(&mut s.ctx)
-                .map_err(|e| format!("renew_buffer(send): {e:?}"))
-        } else {
-            s.nic
-                .renew_recv_buffer(&mut s.ctx)
-                .map_err(|e| format!("renew_buffer(recv): {e:?}"))
-        }
-    })?;
-    Ok(FuzzFunctionVariable::Void)
+    run_logged(|| {
+        with_session(|s| {
+            if is_send_buffer {
+                s.nic
+                    .renew_send_buffer(&mut s.ctx)
+                    .map_err(|e| format!("renew_buffer(send): {e:?}"))
+            } else {
+                s.nic
+                    .renew_recv_buffer(&mut s.ctx)
+                    .map_err(|e| format!("renew_buffer(recv): {e:?}"))
+            }
+        })
+    })
 }
