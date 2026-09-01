@@ -12,13 +12,11 @@
 //!   points to the offset of a data cluster in the image file (or encodes a
 //!   compressed cluster).
 
-use crate::Qcow2Header;
+use crate::header::Qcow2Header;
+use crate::readwriteat::ReadWriteAt;
 use anyhow::Context;
 use core::mem::size_of;
 use inspect::Inspect;
-use std::io::Seek;
-use std::io::SeekFrom;
-use std::io::Write;
 
 /// Mask covering bits 9..=55 (47 bits), the offset field shared by L1 and L2
 /// entries.
@@ -157,23 +155,23 @@ pub fn split_guest_offset(header: &Qcow2Header, guest_offset: u64) -> ClusterAdd
     }
 }
 
-/// Write an entire L1 table back to disk at `l1_offset`
+/// Write a single L1 table entry back to disk at the given index in the L1
+/// table located at `l1_table_offset`.
 pub fn write_l1_entry(
-    file: &mut std::fs::File,
-    header: &Qcow2Header,
+    file: &std::fs::File,
+    l1_table_offset: u64,
     l1_index: u64,
     l2_offset: u64,
 ) -> std::io::Result<()> {
-    let entry_offset = header.l1_table_offset + l1_index * 8;
+    let entry_offset = l1_table_offset + l1_index * 8;
     let raw = l2_offset | OFLAG_COPIED;
-    file.seek(SeekFrom::Start(entry_offset))?;
-    file.write_all(&raw.to_be_bytes())?;
+    file.write_at(&raw.to_be_bytes(), entry_offset)?;
     Ok(())
 }
 
 /// Write an entire L2 table back to disk at `l2_offset`.
 pub fn write_l2_table(
-    file: &mut std::fs::File,
+    file: &std::fs::File,
     l2_offset: u64,
     l2_table: &[L2Entry],
 ) -> std::io::Result<()> {
@@ -191,7 +189,6 @@ pub fn write_l2_table(
         };
         bytes.extend_from_slice(&raw.to_be_bytes());
     }
-    file.seek(SeekFrom::Start(l2_offset))?;
-    file.write_all(&bytes)?;
+    file.write_at(&bytes, l2_offset)?;
     Ok(())
 }

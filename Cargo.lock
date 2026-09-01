@@ -1761,9 +1761,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "blocking",
  "disk_backend",
  "disk_backend_resources",
  "disk_layered",
+ "futures",
  "guestmem",
  "inspect",
  "pal_async",

@@ -24,12 +24,16 @@ const CLUSTER_SIZE: usize = 1 << CLUSTER_BITS;
 ///   cluster: L1 table (1 entry -> L2 table)
 ///   cluster: L2 table (entry 0 -> data cluster, rest unallocated)
 ///   cluster: data cluster containing a known pattern
+///   cluster: refcount table (1 entry -> refcount block)
+///   cluster: refcount block (clusters 0..=5 each have refcount 1)
 /// Disk size is 1 MiB.
 fn build_fixture() -> Vec<u8> {
-    let mut img = vec![0u8; 4 * CLUSTER_SIZE];
+    let mut img = vec![0u8; 6 * CLUSTER_SIZE];
     let data_cluster: u64 = 3 * CLUSTER_SIZE as u64;
     let l2_table: u64 = 2 * CLUSTER_SIZE as u64;
     let l1_table: u64 = 1 * CLUSTER_SIZE as u64;
+    let refcount_table: u64 = 4 * CLUSTER_SIZE as u64;
+    let refcount_block: u64 = 5 * CLUSTER_SIZE as u64;
 
     // Header.
     img[0..4].copy_from_slice(&0x5146_49FBu32.to_be_bytes()); // magic
@@ -39,7 +43,8 @@ fn build_fixture() -> Vec<u8> {
     img[24..32].copy_from_slice(&(1024u64 * 1024).to_be_bytes()); // disk size
     img[36..40].copy_from_slice(&1u32.to_be_bytes()); // l1 size
     img[40..48].copy_from_slice(&l1_table.to_be_bytes());
-    img[56..60].copy_from_slice(&0u32.to_be_bytes()); // refcount table clusters
+    img[48..56].copy_from_slice(&refcount_table.to_be_bytes());
+    img[56..60].copy_from_slice(&1u32.to_be_bytes()); // refcount table clusters
 
     // L1 entry 0 -> L2 table (COPIED bit set).
     let l1_entry = (1u64 << 63) | l2_table;
@@ -48,6 +53,16 @@ fn build_fixture() -> Vec<u8> {
     // L2 entry 0 -> data cluster (COPIED bit set); rest stay 0 (unallocated).
     let l2_entry = (1u64 << 63) | data_cluster;
     img[l2_table as usize..l2_table as usize + 8].copy_from_slice(&l2_entry.to_be_bytes());
+
+    // Refcount table entry 0 -> refcount block.
+    img[refcount_table as usize..refcount_table as usize + 8]
+        .copy_from_slice(&refcount_block.to_be_bytes());
+
+    // Refcount block: every cluster used by the image has refcount 1.
+    for cluster in 0..6u32 {
+        let entry = refcount_block as usize + cluster as usize * 2;
+        img[entry..entry + 2].copy_from_slice(&1u16.to_be_bytes());
+    }
 
     // Data cluster: a recognizable pattern.
     for i in 0..CLUSTER_SIZE {
@@ -191,6 +206,53 @@ async fn write_unallocated_allocates_and_persists() {
     let mut buf2 = vec![0u8; 512];
     mem2.read_at(0, &mut buf2).unwrap();
     assert_eq!(buf2, pattern);
+}
+
+#[async_test]
+async fn write_updates_refcounts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_fixture()).unwrap();
+
+    // Writing sector 8 (unallocated cluster 1) allocates a fresh data cluster
+    // at the end of the file: cluster 6. Its refcount, stored in the refcount
+    // block, must be written back to disk.
+    let pattern: Vec<u8> = (0..512u16).map(|i| (i * 7 % 256) as u8).collect();
+
+    let layer = open_layer(&path, false);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mem = GuestMemory::allocate(512);
+    mem.write_at(0, &pattern).unwrap();
+    let owned = OwnedRequestBuffers::linear(0, 512, true);
+    disk.write_vectored(&owned.buffer(&mem), 8, false).await.unwrap();
+    drop(disk);
+
+    // Read the raw refcount block (cluster 5) from the file on disk.
+    let img = std::fs::read(&path).unwrap();
+    assert_eq!(img.len(), 7 * CLUSTER_SIZE, "one data cluster appended");
+    let refcount = |cluster: usize| -> u16 {
+        let off = 5 * CLUSTER_SIZE + cluster * 2;
+        u16::from_be_bytes([img[off], img[off + 1]])
+    };
+    // The original six clusters each have refcount 1...
+    for cluster in 0..6 {
+        assert_eq!(refcount(cluster), 1, "cluster {cluster}");
+    }
+    // ...and so does the newly allocated data cluster.
+    assert_eq!(refcount(6), 1);
 }
 
 #[async_test]

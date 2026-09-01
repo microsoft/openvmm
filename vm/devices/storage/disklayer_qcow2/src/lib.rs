@@ -17,11 +17,14 @@
 
 pub mod chain;
 mod header;
+mod readwriteat;
+mod refcount;
 pub mod resolver;
 mod table;
 #[cfg(test)]
 mod tests;
 
+use blocking::unblock;
 use core::cmp::min;
 use disk_backend::DiskError;
 use disk_backend::UnmapBehavior;
@@ -32,13 +35,13 @@ use guestmem::MemoryWrite;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
 use std::fs::File;
-use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
-use std::io::Write;
-use std::sync::RwLock;
+use std::sync::Arc;
 
 use crate::header::Qcow2Header;
+use crate::readwriteat::ReadWriteAt;
+use crate::refcount::RefcountTable;
+use crate::refcount::allocate_cluster;
+use crate::refcount::zero_cluster;
 use crate::table::ClusterAddress;
 use crate::table::L1Entry;
 use crate::table::L2Entry;
@@ -47,8 +50,15 @@ use crate::table::read_l2_table;
 use crate::table::split_guest_offset;
 use crate::table::write_l1_entry;
 use crate::table::write_l2_table;
+use futures::lock::Mutex;
 
 const SECTOR_SIZE: u32 = 512;
+
+/// Mutable state shared across all I/O tasks for a qcow2 image.
+struct LayerState {
+    l1_table: Vec<L1Entry>,
+    refcounts: RefcountTable,
+}
 
 /// A qcow2 disk layer implementing [`LayerIo`].
 ///
@@ -58,12 +68,12 @@ const SECTOR_SIZE: u32 = 512;
 #[derive(Inspect)]
 pub struct Qcow2Layer {
     #[inspect(skip)]
-    file: File,
+    file: Arc<File>,
     header: Qcow2Header,
     sector_count: u64,
     read_only: bool,
     #[inspect(skip)]
-    l1_table: RwLock<Vec<L1Entry>>,
+    state: Mutex<LayerState>,
 }
 
 impl Qcow2Layer {
@@ -71,47 +81,30 @@ impl Qcow2Layer {
     ///
     /// NOTE: `sector_count` is passed by the caller until format parsing is
     /// implemented.
-    pub fn new(mut file: File, header: Qcow2Header, read_only: bool) -> anyhow::Result<Self> {
+    pub fn new(file: File, header: Qcow2Header, read_only: bool) -> anyhow::Result<Self> {
         let sector_count = header.size_bytes / SECTOR_SIZE as u64;
 
-        file.seek(SeekFrom::Start(header.l1_table_offset))?;
         let mut l1_bytes = vec![0u8; header.l1_size as usize * 8];
-        file.read_exact(&mut l1_bytes)?;
+        file.read_at(&mut l1_bytes, header.l1_table_offset)?;
         let mut l1_slice = l1_bytes.as_slice();
         let l1_table = read_l1_table(&mut l1_slice, header.l1_size)?;
 
+        let mut refcounts = RefcountTable::new(&header)?;
+        let table_entries = header.refcount_table_clusters as usize * 8 * (header.cluster_size() as usize / 8);
+        let mut table_bytes = vec![0u8; table_entries];
+        file.read_at(&mut table_bytes, header.refcount_table_offset)?;
+        refcounts.set_table_bytes(&table_bytes);
+
         Ok(Self {
-            file,
+            file: Arc::new(file),
             header,
             sector_count,
             read_only,
-            l1_table: RwLock::new(l1_table),
+            state: Mutex::new(LayerState {
+                l1_table,
+                refcounts,
+            }),
         })
-    }
-
-    fn zero_cluster(
-        &self,
-        file: &mut File,
-        cluster_offset: u64,
-        size: usize,
-    ) -> Result<(), DiskError> {
-        let buf = vec![0u8; size as usize];
-        file.seek(SeekFrom::Start(cluster_offset))
-            .map_err(DiskError::Io)?;
-        file.write(buf.as_slice()).map_err(DiskError::Io)?;
-        Ok(())
-    }
-
-    fn allocate_cluster(&self, file: &mut File) -> Result<u64, DiskError> {
-        let cluster_size = self.header.cluster_size() as u64;
-
-        let file_len = file.seek(SeekFrom::End(0)).map_err(DiskError::Io)?;
-        let new_offset = ((file_len + cluster_size - 1) / cluster_size) * cluster_size;
-
-        file.set_len(new_offset + cluster_size)
-            .map_err(DiskError::Io)?;
-
-        Ok(new_offset)
     }
 }
 
@@ -149,7 +142,10 @@ impl LayerIo for Qcow2Layer {
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
-        self.file.sync_all().map_err(DiskError::Io)
+        let file = self.file.clone();
+        unblock(move || file.sync_all())
+            .await
+            .map_err(DiskError::Io)
     }
 
     async fn read(
@@ -163,8 +159,9 @@ impl LayerIo for Qcow2Layer {
         let cluster_size = self.header.cluster_size() as usize;
         let l2_entries = self.header.l2_entries_per_table() as usize;
 
-        let mut file = self.file.try_clone().map_err(DiskError::Io)?;
-        let l1_table = self.l1_table.read().unwrap(); // If this needs errors, the thread is already panicing
+        let file = self.file.clone();
+        let state = self.state.lock().await;
+        let l1_table = &state.l1_table;
 
         let mut byte_off = offset;
         let end = offset + len as u64;
@@ -191,10 +188,15 @@ impl LayerIo for Qcow2Layer {
             }
 
             // TODO: Add L2 table caching for performance.
+            let l2_table_offset = l1_entry.l2_offset;
             let mut l2_bytes = vec![0u8; l2_entries * 8];
-            file.seek(SeekFrom::Start(l1_entry.l2_offset))
-                .map_err(DiskError::Io)?;
-            file.read_exact(&mut l2_bytes).map_err(DiskError::Io)?;
+            let f = file.clone();
+            let l2_bytes = unblock(move || -> Result<Vec<u8>, std::io::Error> {
+                f.read_at(&mut l2_bytes, l2_table_offset)?;
+                Ok(l2_bytes)
+            })
+            .await
+            .map_err(DiskError::Io)?;
             let mut l2_slice = l2_bytes.as_slice();
             let l2_table = read_l2_table(&mut l2_slice, l2_entries as u32)
                 .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
@@ -225,9 +227,13 @@ impl LayerIo for Qcow2Layer {
             let file_offset = l2_entry.cluster_offset + addr.in_cluster_offset;
 
             let mut data = vec![0u8; bytes_in_cluster];
-            file.seek(SeekFrom::Start(file_offset))
-                .map_err(DiskError::Io)?;
-            file.read_exact(&mut data).map_err(DiskError::Io)?;
+            let f = file.clone();
+            let data = unblock(move || -> Result<Vec<u8>, std::io::Error> {
+                f.read_at(&mut data, file_offset)?;
+                Ok(data)
+            })
+            .await
+            .map_err(DiskError::Io)?;
 
             let buf_off = (byte_off - offset) as usize;
             buffers
@@ -255,14 +261,14 @@ impl LayerIo for Qcow2Layer {
         let len = buffers.len();
         let cluster_size = self.header.cluster_size() as usize;
         let l2_entries = self.header.l2_entries_per_table() as usize;
-        let mut file = self.file.try_clone().map_err(DiskError::Io)?;
-        let mut l1_table = self.l1_table.write().unwrap(); // If this needs errors, the thread is already panicing
+        let file = self.file.clone();
+        let mut state = self.state.lock().await;
         let mut byte_off = offset;
         let end = offset + len as u64;
 
         while byte_off < end {
             let addr: ClusterAddress = split_guest_offset(&self.header, byte_off);
-            if addr.l1_index as usize >= l1_table.len() {
+            if addr.l1_index as usize >= state.l1_table.len() {
                 return Err(DiskError::IllegalBlock);
             }
 
@@ -271,13 +277,23 @@ impl LayerIo for Qcow2Layer {
                 cluster_size - addr.in_cluster_offset as usize,
             );
 
-            let l2_offset = l1_table[addr.l1_index as usize].l2_offset;
+            // TODO: once refcounts exist, this should COW if the refcount is
+            // shared with a backing file / snapshot.
+            let l2_offset = state.l1_table[addr.l1_index as usize].l2_offset;
             let l2_offset = if l2_offset == 0 {
-                let new_l2 = self.allocate_cluster(&mut file)?;
-                self.zero_cluster(&mut file, new_l2, cluster_size)?;
+                let cluster_size = cluster_size as u64;
+                let new_l2 = allocate_cluster(file.clone(), cluster_size).await?;
+                zero_cluster(file.clone(), new_l2, cluster_size as usize).await?;
+                state
+                    .refcounts
+                    .increment_cluster(&file, new_l2 / cluster_size)
+                    .await?;
 
-                l1_table[addr.l1_index as usize].l2_offset = new_l2;
-                write_l1_entry(&mut file, &self.header, addr.l1_index, new_l2)
+                state.l1_table[addr.l1_index as usize].l2_offset = new_l2;
+                let f = file.clone();
+                let l1_table_offset = self.header.l1_table_offset;
+                unblock(move || write_l1_entry(&f, l1_table_offset, addr.l1_index, new_l2))
+                    .await
                     .map_err(DiskError::Io)?;
 
                 new_l2
@@ -287,9 +303,13 @@ impl LayerIo for Qcow2Layer {
 
             // TODO: Read cache for Level 2 entries
             let mut l2_bytes = vec![0u8; l2_entries * 8];
-            file.seek(SeekFrom::Start(l2_offset))
-                .map_err(DiskError::Io)?;
-            file.read_exact(&mut l2_bytes).map_err(DiskError::Io)?;
+            let f = file.clone();
+            let l2_bytes = unblock(move || -> Result<Vec<u8>, std::io::Error> {
+                f.read_at(&mut l2_bytes, l2_offset)?;
+                Ok(l2_bytes)
+            })
+            .await
+            .map_err(DiskError::Io)?;
             let mut l2_slice = l2_bytes.as_slice();
             let mut l2_table = read_l2_table(&mut l2_slice, l2_entries as u32)
                 .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
@@ -300,42 +320,54 @@ impl LayerIo for Qcow2Layer {
             }
 
             let data_cluster_offset = if l2_entry.cluster_offset == 0 {
-                let new_cluster = self.allocate_cluster(&mut file)?;
-                self.zero_cluster(&mut file, new_cluster, cluster_size)?;
+                let cluster_size = cluster_size as u64;
+                let new_cluster = allocate_cluster(file.clone(), cluster_size).await?;
+                zero_cluster(file.clone(), new_cluster, cluster_size as usize).await?;
+                state
+                    .refcounts
+                    .increment_cluster(&file, new_cluster / cluster_size)
+                    .await?;
                 new_cluster
             } else {
-                // TODO once refcounts exist: if this cluster's refcount > 1
-                // (shared with a backing file / snapshot), COW-duplicate it
-                // here instead of writing in place.
                 l2_entry.cluster_offset
             };
 
             let buf_off = (byte_off - offset) as usize;
             if bytes_in_cluster < cluster_size {
                 let mut full = vec![0u8; cluster_size];
-                file.seek(SeekFrom::Start(data_cluster_offset))
-                    .map_err(DiskError::Io)?;
-                file.read_exact(&mut full).map_err(DiskError::Io)?;
+                let f = file.clone();
+                let full = unblock(move || -> Result<Vec<u8>, std::io::Error> {
+                    f.read_at(&mut full, data_cluster_offset)?;
+                    Ok(full)
+                })
+                .await
+                .map_err(DiskError::Io)?;
+                let mut full = full;
                 buffers
                     .subrange(buf_off, bytes_in_cluster)
                     .reader()
                     .read(&mut full[addr.in_cluster_offset as usize..][..bytes_in_cluster])?;
-                file.seek(SeekFrom::Start(data_cluster_offset))
+                let f = file.clone();
+                unblock(move || f.write_at(&full, data_cluster_offset))
+                    .await
                     .map_err(DiskError::Io)?;
-                file.write_all(&full).map_err(DiskError::Io)?;
             } else {
                 let mut data = vec![0u8; bytes_in_cluster];
                 buffers
                     .subrange(buf_off, bytes_in_cluster)
                     .reader()
                     .read(&mut data)?;
-                file.seek(SeekFrom::Start(data_cluster_offset))
+                let f = file.clone();
+                unblock(move || f.write_at(&data, data_cluster_offset))
+                    .await
                     .map_err(DiskError::Io)?;
-                file.write_all(&data).map_err(DiskError::Io)?;
             }
 
             l2_table[addr.l2_index as usize].cluster_offset = data_cluster_offset;
-            write_l2_table(&mut file, l2_offset, &l2_table).map_err(DiskError::Io)?;
+            let f = file.clone();
+            unblock(move || write_l2_table(&f, l2_offset, &l2_table))
+                .await
+                .map_err(DiskError::Io)?;
 
             byte_off += bytes_in_cluster as u64;
         }
