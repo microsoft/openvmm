@@ -248,7 +248,7 @@ pub struct AcpiTables {
 //   [RSDP_BASE, 0x100000)          RESERVED  RSDP (0xe0000) + _SM3_ anchor (0xf0000)
 //   [0x100000, end)                RAM       kernel and beyond
 const GDT_BASE: u64 = 0x1000;
-const ZERO_PAGE_BASE: u64 = 0x2000;
+pub const ZERO_PAGE_BASE: u64 = 0x2000;
 const CMDLINE_BASE: u64 = 0x3000;
 const CR3_BASE: u64 = 0x4000;
 /// The identity-map page tables occupy `[CR3_BASE, CR3_BASE + PAGE_TABLE_MAX_BYTES)`;
