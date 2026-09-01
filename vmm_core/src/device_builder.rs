@@ -44,9 +44,15 @@ pub struct PciDeviceResolveContext<'a> {
 pub struct DynamicVpciDevice {
     pci_unit: DynamicDeviceUnit,
     vpci_unit: DynamicDeviceUnit,
+    eject: vpci::bus::VpciBusEject,
 }
 
 impl DynamicVpciDevice {
+    /// Requests device ejection and waits for the guest to acknowledge it.
+    pub async fn eject(&self) -> anyhow::Result<()> {
+        self.eject.eject().await
+    }
+
     /// Removes the VPCI bus before removing its underlying PCI device.
     pub async fn remove(self) {
         self.vpci_unit.remove().await;
@@ -128,10 +134,14 @@ pub async fn build_dynamic_vpci_device(
         .await;
 
     match vpci_unit {
-        Ok((vpci_unit, _)) => Ok(DynamicVpciDevice {
-            pci_unit,
-            vpci_unit,
-        }),
+        Ok((vpci_unit, vpci_bus)) => {
+            let eject = vpci_bus.lock().eject_control();
+            Ok(DynamicVpciDevice {
+                pci_unit,
+                vpci_unit,
+                eject,
+            })
+        }
         Err(error) => {
             pci_unit.remove().await;
             Err(error)

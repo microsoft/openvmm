@@ -8,6 +8,7 @@ use crate::device::VpciChannel;
 use crate::device::VpciConfigSpace;
 use crate::device::VpciConfigSpaceOffset;
 use crate::device::VpciConfigSpaceVtom;
+use anyhow::Context as _;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -22,6 +23,9 @@ use closeable_mutex::CloseableMutex;
 use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use inspect::InspectMut;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
+use parking_lot::Mutex;
 use pci_core::bus_cfg::PciBusCfgAccessCallbacks;
 use pci_core::bus_cfg::PciBusCfgAccessHandler;
 use std::sync::Arc;
@@ -50,6 +54,36 @@ pub struct VpciBus {
     bus_device: VpciBusDevice,
     #[inspect(flatten)]
     channel: SimpleDeviceHandle<VpciChannel>,
+    #[inspect(skip)]
+    eject: VpciBusEject,
+}
+
+/// Control used to request graceful ejection of a VPCI device.
+#[derive(Clone, Default)]
+pub struct VpciBusEject(Arc<Mutex<Option<mesh::Sender<Rpc<(), ()>>>>>);
+
+impl VpciBusEject {
+    /// Requests device ejection and waits for the guest to acknowledge it.
+    ///
+    /// If the VPCI channel is not open, there is no guest device to eject.
+    pub async fn eject(&self) -> anyhow::Result<()> {
+        let Some(send) = self.0.lock().clone() else {
+            return Ok(());
+        };
+        send.call(|rpc| rpc, ())
+            .await
+            .context("VPCI channel closed before device ejection completed")
+    }
+
+    pub(crate) fn connect(&self) -> mesh::Receiver<Rpc<(), ()>> {
+        let (send, recv) = mesh::channel();
+        *self.0.lock() = Some(send);
+        recv
+    }
+
+    pub(crate) fn disconnect(&self) {
+        *self.0.lock() = None;
+    }
 }
 
 /// The chipset device portion of the VPCI bus.
@@ -152,6 +186,7 @@ impl VpciBus {
             msi_controller.clone(),
         )
         .map_err(CreateBusError::NotPci)?;
+        let eject = channel.eject_control();
         let channel = offer_simple_device(driver_source, vmbus, channel)
             .await
             .map_err(CreateBusError::Offer)?;
@@ -159,7 +194,13 @@ impl VpciBus {
         Ok(Self {
             bus_device: bus,
             channel,
+            eject,
         })
+    }
+
+    /// Returns a handle used to request graceful device ejection.
+    pub fn eject_control(&self) -> VpciBusEject {
+        self.eject.clone()
     }
 }
 

@@ -3,6 +3,7 @@
 
 //! Virtual PCI device module
 
+use crate::bus::VpciBusEject;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
@@ -16,15 +17,20 @@ use guestmem::MemoryRead;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::Rpc;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::spec::cfg_space;
 use pci_core::spec::hwid::HardwareIds;
 use ring::OutgoingPacketType;
 use std::fmt::Debug;
+use std::future::Future;
+use std::future::poll_fn;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 use task_control::Cancelled;
 use task_control::StopTask;
 use thiserror::Error;
@@ -228,6 +234,8 @@ enum PacketError {
     InvalidBars(#[source] InvalidBars),
     #[error("invalid slot {0:?}")]
     InvalidSlot(SlotNumber),
+    #[error("unexpected eject completion")]
+    UnexpectedEjectComplete,
     #[error("msi resource count {0} too high")]
     TooManyMsis(u32),
     #[error("failed to register interrupt")]
@@ -248,6 +256,9 @@ enum PacketData {
     },
     FdoD0Exit,
     QueryRelations,
+    EjectComplete {
+        slot: SlotNumber,
+    },
     DeviceRequest {
         slot: SlotNumber,
         request: DeviceRequest,
@@ -464,6 +475,12 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::FDO_D0_EXIT => PacketData::FdoD0Exit,
         protocol::MessageType::QUERY_BUS_RELATIONS => PacketData::QueryRelations,
+        protocol::MessageType::EJECT_COMPLETE => {
+            let msg = protocol::PdoMessage::read_from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("eject complete"))?
+                .0;
+            PacketData::EjectComplete { slot: msg.slot }
+        }
         protocol::MessageType::QUERY_PROTOCOL_VERSION => {
             let msg = protocol::QueryProtocolVersion::read_from_prefix(buf)
                 .map_err(|_| PacketError::PacketTooSmall("query_version"))?
@@ -528,6 +545,8 @@ enum WorkerError {
     InvalidPacketType,
     #[error("packet handling error")]
     Packet(#[from] PacketError),
+    #[error("eject control channel closed")]
+    EjectControl(#[source] mesh::RecvError),
 }
 
 impl<T: RingMem> Connection<T> {
@@ -588,11 +607,12 @@ impl<T: RingMem> Connection<T> {
 pub struct VpciChannelState<T: RingMem = GpadlRingMem> {
     conn: Connection<T>,
     state: ProtocolState,
+    eject_recv: mesh::Receiver<Rpc<(), ()>>,
 }
 
 impl<T: RingMem> InspectMut for VpciChannelState<T> {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        let Self { conn, state } = &self;
+        let Self { conn, state, .. } = &self;
         let mut resp = req.respond();
         let state = match state {
             ProtocolState::Init => "initializing",
@@ -619,13 +639,16 @@ struct ReadyState {
     send_device: bool,
     send_completion: Option<u64>,
     vpci_version: protocol::ProtocolVersion,
+    pending_eject: Option<Rpc<(), ()>>,
 }
 
 impl<T: RingMem> VpciChannelState<T> {
     async fn run(&mut self, dev: &mut VpciChannel) -> Result<(), WorkerError> {
         loop {
             match &mut self.state {
-                ProtocolState::Ready(state) => break state.run(&mut self.conn, dev).await,
+                ProtocolState::Ready(state) => {
+                    break state.run(&mut self.conn, &mut self.eject_recv, dev).await;
+                }
                 ProtocolState::Init => {
                     self.conn.wait_for_completion_space().await?;
 
@@ -662,6 +685,7 @@ impl<T: RingMem> VpciChannelState<T> {
                                 vpci_version: version,
                                 send_device: false,
                                 send_completion: None,
+                                pending_eject: None,
                             });
                         }
                     } else {
@@ -736,6 +760,7 @@ impl ReadyState {
     async fn run(
         &mut self,
         conn: &mut Connection<impl RingMem>,
+        eject_recv: &mut mesh::Receiver<Rpc<(), ()>>,
         dev: &mut VpciChannel,
     ) -> Result<(), WorkerError> {
         loop {
@@ -755,13 +780,50 @@ impl ReadyState {
                 .instrument(tracing::trace_span!("vpci_wait_for_completion_space", instance_id = ?dev.instance_id))
                 .await?;
 
-            let (packet, transaction_id) = {
-                let (mut queue, _) = conn.queue.split();
-                let packet = queue.read().await.map_err(WorkerError::Queue)?;
-                let IncomingPacket::Data(data) = packet.as_ref() else {
-                    return Err(WorkerError::InvalidPacketType);
+            enum Event {
+                Packet(Result<(Result<PacketData, PacketError>, Option<u64>), WorkerError>),
+                Eject(Result<Rpc<(), ()>, mesh::RecvError>),
+            }
+
+            let event = {
+                let packet = async {
+                    let (mut queue, _) = conn.queue.split();
+                    let packet = queue.read().await.map_err(WorkerError::Queue)?;
+                    let IncomingPacket::Data(data) = packet.as_ref() else {
+                        return Err(WorkerError::InvalidPacketType);
+                    };
+                    Ok((parse_packet(data), data.transaction_id()))
                 };
-                (parse_packet(data), data.transaction_id())
+                let mut packet = pin!(packet);
+                let mut eject = pin!(eject_recv.recv());
+                poll_fn(|cx| {
+                    if let Poll::Ready(request) = eject.as_mut().poll(cx) {
+                        return Poll::Ready(Event::Eject(request));
+                    }
+                    if let Poll::Ready(packet) = packet.as_mut().poll(cx) {
+                        return Poll::Ready(Event::Packet(packet));
+                    }
+                    Poll::Pending
+                })
+                .await
+            };
+
+            let (packet, transaction_id) = match event {
+                Event::Packet(packet) => packet?,
+                Event::Eject(Ok(request)) => {
+                    assert!(self.pending_eject.is_none());
+                    conn.send_packet(
+                        &protocol::PdoMessage {
+                            message_type: protocol::MessageType::EJECT,
+                            slot: SlotNumber::new(),
+                        },
+                        &(),
+                    )
+                    .await?;
+                    self.pending_eject = Some(request);
+                    continue;
+                }
+                Event::Eject(Err(error)) => return Err(WorkerError::EjectControl(error)),
             };
 
             let r = match packet {
@@ -822,6 +884,15 @@ impl ReadyState {
                 // could have set the completion requested bit in the ring
                 // buffer packet.
                 conn.send_completion(transaction_id, &(), &[])?;
+            }
+            PacketData::EjectComplete { slot } => {
+                if slot != SlotNumber::new() {
+                    return Err(PacketError::InvalidSlot(slot).into());
+                }
+                self.pending_eject
+                    .take()
+                    .ok_or(PacketError::UnexpectedEjectComplete)?
+                    .complete(());
             }
             PacketData::DeviceRequest { slot, request } => {
                 if u32::from(slot) != 0 {
@@ -1248,6 +1319,8 @@ pub struct VpciChannel {
     bars_set: bool,
     #[inspect(iter_by_index)]
     interrupts: Vec<MsiAddressData>,
+    #[inspect(skip)]
+    eject: VpciBusEject,
 }
 
 /// Virtual PCI Config Space
@@ -1374,7 +1447,12 @@ impl VpciChannel {
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
+            eject: VpciBusEject::default(),
         })
+    }
+
+    pub(crate) fn eject_control(&self) -> VpciBusEject {
+        self.eject.clone()
     }
 }
 
@@ -1407,10 +1485,12 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
                 queue: Queue::new(channel)?,
             },
             state: ProtocolState::Init,
+            eject_recv: self.eject.connect(),
         })
     }
 
     async fn close(&mut self) {
+        self.eject.disconnect();
         self.release_all().await;
 
         // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
@@ -1450,6 +1530,7 @@ mod tests {
     use super::VpciChannel;
     use super::VpciChannelState;
     use super::VpciConfigSpace;
+    use crate::bus::VpciBusEject;
     use crate::test_helpers::TestVpciInterruptController;
     use chipset_arc_mutex_device::services::MmioInterceptServices;
     use chipset_arc_mutex_device::test_chipset::TestChipset;
@@ -1475,6 +1556,7 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
+    use pal_async::task::Spawn;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1535,6 +1617,7 @@ mod tests {
         host_queue: Queue<FlatRingMem>,
         transaction_id: AtomicU64,
         protocol_version: protocol::ProtocolVersion,
+        eject: VpciBusEject,
     }
 
     fn connected_device(
@@ -1565,15 +1648,18 @@ mod tests {
             device,
             bars_set: false,
             interrupts: Vec::new(),
+            eject: VpciBusEject::default(),
         };
+        let eject = state.eject_control();
         let mut worker = VpciChannelState {
             conn: Connection { queue: host },
             state: ProtocolState::Init,
+            eject_recv: eject.connect(),
         };
         driver
             .spawn("worker", async move { worker.run(&mut state).await })
             .detach();
-        MockVpciGuestDevice::new(guest, 0, hardware_ids)
+        MockVpciGuestDevice::new(guest, 0, hardware_ids, eject)
     }
 
     #[derive(Debug, Error)]
@@ -1592,12 +1678,18 @@ mod tests {
     }
 
     impl MockVpciGuestDevice {
-        fn new(queue: Queue<FlatRingMem>, _index: usize, config: HardwareIds) -> Self {
+        fn new(
+            queue: Queue<FlatRingMem>,
+            _index: usize,
+            config: HardwareIds,
+            eject: VpciBusEject,
+        ) -> Self {
             Self {
                 config,
                 host_queue: queue,
                 transaction_id: AtomicU64::new(1),
                 protocol_version: protocol::ProtocolVersion::VB,
+                eject,
             }
         }
 
@@ -1923,6 +2015,52 @@ mod tests {
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         let base_address = 0x140000000;
         guest_driver.start_device(base_address).await;
+    }
+
+    #[async_test]
+    async fn eject_waits_for_guest_completion(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let pci_config = HardwareIds {
+            vendor_id: 0x123,
+            device_id: 0x789,
+            revision_id: 1,
+            prog_if: ProgrammingInterface::NONE,
+            base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+            sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+            type0_sub_vendor_id: 0x456,
+            type0_sub_system_id: 0x1,
+        };
+        let pci = Arc::new(CloseableMutex::new(NullDevice {
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
+        }));
+        let mut guest_driver = connected_device(&driver, pci, msi_controller);
+        guest_driver.start_device(0x140000000).await;
+
+        let eject = guest_driver.eject.clone();
+        let eject_task = driver.spawn("eject", async move { eject.eject().await });
+        let mut packet_info = ReadPacketInfo::None;
+        let request: protocol::PdoMessage =
+            guest_driver.read_packet(&mut packet_info).await.unwrap();
+        assert!(matches!(packet_info, ReadPacketInfo::NewTransaction));
+        assert_eq!(request.message_type, protocol::MessageType::EJECT);
+        assert_eq!(request.slot, SlotNumber::new());
+
+        guest_driver
+            .write_packet(
+                None,
+                &protocol::PdoMessage {
+                    message_type: protocol::MessageType::EJECT_COMPLETE,
+                    slot: SlotNumber::new(),
+                },
+            )
+            .await
+            .unwrap();
+        eject_task.await.unwrap();
     }
 
     #[async_test]

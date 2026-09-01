@@ -4043,6 +4043,10 @@ impl LoadedVm {
                                         "no dynamically added VPCI device with instance ID '{instance_id}'"
                                     )
                                 })?;
+                            self.inner.dynamic_vpci_devices[index]
+                                .device
+                                .eject()
+                                .await?;
                             let entry = self.inner.dynamic_vpci_devices.remove(index);
                             entry.device.remove().await;
                             anyhow::Ok(())
