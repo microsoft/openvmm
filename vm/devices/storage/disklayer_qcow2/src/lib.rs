@@ -90,10 +90,12 @@ impl Qcow2Layer {
         let l1_table = read_l1_table(&mut l1_slice, header.l1_size)?;
 
         let mut refcounts = RefcountTable::new(&header)?;
-        let table_entries = header.refcount_table_clusters as usize * 8 * (header.cluster_size() as usize / 8);
-        let mut table_bytes = vec![0u8; table_entries];
-        file.read_at(&mut table_bytes, header.refcount_table_offset)?;
-        refcounts.set_table_bytes(&table_bytes);
+        if header.refcount_table_offset != 0 && header.refcount_table_clusters != 0 {
+            let table_bytes_len = header.refcount_table_clusters as usize * header.cluster_size() as usize;
+            let mut table_bytes = vec![0u8; table_bytes_len];
+            file.read_at(&mut table_bytes, header.refcount_table_offset)?;
+            refcounts.set_table_bytes(&table_bytes);
+        }
 
         Ok(Self {
             file: Arc::new(file),
