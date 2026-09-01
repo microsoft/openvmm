@@ -16,10 +16,15 @@ use crate::Qcow2Header;
 use anyhow::Context;
 use core::mem::size_of;
 use inspect::Inspect;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::Write;
 
 /// Mask covering bits 9..=55 (47 bits), the offset field shared by L1 and L2
 /// entries.
 const OFFSET_MASK: u64 = ((1u64 << 47) - 1) << 9;
+
+const OFLAG_COPIED: u64 = 1 << 63;
 
 /// An entry in the active L1 table, Each entry describes one L2 table
 /// If `l2_offset` is 0, the L2 table and all clusters it describes are
@@ -150,4 +155,43 @@ pub fn split_guest_offset(header: &Qcow2Header, guest_offset: u64) -> ClusterAdd
         l2_index,
         in_cluster_offset,
     }
+}
+
+/// Write an entire L1 table back to disk at `l1_offset`
+pub fn write_l1_entry(
+    file: &mut std::fs::File,
+    header: &Qcow2Header,
+    l1_index: u64,
+    l2_offset: u64,
+) -> std::io::Result<()> {
+    let entry_offset = header.l1_table_offset + l1_index * 8;
+    let raw = l2_offset | OFLAG_COPIED;
+    file.seek(SeekFrom::Start(entry_offset))?;
+    file.write_all(&raw.to_be_bytes())?;
+    Ok(())
+}
+
+/// Write an entire L2 table back to disk at `l2_offset`.
+pub fn write_l2_table(
+    file: &mut std::fs::File,
+    l2_offset: u64,
+    l2_table: &[L2Entry],
+) -> std::io::Result<()> {
+    let mut bytes = Vec::with_capacity(l2_table.len() * 8);
+    for entry in l2_table {
+        if entry.compressed {
+            return Err(std::io::Error::other(
+                "writing back compressed L2 entries is not supported",
+            ));
+        }
+        let raw = if entry.cluster_offset == 0 {
+            0
+        } else {
+            entry.cluster_offset | OFLAG_COPIED
+        };
+        bytes.extend_from_slice(&raw.to_be_bytes());
+    }
+    file.seek(SeekFrom::Start(l2_offset))?;
+    file.write_all(&bytes)?;
+    Ok(())
 }
