@@ -191,7 +191,7 @@ pub fn write_l2_table(
         let raw = if entry.cluster_offset == 0 {
             0
         } else {
-            entry.cluster_offset | OFLAG_COPIED
+            (entry.cluster_offset & OFFSET_MASK) | OFLAG_COPIED
         };
         bytes.extend_from_slice(&raw.to_be_bytes());
     }
