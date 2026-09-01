@@ -47,7 +47,7 @@ const DEFAULT_MTU: u32 = 1514;
 
 /// A live netvsp data path: the hypercall context plus the opened NIC.
 struct NetvspSession {
-    ctx: HvTestCtx,
+    ctx: Box<HvTestCtx>,
     nic: Netvsp,
 }
 
@@ -70,12 +70,16 @@ static NETVSP: Mutex<SessionCell> = Mutex::new(SessionCell(None));
 /// Mirrors the canonical bring-up sequence documented on
 /// [`vmbus_guest::devices::netvsp`].
 fn bring_up_session() -> Result<NetvspSession, String> {
-    let mut ctx = HvTestCtx::new();
+    // `HvTestCtx` embeds two inline 4 KiB hypercall pages (~8 KiB). Keep it
+    // boxed so the context never lands on the guest stack: as a by-value
+    // local, its frame overflowed the bare-metal (non-growable) UEFI stack
+    // during bring-up and faulted the guest before its first instruction.
+    let mut ctx = Box::new(HvTestCtx::new());
     ctx.init(Vtl::Vtl0)
         .map_err(|e| format!("netvsp: HvTestCtx init failed: {e}"))?;
 
-    vmbus_guest::init(&mut ctx).map_err(|e| format!("netvsp: vmbus init failed: {e:?}"))?;
-    let offers = vmbus_guest::request_offers(&mut ctx)
+    vmbus_guest::init(&mut *ctx).map_err(|e| format!("netvsp: vmbus init failed: {e:?}"))?;
+    let offers = vmbus_guest::request_offers(&mut *ctx)
         .map_err(|e| format!("netvsp: request_offers failed: {e:?}"))?;
     let offer = offers
         .iter()
@@ -83,23 +87,23 @@ fn bring_up_session() -> Result<NetvspSession, String> {
         .ok_or_else(|| String::from("netvsp: no netvsp offer found"))?;
 
     let mut nic =
-        Netvsp::open(&mut ctx, offer).map_err(|e| format!("netvsp: open failed: {e:?}"))?;
-    nic.negotiate_version(&mut ctx)
+        Netvsp::open(&mut *ctx, offer).map_err(|e| format!("netvsp: open failed: {e:?}"))?;
+    nic.negotiate_version(&mut *ctx)
         .map_err(|e| format!("netvsp: negotiate_version failed: {e:?}"))?;
-    nic.send_ndis_config(&mut ctx, DEFAULT_MTU)
+    nic.send_ndis_config(&mut *ctx, DEFAULT_MTU)
         .map_err(|e| format!("netvsp: send_ndis_config failed: {e:?}"))?;
-    nic.send_ndis_version(&mut ctx)
+    nic.send_ndis_version(&mut *ctx)
         .map_err(|e| format!("netvsp: send_ndis_version failed: {e:?}"))?;
-    nic.establish_recv_buffer(&mut ctx, RECV_BUFFER_SIZE)
+    nic.establish_recv_buffer(&mut *ctx, RECV_BUFFER_SIZE)
         .map_err(|e| format!("netvsp: establish_recv_buffer failed: {e:?}"))?;
-    nic.establish_send_buffer(&mut ctx, SEND_BUFFER_SIZE)
+    nic.establish_send_buffer(&mut *ctx, SEND_BUFFER_SIZE)
         .map_err(|e| format!("netvsp: establish_send_buffer failed: {e:?}"))?;
-    nic.rndis_init(&mut ctx)
+    nic.rndis_init(&mut *ctx)
         .map_err(|e| format!("netvsp: rndis_init failed: {e:?}"))?;
     let filter = rndis::NDIS_PACKET_TYPE_DIRECTED
         | rndis::NDIS_PACKET_TYPE_BROADCAST
         | rndis::NDIS_PACKET_TYPE_ALL_MULTICAST;
-    nic.set_packet_filter(&mut ctx, filter)
+    nic.set_packet_filter(&mut *ctx, filter)
         .map_err(|e| format!("netvsp: set_packet_filter failed: {e:?}"))?;
 
     Ok(NetvspSession { ctx, nic })
@@ -158,7 +162,7 @@ pub fn send_nvsp(
 
         with_session(|s| {
             s.nic
-                .send_nvsp_raw(&mut s.ctx, &frame, completion)
+                .send_nvsp_raw(&mut *s.ctx, &frame, completion)
                 .map_err(|e| format!("send_nvsp: {e:?}"))
         })
     })
@@ -206,7 +210,7 @@ pub fn send_rndis(
 
         with_session(|s| {
             s.nic
-                .send_rndis_raw(&mut s.ctx, channel_type, &msg, completion)
+                .send_rndis_raw(&mut *s.ctx, channel_type, &msg, completion)
                 .map_err(|e| format!("send_rndis: {e:?}"))
         })
     })
@@ -240,11 +244,11 @@ pub fn renew_buffer(
         with_session(|s| {
             if is_send_buffer {
                 s.nic
-                    .renew_send_buffer(&mut s.ctx)
+                    .renew_send_buffer(&mut *s.ctx)
                     .map_err(|e| format!("renew_buffer(send): {e:?}"))
             } else {
                 s.nic
-                    .renew_recv_buffer(&mut s.ctx)
+                    .renew_recv_buffer(&mut *s.ctx)
                     .map_err(|e| format!("renew_buffer(recv): {e:?}"))
             }
         })
