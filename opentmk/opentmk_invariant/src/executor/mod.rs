@@ -143,7 +143,6 @@ impl<T: SerialIo> Executor<T> {
                 Ok(code) => OpenTMKPacket::Ack(OpenTMKAckPacket { code }),
                 Err(e) => OpenTMKPacket::Error(OpenTMKErrorPacket {
                     message: format!("{:?}", e),
-                    fatal: false,
                 }),
             })),
         }

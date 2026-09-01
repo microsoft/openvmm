@@ -65,8 +65,6 @@ pub struct OpenTMKFuzzTest {
 pub struct OpenTMKErrorPacket {
     /// The message string
     pub message: String,
-    /// Whether if the error is fatal and requires rebooting
-    pub fatal: bool,
 }
 
 /// Packet used to acknowledge the completion of a single fuzz test case

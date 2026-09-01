@@ -132,7 +132,6 @@ fn deserializer_failure_returns_error_packet() {
         response,
         Some(OpenTMKPacket::Error(OpenTMKErrorPacket {
             message: String::from("SyzlangDeserializerFailed(\"decode failed\")"),
-            fatal: false,
         }))
     );
 }
@@ -172,7 +171,6 @@ fn unexpected_ack_and_error_packets_are_rejected() {
         executor
             .on_recieve_error_packet(&OpenTMKErrorPacket {
                 message: String::from("boom"),
-                fatal: false,
             })
             .expect_err("error packets should be rejected"),
         ExecutorError::UnexpectedPacketReceived
@@ -222,7 +220,6 @@ fn framed_fuzz_packet_writes_framed_error() {
         executor.comms.handle.written_bytes(),
         frame_packet(&OpenTMKPacket::Error(OpenTMKErrorPacket {
             message: String::from("SyzlangDeserializerFailed(\"test failure\")"),
-            fatal: false,
         }))
     );
 }
