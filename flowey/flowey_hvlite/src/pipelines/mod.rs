@@ -11,6 +11,7 @@ pub mod build_docs;
 pub mod build_igvm;
 pub mod build_opentmk;
 pub mod build_reproducible;
+pub mod burn_in;
 pub mod cca_tests;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
@@ -58,6 +59,7 @@ pub enum OpenvmmPipelinesCi {
     BuildDocs(build_docs::BuildDocsCli),
     /// Assemble, validate, and draft an OpenVMM source release.
     OpenvmmSourceRelease(openvmm_source_release::OpenvmmSourceReleaseCli),
+    BurnIn(burn_in::BurnInCli),
 }
 
 impl IntoPipeline for OpenvmmPipelines {
@@ -87,6 +89,7 @@ impl IntoPipeline for OpenvmmPipelines {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::OpenvmmSourceRelease(cmd) => cmd.into_pipeline(pipeline_hint),
+                OpenvmmPipelinesCi::BurnIn(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),

@@ -812,6 +812,7 @@ impl SimpleFlowNode for Node {
                     prep_steps_variants,
                     external_deps,
                     incubator_profile,
+                    upload_logs_on_success: true,
                     fail_job_on_test_fail: true,
                     repetitions,
                     petri_params,

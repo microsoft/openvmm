@@ -1629,6 +1629,16 @@ impl VtlPartition {
                     #[cfg(guest_arch = "aarch64")]
                     {
                         features.bank0 |= F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
+
+                        // Opt into delivery of the system-reset intercept family
+                        // (PSCI SYSTEM_OFF2/hibernate, SYSTEM_RESET2) when the
+                        // hypervisor advertises it.
+                        if supported_synth_features
+                            .bank0
+                            .is_set(F::InterceptSystemReset)
+                        {
+                            features.bank0 |= F::InterceptSystemReset;
+                        }
                     }
 
                     if vtl == Vtl::Vtl0 {

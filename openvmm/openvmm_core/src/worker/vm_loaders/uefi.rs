@@ -34,6 +34,7 @@ pub enum Error {
 pub struct UefiLoadSettings {
     pub debugging: bool,
     pub battery: bool,
+    pub hibernation: bool,
     pub memory_protections: bool,
     pub frontpage: bool,
     pub tpm: bool,
@@ -105,7 +106,7 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         .collect();
 
     let flags = config::Flags::new()
-        .with_hibernate_enabled(true)
+        .with_hibernate_enabled(settings.hibernation)
         .with_serial_controllers_enabled(settings.serial)
         .with_vpci_boot_enabled(settings.vpci_boot)
         .with_debugger_enabled(settings.debugging)

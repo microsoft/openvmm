@@ -97,6 +97,8 @@ pub mod ged {
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
         /// Force UEFI to bounce-buffer all DMA traffic.
         pub force_dma_bounce_enabled: bool,
+        /// Enable hibernation.
+        pub enable_hibernation: bool,
     }
 
     /// The firmware and chipset configuration for the guest.

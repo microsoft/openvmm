@@ -57,6 +57,8 @@ flowey_request! {
         pub incubator_profile: Option<IncubatorProfileNameOrPath>,
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
+        /// Upload logs on success (logs are always uploaded on failure)
+        pub upload_logs_on_success: bool,
         /// Run the tests this number of times
         pub repetitions: std::num::NonZeroU64,
         /// Parameters to pass to Petri via environment variables
@@ -93,6 +95,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<crate::write_incubator_target_runner::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
+        ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<crate::resolve_vmm_tests_pipeline_artifacts::Node>();
     }
 
@@ -107,6 +110,7 @@ impl SimpleFlowNode for Node {
             prep_steps_variants,
             external_deps,
             incubator_profile,
+            upload_logs_on_success,
             fail_job_on_test_fail,
             repetitions,
             petri_params,
@@ -326,6 +330,15 @@ impl SimpleFlowNode for Node {
             prep_steps.claim_unused(ctx);
         }
 
+        // download the nextest bin now (as opposed to automatically during
+        // invocation) so that there are not duplicate flowey steps for this.
+        let nextest_bin = ctx.reqv(|v| {
+            flowey_lib_common::download_cargo_nextest::Request::Get(
+                ReadVar::from_static(target_lexicon::Triple::host()),
+                v,
+            )
+        });
+
         let repetitions = repetitions.get();
         let mut all_results = Vec::with_capacity(repetitions as usize);
         let mut all_log_dirs = Vec::with_capacity(repetitions as usize);
@@ -358,7 +371,7 @@ impl SimpleFlowNode for Node {
                 nextest_filter_expr: nextest_filter_expr.clone(),
                 nextest_working_dir: Some(openvmm_repo_path.clone()),
                 nextest_config_file: Some(nextest_config_file.clone()),
-                nextest_bin: None,
+                nextest_bin: Some(nextest_bin.clone()),
                 target: None,
                 extra_env: extra_env.clone(),
                 pre_run_deps: pre_run_deps_iteration,
@@ -479,17 +492,17 @@ impl SimpleFlowNode for Node {
         let mut reported_results = Vec::new();
 
         for (i, (results, log_dir)) in all_results.iter().enumerate() {
-            let junit_xml = results.map(ctx, |r| r.junit_xml);
             let test_label = test_label_for_iteration(i);
             reported_results.push(
                 ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-                    junit_xml,
+                    test_results: results.clone(),
                     test_label,
                     attachments: BTreeMap::from([(
                         "logs".to_string(),
                         (log_dir.to_owned(), false),
                     )]),
                     output_dir: None,
+                    upload_logs_on_success,
                     done: v,
                 }),
             );
