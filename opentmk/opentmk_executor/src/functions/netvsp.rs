@@ -44,17 +44,35 @@ const FLAG_REQUEST_COMPLETION: u64 = 0x1;
 /// `MAX_RNDIS_LEN` cap enforced deeper in the guest netvsp driver.
 const MAX_FUZZ_MSG_LEN: usize = 16 * 4096;
 
-/// Receive-buffer size established during session bring-up (16 MiB —
-/// the conventional netvsc receive buffer size).
-const RECV_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+/// Receive-buffer size established during session bring-up.
+///
+/// The conventional netvsc recv buffer is 16 MiB, but this fuzzer
+/// barely exercises the RX path (the host is not flooding us), and the
+/// buffer's GPADL is re-registered on **every** per-testcase channel
+/// reset — a 16 MiB buffer is 4096 PFNs, which `establish_gpadl` must
+/// stream to the host as ~140 ~240-byte `GPADL_BODY` post-messages,
+/// dominating reset cost. 256 KiB (64 PFNs → ~3 messages) is ample for
+/// the handful of inbound packets we see and collapses that burst ~40×
+/// with no loss of host-side coverage (the recv-buffer handling code
+/// runs regardless of size).
+const RECV_BUFFER_SIZE: usize = 256 * 1024;
 /// Send-buffer size established during session bring-up (1 MiB).
 const SEND_BUFFER_SIZE: usize = 1024 * 1024;
 /// MTU advertised in `SEND_NDIS_CONFIG` (standard Ethernet + VLAN).
 const DEFAULT_MTU: u32 = 1514;
 
-/// A live netvsp data path: the hypercall context plus the opened NIC.
+/// A live netvsp data path.
+///
+/// Split into a *persistent* part — the hypercall context (`ctx`) and
+/// the netvsp channel `offer` — that survives across testcases, and a
+/// *per-testcase* part (`nic`) that is closed and reopened by
+/// [`reset_session`] at every testcase boundary. Keeping the VMBus
+/// connection up across resets avoids re-running SynIC init and
+/// `request_offers` (and leaking their allocations) on every testcase;
+/// only the netvsp channel itself is churned.
 struct NetvspSession {
     ctx: Box<HvTestCtx>,
+    offer: vmbus_guest::protocol::OfferChannel,
     nic: Netvsp,
 }
 
@@ -62,7 +80,9 @@ struct NetvspSession {
 /// [`Mutex`]. `Netvsp` transitively contains raw pointers (ring
 /// backing, pending-TX allocations) so it is not automatically
 /// [`Send`].
-struct SessionCell(Option<NetvspSession>);
+struct SessionCell {
+    session: Option<NetvspSession>,
+}
 
 // SAFETY: the guest fuzz executor is single-threaded; the raw pointers
 // held by `Netvsp`/`HvTestCtx` are only ever accessed while holding the
@@ -70,13 +90,14 @@ struct SessionCell(Option<NetvspSession>);
 // `unsafe impl Send for OwnedBuf` rationale in the netvsp driver.
 unsafe impl Send for SessionCell {}
 
-static NETVSP: Mutex<SessionCell> = Mutex::new(SessionCell(None));
+static NETVSP: Mutex<SessionCell> = Mutex::new(SessionCell { session: None });
 
-/// Bring up a complete netvsp data path from scratch.
+/// Bring up the VMBus connection and locate the netvsp channel offer.
 ///
-/// Mirrors the canonical bring-up sequence documented on
-/// [`vmbus_guest::devices::netvsp`].
-fn bring_up_session() -> Result<NetvspSession, String> {
+/// This is the *persistent* half of bring-up (SynIC + VMBus
+/// negotiation + channel enumeration); it is done once and reused
+/// across per-testcase channel resets.
+fn bring_up_vmbus() -> Result<(Box<HvTestCtx>, vmbus_guest::protocol::OfferChannel), String> {
     // `HvTestCtx` embeds two inline 4 KiB hypercall pages (~8 KiB). Keep it
     // boxed so the context never lands on the guest stack: as a by-value
     // local, its frame overflowed the bare-metal (non-growable) UEFI stack
@@ -88,45 +109,133 @@ fn bring_up_session() -> Result<NetvspSession, String> {
     vmbus_guest::init(&mut *ctx).map_err(|e| format!("netvsp: vmbus init failed: {e:?}"))?;
     let offers = vmbus_guest::request_offers(&mut *ctx)
         .map_err(|e| format!("netvsp: request_offers failed: {e:?}"))?;
-    let offer = offers
+    let offer = *offers
         .iter()
         .find(|o| o.interface_id == netvsp::INTERFACE_GUID)
         .ok_or_else(|| String::from("netvsp: no netvsp offer found"))?;
+    Ok((ctx, offer))
+}
 
-    let mut nic =
-        Netvsp::open(&mut *ctx, offer).map_err(|e| format!("netvsp: open failed: {e:?}"))?;
-    nic.negotiate_version(&mut *ctx)
+/// Open the netvsp channel on an already-established VMBus connection
+/// and run the full netvsp/RNDIS bring-up (open + version negotiation +
+/// NDIS config/version + recv/send buffers + RNDIS init + packet
+/// filter).
+///
+/// This is the *per-testcase* half of bring-up: called once during the
+/// initial [`bring_up_session`] and again after every channel reset in
+/// [`reset_session`]. It allocates a fresh ring + recv/send buffers,
+/// so the previous channel's [`NetvspBacking`] must be freed first.
+fn open_netvsp_channel(
+    ctx: &mut HvTestCtx,
+    offer: &vmbus_guest::protocol::OfferChannel,
+) -> Result<Netvsp, String> {
+    let mut nic = Netvsp::open(ctx, offer).map_err(|e| format!("netvsp: open failed: {e:?}"))?;
+    nic.negotiate_version(ctx)
         .map_err(|e| format!("netvsp: negotiate_version failed: {e:?}"))?;
-    nic.send_ndis_config(&mut *ctx, DEFAULT_MTU)
+    nic.send_ndis_config(ctx, DEFAULT_MTU)
         .map_err(|e| format!("netvsp: send_ndis_config failed: {e:?}"))?;
-    nic.send_ndis_version(&mut *ctx)
+    nic.send_ndis_version(ctx)
         .map_err(|e| format!("netvsp: send_ndis_version failed: {e:?}"))?;
-    nic.establish_recv_buffer(&mut *ctx, RECV_BUFFER_SIZE)
+    nic.establish_recv_buffer(ctx, RECV_BUFFER_SIZE)
         .map_err(|e| format!("netvsp: establish_recv_buffer failed: {e:?}"))?;
-    nic.establish_send_buffer(&mut *ctx, SEND_BUFFER_SIZE)
+    nic.establish_send_buffer(ctx, SEND_BUFFER_SIZE)
         .map_err(|e| format!("netvsp: establish_send_buffer failed: {e:?}"))?;
-    nic.rndis_init(&mut *ctx)
+    nic.rndis_init(ctx)
         .map_err(|e| format!("netvsp: rndis_init failed: {e:?}"))?;
     let filter = rndis::NDIS_PACKET_TYPE_DIRECTED
         | rndis::NDIS_PACKET_TYPE_BROADCAST
         | rndis::NDIS_PACKET_TYPE_ALL_MULTICAST;
-    nic.set_packet_filter(&mut *ctx, filter)
+    nic.set_packet_filter(ctx, filter)
         .map_err(|e| format!("netvsp: set_packet_filter failed: {e:?}"))?;
+    Ok(nic)
+}
 
-    Ok(NetvspSession { ctx, nic })
+/// Bring up a complete netvsp data path from scratch: VMBus connection
+/// plus an opened netvsp channel.
+fn bring_up_session() -> Result<NetvspSession, String> {
+    let (mut ctx, offer) = bring_up_vmbus()?;
+    let nic = open_netvsp_channel(&mut *ctx, &offer)?;
+    Ok(NetvspSession { ctx, offer, nic })
 }
 
 /// Run `f` against the (lazily initialized) netvsp session.
+///
+/// The datapath is brought up on first use and then kept warm. Each
+/// testcase boundary calls [`reset_session`] to close and reopen the
+/// channel, so a datapath wedged by one testcase (e.g. a `renew_buffer`
+/// that revoked the send buffer) cannot leak into the next.
 fn with_session<R>(f: impl FnOnce(&mut NetvspSession) -> Result<R, String>) -> Result<R, String> {
     let mut cell = NETVSP.lock();
-    if cell.0.is_none() {
-        cell.0 = Some(bring_up_session()?);
+    if cell.session.is_none() {
+        cell.session = Some(bring_up_session()?);
     }
     let session = cell
-        .0
+        .session
         .as_mut()
         .expect("session initialized immediately above");
     f(session)
+}
+
+/// Reset the netvsp channel at a testcase boundary.
+///
+/// Closes the current netvsp channel, **reclaims** its guest memory
+/// (ring region + recv/send GPADL buffers + any pending-TX staging
+/// buffers), and reopens a fresh channel on the same VMBus connection.
+/// This gives each testcase an isolated, clean-slate data path: no
+/// wedged send ring, revoked/renewed buffer, or mutated RNDIS packet
+/// filter can leak from one testcase into the next. It is also the
+/// recovery path for a datapath that a prior testcase wedged (e.g. a
+/// `renew_buffer` that revoked the send buffer but failed to
+/// re-establish it, after which the host stops completing every send).
+///
+/// Only the channel is churned — the VMBus connection (SynIC + offers)
+/// is kept up, so a reset costs one channel bring-up (~8 round-trips),
+/// not a full SynIC/`request_offers` re-init. Freeing the old backing
+/// before reopening keeps this leak-free across an unbounded campaign;
+/// `close_channel` uses SynIC post-messages (not the data ring) so it
+/// succeeds even when the ring is wedged full.
+///
+/// If reopening fails, the VMBus connection is torn down (`unload`) and
+/// the session cleared, so the next [`with_session`] rebuilds from
+/// scratch rather than operating on a half-open channel.
+pub fn reset_session() {
+    let mut cell = NETVSP.lock();
+    let Some(session) = cell.session.take() else {
+        // No session yet (or a prior reset already cleared it): the
+        // next `with_session` call brings one up fresh.
+        return;
+    };
+    let NetvspSession {
+        mut ctx,
+        offer,
+        nic,
+    } = session;
+
+    // Close the channel first, then free its backing — the host must
+    // stop touching the ring/buffers before we deallocate them.
+    let (channel, backing) = nic.into_parts();
+    if let Err(e) = vmbus_guest::channel::close_channel(&mut *ctx, channel) {
+        log::warn!("netvsp: reset close_channel failed: {e:?}");
+    }
+    backing.free();
+
+    // Reopen a fresh channel on the same VMBus connection.
+    match open_netvsp_channel(&mut *ctx, &offer) {
+        Ok(nic) => {
+            cell.session = Some(NetvspSession { ctx, offer, nic });
+        }
+        Err(e) => {
+            log::warn!(
+                "netvsp: channel reopen after reset failed ({e}); \
+                 tearing down VMBus for a full rebuild on next call"
+            );
+            if let Err(e) = vmbus_guest::unload(&mut *ctx) {
+                log::warn!("netvsp: vmbus unload after failed reopen: {e:?}");
+            }
+            // Leave `cell.session` as None → next `with_session` does a
+            // full bring-up (VMBus + channel) from scratch.
+        }
+    }
 }
 
 /// Run a fuzzer-handler body, logging any runtime error instead of

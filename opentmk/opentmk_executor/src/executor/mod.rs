@@ -159,6 +159,12 @@ impl<T: SerialIo> Executor<T> {
         &mut self,
         pkt: &mut OpenTMKFuzzTest,
     ) -> Result<Option<OpenTMKPacket>, ExecutorError> {
+        // Isolate each testcase: tear down any existing netvsp data path
+        // so the next handler call rebuilds a clean one. Prevents state
+        // (a wedged send ring, a revoked buffer, a mutated RNDIS filter)
+        // from leaking across testcases and recovers a datapath a prior
+        // testcase wedged. Lazy: no-op when no session exists yet.
+        netvsp::reset_session();
         match self.deserializer.as_mut() {
             None => Err(ExecutorError::NoDeserializerEnabled),
             Some(t) => Ok(Some(OpenTMKPacket::Ack(OpenTMKAckPacket {

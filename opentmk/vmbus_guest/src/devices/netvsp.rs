@@ -776,6 +776,79 @@ unsafe impl Send for OwnedBuf {}
 )]
 unsafe impl Sync for OwnedBuf {}
 
+/// Freeable guest allocations extracted from a [`Netvsp`] via
+/// [`Netvsp::into_parts`], to be released *after* the owning channel
+/// has been closed host-side.
+///
+/// `Netvsp`'s ring region, GPADL buffers, and pending-TX staging
+/// buffers are all raw `alloc_zeroed` allocations with no `Drop`, so
+/// simply dropping a `Netvsp` (e.g. via [`Netvsp::into_channel`])
+/// leaks them. A close/reopen cycle that reclaims memory must route
+/// through `into_parts` + [`NetvspBacking::free`] instead.
+pub struct NetvspBacking {
+    ring_base: *mut u8,
+    ring_layout: Layout,
+    /// `[recv_buf, send_buf]` — either may be `None` if that buffer was
+    /// never established.
+    bufs: [Option<OwnedBuf>; 2],
+    pending: VecDeque<PendingTx>,
+}
+
+// SAFETY: same rationale as `OwnedBuf`/`Netvsp` — only ever touched by
+// the single-threaded UEFI runtime while holding the session mutex.
+#[expect(
+    unsafe_code,
+    reason = "single-threaded UEFI runtime; identity-mapped allocations"
+)]
+unsafe impl Send for NetvspBacking {}
+
+impl NetvspBacking {
+    /// Deallocate every guest allocation this handle owns: the ring
+    /// region, the send/recv GPADL buffers, and any not-yet-completed
+    /// TX staging buffers.
+    ///
+    /// # Safety contract (caller-enforced)
+    /// Call only after the owning channel has been closed
+    /// (`close_channel`) so the host is no longer reading or writing
+    /// these pages; otherwise the host would access freed memory.
+    pub fn free(self) {
+        let NetvspBacking {
+            ring_base,
+            ring_layout,
+            bufs,
+            mut pending,
+        } = self;
+
+        // SAFETY: `ring_base`/`ring_layout` are exactly the pointer and
+        // layout `alloc_zeroed`'d in `Netvsp::open`, freed once here.
+        #[expect(unsafe_code, reason = "free ring region from Netvsp::open")]
+        unsafe {
+            dealloc(ring_base, ring_layout);
+        }
+
+        for buf in bufs.into_iter().flatten() {
+            let layout = Layout::from_size_align(buf.len, 4096)
+                .expect("GPADL buffer len/align were validated at allocation");
+            // SAFETY: `buf.ptr`/`layout` reconstruct the exact request
+            // `allocate_gpadl_buffer` made; freed once here.
+            #[expect(unsafe_code, reason = "free GPADL buffer")]
+            unsafe {
+                dealloc(buf.ptr, layout);
+            }
+        }
+
+        for tx in pending.drain(..) {
+            // SAFETY: `tx.ptr`/`tx.layout` are the exact request made
+            // in `send_ethernet`; its host completion was never
+            // observed, but the channel is closed so the host is done.
+            #[expect(unsafe_code, reason = "free pending TX staging buffer")]
+            unsafe {
+                dealloc(tx.ptr, tx.layout);
+            }
+        }
+    }
+}
+
 /// Guest-side handle to an open Hyper-V synthetic NIC channel.
 ///
 /// Not thread-safe on its own; the UEFI runtime is effectively
@@ -785,6 +858,15 @@ pub struct Netvsp {
     channel: Channel,
     send: SendRing<RawRingMem>,
     recv: RecvRing<RawRingMem>,
+
+    /// Base pointer and layout of the single page-aligned allocation
+    /// backing both rings (see [`Netvsp::open`]). Retained so the
+    /// region can be reclaimed via [`Netvsp::into_parts`] when the
+    /// channel is torn down — the `send`/`recv` [`RawRingMem`] only
+    /// hold interior pointers and have no `Drop`, so without this the
+    /// region would leak on every close.
+    ring_base: *mut u8,
+    ring_layout: Layout,
 
     /// Negotiated NVSP version, or [`INVALID_PROTOCOL_VERSION`] until
     /// [`Self::negotiate_version`] succeeds.
@@ -896,7 +978,9 @@ impl Netvsp {
             ty: None,
             reason: "netvsp ring layout invalid",
         })?;
-        // SAFETY: alignment and size are validated above. Never freed.
+        // SAFETY: alignment and size are validated above. Freed via
+        // `NetvspBacking::free` (after channel close) — never dropped
+        // implicitly, since the region has no `Drop`.
         #[expect(unsafe_code, reason = "raw page-aligned allocation for GPADL")]
         let base = unsafe { alloc_zeroed(layout) };
         if base.is_null() {
@@ -966,6 +1050,8 @@ impl Netvsp {
             channel,
             send: SendRing::new(send_mem),
             recv: RecvRing::new(recv_mem),
+            ring_base: base,
+            ring_layout: layout,
             version: INVALID_PROTOCOL_VERSION,
             next_transaction_id: 1,
             recv_buf: None,
@@ -2680,6 +2766,35 @@ impl Netvsp {
         self.channel
     }
 
+    /// Split into the channel (to be closed by the caller) and the
+    /// freeable guest [`NetvspBacking`].
+    ///
+    /// The `send`/`recv` rings are dropped here, but they only hold
+    /// interior pointers into the ring region — the region itself, the
+    /// GPADL buffers, and any outstanding TX staging buffers all travel
+    /// out in the returned [`NetvspBacking`] so the caller can
+    /// [`NetvspBacking::free`] them *after* closing the channel (once
+    /// the host is no longer touching the pages). This is what makes a
+    /// close/reopen cycle non-leaking.
+    pub fn into_parts(self) -> (Channel, NetvspBacking) {
+        let Netvsp {
+            channel,
+            ring_base,
+            ring_layout,
+            recv_buf,
+            send_buf,
+            pending_tx,
+            ..
+        } = self;
+        let backing = NetvspBacking {
+            ring_base,
+            ring_layout,
+            bufs: [recv_buf, send_buf],
+            pending: pending_tx,
+        };
+        (channel, backing)
+    }
+
     // ---- internals ----
 
     /// Post an NVSP frame with the completion-requested flag and
@@ -2939,8 +3054,8 @@ fn allocate_gpadl_buffer<C: HypercallPlatformTrait<Config = HyperVHypercallConfi
         reason: "GPADL buffer layout invalid",
     })?;
     // SAFETY: layout is a validated non-zero page-aligned request.
-    // The pointer is never freed — the host holds it for the
-    // lifetime of the channel.
+    // Freed via `NetvspBacking::free` after the channel is closed; the
+    // host holds it through the GPADL until then.
     #[expect(unsafe_code, reason = "page-aligned allocation for GPADL registration")]
     let ptr = unsafe { alloc_zeroed(layout) };
     if ptr.is_null() {
