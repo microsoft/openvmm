@@ -849,14 +849,27 @@ const FUZZ_SEND_MAX_POLLS: usize = 5_000_000;
 
 /// Soft cap on in-flight TX buffers awaiting completion. Sized to
 /// keep the outstanding heap footprint bounded at ~2 MiB (512 × 4 KiB)
-/// under a stress burst. When we reach the cap, `send_ethernet` will
-/// synchronously drain completions before returning `Err(RingFull)`.
+/// under a stress burst. When we reach the cap, the send paths first
+/// synchronously drain completions and then, if still full,
+/// force-reclaim the oldest buffers (see [`PENDING_TX_RECLAIM`]).
 const PENDING_TX_MAX: usize = 512;
 
-/// Ring size: 8 data pages = 32 KiB per direction, power-of-two as
-/// required by `RawRingMem::new`. Plus 1 control page → 9 pages per
-/// direction, 18 pages (72 KiB) total per channel.
-const RING_DATA_PAGES: usize = 8;
+/// When [`PENDING_TX_MAX`] is hit and draining reaps nothing, this
+/// many of the oldest outstanding TX buffers are force-reclaimed to
+/// keep the GPA-direct send path alive. Under fuzzing the host
+/// silently drops malformed sends, so their tracker entries never
+/// receive a completion and would otherwise leak forever, wedging
+/// every subsequent send at `RingFull`. Reclaiming a batch (rather
+/// than a single entry) amortizes the cost across many sends.
+const PENDING_TX_RECLAIM: usize = 64;
+
+/// Ring size: 32 data pages = 128 KiB per direction, power-of-two as
+/// required by `RawRingMem::new`. Plus 1 control page → 33 pages per
+/// direction, 66 pages (264 KiB) total per channel. Sized generously
+/// (vs. the 8-page minimum) so bursty fuzzer testcases posting many
+/// fire-and-forget sends don't overflow the outbound ring before the
+/// host drains it (`Error::RingFull`).
+const RING_DATA_PAGES: usize = 32;
 const RING_DATA_BYTES: usize = RING_DATA_PAGES * 4096;
 
 impl Netvsp {
@@ -872,11 +885,11 @@ impl Netvsp {
         ctx: &mut C,
         offer: &OfferChannel,
     ) -> Result<Self> {
-        // Layout of the 18-page ring region, in order:
-        //   pages 0     : send control page
-        //   pages 1..=8 : send data (8 pages, power-of-two)
-        //   pages 9     : recv control page
-        //   pages 10..=17: recv data
+        // Layout of the ring region, in order:
+        //   page  0            : send control page
+        //   pages 1..=N        : send data (N = RING_DATA_PAGES, power-of-two)
+        //   page  1+N          : recv control page
+        //   pages 2+N..=1+2N   : recv data
         const TOTAL_PAGES: usize = 2 * (1 + RING_DATA_PAGES);
         const REGION_BYTES: usize = TOTAL_PAGES * 4096;
         let layout = Layout::from_size_align(REGION_BYTES, 4096).map_err(|_| Error::Parse {
@@ -2041,17 +2054,16 @@ impl Netvsp {
             return Err(Error::Rescinded);
         }
         // Cap the outstanding-TX queue: opportunistically drain, and
-        // if still full, bail with `RingFull` so the caller knows to
-        // flush.
+        // if still full, force-reclaim the oldest buffers so the send
+        // path stays alive instead of wedging at `RingFull`.
         if self.pending_tx.len() >= PENDING_TX_MAX {
             let _ = self.drain_inbound(ctx, PENDING_TX_MAX, |_| {});
             if self.pending_tx.len() >= PENDING_TX_MAX {
-                // SAFETY: we own `rndis_ptr` and no aliasing has occurred.
-                #[expect(unsafe_code, reason = "reclaim allocation on early exit")]
-                unsafe {
-                    dealloc(rndis_ptr, rndis_layout);
-                }
-                return Err(Error::RingFull);
+                // Draining reaped no completions — under fuzzing these
+                // are sends the host silently dropped, so they will
+                // never complete and would leak forever. Force-reclaim
+                // the oldest buffers to make room.
+                self.reclaim_oldest_tx(PENDING_TX_RECLAIM);
             }
         }
         let tid = self.alloc_transaction_id();
@@ -2061,8 +2073,19 @@ impl Netvsp {
         let pfns = [rndis_gpa >> 12];
         let offset = (rndis_gpa & 0xFFF) as u32;
         let need_signal =
-            self.send
-                .write_gpa_direct(&pfns, offset, total_len, &nvsp_frame[..n], flags, tid)?;
+            match self.post_gpa_direct(ctx, &pfns, offset, total_len, &nvsp_frame[..n], flags, tid)
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    // Not yet tracked in `pending_tx`; free the buffer.
+                    // SAFETY: we own `rndis_ptr` and no aliasing has occurred.
+                    #[expect(unsafe_code, reason = "reclaim allocation on send failure")]
+                    unsafe {
+                        dealloc(rndis_ptr, rndis_layout);
+                    }
+                    return Err(e);
+                }
+            };
         if need_signal {
             self.channel.signal(ctx)?;
         }
@@ -2409,12 +2432,11 @@ impl Netvsp {
         if self.pending_tx.len() >= PENDING_TX_MAX {
             let _ = self.drain_inbound(ctx, PENDING_TX_MAX, |_| {});
             if self.pending_tx.len() >= PENDING_TX_MAX {
-                // SAFETY: we own `rndis_ptr`, no aliasing occurred.
-                #[expect(unsafe_code, reason = "reclaim allocation on early exit")]
-                unsafe {
-                    dealloc(rndis_ptr, rndis_layout);
-                }
-                return Err(Error::RingFull);
+                // Draining reaped no completions — under fuzzing these
+                // are sends the host silently dropped, so they will
+                // never complete and would leak forever. Force-reclaim
+                // the oldest buffers to keep the send path alive.
+                self.reclaim_oldest_tx(PENDING_TX_RECLAIM);
             }
         }
 
@@ -2431,14 +2453,26 @@ impl Netvsp {
         let tid = self.alloc_transaction_id();
         let mut flags = PacketFlags::new();
         flags.set_request_completion(true);
-        let need_signal = self.send.write_gpa_direct(
+        let need_signal = match self.post_gpa_direct(
+            ctx,
             &pfns,
             0,
             rndis.len() as u32,
             &nvsp_frame[..n],
             flags,
             tid,
-        )?;
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                // Not yet tracked in `pending_tx`; free the buffer.
+                // SAFETY: we own `rndis_ptr`, no aliasing occurred.
+                #[expect(unsafe_code, reason = "reclaim allocation on send failure")]
+                unsafe {
+                    dealloc(rndis_ptr, rndis_layout);
+                }
+                return Err(e);
+            }
+        };
         if need_signal {
             self.channel.signal(ctx)?;
         }
@@ -2776,6 +2810,81 @@ impl Netvsp {
         } else {
             false
         }
+    }
+
+    /// Force-free the oldest `n` outstanding TX buffers *without*
+    /// waiting for their host completion. Returns the number freed.
+    ///
+    /// Used only when [`Self::pending_tx`] is saturated at
+    /// [`PENDING_TX_MAX`] and a synchronous drain reaped nothing:
+    /// under fuzzing the host silently drops malformed sends, so those
+    /// tracker entries never receive a completion and would otherwise
+    /// leak forever, wedging every subsequent GPA-direct send at
+    /// `RingFull`.
+    ///
+    /// Safety trade-off: this deallocates a buffer the host could, in
+    /// principle, still be reading during a slow TX. In practice a
+    /// buffer outstanding for `PENDING_TX_MAX` (512) later sends has
+    /// long since been consumed by the host, so the reuse-after-free
+    /// window is negligible for a fuzzing harness.
+    fn reclaim_oldest_tx(&mut self, n: usize) -> usize {
+        let mut freed = 0;
+        for _ in 0..n {
+            match self.pending_tx.pop_front() {
+                Some(entry) => {
+                    // SAFETY: `entry.ptr` was returned by
+                    // `alloc_zeroed(entry.layout)` in the send path and
+                    // is owned solely by the tracker.
+                    #[expect(unsafe_code, reason = "force-free leaked TX buffer")]
+                    unsafe {
+                        dealloc(entry.ptr, entry.layout);
+                    }
+                    freed += 1;
+                }
+                None => break,
+            }
+        }
+        freed
+    }
+
+    /// Post a GPA-direct TX packet, recovering from a transiently
+    /// full outbound ring. Under sustained fuzzing we post sends
+    /// faster than the host drains them; once our recv ring fills
+    /// with unreaped completions the host stops draining our send
+    /// ring, which then wedges at `RingFull` permanently. On
+    /// `RingFull` we reap completions off the recv ring
+    /// ([`Self::drain_inbound`] frees recv-ring space *without*
+    /// needing send-ring space) to relieve the host's backpressure,
+    /// then retry. Returns the `need_signal` flag from the successful
+    /// write, or [`Error::RingFull`] if the ring stays full after
+    /// `RING_FULL_RETRIES` drain-and-retry passes.
+    fn post_gpa_direct<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+        &mut self,
+        ctx: &mut C,
+        pfns: &[u64],
+        offset: u32,
+        len: u32,
+        nvsp_frame: &[u8],
+        flags: PacketFlags,
+        tid: u64,
+    ) -> Result<bool> {
+        const RING_FULL_RETRIES: usize = 8;
+        for _ in 0..RING_FULL_RETRIES {
+            match self
+                .send
+                .write_gpa_direct(pfns, offset, len, nvsp_frame, flags, tid)
+            {
+                Ok(need_signal) => return Ok(need_signal),
+                Err(Error::RingFull) => {
+                    // Reap TX completions to free recv-ring space so
+                    // the host resumes draining our send ring, then
+                    // retry the write.
+                    let _ = self.drain_inbound(ctx, PENDING_TX_MAX, |_| {});
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::RingFull)
     }
 
     /// Spin draining the recv ring until every outstanding TX buffer
