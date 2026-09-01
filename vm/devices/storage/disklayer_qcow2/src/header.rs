@@ -151,6 +151,31 @@ impl Qcow2Header {
             this.extended_version3_header = Some(extended_version3_header);
         }
 
+        anyhow::ensure!(
+            this.crypt_method == 0,
+            "encrypted qcow2 images are not supported"
+        );
+        anyhow::ensure!(
+            this.backing_file_size == 0 && this.backing_offset == 0,
+            "qcow2 backing files are not supported"
+        );
+        anyhow::ensure!(
+            this.nb_snapshots == 0 && this.snapshots_offset == 0,
+            "qcow2 snapshots are not supported"
+        );
+        if let Some(v3) = &this.extended_version3_header {
+            anyhow::ensure!(
+                v3.incompatible_features == 0,
+                "qcow2 incompatible_features {:#x} are not supported",
+                v3.incompatible_features
+            );
+            anyhow::ensure!(
+                v3.refcount_order == 4,
+                "qcow2 refcount_order {} is not supported (only 4 / 16-bit)",
+                v3.refcount_order
+            );
+        }
+
         let header_len = if this.header_version == 3 { 104 } else { 72 };
         anyhow::ensure!(
             this.l1_table_offset >= header_len as u64,

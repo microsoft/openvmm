@@ -39,9 +39,18 @@ pub async fn zero_cluster(
     size: usize,
 ) -> Result<(), DiskError> {
     let buf = vec![0u8; size];
-    unblock(move || file.write_at(&buf, cluster_offset))
-        .await
-        .map_err(DiskError::Io)?;
+    unblock(move || {
+        let n = file.write_at(&buf, cluster_offset)?;
+        if n != buf.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "short write",
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(DiskError::Io)?;
     Ok(())
 }
 
@@ -193,7 +202,13 @@ impl RefcountTable {
         let mut buf = vec![0u8; byte_len];
         let f = file.clone();
         let buf = unblock(move || -> Result<Vec<u8>, std::io::Error> {
-            f.read_at(&mut buf, block_offset)?;
+            let n = f.read_at(&mut buf, block_offset)?;
+            if n != buf.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "short write",
+                ));
+            }
             Ok(buf)
         })
         .await

@@ -164,8 +164,14 @@ pub fn write_l1_entry(
     l2_offset: u64,
 ) -> std::io::Result<()> {
     let entry_offset = l1_table_offset + l1_index * 8;
-    let raw = l2_offset | OFLAG_COPIED;
-    file.write_at(&raw.to_be_bytes(), entry_offset)?;
+    let raw = (l2_offset & OFFSET_MASK) | OFLAG_COPIED;
+    let n = file.write_at(&raw.to_be_bytes(), entry_offset)?;
+    if n != 8 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            "short write",
+        ));
+    }
     Ok(())
 }
 
@@ -189,6 +195,12 @@ pub fn write_l2_table(
         };
         bytes.extend_from_slice(&raw.to_be_bytes());
     }
-    file.write_at(&bytes, l2_offset)?;
+    let n = file.write_at(&bytes, l2_offset)?;
+    if n != bytes.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            "short write",
+        ));
+    }
     Ok(())
 }
