@@ -1797,7 +1797,11 @@ pub fn get_provenance_claims(prov_file: &[u8]) -> Result<VmgsProvisioner, Error>
             .map_err(ProvenanceError::X509Error)
             .map_err(AttestationErrorInner::Provenance)?),
     );
-    let signer = format!("did:x509:0:sha256:{}:subject:{}", hex::encode(digest), sn);
+    let signer = format!(
+        "did:x509:0:sha256:{}:subject:{}",
+        hex::encode_upper(digest),
+        sn
+    );
     let vmgsid = jwt.jwt.body.vmgsid;
 
     Ok(VmgsProvisioner {
@@ -3609,7 +3613,7 @@ mod tests {
         );
         assert_eq!(
             claims.signer,
-            "did:x509:0:sha256:ea76599d86897382aa519ff2bc0fa6b9c15d60da2ebe53e72139cd317b0797ed:subject:fican.cvmprovisioningservice.core.azure-test.net"
+            "did:x509:0:sha256:EA76599D86897382AA519FF2BC0FA6B9C15D60DA2EBE53E72139CD317B0797ED:subject:fican.cvmprovisioningservice.core.azure-test.net"
         );
     }
 

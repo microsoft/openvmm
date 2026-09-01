@@ -1724,8 +1724,7 @@ mod tests {
         let mut switch = switch;
         let (_, _, downstream_port) = switch
             .downstream_ports
-            .iter_mut()
-            .next()
+            .first_mut()
             .expect("expected downstream port");
 
         let downstream_header = downstream_port.cfg_space_mut().read_u32(0x100);

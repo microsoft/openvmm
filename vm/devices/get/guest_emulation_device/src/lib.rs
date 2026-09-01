@@ -148,6 +148,8 @@ pub struct GuestConfig {
     pub secure_boot_template: SecureBootTemplateType,
     /// Enable battery.
     pub enable_battery: bool,
+    /// Enable hibernation.
+    pub enable_hibernation: bool,
     /// Suppress attestation.
     pub no_persistent_secrets: bool,
     /// Guest state lifetime
@@ -1092,7 +1094,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         match header.message_id() {
             HostNotifications::POWER_OFF => {
-                self.handle_power_off(state);
+                self.handle_power_off(message_buf, state)?;
             }
             HostNotifications::RESET => {
                 self.handle_reset(state);
@@ -1122,8 +1124,21 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_power_off(&mut self, state: &mut GuestEmulationDevice) {
-        state.power_client.power_request(PowerRequest::PowerOff);
+    fn handle_power_off(
+        &mut self,
+        message_buf: &[u8],
+        state: &mut GuestEmulationDevice,
+    ) -> Result<(), Error> {
+        let msg = get_protocol::PowerOffNotification::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        let request = match msg.hibernate.0 {
+            0 => PowerRequest::PowerOff,
+            1 => PowerRequest::Hibernate,
+            _ => return Err(Error::InvalidFieldValue),
+        };
+        state.power_client.power_request(request);
+        Ok(())
     }
 
     fn handle_reset(&mut self, state: &mut GuestEmulationDevice) {
@@ -1288,39 +1303,34 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         &mut self,
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        let vpci_boot_enabled;
-        let enable_firmware_debugging;
-        let disable_frontpage;
-        let firmware_mode_is_pcat;
-        let pcat_boot_device_order;
-        let uefi_console_mode;
-        let default_boot_always_attempt;
-        match state.config.firmware {
+        let (
+            vpci_boot_enabled,
+            enable_firmware_debugging,
+            disable_frontpage,
+            firmware_mode_is_pcat,
+            pcat_boot_device_order,
+            uefi_console_mode,
+            default_boot_always_attempt,
+        ) = match state.config.firmware {
             GuestFirmwareConfig::Uefi {
                 enable_vpci_boot,
                 firmware_debug,
                 disable_frontpage: v_disable_frontpage,
                 console_mode,
                 default_boot_always_attempt: v_default_boot_always_attempt,
-            } => {
-                vpci_boot_enabled = enable_vpci_boot;
-                enable_firmware_debugging = firmware_debug;
-                disable_frontpage = v_disable_frontpage;
-                firmware_mode_is_pcat = false;
-                pcat_boot_device_order = None;
-                uefi_console_mode = Some(console_mode);
-                default_boot_always_attempt = v_default_boot_always_attempt;
-            }
+            } => (
+                enable_vpci_boot,
+                firmware_debug,
+                v_disable_frontpage,
+                false,
+                None,
+                Some(console_mode),
+                v_default_boot_always_attempt,
+            ),
             GuestFirmwareConfig::Pcat { boot_order } => {
-                vpci_boot_enabled = false;
-                enable_firmware_debugging = false;
-                disable_frontpage = false;
-                firmware_mode_is_pcat = true;
-                pcat_boot_device_order = Some(boot_order);
-                uefi_console_mode = None;
-                default_boot_always_attempt = false;
+                (false, false, false, true, Some(boot_order), None, false)
             }
-        }
+        };
 
         let json = get_protocol::dps_json::DevicePlatformSettingsV2Json {
             v1: get_protocol::dps_json::HclDevicePlatformSettings {
@@ -1348,6 +1358,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     _ => panic!("Invalid secure boot template"),
                 },
                 enable_battery: state.config.enable_battery,
+                enable_hibernation: state.config.enable_hibernation,
                 console_mode: uefi_console_mode.unwrap_or(UefiConsoleMode::DEFAULT).0,
                 bios_guid: if state.test_gsp_by_id {
                     guid::guid!("2b701019-2816-4a85-9692-3981f1af4423")

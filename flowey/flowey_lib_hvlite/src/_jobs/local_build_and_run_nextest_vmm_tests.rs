@@ -812,6 +812,7 @@ impl SimpleFlowNode for Node {
                     prep_steps_variants,
                     external_deps,
                     incubator_profile,
+                    upload_logs_on_success: true,
                     fail_job_on_test_fail: true,
                     repetitions,
                     petri_params,
@@ -847,7 +848,6 @@ pub(crate) fn init_artifacts_dir(
     skip_vhd_prompt: bool,
 ) -> anyhow::Result<()> {
     let vmm_test_artifacts_dir = test_content_dir.join("images");
-    fs_err::create_dir_all(&vmm_test_artifacts_dir)?;
     ctx.config(crate::download_openvmm_vmm_tests_artifacts::Config {
         custom_cache_dir: Some(vmm_test_artifacts_dir.clone()),
         skip_prompt: Some(skip_vhd_prompt),

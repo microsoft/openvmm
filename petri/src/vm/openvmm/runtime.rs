@@ -472,6 +472,9 @@ impl PetriVmInner {
                             hyperv_ic_resources::shutdown::ShutdownType::PowerOff
                         }
                         ShutdownKind::Reboot => hyperv_ic_resources::shutdown::ShutdownType::Reboot,
+                        ShutdownKind::Hibernate => {
+                            hyperv_ic_resources::shutdown::ShutdownType::Hibernate
+                        }
                     },
                     force: false,
                 },

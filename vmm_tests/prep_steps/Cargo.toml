@@ -17,6 +17,7 @@ scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
 vm_resource.workspace = true
 
+fs-err.workspace = true
 guid.workspace = true
 gptman.workspace = true
 pal_async.workspace = true

@@ -694,6 +694,8 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
             }
         };
 
+        igvm_output.map.emit_tracing();
+
         // Merge the loaded guest into the overall IGVM file.
         match &mut igvm_file {
             Some(file) => file

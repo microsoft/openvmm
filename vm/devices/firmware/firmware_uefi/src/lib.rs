@@ -97,7 +97,10 @@ struct UefiDeviceServices {
 
 // Begin and end range are inclusive.
 const IO_PORT_RANGE_BEGIN: u16 = 0x28;
-const IO_PORT_RANGE_END: u16 = 0x2f;
+// The device only decodes dword accesses at REGISTER_ADDRESS and REGISTER_DATA,
+// so the top of the data dword (0x2e/0x2f) is left unclaimed for the
+// "missing-superio" device to absorb guest probes of the legacy SuperIO ports.
+const IO_PORT_RANGE_END: u16 = 0x2d;
 const MMIO_RANGE_BEGIN: u64 = 0xeffed000;
 const MMIO_RANGE_END: u64 = 0xeffedfff;
 

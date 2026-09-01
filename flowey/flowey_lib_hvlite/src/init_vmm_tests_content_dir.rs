@@ -22,33 +22,50 @@ use crate::common::CommonArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use flowey::node::prelude::*;
 
-#[derive(Serialize, Deserialize, Default)]
-pub struct VmmTestsBuiltArtifacts {
-    // artifacts used at the pipeline level
-    pub flowey_hvlite: Option<ReadVar<FloweyHvliteOutput>>,
-    pub nextest_vmm_tests_archive: Option<ReadVar<NextestVmmTestsArchive>>,
-    pub incubator: Option<ReadVar<IncubatorOutput>>,
-    pub prep_steps: Option<ReadVar<PrepStepsOutput>>,
-    pub test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
+#[macro_export]
+macro_rules! define_vmm_tests_built_artifacts {
+    (
+        $($artifact:ident => $output:ty),* $(,)?
+    ) => {
+        ::paste::paste! {
+            #[derive(Serialize, Deserialize, Default)]
+            pub struct VmmTestsBuiltArtifacts {
+                $(pub $artifact: Option<::flowey::node::prelude::ReadVar<$output>>,)*
+            }
 
-    // artifacts used internally in petri
-    pub openvmm: Option<ReadVar<OpenvmmOutput>>,
-    pub openvmm_vhost: Option<ReadVar<OpenvmmVhostOutput>>,
-    pub pipette_windows: Option<ReadVar<PipetteOutput>>,
-    pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
-    pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
-    pub openhcl_standard: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub openhcl_standard_dev: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub openhcl_cvm: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub openhcl_linux_direct: Option<ReadVar<OpenhclIgvmOutput>>,
-    pub tmks: Option<ReadVar<TmksOutput>>,
-    pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
-    pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
-    pub vmgstool: Option<ReadVar<VmgstoolOutput>>,
-    pub vmgstool_dev: Option<ReadVar<VmgstoolOutput>>,
-    pub tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
-    pub tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
+            #[derive(Serialize, Deserialize, Default)]
+            pub struct VmmTestsBuiltArtifactsWrite {
+                $(pub $artifact: Option<::flowey::node::prelude::WriteVar<$output>>,)*
+            }
+        }
+    };
 }
+
+define_vmm_tests_built_artifacts!(
+    // artifacts used at the pipeline level
+    flowey_hvlite => FloweyHvliteOutput,
+    nextest_vmm_tests_archive => NextestVmmTestsArchive,
+    incubator => IncubatorOutput,
+    prep_steps => PrepStepsOutput,
+    test_igvm_agent_rpc_server => TestIgvmAgentRpcServerOutput,
+    // artifacts used internally in petri
+    openvmm => OpenvmmOutput,
+    openvmm_vhost => OpenvmmVhostOutput,
+    pipette_windows => PipetteOutput,
+    pipette_linux_musl => PipetteOutput,
+    guest_test_uefi => GuestTestUefiOutput,
+    openhcl_standard => OpenhclIgvmOutput,
+    openhcl_standard_dev => OpenhclIgvmOutput,
+    openhcl_cvm => OpenhclIgvmOutput,
+    openhcl_linux_direct => OpenhclIgvmOutput,
+    tmks => TmksOutput,
+    tmk_vmm => TmkVmmOutput,
+    tmk_vmm_linux_musl => TmkVmmOutput,
+    vmgstool => VmgstoolOutput,
+    vmgstool_dev => VmgstoolOutput,
+    tpm_guest_tests_windows => TpmGuestTestsOutput,
+    tpm_guest_tests_linux => TpmGuestTestsOutput,
+);
 
 pub type ResolveVmmTestsBuiltArtifacts =
     Box<dyn Fn(&mut flowey::pipeline::prelude::PipelineJobCtx<'_>) -> VmmTestsBuiltArtifacts>;
@@ -68,17 +85,37 @@ macro_rules! vmm_tests_built_artifacts_builder {
             }
 
             impl $name {
-                pub fn finish(self) -> Result<::flowey_lib_hvlite::init_vmm_tests_content_dir::ResolveVmmTestsBuiltArtifacts, &'static str> {
+                pub fn finish(self) -> Result<$crate::init_vmm_tests_content_dir::ResolveVmmTestsBuiltArtifacts, &'static str> {
                     let $name {
                         $([<use_ $artifact>],)*
                     } = self;
 
                     $(let [<use_ $artifact>] = [<use_ $artifact>].ok_or(stringify!($artifact))?;)*
 
-                    Ok(Box::new(move |ctx| ::flowey_lib_hvlite::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts {
+                    Ok(Box::new(move |ctx| $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts {
                         $($artifact: Some(ctx.use_typed_artifact(&[<use_ $artifact>])),)*
                         .. Default::default()
                     }))
+                }
+
+                pub fn pair(ctx: &mut ::flowey::node::prelude::NodeCtx<'_>) -> (
+                    $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts,
+                    $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsWrite,
+                ) {
+
+                    $(let ([<$artifact _read>], [<$artifact _write>]) = ctx.new_var();)*
+
+                    let built_artifacts_read = $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts {
+                        $($artifact: Some([<$artifact _read>]),)*
+                        .. Default::default()
+                    };
+
+                    let built_artifacts_write = $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsWrite {
+                        $($artifact: Some([<$artifact _write>]),)*
+                        .. Default::default()
+                    };
+
+                    (built_artifacts_read, built_artifacts_write)
                 }
             }
         }
@@ -565,4 +602,95 @@ impl SimpleFlowNode for Node {
 
         Ok(())
     }
+}
+
+/// Utility builders which make it easy to "skim off" artifacts required by VMM
+/// test execution from other pipeline jobs.
+//
+// DEVNOTE: this is pub so internal tests can reuse the same builders
+pub mod vmm_tests_artifact_builders {
+    use super::*;
+
+    vmm_tests_built_artifacts_builder!(
+        VmmTestsArtifactsBuilderLinuxX86,
+        (
+            // windows build machine
+            pipette_windows => PipetteOutput,
+            tmk_vmm => TmkVmmOutput,
+            // linux build machine
+            nextest_vmm_tests_archive => NextestVmmTestsArchive,
+            openvmm => OpenvmmOutput,
+            openvmm_vhost => OpenvmmVhostOutput,
+            pipette_linux_musl => PipetteOutput,
+            prep_steps => PrepStepsOutput,
+            // any machine
+            guest_test_uefi => GuestTestUefiOutput,
+            tmks => TmksOutput,
+        )
+    );
+
+    vmm_tests_built_artifacts_builder!(
+        VmmTestsArtifactsBuilderWindowsX86,
+        (
+            // windows build machine
+            nextest_vmm_tests_archive => NextestVmmTestsArchive,
+            openvmm => OpenvmmOutput,
+            pipette_windows => PipetteOutput,
+            tmk_vmm => TmkVmmOutput,
+            prep_steps => PrepStepsOutput,
+            vmgstool => VmgstoolOutput,
+            vmgstool_dev => VmgstoolOutput,
+            tpm_guest_tests_windows => TpmGuestTestsOutput,
+            tpm_guest_tests_linux => TpmGuestTestsOutput,
+            test_igvm_agent_rpc_server => TestIgvmAgentRpcServerOutput,
+            // linux build machine
+            openhcl_standard => OpenhclIgvmOutput,
+            openhcl_cvm => OpenhclIgvmOutput,
+            openhcl_linux_direct => OpenhclIgvmOutput,
+            pipette_linux_musl => PipetteOutput,
+            tmk_vmm_linux_musl => TmkVmmOutput,
+            // any machine
+            guest_test_uefi => GuestTestUefiOutput,
+            tmks => TmksOutput,
+        )
+    );
+
+    vmm_tests_built_artifacts_builder!(
+        VmmTestsArtifactsBuilderWindowsAarch64,
+        (
+            // windows build machine
+            nextest_vmm_tests_archive => NextestVmmTestsArchive,
+            openvmm => OpenvmmOutput,
+            pipette_windows => PipetteOutput,
+            tmk_vmm => TmkVmmOutput,
+            vmgstool => VmgstoolOutput,
+            vmgstool_dev => VmgstoolOutput,
+            // linux build machine
+            openhcl_standard => OpenhclIgvmOutput,
+            pipette_linux_musl => PipetteOutput,
+            tmk_vmm_linux_musl => TmkVmmOutput,
+            // any machine
+            guest_test_uefi => GuestTestUefiOutput,
+            tmks => TmksOutput,
+        )
+    );
+
+    // Artifact builder for aarch64 Linux VMM tests running via QEMU TCG.
+    //
+    // The test binaries are aarch64-linux-musl (run inside QEMU), but the
+    // incubator binary is x86_64-linux-gnu (runs on the CI host).
+    vmm_tests_built_artifacts_builder!(
+        VmmTestsArtifactsBuilderLinuxAarch64Tcg,
+        (
+            // x86_64 CI host binary
+            incubator => IncubatorOutput,
+            // aarch64 guest binaries
+            nextest_vmm_tests_archive => NextestVmmTestsArchive,
+            openvmm => OpenvmmOutput,
+            pipette_linux_musl => PipetteOutput,
+            guest_test_uefi => GuestTestUefiOutput,
+            tmks => TmksOutput,
+            tmk_vmm => TmkVmmOutput,
+        )
+    );
 }

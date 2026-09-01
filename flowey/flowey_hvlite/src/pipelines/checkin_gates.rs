@@ -25,13 +25,13 @@ use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonProfile;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::init_vmm_tests_content_dir::ResolveVmmTestsBuiltArtifacts;
+use flowey_lib_hvlite::init_vmm_tests_content_dir::vmm_tests_artifact_builders;
 use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use target_lexicon::Triple;
 use vmm_test_images::KnownTestArtifacts;
 
@@ -62,10 +62,6 @@ pub struct CheckinGatesCli {
 
     #[clap(flatten)]
     local_run_args: Option<crate::pipelines_shared::cfg_common_params::LocalRunArgs>,
-
-    /// Set custom path to search for / download VMM tests disk-images
-    #[clap(long)]
-    vmm_tests_disk_cache_dir: Option<PathBuf>,
 }
 
 impl IntoPipeline for CheckinGatesCli {
@@ -73,7 +69,6 @@ impl IntoPipeline for CheckinGatesCli {
         let Self {
             config,
             local_run_args,
-            vmm_tests_disk_cache_dir,
         } = self;
 
         let release = match config {
@@ -1526,12 +1521,6 @@ impl IntoPipeline for CheckinGatesCli {
             }
             filter
         };
-        let exclude_checkin_disabled_vmm_tests = |filter: String| {
-            // CCA has a dedicated xflowey pipeline that installs and drives the
-            // Arm emulator. Do not let broad check-in gate filters select the
-            // custom CCA Petri test binary.
-            format!("({filter}) & !binary(cca)")
-        };
 
         // arbitrarily breaking up this string to please rustfmt
         let mut mi_secure_filter =
@@ -1743,7 +1732,6 @@ impl IntoPipeline for CheckinGatesCli {
                 continue;
             }
 
-            let nextest_filter_expr = exclude_checkin_disabled_vmm_tests(nextest_filter_expr);
             let test_label = format!("{label}-vmm-tests");
 
             let mut vmm_tests_run_job = pipeline
@@ -1782,6 +1770,7 @@ impl IntoPipeline for CheckinGatesCli {
                     external_deps,
                     incubator_profile: incubator_profile
                         .map(|n| IncubatorProfileNameOrPath::Name(n.into())),
+                    upload_logs_on_success: true,
                     fail_job_on_test_fail: true,
                     repetitions: std::num::NonZeroU64::new(1).unwrap(),
                     petri_params: PetriParams {
@@ -1793,15 +1782,6 @@ impl IntoPipeline for CheckinGatesCli {
                     done: ctx.new_done_handle(),
                 }
             });
-
-            if let Some(vmm_tests_disk_cache_dir) = vmm_tests_disk_cache_dir.clone() {
-                vmm_tests_run_job = vmm_tests_run_job.config(
-                    flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts::Config {
-                        custom_cache_dir: Some(vmm_tests_disk_cache_dir),
-                        ..Default::default()
-                    },
-                );
-            }
 
             let vmm_tests_run_job = vmm_tests_run_job.finish();
             if !label.contains("snp") {
@@ -1976,111 +1956,4 @@ impl IntoPipeline for CheckinGatesCli {
 
         Ok(pipeline)
     }
-}
-
-/// Utility builders which make it easy to "skim off" artifacts required by VMM
-/// test execution from other pipeline jobs.
-//
-// FUTURE: if we end up having a _lot_ of VMM test jobs, this would be the sort
-// of thing that would really benefit from a derive macro.
-//
-// DEVNOTE: this is pub so internal tests can reuse the same builders
-pub mod vmm_tests_artifact_builders {
-    use flowey_lib_hvlite::build_guest_test_uefi::GuestTestUefiOutput;
-    use flowey_lib_hvlite::build_incubator::IncubatorOutput;
-    use flowey_lib_hvlite::build_nextest_vmm_tests::NextestVmmTestsArchive;
-    use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
-    use flowey_lib_hvlite::build_openvmm::OpenvmmOutput;
-    use flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostOutput;
-    use flowey_lib_hvlite::build_pipette::PipetteOutput;
-    use flowey_lib_hvlite::build_prep_steps::PrepStepsOutput;
-    use flowey_lib_hvlite::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
-    use flowey_lib_hvlite::build_tmk_vmm::TmkVmmOutput;
-    use flowey_lib_hvlite::build_tmks::TmksOutput;
-    use flowey_lib_hvlite::build_tpm_guest_tests::TpmGuestTestsOutput;
-    use flowey_lib_hvlite::build_vmgstool::VmgstoolOutput;
-    use flowey_lib_hvlite::vmm_tests_built_artifacts_builder;
-
-    vmm_tests_built_artifacts_builder!(
-        VmmTestsArtifactsBuilderLinuxX86,
-        (
-            // windows build machine
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
-            // linux build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            openvmm_vhost => OpenvmmVhostOutput,
-            pipette_linux_musl => PipetteOutput,
-            prep_steps => PrepStepsOutput,
-            // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-        )
-    );
-
-    vmm_tests_built_artifacts_builder!(
-        VmmTestsArtifactsBuilderWindowsX86,
-        (
-            // windows build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
-            prep_steps => PrepStepsOutput,
-            vmgstool => VmgstoolOutput,
-            vmgstool_dev => VmgstoolOutput,
-            tpm_guest_tests_windows => TpmGuestTestsOutput,
-            tpm_guest_tests_linux => TpmGuestTestsOutput,
-            test_igvm_agent_rpc_server => TestIgvmAgentRpcServerOutput,
-            // linux build machine
-            openhcl_standard => OpenhclIgvmOutput,
-            openhcl_cvm => OpenhclIgvmOutput,
-            openhcl_linux_direct => OpenhclIgvmOutput,
-            pipette_linux_musl => PipetteOutput,
-            tmk_vmm_linux_musl => TmkVmmOutput,
-            // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-        )
-    );
-
-    vmm_tests_built_artifacts_builder!(
-        VmmTestsArtifactsBuilderWindowsAarch64,
-        (
-            // windows build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
-            vmgstool => VmgstoolOutput,
-            vmgstool_dev => VmgstoolOutput,
-            // linux build machine
-            openhcl_standard => OpenhclIgvmOutput,
-            pipette_linux_musl => PipetteOutput,
-            tmk_vmm_linux_musl => TmkVmmOutput,
-            // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-        )
-    );
-
-    // Artifact builder for aarch64 Linux VMM tests running via QEMU TCG.
-    //
-    // The test binaries are aarch64-linux-musl (run inside QEMU), but the
-    // incubator binary is x86_64-linux-gnu (runs on the CI host).
-    vmm_tests_built_artifacts_builder!(
-        VmmTestsArtifactsBuilderLinuxAarch64Tcg,
-        (
-            // x86_64 CI host binary
-            incubator => IncubatorOutput,
-            // aarch64 guest binaries
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            pipette_linux_musl => PipetteOutput,
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-            tmk_vmm => TmkVmmOutput,
-        )
-    );
 }

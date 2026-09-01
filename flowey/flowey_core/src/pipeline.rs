@@ -7,6 +7,7 @@ mod artifact;
 
 pub use artifact::Artifact;
 pub use artifact::ArtifactType;
+pub use artifact::resolve;
 
 use self::internal::*;
 use crate::node::FlowArch;
@@ -1024,7 +1025,7 @@ impl PipelineJobCtx<'_> {
     ) -> ReadVar<T> {
         let artifact_path = self.use_artifact(&artifact.0);
         let (read, write) = self.new_artifact_map_vars::<T>();
-        self.helper_request(artifact::resolve::Request::new(artifact_path, write));
+        self.helper_request(resolve::Request::new(artifact_path, write));
         read
     }
 

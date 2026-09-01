@@ -166,7 +166,7 @@ impl SimpleFlowNode for Node {
                 let merge_run = rt.read(merge_run);
 
                 // The contents of the artifact should match `OpenvmmHclBaselineOutput`
-                let old_path = old_openhcl.join(file_name).join("openhcl");
+                let old_path = old_openhcl.join("openhcl");
                 let new_path = new_openhcl.bin;
 
                 println!(

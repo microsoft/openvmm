@@ -95,11 +95,18 @@ impl SimpleFlowNode for Node {
             result.clone().into_side_effect()
         } else {
             let results_dir = result.clone().map(ctx, |result| result.results_dir);
+            let test_results = result.clone().map(ctx, |result| {
+                flowey_lib_common::run_cargo_nextest_run::TestResults {
+                    all_tests_passed: result.success,
+                    junit_xml: None,
+                }
+            });
             ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-                junit_xml: ReadVar::from_static(None),
+                test_results,
                 test_label: label,
                 attachments: BTreeMap::from([("results".into(), (results_dir, false))]),
                 output_dir: None,
+                upload_logs_on_success: true,
                 done: v,
             })
         };
