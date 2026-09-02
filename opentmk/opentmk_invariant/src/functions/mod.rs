@@ -3,6 +3,7 @@
 
 pub mod hvcall_meta;
 pub mod hyperv;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod io_port;
 mod registry;
 pub mod variable;

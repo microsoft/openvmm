@@ -16,10 +16,11 @@ mod executor;
 mod functions;
 mod prelude;
 mod rt;
+mod serial;
 
 use crate::executor::Executor;
 
-use opentmk_core::arch::serial::SerialPort;
+use serial::SerialPort;
 
 #[cfg(target_os = "uefi")]
 use uefi::println;

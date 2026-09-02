@@ -4,7 +4,10 @@
 #[cfg(test)]
 pub(crate) mod test;
 
-use crate::executor::ExecutorError;
+use crate::{
+    executor::ExecutorError,
+    serial::{OpenTmkSerialIo, SerialIo, SerialPort},
+};
 use inv_packet::{
     COMMS_ACK_MAGIC, COMMS_PACKET_FOOTER_MAGIC, COMMS_PACKET_HEADER_MAGIC, COMMS_SYN_ACK_MAGIC,
     COMMS_SYN_MAGIC, OpenTMKPacket,
@@ -12,46 +15,6 @@ use inv_packet::{
 
 #[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
-
-use opentmk_core::arch::serial::{InstrIoAccess, Serial, SerialPort};
-
-pub(crate) trait SerialIo {
-    fn init(&mut self);
-    fn drain(&mut self);
-    fn write_byte(&mut self, byte: u8);
-    fn read_byte(&mut self) -> u8;
-}
-
-pub(crate) struct OpenTmkSerialIo {
-    handle: Serial<InstrIoAccess>,
-}
-
-impl OpenTmkSerialIo {
-    fn new(port: SerialPort) -> Self {
-        log::info!("creating serial port");
-        Self {
-            handle: Serial::new(port, InstrIoAccess),
-        }
-    }
-}
-
-impl SerialIo for OpenTmkSerialIo {
-    fn init(&mut self) {
-        self.handle.init();
-    }
-
-    fn drain(&mut self) {
-        self.handle.drain();
-    }
-
-    fn write_byte(&mut self, byte: u8) {
-        self.handle.write_byte(byte);
-    }
-
-    fn read_byte(&mut self) -> u8 {
-        self.handle.read_byte()
-    }
-}
 
 pub(crate) struct SerialCommsServer<T> {
     pub(crate) handle: T,

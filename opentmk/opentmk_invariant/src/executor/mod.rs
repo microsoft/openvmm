@@ -3,17 +3,20 @@
 
 use crate::prelude::*;
 use crate::{
-    comms::{OpenTmkSerialIo, SerialCommsServer, SerialIo},
+    comms::SerialCommsServer,
     deserializer::{Deserializer, syzlang::SyzlangDeserializer},
-    functions::{FunctionRegistry, FuzzFunction, hyperv, io_port},
+    functions::{FunctionRegistry, hyperv},
+    serial::{OpenTmkSerialIo, SerialIo, SerialPort},
 };
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use crate::functions::io_port;
 
 use inv_packet::{
     OpenTMKAckPacket, OpenTMKConfigurationPacket, OpenTMKErrorPacket, OpenTMKFuzzTest,
     OpenTMKGrammarDeserializer, OpenTMKPacket,
 };
 
-use opentmk_core::arch::serial::SerialPort;
 use spin::Mutex;
 
 #[cfg(test)]
@@ -63,19 +66,25 @@ impl<T: SerialIo> Executor<T> {
     }
 
     pub fn register_fuzz_functions(&mut self) {
-        static REGISTRY: &[(&str, FuzzFunction)] = &[
-            ("port_write8", io_port::write_ioport_u8),
-            ("port_write16", io_port::write_ioport_u16),
-            ("port_write32", io_port::write_ioport_u32),
-            ("port_read8", io_port::read_ioport_u8),
-            ("port_read16", io_port::read_ioport_u16),
-            ("port_read32", io_port::read_ioport_u32),
-            ("hvcall", hyperv::hvcall),
-        ];
         let mut fn_registry = self.fn_registry.lock();
-        for (name, func) in REGISTRY {
-            fn_registry.register(name, *func);
-        }
+
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            static X86_REGISTRY: &[(&str, crate::functions::FuzzFunction)] = &[
+                ("port_write8", io_port::write_ioport_u8),
+                ("port_write16", io_port::write_ioport_u16),
+                ("port_write32", io_port::write_ioport_u32),
+                ("port_read8", io_port::read_ioport_u8),
+                ("port_read16", io_port::read_ioport_u16),
+                ("port_read32", io_port::read_ioport_u32),
+            ];
+
+            for (name, func) in X86_REGISTRY {
+                fn_registry.register(name, *func);
+            }
+        };
+
+        fn_registry.register("hvcall", hyperv::hvcall);
     }
 
     pub fn run(&mut self) -> Result<(), ExecutorError> {
