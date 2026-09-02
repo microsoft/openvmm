@@ -4,7 +4,7 @@
 //! This is the main entrypoint for opentmk_invariant.
 //!
 //! Opentmk Invariant is a bare-bones operating system based off of opentmk
-//! framework used to accept customly crafted program consisting of an encoded
+//! framework used to accept custom-crafted program consisting of an encoded
 //! series of functions that would invoke specific functions into this OS
 
 #![cfg_attr(target_os = "uefi", no_main)]

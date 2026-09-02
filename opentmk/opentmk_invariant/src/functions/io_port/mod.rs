@@ -89,14 +89,14 @@ pub fn read_ioport_u16(
     let port = validate_ioport(port.expect_int("Port")? as u16);
     let value = value.expect_int("Value")? as usize;
     if let Some(port) = port {
-        // Perform and write inh result
+        // Perform and write inw result
         let res = unsafe {
             // SAFETY: this is called within a fuzzer context. We assume all unsafe risks
             arch::io::inw(port)
         };
 
         if let Err(e) = mem.try_write_mem(value, &res.to_le_bytes()) {
-            log::warn!("Failed to write inh output: {e}")
+            log::warn!("Failed to write inw output: {e}")
         }
     }
     Ok(FuzzFunctionVariable::Void)
