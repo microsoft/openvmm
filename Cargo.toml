@@ -52,6 +52,7 @@ members = [
   "petri/make_imc_hive",
   "petri/petri-tool",
   "vm/devices/get/test_igvm_agent_rpc_server",
+  "vm/devices/storage/vhdxtool",
   "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
