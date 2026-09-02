@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This is a extended prelude crate that imports a number of common rust API entities that
-//! would've been imported from the `alloc` crate.
+//! This is an extended prelude crate that imports a number of common rust API entities that
+//! would otherwise be imported from the `alloc` crate.
 #[cfg(target_os = "uefi")]
 extern crate alloc;
 #[cfg(target_os = "uefi")]

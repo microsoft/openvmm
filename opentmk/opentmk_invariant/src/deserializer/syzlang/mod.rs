@@ -51,13 +51,13 @@ impl SyzlangState {
         match self
             .function_registry
             .lock()
-            .exec(mem, handler_name.clone(), input)
+            .exec(mem, &handler_name, input)
         {
             FuzzFunctionVariable::Void => (),
             FuzzFunctionVariable::Int(_) => (), // TODO
             FuzzFunctionVariable::Error(e) => {
                 let error_str = format!("Error recorded in function: {handler_name} error: {e}");
-                log::error!("{error_str:?}");
+                log::error!("{error_str}");
                 self.error_list.push(error_str);
 
                 return InputResult {

@@ -29,7 +29,7 @@ impl FunctionRegistry {
     pub fn exec(
         &self,
         mem: &mut dyn SafeMemoryMap,
-        function_name: String,
+        function_name: &str,
         input: Vec<FuzzFunctionVariable>,
     ) -> FuzzFunctionVariable {
         let mut func: Option<&RegisteredFn> = None;

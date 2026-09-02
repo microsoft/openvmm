@@ -62,9 +62,13 @@ impl SerialIo for OpenTmkSerialIo {
     }
 }
 
+// Dummy transport for non x86 serial specifically to allow compilation to
+// take place. Crashes so that we flag this issue early on.
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 impl SerialIo for OpenTmkSerialIo {
-    fn init(&mut self) {}
+    fn init(&mut self) {
+        todo!()
+    }
 
     fn drain(&mut self) {
         todo!()
