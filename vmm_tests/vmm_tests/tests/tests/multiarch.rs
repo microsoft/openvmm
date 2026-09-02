@@ -307,47 +307,44 @@ async fn smbios_dmi_uefi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow:
 
     let sh = agent.unix_shell();
 
-    // World-readable DMI attributes (mode 0444).
-    let sys_vendor = cmd!(sh, "cat /sys/class/dmi/id/sys_vendor")
-        .read()
+    let sys_vendor = sh
+        .read_file("/sys/class/dmi/id/sys_vendor")
         .await
         .context("reading sys_vendor")?;
     assert_eq!(sys_vendor.trim(), MANUFACTURER);
 
-    let product_name = cmd!(sh, "cat /sys/class/dmi/id/product_name")
-        .read()
+    let product_name = sh
+        .read_file("/sys/class/dmi/id/product_name")
         .await
         .context("reading product_name")?;
     assert_eq!(product_name.trim(), PRODUCT);
 
-    let product_version = cmd!(sh, "cat /sys/class/dmi/id/product_version")
-        .read()
+    let product_version = sh
+        .read_file("/sys/class/dmi/id/product_version")
         .await
         .context("reading product_version")?;
     assert_eq!(product_version.trim(), VERSION);
 
-    let product_sku = cmd!(sh, "cat /sys/class/dmi/id/product_sku")
-        .read()
+    let product_sku = sh
+        .read_file("/sys/class/dmi/id/product_sku")
         .await
         .context("reading product_sku")?;
     assert_eq!(product_sku.trim(), SKU);
 
-    let product_family = cmd!(sh, "cat /sys/class/dmi/id/product_family")
-        .read()
+    let product_family = sh
+        .read_file("/sys/class/dmi/id/product_family")
         .await
         .context("reading product_family")?;
     assert_eq!(product_family.trim(), FAMILY);
 
-    // `product_serial` and `product_uuid` are root-only (mode 0400) on the
-    // Ubuntu guest, so read them with sudo.
-    let product_serial = cmd!(sh, "sudo cat /sys/class/dmi/id/product_serial")
-        .read()
+    let product_serial = sh
+        .read_file("/sys/class/dmi/id/product_serial")
         .await
         .context("reading product_serial")?;
     assert_eq!(product_serial.trim(), SERIAL);
 
-    let product_uuid = cmd!(sh, "sudo cat /sys/class/dmi/id/product_uuid")
-        .read()
+    let product_uuid = sh
+        .read_file("/sys/class/dmi/id/product_uuid")
         .await
         .context("reading product_uuid")?;
     // SMBIOS (>= 2.6) stores the UUID's first three fields little-endian, and
