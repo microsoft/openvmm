@@ -4245,6 +4245,9 @@ jobs:
         EOF
         flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 14
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 15
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 13
         flowey.exe e 22 flowey_core::pipeline::artifact::resolve 3
         flowey.exe e 22 flowey_core::pipeline::artifact::resolve 11
         flowey.exe e 22 flowey_core::pipeline::artifact::resolve 4
@@ -4257,9 +4260,6 @@ jobs:
         flowey.exe e 22 flowey_core::pipeline::artifact::resolve 8
         flowey.exe e 22 flowey_core::pipeline::artifact::resolve 9
         flowey.exe e 22 flowey_core::pipeline::artifact::resolve 12
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 14
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 15
-        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 13
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 22 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -8253,6 +8253,8 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-openvmm" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-openvmm' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-openvmm_vhost"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-openvmm_vhost" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-openvmm_vhost' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-vmm-perf-runner"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-vmm-perf-runner" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-vmm-perf-runner' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-vmm-tests-archive"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-vmm-tests-archive" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-vmm-tests-archive' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-ohcldiag-dev"
@@ -8269,6 +8271,8 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgstool" | flowey v 8 'artifact_publish_from_aarch64-linux-vmgstool' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgstool-dev"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgstool-dev" | flowey v 8 'artifact_publish_from_aarch64-linux-vmgstool-dev' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmm-perf-runner"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmm-perf-runner" | flowey v 8 'artifact_publish_from_aarch64-linux-vmm-perf-runner' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmm-tests-archive"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmm-tests-archive" | flowey v 8 'artifact_publish_from_aarch64-linux-vmm-tests-archive' --is-raw-string update
       shell: bash
@@ -8423,7 +8427,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 1
         flowey e 8 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 8 flowey_core::pipeline::artifact::publish 5
-        flowey e 8 flowey_lib_hvlite::init_cross_build 7
+        flowey e 8 flowey_lib_hvlite::init_cross_build 8
       shell: bash
     - name: cargo build ohcldiag-dev
       run: |-
@@ -8443,7 +8447,7 @@ jobs:
     - name: extract Aarch64 sysroot.tar.gz
       run: |-
         flowey e 8 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-        flowey e 8 flowey_lib_hvlite::init_cross_build 9
+        flowey e 8 flowey_lib_hvlite::init_cross_build 10
       shell: bash
     - name: cargo build openvmm
       run: |-
@@ -8456,7 +8460,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 7
         flowey e 8 flowey_lib_hvlite::build_openvmm 1
         flowey e 8 flowey_core::pipeline::artifact::publish 7
-        flowey e 8 flowey_lib_hvlite::init_cross_build 10
+        flowey e 8 flowey_lib_hvlite::init_cross_build 11
       shell: bash
     - name: cargo build openvmm_vhost
       run: |-
@@ -8469,7 +8473,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 11
         flowey e 8 flowey_lib_hvlite::build_openvmm_vhost 1
         flowey e 8 flowey_core::pipeline::artifact::publish 8
-        flowey e 8 flowey_lib_hvlite::init_cross_build 11
+        flowey e 8 flowey_lib_hvlite::init_cross_build 12
       shell: bash
     - name: cargo build prep_steps
       run: |-
@@ -8523,13 +8527,39 @@ jobs:
         flowey e 8 flowey_lib_common::run_cargo_nextest_archive 0
         flowey e 8 flowey_lib_hvlite::build_nextest_vmm_tests 0
         flowey e 8 flowey_core::pipeline::artifact::publish 10
-        flowey e 8 flowey_lib_hvlite::init_cross_build 8
+        flowey e 8 flowey_lib_hvlite::init_cross_build 9
       shell: bash
     - name: build + archive 'vmm_tests' nextests
       run: |-
         flowey e 8 flowey_lib_common::run_cargo_nextest_archive 1
         flowey e 8 flowey_lib_hvlite::build_nextest_vmm_tests 1
         flowey e 8 flowey_core::pipeline::artifact::publish 11
+        flowey e 8 flowey_lib_hvlite::init_cross_build 7
+      shell: bash
+    - name: cargo build vmm_perf
+      run: |-
+        flowey e 8 flowey_lib_common::run_cargo_build 10
+        flowey e 8 flowey_lib_hvlite::run_cargo_build 19
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 9
+        flowey e 8 flowey_lib_hvlite::run_cargo_build 20
+        flowey e 8 flowey_lib_hvlite::build_vmm_perf 0
+        flowey e 8 flowey_core::pipeline::artifact::publish 12
+        flowey e 8 flowey_lib_hvlite::init_cross_build 13
+      shell: bash
+    - name: cargo build vmm_perf
+      run: |-
+        flowey e 8 flowey_lib_common::run_cargo_build 11
+        flowey e 8 flowey_lib_hvlite::run_cargo_build 21
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 8 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 8 flowey_lib_hvlite::run_cargo_build 22
+        flowey e 8 flowey_lib_hvlite::build_vmm_perf 1
+        flowey e 8 flowey_core::pipeline::artifact::publish 13
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 8 flowey_lib_common::cache 3
@@ -8554,6 +8584,12 @@ jobs:
       with:
         name: aarch64-linux-musl-openvmm_vhost
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-openvmm_vhost/
+        include-hidden-files: true
+    - name: 🌼📦 Publish aarch64-linux-musl-vmm-perf-runner
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: aarch64-linux-musl-vmm-perf-runner
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-vmm-perf-runner/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-vmm-tests-archive
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -8603,6 +8639,12 @@ jobs:
         name: aarch64-linux-vmgstool-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgstool-dev/
         include-hidden-files: true
+    - name: 🌼📦 Publish aarch64-linux-vmm-perf-runner
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: aarch64-linux-vmm-perf-runner
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmm-perf-runner/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmm-tests-archive
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
@@ -8651,6 +8693,8 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-openvmm" | flowey v 9 'artifact_publish_from_x64-linux-musl-openvmm' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-openvmm_vhost"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-openvmm_vhost" | flowey v 9 'artifact_publish_from_x64-linux-musl-openvmm_vhost' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-vmm-perf-runner"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-vmm-perf-runner" | flowey v 9 'artifact_publish_from_x64-linux-musl-vmm-perf-runner' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-vmm-tests-archive"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-vmm-tests-archive" | flowey v 9 'artifact_publish_from_x64-linux-musl-vmm-tests-archive' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-ohcldiag-dev"
@@ -8667,6 +8711,8 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgstool" | flowey v 9 'artifact_publish_from_x64-linux-vmgstool' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgstool-dev"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgstool-dev" | flowey v 9 'artifact_publish_from_x64-linux-vmgstool-dev' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-perf-runner"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-perf-runner" | flowey v 9 'artifact_publish_from_x64-linux-vmm-perf-runner' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-archive"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-archive" | flowey v 9 'artifact_publish_from_x64-linux-vmm-tests-archive' --is-raw-string update
       shell: bash
@@ -8825,7 +8871,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 1
         flowey e 9 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 9 flowey_core::pipeline::artifact::publish 5
-        flowey e 9 flowey_lib_hvlite::init_cross_build 7
+        flowey e 9 flowey_lib_hvlite::init_cross_build 8
       shell: bash
     - name: cargo build ohcldiag-dev
       run: |-
@@ -8845,7 +8891,7 @@ jobs:
     - name: extract X86_64 sysroot.tar.gz
       run: |-
         flowey e 9 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-        flowey e 9 flowey_lib_hvlite::init_cross_build 9
+        flowey e 9 flowey_lib_hvlite::init_cross_build 10
       shell: bash
     - name: cargo build openvmm
       run: |-
@@ -8858,7 +8904,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 7
         flowey e 9 flowey_lib_hvlite::build_openvmm 1
         flowey e 9 flowey_core::pipeline::artifact::publish 7
-        flowey e 9 flowey_lib_hvlite::init_cross_build 10
+        flowey e 9 flowey_lib_hvlite::init_cross_build 11
       shell: bash
     - name: cargo build openvmm_vhost
       run: |-
@@ -8871,7 +8917,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 11
         flowey e 9 flowey_lib_hvlite::build_openvmm_vhost 1
         flowey e 9 flowey_core::pipeline::artifact::publish 8
-        flowey e 9 flowey_lib_hvlite::init_cross_build 11
+        flowey e 9 flowey_lib_hvlite::init_cross_build 12
       shell: bash
     - name: cargo build prep_steps
       run: |-
@@ -8925,13 +8971,39 @@ jobs:
         flowey e 9 flowey_lib_common::run_cargo_nextest_archive 0
         flowey e 9 flowey_lib_hvlite::build_nextest_vmm_tests 0
         flowey e 9 flowey_core::pipeline::artifact::publish 10
-        flowey e 9 flowey_lib_hvlite::init_cross_build 8
+        flowey e 9 flowey_lib_hvlite::init_cross_build 9
       shell: bash
     - name: build + archive 'vmm_tests' nextests
       run: |-
         flowey e 9 flowey_lib_common::run_cargo_nextest_archive 1
         flowey e 9 flowey_lib_hvlite::build_nextest_vmm_tests 1
         flowey e 9 flowey_core::pipeline::artifact::publish 11
+        flowey e 9 flowey_lib_hvlite::init_cross_build 7
+      shell: bash
+    - name: cargo build vmm_perf
+      run: |-
+        flowey e 9 flowey_lib_common::run_cargo_build 10
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 19
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 9
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 20
+        flowey e 9 flowey_lib_hvlite::build_vmm_perf 0
+        flowey e 9 flowey_core::pipeline::artifact::publish 12
+        flowey e 9 flowey_lib_hvlite::init_cross_build 13
+      shell: bash
+    - name: cargo build vmm_perf
+      run: |-
+        flowey e 9 flowey_lib_common::run_cargo_build 11
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 21
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 10
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 22
+        flowey e 9 flowey_lib_hvlite::build_vmm_perf 1
+        flowey e 9 flowey_core::pipeline::artifact::publish 13
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 9 flowey_lib_common::cache 3
@@ -8956,6 +9028,12 @@ jobs:
       with:
         name: x64-linux-musl-openvmm_vhost
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-openvmm_vhost/
+        include-hidden-files: true
+    - name: 🌼📦 Publish x64-linux-musl-vmm-perf-runner
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-linux-musl-vmm-perf-runner
+        path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-vmm-perf-runner/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-vmm-tests-archive
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -9004,6 +9082,12 @@ jobs:
       with:
         name: x64-linux-vmgstool-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgstool-dev/
+        include-hidden-files: true
+    - name: 🌼📦 Publish x64-linux-vmm-perf-runner
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-linux-vmm-perf-runner
+        path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-perf-runner/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmm-tests-archive
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

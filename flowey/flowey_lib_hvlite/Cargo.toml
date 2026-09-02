@@ -21,6 +21,7 @@ log.workspace = true
 paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
+sha2.workspace = true
 target-lexicon = { workspace = true, features = ["serde_support"] }
 toml_edit.workspace = true
 which.workspace = true
