@@ -52,7 +52,7 @@ pub type Executor<'f> =
     dyn Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + 'f + Send + Sync;
 
 /// An enumeration of possible decoder errors
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum DecoderError {
     /// A bad magic value for the program header
     BadMagic(u64),
@@ -1060,7 +1060,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "copyin: bad argument size 3")]
     fn test_copyin_with_invalid_size() {
         let mut mem: [u8; 8] = [0; 8];
         let addr = mem.as_ptr() as u64;
@@ -1070,11 +1069,13 @@ mod tests {
         let bf_off: u64 = 0;
         let bf_len: u64 = 0;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
+        assert_eq!(
+            copyin(&mut mem, addr, val, size, bf, bf_off, bf_len),
+            Err(DecoderError::CopyInBadSize { bf: 0, size: 3 }),
+        );
     }
 
     #[test]
-    #[should_panic(expected = "copyin: unknown binary format 5")]
     fn test_copyin_with_unknown_binary_format() {
         let mut mem: [u8; 8] = [0; 8];
         let addr = mem.as_ptr() as u64;
@@ -1084,7 +1085,10 @@ mod tests {
         let bf_off: u64 = 0;
         let bf_len: u64 = 0;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
+        assert_eq!(
+            copyin(&mut mem, addr, val, size, bf, bf_off, bf_len),
+            Err(DecoderError::CopyInBadFormat(5)),
+        );
     }
 
     #[test]
