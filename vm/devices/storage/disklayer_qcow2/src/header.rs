@@ -66,7 +66,7 @@ pub struct QcowV3Header {
 }
 
 fn read_be_u8(input: &mut &[u8]) -> anyhow::Result<u8> {
-    anyhow::ensure!(input.len() >= 1, "Input too short to read u8");
+    anyhow::ensure!(!input.is_empty(), "Input too short to read u8");
 
     let (int_bytes, rest) = input.split_at(size_of::<u8>());
     *input = rest;
@@ -80,11 +80,12 @@ fn read_be_u32(input: &mut &[u8]) -> anyhow::Result<u32> {
     let (int_bytes, rest) = input.split_at(size_of::<u32>());
     *input = rest;
 
-    Ok(u32::from_be_bytes(
-        int_bytes
-            .try_into()
-            .context("failed to convert bytes to u32")?,
-    ))
+    Ok(u32::from_be_bytes([
+        int_bytes[0],
+        int_bytes[1],
+        int_bytes[2],
+        int_bytes[3],
+    ]))
 }
 
 fn read_be_u64(input: &mut &[u8]) -> anyhow::Result<u64> {
@@ -92,11 +93,16 @@ fn read_be_u64(input: &mut &[u8]) -> anyhow::Result<u64> {
     let (int_bytes, rest) = input.split_at(size_of::<u64>());
     *input = rest;
 
-    Ok(u64::from_be_bytes(
-        int_bytes
-            .try_into()
-            .context("failed to convert bytes to u64")?,
-    ))
+    Ok(u64::from_be_bytes([
+        int_bytes[0],
+        int_bytes[1],
+        int_bytes[2],
+        int_bytes[3],
+        int_bytes[4],
+        int_bytes[5],
+        int_bytes[6],
+        int_bytes[7],
+    ]))
 }
 
 impl Qcow2Header {
@@ -127,7 +133,7 @@ impl Qcow2Header {
             refcount_table_offset: Self::read_u64_cluster_aligned(header, cluster_bits)?,
             refcount_table_clusters: read_be_u32(header)?,
             nb_snapshots: read_be_u32(header)?,
-            snapshots_offset: read_be_u64(header)?,
+            snapshots_offset: Self::read_u64_cluster_aligned(header, cluster_bits)?,
             incompatible_features: None,
             extended_version3_header: None,
         };
@@ -226,8 +232,8 @@ impl Qcow2Header {
     fn read_cluster_bits(header: &mut &[u8]) -> anyhow::Result<u32> {
         let cluster_bits = read_be_u32(header)?;
         anyhow::ensure!(
-            (9..=16).contains(&cluster_bits),
-            "Cluster bits must be between 9 and 16 for qcow2"
+            (9..=21).contains(&cluster_bits),
+            "Cluster bits must be between 9 and 21 for qcow2"
         );
         Ok(cluster_bits)
     }

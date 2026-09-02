@@ -93,8 +93,10 @@ impl RefcountTable {
     /// image's refcount table. Each entry is an 8-byte big-endian offset.
     pub fn set_table_bytes(&mut self, bytes: &[u8]) {
         self.entries = bytes
-            .chunks_exact(8)
-            .map(|c| u64::from_be_bytes(c.try_into().expect("8 bytes")))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_be_bytes(*c))
             .collect();
     }
 
@@ -176,16 +178,27 @@ impl RefcountTable {
                 self.blocks.get_mut(&(table_index as u64)).unwrap()
             }
         };
-        counts[in_block] = counts[in_block].saturating_add(1);
+        counts[in_block] = counts[in_block]
+            .checked_add(1)
+            .ok_or_else(|| DiskError::Io(std::io::Error::other("refcount overflow")))?;
 
         let mut bytes = Vec::with_capacity(counts.len() * 2);
         for count in counts.iter() {
             bytes.extend_from_slice(&count.to_be_bytes());
         }
         let f = file.clone();
-        unblock(move || f.write_at(&bytes, block_offset))
-            .await
-            .map_err(DiskError::Io)?;
+        unblock(move || -> std::io::Result<()> {
+            let n = f.write_at(&bytes, block_offset)?;
+            if n != bytes.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "short write",
+                ));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(DiskError::Io)?;
 
         if self.blocks.len() > MAX_CACHED_BLOCKS {
             self.blocks.clear();
@@ -215,8 +228,10 @@ impl RefcountTable {
         .await
         .map_err(DiskError::Io)?;
         Ok(buf
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_be_bytes(*c))
             .collect())
     }
 }

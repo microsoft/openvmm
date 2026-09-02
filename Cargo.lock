@@ -1770,7 +1770,6 @@ dependencies = [
  "inspect",
  "pal_async",
  "scsi_buffers",
- "storage_tests",
  "tempfile",
  "vm_resource",
 ]

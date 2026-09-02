@@ -95,7 +95,10 @@ impl Qcow2Layer {
         let sector_count = header.size_bytes / SECTOR_SIZE as u64;
 
         let mut l1_bytes = vec![0u8; header.l1_size as usize * 8];
-        file.read_at(&mut l1_bytes, header.l1_table_offset)?;
+        let n = file.read_at(&mut l1_bytes, header.l1_table_offset)?;
+        if n != l1_bytes.len() {
+            anyhow::bail!("short read while reading the qcow2 L1 table");
+        }
         let mut l1_slice = l1_bytes.as_slice();
         let l1_table = read_l1_table(&mut l1_slice, header.l1_size)?;
 
@@ -104,7 +107,10 @@ impl Qcow2Layer {
             let table_bytes_len =
                 header.refcount_table_clusters as usize * header.cluster_size() as usize;
             let mut table_bytes = vec![0u8; table_bytes_len];
-            file.read_at(&mut table_bytes, header.refcount_table_offset)?;
+            let n = file.read_at(&mut table_bytes, header.refcount_table_offset)?;
+            if n != table_bytes.len() {
+                anyhow::bail!("short read while reading the qcow2 refcount table");
+            }
             refcounts.set_table_bytes(&table_bytes);
         }
 
@@ -251,7 +257,13 @@ impl LayerIo for Qcow2Layer {
             let mut data = vec![0u8; bytes_in_cluster];
             let f = file.clone();
             let data = unblock(move || -> Result<Vec<u8>, std::io::Error> {
-                f.read_at(&mut data, file_offset)?;
+                let n = f.read_at(&mut data, file_offset)?;
+                if n != data.len() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "short read",
+                    ));
+                }
                 Ok(data)
             })
             .await
@@ -331,7 +343,13 @@ impl LayerIo for Qcow2Layer {
             let mut l2_bytes = vec![0u8; l2_entries * 8];
             let f = file.clone();
             let l2_bytes = unblock(move || -> Result<Vec<u8>, std::io::Error> {
-                f.read_at(&mut l2_bytes, l2_offset)?;
+                let n = f.read_at(&mut l2_bytes, l2_offset)?;
+                if n != l2_bytes.len() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "short read",
+                    ));
+                }
                 Ok(l2_bytes)
             })
             .await
@@ -364,7 +382,13 @@ impl LayerIo for Qcow2Layer {
                 let mut full = vec![0u8; cluster_size];
                 let f = file.clone();
                 let full = unblock(move || -> Result<Vec<u8>, std::io::Error> {
-                    f.read_at(&mut full, data_cluster_offset)?;
+                    let n = f.read_at(&mut full, data_cluster_offset)?;
+                    if n != full.len() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "short read",
+                        ));
+                    }
                     Ok(full)
                 })
                 .await
@@ -375,9 +399,18 @@ impl LayerIo for Qcow2Layer {
                     .reader()
                     .read(&mut full[addr.in_cluster_offset as usize..][..bytes_in_cluster])?;
                 let f = file.clone();
-                unblock(move || f.write_at(&full, data_cluster_offset))
-                    .await
-                    .map_err(DiskError::Io)?;
+                unblock(move || -> std::io::Result<()> {
+                    let n = f.write_at(&full, data_cluster_offset)?;
+                    if n != full.len() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "short write",
+                        ));
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(DiskError::Io)?;
             } else {
                 let mut data = vec![0u8; bytes_in_cluster];
                 buffers
@@ -385,9 +418,18 @@ impl LayerIo for Qcow2Layer {
                     .reader()
                     .read(&mut data)?;
                 let f = file.clone();
-                unblock(move || f.write_at(&data, data_cluster_offset))
-                    .await
-                    .map_err(DiskError::Io)?;
+                unblock(move || -> std::io::Result<()> {
+                    let n = f.write_at(&data, data_cluster_offset)?;
+                    if n != data.len() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "short write",
+                        ));
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(DiskError::Io)?;
             }
 
             l2_table[addr.l2_index as usize].cluster_offset = data_cluster_offset;

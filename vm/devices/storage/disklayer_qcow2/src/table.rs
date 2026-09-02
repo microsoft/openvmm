@@ -24,7 +24,7 @@ const OFFSET_MASK: u64 = ((1u64 << 47) - 1) << 9;
 
 const OFLAG_COPIED: u64 = 1 << 63;
 
-/// An entry in the active L1 table, Each entry describes one L2 table
+/// An entry in the active L1 table. Each entry describes one L2 table.
 /// If `l2_offset` is 0, the L2 table and all clusters it describes are
 /// unallocated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
@@ -36,7 +36,7 @@ pub struct L1Entry {
     pub copied: bool,
 }
 
-/// An entry in an L2 table and Each entry describes one data cluster.
+/// An entry in an L2 table. Each entry describes one data cluster.
 /// If `cluster_offset` is 0, the cluster is unallocated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct L2Entry {
@@ -91,7 +91,7 @@ impl L2Entry {
         // For standard clusters, bits 0-8 cover the "reads as zeros" flag
         // (bit 0) and reserved bits (bits 1-8). For compressed clusters,
         // bits 0-8 encode the sector offset within the host cluster. In both
-        // cases these bits are valid and not part of the reservered region.
+        // cases these bits are valid and not part of the reserved region.
         let reserved_mask = !(OFFSET_MASK | ((1 << 9) - 1) | (1 << 62) | (1 << 63));
         let reserved = raw & reserved_mask;
         anyhow::ensure!(
@@ -122,11 +122,16 @@ fn read_be_u64(input: &mut &[u8]) -> anyhow::Result<u64> {
     let (int_bytes, rest) = input.split_at(size_of::<u64>());
     *input = rest;
 
-    Ok(u64::from_be_bytes(
-        int_bytes
-            .try_into()
-            .context("failed to convert bytes to u64")?,
-    ))
+    Ok(u64::from_be_bytes([
+        int_bytes[0],
+        int_bytes[1],
+        int_bytes[2],
+        int_bytes[3],
+        int_bytes[4],
+        int_bytes[5],
+        int_bytes[6],
+        int_bytes[7],
+    ]))
 }
 
 /// Read the full L1 table from the image header bytes.
@@ -195,12 +200,13 @@ pub fn write_l2_table(
         let raw = if entry.cluster_offset == 0 {
             0
         } else {
-            let mut raw = (entry.cluster_offset & OFFSET_MASK) | OFLAG_COPIED;
+            let mut r = (entry.cluster_offset & OFFSET_MASK) | OFLAG_COPIED;
             if entry.reads_as_zeros {
-                raw |= 1;
+                r |= 1;
             }
-            raw
+            r
         };
+        bytes.extend_from_slice(&raw.to_be_bytes());
     }
     let n = file.write_at(&bytes, l2_offset)?;
     if n != bytes.len() {

@@ -5,7 +5,9 @@
 
 use crate::Qcow2Layer;
 use crate::header::Qcow2Header;
+use anyhow::Context;
 use async_trait::async_trait;
+use blocking::unblock;
 use disk_backend_resources::layer::Qcow2DiskLayerHandle;
 use disk_layered::resolve::ResolveDiskLayerParameters;
 use disk_layered::resolve::ResolvedDiskLayer;
@@ -23,10 +25,6 @@ declare_static_async_resolver!(
     (DiskLayerHandleKind, Qcow2DiskLayerHandle)
 );
 
-/// Read the virtual disk size (in bytes) from the qcow2 header.
-///
-/// The header's `size` field is a big-endian u64 at offset 24.
-
 #[async_trait]
 impl AsyncResolveResource<DiskLayerHandleKind, Qcow2DiskLayerHandle> for Qcow2DiskLayerResolver {
     type Output = ResolvedDiskLayer;
@@ -35,17 +33,20 @@ impl AsyncResolveResource<DiskLayerHandleKind, Qcow2DiskLayerHandle> for Qcow2Di
     async fn resolve(
         &self,
         _resolver: &ResourceResolver,
-        Qcow2DiskLayerHandle { file, .. }: Qcow2DiskLayerHandle,
+        Qcow2DiskLayerHandle { file, read_only }: Qcow2DiskLayerHandle,
         input: ResolveDiskLayerParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let mut file = file;
-        file.seek(std::io::SeekFrom::Start(0))?;
-        let header = Qcow2Header::from_file(&mut file)?;
-        file.seek(std::io::SeekFrom::Start(0))?;
-        Ok(ResolvedDiskLayer::new(Qcow2Layer::new(
-            file,
-            header,
-            input.read_only,
-        )?))
+        let read_only = read_only || input.read_only;
+        let layer = unblock(move || {
+            let mut file = file;
+            file.seek(std::io::SeekFrom::Start(0))
+                .context("failed to seek to the start of the qcow2 file")?;
+            let header = Qcow2Header::from_file(&mut file)?;
+            file.seek(std::io::SeekFrom::Start(0))
+                .context("failed to seek to the start of the qcow2 file")?;
+            Qcow2Layer::new(file, header, read_only)
+        })
+        .await?;
+        Ok(ResolvedDiskLayer::new(layer))
     }
 }

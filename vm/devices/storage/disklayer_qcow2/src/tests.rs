@@ -31,7 +31,7 @@ fn build_fixture() -> Vec<u8> {
     let mut img = vec![0u8; 6 * CLUSTER_SIZE];
     let data_cluster: u64 = 3 * CLUSTER_SIZE as u64;
     let l2_table: u64 = 2 * CLUSTER_SIZE as u64;
-    let l1_table: u64 = 1 * CLUSTER_SIZE as u64;
+    let l1_table: u64 = CLUSTER_SIZE as u64;
     let refcount_table: u64 = 4 * CLUSTER_SIZE as u64;
     let refcount_block: u64 = 5 * CLUSTER_SIZE as u64;
 
