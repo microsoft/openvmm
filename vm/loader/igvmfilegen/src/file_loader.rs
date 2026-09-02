@@ -93,7 +93,6 @@ pub struct SnpLinuxDirectConfig {
     pub ram_page_count: u64,
     pub vmsa_page: Option<u64>,
     pub injection_type: InjectionType,
-    pub import_all_ram: bool,
 }
 
 pub struct IgvmLoader<R: VbsRegister + GuestArch> {
@@ -306,9 +305,19 @@ pub struct MapFile {
     required_memory: Vec<RequiredMemory>,
     accepted_ranges: Vec<(MemoryRange, RangeInfo)>,
     relocatable_regions: Vec<(MemoryRange, RelocationType)>,
+    reported_ranges: Vec<(MemoryRange, String)>,
 }
 
 impl MapFile {
+    /// Adds a map-only annotation for a range that is not represented by an
+    /// IGVM directive.
+    ///
+    /// Reported ranges appear under `IGVM file reported ranges` in tracing and
+    /// the written map file. They do not change the generated IGVM file.
+    pub fn report_range(&mut self, range: MemoryRange, tag: impl Into<String>) {
+        self.reported_ranges.push((range, tag.into()));
+    }
+
     /// Emit this map file information to tracing::info.
     pub fn emit_tracing(&self) {
         tracing::info!(isolation = ?self.isolation, "IGVM file isolation");
@@ -363,6 +372,19 @@ impl MapFile {
                         );
                     }
                 }
+            }
+        }
+
+        if !self.reported_ranges.is_empty() {
+            tracing::info!("IGVM file reported ranges:");
+            for (range, tag) in &self.reported_ranges {
+                tracing::info!(
+                    size_bytes = range.len(),
+                    "{:#x} - {:#x} {}",
+                    range.start(),
+                    range.end(),
+                    tag,
+                );
             }
         }
     }
@@ -425,6 +447,20 @@ impl Display for MapFile {
                         )?;
                     }
                 }
+            }
+        }
+
+        if !self.reported_ranges.is_empty() {
+            writeln!(f, "IGVM file reported ranges:")?;
+            for (range, tag) in &self.reported_ranges {
+                writeln!(
+                    f,
+                    "  {:016x} - {:016x} ({:#x} bytes) {}",
+                    range.start(),
+                    range.end(),
+                    range.len(),
+                    tag
+                )?;
             }
         }
 
@@ -591,46 +627,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 page_data_pages.insert(page),
                 "duplicate page-data GPA {gpa:#x}"
             );
-        }
-
-        if config.import_all_ram {
-            let mut missing_start = None;
-            for page in 0..config.ram_page_count {
-                let occupied = page_data_pages.contains(&page)
-                    || self
-                        .accepted_ranges
-                        .iter()
-                        .any(|(range, _)| range.contains(&page));
-                if occupied {
-                    if let Some(start) = missing_start.take() {
-                        self.accept_new_range(
-                            start,
-                            page - start,
-                            "accepted-zero-ram",
-                            BootPageAcceptance::Exclusive,
-                        )?;
-                    }
-                    continue;
-                }
-
-                missing_start.get_or_insert(page);
-                self.page_data_directives
-                    .push(IgvmDirectiveHeader::PageData {
-                        gpa: page * PAGE_SIZE_4K,
-                        compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
-                        flags: IgvmPageDataFlags::new(),
-                        data_type: IgvmPageDataType::NORMAL,
-                        data: Vec::new(),
-                    });
-            }
-            if let Some(start) = missing_start {
-                self.accept_new_range(
-                    start,
-                    config.ram_page_count - start,
-                    "accepted-zero-ram",
-                    BootPageAcceptance::Exclusive,
-                )?;
-            }
         }
 
         self.page_data_directives
@@ -889,9 +885,8 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                     )
                 })
                 .collect(),
+            reported_ranges: Vec::new(),
         };
-
-        map_file.emit_tracing();
 
         // Create an IGVM file with the loader's internal state.
         let igvm_file = IgvmFile::new(
@@ -960,6 +955,59 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
     /// The guest architecture used by this loader.
     pub fn arch(&self) -> GuestArchKind {
         R::arch()
+    }
+
+    /// Returns the first GPA after all imported page-data directives.
+    pub fn next_available_gpa(&self) -> anyhow::Result<u64> {
+        self.page_data_directives
+            .iter()
+            .filter_map(|directive| match directive {
+                IgvmDirectiveHeader::PageData { gpa, .. } => Some(*gpa),
+                _ => None,
+            })
+            .max()
+            .map_or(Ok(0), |gpa| {
+                gpa.checked_add(PAGE_SIZE_4K)
+                    .context("next imported address overflow")
+            })
+    }
+
+    /// Returns unimported RAM page ranges for an SNP Linux-direct image.
+    pub fn unimported_ram_ranges(
+        &self,
+        additional_imported_pages: impl IntoIterator<Item = u64>,
+    ) -> anyhow::Result<Vec<std::ops::Range<u64>>> {
+        let config = self
+            .snp_linux_direct
+            .context("unimported RAM ranges require an SNP Linux-direct loader")?;
+        let mut imported_pages = BTreeSet::new();
+        for (range, _) in self.accepted_ranges.iter() {
+            for page in range.clone() {
+                if page < config.ram_page_count {
+                    imported_pages.insert(page);
+                }
+            }
+        }
+        imported_pages.extend(additional_imported_pages);
+        anyhow::ensure!(
+            imported_pages
+                .last()
+                .is_none_or(|page| *page < config.ram_page_count),
+            "an imported page lies outside RAM"
+        );
+
+        let mut ranges = Vec::new();
+        let mut cursor = 0;
+        for page in imported_pages {
+            if cursor < page {
+                ranges.push(cursor..page);
+            }
+            cursor = page + 1;
+        }
+        if cursor < config.ram_page_count {
+            ranges.push(cursor..config.ram_page_count);
+        }
+        Ok(ranges)
     }
 
     pub fn loader(&mut self) -> IgvmVtlLoader<'_, R> {
@@ -1483,6 +1531,27 @@ mod tests {
     use loader::importer::BootPageAcceptance;
     use loader::importer::ImageLoad;
     use loader_defs::paravisor::ImportedRegionDescriptor;
+
+    #[test]
+    fn reported_ranges_appear_in_map_output() {
+        let mut map = MapFile {
+            isolation: LoaderIsolationType::None,
+            required_memory: Vec::new(),
+            accepted_ranges: Vec::new(),
+            relocatable_regions: Vec::new(),
+            reported_ranges: Vec::new(),
+        };
+        map.report_range(
+            MemoryRange::new(0x1000..0x3000),
+            "snp-bootshim-accepted-ram [PVALIDATE]",
+        );
+
+        assert!(map.to_string().contains(concat!(
+            "IGVM file reported ranges:\n",
+            "  0000000000001000 - 0000000000003000 (0x2000 bytes) ",
+            "snp-bootshim-accepted-ram [PVALIDATE]\n",
+        )));
+    }
 
     #[test]
     fn test_snp_measurement() {

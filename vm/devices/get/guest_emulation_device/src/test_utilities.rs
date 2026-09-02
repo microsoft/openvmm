@@ -257,6 +257,7 @@ pub fn create_host_channel(
         secure_boot_enabled: false,
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,
         enable_battery: false,
+        enable_hibernation: false,
         no_persistent_secrets: true,
         guest_state_lifetime: Default::default(),
         guest_state_encryption_policy: Default::default(),

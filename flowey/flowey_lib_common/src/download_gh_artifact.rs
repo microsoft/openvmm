@@ -60,11 +60,13 @@ impl SimpleFlowNode for Node {
 
                 flowey::shell_cmd!(rt, "{gh_cli} run download {run_id} -R {repo_owner}/{repo_name} --pattern {file_name}").run()?;
 
-                if !out_dir.join(file_name).exists() {
+                let artifact_path = out_dir.join(file_name);
+
+                if !artifact_path.exists() {
                     anyhow::bail!("Failed to download artifact");
                 }
 
-                rt.write(path, &out_dir);
+                rt.write(path, &artifact_path);
                 Ok(())
             }
         });

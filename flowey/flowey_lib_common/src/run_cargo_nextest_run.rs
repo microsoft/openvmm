@@ -358,7 +358,7 @@ impl FlowNodeWithConfig for Node {
                             .join(junit_path);
                         let final_xml = std::env::current_dir()?.join("junit.xml");
                         // copy locally to avoid trashing the output between test runs
-                        fs_err::rename(emitted_xml, &final_xml)?;
+                        fs_err::copy(emitted_xml, &final_xml)?;
                         Some(final_xml.absolute()?)
                     } else {
                         None
