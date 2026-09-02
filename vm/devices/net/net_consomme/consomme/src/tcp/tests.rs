@@ -3193,11 +3193,11 @@ async fn test_tcp_close_before_syn_ack_retransmits_syn_then_fin(driver: DefaultD
 
     {
         let access = h.consomme.access(&mut h.client);
-        let conn = access.inner.tcp.connections.values_mut().next().unwrap();
+        let (flow, conn) = access.inner.tcp.connections.iter_mut().next().unwrap();
         conn.inner.state = TcpState::SynReceived;
         conn.inner.tx_acked = conn.inner.tx_acked - 1;
         conn.inner.tx_syn = TxSynState::SynAck;
-        conn.inner.close(Duration::from_secs(60));
+        conn.inner.close(Duration::from_secs(60), flow);
         conn.inner.retransmission.timer = RetransmissionTimer::Rto {
             deadline: Instant::now() - Duration::from_millis(1),
             recover: None,
