@@ -88,22 +88,30 @@ impl L2Entry {
     /// Decode an L2 table entry from its raw big-endian value.
     pub fn decode(raw: u64) -> anyhow::Result<Self> {
         let compressed = raw & (1 << 62) != 0;
-        // For standard clusters, bits 0-8 cover the "reads as zeros" flag
-        // (bit 0) and reserved bits (bits 1-8). For compressed clusters,
-        // bits 0-8 encode the sector offset within the host cluster. In both
-        // cases these bits are valid and not part of the reserved region.
+
+        // For standard clusters, bits 1..=8 are reserved and must be zero.
+        // For compressed clusters, bits 0..=8 encode the sector offset within the host cluster.
+        if !compressed {
+            let reserved_low = raw & 0x1fe;
+            anyhow::ensure!(
+                reserved_low == 0,
+                "L2 table entry has non-zero reserved bits in bits 1..=8: {reserved_low:#x}"
+            );
+        }
+
         let reserved_mask = !(OFFSET_MASK | ((1 << 9) - 1) | (1 << 62) | (1 << 63));
         let reserved = raw & reserved_mask;
         anyhow::ensure!(
             reserved == 0,
             "L2 table entry has non-zero reserved bits: {reserved:#x}"
         );
+
         Ok(Self {
             cluster_offset: raw & OFFSET_MASK,
             compressed,
             reads_as_zeros: !compressed && raw & 1 != 0,
             copied: raw & (1 << 63) != 0,
-            sector_offset_in_cluster: raw & ((1 << 9) - 1),
+            sector_offset_in_cluster: if compressed { raw & ((1 << 9) - 1) } else { 0 },
         })
     }
 
