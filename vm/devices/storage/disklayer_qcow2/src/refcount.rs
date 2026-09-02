@@ -182,14 +182,12 @@ impl RefcountTable {
             .checked_add(1)
             .ok_or_else(|| DiskError::Io(std::io::Error::other("refcount overflow")))?;
 
-        let mut bytes = Vec::with_capacity(counts.len() * 2);
-        for count in counts.iter() {
-            bytes.extend_from_slice(&count.to_be_bytes());
-        }
+        let entry_offset = block_offset + (in_block as u64 * 2);
+        let new_bytes = counts[in_block].to_be_bytes();
         let f = file.clone();
         unblock(move || -> std::io::Result<()> {
-            let n = f.write_at(&bytes, block_offset)?;
-            if n != bytes.len() {
+            let n = f.write_at(&new_bytes, entry_offset)?;
+            if n != new_bytes.len() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WriteZero,
                     "short write",

@@ -443,7 +443,7 @@ impl LayerIo for Qcow2Layer {
                 return Err(DiskError::InvalidInput);
             }
 
-            let needs_allocation = l2_entry.cluster_offset == 0 || l2_entry.reads_as_zeros;
+            let needs_allocation = l2_entry.cluster_offset == 0;
             let data_cluster_offset = if needs_allocation {
                 let cluster_size = cluster_size as u64;
                 let new_cluster = allocate_cluster(file.clone(), cluster_size).await?;
