@@ -3,7 +3,6 @@
 
 //! Virtio packed queue implementation.
 
-use crate::queue::QueueDescriptor;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::descriptor_offset;
@@ -23,11 +22,9 @@ pub struct PackedQueueCompletionContext {
 }
 
 impl PackedQueueCompletionContext {
-    pub(super) fn new(last_descriptor: &QueueDescriptor, descriptor_count: u16) -> Self {
+    pub(super) fn new(buffer_id: u16, descriptor_count: u16) -> Self {
         Self {
-            buffer_id: last_descriptor
-                .buffer_id
-                .expect("packed descriptors have buffer id"),
+            buffer_id,
             descriptor_count,
         }
     }

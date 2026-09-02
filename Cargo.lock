@@ -9838,6 +9838,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "pci_resources",
+ "smallvec",
  "task_control",
  "test_with_tracing",
  "thiserror 2.0.16",
