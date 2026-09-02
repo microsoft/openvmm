@@ -5,6 +5,7 @@ use crate::common::CommonArch;
 use crate::common::CommonTriple;
 use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsWrite;
 use flowey::node::prelude::*;
+use flowey_lib_common::gh_workflow_id;
 
 flowey_request! {
     pub struct Request {
@@ -20,7 +21,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::download_gh_artifact::Node>();
-        ctx.import::<flowey_lib_common::gh_latest_completed_workflow_id::Node>();
+        ctx.import::<gh_workflow_id::Node>();
         ctx.import::<resolve_artifact::Node>();
     }
 
@@ -54,14 +55,18 @@ impl SimpleFlowNode for Node {
         } = request;
 
         // TODO: make this configurable with pipeline parameters
-        let run_id = ctx.reqv(
-            |v| flowey_lib_common::gh_latest_completed_workflow_id::Request {
-                repo: "microsoft/openvmm".into(),
-                branch: ReadVar::from_static("main".into()),
-                pipeline_name: "openvmm-ci.yaml".into(),
-                gh_workflow_id: v,
-            },
-        );
+        let run = ctx.reqv(|v| gh_workflow_id::Request {
+            repo_owner: "microsoft".into(),
+            repo_name: "openvmm".into(),
+            commit_or_branch: gh_workflow_id::GitCommitOrBranch::Branch(ReadVar::from_static(
+                "main".into(),
+            )),
+            pipeline_name: "openvmm-ci.yaml".into(),
+            require_run_status: Some(gh_workflow_id::GhRunStatus::Success),
+            require_successful_job_with_name: None,
+            gh_workflow: v,
+        });
+        let run_id = run.map(ctx, |r| r.id);
 
         let arch_tag = match target.common_arch()? {
             CommonArch::X86_64 => "x64",
