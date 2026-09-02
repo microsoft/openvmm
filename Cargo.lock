@@ -2371,6 +2371,7 @@ dependencies = [
  "powershell_builder",
  "serde",
  "serde_json",
+ "sha2",
  "target-lexicon",
  "tempfile",
  "toml_edit",
@@ -10697,6 +10698,24 @@ dependencies = [
  "inspect",
  "mesh",
  "virt",
+]
+
+[[package]]
+name = "vmm_perf"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs-err",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "test_with_tracing",
+ "tracing",
+ "tracing-subscriber",
+ "whp",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 
 use crate::pipelines_shared::ado_pools;
 use crate::pipelines_shared::gh_pools;
+use anyhow::Context as _;
 use flowey::node::prelude::AdoResourcesRepositoryId;
 use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::node::prelude::GhPermission;
@@ -205,6 +206,20 @@ impl IntoPipeline for CheckinGatesCli {
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderWindowsAarch64::default();
         let mut vmm_tests_artifacts_linux_aarch64_tcg =
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxAarch64Tcg::default();
+
+        // Run VMM.Perf after merge, or before merge through the opt-in release
+        // PR pipeline.
+        let enable_vmm_perf = matches!(
+            (backend_hint, config),
+            (
+                PipelineBackendHint::Github,
+                PipelineConfig::Ci | PipelineConfig::PrRelease
+            )
+        );
+        let mut use_vmm_perf_runner_gnu_x64 = None;
+        let mut use_vmm_perf_runner_musl_x64 = None;
+        let mut use_vmm_perf_openvmm_gnu_x64 = None;
+        let mut use_vmm_perf_openvmm_musl_x64 = None;
 
         // We need to maintain a list of all jobs, so we can hang the "all good"
         // job off of them. This is requires because github status checks only allow
@@ -773,6 +788,10 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmm-tests-archive"));
             let (pub_vmm_tests_archive_musl, use_vmm_tests_archive_musl) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-vmm-tests-archive"));
+            let (pub_vmm_perf_gnu, use_vmm_perf_gnu) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmm-perf-runner"));
+            let (pub_vmm_perf_musl, use_vmm_perf_musl) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-vmm-perf-runner"));
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -790,6 +809,10 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_vmm_tests_archive.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_nextest_vmm_tests_archive =
                         Some(use_vmm_tests_archive_musl.clone());
+                    use_vmm_perf_runner_gnu_x64 = Some(use_vmm_perf_gnu);
+                    use_vmm_perf_runner_musl_x64 = Some(use_vmm_perf_musl);
+                    use_vmm_perf_openvmm_gnu_x64 = Some(use_openvmm.clone());
+                    use_vmm_perf_openvmm_musl_x64 = Some(use_openvmm_musl.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_linux_aarch64_tcg.use_openvmm =
@@ -953,6 +976,25 @@ impl IntoPipeline for CheckinGatesCli {
                             build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
                                 archive,
                             ),
+                        }
+                    }).publish(pub_vmm_perf_gnu, |vmm_perf| {
+                        flowey_lib_hvlite::build_vmm_perf::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            vmm_perf,
+                        }
+                    })
+                    .publish(pub_vmm_perf_musl, |vmm_perf| {
+                        flowey_lib_hvlite::build_vmm_perf::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            vmm_perf,
                         }
                     });
 
@@ -1744,6 +1786,60 @@ impl IntoPipeline for CheckinGatesCli {
             let vmm_tests_run_job = vmm_tests_run_job.finish();
             if !label.contains("snp") {
                 all_jobs.push(vmm_tests_run_job);
+            }
+        }
+
+        if enable_vmm_perf {
+            let runner_gnu =
+                use_vmm_perf_runner_gnu_x64.context("missing x64 Linux GNU VMM.Perf runner")?;
+            let runner_musl =
+                use_vmm_perf_runner_musl_x64.context("missing x64 Linux MUSL VMM.Perf runner")?;
+            let openvmm_gnu = use_vmm_perf_openvmm_gnu_x64
+                .context("missing x64 Linux GNU OpenVMM artifact for VMM.Perf")?;
+            let openvmm_musl = use_vmm_perf_openvmm_musl_x64
+                .context("missing x64 Linux MUSL OpenVMM artifact for VMM.Perf")?;
+            for (label, platform, pool, openvmm, runner, hugetlb_pages) in [
+                (
+                    "x64-linux-amd-kvm",
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    gh_pools::linux_amd_v7_1es(),
+                    openvmm_gnu,
+                    runner_gnu,
+                    Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
+                ),
+                (
+                    "x64-linux-intel-mshv",
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
+                    gh_pools::linux_mshv_intel_v5_1es(),
+                    openvmm_musl,
+                    runner_musl,
+                    None,
+                ),
+            ] {
+                let job = pipeline
+                    .new_job(
+                        platform,
+                        FlowArch::X86_64,
+                        format!("run vmm-perf [{label}]"),
+                    )
+                    .gh_set_pool(pool)
+                    .with_timeout_in_minutes(120)
+                    .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
+                    .dep_on(
+                        |ctx| flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf::Params {
+                            label: format!("{label}-vmm-perf"),
+                            runner: ctx.use_typed_artifact(&runner),
+                            openvmm: ctx.use_typed_artifact(&openvmm),
+                            profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
+                            vm_sizes_json: None,
+                            parameters_json: None,
+                            root_dir: None,
+                            hugetlb_2mb_overcommit_pages: hugetlb_pages,
+                            done: ctx.new_done_handle(),
+                        },
+                    )
+                    .finish();
+                all_jobs.push(job);
             }
         }
 
