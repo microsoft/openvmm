@@ -62,9 +62,8 @@ struct LayerState {
 
 /// A qcow2 disk layer implementing [`LayerIo`].
 ///
-/// NOTE: This is a placeholder backing layer. Actual qcow2 format parsing
-/// (header, L1/L2 tables, cluster allocation, backing file handling) is not
-/// yet implemented.
+/// Currently supports basic qcow2 v2/v3 images without encryption, backing files,
+/// snapshots, or compressed clusters, and implements sparse reads and in-place writes.
 #[derive(Inspect)]
 pub struct Qcow2Layer {
     #[inspect(skip)]
@@ -191,7 +190,13 @@ impl LayerIo for Qcow2Layer {
             let mut l2_bytes = vec![0u8; l2_entries * 8];
             let f = file.clone();
             let l2_bytes = unblock(move || -> Result<Vec<u8>, std::io::Error> {
-                f.read_at(&mut l2_bytes, l2_table_offset)?;
+                let n = f.read_at(&mut l2_bytes, l2_table_offset)?;
+                if n != l2_bytes.len() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "short read",
+                    ));
+                }
                 Ok(l2_bytes)
             })
             .await
