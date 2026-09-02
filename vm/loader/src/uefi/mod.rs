@@ -150,27 +150,25 @@ fn pe_get_entry_point_offset(pe32_data: &[u8]) -> Option<u32> {
     let dos_header = ImageDosHeader::read_from_prefix(pe32_data).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
     let nt_headers_offset = if dos_header.e_magic == IMAGE_DOS_SIGNATURE {
         // DOS image header is present, so read the PE header after the DOS image header.
-        dos_header.e_lfanew as usize
+        usize::try_from(dos_header.e_lfanew).ok()?
     } else {
         // DOS image header is not present, so PE header is at the image base.
         0
     };
 
-    let signature = u32::read_from_prefix(&pe32_data[nt_headers_offset..])
-        .ok()?
-        .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+    // Bounds-checked: the image may be corrupt/untrusted (e.g. restored from VMGS).
+    let nt_headers = pe32_data.get(nt_headers_offset..)?;
+    let signature = u32::read_from_prefix(nt_headers).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
     // Calculate the entry point relative to the start of the image.
     // AddressOfEntryPoint is common for PE32 & PE32+
     if signature as u16 == TE_IMAGE_HEADER_SIGNATURE {
-        let te = TeImageHeader::read_from_prefix(&pe32_data[nt_headers_offset..])
-            .ok()?
-            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
-        Some(te.address_of_entry_point + size_of_val(&te) as u32 - te.stripped_size as u32)
+        let te = TeImageHeader::read_from_prefix(nt_headers).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+        te.address_of_entry_point
+            .checked_add(size_of_val(&te) as u32)?
+            .checked_sub(te.stripped_size as u32)
     } else if signature == IMAGE_NT_SIGNATURE {
-        let pe = ImageNtHeaders32::read_from_prefix(&pe32_data[nt_headers_offset..])
-            .ok()?
-            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+        let pe = ImageNtHeaders32::read_from_prefix(nt_headers).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         Some(pe.optional_header.address_of_entry_point)
     } else {
         None
@@ -215,12 +213,18 @@ struct EFI_COMMON_SECTION_HEADER {
 const EFI_SECTION_PE32: u8 = 0x10;
 
 /// Get the SEC entry point offset from the firmware base.
-fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
+///
+/// On x86_64 the initial VTL0 RIP is the firmware base plus this offset. It is
+/// exposed so callers that swap the firmware image at runtime (e.g. restoring a
+/// hibernated firmware image) can recompute the entry point from the new image.
+/// Returns `None` if the image has no recognizable SEC firmware volume / entry
+/// point.
+pub fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     // Skip to SEC volume start.
     let mut image_offset = SEC_FIRMWARE_VOLUME_OFFSET;
 
     // Expect a firmware volume header for SEC volume.
-    let fvh = EFI_FIRMWARE_VOLUME_HEADER::read_from_prefix(&image[image_offset as usize..])
+    let fvh = EFI_FIRMWARE_VOLUME_HEADER::read_from_prefix(image.get(image_offset as usize..)?)
         .ok()?
         .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
     if fvh.signature != EFI_FVH_SIGNATURE {
@@ -228,18 +232,17 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     }
 
     // Skip past firmware volume header to beginning of firmware volume.
-    image_offset += fvh.header_length as u64;
+    image_offset = image_offset.checked_add(fvh.header_length as u64)?;
 
     // Find the first SEC CORE file type.
     let mut sec_core_file_header = None;
     let mut volume_offset = 0;
     while volume_offset < fvh.fv_length {
-        let new_volume_offset = (volume_offset + 7) & !7;
-        if new_volume_offset > volume_offset {
-            image_offset += new_volume_offset - volume_offset;
-            volume_offset = new_volume_offset;
-        }
-        let fh = EFI_FFS_FILE_HEADER::read_from_prefix(&image[image_offset as usize..])
+        let new_volume_offset = volume_offset.checked_add(7)? & !7;
+        image_offset = image_offset.checked_add(new_volume_offset - volume_offset)?;
+        volume_offset = new_volume_offset;
+
+        let fh = EFI_FFS_FILE_HEADER::read_from_prefix(image.get(image_offset as usize..)?)
             .ok()?
             .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         if fh.typ == EFI_FV_FILETYPE_SECURITY_CORE {
@@ -247,45 +250,62 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
             break;
         }
 
-        image_offset += expand_3byte_integer(fh.size);
-        volume_offset += expand_3byte_integer(fh.size);
+        // A zero-size file would not advance the scan; treat as malformed.
+        let file_size = expand_3byte_integer(fh.size);
+        if file_size == 0 {
+            return None;
+        }
+        image_offset = image_offset.checked_add(file_size)?;
+        volume_offset = volume_offset.checked_add(file_size)?;
     }
 
     // There should always be a Security Core file.
     let sec_core_file_header = sec_core_file_header?;
     let sec_core_file_size = expand_3byte_integer(sec_core_file_header.size);
+    // A zero-size SEC file has no sections; reject it rather than returning an
+    // offset that is not an entry point.
+    if sec_core_file_size == 0 {
+        return None;
+    }
 
     // Move past the firmware file header.
-    image_offset += size_of::<EFI_FFS_FILE_HEADER>() as u64;
-    volume_offset += size_of::<EFI_FFS_FILE_HEADER>() as u64;
+    let file_header_size = size_of::<EFI_FFS_FILE_HEADER>() as u64;
+    image_offset = image_offset.checked_add(file_header_size)?;
+    volume_offset = volume_offset.checked_add(file_header_size)?;
 
-    // Loop through the firmware file sections looking for PE section.
+    // Loop through the firmware file sections looking for the PE section, which
+    // holds the entry point.
     let mut file_offset = volume_offset;
+    let mut pe_entry = None;
     while file_offset < sec_core_file_size {
         //
         // Section headers are 8 byte aligned with respect to the beginning of the file stream.
         //
-        let new_file_offset = (file_offset + 3) & !3;
-        if new_file_offset > file_offset {
-            image_offset += new_file_offset - file_offset;
-            file_offset += new_file_offset - file_offset;
-        }
+        let new_file_offset = file_offset.checked_add(3)? & !3;
+        image_offset = image_offset.checked_add(new_file_offset - file_offset)?;
+        file_offset = new_file_offset;
 
-        let sh = EFI_COMMON_SECTION_HEADER::read_from_prefix(&image[image_offset as usize..])
+        let sh = EFI_COMMON_SECTION_HEADER::read_from_prefix(image.get(image_offset as usize..)?)
             .ok()?
             .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         if sh.typ == EFI_SECTION_PE32 {
-            let pe_offset = pe_get_entry_point_offset(
-                &image[image_offset as usize + size_of::<EFI_COMMON_SECTION_HEADER>()..],
-            )?;
-            image_offset += size_of::<EFI_COMMON_SECTION_HEADER>() as u64 + pe_offset as u64;
+            let section_header_size = size_of::<EFI_COMMON_SECTION_HEADER>() as u64;
+            let pe_data_offset = image_offset.checked_add(section_header_size)?;
+            let pe_offset = pe_get_entry_point_offset(image.get(pe_data_offset as usize..)?)?;
+            pe_entry = Some(pe_data_offset.checked_add(pe_offset as u64)?);
             break;
         }
-        image_offset += expand_3byte_integer(sh.size);
-        file_offset += expand_3byte_integer(sh.size);
+        // A zero-size section would not advance the scan; treat as malformed.
+        let section_size = expand_3byte_integer(sh.size);
+        if section_size == 0 {
+            return None;
+        }
+        image_offset = image_offset.checked_add(section_size)?;
+        file_offset = file_offset.checked_add(section_size)?;
     }
 
-    Some(image_offset)
+    // No PE section means no entry point.
+    pe_entry
 }
 
 /// Definitions shared by UEFI and the loader when loaded with parameters passed in IGVM format.
