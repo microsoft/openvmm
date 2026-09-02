@@ -32,6 +32,18 @@ pub async fn allocate_cluster(file: Arc<File>, cluster_size: u64) -> Result<u64,
     .map_err(DiskError::Io)
 }
 
+/// Compute the next cluster-aligned end-of-file offset that a fresh
+/// `allocate_cluster` call would return, without extending the file.
+async fn next_aligned_offset(file: &Arc<File>, cluster_size: u64) -> Result<u64, DiskError> {
+    let f = file.clone();
+    unblock(move || -> std::io::Result<u64> {
+        let file_len = f.metadata()?.len();
+        Ok(file_len.div_ceil(cluster_size) * cluster_size)
+    })
+    .await
+    .map_err(DiskError::Io)
+}
+
 /// Zero out `size` bytes at the given (cluster-aligned) offset.
 pub async fn zero_cluster(
     file: Arc<File>,
@@ -131,6 +143,18 @@ impl RefcountTable {
             }
             if self.entries[table_index] != 0 {
                 break;
+            }
+
+            // A new refcount block is allocated at the end of the file, and
+            // that block is itself referenced by the refcount table. Verify
+            // that the block's own cluster is still covered by the refcount
+            // table *before* allocating, otherwise we would leave the file
+            // extended and then fail below.
+            let next_block_offset = next_aligned_offset(file, self.cluster_size).await?;
+            let next_cluster = next_block_offset / self.cluster_size;
+            let next_index = (next_cluster / self.entries_per_block) as usize;
+            if next_index >= self.entries.len() {
+                return Err(DiskError::InvalidInput);
             }
 
             let block_offset = allocate_cluster(file.clone(), self.cluster_size).await?;

@@ -191,7 +191,7 @@ impl Qcow2Layer {
         if !byte_len.is_multiple_of(SECTOR_SIZE as usize) {
             return Err(DiskError::InvalidInput);
         }
-        let end_sector = sector + byte_len as u64 / SECTOR_SIZE as u64;
+        let end_sector = sector.saturating_add(byte_len as u64 / SECTOR_SIZE as u64);
         if end_sector > self.sector_count {
             return Err(DiskError::IllegalBlock);
         }
@@ -245,9 +245,9 @@ impl LayerIo for Qcow2Layer {
         sector: u64,
         mut marker: SectorMarker<'_>,
     ) -> Result<(), DiskError> {
-        let offset = sector * SECTOR_SIZE as u64;
         let len = buffers.len();
         self.validate_range(sector, len)?;
+        let offset = sector * SECTOR_SIZE as u64;
         let cluster_size = self.header.cluster_size() as usize;
         let l2_entries = self.header.l2_entries_per_table() as usize;
 
@@ -301,7 +301,7 @@ impl LayerIo for Qcow2Layer {
             }
             if l2_entry.cluster_offset != 0
                 && !l2_entry.reads_as_zeros
-                && l2_entry.cluster_offset % cluster_size as u64 != 0
+                && !l2_entry.cluster_offset.is_multiple_of(cluster_size as u64)
             {
                 return Err(DiskError::InvalidInput);
             }
@@ -379,9 +379,9 @@ impl LayerIo for Qcow2Layer {
             return Err(DiskError::ReadOnly);
         }
 
-        let offset = sector * SECTOR_SIZE as u64;
         let len = buffers.len();
         self.validate_range(sector, len)?;
+        let offset = sector * SECTOR_SIZE as u64;
         let cluster_size = self.header.cluster_size() as usize;
         let l2_entries = self.header.l2_entries_per_table() as usize;
         let file = self.file.clone();
@@ -448,7 +448,11 @@ impl LayerIo for Qcow2Layer {
                 return Err(DiskError::InvalidInput);
             }
 
-            let needs_allocation = l2_entry.cluster_offset == 0;
+            // A `reads_as_zeros` entry stores no usable data (its host
+            // `cluster_offset` is ignored for reads), so it must be treated as
+            // unallocated for the purpose of writes: allocate a fresh cluster
+            // rather than writing into the unreliable offset.
+            let needs_allocation = l2_entry.cluster_offset == 0 || l2_entry.reads_as_zeros;
             let data_cluster_offset = if needs_allocation {
                 let cluster_size = cluster_size as u64;
                 let new_cluster = allocate_cluster(file.clone(), cluster_size).await?;
