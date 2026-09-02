@@ -820,7 +820,7 @@ fn copyout<M: SafeMemoryMap + ?Sized>(
 /// provided exec function with a single test case; then continues from the
 /// beginning until all provided testcases have completed.
 ///
-/// It is expected that addr_size is minimum 0x1000000 bytes (or 4mb).
+/// It is expected that addr_size is minimum 0x1000000 bytes (or 16MiB).
 /// syz_exec_mem must be at least [`EXEC_INPUT_REQ_SIZE`] in size.
 /// syz_input_buffer must be at least [`SUPPORTED_INPUT_SIZE`] in size.
 pub fn exec_testcases_safe<M: SafeMemoryMap, F>(
