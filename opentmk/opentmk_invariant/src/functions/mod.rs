@@ -3,7 +3,7 @@
 
 pub mod hvcall_meta;
 pub mod hyperv;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
 pub mod io_port;
 mod registry;
 pub mod variable;

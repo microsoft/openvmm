@@ -9,9 +9,6 @@ use crate::{
     serial::{OpenTmkSerialIo, SerialIo, SerialPort},
 };
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use crate::functions::io_port;
-
 use inv_packet::{
     OpenTMKAckPacket, OpenTMKConfigurationPacket, OpenTMKErrorPacket, OpenTMKFuzzTest,
     OpenTMKGrammarDeserializer, OpenTMKPacket,
@@ -68,8 +65,9 @@ impl<T: SerialIo> Executor<T> {
     pub fn register_fuzz_functions(&mut self) {
         let mut fn_registry = self.fn_registry.lock();
 
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
         {
+            use crate::functions::io_port;
             static X86_REGISTRY: &[(&str, crate::functions::FuzzFunction)] = &[
                 ("port_write8", io_port::write_ioport_u8),
                 ("port_write16", io_port::write_ioport_u16),

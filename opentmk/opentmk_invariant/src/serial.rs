@@ -1,11 +1,11 @@
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
 pub use opentmk_core::arch::serial::SerialPort;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
 use opentmk_core::arch::serial::{InstrIoAccess, Serial};
 
 /// Copy of the x86 serial ports, used as a polyfill for those architectures
 /// that are not currently supported yet
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))] // xtask-fmt allow-target-arch sys-crate
 #[expect(unused)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SerialPort {
@@ -23,12 +23,12 @@ pub(crate) trait SerialIo {
 }
 
 pub(crate) struct OpenTmkSerialIo {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
     handle: Serial<InstrIoAccess>,
 }
 
 impl OpenTmkSerialIo {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
     pub fn new(port: SerialPort) -> Self {
         log::info!("creating serial port");
         Self {
@@ -36,14 +36,14 @@ impl OpenTmkSerialIo {
         }
     }
 
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))] // xtask-fmt allow-target-arch sys-crate
     pub fn new(_port: SerialPort) -> Self {
         log::info!("creating serial port (dummy)");
         Self {}
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
 impl SerialIo for OpenTmkSerialIo {
     fn init(&mut self) {
         self.handle.init();
@@ -64,7 +64,7 @@ impl SerialIo for OpenTmkSerialIo {
 
 // Dummy transport for non x86 serial specifically to allow compilation to
 // take place. Crashes so that we flag this issue early on.
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))] // xtask-fmt allow-target-arch sys-crate
 impl SerialIo for OpenTmkSerialIo {
     fn init(&mut self) {
         todo!()
