@@ -78,6 +78,15 @@ impl Qcow2Layer {
         if header.incompatible_features.unwrap_or(0) & 0x3 != 0 && !read_only {
             anyhow::bail!("refusing to write to a dirty/corrupt qcow2 image");
         }
+        if !read_only {
+            if let Some(v3) = &header.extended_version3_header {
+                anyhow::ensure!(
+                    v3.autoclear_features == 0,
+                    "qcow2 autoclear_features {:#x} are not supported for write access",
+                    v3.autoclear_features
+                );
+            }
+        }
 
         // The guest-visible size must be a whole number of 512-byte sectors,
         // otherwise the final partial sector would be silently inaccessible.
