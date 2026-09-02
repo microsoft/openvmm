@@ -449,14 +449,6 @@ pub enum TpmErrorKind {
     },
     #[error("failed to set pcr banks")]
     SetPcrBanks(#[source] tpm_lib::Error),
-    #[error(
-        "TPM {version:?} does not support the legacy {nvram_size} byte vTPM state; \
-         only TPM V138 can be used with vTPM state smaller than {STANDARD_VTPM_SIZE} bytes"
-    )]
-    LegacyVtpmStateUnsupported {
-        version: TpmVersion,
-        nvram_size: usize,
-    },
 }
 
 struct TpmPlatformCallbacks {
@@ -2266,29 +2258,21 @@ mod tests {
             .expect("mitigation marker NV index present");
     }
 
-    /// Legacy sub-32kB vTPM state is only supported by the 1.38 reference
-    /// implementation, so a newer TPM must refuse it rather than handing it to
-    /// a library that cannot interpret it.
+    /// Each library validates NVRAM against its compiled-in size.
     #[async_test]
     async fn test_legacy_nvram_size_rejected_for_v185() {
         let Err(err) = new_test_tpm(TpmVersion::V185, Some(LEGACY_VTPM_SIZE), None).await else {
             panic!("legacy nvram size must be rejected");
         };
 
-        assert!(
-            matches!(
-                err.0,
-                TpmErrorKind::LegacyVtpmStateUnsupported {
-                    version: TpmVersion::V185,
-                    nvram_size: LEGACY_VTPM_SIZE,
-                }
-            ),
-            "unexpected error: {err:?}"
-        );
+        match err.0 {
+            TpmErrorKind::InstantiateTpm(ref e) if e.is_mismatched_blob_size() => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     /// A 16kB blob can be present even when the reported NVRAM size is correct,
-    /// due to a previous size-reporting bug, so the blob itself is gated too.
+    /// due to a previous size-reporting bug. The library must reject it on reset.
     #[async_test]
     async fn test_legacy_nvram_blob_rejected_for_v185() {
         let Err(err) = new_test_tpm(
@@ -2301,16 +2285,10 @@ mod tests {
             panic!("legacy nvram blob must be rejected");
         };
 
-        assert!(
-            matches!(
-                err.0,
-                TpmErrorKind::LegacyVtpmStateUnsupported {
-                    version: TpmVersion::V185,
-                    nvram_size: LEGACY_VTPM_SIZE,
-                }
-            ),
-            "unexpected error: {err:?}"
-        );
+        match err.0 {
+            TpmErrorKind::ResetTpmWithState(ref e) if e.is_mismatched_blob_size() => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     /// The 1.38 implementation must keep accepting legacy state.
