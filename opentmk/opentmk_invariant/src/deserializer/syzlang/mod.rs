@@ -34,10 +34,13 @@ impl SyzlangState {
     ) -> InputResult {
         // resolve the call number to a pseudo syscall
         if self.glob_mapping.len() as u64 <= input_struct.call_num {
-            log::error!(
-                "[fatal] invalid call number {} received from syzlang",
+            let error_str = format!(
+                "invalid call number {} received from syzlang",
                 input_struct.call_num,
             );
+            log::error!("{error_str}");
+            self.error_list.push(error_str);
+
             return InputResult {
                 code: SYZLANG_DESERIALIZER_ERROR_CODE,
                 name: String::default(), //never used!
@@ -56,7 +59,7 @@ impl SyzlangState {
             FuzzFunctionVariable::Void => (),
             FuzzFunctionVariable::Int(_) => (), // TODO
             FuzzFunctionVariable::Error(e) => {
-                let error_str = format!("Error recorded in function: {handler_name} error: {e}");
+                let error_str = format!("{handler_name}: {e}");
                 log::error!("{error_str}");
                 self.error_list.push(error_str);
 
