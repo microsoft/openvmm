@@ -25,9 +25,6 @@ virt_whp = ["openvmm_core/virt_whp", "dep:virt_whp"]
 # Enable building with macOS hypervisor framework support.
 virt_hvf = ["dep:virt_hvf"]
 
-# Enable utilities used by VMM tests.
-test_utilities = ["dep:gdma_test", "guest_emulation_device/test_utilities"]
-
 [dependencies]
 hypervisor_resources.workspace = true
 mesh_worker.workspace = true
@@ -65,7 +62,7 @@ vmgs_broker.workspace = true
 # PCI devices
 cxl_spec.workspace = true
 gdma.workspace = true
-gdma_test = { workspace = true, optional = true }
+gdma_test.workspace = true
 nvme.workspace = true
 nvme_test.workspace = true
 

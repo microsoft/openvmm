@@ -227,24 +227,6 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
     }
 }
 
-impl<T: RingMem + Unpin> GedChannel<T> {
-    pub(super) fn handle_vpci_device_control(&mut self, message_buf: &[u8]) -> Result<(), Error> {
-        let request: get_protocol::VpciDeviceControlRequest =
-            get_protocol::VpciDeviceControlRequest::read_from_prefix(message_buf)
-                .map_err(|_| Error::MessageTooSmall)?
-                .0;
-        let status = if request.code == get_protocol::VpciDeviceControlCode::OFFER {
-            get_protocol::VpciDeviceControlStatus::SUCCESS
-        } else {
-            get_protocol::VpciDeviceControlStatus::INVALID_REQUEST
-        };
-        let response = get_protocol::VpciDeviceControlResponse::new(status);
-        self.channel
-            .try_send(response.as_bytes())
-            .map_err(Error::Vmbus)
-    }
-}
-
 /// Create the host Guest Emulation Device and corresponding I/O.
 ///
 /// If `ged_responses` is Some(), then TestGedChannel will be used to

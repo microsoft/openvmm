@@ -657,10 +657,7 @@ impl IntoPipeline for CheckinGatesCli {
                             },
                             profile: CommonProfile::from_release(release),
                             // FIXME: this relies on openvmm default features
-                            features: [
-                                flowey_lib_hvlite::build_openvmm::OpenvmmFeature::TestUtilities,
-                            ]
-                            .into(),
+                            features: [].into(),
                         },
                         openvmm,
                     }
@@ -830,11 +827,8 @@ impl IntoPipeline for CheckinGatesCli {
                             },
                             profile: CommonProfile::from_release(release),
                             // FIXME: this relies on openvmm default features
-                            features: [
-                                flowey_lib_hvlite::build_openvmm::OpenvmmFeature::TestUtilities,
-                                flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm,
-                            ]
-                            .into(),
+                            features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
+                                .into(),
                         },
                         openvmm,
                     }
@@ -910,11 +904,8 @@ impl IntoPipeline for CheckinGatesCli {
                                 platform: CommonPlatform::LinuxMusl,
                             },
                             profile: CommonProfile::from_release(release),
-                            features: [
-                                flowey_lib_hvlite::build_openvmm::OpenvmmFeature::TestUtilities,
-                                flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm,
-                            ]
-                            .into(),
+                            features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
+                                .into(),
                         },
                         openvmm,
                     }
