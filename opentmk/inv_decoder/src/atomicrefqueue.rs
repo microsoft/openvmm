@@ -45,6 +45,8 @@ impl<T> AtomicRefQueue<T> {
         let mut update_start_idx = true;
         let start_idx = self.start_idx.load(Ordering::SeqCst);
         for (idx, entry) in self.data[start_idx..].iter().enumerate() {
+            let idx = idx + start_idx;
+
             // Check if the entry is already marked without marking it first
             // If it is not, then ensure it also passes the conditional function check
             if !entry.1.load(Ordering::SeqCst) {
