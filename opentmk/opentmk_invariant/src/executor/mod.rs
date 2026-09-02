@@ -65,7 +65,8 @@ impl<T: SerialIo> Executor<T> {
     pub fn register_fuzz_functions(&mut self) {
         let mut fn_registry = self.fn_registry.lock();
 
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        // xtask-fmt allow-target-arch sys-crate
         {
             use crate::functions::io_port;
             static X86_REGISTRY: &[(&str, crate::functions::FuzzFunction)] = &[

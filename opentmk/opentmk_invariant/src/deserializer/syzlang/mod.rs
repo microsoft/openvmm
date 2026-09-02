@@ -51,11 +51,7 @@ impl SyzlangState {
         let handler_name = &self.glob_mapping[input_struct.call_num as usize];
         let input = SyzlangDeserializer::to_function_variables(&input_struct);
 
-        match self
-            .function_registry
-            .lock()
-            .exec(mem, handler_name, input)
-        {
+        match self.function_registry.lock().exec(mem, handler_name, input) {
             FuzzFunctionVariable::Void => (),
             FuzzFunctionVariable::Int(_) => (), // TODO
             FuzzFunctionVariable::Error(e) => {
