@@ -11,6 +11,8 @@ use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::{HvTestCtx, HyperVHypercallConfig};
 use spin::Mutex;
 
+const HVCALL_SANE_LIMIT: usize = 0x100000;
+
 /// Future-proof for future multi-VP usage to ensure writing to input_page and
 /// then dispatching the hypercall is done in one shot. Today we are running
 /// single-threaded, and this is mainly used to keep rust happy.
@@ -48,6 +50,11 @@ pub fn hvcall(
         hvc.init(Vtl::Vtl0)
             .map_err(|e| format!("Failed to initialize HvTestCtx: {e}"))?;
         *init = true;
+    }
+
+    if input_len > HVCALL_SANE_LIMIT {
+        log::error!("hvcall: input_len is too large: {input_len} > {HVCALL_SANE_LIMIT}");
+        return Ok(FuzzFunctionVariable::Void);
     }
 
     let mut in_args = vec![0; input_len];

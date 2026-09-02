@@ -91,8 +91,8 @@ impl<T: SerialIo> Executor<T> {
         let response_pkt = match pkt {
             OpenTMKPacket::Configuration(cfg) => self.on_receive_configuration_packet(&cfg)?,
             OpenTMKPacket::FuzzTest(mut fuzz) => self.on_receive_fuzz_test_packet(&mut fuzz)?,
-            OpenTMKPacket::Ack(a) => self.on_recieve_ack_packet(&a)?,
-            OpenTMKPacket::Error(a) => self.on_recieve_error_packet(&a)?,
+            OpenTMKPacket::Ack(a) => self.on_receive_ack_packet(&a)?,
+            OpenTMKPacket::Error(a) => self.on_receive_error_packet(&a)?,
         };
 
         if let Some(resp) = response_pkt {
@@ -148,7 +148,7 @@ impl<T: SerialIo> Executor<T> {
         }
     }
 
-    pub fn on_recieve_ack_packet(
+    pub fn on_receive_ack_packet(
         &mut self,
         _: &OpenTMKAckPacket,
     ) -> Result<Option<OpenTMKPacket>, ExecutorError> {
@@ -156,7 +156,7 @@ impl<T: SerialIo> Executor<T> {
         Err(ExecutorError::UnexpectedPacketReceived)
     }
 
-    pub fn on_recieve_error_packet(
+    pub fn on_receive_error_packet(
         &mut self,
         _: &OpenTMKErrorPacket,
     ) -> Result<Option<OpenTMKPacket>, ExecutorError> {

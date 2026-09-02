@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-serde = { workspace = true, features = ["derive"]}
+serde = { workspace = true, features = ["derive", "alloc"]}
 
 [lints]
 workspace = true

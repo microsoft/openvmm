@@ -145,6 +145,13 @@ impl Deserializer for SyzlangDeserializer {
         self.tc_slice.fill(0);
 
         let src = &testcase.testcase_vcpu0.as_slice();
+        if src.len() > self.tc_slice.len() {
+            return Err(ExecutorError::SyzlangDeserializerFailed(format!(
+                "Testcase input is too large: {} > {}",
+                src.len(),
+                self.tc_slice.len(),
+            )));
+        }
         self.tc_slice[..src.len()].copy_from_slice(src);
         self.mem.0.as_mut_slice().fill(0);
 

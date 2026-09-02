@@ -30,7 +30,7 @@ pub const COMMS_ACK_MAGIC: u64 = 0x6162636465666768;
 /// Magic value used as the header of a regular packet
 pub const COMMS_PACKET_HEADER_MAGIC: u64 = 0xf0f1f2f3f4f5f6f7;
 /// Magic value used as the footer of a regular packet
-pub const COMMS_PACKET_FOOTER_MAGIC: u64 = 0xf0f1f2f3f4f5f6f7;
+pub const COMMS_PACKET_FOOTER_MAGIC: u64 = !COMMS_PACKET_HEADER_MAGIC;
 
 /// Describes the specific serialization format used for encoding test cases to the opentmk
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]

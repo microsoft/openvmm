@@ -163,13 +163,13 @@ fn unexpected_ack_and_error_packets_are_rejected() {
 
     assert_eq!(
         executor
-            .on_recieve_ack_packet(&OpenTMKAckPacket { code: 0 })
+            .on_receive_ack_packet(&OpenTMKAckPacket { code: 0 })
             .expect_err("ack packets should be rejected"),
         ExecutorError::UnexpectedPacketReceived
     );
     assert_eq!(
         executor
-            .on_recieve_error_packet(&OpenTMKErrorPacket {
+            .on_receive_error_packet(&OpenTMKErrorPacket {
                 message: String::from("boom"),
             })
             .expect_err("error packets should be rejected"),
