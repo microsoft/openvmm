@@ -3,6 +3,10 @@
 
 //! Configuration for the VM worker.
 
+pub use smbios_defs::SmbiosBiosOverrides;
+pub use smbios_defs::SmbiosConfig;
+pub use smbios_defs::SmbiosSystemOverrides;
+
 use guid::Guid;
 use input_core::InputData;
 use memory_range::MemoryRange;
@@ -129,13 +133,6 @@ pub enum LinuxIsolationConfig {
         restricted_injection: bool,
     },
 }
-
-/// SMBIOS (DMI) identity configuration, shared with the Guest Emulation
-/// Transport and the firmware load paths. Defined in [`smbios_defs`] so that
-/// both `openvmm_defs` and `get_resources` reference a single representation.
-pub use smbios_defs::SmbiosBiosOverrides;
-pub use smbios_defs::SmbiosConfig;
-pub use smbios_defs::SmbiosSystemOverrides;
 
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
