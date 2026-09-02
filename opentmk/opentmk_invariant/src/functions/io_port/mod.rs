@@ -15,10 +15,10 @@ use opentmk_core::arch;
 
 fn validate_ioport(port: u16) -> Option<u16> {
     if (0x3E8..0x3F0).contains(&port) // COM3
-        || (0x2E8..0x2F0).contains(&port) // COM4
-        || (0x2F8..0x300).contains(&port) // COM2
-        // Ignores COM1 because we need that for fuzzer
+        || /* COM4 */ (0x2E8..0x2F0).contains(&port)
+        || /* COM2 */ (0x2F8..0x300).contains(&port)
     {
+        // Ignores COM1 because we need that for fuzzer
         Some(port)
     } else {
         None
