@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
 pub use opentmk_core::arch::serial::SerialPort;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] // xtask-fmt allow-target-arch sys-crate
