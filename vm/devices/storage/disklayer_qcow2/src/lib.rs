@@ -126,7 +126,14 @@ impl Qcow2Layer {
         }
         let mut l1_slice = l1_bytes.as_slice();
         let l1_table = read_l1_table(&mut l1_slice, header.l1_size)?;
-
+        let cluster_size = header.cluster_size();
+        for (i, entry) in l1_table.iter().enumerate() {
+            anyhow::ensure!(
+                entry.l2_offset == 0 || entry.l2_offset.is_multiple_of(cluster_size),
+                "qcow2 L1 entry {i} has a non-cluster-aligned L2 offset {:#x}",
+                entry.l2_offset
+            );
+        }
         let mut refcounts = RefcountTable::new(&header)?;
         if header.refcount_table_offset != 0 && header.refcount_table_clusters != 0 {
             // Bound the refcount table allocation so a hostile header can't
@@ -284,9 +291,18 @@ impl LayerIo for Qcow2Layer {
                 .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
             let l2_entry: &L2Entry = &l2_table[addr.l2_index as usize];
 
-            if l2_entry.cluster_offset == 0 || l2_entry.reads_as_zeros {
-                // Unallocated, or marked as reading as all zeros; zero the
-                // covered portion of the request.
+            if l2_entry.compressed {
+                return Err(DiskError::InvalidInput);
+            }
+            if l2_entry.cluster_offset != 0
+                && !l2_entry.reads_as_zeros
+                && l2_entry.cluster_offset % cluster_size as u64 != 0
+            {
+                return Err(DiskError::InvalidInput);
+            }
+
+            if l2_entry.reads_as_zeros {
+                // Marked as reading as all zeros; zero the covered portion of the request.
                 let zero_n = min(
                     (end - byte_off) as usize,
                     cluster_size - addr.in_cluster_offset as usize,
@@ -299,8 +315,16 @@ impl LayerIo for Qcow2Layer {
                 byte_off += zero_n as u64;
                 continue;
             }
-            if l2_entry.compressed {
-                return Err(DiskError::InvalidInput);
+
+            if l2_entry.cluster_offset == 0 {
+                // Unallocated in this layer: do not mark sectors so lower layers (or final zero-fill)
+                // can provide the data.
+                let skip_n = min(
+                    (end - byte_off) as usize,
+                    cluster_size - addr.in_cluster_offset as usize,
+                );
+                byte_off += skip_n as u64;
+                continue;
             }
 
             let bytes_in_cluster = min(
