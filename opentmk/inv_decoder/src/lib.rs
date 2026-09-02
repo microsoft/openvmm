@@ -369,6 +369,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                 // Evaluate all input arguments.
                 let mut args = [0u64; MAX_ARGS];
 
+                let mut skip = false;
                 for (n, arg) in i.args.iter().enumerate() {
                     match arg {
                         Arg::Const(a) => {
@@ -383,7 +384,8 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                                 // The dependent call that's expected to fill this result argument value has either
                                 // not been executed or did not execute successfully, meaning the result value
                                 // is invalid. We will skip this call
-                                return Ok(());
+                                skip = true;
+                                break;
                             } else {
                                 let mut v = r.val.load(Ordering::SeqCst);
                                 v = v.checked_div(a.op_div).unwrap_or(v);
@@ -396,20 +398,29 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                     }
                 }
 
-                let input_struct = InputCase {
-                    call_num: i.idx as u64,
-                    args,
-                    num_args: i.args.len() as u64,
-                    _priv: PhantomData,
-                };
-
                 // Ensure that we don't keep a lock to the safe memory map
                 // when we pass execution to the executor. That way we can
                 // perform reentrancy as needed.
                 drop(mem);
 
-                // Call the provided exec function now that we've parsed an input.
-                let exec_result = (self.exec)(self, input_struct);
+                let exec_result = if skip {
+                    // Skipped function call because we couldn't fill out all
+                    // the values needed from dependent calls
+                    InputResult {
+                        code: 0,
+                        name: "<skipped>".into(),
+                        is_success: false,
+                    }
+                } else {
+                    // Call the provided exec function now that we've parsed an input.
+                    let input_struct = InputCase {
+                        call_num: i.idx as u64,
+                        args,
+                        num_args: i.args.len() as u64,
+                        _priv: PhantomData,
+                    };
+                    (self.exec)(self, input_struct)
+                };
 
                 // If the call has a valid associated copyout index, we need to set the result in the results array.
                 let (copyout_index, results) =
