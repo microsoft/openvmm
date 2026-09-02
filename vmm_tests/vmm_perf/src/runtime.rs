@@ -9,6 +9,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const ARCHIVE_SIGNATURE_FILE: &str = ".archive-signature";
+const SUPPORTED_ARCHIVE_EXTENSIONS: &[&str] = if cfg!(windows) {
+    &[".tar.gz", ".tar", ".zip"]
+} else {
+    &[".tar.gz", ".tar"]
+};
 
 pub(crate) struct VmmPerfRuntime {
     root: PathBuf,
@@ -120,13 +125,13 @@ fn extract_runtime(archive: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn archive_cache_name(archive_name: &str) -> anyhow::Result<&str> {
-    archive_name
-        .strip_suffix(".tar.gz")
-        .or_else(|| archive_name.strip_suffix(".tar"))
-        .or_else(|| archive_name.strip_suffix(".zip"))
+    SUPPORTED_ARCHIVE_EXTENSIONS
+        .iter()
+        .find_map(|extension| archive_name.strip_suffix(extension))
         .with_context(|| {
             format!(
-                "unsupported VMM.Perf archive format for {archive_name}; expected .tar.gz, .tar, or .zip"
+                "unsupported VMM.Perf archive format for {archive_name}; expected {}",
+                SUPPORTED_ARCHIVE_EXTENSIONS.join(", ")
             )
         })
 }
@@ -230,8 +235,8 @@ mod tests {
             "vmm-perf-linux-x64"
         );
         assert_eq!(
-            archive_cache_name("vmm-perf-win-x64.zip")?,
-            "vmm-perf-win-x64"
+            archive_cache_name("vmm-perf-win-x64.zip").is_ok(),
+            cfg!(windows)
         );
         assert!(archive_cache_name("vmm-perf-win-x64.7z").is_err());
         Ok(())

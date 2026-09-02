@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::Path;
 
-// Update the version and both hashes together from the latest successful
-// definition 200014 build whose source branch is exactly refs/heads/main.
+// Update the version and both hashes together when refreshing the archives
+// published to the public VMM.Perf runtime source below.
 const VMM_PERF_RUNTIME_VERSION: &str = "20260828.1";
 const VMM_PERF_RUNTIME_X64_SHA256: &str =
     "57a3ed767587f1d7ed9ce4de04562f712e2c56c3a05da1aa2b34d2a22e43b314";
