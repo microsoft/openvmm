@@ -208,10 +208,7 @@ pub fn write_l2_table(
         let raw = if entry.cluster_offset == 0 {
             0
         } else {
-            let mut r = (entry.cluster_offset & OFFSET_MASK) | OFLAG_COPIED;
-            if entry.compressed {
-                r |= 1 << 62;
-            }
+            let mut r = entry.cluster_offset & OFFSET_MASK;
             if entry.copied {
                 r |= OFLAG_COPIED;
             }

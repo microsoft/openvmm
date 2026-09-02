@@ -144,16 +144,21 @@ impl Qcow2Layer {
             let refcount_entries_per_block = header.cluster_size() / 2; // 16-bit refcounts
             let table_entries_needed = max_clusters.div_ceil(refcount_entries_per_block);
             let table_clusters_needed = table_entries_needed.div_ceil(header.cluster_size() / 8);
-            const MAX_REFCOUNT_TABLE_CLUSTERS: u64 = 4096; // 16 MiB with 4 KiB clusters
+
+            const MAX_REFCOUNT_TABLE_BYTES: u64 = 16 * 1024 * 1024; // hard cap to avoid OOM on crafted images
+            let table_bytes_len_u64 = (header.refcount_table_clusters as u64)
+                .checked_mul(header.cluster_size())
+                .ok_or_else(|| anyhow::anyhow!("qcow2 refcount table length overflow"))?;
             anyhow::ensure!(
                 header.refcount_table_clusters as u64 <= table_clusters_needed.max(1)
-                    && header.refcount_table_clusters as u64 <= MAX_REFCOUNT_TABLE_CLUSTERS,
-                "qcow2 refcount table of {} clusters is unreasonably large",
-                header.refcount_table_clusters
+                    && table_bytes_len_u64 <= MAX_REFCOUNT_TABLE_BYTES,
+                "qcow2 refcount table of {} bytes is unreasonably large",
+                table_bytes_len_u64
             );
 
-            let table_bytes_len =
-                header.refcount_table_clusters as usize * header.cluster_size() as usize;
+            let table_bytes_len: usize = table_bytes_len_u64
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("qcow2 refcount table is too large to allocate"))?;
             let mut table_bytes = vec![0u8; table_bytes_len];
             let n = file.read_at(&mut table_bytes, header.refcount_table_offset)?;
             if n != table_bytes.len() {
@@ -460,20 +465,21 @@ impl LayerIo for Qcow2Layer {
             let buf_off = (byte_off - offset) as usize;
             if bytes_in_cluster < cluster_size {
                 let mut full = vec![0u8; cluster_size];
-                let f = file.clone();
-                let full = unblock(move || -> Result<Vec<u8>, std::io::Error> {
-                    let n = f.read_at(&mut full, data_cluster_offset)?;
-                    if n != full.len() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "short read",
-                        ));
-                    }
-                    Ok(full)
-                })
-                .await
-                .map_err(DiskError::Io)?;
-                let mut full = full;
+                if !needs_allocation {
+                    let f = file.clone();
+                    full = unblock(move || -> Result<Vec<u8>, std::io::Error> {
+                        let n = f.read_at(&mut full, data_cluster_offset)?;
+                        if n != full.len() {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "short read",
+                            ));
+                        }
+                        Ok(full)
+                    })
+                    .await
+                    .map_err(DiskError::Io)?;
+                }
                 buffers
                     .subrange(buf_off, bytes_in_cluster)
                     .reader()

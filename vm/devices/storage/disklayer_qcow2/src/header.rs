@@ -152,11 +152,14 @@ impl Qcow2Header {
                 header_length: read_be_u32(header)?,
                 compression_type: None,
             };
+            const MAX_V3_HEADER_LENGTH: u32 = 1024 * 1024; // 1 MiB hard cap to avoid OOM on crafted images
             anyhow::ensure!(
                 extended_version3_header.header_length >= 104
+                    && extended_version3_header.header_length <= MAX_V3_HEADER_LENGTH
                     && extended_version3_header.header_length.is_multiple_of(8),
-                "invalid v3 header_length {} (must be >= 104 and a multiple of 8)",
-                extended_version3_header.header_length
+                "invalid v3 header_length {} (must be >= 104, <= {}, and a multiple of 8)",
+                extended_version3_header.header_length,
+                MAX_V3_HEADER_LENGTH
             );
             if extended_version3_header.header_length > 104 {
                 let mut header = [0u8; 1]; // Length of rest of V3 Header
