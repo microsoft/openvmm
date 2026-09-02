@@ -75,9 +75,9 @@ impl RefcountTable {
     pub fn new(header: &Qcow2Header) -> anyhow::Result<Self> {
         let refcount_order = match &header.extended_version3_header {
             Some(v3) => v3.refcount_order,
-            None => 4, // V2 images always use 16-bit refcount entries
+            None => 4,
         };
-        anyhow::ensure!(refcount_order >= 3, "refcount_order too small");
+        anyhow::ensure!(refcount_order == 4, "only 16-bit refcounts are supported");
         // Each entry is (1 << refcount_order) bits wide.
         let entry_bytes = 1u64 << (refcount_order - 3);
         Ok(Self {
@@ -112,9 +112,7 @@ impl RefcountTable {
         cluster: u64,
     ) -> Result<(), DiskError> {
         if !self.is_available() {
-            return Err(DiskError::Io(std::io::Error::other(
-                "qcow2 image has no refcount table; cannot write safely",
-            )));
+            return Err(DiskError::InvalidInput);
         }
 
         // Allocating a refcount block also requires bumping that block's own
@@ -127,13 +125,7 @@ impl RefcountTable {
         loop {
             let table_index = (cur / self.entries_per_block) as usize;
             if table_index >= self.entries.len() {
-                // TODO: grow/relocate the refcount table and update the header
-                // (which also requires adjusting the refcounts of the old
-                // table clusters). Only reachable for images whose clusters
-                // are no longer covered by the existing refcount table.
-                return Err(DiskError::Io(std::io::Error::other(
-                    "qcow2 refcount table is exhausted",
-                )));
+                return Err(DiskError::InvalidInput);
             }
             if self.entries[table_index] != 0 {
                 break;

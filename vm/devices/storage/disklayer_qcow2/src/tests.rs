@@ -323,3 +323,49 @@ async fn write_overwrites_existing_cluster() {
     let expected: Vec<u8> = (0..512u16).map(|i| ((512 + i) % 251) as u8).collect();
     assert_eq!(buf, expected);
 }
+
+/// Build a fixture identical to [`build_fixture`] except that L2 entry 1 has
+/// bit 0 (the Standard Cluster Descriptor "reads as all zeros" flag) set with
+/// a non-zero host offset. Per the spec, reads must return zeros regardless
+/// of the host offset.
+fn build_zero_flag_fixture() -> Vec<u8> {
+    let mut img = build_fixture();
+    let l2_table: usize = 2 * CLUSTER_SIZE;
+    let l2_entry: u64 = (1u64 << 63) // COPIED
+        | 1                          // bit 0: reads as all zeros
+        | (3 * CLUSTER_SIZE as u64); // non-zero, but ignored, host offset
+    img[l2_table..l2_table + 8].copy_from_slice(&l2_entry.to_be_bytes());
+    img
+}
+
+#[async_test]
+async fn read_zero_flag_cluster_returns_zeros() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_zero_flag_fixture()).unwrap();
+
+    let layer = open_layer(&path, true);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Cluster 1 = sectors 8-15. Its L2 entry has the "reads as zeros" flag
+    // set, so it must read back as zeros even though the host offset is
+    // non-zero.
+    let mem = GuestMemory::allocate(512);
+    let owned = OwnedRequestBuffers::linear(0, 512, true);
+    disk.read_vectored(&owned.buffer(&mem), 8).await.unwrap();
+    let mut buf = vec![0xFFu8; 512];
+    mem.read_at(0, &mut buf).unwrap();
+    assert_eq!(buf, vec![0u8; 512]);
+}

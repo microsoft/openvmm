@@ -35,6 +35,11 @@ pub struct Qcow2Header {
     pub nb_snapshots: u32,
     /// Offset into the image file at which the snapshot table starts. Must be aligned to a cluster boundary.
     pub snapshots_offset: u64,
+    /// Bitmask of incompatible features (only present for version 3). Bits 0
+    /// and 1 are the dirty and corrupt flags: both may be opened read-only,
+    /// but only the dirty flag may be repaired and a corrupt image must not be
+    /// written to. Any other (unknown) bit set is rejected at parse time.
+    pub incompatible_features: Option<u64>,
     /// The Version 3 extra values
     pub extended_version3_header: Option<QcowV3Header>,
 }
@@ -123,6 +128,7 @@ impl Qcow2Header {
             refcount_table_clusters: read_be_u32(header)?,
             nb_snapshots: read_be_u32(header)?,
             snapshots_offset: read_be_u64(header)?,
+            incompatible_features: None,
             extended_version3_header: None,
         };
 
@@ -140,6 +146,12 @@ impl Qcow2Header {
                 header_length: read_be_u32(header)?,
                 compression_type: None,
             };
+            anyhow::ensure!(
+                extended_version3_header.header_length >= 104
+                    && extended_version3_header.header_length.is_multiple_of(8),
+                "invalid v3 header_length {} (must be >= 104 and a multiple of 8)",
+                extended_version3_header.header_length
+            );
             if extended_version3_header.header_length > 104 {
                 let mut header = [0u8; 1]; // Length of rest of V3 Header
                 file.read_exact(&mut header)
@@ -148,6 +160,7 @@ impl Qcow2Header {
 
                 extended_version3_header.compression_type = Some(read_be_u8(header)?);
             }
+            this.incompatible_features = Some(extended_version3_header.incompatible_features);
             this.extended_version3_header = Some(extended_version3_header);
         }
 
@@ -164,10 +177,14 @@ impl Qcow2Header {
             "qcow2 snapshots are not supported"
         );
         if let Some(v3) = &this.extended_version3_header {
+            // Bits 0 and 1 (dirty and corrupt) are understood; they are handled
+            // by the layer, which restricts writes on a corrupt image. Unknown
+            // bits must be rejected.
+            let known = 0x3u64;
             anyhow::ensure!(
-                v3.incompatible_features == 0,
-                "qcow2 incompatible_features {:#x} are not supported",
-                v3.incompatible_features
+                v3.incompatible_features & !known == 0,
+                "qcow2 unknown incompatible_features {:#x} are not supported",
+                v3.incompatible_features & !known
             );
             anyhow::ensure!(
                 v3.refcount_order == 4,

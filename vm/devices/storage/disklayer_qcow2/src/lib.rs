@@ -81,6 +81,20 @@ impl Qcow2Layer {
     /// NOTE: `sector_count` is passed by the caller until format parsing is
     /// implemented.
     pub fn new(file: File, header: Qcow2Header, read_only: bool) -> anyhow::Result<Self> {
+        // A corrupt image (incompatible bit 1) must not be written to. The
+        // dirty flag (bit 0) implies refcounts may be inconsistent, which we
+        // do not repair; treat it as requiring read-only access too.
+        if header.incompatible_features.unwrap_or(0) & 0x3 != 0 && !read_only {
+            anyhow::bail!("refusing to write to a dirty/corrupt qcow2 image");
+        }
+
+        // The guest-visible size must be a whole number of 512-byte sectors,
+        // otherwise the final partial sector would be silently inaccessible.
+        anyhow::ensure!(
+            header.size_bytes.is_multiple_of(SECTOR_SIZE as u64),
+            "qcow2 disk size {} is not a multiple of the sector size",
+            header.size_bytes
+        );
         let sector_count = header.size_bytes / SECTOR_SIZE as u64;
 
         let mut l1_bytes = vec![0u8; header.l1_size as usize * 8];
@@ -95,6 +109,12 @@ impl Qcow2Layer {
             let mut table_bytes = vec![0u8; table_bytes_len];
             file.read_at(&mut table_bytes, header.refcount_table_offset)?;
             refcounts.set_table_bytes(&table_bytes);
+        }
+
+        // Writes require a usable refcount table; fail eagerly rather than at
+        // the first write.
+        if !refcounts.is_available() && !read_only {
+            anyhow::bail!("qcow2 image has no refcount table; cannot write safely");
         }
 
         Ok(Self {
@@ -206,8 +226,9 @@ impl LayerIo for Qcow2Layer {
                 .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
             let l2_entry: &L2Entry = &l2_table[addr.l2_index as usize];
 
-            if l2_entry.cluster_offset == 0 {
-                // Unallocated; zero the covered portion of the request.
+            if l2_entry.cluster_offset == 0 || l2_entry.reads_as_zeros {
+                // Unallocated, or marked as reading as all zeros; zero the
+                // covered portion of the request.
                 let zero_n = min(
                     (end - byte_off) as usize,
                     cluster_size - addr.in_cluster_offset as usize,
@@ -389,8 +410,9 @@ impl LayerIo for Qcow2Layer {
         _block_level_only: bool,
         _next_is_zero: bool,
     ) -> Result<(), DiskError> {
-        Err(DiskError::Io(std::io::Error::other(
-            "qcow2 unmap is not implemented yet",
-        )))
+        // TODO: qcow2 unmap (deallocating host clusters and clearing the
+        // corresponding L2 entries) is not implemented yet. Report it as
+        // unsupported input rather than an I/O error.
+        Err(DiskError::InvalidInput)
     }
 }
