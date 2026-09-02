@@ -149,6 +149,22 @@ impl AsMut<VpInfo> for Aarch64VpInfo {
     }
 }
 
+/// Constructs the default MPIDR for a VP index.
+///
+/// `ICC_SGI1R_EL1.TargetList` directly addresses 16 affinity level 0 values.
+/// Without GIC range selector support, bit N targets the PE whose Aff0 is N,
+/// so Aff0 must remain in 0..=15 for every VP to receive SGIs. Carrying the
+/// remaining index bits into Aff1 and Aff2 also matches KVM's default
+/// vCPU-ID-to-MPIDR mapping.
+fn mpidr_from_vp_index(vp_index: u32, uniprocessor: bool) -> MpidrEl1 {
+    MpidrEl1::new()
+        .with_res1_31(true)
+        .with_u(uniprocessor)
+        .with_aff0((vp_index & 0xf) as u8)
+        .with_aff1(((vp_index >> 4) & 0xff) as u8)
+        .with_aff2(((vp_index >> 12) & 0xff) as u8)
+}
+
 impl TopologyBuilder<Aarch64Topology> {
     /// Returns a builder for creating an aarch64 processor topology.
     pub fn new_aarch64(platform: Aarch64PlatformConfig) -> Self {
@@ -189,19 +205,7 @@ impl TopologyBuilder<Aarch64Topology> {
         if !(64..=992).contains(&nr) || !nr.is_multiple_of(32) {
             return Err(InvalidTopology::InvalidGicNrIrqs(nr));
         }
-        let mpidrs = (0..proc_count).map(|vp_index| {
-            // TODO: construct mpidr appropriately for the specified
-            // topology.
-            let uni_proc = proc_count == 1;
-            let mut aff = (0..4).map(|i| (vp_index >> (8 * i)) as u8);
-            MpidrEl1::new()
-                .with_res1_31(true)
-                .with_u(uni_proc)
-                .with_aff0(aff.next().unwrap())
-                .with_aff1(aff.next().unwrap())
-                .with_aff2(aff.next().unwrap())
-                .with_aff3(aff.next().unwrap())
-        });
+        let mpidrs = (0..proc_count).map(|vp_index| mpidr_from_vp_index(vp_index, proc_count == 1));
         let gic_version = self.arch.platform.gic_version;
         self.build_with_vp_info(mpidrs.enumerate().map(move |(id, mpidr)| {
             // GICv3 assigns a per-VP redistributor region; GICv2 has no
@@ -281,5 +285,41 @@ impl ProcessorTopology<Aarch64Topology> {
     /// Returns the total number of GIC interrupts to configure.
     pub fn gic_nr_irqs(&self) -> u32 {
         self.arch.platform.gic_nr_irqs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MpidrEl1;
+    use super::mpidr_from_vp_index;
+    use std::collections::HashSet;
+    use test_with_tracing::test;
+
+    #[test]
+    fn default_mpidr_crosses_aff0_boundary_at_16() {
+        let mpidr15 = mpidr_from_vp_index(15, false);
+        assert_eq!(mpidr15.aff0(), 15);
+        assert_eq!(mpidr15.aff1(), 0);
+
+        let mpidr16 = mpidr_from_vp_index(16, false);
+        assert_eq!(mpidr16.aff0(), 0);
+        assert_eq!(mpidr16.aff1(), 1);
+
+        let mpidr17 = mpidr_from_vp_index(17, false);
+        assert_eq!(mpidr17.aff0(), 1);
+        assert_eq!(mpidr17.aff1(), 1);
+    }
+
+    #[test]
+    fn default_mpidrs_are_unique_and_sgi_addressable() {
+        let mut affinities = HashSet::new();
+
+        for vp_index in 0..u32::from(u8::MAX) {
+            let mpidr = mpidr_from_vp_index(vp_index, false);
+            let affinity = u64::from(mpidr) & u64::from(MpidrEl1::AFFINITY_MASK);
+
+            assert!(mpidr.aff0() < 16);
+            assert!(affinities.insert(affinity));
+        }
     }
 }

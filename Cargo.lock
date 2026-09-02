@@ -10107,6 +10107,7 @@ dependencies = [
  "memory_range",
  "mesh_protobuf",
  "safe_intrinsics",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "x86defs",
 ]

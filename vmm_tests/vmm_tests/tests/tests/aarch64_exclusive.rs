@@ -8,6 +8,7 @@ use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
+use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use std::time::Duration;
@@ -15,6 +16,48 @@ use vfio_assigned_device_resources::BarAddressConfig;
 use vm_resource::IntoResource;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
+
+/// Verify that a vCPU above the GICv3 Aff0 boundary can boot and be hotplugged.
+///
+/// The `_aarch64_tcg` suffix opts this test into the QEMU incubator CI pass.
+#[cfg(target_os = "linux")]
+#[vmm_test_with(openvmm, configs(linux_direct_aarch64))]
+async fn cpu_affinity_over_16_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const VP_COUNT: u32 = 17;
+    const TARGET_CPU: u32 = 16;
+
+    let (vm, agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: VP_COUNT,
+            vps_per_socket: Some(16),
+            enable_smt: Some(false),
+            apic_mode: None,
+        })
+        .with_no_hv()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+    let online = cmd!(sh, "cat /sys/devices/system/cpu/online")
+        .read()
+        .await?;
+    assert_eq!(online.trim(), "0-16", "not all configured CPUs came online");
+
+    let online_path = format!("/sys/devices/system/cpu/cpu{TARGET_CPU}/online");
+    let hotplug = format!("echo 0 > {online_path} && echo 1 > {online_path}");
+    cmd!(sh, "sh -c {hotplug}").run().await?;
+
+    let target_online = cmd!(sh, "cat {online_path}").read().await?;
+    assert_eq!(target_online.trim(), "1", "CPU 16 did not come back online");
+
+    drop(agent);
+    tracing::info!("dropping VM");
+    drop(vm);
+    Ok(())
+}
 
 /// Boot Linux and verify the PMU interrupt is available.
 ///
