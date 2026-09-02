@@ -4045,7 +4045,6 @@ dependencies = [
 name = "inv_decoder"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "num-traits",
  "spin",
  "zerocopy",

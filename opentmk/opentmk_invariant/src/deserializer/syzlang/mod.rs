@@ -54,7 +54,7 @@ impl SyzlangState {
         match self
             .function_registry
             .lock()
-            .exec(mem, &handler_name, input)
+            .exec(mem, handler_name, input)
         {
             FuzzFunctionVariable::Void => (),
             FuzzFunctionVariable::Int(_) => (), // TODO

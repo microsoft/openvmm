@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 vmm_test_images = { workspace = true, features = ["clap"] }
 
-anyhow = { workspace = true, features = ["std"] }
+anyhow.workspace = true
 cargo_toml.workspace = true
 ci_logger.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }

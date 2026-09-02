@@ -473,7 +473,7 @@ vnc_worker_defs = { path = "workers/vnc_worker_defs" }
 # crates.io
 
 # --- Error handling ---
-anyhow = { version = "1.0", default-features = false }
+anyhow = "1.0"
 thiserror = { version = "2", default-features = false }
 
 # --- Logging / tracing ---

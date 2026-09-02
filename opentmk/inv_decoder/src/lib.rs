@@ -23,8 +23,7 @@ use core::{
 };
 
 use alloc::{string::String, sync::Arc, vec::Vec};
-use anyhow::{Context, Result, bail};
-use zerocopy::{FromBytes, Immutable, IntoBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, SizeError};
 
 use crate::atomicrefqueue::AtomicRefQueue;
 
@@ -51,6 +50,62 @@ pub type TestcaseResults = [ResT; K_MAX_COMMANDS];
 /// Callback used to execute a decoded syzkaller input.
 pub type Executor<'f> =
     dyn Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + 'f + Send + Sync;
+
+/// An enumeration of possible decoder errors
+#[derive(Debug)]
+pub enum DecoderError {
+    /// A bad magic value for the program header
+    BadMagic(u64),
+    /// The program size is zero
+    ZeroProgSize,
+    /// The program size exceeds the remaining size of the buffer
+    ProgSizeExceedsBuffer,
+    /// A truncated read occurred
+    TruncRead {
+        /// The context of the value being read
+        context: &'static str,
+        /// The number of bytes expected to read
+        expected: usize,
+        /// The actual number of bytes read
+        got: usize,
+    },
+    /// A bad instruction code
+    BadInstruction(i64),
+    /// A bad argument code
+    BadArgType(u64),
+    /// The data of an argument is zero size
+    ZeroDataSize,
+    /// copy_in: a bitmask is non-zero for string binary format
+    CopyInUnsupportedStringMask,
+    /// copy_in: bad size value for a particular binary format
+    CopyInBadSize {
+        /// The binary format code
+        bf: u64,
+        /// The size that was set for this
+        size: u64,
+    },
+    /// copy_in: bad format type
+    CopyInBadFormat(u64),
+    /// copy_out: bad size value
+    CopyOutBadSize(u64),
+    /// A data argument is passed to a function call argument directly
+    /// (unsupported)
+    UnsupportedArgData,
+    /// The copyout_index overflows/underflows K_MAX_COMMANDS
+    OverflowOutIndex(usize),
+    /// Some other error not captured here
+    Other(String),
+}
+
+impl DecoderError {
+    fn trunc<D>(context: &'static str, value: SizeError<&[u8], D>) -> Self {
+        Self::TruncRead {
+            context,
+            expected: size_of::<D>(),
+            got: value.into_src().len(),
+        }
+    }
+}
 
 /// Instructions for a decoded syzkaller program alongside the required
 /// components to execute the program (e.g. the exec function and the results array).
@@ -97,14 +152,13 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
         mem: M,
         syz_input_buffer: &[u8],
         exec: F,
-    ) -> Result<Self> {
-        let mut decoder =
-            Decoder::new(syz_input_buffer).context("failed to instantiate decoder")?;
+    ) -> Result<Self, DecoderError> {
+        let mut decoder = Decoder::new(syz_input_buffer)?;
         let mut instr_vec_tmp: Vec<InstrEntry> = Vec::new();
         {
             let mut call = None;
             let mut instrout: Vec<InstrCopyOut> = Vec::new();
-            while let Some(instr) = decoder.try_next().context("failed to decode instruction")? {
+            while let Some(instr) = decoder.try_next()? {
                 match instr {
                     Instr::CopyOut(i) => {
                         // CopyOuts always follow a call and are tied to calls, so we collect them
@@ -179,7 +233,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
 
     /// Check if the provided call was executed and returned success, based on the contents
     /// of the provided results array.
-    fn was_call_successful(&self, call: &InstrCall) -> bool {
+    fn was_call_successful(&self, call: &InstrCall) -> Result<bool, DecoderError> {
         let (copyout_index, results) =
             if call.wire.copyout_index != wire::COPYOUT_INDEX_INVALID as u64 {
                 (call.wire.copyout_index as usize, &self.results)
@@ -192,20 +246,17 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
             };
 
         if copyout_index >= K_MAX_COMMANDS {
-            panic!(
-                "copyout_call_results: result idx {:#x} overflows/underflows K_MAX_COMMANDS",
-                copyout_index
-            );
+            return Err(DecoderError::OverflowOutIndex(copyout_index));
         }
 
         // Get the result value from the results array.
         let r = &results[copyout_index];
 
-        r.was_successful()
+        Ok(r.was_successful())
     }
 
     /// Continues execution of the instructions contains in our own instruction vector
-    pub fn continue_execution(&self) -> Result<()> {
+    pub fn continue_execution(&self) -> Result<(), DecoderError> {
         // SAFETY: This should always be sound because we cannot reach this point without having a valid
         // execution function.
         // We can _only_ take an immutable borrow here because this function is reentrant and we may have
@@ -214,17 +265,15 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
         while let Some(entry) = instr_vec.pop_ref_conditional(|ent| self.is_instr_call_ready(ent)) {
             // Execute all the instructions, regardless of their type
             let instr_target = entry.get_inner_instr();
-            self.exec_single(instr_target)
-                .context("failed to execute instruction")?;
+            self.exec_single(instr_target)?;
 
             // If the instr was a Call, it may have copyouts to execute.
             if let InstrEntry::Call(instr_call, copyouts) = entry {
                 // Only execute copyouts if the call itself was successful, otherwise the values being
                 // copied out may be invalid.
-                if self.was_call_successful(instr_call) {
+                if self.was_call_successful(instr_call)? {
                     for copyout_entry in copyouts.iter() {
-                        self.exec_single(Instr::CopyOut(*copyout_entry))
-                            .context("failed to execute instruction")?;
+                        self.exec_single(Instr::CopyOut(*copyout_entry))?;
                     }
                 }
             } // No copyouts to process if the instruction was not a call
@@ -234,21 +283,19 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
     }
 
     /// Executes the instructions in the provided instruction vector.
-    fn exec_instrs(&self) -> Result<()> {
+    fn exec_instrs(&self) -> Result<(), DecoderError> {
         let instr_vec = self.instr_vec.clone();
         while let Some(entry) = instr_vec.pop_ref_conditional(|ent| self.is_instr_call_ready(ent)) {
             // Execute all the instructions, regardless of their type
-            self.exec_single(entry.get_inner_instr())
-                .context("failed to execute instruction")?;
+            self.exec_single(entry.get_inner_instr())?;
 
             // If the instr was a Call, it may have copyouts to execute.
             if let InstrEntry::Call(instr_call, copyouts) = entry {
                 // Only execute copyouts if the call itself was successful, otherwise the values being
                 // copied out may be invalid.
-                if self.was_call_successful(instr_call) {
+                if self.was_call_successful(instr_call)? {
                     for copyout_entry in copyouts.iter() {
-                        self.exec_single(Instr::CopyOut(*copyout_entry))
-                            .context("failed to execute instruction")?;
+                        self.exec_single(Instr::CopyOut(*copyout_entry))?;
                     }
                 }
             } // No copyouts to process if the instruction was not a call
@@ -260,7 +307,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
     /// Executes the provided instruction.
     /// If the instruction is a call, the provided exec function is called with the provided input case
     /// and the results are stored in the results array if the call has a valid copyout index.
-    fn exec_single(&self, instr: Instr) -> Result<()> {
+    fn exec_single(&self, instr: Instr) -> Result<(), DecoderError> {
         /// The number of bytes to offset all data operations by.
         const COPYIN_OFFSET: u64 = 0;
 
@@ -282,7 +329,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                         bf,
                         bf_off,
                         bf_len,
-                    );
+                    )?;
                 }
                 Arg::Result(a) => {
                     let size = a.meta & 0xff;
@@ -297,7 +344,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                         a.arg
                     };
 
-                    copyin(&mut *mem, i.wire.addr + COPYIN_OFFSET, val, size, bf, 0, 0);
+                    copyin(&mut *mem, i.wire.addr + COPYIN_OFFSET, val, size, bf, 0, 0)?;
                 }
                 Arg::Data((a, d)) => {
                     mem.write_mem(
@@ -309,7 +356,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
 
             Instr::CopyOut(i) => {
                 let mut val = 0u64;
-                copyout(&mut *mem, i.wire.addr, i.wire.size, &mut val);
+                copyout(&mut *mem, i.wire.addr, i.wire.size, &mut val)?;
 
                 let r = &self.results[i.wire.index as usize];
                 // Its assumed if we're executing a CopyOut, that the associated call was
@@ -345,7 +392,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
 
                             args[n] = val;
                         }
-                        Arg::Data(_) => panic!("data argument for function call!?"),
+                        Arg::Data(_) => return Err(DecoderError::UnsupportedArgData),
                     }
                 }
 
@@ -378,10 +425,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                     };
 
                 if copyout_index >= K_MAX_COMMANDS {
-                    panic!(
-                        "copyout_call_results: result idx {:#x} overflows/underflows K_MAX_COMMANDS",
-                        copyout_index
-                    );
+                    return Err(DecoderError::OverflowOutIndex(copyout_index));
                 }
                 let r = &results[copyout_index];
 
@@ -470,22 +514,15 @@ struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    fn new(mut buf: &'a [u8]) -> Result<Self> {
-        let hdr = read_struct::<wire::ProgramHeader>(&mut buf)
-            .context("failed to read program header")?;
+    fn new(mut buf: &'a [u8]) -> Result<Self, DecoderError> {
+        let hdr = read_struct::<wire::ProgramHeader>("program header", &mut buf)?;
 
         if hdr.magic != 0xbadc0ffeebadface {
-            bail!("bad execute request magic {:#?}", hdr.magic);
+            return Err(DecoderError::BadMagic(hdr.magic));
         } else if hdr.prog_size == 0 {
-            bail!("prog size is 0");
-        } else if hdr.prog_size
-            > ((SUPPORTED_INPUT_SIZE as u64) - (size_of::<wire::ProgramHeader>() as u64))
-        {
-            bail!("input size too large! InputSz:{:#?}", hdr.prog_size);
-        }
-
-        if hdr.prog_size > buf.len() as u64 {
-            bail!("syzkaller program is larger than input buffer");
+            return Err(DecoderError::ZeroProgSize);
+        } else if hdr.prog_size > buf.len() as u64 {
+            return Err(DecoderError::ProgSizeExceedsBuffer);
         }
 
         Ok(Self {
@@ -497,45 +534,30 @@ impl<'a> Decoder<'a> {
     }
 
     /// Fetch and decode the next instruction. Returns `None` if we have reached EOF.
-    pub fn try_next(&mut self) -> Result<Option<Instr>> {
-        let n = read_inc_input(&mut self.buf).context("unexpected end of input")? as i64;
+    pub fn try_next(&mut self) -> Result<Option<Instr>, DecoderError> {
+        let n = read_inc_input("instruction type", &mut self.buf)? as i64;
         match n {
             wire::INSTR_EOF => Ok(None),
 
-            wire::INSTR_COPYIN => {
-                let insn = read_struct::<wire::InstrCopyIn>(&mut self.buf)
-                    .context("failed to read instruction")?;
+            wire::INSTR_COPYIN => Ok(Some(Instr::CopyIn(InstrCopyIn {
+                rpid: self.hdr.pid,
+                wire: read_struct("instruction", &mut self.buf)?,
+                arg: read_arg(&mut self.buf)?,
+            }))),
 
-                let arg = read_arg(&mut self.buf).context("failed to read argument")?;
+            wire::INSTR_COPYOUT => Ok(Some(Instr::CopyOut(InstrCopyOut {
+                rpid: self.hdr.pid,
+                wire: read_struct("instruction", &mut self.buf)?,
+            }))),
 
-                Ok(Some(Instr::CopyIn(InstrCopyIn {
-                    rpid: self.hdr.pid,
-                    wire: insn,
-                    arg,
-                })))
-            }
-
-            wire::INSTR_COPYOUT => {
-                let insn = read_struct::<wire::InstrCopyOut>(&mut self.buf)
-                    .context("failed to read instruction")?;
-
-                Ok(Some(Instr::CopyOut(InstrCopyOut {
-                    rpid: self.hdr.pid,
-                    wire: insn,
-                })))
-            }
-
-            c if c < 0 => {
-                bail!("unknown instruction {n}");
-            }
+            c if c < 0 => Err(DecoderError::BadInstruction(n)),
 
             _ => {
-                let insn = read_struct::<wire::InstrCall>(&mut self.buf)
-                    .context("failed to read instruction")?;
+                let insn = read_struct::<wire::InstrCall>("instruction", &mut self.buf)?;
 
                 let mut args = Vec::new();
                 for _i in 0..insn.num_args {
-                    args.push(read_arg(&mut self.buf).context("failed to read argument")?);
+                    args.push(read_arg(&mut self.buf)?);
                 }
                 let custom_copyout_index =
                     if insn.copyout_index == wire::COPYOUT_INDEX_INVALID as u64 {
@@ -633,49 +655,39 @@ impl ResT {
 }
 
 /// Read a 64-bit little-endian word from a slice and advance the slice's pointer.
-///
-/// This will panic if the slice pointed to by `input_data` is smaller than 8 bytes.
-fn read_inc_input(input_data: &mut &[u8]) -> Option<u64> {
-    let (s, t) = u64::read_from_prefix(input_data).ok()?;
+fn read_inc_input(ctx: &'static str, input_data: &mut &[u8]) -> Result<u64, DecoderError> {
+    let (s, t) = u64::read_from_prefix(input_data).map_err(|e| DecoderError::trunc(ctx, e))?;
     *input_data = t;
-    Some(s)
+    Ok(s)
 }
 
 /// Read a struct out of `input_data` and advance the slice's pointer.
-fn read_struct<T: FromBytes>(input_data: &mut &[u8]) -> Option<T> {
-    let (s, t) = T::read_from_prefix(input_data).ok()?;
+fn read_struct<T: FromBytes>(ctx: &'static str, input_data: &mut &[u8]) -> Result<T, DecoderError> {
+    let (s, t) = T::read_from_prefix(input_data).map_err(|e| DecoderError::trunc(ctx, e))?;
 
     *input_data = t;
-    Some(s)
+    Ok(s)
 }
 
 /// Read out an argument from an input buffer.
-fn read_arg(buf: &mut &[u8]) -> Result<Arg> {
-    let typ = read_inc_input(buf).context("unexpected end of input")?;
+fn read_arg(buf: &mut &[u8]) -> Result<Arg, DecoderError> {
+    let typ = read_inc_input("argument type", buf)?;
 
     Ok(match typ {
-        wire::ARG_CONST => {
-            let arg = read_struct::<wire::ArgConst>(buf).context("failed to read argument")?;
-
-            Arg::Const(arg)
-        }
-        wire::ARG_RESULT => {
-            let arg = read_struct::<wire::ArgResult>(buf).context("failed to read argument")?;
-
-            Arg::Result(arg)
-        }
+        wire::ARG_CONST => Arg::Const(read_struct("argument", buf)?),
+        wire::ARG_RESULT => Arg::Result(read_struct("argument", buf)?),
         wire::ARG_DATA => {
-            let arg = read_struct::<wire::ArgData>(buf).context("failed to read argument")?;
+            let arg = read_struct::<wire::ArgData>("argument", buf)?;
 
             // Read out each data word.
             let cnt = arg.size.div_ceil(8);
             if cnt == 0 {
-                panic!("data argument with size of zero!?");
+                return Err(DecoderError::ZeroDataSize);
             }
 
             let mut words = Vec::new();
             for _i in 0..cnt {
-                words.push(read_inc_input(buf).context("unexpected end of input")?);
+                words.push(read_inc_input("argument data", buf)?);
             }
 
             Arg::Data((arg, words))
@@ -683,7 +695,7 @@ fn read_arg(buf: &mut &[u8]) -> Result<Arg> {
         // arg_csum
         0x3 => todo!(),
         // Catchall
-        _ => bail!("unsupported argument type: {typ}"),
+        _ => return Err(DecoderError::BadArgType(typ)),
     })
 }
 
@@ -728,9 +740,9 @@ fn copyin<M: SafeMemoryMap + ?Sized>(
     bf: u64,
     bf_off: u64,
     bf_len: u64,
-) {
+) -> Result<(), DecoderError> {
     if bf != 0 && (bf_off != 0 || bf_len != 0) {
-        panic!("copyin: bitmask for string format invalid");
+        return Err(DecoderError::CopyInUnsupportedStringMask);
     }
 
     let tmp_str = match bf {
@@ -741,69 +753,66 @@ fn copyin<M: SafeMemoryMap + ?Sized>(
                 2 => store_by_bitmask(mem, addr, val as u16, bf_off, bf_len),
                 4 => store_by_bitmask(mem, addr, val as u32, bf_off, bf_len),
                 8 => store_by_bitmask(mem, addr, val, bf_off, bf_len),
-                _ => {
-                    panic!("copyin: bad argument size {}", size);
-                }
+                _ => return Err(DecoderError::CopyInBadSize { bf, size }),
             }
-            return;
+            return Ok(());
         }
 
         // Case: binary_format_bigendian
         1 => panic!("unhandled: bigendian binary format"),
 
         // Case: binary_format_strdec
-        2 => {
-            // Converts 0xffffffffffffffff into 34343736`34343831
-            // 35353930`37333730 00000000`35313631
-            // TODO: verify endianness & correctness and re-assess implementation for perf
-            assert!(size == 20);
-            format!("{val:020}")
-        }
+        // Converts 0xffffffffffffffff into 34343736`34343831
+        // 35353930`37333730 00000000`35313631
+        // TODO: verify endianness & correctness and re-assess implementation for perf
+        2 => format!("{val:020}"),
 
         // Case: binary_format_strhex
-        3 => {
-            // Stores ascii of hex, e.g val 0xffffffffffffffff turns
-            // into 0x66666666`66667830 66666666`66666666
-            // TODO: verify endianness & correctness and re-assess implementation for perf
-            assert!(size == 18);
-            format!("{val:#018x}")
-        }
+        // Stores ascii of hex, e.g val 0xffffffffffffffff turns
+        // into 0x66666666`66667830 66666666`66666666
+        // TODO: verify endianness & correctness and re-assess implementation for perf
+        3 => format!("{val:#018x}"),
 
         // Case: binary_format_stroct
-        4 => {
-            // turns 0xffffffffffffffff into 37373737`37373130
-            // 37373737`37373737 00373737`37373737
-            // TODO: verify endianness & correctness and re-assess implementation for perf
-            assert!(size == 23);
-            format!("{val:0023o}")
-        }
+        // turns 0xffffffffffffffff into 37373737`37373130
+        // 37373737`37373737 00373737`37373737
+        // TODO: verify endianness & correctness and re-assess implementation for perf
+        4 => format!("{val:0023o}"),
 
-        _ => {
-            panic!("copyin: unknown binary format {}", bf);
-        }
+        _ => return Err(DecoderError::CopyInBadFormat(bf)),
     };
 
-    assert!(tmp_str.len() == size as usize);
+    if size as usize != tmp_str.len() {
+        return Err(DecoderError::CopyInBadSize { bf, size });
+    }
 
-    mem.write_mem(addr as usize, tmp_str.as_bytes())
+    mem.try_write_mem(addr as usize, tmp_str.as_bytes())
+        .map_err(DecoderError::Other)
 }
 
-fn copyout<M: SafeMemoryMap + ?Sized>(mem: &mut M, addr: u64, size: u64, res: &mut u64) {
+fn copyout<M: SafeMemoryMap + ?Sized>(
+    mem: &mut M,
+    addr: u64,
+    size: u64,
+    res: &mut u64,
+) -> Result<(), DecoderError> {
     // NB: this code makes an assumption that we are working with LSB only architectures
     const _STATIC_ASSERT_IS_LSB: [u8; (1 - u16::from_le_bytes([1, 0])) as usize] = []; // if this errors we are compiling to an MSB arch
 
     let mut buf = [0; 8];
     let readlen = size.min(8) as usize;
-    mem.read_mem(addr as usize, &mut buf[0..readlen]);
+    mem.try_read_mem(addr as usize, &mut buf[0..readlen])
+        .map_err(DecoderError::Other)?;
     match size {
         1 => (),
         2 => (),
         4 => (),
         8 => (),
-        _ => panic!("copyout: bad argument size {:#x}", size),
+        _ => return Err(DecoderError::CopyOutBadSize(size)),
     }
 
     *res = u64::from_le_bytes(buf);
+    Ok(())
 }
 
 /// Takes a syz_in buffer containing raw syzkaller data from TKO, parses
@@ -818,7 +827,7 @@ pub fn exec_testcases_safe<M: SafeMemoryMap, F>(
     syz_exec_mem: M,
     syz_input_buffer: &mut [u8],
     exec: F,
-) -> Result<TestcaseResults>
+) -> Result<TestcaseResults, DecoderError>
 where
     F: Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + Send + Sync,
 {
@@ -1028,7 +1037,7 @@ mod tests {
         let bf_off: u64 = 0;
         let bf_len: u64 = 0;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len);
+        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
 
         let expected: [u8; 8] = [0xef, 0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12];
         assert_eq!(mem, expected);
@@ -1044,7 +1053,7 @@ mod tests {
         let bf_off: u64 = 2;
         let bf_len: u64 = 2;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len);
+        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
 
         let expected: [u8; 4] = [0x4, 0x0, 0x0, 0x0];
         assert_eq!(mem, expected);
@@ -1061,7 +1070,7 @@ mod tests {
         let bf_off: u64 = 0;
         let bf_len: u64 = 0;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len);
+        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
     }
 
     #[test]
@@ -1075,7 +1084,7 @@ mod tests {
         let bf_off: u64 = 0;
         let bf_len: u64 = 0;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len);
+        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
     }
 
     #[test]
@@ -1088,7 +1097,7 @@ mod tests {
         let bf_off: u64 = 0;
         let bf_len: u64 = 0;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len);
+        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
 
         // 0xffffffffffffffff -> 34343736`34343831 35353930`37333730 00000000`35313631 (ascii dec)
         let expected: [u8; 20] = [
@@ -1108,7 +1117,7 @@ mod tests {
         let bf_off: u64 = 0;
         let bf_len: u64 = 0;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len);
+        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
 
         // 0xffffffffffffffff -> 0x66666666`66667830 66666666`66666666 (ascii hex)
         let expected: [u8; 18] = [
@@ -1128,7 +1137,7 @@ mod tests {
         let bf_off: u64 = 0;
         let bf_len: u64 = 0;
 
-        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len);
+        copyin(&mut mem, addr, val, size, bf, bf_off, bf_len).unwrap();
 
         // 0xffffffffffffffff -> 37373737`37373130 37373737`37373737 00373737`37373737 (ascii oct)
         let expected: [u8; 23] = [
