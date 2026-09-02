@@ -195,9 +195,12 @@ pub fn write_l2_table(
         let raw = if entry.cluster_offset == 0 {
             0
         } else {
-            (entry.cluster_offset & OFFSET_MASK) | OFLAG_COPIED
+            let mut raw = (entry.cluster_offset & OFFSET_MASK) | OFLAG_COPIED;
+            if entry.reads_as_zeros {
+                raw |= 1;
+            }
+            raw
         };
-        bytes.extend_from_slice(&raw.to_be_bytes());
     }
     let n = file.write_at(&bytes, l2_offset)?;
     if n != bytes.len() {

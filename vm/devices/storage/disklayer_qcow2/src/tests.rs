@@ -334,7 +334,7 @@ fn build_zero_flag_fixture() -> Vec<u8> {
     let l2_entry: u64 = (1u64 << 63) // COPIED
         | 1                          // bit 0: reads as all zeros
         | (3 * CLUSTER_SIZE as u64); // non-zero, but ignored, host offset
-    img[l2_table..l2_table + 8].copy_from_slice(&l2_entry.to_be_bytes());
+    img[l2_table + 8..l2_table + 16].copy_from_slice(&l2_entry.to_be_bytes());
     img
 }
 

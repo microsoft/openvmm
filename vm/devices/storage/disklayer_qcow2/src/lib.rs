@@ -77,9 +77,6 @@ pub struct Qcow2Layer {
 
 impl Qcow2Layer {
     /// Create a `Qcow2Layer` from an open file.
-    ///
-    /// NOTE: `sector_count` is passed by the caller until format parsing is
-    /// implemented.
     pub fn new(file: File, header: Qcow2Header, read_only: bool) -> anyhow::Result<Self> {
         // A corrupt image (incompatible bit 1) must not be written to. The
         // dirty flag (bit 0) implies refcounts may be inconsistent, which we
@@ -348,7 +345,8 @@ impl LayerIo for Qcow2Layer {
                 return Err(DiskError::InvalidInput);
             }
 
-            let data_cluster_offset = if l2_entry.cluster_offset == 0 {
+            let needs_allocation = l2_entry.cluster_offset == 0 || l2_entry.reads_as_zeros;
+            let data_cluster_offset = if needs_allocation {
                 let cluster_size = cluster_size as u64;
                 let new_cluster = allocate_cluster(file.clone(), cluster_size).await?;
                 zero_cluster(file.clone(), new_cluster, cluster_size as usize).await?;
@@ -393,6 +391,7 @@ impl LayerIo for Qcow2Layer {
             }
 
             l2_table[addr.l2_index as usize].cluster_offset = data_cluster_offset;
+            l2_table[addr.l2_index as usize].reads_as_zeros = false;
             let f = file.clone();
             unblock(move || write_l2_table(&f, l2_offset, &l2_table))
                 .await
