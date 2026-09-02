@@ -178,20 +178,24 @@ fn with_session<R>(f: impl FnOnce(&mut NetvspSession) -> Result<R, String>) -> R
 
 /// Reset the netvsp channel at a testcase boundary.
 ///
-/// Closes the current netvsp channel, **reclaims** its guest memory
-/// (ring region + recv/send GPADL buffers + any pending-TX staging
-/// buffers), and reopens a fresh channel on the same VMBus connection.
-/// This gives each testcase an isolated, clean-slate data path: no
-/// wedged send ring, revoked/renewed buffer, or mutated RNDIS packet
-/// filter can leak from one testcase into the next. It is also the
-/// recovery path for a datapath that a prior testcase wedged (e.g. a
+/// Closes the current netvsp channel, tears down its GPADL
+/// registrations (ring + recv/send buffers), **reclaims** its guest
+/// memory (ring region + recv/send GPADL buffers + any pending-TX
+/// staging buffers), and reopens a fresh channel on the same VMBus
+/// connection. This gives each testcase an isolated, clean-slate data
+/// path: no wedged send ring, revoked/renewed buffer, or mutated RNDIS
+/// packet filter can leak from one testcase into the next. It is also
+/// the recovery path for a datapath that a prior testcase wedged (e.g. a
 /// `renew_buffer` that revoked the send buffer but failed to
 /// re-establish it, after which the host stops completing every send).
 ///
 /// Only the channel is churned — the VMBus connection (SynIC + offers)
-/// is kept up, so a reset costs one channel bring-up (~8 round-trips),
-/// not a full SynIC/`request_offers` re-init. Freeing the old backing
-/// before reopening keeps this leak-free across an unbounded campaign;
+/// is kept up, so a reset costs one channel bring-up plus a handful of
+/// GPADL teardowns, not a full SynIC/`request_offers` re-init. Tearing
+/// down the GPADLs before freeing the backing is what makes the cheap
+/// reopen viable: the freed guest pages are reused by the next channel's
+/// ring/buffers, so a GPADL left registered would make the host NAK the
+/// reopen's `GpadlHeader` over the same PFNs and force a full rebuild.
 /// `close_channel` uses SynIC post-messages (not the data ring) so it
 /// succeeds even when the ring is wedged full.
 ///
@@ -214,9 +218,35 @@ pub fn reset_session() {
     // Close the channel first, then free its backing — the host must
     // stop touching the ring/buffers before we deallocate them.
     let (channel, backing) = nic.into_parts();
-    if let Err(e) = vmbus_guest::channel::close_channel(&mut *ctx, channel) {
+
+    // GPADL handles to release once the channel is closed. The reopen
+    // hands the just-freed guest pages straight back to the next
+    // `alloc_zeroed`, so any GPADL left registered makes the host NAK
+    // the reopen's `GpadlHeader` over the exact same PFNs (observed as
+    // `open failed: Parse { ty: GPADL_CREATED, "non-success" }`, which
+    // forced a full VMBus teardown + re-bringup every testcase).
+    // Capture the ring handle before `channel` is consumed below.
+    let ring_gpadl = channel.ring_gpadl();
+
+    // Post `CloseChannel` but *retain* the relid: `teardown_gpadl` needs
+    // the host to still recognize the channel id (a `RelIdReleased`
+    // first makes it drop the teardown and we time out), and keeping the
+    // offer live lets the reopen skip `RequestOffers`.
+    if let Err(e) = vmbus_guest::channel::close_channel_keep_relid(&mut *ctx, channel) {
         log::warn!("netvsp: reset close_channel failed: {e:?}");
     }
+
+    // Tear down the recv/send buffer GPADLs and the ring GPADL so the
+    // host releases those guest pages before we free and reuse them.
+    for handle in backing.buffer_gpadls() {
+        if let Err(e) = vmbus_guest::gpadl::teardown_gpadl(&mut *ctx, handle) {
+            log::warn!("netvsp: reset teardown buffer gpadl {:?} failed: {e:?}", handle.id());
+        }
+    }
+    if let Err(e) = vmbus_guest::gpadl::teardown_gpadl(&mut *ctx, ring_gpadl) {
+        log::warn!("netvsp: reset teardown ring gpadl {:?} failed: {e:?}", ring_gpadl.id());
+    }
+
     backing.free();
 
     // Reopen a fresh channel on the same VMBus connection.

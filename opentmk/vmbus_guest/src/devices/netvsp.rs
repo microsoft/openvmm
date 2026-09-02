@@ -803,6 +803,20 @@ pub struct NetvspBacking {
 unsafe impl Send for NetvspBacking {}
 
 impl NetvspBacking {
+    /// GPADL handles for the established recv/send buffers.
+    ///
+    /// A close/reopen cycle that frees this backing must tear these
+    /// down host-side *before* [`free`](Self::free): the freed guest
+    /// pages are typically handed straight back to the next
+    /// `alloc_zeroed`, so reopening re-registers a fresh GPADL over the
+    /// exact PFNs the host still holds under the old (un-torn-down)
+    /// handle, and the host NAKs the new `GpadlHeader`. The ring GPADL
+    /// (from [`Channel::ring_gpadl`](crate::channel::Channel::ring_gpadl))
+    /// must be torn down for the same reason.
+    pub fn buffer_gpadls(&self) -> impl Iterator<Item = GpadlHandle> + '_ {
+        self.bufs.iter().flatten().map(|b| b.gpadl)
+    }
+
     /// Deallocate every guest allocation this handle owns: the ring
     /// region, the send/recv GPADL buffers, and any not-yet-completed
     /// TX staging buffers.
@@ -921,13 +935,22 @@ const DEFAULT_MAX_POLLS: usize = 100_000_000;
 
 /// Completion-poll budget for the fuzzer-facing raw send paths
 /// (`send_nvsp_raw`, `send_rndis_raw`, `renew_*_buffer`). Much smaller
-/// than [`DEFAULT_MAX_POLLS`] (~0.25s vs ~5s) because malformed fuzz
+/// than [`DEFAULT_MAX_POLLS`] (~0.1s vs ~5s) because malformed fuzz
 /// input routinely gets no host completion, and a single testcase may
 /// chain many such sends. The agent must answer within the fuzzer's
 /// 20s TCP read window, so a large per-send timeout would blow the
-/// whole testcase budget on the first few sends. A real completion for
-/// a well-formed send arrives far faster than this bound.
-const FUZZ_SEND_MAX_POLLS: usize = 5_000_000;
+/// whole testcase budget on the first few sends.
+///
+/// Sized from a live-run measurement of the network-backed datapath:
+/// genuine completions for well-formed sends arrive with p50 ~23ms and
+/// 97% within ~75ms, while a malformed send that gets no completion
+/// otherwise spins the whole budget. ~0.1s therefore captures
+/// effectively all real acks with margin while cutting the wasted spin
+/// on dropped packets (~53% of fuzz sends) by more than half. Missing a
+/// late ack is harmless: the packet was already delivered to the host
+/// via `post_message`, and the per-testcase channel reset discards any
+/// completion still queued behind it.
+const FUZZ_SEND_MAX_POLLS: usize = 2_000_000;
 
 /// Soft cap on in-flight TX buffers awaiting completion. Sized to
 /// keep the outstanding heap footprint bounded at ~2 MiB (512 × 4 KiB)

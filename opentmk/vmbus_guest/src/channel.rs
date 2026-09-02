@@ -320,6 +320,34 @@ pub fn close_channel_with<C>(ctx: &mut C, channel: Channel) -> Result<()>
 where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
 {
+    close_channel_inner(ctx, channel, true)
+}
+
+/// Like [`close_channel_with`], but posts only `CloseChannel` and
+/// **retains** the channel's relid (no `RelIdReleased`).
+///
+/// This leaves the offer live host-side (channel returns to the
+/// "offered" state) so it can be re-opened without re-running
+/// `RequestOffers`, and — crucially — keeps the channel id valid for
+/// subsequent [`crate::gpadl::teardown_gpadl`] calls. `RelIdReleased`
+/// tells the host the relid may be reassigned; once sent, the host no
+/// longer recognizes the channel id and drops any later `GpadlTeardown`
+/// for it on the floor (the guest then times out waiting for
+/// `GpadlTorndown`). The per-testcase reset therefore closes with this,
+/// tears down the ring/buffer GPADLs, and reopens — all on the retained
+/// relid. Matches `vmbus_client`, which sends `CloseChannel` (channel →
+/// `Offered`) separately from the later `RelIdReleased`.
+pub fn close_channel_keep_relid_with<C>(ctx: &mut C, channel: Channel) -> Result<()>
+where
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
+{
+    close_channel_inner(ctx, channel, false)
+}
+
+fn close_channel_inner<C>(ctx: &mut C, channel: Channel, release_relid: bool) -> Result<()>
+where
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
+{
     let state = connection().clone().ok_or(Error::VersionMismatch)?;
 
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
@@ -335,11 +363,13 @@ where
         post_message(ctx, state.post_message_connection_id, &buf[..used])?;
     }
 
-    let rel = RelIdReleased {
-        channel_id: channel.channel_id,
-    };
-    let used = encode(&rel, &mut buf);
-    post_message(ctx, state.post_message_connection_id, &buf[..used])?;
+    if release_relid {
+        let rel = RelIdReleased {
+            channel_id: channel.channel_id,
+        };
+        let used = encode(&rel, &mut buf);
+        post_message(ctx, state.post_message_connection_id, &buf[..used])?;
+    }
 
     Ok(())
 }
@@ -381,4 +411,12 @@ pub fn close_channel<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     channel: Channel,
 ) -> Result<()> {
     close_channel_with(ctx, channel)
+}
+
+/// UEFI entry point: [`close_channel_keep_relid_with`].
+pub fn close_channel_keep_relid<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    ctx: &mut C,
+    channel: Channel,
+) -> Result<()> {
+    close_channel_keep_relid_with(ctx, channel)
 }
