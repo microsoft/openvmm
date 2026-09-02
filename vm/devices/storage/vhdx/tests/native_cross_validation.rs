@@ -1117,10 +1117,8 @@ impl NativeVhdx {
 }
 
 impl RustVhdx {
-    /// Create a differencing VHDX via the Rust API (`has_parent: true`).
+    /// Create a differencing VHDX via the Rust API.
     ///
-    /// No parent locator is written — this is sufficient for Rust-only
-    /// chained reads but NOT for native-open.
     async fn create_diff(
         path: &Path,
         disk_size: u64,
@@ -1131,7 +1129,9 @@ impl RustVhdx {
         let mut params = vhdx::CreateParams {
             disk_size,
             block_size,
-            has_parent: true,
+            disk_type: vhdx::DiskType::Differencing(
+                vhdx::VhdxParent::new(Guid::new_random()).unwrap(),
+            ),
             ..Default::default()
         };
         vhdx::create(&file, &mut params)
@@ -1222,7 +1222,7 @@ async fn diff_rust_chained_read_unwritten_child(driver: DefaultDriver) {
         parent.close().await;
     }
 
-    // Step 2: Rust-create diff child (has_parent: true).
+    // Step 2: Rust-create a differencing child.
     let child = RustVhdx::create_diff(&child_path, disk_size, block_size, &driver).await;
 
     // Step 3: child.read_data returns zeros (Unmapped treated as zero).
