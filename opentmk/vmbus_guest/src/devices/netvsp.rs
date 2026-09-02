@@ -1013,7 +1013,7 @@ impl Netvsp {
             });
         }
         let base_gpa = virt_to_phys(base);
-        log::info!(
+        log::debug!(
             "netvsp: ring region at GPA {:#x} ({} bytes)",
             base_gpa,
             REGION_BYTES,
@@ -1024,7 +1024,7 @@ impl Netvsp {
             pfns.push((base_gpa + (i * 4096) as u64) >> 12);
         }
         let gpadl = establish_gpadl(ctx, offer.channel_id, REGION_BYTES as u32, &pfns)?;
-        log::info!(
+        log::debug!(
             "netvsp: ring GPADL established id={:?} for channel {:?}",
             gpadl.id(),
             offer.channel_id,
@@ -1067,7 +1067,7 @@ impl Netvsp {
             offer.connection_id,
             offer.channel_id.0 as u16,
         )?;
-        log::info!("netvsp: channel opened");
+        log::debug!("netvsp: channel opened");
 
         Ok(Self {
             channel,
@@ -1103,7 +1103,7 @@ impl Netvsp {
             match self.try_init(ctx, v) {
                 Ok(true) => {
                     self.version = v as u32;
-                    log::info!("netvsp: negotiated version {:?}", v);
+                    log::debug!("netvsp: negotiated version {:?}", v);
                     return Ok(v);
                 }
                 Ok(false) => {
@@ -1256,7 +1256,7 @@ impl Netvsp {
             });
         }
         let buf = allocate_gpadl_buffer(ctx, self.channel.channel_id(), size)?;
-        log::info!(
+        log::debug!(
             "netvsp: recv-buf allocated {} bytes, GPADL id={:?}",
             size,
             buf.gpadl.id(),
@@ -1340,7 +1340,7 @@ impl Netvsp {
                 reason: "recv-buf sub_alloc_size * count > allocation",
             });
         }
-        log::info!(
+        log::debug!(
             "netvsp: recv-buf established: sub_alloc_size={}, num_sub_allocs={}, used={}/{}",
             sec.sub_alloc_size,
             sec.num_sub_allocs,
@@ -1373,7 +1373,7 @@ impl Netvsp {
             });
         }
         let buf = allocate_gpadl_buffer(ctx, self.channel.channel_id(), size)?;
-        log::info!(
+        log::debug!(
             "netvsp: send-buf allocated {} bytes, GPADL id={:?}",
             size,
             buf.gpadl.id(),
@@ -1430,7 +1430,7 @@ impl Netvsp {
                 reason: "send-buf section_size larger than buffer",
             });
         }
-        log::info!(
+        log::debug!(
             "netvsp: send-buf established: section_size={}, count={}",
             parsed.section_size,
             count,
@@ -1545,7 +1545,7 @@ impl Netvsp {
             );
         }
         let rndis_total_bytes = (hdr_bytes.len() + req_bytes.len()) as u32;
-        log::info!(
+        log::debug!(
             "netvsp: rndis buffer at GPA {:#x}, {} bytes",
             virt_to_phys(rndis_ptr),
             rndis_total_bytes
@@ -1589,7 +1589,7 @@ impl Netvsp {
         if need_signal {
             self.channel.signal(ctx)?;
         }
-        log::info!("netvsp: RNDIS INITIALIZE sent (tid={:#x})", tid);
+        log::debug!("netvsp: RNDIS INITIALIZE sent (tid={:#x})", tid);
 
         // Wait for the two responses on the recv ring:
         // (a) VM_PKT_COMP with our tid → acks the NVSP send.
@@ -1606,7 +1606,7 @@ impl Netvsp {
                 Ok(pkt) => {
                     match pkt.descriptor.packet_type {
                         PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
-                            log::info!("netvsp: got V1_SEND_RNDIS_PKT_COMPLETE (tid={:#x})", tid);
+                            log::debug!("netvsp: got V1_SEND_RNDIS_PKT_COMPLETE (tid={:#x})", tid);
                             got_nvsp_comp = true;
                         }
                         PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
@@ -1622,7 +1622,7 @@ impl Netvsp {
                                         reason: "parse TransferPageHeader",
                                     }
                                 })?;
-                            log::info!(
+                            log::debug!(
                                 "netvsp: xfer-page packet: set_id={:#x} range_count={} host_tid={:#x}",
                                 xhdr.transfer_page_set_id,
                                 xhdr.range_count,
@@ -1650,7 +1650,7 @@ impl Netvsp {
                                     ty: None,
                                     reason: "parse TransferPageRange",
                                 })?;
-                            log::info!(
+                            log::debug!(
                                 "netvsp: xfer-page range0: offset={:#x} count={}",
                                 range0.byte_offset,
                                 range0.byte_count,
@@ -1677,7 +1677,7 @@ impl Netvsp {
                                     ty: None,
                                     reason: "parse RndisMessageHeader",
                                 })?;
-                            log::info!(
+                            log::debug!(
                                 "netvsp: RNDIS response type={:#x} len={}",
                                 rhdr.message_type,
                                 rhdr.message_length,
@@ -1693,7 +1693,7 @@ impl Netvsp {
                                     ty: None,
                                     reason: "parse RndisInitializeComplete",
                                 })?;
-                            log::info!(
+                            log::debug!(
                                 "netvsp: RNDIS init complete status={:#x} request_id={:#x} \
                                  major={} minor={} device_flags={:#x} medium={} \
                                  max_packets={} max_transfer={}",
@@ -1741,7 +1741,7 @@ impl Netvsp {
                             if need_signal {
                                 self.channel.signal(ctx)?;
                             }
-                            log::info!(
+                            log::debug!(
                                 "netvsp: xfer-page COMP sent back (host_tid={:#x})",
                                 host_tid
                             );
@@ -1886,7 +1886,7 @@ impl Netvsp {
         if need_signal {
             self.channel.signal(ctx)?;
         }
-        log::info!(
+        log::debug!(
             "netvsp: RNDIS SET packet_filter={:#x} sent (tid={:#x})",
             filter,
             tid
@@ -1902,7 +1902,7 @@ impl Netvsp {
                 Ok(pkt) => {
                     match pkt.descriptor.packet_type {
                         PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
-                            log::info!("netvsp: RNDIS SET nvsp-comp received");
+                            log::debug!("netvsp: RNDIS SET nvsp-comp received");
                             got_nvsp_comp = true;
                         }
                         PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
@@ -1950,7 +1950,7 @@ impl Netvsp {
                                             reason: "parse RndisSetComplete",
                                         }
                                     })?;
-                                log::info!(
+                                log::debug!(
                                     "netvsp: RNDIS SET_CMPLT request_id={:#x} status={:#x}",
                                     sc.request_id,
                                     sc.status,
