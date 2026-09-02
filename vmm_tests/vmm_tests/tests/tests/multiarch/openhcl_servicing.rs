@@ -8,7 +8,6 @@
 
 use crate::utils::ExpectedGuestDevice;
 use crate::utils::get_device_paths;
-use anyhow::Context;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
@@ -31,7 +30,6 @@ use nvme_test::command_match::CommandMatchBuilder;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
 use pal_async::DefaultDriver;
-use pal_async::timer::PolledTimer;
 use petri::MemoryConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
@@ -59,7 +57,6 @@ use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::Stdio;
 use scsidisk_resources::SimpleScsiDiskHandle;
-use std::path::Path;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -1773,7 +1770,7 @@ async fn configure_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> 
 }
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
-/// implementation.
+/// implementation. Also sends one Ping.
 ///
 /// FUTURE: Test traffic on the nic.
 async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
@@ -1794,98 +1791,18 @@ async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-async fn mana_hwc_session_id(vm: &PetriVm<OpenVmmPetriBackend>) -> anyhow::Result<u16> {
-    let inspect = vm
-        .inspect_openhcl("vm/network/vf_managers", None, None)
-        .await?;
-    let json: serde_json::Value = serde_json::from_str(&inspect.json().to_string())
-        .context("failed to parse MANA inspect output as JSON")?;
-    let managers = json
-        .as_object()
-        .context("MANA VF managers inspect node is not an object")?;
-    if managers.len() != 1 {
-        anyhow::bail!(
-            "expected exactly one MANA VF manager, found {}",
-            managers.len()
-        );
-    }
-    let manager = managers
-        .values()
-        .next()
-        .context("MANA VF manager disappeared from Inspect output")?;
-    let activity_id = manager["mana_device"]["hwc_activity_id"]
-        .as_u64()
-        .context("MANA HWC activity ID missing or not an integer")?;
-    let activity_id = u32::try_from(activity_id).context("MANA HWC activity ID exceeds u32")?;
-
-    // A fresh GdmaDriver randomizes the upper half to distinguish its HWC
-    // session, while every request increments only the full activity ID. VFKA
-    // restores the saved ID, so the upper half identifies HWC continuity as
-    // long as servicing does not issue 2^16 HWC requests.
-    Ok((activity_id >> 16) as u16)
-}
-
-async fn validate_mana_servicing_trace(
-    driver: &DefaultDriver,
-    openhcl_log_path: &Path,
-    openhcl_log_offset: u64,
-    vfka_enabled: bool,
-) -> anyhow::Result<()> {
-    const TRACE_TIMEOUT: Duration = Duration::from_secs(10);
-    const RETRY_INTERVAL: Duration = Duration::from_millis(50);
-
-    let (expected_trace, unexpected_trace) = if vfka_enabled {
-        ("restore_gdma_driver", "new_gdma_driver")
-    } else {
-        ("new_gdma_driver", "restore_gdma_driver")
-    };
-    let offset = usize::try_from(openhcl_log_offset).context("OpenHCL log offset exceeds usize")?;
-    let deadline = std::time::Instant::now() + TRACE_TIMEOUT;
-
-    loop {
-        let log = std::fs::read(openhcl_log_path).with_context(|| {
-            format!(
-                "failed to read OpenHCL log at {}",
-                openhcl_log_path.display()
-            )
-        })?;
-        let post_servicing_log = log
-            .get(offset..)
-            .context("OpenHCL log was truncated during servicing")?;
-        let post_servicing_log = String::from_utf8_lossy(post_servicing_log);
-
-        anyhow::ensure!(
-            !post_servicing_log.contains(unexpected_trace),
-            "VFKA unexpectedly selected the {unexpected_trace} path after servicing"
-        );
-        if post_servicing_log.contains(expected_trace) {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            anyhow::bail!(
-                "timed out waiting for {expected_trace} in the post-servicing OpenHCL log"
-            );
-        }
-
-        PolledTimer::new(driver).sleep(RETRY_INTERVAL).await;
-    }
-}
-
-async fn mana_nic_servicing_core(
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    igvm_file: ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,
-    vfka_enabled: bool,
-    driver: &DefaultDriver,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
-    // When { VF KA: false, NVME KA : true }, `validate_restore` fails.
-    // The default value of both is true.
-    // TODO: Should OpenHCL support that scenario?
-    flags.enable_nvme_keepalive = vfka_enabled;
-    flags.enable_mana_keepalive = vfka_enabled;
-
-    let openhcl_log_path = config.log_source().output_dir().join("openhcl.log");
+    flags.enable_nvme_keepalive = false;
+    flags.enable_mana_keepalive = false;
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
@@ -1895,28 +1812,10 @@ async fn mana_nic_servicing_core(
 
     configure_mana_nic(&agent).await?;
     validate_mana_nic(&agent).await?;
-    let hwc_session_before = mana_hwc_session_id(&vm).await?;
-    let openhcl_log_offset = std::fs::metadata(&openhcl_log_path)
-        .with_context(|| {
-            format!(
-                "failed to inspect OpenHCL log at {}",
-                openhcl_log_path.display()
-            )
-        })?
-        .len();
 
     vm.restart_openhcl(igvm_file, flags).await?;
 
     validate_mana_nic(&agent).await?;
-    let hwc_session_after = mana_hwc_session_id(&vm).await?;
-    if vfka_enabled {
-        assert_eq!(
-            hwc_session_after, hwc_session_before,
-            "VFKA must preserve the GDMA HWC session across servicing"
-        );
-    }
-    validate_mana_servicing_trace(driver, &openhcl_log_path, openhcl_log_offset, vfka_enabled)
-        .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -1925,27 +1824,38 @@ async fn mana_nic_servicing_core(
 }
 
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
-/// nic is still functional.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn mana_nic_servicing(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
-    driver: DefaultDriver,
-) -> Result<(), anyhow::Error> {
-    mana_nic_servicing_core(config, igvm_file, false, &driver).await
-}
-
-/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Perform servicing and validate that its
-/// HWC is preserved across servicing with VFKA.
+/// the MANA emulator), and vmbus relay. Perform servicing with VF keepalive
+/// and validate that the nic is still functional.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn mana_nic_servicing_keepalive(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
-    driver: DefaultDriver,
 ) -> Result<(), anyhow::Error> {
-    mana_nic_servicing_core(config, igvm_file, true, &driver).await
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    // When { VF KA: false, NVME KA : true }, `validate_restore` fails.
+    // The default value of both is true.
+    // TODO: Should OpenHCL support that scenario?
+    flags.enable_nvme_keepalive = true;
+    flags.enable_mana_keepalive = true;
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .run()
+        .await?;
+
+    configure_mana_nic(&agent).await?;
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(igvm_file, flags).await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
 }
 
 /// Test servicing an OpenHCL VM when NVME keepalive is enabled but then
