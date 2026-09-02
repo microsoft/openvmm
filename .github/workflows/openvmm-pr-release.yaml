@@ -3004,6 +3004,12 @@ jobs:
     - name: install Rust
       run: flowey e 18 flowey_lib_common::install_rust 1
       shell: bash
+    - name: unpack openvmm-deps archive
+      run: flowey e 18 flowey_lib_hvlite::resolve_openvmm_deps 0
+      shell: bash
+    - name: extract Aarch64 sysroot.tar.gz
+      run: flowey e 18 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
+      shell: bash
     - name: run doctests for aarch64-unknown-linux-musl
       run: flowey e 18 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
       shell: bash
@@ -3011,13 +3017,6 @@ jobs:
       run: |-
         flowey e 18 flowey_lib_common::install_rust 2
         flowey e 18 flowey_lib_common::cfg_cargo_common_flags 0
-      shell: bash
-    - name: unpack openvmm-deps archive
-      run: flowey e 18 flowey_lib_hvlite::resolve_openvmm_deps 0
-      shell: bash
-    - name: extract Aarch64 sysroot.tar.gz
-      run: |-
-        flowey e 18 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
         flowey e 18 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo clippy
