@@ -165,6 +165,15 @@ impl Qcow2Header {
                 let header = &mut header.as_slice();
 
                 extended_version3_header.compression_type = Some(read_be_u8(header)?);
+
+                // Skip any additional header extension bytes so the whole
+                // header (up to `header_length`) is consumed.
+                let extension_len = extended_version3_header.header_length as usize - 105;
+                if extension_len > 0 {
+                    let mut skip = vec![0u8; extension_len];
+                    file.read_exact(&mut skip)
+                        .context("failed to read qcow2 header extension bytes")?;
+                }
             }
             this.incompatible_features = Some(extended_version3_header.incompatible_features);
             this.extended_version3_header = Some(extended_version3_header);
@@ -199,9 +208,12 @@ impl Qcow2Header {
             );
         }
 
-        let header_len = if this.header_version == 3 { 104 } else { 72 };
+        let header_len = match &this.extended_version3_header {
+            Some(v3) => v3.header_length as u64,
+            None => 72,
+        };
         anyhow::ensure!(
-            this.l1_table_offset >= header_len as u64,
+            this.l1_table_offset >= header_len,
             "l1_table_offset must not overlap the header"
         );
 

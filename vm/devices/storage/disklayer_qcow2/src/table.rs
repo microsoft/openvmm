@@ -201,6 +201,12 @@ pub fn write_l2_table(
             0
         } else {
             let mut r = (entry.cluster_offset & OFFSET_MASK) | OFLAG_COPIED;
+            if entry.compressed {
+                r |= 1 << 62;
+            }
+            if entry.copied {
+                r |= OFLAG_COPIED;
+            }
             if entry.reads_as_zeros {
                 r |= 1;
             }

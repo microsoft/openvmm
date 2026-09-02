@@ -6,12 +6,6 @@
 //! Provides a cross-platform, pure-Rust qcow2 backend for the layered disk
 //! stack.
 //!
-//! # Modules
-//!
-//! - [`chain`] — qcow2 chain opening helpers
-//! - [`header`] — qcow2 on-disk header parsing
-//! - [`resolver`] — resource resolver for qcow2 disk layers
-//! - [`table`] — qcow2 L1/L2 table entry parsing
 
 #![forbid(unsafe_code)]
 
@@ -94,6 +88,28 @@ impl Qcow2Layer {
         );
         let sector_count = header.size_bytes / SECTOR_SIZE as u64;
 
+        // Bound header-controlled sizes before allocating, so a crafted image
+        // cannot request an unbounded allocation. The L1 table must have
+        // enough entries to cover the virtual disk, but not vastly more.
+        let l1_entries_needed = header
+            .size_bytes
+            .div_ceil(header.cluster_size() * header.l2_entries_per_table());
+        anyhow::ensure!(
+            header.l1_size as u64 >= l1_entries_needed,
+            "qcow2 l1_size {} is too small to address a {} byte disk",
+            header.l1_size,
+            header.size_bytes
+        );
+        // Each L1 table entry is 8 bytes. A 2^63-byte disk (the max qcow2
+        // allows) with 2 MiB clusters needs at most 16 Mi entries, i.e. 128 MiB
+        // of table. Cap the allocation there so a hostile header can't OOM us.
+        const MAX_L1_ENTRIES: u64 = 16 * 1024 * 1024;
+        anyhow::ensure!(
+            header.l1_size as u64 <= MAX_L1_ENTRIES,
+            "qcow2 l1_size {} exceeds the supported maximum of {MAX_L1_ENTRIES}",
+            header.l1_size
+        );
+
         let mut l1_bytes = vec![0u8; header.l1_size as usize * 8];
         let n = file.read_at(&mut l1_bytes, header.l1_table_offset)?;
         if n != l1_bytes.len() {
@@ -104,6 +120,22 @@ impl Qcow2Layer {
 
         let mut refcounts = RefcountTable::new(&header)?;
         if header.refcount_table_offset != 0 && header.refcount_table_clusters != 0 {
+            // Bound the refcount table allocation so a hostile header can't
+            // request an unbounded allocation. Cap it at the amount needed to
+            // cover every refcount block for all clusters the L1 table can
+            // reference, with an absolute ceiling as a hard backstop.
+            let max_clusters = header.l1_size as u64 * header.l2_entries_per_table();
+            let refcount_entries_per_block = header.cluster_size() / 2; // 16-bit refcounts
+            let table_entries_needed = max_clusters.div_ceil(refcount_entries_per_block);
+            let table_clusters_needed = table_entries_needed.div_ceil(header.cluster_size() / 8);
+            const MAX_REFCOUNT_TABLE_CLUSTERS: u64 = 4096; // 16 MiB with 4 KiB clusters
+            anyhow::ensure!(
+                header.refcount_table_clusters as u64 <= table_clusters_needed.max(1)
+                    && header.refcount_table_clusters as u64 <= MAX_REFCOUNT_TABLE_CLUSTERS,
+                "qcow2 refcount table of {} clusters is unreasonably large",
+                header.refcount_table_clusters
+            );
+
             let table_bytes_len =
                 header.refcount_table_clusters as usize * header.cluster_size() as usize;
             let mut table_bytes = vec![0u8; table_bytes_len];
@@ -130,6 +162,19 @@ impl Qcow2Layer {
                 refcounts,
             }),
         })
+    }
+
+    /// Validate that the request at `sector` for `byte_len` bytes lies wholly
+    /// within the layer's disk and is sector-aligned.
+    fn validate_range(&self, sector: u64, byte_len: usize) -> Result<(), DiskError> {
+        if !byte_len.is_multiple_of(SECTOR_SIZE as usize) {
+            return Err(DiskError::InvalidInput);
+        }
+        let end_sector = sector + byte_len as u64 / SECTOR_SIZE as u64;
+        if end_sector > self.sector_count {
+            return Err(DiskError::IllegalBlock);
+        }
+        Ok(())
     }
 }
 
@@ -181,6 +226,7 @@ impl LayerIo for Qcow2Layer {
     ) -> Result<(), DiskError> {
         let offset = sector * SECTOR_SIZE as u64;
         let len = buffers.len();
+        self.validate_range(sector, len)?;
         let cluster_size = self.header.cluster_size() as usize;
         let l2_entries = self.header.l2_entries_per_table() as usize;
 
@@ -297,6 +343,7 @@ impl LayerIo for Qcow2Layer {
 
         let offset = sector * SECTOR_SIZE as u64;
         let len = buffers.len();
+        self.validate_range(sector, len)?;
         let cluster_size = self.header.cluster_size() as usize;
         let l2_entries = self.header.l2_entries_per_table() as usize;
         let file = self.file.clone();
@@ -432,6 +479,11 @@ impl LayerIo for Qcow2Layer {
                 .map_err(DiskError::Io)?;
             }
 
+            if needs_allocation {
+                // A freshly allocated cluster has refcount 1, so its COPIED
+                // bit is set.
+                l2_table[addr.l2_index as usize].copied = true;
+            }
             l2_table[addr.l2_index as usize].cluster_offset = data_cluster_offset;
             l2_table[addr.l2_index as usize].reads_as_zeros = false;
             let f = file.clone();
