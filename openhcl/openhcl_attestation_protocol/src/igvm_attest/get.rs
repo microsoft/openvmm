@@ -497,7 +497,6 @@ pub mod runtime_claims {
         /// Whether the TPM is enabled
         pub tpm_enabled: bool,
         /// TPM reference implementation version
-        #[serde(rename = "tpm_version")]
         pub tpm_version: AttestationTpmVersion,
         /// Whether the VM is in stateful mode (i.e. attestation is not
         /// suppressed).
