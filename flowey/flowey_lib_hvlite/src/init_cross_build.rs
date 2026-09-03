@@ -152,6 +152,14 @@ impl FlowNode for Node {
                                 ),
                                 bin,
                             );
+
+                            // The TPM's CMake project probes CXX, but its library-only
+                            // target builds no C++ sources. Avoid installing a cross C++
+                            // compiler solely for that unused probe.
+                            injected_env.insert(
+                                format!("CXX_{}", target.to_string().replace('-', "_")),
+                                "true".into(),
+                            );
                         }
                     }
                     // Cross compiling for Windows with the MSVC toolchain
