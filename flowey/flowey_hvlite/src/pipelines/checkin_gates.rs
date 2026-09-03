@@ -220,6 +220,8 @@ impl IntoPipeline for CheckinGatesCli {
         let mut use_vmm_perf_runner_musl_x64 = None;
         let mut use_vmm_perf_openvmm_gnu_x64 = None;
         let mut use_vmm_perf_openvmm_musl_x64 = None;
+        let mut use_vmm_perf_runner_windows_x64 = None;
+        let mut use_vmm_perf_openvmm_windows_x64 = None;
 
         // We need to maintain a list of all jobs, so we can hang the "all good"
         // job off of them. This is requires because github status checks only allow
@@ -551,6 +553,8 @@ impl IntoPipeline for CheckinGatesCli {
 
             let (pub_vmm_tests_archive, use_vmm_tests_archive) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmm-tests-archive"));
+            let (pub_vmm_perf, use_vmm_perf) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmm-perf-runner"));
 
             // filter off interesting artifacts required by the VMM tests job
             match arch {
@@ -567,6 +571,8 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_test_igvm_agent_rpc_server.clone());
                     vmm_tests_artifacts_windows_x86.use_nextest_vmm_tests_archive =
                         Some(use_vmm_tests_archive.clone());
+                    use_vmm_perf_runner_windows_x64 = Some(use_vmm_perf);
+                    use_vmm_perf_openvmm_windows_x64 = Some(use_openvmm.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openvmm = Some(use_openvmm.clone());
@@ -639,6 +645,16 @@ impl IntoPipeline for CheckinGatesCli {
                         },
                         profile: CommonProfile::from_release(release),
                         ohcldiag_dev,
+                    }
+                })
+                .publish(pub_vmm_perf, |vmm_perf| {
+                    flowey_lib_hvlite::build_vmm_perf::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        vmm_perf,
                     }
                 });
 
@@ -1798,6 +1814,10 @@ impl IntoPipeline for CheckinGatesCli {
                 .context("missing x64 Linux GNU OpenVMM artifact for VMM.Perf")?;
             let openvmm_musl = use_vmm_perf_openvmm_musl_x64
                 .context("missing x64 Linux MUSL OpenVMM artifact for VMM.Perf")?;
+            let runner_windows =
+                use_vmm_perf_runner_windows_x64.context("missing x64 Windows VMM.Perf runner")?;
+            let openvmm_windows = use_vmm_perf_openvmm_windows_x64
+                .context("missing x64 Windows OpenVMM artifact for VMM.Perf")?;
             for (label, platform, pool, openvmm, runner, hugetlb_pages) in [
                 (
                     "x64-linux-amd-kvm",
@@ -1813,6 +1833,22 @@ impl IntoPipeline for CheckinGatesCli {
                     gh_pools::linux_mshv_intel_v5_1es(),
                     openvmm_musl,
                     runner_musl,
+                    None,
+                ),
+                (
+                    "x64-windows-amd",
+                    FlowPlatform::Windows,
+                    gh_pools::windows_amd_v6_1es(),
+                    openvmm_windows.clone(),
+                    runner_windows.clone(),
+                    None,
+                ),
+                (
+                    "x64-windows-intel",
+                    FlowPlatform::Windows,
+                    gh_pools::windows_intel_v6_1es(),
+                    openvmm_windows,
+                    runner_windows,
                     None,
                 ),
             ] {

@@ -12,13 +12,15 @@ use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::Path;
 
-// Update the version and both hashes together when refreshing the archives
+// Update the version and all hashes together when refreshing the archives
 // published to the public VMM.Perf runtime source below.
 const VMM_PERF_RUNTIME_VERSION: &str = "20260828.1";
-const VMM_PERF_RUNTIME_X64_SHA256: &str =
+const VMM_PERF_RUNTIME_LINUX_X64_SHA256: &str =
     "57a3ed767587f1d7ed9ce4de04562f712e2c56c3a05da1aa2b34d2a22e43b314";
-const VMM_PERF_RUNTIME_ARM64_SHA256: &str =
+const VMM_PERF_RUNTIME_LINUX_ARM64_SHA256: &str =
     "e2dce7becb6eeb44ba82e23a724d2b7ae9eb3c8a56029614edf935a53f4fda72";
+const VMM_PERF_RUNTIME_WINDOWS_X64_SHA256: &str =
+    "f5d5c0cc933eb36862637084ed112a10d29ad8635b18084be496c11739a0f09c";
 
 flowey_request! {
     pub enum Request {
@@ -57,89 +59,96 @@ impl FlowNode for Node {
 
         let azcopy = ctx.reqv(flowey_lib_common::download_azcopy::Request::GetAzCopy);
         let persistent_dir = ctx.persistent_dir();
+        let platform = ctx.platform();
 
         for (arch, outputs) in requests_by_arch {
-            let (filename, expected_sha256) = match arch {
-                CommonArch::X86_64 => ("vmm-perf-linux-x64.tar.gz", VMM_PERF_RUNTIME_X64_SHA256),
-                CommonArch::Aarch64 => {
-                    ("vmm-perf-linux-arm64.tar.gz", VMM_PERF_RUNTIME_ARM64_SHA256)
-                }
-            };
+            let (filename, expected_sha256) = runtime_archive_info(platform, arch)?;
             let url = format!(
                 "https://vmmperfartifactpublic.blob.core.windows.net/perfpackage/{VMM_PERF_RUNTIME_VERSION}/{filename}"
             );
 
-            ctx.emit_rust_step(
-                format!(
-                    "download VMM.Perf runtime ({})",
-                    match arch {
-                        CommonArch::X86_64 => "x64",
-                        CommonArch::Aarch64 => "arm64",
+            ctx.emit_rust_step(format!("download VMM.Perf runtime ({filename})"), |ctx| {
+                let azcopy = azcopy.clone().claim(ctx);
+                let persistent_dir = persistent_dir.clone().claim(ctx);
+                let outputs = outputs.claim(ctx);
+                move |rt| {
+                    let cache_dir = if let Some(dir) = persistent_dir {
+                        rt.read(dir)
+                    } else {
+                        rt.sh.current_dir()
                     }
-                ),
-                |ctx| {
-                    let azcopy = azcopy.clone().claim(ctx);
-                    let persistent_dir = persistent_dir.clone().claim(ctx);
-                    let outputs = outputs.claim(ctx);
-                    move |rt| {
-                        let cache_dir = if let Some(dir) = persistent_dir {
-                            rt.read(dir)
-                        } else {
-                            rt.sh.current_dir()
-                        }
-                        .join("vmm-perf")
-                        .join(VMM_PERF_RUNTIME_VERSION);
-                        fs_err::create_dir_all(&cache_dir)?;
-                        let archive = cache_dir.join(filename);
-                        let azcopy = rt.read(azcopy);
+                    .join("vmm-perf")
+                    .join(VMM_PERF_RUNTIME_VERSION);
+                    fs_err::create_dir_all(&cache_dir)?;
+                    let archive = cache_dir.join(filename);
+                    let azcopy = rt.read(azcopy);
 
-                        if archive.exists()
-                            && let Err(err) = verify_sha256(&archive, expected_sha256)
-                        {
-                            log::warn!(
-                                "discarding invalid cached VMM.Perf runtime {}: {err:#}",
+                    if archive.exists()
+                        && let Err(err) = verify_sha256(&archive, expected_sha256)
+                    {
+                        log::warn!(
+                            "discarding invalid cached VMM.Perf runtime {}: {err:#}",
+                            archive.display()
+                        );
+                        fs_err::remove_file(&archive).with_context(|| {
+                            format!(
+                                "failed to remove invalid cached VMM.Perf runtime {}",
                                 archive.display()
-                            );
-                            fs_err::remove_file(&archive).with_context(|| {
-                                format!(
-                                    "failed to remove invalid cached VMM.Perf runtime {}",
-                                    archive.display()
-                                )
-                            })?;
-                        }
+                            )
+                        })?;
+                    }
 
-                        if !archive.exists() {
-                            flowey::shell_cmd!(
-                                rt,
-                                "{azcopy} copy
+                    if !archive.exists() {
+                        flowey::shell_cmd!(
+                            rt,
+                            "{azcopy} copy
                                     {url}
                                     {archive}
                                     --overwrite ifSourceNewer
                                     --skip-version-check"
-                            )
-                            .run()?;
-                        }
-
-                        verify_sha256(&archive, expected_sha256).or_else(|err| {
-                            fs_err::remove_file(&archive).with_context(|| {
-                                format!(
-                                    "failed to remove VMM.Perf runtime with an invalid checksum: {}",
-                                    archive.display()
-                                )
-                            })?;
-                            Err(err)
-                        })?;
-
-                        for output in outputs {
-                            rt.write(output, &archive.absolute()?);
-                        }
-                        Ok(())
+                        )
+                        .run()?;
                     }
-                },
-            );
+
+                    verify_sha256(&archive, expected_sha256).or_else(|err| {
+                        fs_err::remove_file(&archive).with_context(|| {
+                            format!(
+                                "failed to remove VMM.Perf runtime with an invalid checksum: {}",
+                                archive.display()
+                            )
+                        })?;
+                        Err(err)
+                    })?;
+
+                    for output in outputs {
+                        rt.write(output, &archive.absolute()?);
+                    }
+                    Ok(())
+                }
+            });
         }
 
         Ok(())
+    }
+}
+
+fn runtime_archive_info(
+    platform: FlowPlatform,
+    arch: CommonArch,
+) -> anyhow::Result<(&'static str, &'static str)> {
+    match (platform, arch) {
+        (FlowPlatform::Linux(_), CommonArch::X86_64) => Ok((
+            "vmm-perf-linux-x64.tar.gz",
+            VMM_PERF_RUNTIME_LINUX_X64_SHA256,
+        )),
+        (FlowPlatform::Linux(_), CommonArch::Aarch64) => Ok((
+            "vmm-perf-linux-arm64.tar.gz",
+            VMM_PERF_RUNTIME_LINUX_ARM64_SHA256,
+        )),
+        (FlowPlatform::Windows, CommonArch::X86_64) => {
+            Ok(("vmm-perf-win-x64.zip", VMM_PERF_RUNTIME_WINDOWS_X64_SHA256))
+        }
+        _ => anyhow::bail!("no VMM.Perf runtime archive for {arch:?} on {platform:?}"),
     }
 }
 

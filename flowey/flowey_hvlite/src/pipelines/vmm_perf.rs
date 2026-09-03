@@ -18,6 +18,7 @@ use std::path::PathBuf;
 enum VmmPerfTargetCli {
     LinuxX64Gnu,
     LinuxX64Musl,
+    WindowsX64,
 }
 
 impl VmmPerfTargetCli {
@@ -27,6 +28,7 @@ impl VmmPerfTargetCli {
             platform: match self {
                 Self::LinuxX64Gnu => CommonPlatform::LinuxGnu,
                 Self::LinuxX64Musl => CommonPlatform::LinuxMusl,
+                Self::WindowsX64 => CommonPlatform::WindowsMsvc,
             },
         }
     }
@@ -52,9 +54,9 @@ impl From<VmmPerfProfileCli> for VmmPerfProfile {
 /// Build and run VMM.Perf without the Petri/nextest test harness.
 #[derive(clap::Args)]
 pub struct VmmPerfCli {
-    /// Linux target for the OpenVMM and VMM.Perf runner binaries.
-    #[clap(long, value_enum, default_value = "linux-x64-gnu")]
-    target: VmmPerfTargetCli,
+    /// Target for the OpenVMM and VMM.Perf runner binaries.
+    #[clap(long, value_enum)]
+    target: Option<VmmPerfTargetCli>,
 
     /// Run only the selected profile. May be repeated; defaults to all profiles.
     #[clap(long, value_enum)]
@@ -98,11 +100,6 @@ impl IntoPipeline for VmmPerfCli {
         if !matches!(backend_hint, PipelineBackendHint::Local) {
             anyhow::bail!("vmm-perf is for local use only")
         }
-        if !matches!(FlowPlatform::host(backend_hint), FlowPlatform::Linux(_))
-            || !matches!(FlowArch::host(backend_hint), FlowArch::X86_64)
-        {
-            anyhow::bail!("vmm-perf currently requires a Linux x64 host")
-        }
 
         let Self {
             target,
@@ -116,6 +113,27 @@ impl IntoPipeline for VmmPerfCli {
             custom_uefi_firmware,
             verbose,
         } = self;
+
+        let host_platform = FlowPlatform::host(backend_hint);
+        anyhow::ensure!(
+            matches!(FlowArch::host(backend_hint), FlowArch::X86_64),
+            "vmm-perf currently requires an x64 host"
+        );
+        let target = target.unwrap_or(match host_platform {
+            FlowPlatform::Linux(_) => VmmPerfTargetCli::LinuxX64Gnu,
+            FlowPlatform::Windows => VmmPerfTargetCli::WindowsX64,
+            platform => anyhow::bail!("vmm-perf does not support a {platform:?} host"),
+        });
+        anyhow::ensure!(
+            matches!(
+                (host_platform, target),
+                (
+                    FlowPlatform::Linux(_),
+                    VmmPerfTargetCli::LinuxX64Gnu | VmmPerfTargetCli::LinuxX64Musl
+                ) | (FlowPlatform::Windows, VmmPerfTargetCli::WindowsX64)
+            ),
+            "the selected VMM.Perf target does not match the host platform"
+        );
 
         let vm_sizes_json = serialize_vm_sizes(&vmm_perf_vm_sizes)?;
         let parameters_json = serialize_parameters(&vmm_perf_parameter)?;

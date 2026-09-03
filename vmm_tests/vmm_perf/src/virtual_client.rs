@@ -363,8 +363,28 @@ fn resolve_work_dir_base(base: &str, runtime_dir: &Path) -> anyhow::Result<PathB
         "VMM.Perf WorkDir base is not a directory: {}",
         base.display()
     );
-    fs_err::canonicalize(&base)
-        .with_context(|| format!("failed to resolve VMM.Perf WorkDir base {}", base.display()))
+    let base = fs_err::canonicalize(&base)
+        .with_context(|| format!("failed to resolve VMM.Perf WorkDir base {}", base.display()))?;
+    Ok(path_for_virtual_client(base))
+}
+
+#[cfg(target_os = "windows")]
+fn path_for_virtual_client(path: PathBuf) -> PathBuf {
+    let Some(path) = path.to_str() else {
+        return path;
+    };
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{path}"))
+    } else if let Some(path) = path.strip_prefix(r"\\?\") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from(path)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn path_for_virtual_client(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn experiment_id(profile: VmmPerfProfile, config_name: &str) -> anyhow::Result<String> {
@@ -394,10 +414,9 @@ mod tests {
 
         fs_err::create_dir_all(&work_base)?;
 
-        assert_eq!(
-            resolve_work_dir_base("relative-base", &runtime_dir)?,
-            fs_err::canonicalize(&work_base)?
-        );
+        let resolved = resolve_work_dir_base("relative-base", &runtime_dir)?;
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with("relative-base"));
         Ok(())
     }
 

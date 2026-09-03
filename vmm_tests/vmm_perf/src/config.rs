@@ -8,9 +8,9 @@ use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-const MIB: u64 = 1024 * 1024;
 const MIB_PER_GIB: u64 = 1024;
-const DEFAULT_CAPACITY_PERCENT: u64 = 80;
+const DEFAULT_CPU_COUNT: u64 = 16;
+const DEFAULT_MEMORY_MB: u64 = 64 * MIB_PER_GIB;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VmmPerfProfile {
@@ -182,26 +182,15 @@ fn stringify_parameters(
 }
 
 fn default_configs(capacity: HostCapacity) -> anyhow::Result<Vec<VmmPerfConfig>> {
-    let cpu_count = capacity
-        .logical_processors
-        .saturating_mul(DEFAULT_CAPACITY_PERCENT as usize)
-        / 100;
-    let cpu_count = u64::try_from(cpu_count.max(1)).context("host processor count is too large")?;
-    let memory_mb = capacity
-        .available_memory_bytes
-        .saturating_mul(DEFAULT_CAPACITY_PERCENT)
-        / 100
-        / MIB
-        / MIB_PER_GIB
-        * MIB_PER_GIB;
-    let memory_mb = memory_mb.max(MIB_PER_GIB);
+    let parameters = BTreeMap::from([
+        ("CpuCount".into(), DEFAULT_CPU_COUNT.to_string()),
+        ("MemoryMB".into(), DEFAULT_MEMORY_MB.to_string()),
+    ]);
+    super::host::validate_requested_capacity(&parameters, capacity)?;
 
     Ok(vec![VmmPerfConfig {
-        name: shape_name(cpu_count, memory_mb),
-        parameters: BTreeMap::from([
-            ("CpuCount".into(), cpu_count.to_string()),
-            ("MemoryMB".into(), memory_mb.to_string()),
-        ]),
+        name: shape_name(DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB),
+        parameters,
         name_is_explicit: false,
     }])
 }
@@ -266,22 +255,22 @@ mod tests {
     const GIB: u64 = 1024 * 1024 * 1024;
 
     #[test]
-    fn default_configs_use_eighty_percent_capacity() -> anyhow::Result<()> {
+    fn default_configs_use_fixed_shape() -> anyhow::Result<()> {
         let configs = selected_configs(
             HostCapacity {
-                logical_processors: 10,
-                available_memory_bytes: 10 * GIB,
+                logical_processors: 32,
+                available_memory_bytes: 128 * GIB,
             },
             &ConfigSelection::default(),
         )?;
 
         assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].name, "cpu-8-memory-8192mb");
+        assert_eq!(configs[0].name, "cpu-16-memory-65536mb");
         assert_eq!(
             configs[0].parameters,
             BTreeMap::from([
-                ("CpuCount".into(), "8".into()),
-                ("MemoryMB".into(), "8192".into()),
+                ("CpuCount".into(), "16".into()),
+                ("MemoryMB".into(), "65536".into()),
             ])
         );
         Ok(())
@@ -334,7 +323,7 @@ mod tests {
         let configs = selected_configs(
             HostCapacity {
                 logical_processors: 16,
-                available_memory_bytes: 32 * GIB,
+                available_memory_bytes: 128 * GIB,
             },
             &ConfigSelection {
                 vm_sizes_json: None,

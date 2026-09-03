@@ -17,7 +17,7 @@ Some particularly notable pipelines:
 
 ## VMM.Perf
 
-Run all Linux x64 VMM.Perf profiles with:
+Run all VMM.Perf profiles on a Linux or Windows x64 host with:
 
 ```bash
 cargo xflowey vmm-perf
@@ -25,7 +25,8 @@ cargo xflowey vmm-perf
 
 By default, scratch files are created under `target/vmm_perf/temp` and retained
 results are written to `target/vmm_perf/results`. Use `--dir` to select a
-different root directory with the same `temp` and `results` layout.
+different root directory with the same `temp` and `results` layout. The default
+VM shape is 16 virtual processors and 64 GiB of memory.
 
 To run one profile:
 
@@ -42,10 +43,9 @@ cargo xflowey vmm-perf \
   --vmm-perf-vmsizes 'CpuCount=8,MemoryMB=16384'
 ```
 
-Use `--target linux-x64-musl` when the host requires a statically linked
-runner, such as the MSHV Azure Linux pool. The Windows x64 runner code remains
-compile-validated, but the local xflowey command stays Linux-only until a
-Windows VMM.Perf runtime package is available.
+The command selects `linux-x64-gnu` on Linux and `windows-x64` on Windows.
+Use `--target linux-x64-musl` when the Linux host requires a statically linked
+runner, such as the MSHV Azure Linux pool.
 
 ## `xflowey` vs `xtask`
 
