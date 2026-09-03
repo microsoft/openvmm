@@ -6,6 +6,9 @@
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_vmm_perf::VmmPerfOutput;
 use crate::common::CommonArch;
+use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
+use crate::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
+use crate::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
 use crate::run_vmm_perf::VmmPerfProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -33,6 +36,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::download_vmm_perf_runtime::Node>();
+        ctx.import::<crate::install_vmm_tests_external_deps::Node>();
         ctx.import::<crate::run_vmm_perf::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -53,6 +57,24 @@ impl SimpleFlowNode for Node {
         if root_dir.is_some() && !matches!(ctx.backend(), FlowBackend::Local) {
             anyhow::bail!("custom VMM.Perf root directories are local-only");
         }
+
+        let external_deps = match ctx.platform() {
+            FlowPlatform::Windows => VmmTestsExternalDeps::Windows(VmmTestsExternalDepsWindows {
+                hyperv: true,
+                whp: true,
+                hardware_isolation: false,
+            }),
+            FlowPlatform::Linux(_) => VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
+                hugetlb_2mb_overcommit_pages,
+                prepare_vhost_vsock: false,
+            }),
+            _ => anyhow::bail!("VMM.Perf is unsupported on this platform"),
+        };
+        ctx.config(crate::install_vmm_tests_external_deps::Config {
+            selections: Some(external_deps),
+            auto_install: None,
+        });
+        let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_external_deps::Request::Install)];
 
         let firmware = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
             arch: CommonArch::X86_64,
@@ -87,7 +109,7 @@ impl SimpleFlowNode for Node {
             profiles,
             vm_sizes_json,
             parameters_json,
-            hugetlb_2mb_overcommit_pages,
+            pre_run_deps,
             output: v,
         });
 

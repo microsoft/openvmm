@@ -6941,11 +6941,14 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-openvmm" | flowey v 30 'artifact_use_from_x64-linux-openvmm' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-vmm-perf-runner" | flowey v 30 'artifact_use_from_x64-linux-vmm-perf-runner' --is-raw-string update
       shell: bash
-    - name: checking if packages need to be installed
+    - name: install vmm tests deps (linux)
       run: |-
         flowey e 30 flowey_core::pipeline::artifact::resolve 1
         flowey e 30 flowey_core::pipeline::artifact::resolve 0
-        flowey e 30 flowey_lib_common::install_dist_pkg 0
+        flowey e 30 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 30 flowey_lib_common::install_dist_pkg 0
       shell: bash
     - name: installing packages
       run: flowey e 30 flowey_lib_common::install_dist_pkg 1
@@ -6982,7 +6985,7 @@ jobs:
     - name: download VMM.Perf runtime (vmm-perf-linux-x64.tar.gz)
       run: |-
         flowey e 30 flowey_lib_hvlite::download_vmm_perf_runtime 0
-        flowey v 30 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        flowey v 30 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:3:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
         ${{ runner.temp }}
         EOF
         flowey e 30 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 1
@@ -7116,11 +7119,14 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-openvmm" | flowey v 31 'artifact_use_from_x64-linux-musl-openvmm' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-vmm-perf-runner" | flowey v 31 'artifact_use_from_x64-linux-musl-vmm-perf-runner' --is-raw-string update
       shell: bash
-    - name: checking if packages need to be installed
+    - name: install vmm tests deps (linux)
       run: |-
         flowey e 31 flowey_core::pipeline::artifact::resolve 1
         flowey e 31 flowey_core::pipeline::artifact::resolve 0
-        flowey e 31 flowey_lib_common::install_dist_pkg 0
+        flowey e 31 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 31 flowey_lib_common::install_dist_pkg 0
       shell: bash
     - name: installing packages
       run: flowey e 31 flowey_lib_common::install_dist_pkg 1
@@ -7157,7 +7163,7 @@ jobs:
     - name: download VMM.Perf runtime (vmm-perf-linux-x64.tar.gz)
       run: |-
         flowey e 31 flowey_lib_hvlite::download_vmm_perf_runtime 0
-        flowey v 31 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        flowey v 31 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:3:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
         ${{ runner.temp }}
         EOF
         flowey e 31 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 1
@@ -7244,11 +7250,14 @@ jobs:
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-openvmm" | flowey.exe v 32 'artifact_use_from_x64-windows-openvmm' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-vmm-perf-runner" | flowey.exe v 32 'artifact_use_from_x64-windows-vmm-perf-runner' --is-raw-string update
       shell: bash
-    - name: create gh-release-download cache dir
+    - name: install vmm tests deps (windows)
       run: |-
         flowey.exe e 32 flowey_core::pipeline::artifact::resolve 1
         flowey.exe e 32 flowey_core::pipeline::artifact::resolve 0
-        flowey.exe e 32 flowey_lib_common::download_gh_release 0
+        flowey.exe e 32 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+      shell: bash
+    - name: create gh-release-download cache dir
+      run: flowey.exe e 32 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -7279,7 +7288,7 @@ jobs:
     - name: download VMM.Perf runtime (vmm-perf-win-x64.zip)
       run: |-
         flowey.exe e 32 flowey_lib_hvlite::download_vmm_perf_runtime 0
-        flowey.exe v 32 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        flowey.exe v 32 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:3:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
         ${{ runner.temp }}
         EOF
         flowey.exe e 32 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 1
@@ -7366,11 +7375,14 @@ jobs:
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-openvmm" | flowey.exe v 33 'artifact_use_from_x64-windows-openvmm' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-vmm-perf-runner" | flowey.exe v 33 'artifact_use_from_x64-windows-vmm-perf-runner' --is-raw-string update
       shell: bash
-    - name: create gh-release-download cache dir
+    - name: install vmm tests deps (windows)
       run: |-
         flowey.exe e 33 flowey_core::pipeline::artifact::resolve 1
         flowey.exe e 33 flowey_core::pipeline::artifact::resolve 0
-        flowey.exe e 33 flowey_lib_common::download_gh_release 0
+        flowey.exe e 33 flowey_lib_hvlite::install_vmm_tests_external_deps 0
+      shell: bash
+    - name: create gh-release-download cache dir
+      run: flowey.exe e 33 flowey_lib_common::download_gh_release 0
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -7401,7 +7413,7 @@ jobs:
     - name: download VMM.Perf runtime (vmm-perf-win-x64.zip)
       run: |-
         flowey.exe e 33 flowey_lib_hvlite::download_vmm_perf_runtime 0
-        flowey.exe v 33 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:2:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
+        flowey.exe v 33 'flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf:3:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source runner.temp <<EOF
         ${{ runner.temp }}
         EOF
         flowey.exe e 33 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 1
