@@ -2712,7 +2712,21 @@ async fn new_underhill_vm(
                 num_lock_enabled: dps.general.num_lock_enabled,
                 smbios: firmware_pcat::config::SmbiosConstants {
                     bios_guid: dps.general.bios_guid,
-                    system_serial_number: dps.smbios.serial_number.clone().into_bytes(),
+                    // Truncate rather than fail: the serial comes from the host
+                    // via DPS, and the PCAT config port caps each string at a
+                    // fixed length regardless.
+                    system_serial_number: {
+                        let mut serial = dps.smbios.serial_number.clone().into_bytes();
+                        if serial.len() > firmware_pcat::config::SMBIOS_STRING_MAX_LEN {
+                            tracing::warn!(
+                                len = serial.len(),
+                                max = firmware_pcat::config::SMBIOS_STRING_MAX_LEN,
+                                "SMBIOS system serial number too long; truncating for PCAT"
+                            );
+                            serial.truncate(firmware_pcat::config::SMBIOS_STRING_MAX_LEN);
+                        }
+                        serial
+                    },
                     base_board_serial_number: dps
                         .smbios
                         .base_board_serial_number

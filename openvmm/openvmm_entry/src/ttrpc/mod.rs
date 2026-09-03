@@ -1506,20 +1506,30 @@ fn smbios_config_from_proto(
         None => Guid::ZERO,
     };
 
+    // Match the CLI parser, which rejects empty values. An explicitly provided
+    // empty string is ambiguous — UEFI omits the blob while the direct loader
+    // clears the field — so reject it rather than silently pick one behavior.
+    fn reject_empty(field: &str, value: Option<String>) -> anyhow::Result<Option<String>> {
+        if value.as_deref() == Some("") {
+            anyhow::bail!("smbios {field} must not be empty if specified");
+        }
+        Ok(value)
+    }
+
     Ok(openvmm_defs::config::SmbiosConfig {
         bios: openvmm_defs::config::SmbiosBiosOverrides {
-            vendor,
-            version: bios_version,
-            release_date,
+            vendor: reject_empty("bios vendor", vendor)?,
+            version: reject_empty("bios version", bios_version)?,
+            release_date: reject_empty("bios release date", release_date)?,
             release,
         },
         system: openvmm_defs::config::SmbiosSystemOverrides {
-            manufacturer,
-            product_name,
-            version: system_version,
-            serial_number,
-            sku_number,
-            family,
+            manufacturer: reject_empty("system manufacturer", manufacturer)?,
+            product_name: reject_empty("system product", product_name)?,
+            version: reject_empty("system version", system_version)?,
+            serial_number: reject_empty("system serial", serial_number)?,
+            sku_number: reject_empty("system sku", sku_number)?,
+            family: reject_empty("system family", family)?,
             uuid,
         },
     })

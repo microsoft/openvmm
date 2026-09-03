@@ -1354,6 +1354,17 @@ async fn vm_config_from_command_line(
                 irq: ComPort::Com3.irq().into(),
             }),
         };
+
+        // An IGVM launch carries no SMBIOS field of its own; the identity is
+        // only delivered over the GET/GED channel, which is absent here. Reject
+        // overrides that would otherwise be silently dropped.
+        let smbios_requested = !opt.smbios.is_empty();
+        let smbios_delivered_via_get = with_get && with_hv;
+        if smbios_requested && !smbios_delivered_via_get {
+            anyhow::bail!(
+                "--smbios is not supported for IGVM launches without an OpenHCL GET channel"
+            );
+        }
     } else if opt.pcat {
         // Emit a nice error early instead of complaining about missing firmware.
         if arch != MachineArch::X86_64 {

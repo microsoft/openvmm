@@ -187,10 +187,13 @@ describes the source definitions.
   guest (repeatable). Uses the format
   `type=N,key=value[,key=value...]`, following QEMU's `-smbios` syntax and
   key names. As with QEMU, `type=N` is required (there is no default). Keys
-  left unset use the loader's built-in default identity (OpenVMM / OpenVMM
-  Virtual Machine). The system UUID defaults to the all-zero GUID unless
-  overridden with `uuid=<GUID>`; `uuid=random` requests a freshly generated
-  per-VM GUID. Unknown types and unknown keys are rejected.
+  left unset use the selected boot path's built-in default identity — for
+  example, the OpenVMM direct loader defaults to `OpenVMM` / `OpenVMM Virtual
+  Machine`, OpenHCL direct boot to `OpenHCL` / `OpenHCL Virtual Machine`, and
+  firmware-backed (UEFI/PCAT) paths keep their own built-in defaults. The
+  system UUID defaults to the all-zero GUID unless overridden with
+  `uuid=<GUID>`; `uuid=random` requests a freshly generated per-VM GUID.
+  Unknown types and unknown keys are rejected.
 
   Applies to Linux direct, UEFI, and PCAT boot. On UEFI boot the firmware
   builds the SMBIOS tables, so only `type=1` (System) fields can be

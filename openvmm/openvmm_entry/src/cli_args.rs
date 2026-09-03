@@ -296,7 +296,7 @@ Examples:
     /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
     /// boot. By default, ARM64 uses ACPI mode (stub DT + EFI + ACPI tables).
     /// This flag selects the legacy DT-only path. Rejected on x86.
-    #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm"])]
+    #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm", "smbios"])]
     pub device_tree: bool,
 
     /// SMBIOS (DMI) identity overrides (repeatable).
