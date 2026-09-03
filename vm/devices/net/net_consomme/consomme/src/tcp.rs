@@ -29,6 +29,7 @@ use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
 use pal_async::timer::Instant as TimerInstant;
 use pal_async::timer::PolledTimer as TcpTimer;
+use parking_lot::Mutex;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetFrame;
@@ -61,6 +62,7 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
@@ -70,8 +72,10 @@ use thiserror::Error;
 pub(crate) struct Tcp {
     #[inspect(iter_by_key)]
     connections: HashMap<FourTuple, TcpConnection>,
-    #[inspect(iter_by_key)]
-    listeners: HashMap<PortForwardKey, TcpListener>,
+    #[inspect(
+        with = "|listeners| inspect::adhoc(|req| inspect::iter_by_key(&*listeners.lock()).inspect(req))"
+    )]
+    listeners: Arc<Mutex<HashMap<PortForwardKey, TcpListener>>>,
     #[inspect(skip)]
     timer: Option<TcpTimer>,
     connection_params: ConnectionParams,
@@ -162,7 +166,7 @@ impl Tcp {
     pub fn new(rx_buffer: crate::TcpBufferBounds, tx_buffer: crate::TcpBufferBounds) -> Self {
         Self {
             connections: HashMap::new(),
-            listeners: HashMap::new(),
+            listeners: Arc::new(Mutex::new(HashMap::new())),
             timer: None,
             connection_params: ConnectionParams {
                 rx_buffer: NormalizedBufferBounds::from_bounds(rx_buffer),
@@ -170,6 +174,48 @@ impl Tcp {
             },
             aggregate_stats: TcpAggregateStats::default(),
         }
+    }
+
+    pub(crate) fn listener_control(&self) -> TcpListenerControl {
+        TcpListenerControl {
+            listeners: self.listeners.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TcpListenerControl {
+    listeners: Arc<Mutex<HashMap<PortForwardKey, TcpListener>>>,
+}
+
+impl TcpListenerControl {
+    pub(crate) fn bind(
+        &self,
+        driver: &dyn Driver,
+        socket: Socket,
+        guest_port: u16,
+    ) -> Result<(), BindError> {
+        let host_addr = socket
+            .local_addr()
+            .map_err(BindError::Io)?
+            .as_socket()
+            .ok_or_else(|| BindError::Io(io::Error::other("socket local address is invalid")))?;
+        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        match self.listeners.lock().entry(key) {
+            hash_map::Entry::Occupied(_) => Err(BindError::PortAlreadyBound(guest_port)),
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(TcpListener::from_socket(driver, socket)?);
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn unbind(&self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        self.listeners
+            .lock()
+            .remove(&PortForwardKey::new(family, port))
+            .map(|_| ())
+            .ok_or(BindError::PortNotBound)
     }
 }
 
@@ -778,10 +824,8 @@ impl TcpState {
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
         // Check for any new incoming connections
-        self.inner
-            .tcp
-            .listeners
-            .retain(|key, listener| match listener.poll_listener(cx) {
+        if let Some(mut listeners) = self.inner.tcp.listeners.try_lock() {
+            listeners.retain(|key, listener| match listener.poll_listener(cx) {
                 Ok(result) => {
                     if let Some((socket, mut other_addr)) = result {
                         // If this packet was originally from the guest, update the port to match
@@ -857,8 +901,9 @@ impl<T: Client> Access<'_, T> {
                     }
                     true
                 }
-                Err(_) => false,
-            });
+                    Err(_) => false,
+                });
+        }
         // Check for any new incoming data.
         let mut now = None;
         let mut next_deadline: Option<TimerInstant> = None;
@@ -1104,7 +1149,8 @@ impl<T: Client> Access<'_, T> {
                         let key =
                             PortForwardKey::from_socket_addr(resolved_dst, resolved_dst.port());
                         let ft = if is_local_address
-                            && let Some(listener) = self.inner.tcp.listeners.get(&key)
+                            && let Some(listeners) = self.inner.tcp.listeners.try_lock()
+                            && let Some(listener) = listeners.get(&key)
                         {
                             FourTuple {
                                 src: sender.ft.src,
@@ -1148,42 +1194,15 @@ impl<T: Client> Access<'_, T> {
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
     pub fn bind_tcp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
-        let host_addr = Self::socket_local_addr(&socket)?;
-        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
-        match self.inner.tcp.listeners.entry(key) {
-            hash_map::Entry::Occupied(_) => {
-                return Err(BindError::PortAlreadyBound(guest_port));
-            }
-            hash_map::Entry::Vacant(e) => {
-                let listener = TcpListener::from_socket(self.client.driver(), socket)?;
-                e.insert(listener);
-            }
-        };
-        Ok(())
+        self.inner
+            .tcp
+            .listener_control()
+            .bind(self.client.driver(), socket, guest_port)
     }
 
     /// Unbinds from the specified guest port and IP family.
     pub fn unbind_tcp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
-        match self
-            .inner
-            .tcp
-            .listeners
-            .entry(PortForwardKey::new(family, port))
-        {
-            hash_map::Entry::Occupied(e) => {
-                e.remove();
-                Ok(())
-            }
-            hash_map::Entry::Vacant(_) => Err(BindError::PortNotBound),
-        }
-    }
-
-    fn socket_local_addr(socket: &Socket) -> Result<SocketAddr, BindError> {
-        socket
-            .local_addr()
-            .map_err(BindError::Io)?
-            .as_socket()
-            .ok_or_else(|| BindError::Io(io::Error::other("socket local address is invalid")))
+        self.inner.tcp.listener_control().unbind(family, port)
     }
 }
 
