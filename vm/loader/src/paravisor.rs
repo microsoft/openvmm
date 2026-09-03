@@ -483,6 +483,12 @@ where
     )?;
     offset += heap_size;
 
+    // Some loaders only fix up identity map entries that overlap the relocation
+    // region, so keep the page table region in the same large page as it.
+    if offset.is_multiple_of(X64_LARGE_PAGE_SIZE) {
+        offset += HV_PAGE_SIZE;
+    }
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
 
@@ -1241,6 +1247,12 @@ where
         &[],
     )?;
     next_addr += heap_size;
+
+    // Some loaders only fix up identity map entries that overlap the relocation
+    // region, so keep the page table region in the same large page as it.
+    if next_addr.is_multiple_of(u64::from(Arm64PageSize::Large)) {
+        next_addr += HV_PAGE_SIZE;
+    }
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
