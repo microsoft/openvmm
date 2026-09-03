@@ -18,12 +18,21 @@ resource file and run `igvmfilegen manifest` directly.
 - SNP C-bit position 51; the value must be bit 32 or higher because the
   startup page tables identity-map the lower 4 GiB
 
+The normal-injection output is a shared artifact: the same binary is intended
+to boot on KVM and MSHV. Its `SnpVpContext` uses the SNP initial-VMSA GPA
+`0xffff_ffff_f000`. KVM synthesizes its measured VMSA at that GPA, while MSHV
+maps and imports the file-provided VMSA there. Both backends use the policy
+encoded in the file, but only MSHV submits its SNP ID block.
+
+The `snp-linux-direct-restricted.json` profile encodes restricted interrupt
+injection in its IGVM VMSA. It is intended only for MSHV bring-up.
+
 The image contains a small measured bootshim. Only pages containing the kernel,
 initrd, boot metadata, SNP special pages, bootshim, or bootshim parameters are
-included as IGVM `PageData`. After SNP launch, the bootshim accepts the remaining
-private RAM with `PVALIDATE` and then enters Linux. This avoids loading and
-measuring every configured RAM page, but still accepts all RAM before Linux
-starts.
+included as IGVM `PageData`. After SNP launch, the bootshim accepts the
+remaining private RAM with `PVALIDATE` and then enters Linux. This avoids
+loading and measuring every configured RAM page, but still accepts all RAM
+before Linux starts.
 
 The IGVM contains only the BSP VMSA, regardless of processor count. Backends
 are responsible for any AP launch state they require. Current KVM constructs
@@ -62,8 +71,9 @@ cargo build -p igvmfilegen
 Then generate the image:
 
 ```bash
+repo=/absolute/path/to/openvmm
 cargo run -p igvmfilegen -- manifest \
-  --manifest /absolute/path/to/openvmm/vm/loader/manifests/snp-linux-direct.json \
+  --manifest "$repo/vm/loader/manifests/snp-linux-direct.json" \
   --resources /absolute/path/to/snp-linux-direct-resources.json \
   --output /absolute/path/to/snp-linux-direct.bin
 ```

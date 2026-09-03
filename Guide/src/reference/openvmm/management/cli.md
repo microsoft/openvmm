@@ -93,11 +93,23 @@ describes the source definitions.
   `snp`.
 
   SNP support is currently limited to Linux direct boot and is intended for
-  bring-up. MSHV SNP can expose Hyper-V enlightenments with `--hv --no-vmbus`;
-  VMBus devices remain unsupported. SNP does not support UEFI, VTL2, or
-  hugetlb-backed memory. In addition to the minimal emulated chipset and serial
-  console, optional devices are limited to virtio devices attached through
-  PCIe.
+  bring-up. It supports either loader-based kernel/initrd boot or an SNP IGVM
+  selected with `--igvm-personality linux-direct`. MSHV SNP can expose Hyper-V
+  enlightenments with `--hv --no-vmbus`; VMBus devices remain unsupported.
+  The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
+
+  SNP does not support UEFI, VTL2, or hugetlb-backed memory. In addition to
+  the minimal emulated chipset and serial console, optional devices are
+  limited to virtio devices attached through PCIe.
+
+  A minimal MSHV IGVM invocation is:
+
+  ```bash
+  openvmm --hypervisor mshv --isolation snp \
+    --igvm path/to/snp-linux-direct.bin \
+    --igvm-personality linux-direct --com1 console \
+    --no-vmbus -m 160MB -p 1
+  ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
   loader-generated SNP VMSA. This bring-up option has no default and requires
   `--hypervisor mshv --isolation snp` with Linux direct boot. KVM SNP does not
