@@ -30,7 +30,7 @@ pub const NODEJS: &str = "24.x";
 // None disables hcl-dev builds and tests; Some(version) enables them.
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.5";
-pub const OPENVMM_DEPS: &str = "0.3.0-130";
+pub const OPENVMM_DEPS: &str = "0.3.0-134";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
