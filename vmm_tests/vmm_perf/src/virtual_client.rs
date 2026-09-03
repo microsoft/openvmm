@@ -417,6 +417,10 @@ mod tests {
         let resolved = resolve_work_dir_base("relative-base", &runtime_dir)?;
         assert!(resolved.is_absolute());
         assert!(resolved.ends_with("relative-base"));
+        assert_eq!(
+            resolved,
+            super::path_for_virtual_client(fs_err::canonicalize(&work_base)?)
+        );
         Ok(())
     }
 

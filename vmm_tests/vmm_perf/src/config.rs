@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 
 const MIB_PER_GIB: u64 = 1024;
 const DEFAULT_CPU_COUNT: u64 = 16;
-const DEFAULT_MEMORY_MB: u64 = 64 * MIB_PER_GIB;
+const DEFAULT_MEMORY_GIB: u64 = 64;
+const DEFAULT_MEMORY_MB: u64 = DEFAULT_MEMORY_GIB * MIB_PER_GIB;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VmmPerfProfile {
