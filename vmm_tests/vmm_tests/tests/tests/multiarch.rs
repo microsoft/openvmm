@@ -440,7 +440,10 @@ async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
             reason = "WHP lacks ARM64 VTL2 support",
             openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
         ),
-        openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        unstable(
+            reason = "known WHP lost interrupt bug",
+            openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
+        ),
         ignore(
             reason = "Linux initrd lacks a VPCI driver",
             openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
