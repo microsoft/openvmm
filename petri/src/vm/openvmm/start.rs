@@ -11,6 +11,7 @@ use crate::PetriLogFile;
 use crate::PetriVmRuntimeConfig;
 use crate::worker::Worker;
 use anyhow::Context;
+use mesh::payload::message::ProtobufMessage;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
@@ -26,7 +27,27 @@ use std::sync::Arc;
 use vm_resource::IntoResource;
 
 impl PetriVmConfigOpenVmm {
-    async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+    pub(super) async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        self.run_core_inner(None).await
+    }
+
+    /// Launch a fresh worker that restores from `saved_state`, mirroring
+    /// production `--restore-snapshot`. Exercises the path the in-process
+    /// pulse (`verify_save_restore`) cannot reach.
+    pub(crate) async fn run_restore(
+        self,
+        saved_state: &[u8],
+    ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        let saved_state: ProtobufMessage = mesh::payload::decode(saved_state)
+            .context("failed to decode serialized saved state")?;
+        self.run_core_inner(Some(saved_state)).await
+    }
+
+    async fn run_core_inner(
+        self,
+        saved_state: Option<ProtobufMessage>,
+    ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        let restoring = saved_state.is_some();
         let Self {
             runtime_config,
             arch,
@@ -56,6 +77,10 @@ impl PetriVmConfigOpenVmm {
                 .find(|rc| rc.name == *name)
                 .with_context(|| format!("IOMMU configured for unknown root complex '{name}'"))?;
             rc.iommu = Some(iommu_config.clone());
+        }
+
+        if restoring {
+            config.load_mode = config.load_mode.into_restore();
         }
 
         // TODO: OpenHCL needs virt_whp support
@@ -145,7 +170,7 @@ impl PetriVmConfigOpenVmm {
             );
         }
 
-        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory)
+        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory, saved_state)
             .await
             .context("failed to launch vm worker")?;
 
@@ -181,7 +206,8 @@ impl PetriVmConfigOpenVmm {
         tracing::info!("Resuming VM");
         vm.resume().await?;
 
-        // Run basic save/restore test if it is supported
+        // Run the basic save/restore pulse if supported. This also verifies
+        // that a restored VM can be saved and restored again.
         if supports_save_restore && !is_minimal {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;

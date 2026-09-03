@@ -5829,6 +5829,7 @@ dependencies = [
  "mesh_worker",
  "net_backend_resources",
  "openvmm_pcat_locator",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "unix_socket",
  "virt",

@@ -193,6 +193,54 @@ mod tests {
         }
     }
 
+    /// Mock regression test for the Windows save-snapshot fsync bug.
+    ///
+    /// `handle_save_snapshot` (in `openvmm_entry`) fsyncs the memory backing
+    /// file before capturing it. On Windows `sync_all` maps to
+    /// `FlushFileBuffers`, which requires a handle opened with **write**
+    /// access; the original code used a read-only `File::open` and failed with
+    /// "Access is denied" (`os error 5`). This test models that exact
+    /// operation (writable open + `sync_all`) and asserts it succeeds — the
+    /// same pattern the fix uses.
+    #[test]
+    fn writable_open_then_sync_all_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mem_path = dir.path().join("memory.bin");
+        // A page-sized file, matching the real memory-backing-file shape.
+        std::fs::write(&mem_path, vec![0u8; 4096]).unwrap();
+
+        // Mirrors the fix in vm_controller::handle_save_snapshot.
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&mem_path)
+            .unwrap();
+        f.sync_all()
+            .expect("sync_all on a writable-opened backing file must succeed on all platforms");
+    }
+
+    /// Documents *why* the fix is necessary: on Windows, `sync_all` on a
+    /// read-only handle is rejected with ERROR_ACCESS_DENIED. This is the
+    /// original bug. On POSIX a read-only `fsync` is allowed, so the negative
+    /// assertion is Windows-only.
+    #[cfg(windows)]
+    #[test]
+    fn readonly_sync_all_fails_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mem_path = dir.path().join("memory.bin");
+        std::fs::write(&mem_path, vec![0u8; 4096]).unwrap();
+
+        // Reproduce the ORIGINAL (buggy) pattern: read-only open + sync_all.
+        let read_only = std::fs::File::open(&mem_path).unwrap();
+        let err = read_only
+            .sync_all()
+            .expect_err("read-only sync_all must fail on Windows (this is the bug)");
+        assert_eq!(
+            err.raw_os_error(),
+            Some(5),
+            "expected ERROR_ACCESS_DENIED (5), got: {err}"
+        );
+    }
+
     #[test]
     fn write_read_roundtrip() {
         let dir = tempfile::tempdir().unwrap();

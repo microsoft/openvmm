@@ -320,6 +320,18 @@ impl Worker for VmWorker {
     fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
         let (device_thread, device_driver) = new_device_thread();
 
+        let saved_state = parameters
+            .saved_state
+            .map(|m| m.parse())
+            .transpose()
+            .context("failed to decode saved state")?;
+        if parameters.cfg.load_mode.has_nested_restore() {
+            anyhow::bail!("restore load mode cannot contain another restore load mode");
+        }
+        if parameters.cfg.load_mode.is_restore() && saved_state.is_none() {
+            anyhow::bail!("restore load mode requires saved state");
+        }
+
         let manifest = Manifest::from_config(parameters.cfg);
 
         let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
@@ -335,12 +347,6 @@ impl Worker for VmWorker {
             manifest,
             shared_memory,
         ))?;
-        let saved_state = parameters
-            .saved_state
-            .map(|m| m.parse())
-            .transpose()
-            .context("failed to decode saved state")?;
-
         let vm = block_with_io(|_| vm.load(saved_state, parameters.notify))?;
 
         LOADED_VM.store(&vm);
@@ -894,7 +900,7 @@ fn convert_vtl2_config(
 
             let allowed_ranges = if let LoadMode::Igvm {
                 vtl2_base_address, ..
-            } = load_mode
+            } = load_mode.boot_recipe()
             {
                 let range = vtl2_memory_info(igvm_file).context("invalid igvm file")?;
                 match vtl2_base_address {
@@ -1018,7 +1024,7 @@ impl InitializedVm {
             .unwrap_or(virt::IsolationType::None);
         // Pre-parse the IGVM file early so the backend can consume opaque
         // isolation metadata before it creates memory regions or VPs.
-        let igvm_file = if let LoadMode::Igvm { file, .. } = &cfg.load_mode {
+        let igvm_file = if let LoadMode::Igvm { file, .. } = cfg.load_mode.boot_recipe() {
             let igvm_file = super::vm_loaders::igvm::read_igvm_file(
                 file,
                 super::vm_loaders::igvm::igvm_isolation_type(partition_isolation),
@@ -1134,7 +1140,7 @@ impl InitializedVm {
         // Determine if a special vtl2 memory allocation should be used.
         let vtl2_layout = if let LoadMode::Igvm {
             vtl2_base_address, ..
-        } = &cfg.load_mode
+        } = cfg.load_mode.boot_recipe()
         {
             match vtl2_base_address {
                 Vtl2BaseAddressType::File
@@ -1176,7 +1182,7 @@ impl InitializedVm {
         //  3. Install a little bit of low memory, enough for UEFI to get to DXE
         //     (which can run anywhere.)
         let ram_start_address =
-            if cfg!(guest_arch = "aarch64") && matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+            if cfg!(guest_arch = "aarch64") && cfg.load_mode.is_linux_direct_platform() {
                 1024 * 1024 * 1024 // 1 GiB
             } else {
                 0
@@ -1243,7 +1249,7 @@ impl InitializedVm {
 
         if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
             if !matches!(
-                cfg.load_mode,
+                cfg.load_mode.boot_recipe(),
                 LoadMode::Linux { .. } | LoadMode::Igvm { .. }
             ) {
                 anyhow::bail!(
@@ -1323,9 +1329,7 @@ impl InitializedVm {
         memory_builder = memory_builder
             .vtl0_alias_map(vtl0_alias_map)
             .supports_memory_fault_resolution(supports_memory_fault_resolution)
-            .x86_legacy_support(
-                matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
-            );
+            .x86_legacy_support(cfg.load_mode.is_pcat_platform() || cfg.chipset.with_hyperv_vga);
 
         for (vnode, ranges) in ranges_by_node.into_iter().enumerate() {
             if ranges.is_empty() {
@@ -1398,7 +1402,7 @@ impl InitializedVm {
         if cfg.hypervisor.with_hv {
             let confidential_vmbus = false;
             // Only advertise extended IOAPIC on non-PCAT systems.
-            let extended_ioapic_rte = !matches!(cfg.load_mode, LoadMode::Pcat { .. });
+            let extended_ioapic_rte = !cfg.load_mode.is_pcat_platform();
             cpuid.extend(vmm_core::cpuid::hyperv_cpuid_leaves(
                 extended_ioapic_rte,
                 confidential_vmbus,
@@ -1472,6 +1476,8 @@ impl InitializedVm {
         client_notify_send: mesh::Sender<HaltReason>,
     ) -> Result<LoadedVm, anyhow::Error> {
         use vmotherboard::options::dev;
+
+        let is_restoring = saved_state.is_some();
 
         let Self {
             partition,
@@ -1593,7 +1599,7 @@ impl InitializedVm {
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
-        match &cfg.load_mode {
+        match cfg.load_mode.boot_recipe() {
             LoadMode::Uefi { .. } => {
                 use emuplat::uefi::*;
                 // Register the platform-specific resolvers used by the UEFI
@@ -1833,7 +1839,7 @@ impl InitializedVm {
             )));
         }
 
-        let initial_rtc_cmos = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
+        let initial_rtc_cmos = if cfg.load_mode.is_pcat_platform() {
             Some(firmware_pcat::default_cmos_values(&mem_layout))
         } else {
             None
@@ -1992,7 +1998,7 @@ impl InitializedVm {
             device_interfaces: base_chipset_device_interfaces,
         } = BaseChipsetBuilder::new(
             BaseChipsetFoundation {
-                is_restoring: false,
+                is_restoring,
                 untrusted_dma_memory: gm.clone(),
                 // There is no access to encrypted memory on the host, so this
                 // may be misleading. Presumably in any confidential VM
@@ -2260,8 +2266,7 @@ impl InitializedVm {
                     // addresses. UEFI also consumes OpenVMM's preassigned PCI
                     // configuration, so tell the guest OS not to reallocate it
                     // and transiently overlap BAR mappings.
-                    preserve_boot_config: rc.preserve_bars
-                        || matches!(&cfg.load_mode, LoadMode::Uefi { .. }),
+                    preserve_boot_config: rc.preserve_bars || cfg.load_mode.is_uefi_platform(),
                 });
 
                 pcie_root_complexes.push(root_complex.clone());
@@ -2453,7 +2458,7 @@ impl InitializedVm {
         // and MSI writes through the emulated SMMUv3.
         #[cfg(guest_arch = "aarch64")]
         let smmu_devices = {
-            let acpi_available = match &cfg.load_mode {
+            let acpi_available = match cfg.load_mode.boot_recipe() {
                 LoadMode::Linux {
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
                     ..
@@ -2464,8 +2469,10 @@ impl InitializedVm {
                 }
                 | LoadMode::Uefi { .. }
                 | LoadMode::Pcat { .. }
-                | LoadMode::Igvm { .. }
-                | LoadMode::None => true,
+                | LoadMode::Igvm { .. } => true,
+                LoadMode::Restore { .. } => {
+                    unreachable!("nested restore mode was rejected during validation")
+                }
             };
             match &resolved_iommu {
                 ResolvedIommu::Smmu(resolved) => smmu_wiring::setup_smmu(
@@ -2701,7 +2708,7 @@ impl InitializedVm {
                 .use_message_redirect(vmbus_cfg.vtl2_redirect)
                 .max_version(vmbus_max_version)
                 .max_restore_version(vmbus_max_version)
-                .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
+                .delay_max_version(cfg.load_mode.is_uefi_platform())
                 .enable_mnf(true)
                 .build()
                 .context("failed to create vmbus server")?;
@@ -3237,15 +3244,14 @@ impl LoadedVmInner {
         };
 
         if vtl2_only {
-            assert!(matches!(self.load_mode, LoadMode::Igvm { .. }));
+            assert!(self.load_mode.is_igvm_platform());
         }
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let InitialLoad {
             mut regs,
             page_imports: initial_page_imports,
-        } = match &self.load_mode {
-            LoadMode::None => return Ok(()),
+        } = match self.load_mode.boot_recipe() {
             #[cfg(guest_arch = "x86_64")]
             &LoadMode::Linux {
                 ref kernel,
@@ -3817,7 +3823,7 @@ impl LoadedVm {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
                     VmRpc::UpdateCliParams(rpc) => {
-                        rpc.handle_failable_sync(|params| match &mut self.inner.load_mode {
+                        rpc.handle_failable_sync(|params| match self.inner.load_mode.boot_recipe_mut() {
                             LoadMode::Igvm { cmdline, .. } => {
                                 *cmdline = params;
                                 Ok(())

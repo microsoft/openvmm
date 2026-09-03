@@ -68,6 +68,7 @@ To restore, pass the snapshot directory with `--restore-snapshot`:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M \
@@ -79,6 +80,10 @@ cargo run -- \
 directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
 
+Supply the original boot recipe and artifacts on restore. OpenVMM retains them
+for later operations such as reset, but applies saved state instead of running
+the boot loader during initial restore.
+
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
 the snapshot manifest. If they do not match, OpenVMM will report a
@@ -87,10 +92,9 @@ validation error and refuse to start.
 
 ## Device configuration on restore
 
-The snapshot only stores device *state*, not device *configuration*. All
-device flags (e.g. `--disk`, `--nic`, `--serial`, `--virtio-blk`, etc.)
-must be specified on the restore command line exactly as they were when
-the snapshot was saved — they are not read from the snapshot.
+The snapshot stores device *state*, not VM *configuration* or host paths.
+Specify the same boot and device flags on restore; they are not read from
+`manifest.bin`.
 
 The snapshot manifest validates that `--memory`, `--processors`,
 architecture, and page size match the values recorded at save time. However,

@@ -1261,12 +1261,7 @@ async fn vm_config_from_command_line(
         .build()
         .context("failed to build chipset configuration")?;
 
-    if opt.restore_snapshot.is_some() {
-        // Snapshot restore: skip firmware loading entirely. Device state and
-        // memory come from the snapshot directory.
-        load_mode = LoadMode::None;
-        with_hv = true;
-    } else if let Some(path) = &opt.igvm {
+    if let Some(path) = &opt.igvm {
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
@@ -2074,6 +2069,9 @@ async fn vm_config_from_command_line(
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
+    if opt.restore_snapshot.is_some() {
+        cfg.load_mode = cfg.load_mode.into_restore();
+    }
     resources.serial_driver = Some(serial_driver);
     validate_snp_config(&cfg)?;
     Ok((cfg, resources))
@@ -2085,7 +2083,7 @@ fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
     }
 
     if !matches!(
-        cfg.load_mode,
+        cfg.load_mode.boot_recipe(),
         LoadMode::Linux { .. } | LoadMode::Igvm { .. }
     ) {
         anyhow::bail!("SNP isolation currently only supports Linux direct or IGVM boot");

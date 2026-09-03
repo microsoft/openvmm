@@ -170,7 +170,66 @@ pub enum LoadMode {
         vtl2_base_address: Vtl2BaseAddressType,
         com_serial: Option<SerialInformation>,
     },
-    None,
+    /// Restore saved memory and device state using the complete original boot recipe.
+    Restore { boot: Box<LoadMode> },
+}
+
+impl LoadMode {
+    /// Returns the concrete boot recipe used to construct and operate the VM.
+    pub fn boot_recipe(&self) -> &LoadMode {
+        match self {
+            Self::Restore { boot } => boot,
+            mode => mode,
+        }
+    }
+
+    /// Returns mutable access to the concrete boot recipe.
+    pub fn boot_recipe_mut(&mut self) -> &mut LoadMode {
+        match self {
+            Self::Restore { boot } => boot,
+            mode => mode,
+        }
+    }
+
+    /// Returns whether this worker must initialize from saved state.
+    pub fn is_restore(&self) -> bool {
+        matches!(self, Self::Restore { .. })
+    }
+
+    /// Wraps a concrete boot recipe for snapshot restore.
+    pub fn into_restore(self) -> LoadMode {
+        match self {
+            Self::Restore { .. } => self,
+            boot => Self::Restore {
+                boot: Box::new(boot),
+            },
+        }
+    }
+
+    /// Returns whether a restore wrapper contains another restore wrapper.
+    pub fn has_nested_restore(&self) -> bool {
+        matches!(self, Self::Restore { boot } if boot.is_restore())
+    }
+
+    /// Returns whether this mode constructs a Linux direct-boot platform.
+    pub fn is_linux_direct_platform(&self) -> bool {
+        matches!(self.boot_recipe(), Self::Linux { .. })
+    }
+
+    /// Returns whether this mode constructs a UEFI platform.
+    pub fn is_uefi_platform(&self) -> bool {
+        matches!(self.boot_recipe(), Self::Uefi { .. })
+    }
+
+    /// Returns whether this mode constructs a PCAT platform.
+    pub fn is_pcat_platform(&self) -> bool {
+        matches!(self.boot_recipe(), Self::Pcat { .. })
+    }
+
+    /// Returns whether this mode constructs an IGVM platform.
+    pub fn is_igvm_platform(&self) -> bool {
+        matches!(self.boot_recipe(), Self::Igvm { .. })
+    }
 }
 
 #[derive(Debug, Clone, Copy, MeshPayload)]
@@ -637,4 +696,109 @@ pub enum UefiConsoleMode {
     Com1,
     Com2,
     None,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn open_test_file() -> File {
+        File::open(std::env::current_exe().unwrap()).unwrap()
+    }
+
+    fn linux_mode() -> LoadMode {
+        LoadMode::Linux {
+            kernel: open_test_file(),
+            initrd: None,
+            cmdline: String::new(),
+            enable_serial: false,
+            boot_mode: LinuxDirectBootMode::Acpi,
+        }
+    }
+
+    #[test]
+    fn restore_preserves_complete_platform_recipe() {
+        let cases = [
+            (linux_mode(), [true, false, false, false]),
+            (
+                LoadMode::Uefi {
+                    firmware: open_test_file(),
+                    enable_debugging: false,
+                    enable_memory_protections: false,
+                    disable_frontpage: false,
+                    enable_tpm: false,
+                    enable_battery: false,
+                    enable_serial: false,
+                    enable_vpci_boot: false,
+                    uefi_console_mode: None,
+                    default_boot_always_attempt: false,
+                    bios_guid: Guid::ZERO,
+                    enable_vmbus: false,
+                    force_dma_bounce: false,
+                    enable_hv: false,
+                },
+                [false, true, false, false],
+            ),
+            (
+                LoadMode::Pcat {
+                    firmware: RomFileLocation {
+                        file: open_test_file(),
+                        start: 0,
+                        len: 0,
+                    },
+                    boot_order: DEFAULT_PCAT_BOOT_ORDER,
+                },
+                [false, false, true, false],
+            ),
+            (
+                LoadMode::Igvm {
+                    file: open_test_file(),
+                    cmdline: String::new(),
+                    vtl2_base_address: Vtl2BaseAddressType::File,
+                    com_serial: None,
+                },
+                [false, false, false, true],
+            ),
+        ];
+
+        for (recipe, expected) in cases {
+            let mode = recipe.into_restore();
+            assert!(mode.is_restore());
+            assert_eq!(
+                [
+                    mode.is_linux_direct_platform(),
+                    mode.is_uefi_platform(),
+                    mode.is_pcat_platform(),
+                    mode.is_igvm_platform(),
+                ],
+                expected
+            );
+            assert!(!mode.has_nested_restore());
+        }
+    }
+
+    #[test]
+    fn restore_recipe_mutation_and_wrapping_are_idempotent() {
+        let mut mode = linux_mode().into_restore().into_restore();
+        assert!(!mode.has_nested_restore());
+
+        let LoadMode::Linux { cmdline, .. } = mode.boot_recipe_mut() else {
+            panic!("expected Linux recipe");
+        };
+        *cmdline = "updated".into();
+
+        let LoadMode::Linux { cmdline, .. } = mode.boot_recipe() else {
+            panic!("expected Linux recipe");
+        };
+        assert_eq!(cmdline, "updated");
+    }
+
+    #[test]
+    fn nested_restore_is_detected() {
+        let mode = LoadMode::Restore {
+            boot: Box::new(linux_mode().into_restore()),
+        };
+        assert!(mode.has_nested_restore());
+    }
 }
