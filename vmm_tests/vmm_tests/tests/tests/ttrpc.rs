@@ -385,7 +385,7 @@ async fn test_ttrpc_interface(
                                 socket_path: console_path.to_string_lossy().into(),
                                 connect: use_connect,
                             }),
-                            virtiofs_config: vec![vmservice::VirtioFsConfig {
+                            virtiofs_config: vec![vmservice::VirtioFs {
                                 tag: "testfs".to_string(),
                                 root_path: virtiofs_root.to_string_lossy().into(),
                             }],
@@ -495,7 +495,7 @@ async fn test_ttrpc_interface(
                     vmservice::AddPcieDeviceRequest {
                         port_name: "rphp".to_string(),
                         device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
-                            vmservice::VirtioFsConfig {
+                            vmservice::VirtioFs {
                                 tag: "hotplugfs".to_string(),
                                 root_path: hotplug_virtiofs_root.to_string_lossy().into(),
                             },
@@ -990,7 +990,7 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
 fn virtio_fs_vpci_request(tag: &str, root_path: &Path) -> vmservice::AddVpciDeviceRequest {
     vmservice::AddVpciDeviceRequest {
         device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
-            vmservice::VirtioFsConfig {
+            vmservice::VirtioFs {
                 tag: tag.to_string(),
                 root_path: root_path.to_string_lossy().into_owned(),
             },

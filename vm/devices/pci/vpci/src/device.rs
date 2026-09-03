@@ -24,7 +24,6 @@ use pci_core::spec::cfg_space;
 use pci_core::spec::hwid::HardwareIds;
 use ring::OutgoingPacketType;
 use std::fmt::Debug;
-use std::future::Future;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::sync::Arc;

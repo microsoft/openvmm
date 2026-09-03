@@ -23,6 +23,7 @@ use vmbus_channel::channel::VmbusDevice;
 use vmbus_channel::channel::offer_channel;
 use vmbus_channel::channel::offer_generic_channel;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
+use vmbus_channel::simple::InitialDeviceState;
 use vmbus_channel::simple::SimpleDeviceHandle;
 use vmbus_channel::simple::SimpleVmbusDevice;
 use vmbus_channel::simple::offer_simple_device;
@@ -170,7 +171,13 @@ pub async fn offer_simple_device_unit<T: SimpleVmbusDevice>(
 ) -> anyhow::Result<SpawnedUnit<SimpleChannelUnit<T>>> {
     let offer = device.offer();
     let name = format!("{}:{}", offer.interface_name, offer.instance_id);
-    let handle = offer_simple_device(driver_source, vmbus.control.as_ref(), device, false).await?;
+    let handle = offer_simple_device(
+        driver_source,
+        vmbus.control.as_ref(),
+        device,
+        InitialDeviceState::Stopped,
+    )
+    .await?;
     let unit = state_units
         .add(name)
         .depends_on(vmbus.unit.handle())

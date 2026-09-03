@@ -31,6 +31,7 @@ use pci_core::bus_cfg::PciBusCfgAccessHandler;
 use std::sync::Arc;
 use std::task::Context;
 use thiserror::Error;
+use vmbus_channel::simple::InitialDeviceState;
 use vmbus_channel::simple::SimpleDeviceHandle;
 use vmbus_channel::simple::offer_simple_device;
 use vmcore::device_state::ChangeDeviceState;
@@ -251,7 +252,12 @@ impl PendingVpciBusOffer {
         vmbus: &dyn vmbus_channel::bus::ParentBus,
         started: bool,
     ) -> anyhow::Result<SimpleDeviceHandle<VpciChannel>> {
-        offer_simple_device(driver_source, vmbus, self.channel, started).await
+        let initial_state = if started {
+            InitialDeviceState::Running
+        } else {
+            InitialDeviceState::Stopped
+        };
+        offer_simple_device(driver_source, vmbus, self.channel, initial_state).await
     }
 
     /// Publishes the VMBus channel for an already-registered VPCI bus.

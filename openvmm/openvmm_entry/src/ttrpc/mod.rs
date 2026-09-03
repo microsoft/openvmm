@@ -2042,7 +2042,7 @@ async fn build_virtio_device(
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
-        Kind::Fs(vmservice::VirtioFsConfig { tag, root_path }) => {
+        Kind::Fs(vmservice::VirtioFs { tag, root_path }) => {
             const VIRTIO_FS_TAG_LEN: usize = 36;
             anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
             anyhow::ensure!(

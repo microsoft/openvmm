@@ -176,7 +176,7 @@ message DevicesConfig {
     // have a oneof here named PCIDevice with WindowsPCIDevice and LinuxPCIDevice
     // housed.
     repeated WindowsPCIDevice windows_device = 4;
-    repeated VirtioFSConfig virtiofs_config = 5;
+    repeated VirtioFs virtiofs_config = 5;
     VirtioConsoleConfig virtio_console = 6;
 }
 
@@ -212,7 +212,7 @@ message VirtioDevice {
         // process (e.g. vhost-user-blk / vhost-user-fs).
         VhostUser     vhost_user = 6;
         // Built-in virtio-fs filesystem device.
-        VirtioFSConfig fs        = 7;
+        VirtioFs       fs        = 7;
     }
 }
 
@@ -759,7 +759,7 @@ message WindowsPCIDevice {
     string instance_id = 1;
 }
 
-message VirtioFSConfig {
+message VirtioFs {
     string tag = 1;
     string root_path = 2;
 }
