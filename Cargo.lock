@@ -3916,6 +3916,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "fs-err",
  "futures",
  "futures-concurrency",
  "initrd_cpio",

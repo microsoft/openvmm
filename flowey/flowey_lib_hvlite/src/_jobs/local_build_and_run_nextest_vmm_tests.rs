@@ -670,6 +670,7 @@ impl SimpleFlowNode for Node {
                 built_artifacts,
                 is_repo_root: true,
                 needs_release_igvm,
+                needs_incubator_profiles: incubator_profile.is_some(),
                 done: v,
             });
 
