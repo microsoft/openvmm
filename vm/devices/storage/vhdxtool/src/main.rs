@@ -343,11 +343,21 @@ async fn create_image(options: CreateOptions) -> Result<()> {
             .unwrap_or_else(|| std::path::Path::new("."));
         let absolute_parent = fs_err::canonicalize(&parent_path)
             .with_context(|| format!("failed to resolve parent {}", parent_path.display()))?;
-        let relative_path = util::relative_path(child_directory, &absolute_parent)?
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "\\");
-        let vhdx_parent =
-            VhdxParent::new(parent.data_write_guid())?.with_relative_path(relative_path)?;
+        let relative_path = util::relative_path(child_directory, &absolute_parent).map(|path| {
+            path.to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "\\")
+        });
+        // On Windows the parent may be on another drive, leaving no relative
+        // path; the absolute path below is then the only locator. Elsewhere
+        // there is no absolute locator, so a relative path is required.
+        #[cfg(windows)]
+        let relative_path = relative_path.ok();
+        #[cfg(not(windows))]
+        let relative_path = Some(relative_path?);
+        let mut vhdx_parent = VhdxParent::new(parent.data_write_guid())?;
+        if let Some(relative_path) = relative_path {
+            vhdx_parent = vhdx_parent.with_relative_path(relative_path)?;
+        }
         #[cfg(windows)]
         let vhdx_parent = {
             let absolute_path = absolute_parent.to_string_lossy();
