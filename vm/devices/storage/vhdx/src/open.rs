@@ -870,8 +870,10 @@ mod tests {
         assert!(vhdx.has_parent());
     }
 
+    /// A differencing disk should not set `leave_blocks_allocated`, but opening
+    /// one that does is tolerated rather than reported as corruption.
     #[async_test]
-    async fn open_differencing_disk_ignores_leave_blocks_allocated() {
+    async fn open_differencing_disk_tolerates_leave_blocks_allocated() {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
