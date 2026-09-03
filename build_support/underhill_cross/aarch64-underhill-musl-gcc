@@ -14,4 +14,9 @@ if [ -z "$REALGCC" ]; then
     fi
 fi
 
-MUSL_ARCH=aarch64 MUSL_SYSROOT="$AARCH64_SYSROOT" exec "$REALGCC" "$@" -specs "$script_dir/musl-gcc.specs"
+# Satisfy the -fuse-ld=lld in .cargo/config.toml using the lld bundled with the
+# Rust toolchain, so no distro lld package is needed. gcc-ld only ever exists
+# for the host triple; if it is missing, gcc falls back to searching PATH.
+gcc_ld_dir="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/gcc-ld"
+
+MUSL_ARCH=aarch64 MUSL_SYSROOT="$AARCH64_SYSROOT" exec "$REALGCC" "$@" -B"$gcc_ld_dir" -specs "$script_dir/musl-gcc.specs"

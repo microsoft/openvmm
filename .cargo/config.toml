@@ -128,6 +128,13 @@ rustflags = [
   # Disable unwind tables to reduce binary size.
   # TODO: It would be nice to have this enabled for debug builds
   "-Cforce-unwind-tables=no",
+  # Link with lld, which can fold identical functions. Monomorphization emits a
+  # long tail of byte-identical functions, so folding them cuts some bytes off
+  # the binary. -O2 additionally turns on lld's string tail merging.
+  # Note that folding makes backtraces ambiguous between folded functions.
+  "-Clink-arg=-fuse-ld=lld",
+  "-Clink-arg=-Wl,--icf=all",
+  "-Clink-arg=-Wl,-O2",
 ]
 
 [target.'cfg(all(target_arch = "aarch64", target_env = "musl"))']
