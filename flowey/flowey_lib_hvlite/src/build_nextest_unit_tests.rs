@@ -278,12 +278,12 @@ impl FlowNode for Node {
                     let publish_dones: Vec<_> = test_results
                         .iter()
                         .map(|(test_label, r)| {
-                            let junit_xml = r.clone().map(ctx, |t| t.junit_xml);
                             ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-                                junit_xml,
+                                test_results: r.clone(),
                                 test_label: test_label.clone(),
                                 attachments: BTreeMap::new(),
                                 output_dir: artifact_dir.clone(),
+                                upload_logs_on_success: true,
                                 done: v,
                             })
                         })

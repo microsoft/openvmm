@@ -16,7 +16,7 @@ use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri_artifacts_common::tags::MachineArch;
 
-petri::test!(host_tmks, |resolver| resolve_host_tmks(resolver, false));
+petri::test_sync!(host_tmks, |resolver| resolve_host_tmks(resolver, false));
 
 fn host_tmks(
     params: petri::PetriTestParams<'_>,
@@ -25,7 +25,7 @@ fn host_tmks(
     host_tmks_core(params, false, artifacts)
 }
 
-petri::test!(host_tmks_emulated_apic, |resolver| resolve_host_tmks(
+petri::test_sync!(host_tmks_emulated_apic, |resolver| resolve_host_tmks(
     resolver, true
 ));
 
@@ -214,11 +214,48 @@ fn resolve_openhcl_tmks<T: PetriVmmBackend>(
     Some(OpenhclTmkArtifacts { vm, tmk_vmm, tmk })
 }
 
-fn openvmm_openhcl_tmks(
+async fn openvmm_openhcl_tmks(
     params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
     artifacts: OpenhclTmkArtifacts<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
-    DefaultPool::run_with(async |driver| {
+    let logger = params.logger.clone();
+    let mut vm = petri::PetriVmBuilder::new(params, artifacts.vm, &driver)?
+        .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
+        .with_expect_no_boot_event()
+        .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
+        .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 1,
+            ..Default::default()
+        })
+        // TODO: remove once the TMK VMM initializes memory properly.
+        // and unify test functions into one generic function
+        .modify_backend(|b| b.with_allow_early_vtl0_access(true))
+        .run_without_agent()
+        .await?;
+
+    tracing::info!("started vm");
+    openhcl_tmks_inner(&driver, logger, &mut vm).await?;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+mod hyperv {
+    use crate::OPENHCL_COMMAND_LINE;
+    use crate::OpenhclTmkArtifacts;
+    use crate::openhcl_tmks_inner;
+    use crate::resolve_openhcl_tmks;
+    use pal_async::DefaultDriver;
+    use petri::ProcessorTopology;
+    use petri::hyperv::HyperVPetriBackend;
+
+    async fn hyperv_openhcl_tmks(
+        params: petri::PetriTestParams<'_>,
+        driver: DefaultDriver,
+        artifacts: OpenhclTmkArtifacts<HyperVPetriBackend>,
+    ) -> anyhow::Result<()> {
         let logger = params.logger.clone();
         let mut vm = petri::PetriVmBuilder::new(params, artifacts.vm, &driver)?
             .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
@@ -229,9 +266,6 @@ fn openvmm_openhcl_tmks(
                 vp_count: 1,
                 ..Default::default()
             })
-            // TODO: remove once the TMK VMM initializes memory properly.
-            // and unify test functions into one generic function
-            .modify_backend(|b| b.with_allow_early_vtl0_access(true))
             .run_without_agent()
             .await?;
 
@@ -239,42 +273,6 @@ fn openvmm_openhcl_tmks(
         openhcl_tmks_inner(&driver, logger, &mut vm).await?;
 
         Ok(())
-    })
-}
-
-#[cfg(windows)]
-mod hyperv {
-    use crate::OPENHCL_COMMAND_LINE;
-    use crate::OpenhclTmkArtifacts;
-    use crate::openhcl_tmks_inner;
-    use crate::resolve_openhcl_tmks;
-    use pal_async::DefaultPool;
-    use petri::ProcessorTopology;
-    use petri::hyperv::HyperVPetriBackend;
-
-    fn hyperv_openhcl_tmks(
-        params: petri::PetriTestParams<'_>,
-        artifacts: OpenhclTmkArtifacts<HyperVPetriBackend>,
-    ) -> anyhow::Result<()> {
-        DefaultPool::run_with(async |driver| {
-            let logger = params.logger.clone();
-            let mut vm = petri::PetriVmBuilder::new(params, artifacts.vm, &driver)?
-                .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
-                .with_expect_no_boot_event()
-                .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
-                .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
-                .with_processor_topology(ProcessorTopology {
-                    vp_count: 1,
-                    ..Default::default()
-                })
-                .run_without_agent()
-                .await?;
-
-            tracing::info!("started vm");
-            openhcl_tmks_inner(&driver, logger, &mut vm).await?;
-
-            Ok(())
-        })
     }
 
     petri::unstable_test!(

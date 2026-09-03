@@ -521,7 +521,7 @@ jobs:
     name: publish openvmm.dev
     concurrency:
       group: publish-openvmm.dev
-      cancel-in-progress: true
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read

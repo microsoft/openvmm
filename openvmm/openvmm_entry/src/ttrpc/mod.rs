@@ -863,6 +863,7 @@ impl VmService {
                         default_boot_always_attempt: false,
                         force_dma_bounce: false,
                         enable_hv: true,
+                        hibernation_enabled: true,
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
                     Some((base_template, uefi.secure_boot_enabled)),

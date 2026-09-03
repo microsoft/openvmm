@@ -25,6 +25,10 @@ cmd = ["ci", "build-docs", "--config=pr"]
 file = ".github/workflows/openvmm-source-release.yaml"
 cmd = ["ci", "openvmm-source-release"]
 
+[[pipeline.flowey_hvlite.github]]
+file = ".github/workflows/openvmm-burn-in.yaml"
+cmd = ["ci", "burn-in"]
+
 [[pipeline.flowey_hvlite.ado]]
 file = "ci-flowey/openvmm-pr.yaml"
 cmd = ["ci", "checkin-gates", "--config=pr"]

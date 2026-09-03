@@ -132,7 +132,14 @@ impl NormalizedBufferBounds {
 }
 
 #[derive(Debug, Error)]
-pub enum TcpError {
+#[error("{kind} for flow {flow}")]
+pub struct TcpError {
+    flow: FourTuple,
+    kind: TcpErrorKind,
+}
+
+#[derive(Debug, Error)]
+enum TcpErrorKind {
     #[error("still connecting")]
     StillConnecting,
     #[error("unacceptable segment number")]
@@ -143,6 +150,12 @@ pub enum TcpError {
     AckPastSequence,
     #[error("invalid window scale")]
     InvalidWindowScale,
+}
+
+impl TcpError {
+    fn new(flow: FourTuple, kind: TcpErrorKind) -> Self {
+        Self { flow, kind }
+    }
 }
 
 impl Tcp {
@@ -825,7 +838,11 @@ impl<T: Client> Access<'_, T> {
                                         return true;
                                     }
                                 };
-                                tracing::trace!(?ft, "TCP connection established");
+                                tracing::trace!(
+                                    src = %ft.src,
+                                    dst = %ft.dst,
+                                    "TCP connection established"
+                                );
                                 e.insert(conn);
                                 self.inner.tcp.aggregate_stats.connections_accepted.increment();
                             }
@@ -903,6 +920,8 @@ impl<T: Client> Access<'_, T> {
                         )
                     } else {
                         tracelimit::warn_ratelimited!(
+                            src = %ft.src,
+                            dst = %ft.dst,
                             "DNS TCP connection without an answer source, dropping"
                         );
                         false
@@ -1370,7 +1389,7 @@ impl TcpConnection {
         inspect_static_dns: bool,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
-        inner.initialize_from_first_client_packet(tcp)?;
+        inner.initialize_from_first_client_packet(*sender.ft, tcp)?;
 
         let socket = Socket::new(
             match sender.ft.dst {
@@ -1391,7 +1410,12 @@ impl TcpConnection {
         #[cfg(windows)]
         if sender.ft.dst.ip().is_loopback() {
             if let Err(err) = crate::windows::disable_connection_retries(&socket) {
-                tracing::trace!(err, "Failed to disable loopback retries");
+                tracing::trace!(
+                    err,
+                    src = %sender.ft.src,
+                    dst = %sender.ft.dst,
+                    "Failed to disable loopback retries"
+                );
             }
         }
 
@@ -1465,7 +1489,7 @@ impl TcpConnection {
         params: &ConnectionParams,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
-        inner.initialize_from_first_client_packet(tcp)?;
+        inner.initialize_from_first_client_packet(*sender.ft, tcp)?;
 
         let flow = crate::dns_resolver::DnsFlow {
             src: sender.ft.src,
@@ -1487,14 +1511,18 @@ impl TcpConnection {
 }
 
 impl TcpConnectionInner {
-    fn initialize_from_first_client_packet(&mut self, tcp: &TcpRepr<'_>) -> Result<(), DropReason> {
+    fn initialize_from_first_client_packet(
+        &mut self,
+        flow: FourTuple,
+        tcp: &TcpRepr<'_>,
+    ) -> Result<(), DropReason> {
         // The TCPv4 default maximum segment size is 536. This can be bigger for
         // IPv6.
         let tx_mss = tcp.max_seg_size.map_or(536, |x| x.into());
 
         if let Some(tx_window_scale) = tcp.window_scale {
             if tx_window_scale > 14 {
-                return Err(TcpError::InvalidWindowScale.into());
+                return Err(TcpError::new(flow, TcpErrorKind::InvalidWindowScale).into());
             }
             self.enable_window_scaling = true;
             self.tx_window_scale = tx_window_scale;
@@ -1565,7 +1593,7 @@ impl TcpConnectionInner {
                     if n == 0 {
                         // EOF — close the connection.
                         if !self.state.tx_fin() {
-                            self.close(sender.state.params.tcp_close_timeout);
+                            self.close(sender.state.params.tcp_close_timeout, sender.ft);
                         }
                         break;
                     }
@@ -1671,7 +1699,7 @@ impl TcpConnectionInner {
                         match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
                             Poll::Ready(Ok(n)) => {
                                 if n == 0 {
-                                    self.close(sender.state.params.tcp_close_timeout);
+                                    self.close(sender.state.params.tcp_close_timeout, sender.ft);
                                     break 'read;
                                 }
                                 if let Some(static_dns) = static_dns.as_mut() {
@@ -2192,11 +2220,11 @@ impl TcpConnectionInner {
         self.compact_closed_buffers();
     }
 
-    fn close(&mut self, close_timeout: Duration) {
+    fn close(&mut self, close_timeout: Duration, flow: &FourTuple) {
         if self.tx_fin.is_pending() {
             return;
         }
-        tracing::trace!("fin");
+        tracing::trace!(src = %flow.src, dst = %flow.dst, "fin");
         match self.state {
             TcpState::SynSent | TcpState::SynReceived => {
                 self.start_close_deadline(close_timeout);
@@ -2572,8 +2600,10 @@ impl TcpConnectionInner {
         if tcp.control != TcpControl::Syn || tcp.segment_len() != 1 {
             return Ok(true);
         }
-        let ack_number = tcp.ack_number.ok_or(TcpError::MissingAck)?;
-        self.initialize_from_first_client_packet(tcp)?;
+        let ack_number = tcp
+            .ack_number
+            .ok_or_else(|| TcpError::new(*sender.ft, TcpErrorKind::MissingAck))?;
+        self.initialize_from_first_client_packet(*sender.ft, tcp)?;
 
         self.tx_acked = ack_number;
         self.tx_syn = TxSynState::None;
@@ -2607,7 +2637,7 @@ impl TcpConnectionInner {
             // We have not yet sent a syn (we are still deciding whether we are
             // in LISTEN or CLOSED state), so we can't send a reasonable
             // response to this. Just drop the packet.
-            return Err(TcpError::StillConnecting.into());
+            return Err(TcpError::new(*sender.ft, TcpErrorKind::StillConnecting).into());
         } else if self.state == TcpState::SynSent {
             return self.handle_listen_syn(sender, tcp);
         }
@@ -2643,7 +2673,7 @@ impl TcpConnectionInner {
             if !seq_acceptable {
                 // Silently drop--don't send an ACK--since the peer would then
                 // immediately respond with a valid RST.
-                return Err(TcpError::Unacceptable.into());
+                return Err(TcpError::new(*sender.ft, TcpErrorKind::Unacceptable).into());
             }
 
             // RFC 5961
@@ -2654,7 +2684,11 @@ impl TcpConnectionInner {
             }
 
             // This is a valid RST. Drop the connection.
-            tracing::debug!("connection reset");
+            tracing::debug!(
+                src = %sender.ft.src,
+                dst = %sender.ft.dst,
+                "connection reset"
+            );
             self.last_close_reason = ConnectionCloseReason::PeerRst;
             return Ok(false);
         }
@@ -2674,13 +2708,17 @@ impl TcpConnectionInner {
                 );
             }
             self.ack(sender);
-            return Err(TcpError::Unacceptable.into());
+            return Err(TcpError::new(*sender.ft, TcpErrorKind::Unacceptable).into());
         }
 
         // SYN should not be set for in-window segments.
         if tcp.control == TcpControl::Syn {
             if self.state == TcpState::SynReceived {
-                tracing::debug!("invalid syn, drop connection");
+                tracing::debug!(
+                    src = %sender.ft.src,
+                    dst = %sender.ft.dst,
+                    "invalid syn, drop connection"
+                );
                 return Ok(false);
             }
             // RFC 5961, send a challenge ACK.
@@ -2689,7 +2727,9 @@ impl TcpConnectionInner {
         }
 
         // ACK should always be set at this point.
-        let ack_number = tcp.ack_number.ok_or(TcpError::MissingAck)?;
+        let ack_number = tcp
+            .ack_number
+            .ok_or_else(|| TcpError::new(*sender.ft, TcpErrorKind::MissingAck))?;
         let previous_tx_acked = self.tx_acked;
         let tx_window_was_zero = self.tx_window_len == 0;
         let previous_tx_window_len = self.tx_window_len;
@@ -2724,7 +2764,7 @@ impl TcpConnectionInner {
         // Ignore ACKs for segments that have not been sent.
         if ack_number > self.tx_send {
             self.ack(sender);
-            return Err(TcpError::AckPastSequence.into());
+            return Err(TcpError::new(*sender.ft, TcpErrorKind::AckPastSequence).into());
         }
 
         // Retire the ACKed segments.
@@ -2958,6 +2998,7 @@ impl TcpListener {
         if let Err(err) = socket.listen(10) {
             tracing::warn!(
                 error = &err as &dyn std::error::Error,
+                host_port,
                 "socket listen error"
             );
             return Err(BindError::Io(err));
@@ -2974,13 +3015,21 @@ impl TcpListener {
                 Ok((socket, address)) => match address.as_socket() {
                     Some(addr) => Ok(Some((socket, addr))),
                     None => {
-                        tracing::warn!(?address, "Unknown address from accept");
+                        tracing::warn!(
+                            host_port = self.host_port,
+                            ?address,
+                            "Unknown address from accept"
+                        );
                         Ok(None)
                     }
                 },
                 Err(_) => {
                     let err = take_socket_error(&self.socket);
-                    tracing::warn!(error = &err as &dyn std::error::Error, "listen failure");
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        host_port = self.host_port,
+                        "listen failure"
+                    );
                     Err(DropReason::Io(err))
                 }
             },

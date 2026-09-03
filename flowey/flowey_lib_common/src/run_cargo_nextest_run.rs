@@ -86,7 +86,7 @@ pub enum NextestRunKind {
     /// Run tests from pre-built nextest archive file.
     RunFromArchive {
         archive_file: ReadVar<PathBuf>,
-        target: Option<ReadVar<target_lexicon::Triple>>,
+        target: Option<target_lexicon::Triple>,
         nextest_bin: Option<ReadVar<PathBuf>>,
     },
 }
@@ -209,8 +209,7 @@ impl FlowNodeWithConfig for Node {
                     target,
                     nextest_bin,
                 } => {
-                    let target =
-                        target.unwrap_or(ReadVar::from_static(target_lexicon::Triple::host()));
+                    let target = target.unwrap_or(target_lexicon::Triple::host());
 
                     let nextest_bin = nextest_bin.unwrap_or_else(|| {
                         ctx.reqv(|v| crate::download_cargo_nextest::Request::Get(target.clone(), v))
@@ -358,7 +357,7 @@ impl FlowNodeWithConfig for Node {
                             .join(junit_path);
                         let final_xml = std::env::current_dir()?.join("junit.xml");
                         // copy locally to avoid trashing the output between test runs
-                        fs_err::rename(emitted_xml, &final_xml)?;
+                        fs_err::copy(emitted_xml, &final_xml)?;
                         Some(final_xml.absolute()?)
                     } else {
                         None

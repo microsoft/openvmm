@@ -5,6 +5,7 @@
 
 use crate::pipelines_shared::ado_pools;
 use crate::pipelines_shared::gh_pools;
+use anyhow::Context as _;
 use flowey::node::prelude::AdoResourcesRepositoryId;
 use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::node::prelude::GhPermission;
@@ -24,6 +25,7 @@ use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonProfile;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::init_vmm_tests_content_dir::ResolveVmmTestsBuiltArtifacts;
+use flowey_lib_hvlite::init_vmm_tests_content_dir::vmm_tests_artifact_builders;
 use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
@@ -204,6 +206,20 @@ impl IntoPipeline for CheckinGatesCli {
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderWindowsAarch64::default();
         let mut vmm_tests_artifacts_linux_aarch64_tcg =
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxAarch64Tcg::default();
+
+        // Run VMM.Perf after merge, or before merge through the opt-in release
+        // PR pipeline.
+        let enable_vmm_perf = matches!(
+            (backend_hint, config),
+            (
+                PipelineBackendHint::Github,
+                PipelineConfig::Ci | PipelineConfig::PrRelease
+            )
+        );
+        let mut use_vmm_perf_runner_gnu_x64 = None;
+        let mut use_vmm_perf_runner_musl_x64 = None;
+        let mut use_vmm_perf_openvmm_gnu_x64 = None;
+        let mut use_vmm_perf_openvmm_musl_x64 = None;
 
         // We need to maintain a list of all jobs, so we can hang the "all good"
         // job off of them. This is requires because github status checks only allow
@@ -772,6 +788,10 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmm-tests-archive"));
             let (pub_vmm_tests_archive_musl, use_vmm_tests_archive_musl) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-vmm-tests-archive"));
+            let (pub_vmm_perf_gnu, use_vmm_perf_gnu) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmm-perf-runner"));
+            let (pub_vmm_perf_musl, use_vmm_perf_musl) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-vmm-perf-runner"));
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -789,6 +809,10 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_vmm_tests_archive.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_nextest_vmm_tests_archive =
                         Some(use_vmm_tests_archive_musl.clone());
+                    use_vmm_perf_runner_gnu_x64 = Some(use_vmm_perf_gnu);
+                    use_vmm_perf_runner_musl_x64 = Some(use_vmm_perf_musl);
+                    use_vmm_perf_openvmm_gnu_x64 = Some(use_openvmm.clone());
+                    use_vmm_perf_openvmm_musl_x64 = Some(use_openvmm_musl.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_linux_aarch64_tcg.use_openvmm =
@@ -952,6 +976,25 @@ impl IntoPipeline for CheckinGatesCli {
                             build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
                                 archive,
                             ),
+                        }
+                    }).publish(pub_vmm_perf_gnu, |vmm_perf| {
+                        flowey_lib_hvlite::build_vmm_perf::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            vmm_perf,
+                        }
+                    })
+                    .publish(pub_vmm_perf_musl, |vmm_perf| {
+                        flowey_lib_hvlite::build_vmm_perf::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            vmm_perf,
                         }
                     });
 
@@ -1727,6 +1770,7 @@ impl IntoPipeline for CheckinGatesCli {
                     external_deps,
                     incubator_profile: incubator_profile
                         .map(|n| IncubatorProfileNameOrPath::Name(n.into())),
+                    upload_logs_on_success: true,
                     fail_job_on_test_fail: true,
                     repetitions: std::num::NonZeroU64::new(1).unwrap(),
                     petri_params: PetriParams {
@@ -1742,6 +1786,60 @@ impl IntoPipeline for CheckinGatesCli {
             let vmm_tests_run_job = vmm_tests_run_job.finish();
             if !label.contains("snp") {
                 all_jobs.push(vmm_tests_run_job);
+            }
+        }
+
+        if enable_vmm_perf {
+            let runner_gnu =
+                use_vmm_perf_runner_gnu_x64.context("missing x64 Linux GNU VMM.Perf runner")?;
+            let runner_musl =
+                use_vmm_perf_runner_musl_x64.context("missing x64 Linux MUSL VMM.Perf runner")?;
+            let openvmm_gnu = use_vmm_perf_openvmm_gnu_x64
+                .context("missing x64 Linux GNU OpenVMM artifact for VMM.Perf")?;
+            let openvmm_musl = use_vmm_perf_openvmm_musl_x64
+                .context("missing x64 Linux MUSL OpenVMM artifact for VMM.Perf")?;
+            for (label, platform, pool, openvmm, runner, hugetlb_pages) in [
+                (
+                    "x64-linux-amd-kvm",
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    gh_pools::linux_amd_v7_1es(),
+                    openvmm_gnu,
+                    runner_gnu,
+                    Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
+                ),
+                (
+                    "x64-linux-intel-mshv",
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
+                    gh_pools::linux_mshv_intel_v5_1es(),
+                    openvmm_musl,
+                    runner_musl,
+                    None,
+                ),
+            ] {
+                let job = pipeline
+                    .new_job(
+                        platform,
+                        FlowArch::X86_64,
+                        format!("run vmm-perf [{label}]"),
+                    )
+                    .gh_set_pool(pool)
+                    .with_timeout_in_minutes(120)
+                    .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
+                    .dep_on(
+                        |ctx| flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf::Params {
+                            label: format!("{label}-vmm-perf"),
+                            runner: ctx.use_typed_artifact(&runner),
+                            openvmm: ctx.use_typed_artifact(&openvmm),
+                            profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
+                            vm_sizes_json: None,
+                            parameters_json: None,
+                            root_dir: None,
+                            hugetlb_2mb_overcommit_pages: hugetlb_pages,
+                            done: ctx.new_done_handle(),
+                        },
+                    )
+                    .finish();
+                all_jobs.push(job);
             }
         }
 
@@ -1858,111 +1956,4 @@ impl IntoPipeline for CheckinGatesCli {
 
         Ok(pipeline)
     }
-}
-
-/// Utility builders which make it easy to "skim off" artifacts required by VMM
-/// test execution from other pipeline jobs.
-//
-// FUTURE: if we end up having a _lot_ of VMM test jobs, this would be the sort
-// of thing that would really benefit from a derive macro.
-//
-// DEVNOTE: this is pub so internal tests can reuse the same builders
-pub mod vmm_tests_artifact_builders {
-    use flowey_lib_hvlite::build_guest_test_uefi::GuestTestUefiOutput;
-    use flowey_lib_hvlite::build_incubator::IncubatorOutput;
-    use flowey_lib_hvlite::build_nextest_vmm_tests::NextestVmmTestsArchive;
-    use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
-    use flowey_lib_hvlite::build_openvmm::OpenvmmOutput;
-    use flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostOutput;
-    use flowey_lib_hvlite::build_pipette::PipetteOutput;
-    use flowey_lib_hvlite::build_prep_steps::PrepStepsOutput;
-    use flowey_lib_hvlite::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
-    use flowey_lib_hvlite::build_tmk_vmm::TmkVmmOutput;
-    use flowey_lib_hvlite::build_tmks::TmksOutput;
-    use flowey_lib_hvlite::build_tpm_guest_tests::TpmGuestTestsOutput;
-    use flowey_lib_hvlite::build_vmgstool::VmgstoolOutput;
-    use flowey_lib_hvlite::vmm_tests_built_artifacts_builder;
-
-    vmm_tests_built_artifacts_builder!(
-        VmmTestsArtifactsBuilderLinuxX86,
-        (
-            // windows build machine
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
-            // linux build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            openvmm_vhost => OpenvmmVhostOutput,
-            pipette_linux_musl => PipetteOutput,
-            prep_steps => PrepStepsOutput,
-            // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-        )
-    );
-
-    vmm_tests_built_artifacts_builder!(
-        VmmTestsArtifactsBuilderWindowsX86,
-        (
-            // windows build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
-            prep_steps => PrepStepsOutput,
-            vmgstool => VmgstoolOutput,
-            vmgstool_dev => VmgstoolOutput,
-            tpm_guest_tests_windows => TpmGuestTestsOutput,
-            tpm_guest_tests_linux => TpmGuestTestsOutput,
-            test_igvm_agent_rpc_server => TestIgvmAgentRpcServerOutput,
-            // linux build machine
-            openhcl_standard => OpenhclIgvmOutput,
-            openhcl_cvm => OpenhclIgvmOutput,
-            openhcl_linux_direct => OpenhclIgvmOutput,
-            pipette_linux_musl => PipetteOutput,
-            tmk_vmm_linux_musl => TmkVmmOutput,
-            // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-        )
-    );
-
-    vmm_tests_built_artifacts_builder!(
-        VmmTestsArtifactsBuilderWindowsAarch64,
-        (
-            // windows build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
-            vmgstool => VmgstoolOutput,
-            vmgstool_dev => VmgstoolOutput,
-            // linux build machine
-            openhcl_standard => OpenhclIgvmOutput,
-            pipette_linux_musl => PipetteOutput,
-            tmk_vmm_linux_musl => TmkVmmOutput,
-            // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-        )
-    );
-
-    // Artifact builder for aarch64 Linux VMM tests running via QEMU TCG.
-    //
-    // The test binaries are aarch64-linux-musl (run inside QEMU), but the
-    // incubator binary is x86_64-linux-gnu (runs on the CI host).
-    vmm_tests_built_artifacts_builder!(
-        VmmTestsArtifactsBuilderLinuxAarch64Tcg,
-        (
-            // x86_64 CI host binary
-            incubator => IncubatorOutput,
-            // aarch64 guest binaries
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            pipette_linux_musl => PipetteOutput,
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-            tmk_vmm => TmkVmmOutput,
-        )
-    );
 }

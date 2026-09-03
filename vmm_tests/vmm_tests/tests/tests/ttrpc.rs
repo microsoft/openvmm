@@ -16,7 +16,6 @@ use guid::Guid;
 use mesh::CancelContext;
 use openvmm_ttrpc_vmservice as vmservice;
 use pal_async::DefaultDriver;
-use pal_async::DefaultPool;
 use pal_async::pipe::PolledPipe;
 use pal_async::process::PolledChild;
 use pal_async::socket::PolledSocket;
@@ -49,8 +48,9 @@ petri::test!(test_ttrpc_interface, |resolver| {
     Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
 });
 
-fn test_ttrpc_interface(
+async fn test_ttrpc_interface(
     params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
 ) -> anyhow::Result<()> {
     // All temporary files for this test live under a single temp directory
@@ -77,9 +77,8 @@ fn test_ttrpc_interface(
         petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
     };
 
-    DefaultPool::run_with(async |driver| {
-        let (mut child, client, _stderr_task) =
-            launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, _stderr_task) =
+        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
         let query_props = || {
             client.call().start(
@@ -715,8 +714,7 @@ fn test_ttrpc_interface(
             "pidfile should be removed after exit"
         );
 
-        Ok(())
-    })
+    Ok(())
 }
 
 petri::test!(test_ttrpc_uefi_boot, |resolver| {
@@ -749,8 +747,9 @@ petri::test!(test_ttrpc_uefi_boot, |resolver| {
 /// which the firmware routes to COM1. Seeing that banner proves the firmware
 /// loaded, enumerated the SCSI disk, and launched the application off of it --
 /// rather than merely proving the firmware started.
-fn test_ttrpc_uefi_boot(
+async fn test_ttrpc_uefi_boot(
     params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
     [openvmm, firmware_path, guest_disk_path]: [ResolvedArtifact; 3],
 ) -> anyhow::Result<()> {
     let tempdir = tempfile::tempdir()?;
@@ -758,9 +757,8 @@ fn test_ttrpc_uefi_boot(
     let pidfile_path = tempdir.path().join("openvmm.pid");
     let com1_path = tempdir.path().join("com1.sock");
 
-    DefaultPool::run_with(async |driver| {
-        let (mut child, client, _stderr_task) =
-            launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, _stderr_task) =
+        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
         client
             .call()
@@ -906,8 +904,7 @@ fn test_ttrpc_uefi_boot(
             exit_status
         );
 
-        Ok(())
-    })
+    Ok(())
 }
 
 /// The first thing `guest_test_uefi` prints once the firmware hands off to it.
