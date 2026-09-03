@@ -412,8 +412,8 @@ impl ConsommeControl {
         let StaticDnsRecord::A(addr) = record;
         self.request_send
             .call(
-            ConsommeRequest::AddDnsRecord,
-            DnsRecordConfig { record: addr, name },
+                ConsommeRequest::AddDnsRecord,
+                DnsRecordConfig { record: addr, name },
             )
             .await
             .map_err(ConsommeMessageError::Mesh)?

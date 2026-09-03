@@ -904,9 +904,9 @@ impl<T: Client> Access<'_, T> {
                     Err(_) => false,
                 });
         }
-    // Check for any new incoming data.
-    let mut now = None;
-    let mut next_deadline: Option<TimerInstant> = None;
+        // Check for any new incoming data.
+        let mut now = None;
+        let mut next_deadline: Option<TimerInstant> = None;
         self.inner.tcp.connections.retain(|ft, conn| {
             let mut sender = Sender {
                 ft,

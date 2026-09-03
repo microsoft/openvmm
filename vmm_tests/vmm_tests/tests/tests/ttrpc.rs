@@ -1237,251 +1237,247 @@ async fn test_ttrpc_consomme_port_forward(
         ),
     );
 
-        // Wait for stdout to close (readiness signal).
-        let mut stdout = PolledPipe::new(&driver, stdout_read)?;
-        let mut buf = [0u8; 1];
-        let n = stdout
-            .read(&mut buf)
-            .await
-            .context("reading from openvmm stdout")?;
-        anyhow::ensure!(n == 0, "openvmm wrote unexpected data to stdout");
-        drop(stdout);
+    // Wait for stdout to close (readiness signal).
+    let mut stdout = PolledPipe::new(&driver, stdout_read)?;
+    let mut buf = [0u8; 1];
+    let n = stdout
+        .read(&mut buf)
+        .await
+        .context("reading from openvmm stdout")?;
+    anyhow::ensure!(n == 0, "openvmm wrote unexpected data to stdout");
+    drop(stdout);
 
-        let client = mesh_rpc::Client::new(
-            &driver,
-            mesh_rpc::client::UnixDialier::new(driver.clone(), socket_path.clone()),
-        );
+    let client = mesh_rpc::Client::new(
+        &driver,
+        mesh_rpc::client::UnixDialier::new(driver.clone(), socket_path.clone()),
+    );
 
-        let nic_id = Guid::new_random().to_string();
-        let mac = "00-15-5D-12-12-12".to_string();
+    let nic_id = Guid::new_random().to_string();
+    let mac = "00-15-5D-12-12-12".to_string();
 
-        // Bring up eth0 (consomme's DHCP assigns 10.0.0.2) and serve the banner
-        // on GUEST_PORT, re-listening after each connection so repeated probes
-        // from the host all get served.
-        let banner = std::str::from_utf8(BANNER).unwrap();
-        let kernel_cmdline = format!(
-            "console=ttyS0 rdinit=/bin/busybox panic=-1 -- \
+    // Bring up eth0 (consomme's DHCP assigns 10.0.0.2) and serve the banner
+    // on GUEST_PORT, re-listening after each connection so repeated probes
+    // from the host all get served.
+    let banner = std::str::from_utf8(BANNER).unwrap();
+    let kernel_cmdline = format!(
+        "console=ttyS0 rdinit=/bin/busybox panic=-1 -- \
              sh -c \"ifconfig eth0 up; udhcpc eth0; \
              while true; do echo {banner} | nc -l -p {GUEST_PORT}; done\""
-        );
+    );
 
-        client
-            .call()
-            .start(
-                vmservice::Vm::CreateVm,
-                vmservice::CreateVmRequest {
-                    config: Some(vmservice::VmConfig {
-                        memory_config: Some(vmservice::MemoryConfig {
-                            memory_mb: 256,
-                            ..Default::default()
-                        }),
-                        processor_config: Some(vmservice::ProcessorConfig {
-                            processor_count: 2,
-                            ..Default::default()
-                        }),
-                        boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
-                            vmservice::DirectBoot {
-                                kernel_path: kernel_path.get().to_string_lossy().to_string(),
-                                initrd_path: initrd_path.get().to_string_lossy().to_string(),
-                                kernel_cmdline,
-                            },
-                        )),
-                        devices_config: Some(vmservice::DevicesConfig {
-                            nic_config: vec![vmservice::NicConfig {
-                                nic_id: nic_id.clone(),
-                                mac_address: mac.clone(),
-                                backend: Some(vmservice::nic_config::Backend::Consomme(
-                                    vmservice::ConsommeBackend {
-                                        cidr: String::new(),
-                                        ports: vec![],
-                                    },
-                                )),
-                                ..Default::default()
-                            }],
-                            ..Default::default()
-                        }),
+    client
+        .call()
+        .start(
+            vmservice::Vm::CreateVm,
+            vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig {
+                    memory_config: Some(vmservice::MemoryConfig {
+                        memory_mb: 256,
                         ..Default::default()
                     }),
-                    log_id: String::new(),
-                },
-            )
-            .await
-            .unwrap();
-
-        client
-            .call()
-            .start(vmservice::Vm::ResumeVm, ())
-            .await
-            .unwrap();
-
-        let operation_result: anyhow::Result<()> = async {
-            // Pick an ephemeral host port and bind it via ModifyResource. Retry
-            // with a fresh port if another process claims it first.
-            let mut host_port = 0u16;
-            let modify_request =
-                |port: u16, modify_type: vmservice::ModifyType| vmservice::ModifyResourceRequest {
-                    r#type: modify_type as i32,
-                    resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
-                        vmservice::NicConfig {
+                    processor_config: Some(vmservice::ProcessorConfig {
+                        processor_count: 2,
+                        ..Default::default()
+                    }),
+                    boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                        vmservice::DirectBoot {
+                            kernel_path: kernel_path.get().to_string_lossy().to_string(),
+                            initrd_path: initrd_path.get().to_string_lossy().to_string(),
+                            kernel_cmdline,
+                        },
+                    )),
+                    devices_config: Some(vmservice::DevicesConfig {
+                        nic_config: vec![vmservice::NicConfig {
                             nic_id: nic_id.clone(),
                             mac_address: mac.clone(),
                             backend: Some(vmservice::nic_config::Backend::Consomme(
                                 vmservice::ConsommeBackend {
                                     cidr: String::new(),
-                                    ports: vec![vmservice::PortConfig {
-                                        host_port: port as u32,
-                                        guest_port: GUEST_PORT as u32,
-                                        protocol: vmservice::IpProtocol::Tcp as i32,
-                                    }],
+                                    ports: vec![],
                                 },
                             )),
                             ..Default::default()
-                        },
-                    )),
-                };
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                log_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
 
-            const MAX_PORT_ATTEMPTS: u32 = 5;
-            let mut bound = false;
-            let mut last_bind_error = None;
-            for attempt in 0..MAX_PORT_ATTEMPTS {
-                host_port = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))?
-                    .local_addr()?
-                    .port();
+    client
+        .call()
+        .start(vmservice::Vm::ResumeVm, ())
+        .await
+        .unwrap();
 
-                match client
-                    .call()
-                    .start(
-                        vmservice::Vm::ModifyResource,
-                        modify_request(host_port, vmservice::ModifyType::Update),
-                    )
-                    .await
-                {
-                    Ok(()) => {
-                        tracing::info!(attempt, host_port, "port forward bound successfully");
-                        bound = true;
-                        break;
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            attempt,
-                            host_port,
-                            error = ?err,
-                            "ModifyResource bind failed, retrying with new port"
-                        );
-                        last_bind_error = Some(err);
-                    }
-                }
-            }
-            anyhow::ensure!(
-                bound,
-                "could not bind a host port after {MAX_PORT_ATTEMPTS} attempts: \
-                 {last_bind_error:?}"
-            );
+    let operation_result: anyhow::Result<()> = async {
+        // Pick an ephemeral host port and bind it via ModifyResource. Retry
+        // with a fresh port if another process claims it first.
+        let mut host_port = 0u16;
+        let modify_request =
+            |port: u16, modify_type: vmservice::ModifyType| vmservice::ModifyResourceRequest {
+                r#type: modify_type as i32,
+                resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
+                    vmservice::NicConfig {
+                        nic_id: nic_id.clone(),
+                        mac_address: mac.clone(),
+                        backend: Some(vmservice::nic_config::Backend::Consomme(
+                            vmservice::ConsommeBackend {
+                                cidr: String::new(),
+                                ports: vec![vmservice::PortConfig {
+                                    host_port: port as u32,
+                                    guest_port: GUEST_PORT as u32,
+                                    protocol: vmservice::IpProtocol::Tcp as i32,
+                                }],
+                            },
+                        )),
+                        ..Default::default()
+                    },
+                )),
+            };
 
-            // From the host, connect to the forwarded port and confirm the guest's
-            // banner comes back. Retry to absorb guest boot/DHCP/listener latency
-            // and the fact that consomme may drop the initial SYN to the guest
-            // before RX buffers exist (a reconnect forces a fresh SYN).
-            let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, host_port));
-            let mut timer = PolledTimer::new(&driver);
-            let mut got_banner = false;
-            for attempt in 0..60 {
-                let probe = async {
-                    let mut socket = PolledSocket::connect_tcp(&driver, addr).await?;
-                    let mut buf = vec![0u8; BANNER.len()];
-                    socket.read_exact(&mut buf).await?;
-                    anyhow::Ok(buf)
-                };
-                match CancelContext::new()
-                    .with_timeout(Duration::from_secs(5))
-                    .until_cancelled(probe)
-                    .await
-                {
-                    Ok(Ok(buf)) if buf == BANNER => {
-                        tracing::info!(
-                            attempt,
-                            host_port,
-                            "received guest banner over forwarded port"
-                        );
-                        got_banner = true;
-                        break;
-                    }
-                    other => {
-                        tracing::debug!(
-                            attempt,
-                            ?other,
-                            "forwarded connection not ready, retrying"
-                        );
-                        timer.sleep(Duration::from_secs(1)).await;
-                    }
-                }
-            }
-            anyhow::ensure!(
-                got_banner,
-                "did not receive guest banner over forwarded host port {host_port}"
-            );
+        const MAX_PORT_ATTEMPTS: u32 = 5;
+        let mut bound = false;
+        let mut last_bind_error = None;
+        for attempt in 0..MAX_PORT_ATTEMPTS {
+            host_port = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))?
+                .local_addr()?
+                .port();
 
-            // Unbind the port and confirm the host stops accepting connections.
-            client
+            match client
                 .call()
                 .start(
                     vmservice::Vm::ModifyResource,
-                    modify_request(host_port, vmservice::ModifyType::Remove),
+                    modify_request(host_port, vmservice::ModifyType::Update),
                 )
                 .await
-                .map_err(|err| anyhow::anyhow!(err.message))?;
-
-            let mut refused = false;
-            for attempt in 0..30 {
-                match CancelContext::new()
-                    .with_timeout(Duration::from_secs(5))
-                    .until_cancelled(PolledSocket::connect_tcp(&driver, addr))
-                    .await
-                {
-                    Ok(Err(err)) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
-                        tracing::info!(attempt, host_port, "forwarded port refused after unbind");
-                        refused = true;
-                        break;
-                    }
-                    Ok(Ok(_)) => {
-                        tracing::debug!(attempt, "forwarded port still accepting connections");
-                        timer.sleep(Duration::from_secs(1)).await;
-                    }
-                    Ok(Err(err)) => {
-                        tracing::debug!(
-                            attempt,
-                            error = &err as &dyn std::error::Error,
-                            "forwarded connection failed without refusal"
-                        );
-                        timer.sleep(Duration::from_secs(1)).await;
-                    }
-                    Err(err) => {
-                        tracing::debug!(attempt, ?err, "forwarded connection attempt timed out");
-                        timer.sleep(Duration::from_secs(1)).await;
-                    }
+            {
+                Ok(()) => {
+                    tracing::info!(attempt, host_port, "port forward bound successfully");
+                    bound = true;
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        attempt,
+                        host_port,
+                        error = ?err,
+                        "ModifyResource bind failed, retrying with new port"
+                    );
+                    last_bind_error = Some(err);
                 }
             }
-            anyhow::ensure!(
-                refused,
-                "forwarded host port {host_port} still accepting connections after unbind"
-            );
-            Ok(())
         }
-        .await;
-
-        // Tear down the VM and quit OpenVMM.
-        let teardown_result = client.call().start(vmservice::Vm::TeardownVm, ()).await;
-        let _ = client.call().start(vmservice::Vm::Quit, ()).await;
-
-        let exit_status = child.wait().await;
-        operation_result?;
-        teardown_result.map_err(|err| anyhow::anyhow!(err.message))?;
-        let exit_status = exit_status?;
-        tracing::info!(?exit_status, "openvmm exited");
         anyhow::ensure!(
-            exit_status.success(),
-            "openvmm exited abnormally: {exit_status:?}"
+            bound,
+            "could not bind a host port after {MAX_PORT_ATTEMPTS} attempts: \
+                 {last_bind_error:?}"
         );
+
+        // From the host, connect to the forwarded port and confirm the guest's
+        // banner comes back. Retry to absorb guest boot/DHCP/listener latency
+        // and the fact that consomme may drop the initial SYN to the guest
+        // before RX buffers exist (a reconnect forces a fresh SYN).
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, host_port));
+        let mut timer = PolledTimer::new(&driver);
+        let mut got_banner = false;
+        for attempt in 0..60 {
+            let probe = async {
+                let mut socket = PolledSocket::connect_tcp(&driver, addr).await?;
+                let mut buf = vec![0u8; BANNER.len()];
+                socket.read_exact(&mut buf).await?;
+                anyhow::Ok(buf)
+            };
+            match CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(probe)
+                .await
+            {
+                Ok(Ok(buf)) if buf == BANNER => {
+                    tracing::info!(
+                        attempt,
+                        host_port,
+                        "received guest banner over forwarded port"
+                    );
+                    got_banner = true;
+                    break;
+                }
+                other => {
+                    tracing::debug!(attempt, ?other, "forwarded connection not ready, retrying");
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+        anyhow::ensure!(
+            got_banner,
+            "did not receive guest banner over forwarded host port {host_port}"
+        );
+
+        // Unbind the port and confirm the host stops accepting connections.
+        client
+            .call()
+            .start(
+                vmservice::Vm::ModifyResource,
+                modify_request(host_port, vmservice::ModifyType::Remove),
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!(err.message))?;
+
+        let mut refused = false;
+        for attempt in 0..30 {
+            match CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(PolledSocket::connect_tcp(&driver, addr))
+                .await
+            {
+                Ok(Err(err)) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    tracing::info!(attempt, host_port, "forwarded port refused after unbind");
+                    refused = true;
+                    break;
+                }
+                Ok(Ok(_)) => {
+                    tracing::debug!(attempt, "forwarded port still accepting connections");
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+                Ok(Err(err)) => {
+                    tracing::debug!(
+                        attempt,
+                        error = &err as &dyn std::error::Error,
+                        "forwarded connection failed without refusal"
+                    );
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+                Err(err) => {
+                    tracing::debug!(attempt, ?err, "forwarded connection attempt timed out");
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+        anyhow::ensure!(
+            refused,
+            "forwarded host port {host_port} still accepting connections after unbind"
+        );
+        Ok(())
+    }
+    .await;
+
+    // Tear down the VM and quit OpenVMM.
+    let teardown_result = client.call().start(vmservice::Vm::TeardownVm, ()).await;
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+
+    let exit_status = child.wait().await;
+    operation_result?;
+    teardown_result.map_err(|err| anyhow::anyhow!(err.message))?;
+    let exit_status = exit_status?;
+    tracing::info!(?exit_status, "openvmm exited");
+    anyhow::ensure!(
+        exit_status.success(),
+        "openvmm exited abnormally: {exit_status:?}"
+    );
 
     Ok(())
 }
