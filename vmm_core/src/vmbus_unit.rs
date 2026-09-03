@@ -169,6 +169,10 @@ pub async fn offer_simple_device_unit<T: SimpleVmbusDevice>(
     vmbus: &VmbusServerHandle,
     device: T,
 ) -> anyhow::Result<SpawnedUnit<SimpleChannelUnit<T>>> {
+    anyhow::ensure!(
+        !state_units.is_running(),
+        "cannot offer a simple VMBus device while state units are running"
+    );
     let offer = device.offer();
     let name = format!("{}:{}", offer.interface_name, offer.instance_id);
     let handle = offer_simple_device(
