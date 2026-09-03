@@ -2211,7 +2211,6 @@ mod tests {
         }
     }
 
-    // TODO: Create version of this for V185
     #[async_test]
     async fn test_fix_corrupted_vmgs() {
         let tpm_state_blob = include_bytes!("../../test_data/vTpmState-corrupt.blob");

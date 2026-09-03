@@ -1980,6 +1980,7 @@ mod tests {
     use guest_emulation_transport::test_utilities::TestGet;
     use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
@@ -2135,6 +2136,7 @@ mod tests {
             interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: true,
+            tpm_version: AttestationTpmVersion::V138,
             tpm_persisted: true,
             hardware_sealing_policy: HardwareSealingPolicy::None,
             filtered_vpci_devices_allowed: false,
@@ -2709,6 +2711,7 @@ mod tests {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: false,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
@@ -2788,6 +2791,7 @@ mod tests {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: false,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
@@ -2832,6 +2836,7 @@ mod tests {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: false,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
@@ -2902,6 +2907,7 @@ mod tests {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: false,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,

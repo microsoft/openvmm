@@ -364,6 +364,7 @@ fn runtime_claims_to_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 
     #[test]
@@ -532,7 +533,7 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_no_time() {
-        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"signer"}"#;
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm_version":"1.38","tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"signer"}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
@@ -541,6 +542,7 @@ mod tests {
             interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
+            tpm_version: AttestationTpmVersion::V138,
             tpm_persisted: false,
             hardware_sealing_policy: HardwareSealingPolicy::Signer,
             filtered_vpci_devices_allowed: true,
@@ -556,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_with_time() {
-        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"hash"}"#;
+        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm_version":"185","tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"hash"}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
@@ -565,6 +567,7 @@ mod tests {
             interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
+            tpm_version: AttestationTpmVersion::V185,
             tpm_persisted: false,
             hardware_sealing_policy: HardwareSealingPolicy::Hash,
             filtered_vpci_devices_allowed: true,

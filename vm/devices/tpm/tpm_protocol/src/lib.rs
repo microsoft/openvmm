@@ -68,7 +68,7 @@ pub fn platform_akcert_attributes() -> TpmaNvBits {
 }
 
 /// vTPM version string for the 1.38 reference implementation.
-pub const TPM_V138_VERSION: &str = "138";
+pub const TPM_V138_VERSION: &str = "1.38";
 
 /// vTPM version string for the 1.85 reference implementation.
 pub const TPM_V185_VERSION: &str = "185";

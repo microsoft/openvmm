@@ -468,6 +468,17 @@ pub mod runtime_claims {
         Signer,
     }
 
+    /// TPM reference implementation version.
+    #[derive(Clone, Copy, Debug, Deserialize, Serialize, MeshPayload)]
+    pub enum AttestationTpmVersion {
+        /// TPM reference implementation version 1.38
+        #[serde(rename = "1.38")]
+        V138,
+        /// TPM reference implementation version 1.85
+        #[serde(rename = "185")]
+        V185,
+    }
+
     /// VM configuration to be included in the `RuntimeClaims`.
     #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
     #[serde(rename_all = "kebab-case")]
@@ -485,6 +496,9 @@ pub mod runtime_claims {
         pub secure_boot: bool,
         /// Whether the TPM is enabled
         pub tpm_enabled: bool,
+        /// TPM reference implementation version
+        #[serde(rename = "tpm_version")]
+        pub tpm_version: AttestationTpmVersion,
         /// Whether the VM is in stateful mode (i.e. attestation is not
         /// suppressed).
         ///
@@ -517,6 +531,7 @@ pub mod runtime_claims {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: true,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: true,
                 filtered_vpci_devices_allowed: false,
                 vm_unique_id: String::new(),

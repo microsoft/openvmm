@@ -104,6 +104,7 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 use openhcl_dma_manager::AllocationVisibility;
@@ -2148,6 +2149,10 @@ async fn new_underhill_vm(
         interactive_console_enabled: interactive_console,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
+        tpm_version: match tpm_version {
+            TpmVersion::V138 => AttestationTpmVersion::V138,
+            TpmVersion::V185 => AttestationTpmVersion::V185,
+        },
         // Legacy claim; `stateful` reflects its true meaning (attestation not
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
@@ -3964,9 +3969,6 @@ async fn new_underhill_vm(
 
 fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), anyhow::Error> {
     let General {
-        // TODO
-        tpm_version: _,
-
         // Attested to
         secure_boot_enabled,
         tpm_enabled: _,
@@ -3978,6 +3980,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         bios_guid: _,
         vpci_boot_enabled: _,
         hardware_sealing_policy: _,
+        tpm_version: _,
 
         // Validated below
         processor_idle_enabled,
