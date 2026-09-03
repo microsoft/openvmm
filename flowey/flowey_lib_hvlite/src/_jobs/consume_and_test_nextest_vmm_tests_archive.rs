@@ -95,7 +95,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<crate::write_incubator_target_runner::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
-        ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<crate::resolve_vmm_tests_pipeline_artifacts::Node>();
     }
 
@@ -330,15 +329,6 @@ impl SimpleFlowNode for Node {
             prep_steps.claim_unused(ctx);
         }
 
-        // download the nextest bin now (as opposed to automatically during
-        // invocation) so that there are not duplicate flowey steps for this.
-        let nextest_bin = ctx.reqv(|v| {
-            flowey_lib_common::download_cargo_nextest::Request::Get(
-                ReadVar::from_static(target_lexicon::Triple::host()),
-                v,
-            )
-        });
-
         let repetitions = repetitions.get();
         let mut all_results = Vec::with_capacity(repetitions as usize);
         let mut all_log_dirs = Vec::with_capacity(repetitions as usize);
@@ -371,7 +361,7 @@ impl SimpleFlowNode for Node {
                 nextest_filter_expr: nextest_filter_expr.clone(),
                 nextest_working_dir: Some(openvmm_repo_path.clone()),
                 nextest_config_file: Some(nextest_config_file.clone()),
-                nextest_bin: Some(nextest_bin.clone()),
+                nextest_bin: None,
                 target: None,
                 extra_env: extra_env.clone(),
                 pre_run_deps: pre_run_deps_iteration,

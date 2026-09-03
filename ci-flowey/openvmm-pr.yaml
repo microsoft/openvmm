@@ -445,8 +445,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -467,7 +465,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 15 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 4
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 2
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -765,8 +763,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -787,7 +783,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 14 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 4
+  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 2
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -1098,8 +1094,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -1120,7 +1114,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 13 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 4
+  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 2
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -2252,8 +2246,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -2274,7 +2266,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 9 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 4
+  - bash: $(FLOWEY_BIN) e 9 flowey_lib_common::download_cargo_nextest 2
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 9 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -2640,8 +2632,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -2662,7 +2652,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 8 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 4
+  - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::download_cargo_nextest 2
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 8 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -2985,8 +2975,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -3007,7 +2995,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 7 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 4
+  - bash: $(FLOWEY_BIN) e 7 flowey_lib_common::download_cargo_nextest 2
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 7 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -3492,8 +3480,6 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 0
       $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 3
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
@@ -3514,7 +3500,7 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 5 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 4
+  - bash: $(FLOWEY_BIN) e 5 flowey_lib_common::download_cargo_nextest 2
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 5 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
@@ -4160,6 +4146,32 @@ jobs:
     displayName: 🌼🛫 Initialize job
   - bash: |-
       set -e
+      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 1
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 2
+    displayName: downloading cargo-nextest
+  - bash: |-
+      set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::git_checkout 0
       $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
       $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
@@ -4184,38 +4196,8 @@ jobs:
       $(FLOWEY_BIN) e 20 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
-    displayName: print system info
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 0
-      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 3
-    displayName: create cargo-nextest cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: cargo-nextest'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 20 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_common::download_cargo_nextest 4
       $(FLOWEY_BIN) e 20 flowey_core::pipeline::artifact::resolve 6
-    displayName: downloading cargo-nextest
+    displayName: print system info
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
   - bash: |-
@@ -4598,6 +4580,32 @@ jobs:
     displayName: 🌼🛫 Initialize job
   - bash: |-
       set -e
+      $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 1
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 19 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 19 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 2
+    displayName: downloading cargo-nextest
+  - bash: |-
+      set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::git_checkout 0
       $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
       $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
@@ -4623,34 +4631,6 @@ jobs:
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: print system info
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 0
-      $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 3
-    displayName: create cargo-nextest cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 19 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: cargo-nextest'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 19 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::download_cargo_nextest 4
-    displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::install_dist_pkg 0
     displayName: checking if packages need to be installed
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::install_dist_pkg 1
@@ -4979,6 +4959,32 @@ jobs:
     displayName: setting up vmm_tests env
   - bash: |-
       set -e
+      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 1
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 18 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 18 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 2
+    displayName: downloading cargo-nextest
+  - bash: |-
+      set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 0
       $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
       $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
@@ -5003,40 +5009,10 @@ jobs:
       $(FLOWEY_BIN) e 18 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
-    displayName: print system info
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 0
-      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 3
-    displayName: create cargo-nextest cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: cargo-nextest'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 18 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_common::download_cargo_nextest 4
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 16
       $(FLOWEY_BIN) e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
-    displayName: downloading cargo-nextest
+    displayName: print system info
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -5304,6 +5280,32 @@ jobs:
     displayName: setting up vmm_tests env
   - bash: |-
       set -e
+      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 1
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 17 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 17 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 2
+    displayName: downloading cargo-nextest
+  - bash: |-
+      set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 0
       $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
       $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
@@ -5328,40 +5330,10 @@ jobs:
       $(FLOWEY_BIN) e 17 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
-    displayName: print system info
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 0
-      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 3
-    displayName: create cargo-nextest cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: cargo-nextest'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 17 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_common::download_cargo_nextest 4
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 16
       $(FLOWEY_BIN) e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
-    displayName: downloading cargo-nextest
+    displayName: print system info
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
     displayName: generate nextest command
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
@@ -5621,6 +5593,32 @@ jobs:
     displayName: setting up vmm_tests env
   - bash: |-
       set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 0
+      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 1
+    displayName: create cargo-nextest cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar4)
+      path: $(floweyvar3)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: cargo-nextest'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 16 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 2
+    displayName: downloading cargo-nextest
+  - bash: |-
+      set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 0
       $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
       $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
@@ -5645,40 +5643,10 @@ jobs:
       $(FLOWEY_BIN) e 16 flowey_lib_common::system_info 0
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
-    displayName: print system info
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 0
-      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 1
-      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 2
-      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 3
-    displayName: create cargo-nextest cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: cargo-nextest'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 16 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::download_cargo_nextest 4
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 0
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 16
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
-    displayName: downloading cargo-nextest
+    displayName: print system info
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 0
