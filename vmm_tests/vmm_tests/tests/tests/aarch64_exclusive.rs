@@ -8,11 +8,13 @@ use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
+use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use std::time::Duration;
 use vfio_assigned_device_resources::BarAddressConfig;
 use vm_resource::IntoResource;
+use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
 
@@ -843,4 +845,231 @@ async fn assigned_device_smmu_accel_fault_aarch64_tcg(
          fault did not reach the guest Event queue. SMMU lines:\n{}",
         smmu_lines.join("\n")
     )
+}
+
+/// Boot past the 16-VP `Aff0` boundary and verify the MPIDRs the guest sees.
+///
+/// This is the case the whole non-SMT encoding exists for. GICv3 can only
+/// target 16 `Aff0` values within one affinity group without Range Selector
+/// support, so `Aff0` rolls into `Aff1` every 16 VPs, which is also what KVM's
+/// `reset_mpidr()` does. Firmware and the hypervisor have to agree on every
+/// VP's identity: if they diverge above VP 15, PSCI `CPU_ON` cannot resolve
+/// the MPIDRs the MADT advertises and those CPUs never come online.
+///
+/// 17 VPs is the smallest count that crosses the boundary. SMT cannot reach it
+/// at all — under the SMT encoding `Aff0` is only ever 0 or 1 — so this needs
+/// to be a separate non-SMT configuration from [`smt_topology_aarch64_tcg`].
+///
+/// The `_aarch64_tcg` name suffix opts this test into the QEMU incubator pass.
+#[openvmm_test(linux_direct_aarch64)]
+async fn mpidr_affinity_rollover_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const VP_COUNT: u32 = 17;
+
+    let (vm, agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: VP_COUNT,
+            enable_smt: Some(false),
+            vps_per_socket: Some(VP_COUNT),
+            ..Default::default()
+        })
+        // KVM/aarch64 has no synic, so VMBus cannot come up and pipette has to
+        // reach the guest over virtio-vsock, which needs a PCIe root.
+        .with_no_hv()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // VP 16 is the one that only comes online if the MADT and KVM agree on its
+    // MPIDR, so this assertion is the point of the test.
+    let online = sh.read_file("/sys/devices/system/cpu/online").await?;
+    assert_eq!(
+        online.trim(),
+        format!("0-{}", VP_COUNT - 1),
+        "not every VP came online; VP 16 dropping out means firmware and KVM \
+         disagree about its MPIDR"
+    );
+
+    // Linux logs each secondary's MPIDR as it boots. Non-SMT packs 16 VPs per
+    // affinity group, so VP 15 is the last of group 0 and VP 16 opens group 1.
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let booted: Vec<u64> = dmesg
+        .lines()
+        .filter(|l| l.contains("Booted secondary processor"))
+        .filter_map(|l| {
+            let token = l.split_whitespace().find(|t| t.starts_with("0x"))?;
+            u64::from_str_radix(token.trim_start_matches("0x"), 16).ok()
+        })
+        .collect();
+    let expected: Vec<u64> = (1..VP_COUNT as u64)
+        .map(|vp| (vp % 16) | ((vp / 16) << 8))
+        .collect();
+    assert_eq!(
+        booted,
+        expected,
+        "unexpected secondary MPIDRs; guest logged:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| l.contains("Booted secondary processor"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // Without SMT every VP is its own core, so PPTT must describe one socket
+    // holding VP_COUNT distinct cores.
+    //
+    // These ids are opaque: Linux returns the PPTT node's offset within the
+    // table unless the node sets ACPI_PROCESSOR_ID_VALID, which OpenVMM's
+    // socket nodes do not. Only their grouping is meaningful.
+    let mut sockets = std::collections::BTreeSet::new();
+    let mut cores = std::collections::BTreeSet::new();
+    for cpu in 0..VP_COUNT {
+        let base = format!("/sys/devices/system/cpu/cpu{cpu}/topology");
+        sockets.insert(
+            sh.read_file(format!("{base}/physical_package_id"))
+                .await?
+                .trim()
+                .to_string(),
+        );
+        cores.insert(
+            sh.read_file(format!("{base}/core_id"))
+                .await?
+                .trim()
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        sockets.len(),
+        1,
+        "expected a single socket, got {sockets:?}"
+    );
+    assert_eq!(
+        cores.len(),
+        VP_COUNT as usize,
+        "expected {VP_COUNT} distinct cores, got {}",
+        cores.len()
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot an SMT guest and verify the MPIDRs and CPU topology the guest observes.
+///
+/// This covers the whole MPIDR chain end to end. Under SMT the generated MPIDRs
+/// use `Aff0` as a thread id and `Aff1` as a core id, which deliberately
+/// diverges from KVM's default vcpu-id mapping: VP 2 is `0x100` here but `0x2`
+/// after `KVM_ARM_VCPU_INIT`. So if OpenVMM stopped programming `MPIDR_EL1`
+/// into KVM, PSCI `CPU_ON` could not resolve the MPIDRs firmware advertises in
+/// the MADT and the secondary CPUs would never come online. Four VPs is the
+/// smallest count that distinguishes the two mappings.
+///
+/// The topology assertions cover the PPTT builder. MPIDR is an identity rather
+/// than a topology description, so socket/core/thread have to come from the
+/// configured topology instead of the affinity fields.
+///
+/// The `_aarch64_tcg` name suffix opts this test into the QEMU incubator pass.
+#[openvmm_test(linux_direct_aarch64)]
+async fn smt_topology_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const VP_COUNT: u32 = 4;
+
+    let (vm, agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: VP_COUNT,
+            enable_smt: Some(true),
+            vps_per_socket: Some(VP_COUNT),
+            ..Default::default()
+        })
+        // KVM/aarch64 has no synic, so VMBus cannot come up and pipette has to
+        // reach the guest over virtio-vsock, which needs a PCIe root.
+        .with_no_hv()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Every VP must come online. This is the assertion that fails if the
+    // firmware-visible MPIDRs and KVM's runtime MPIDRs disagree.
+    let online = sh.read_file("/sys/devices/system/cpu/online").await?;
+    assert_eq!(
+        online.trim(),
+        format!("0-{}", VP_COUNT - 1),
+        "not every VP came online"
+    );
+
+    // Linux logs each secondary's MPIDR as it boots, which is the guest's own
+    // view of the register rather than anything OpenVMM reports about itself.
+    // Expected values for 4 VPs, one socket, two-way SMT:
+    //   VP 0 -> Aff1=0 Aff0=0 (boot CPU, not logged here)
+    //   VP 1 -> Aff1=0 Aff0=1 = 0x001
+    //   VP 2 -> Aff1=1 Aff0=0 = 0x100
+    //   VP 3 -> Aff1=1 Aff0=1 = 0x101
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let booted: Vec<u64> = dmesg
+        .lines()
+        .filter(|l| l.contains("Booted secondary processor"))
+        .filter_map(|l| {
+            let token = l.split_whitespace().find(|t| t.starts_with("0x"))?;
+            u64::from_str_radix(token.trim_start_matches("0x"), 16).ok()
+        })
+        .collect();
+    assert_eq!(
+        booted,
+        vec![0x001, 0x100, 0x101],
+        "unexpected secondary MPIDRs; guest logged:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| l.contains("Booted secondary processor"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // Two-way SMT over four VPs is two cores of two threads, all in one socket.
+    //
+    // The socket and core ids are opaque PPTT node offsets, so compare them
+    // against each other rather than against expected values.
+    let mut sockets = std::collections::BTreeSet::new();
+    let mut cores = Vec::new();
+    for cpu in 0..VP_COUNT {
+        let base = format!("/sys/devices/system/cpu/cpu{cpu}/topology");
+        sockets.insert(
+            sh.read_file(format!("{base}/physical_package_id"))
+                .await?
+                .trim()
+                .to_string(),
+        );
+        cores.push(
+            sh.read_file(format!("{base}/core_id"))
+                .await?
+                .trim()
+                .to_string(),
+        );
+
+        let siblings = sh.read_file(format!("{base}/thread_siblings_list")).await?;
+        let expected = if cpu < 2 { "0-1" } else { "2-3" };
+        assert_eq!(
+            siblings.trim(),
+            expected,
+            "cpu{cpu} reported unexpected thread siblings"
+        );
+    }
+    assert_eq!(
+        sockets.len(),
+        1,
+        "expected a single socket, got {sockets:?}"
+    );
+    assert_eq!(cores[0], cores[1], "cpu0 and cpu1 should share a core");
+    assert_eq!(cores[2], cores[3], "cpu2 and cpu3 should share a core");
+    assert_ne!(cores[0], cores[2], "cpu0 and cpu2 should be distinct cores");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
 }

@@ -482,6 +482,7 @@ open_enum! {
         IFSR32_EL2 = SystemRegEncoding::make(3, 4, 5, 0, 1),
 
         VPIDR_EL2 = SystemRegEncoding::make(3, 4, 0, 0, 0),
+        MPIDR_EL1 = SystemRegEncoding::make(3, 0, 0, 0, 5),
         ARM64_REVIDR_EL1 = SystemRegEncoding::make(3, 0, 0, 0, 6),
         CTR_EL0 = SystemRegEncoding::make(3, 3, 0, 0, 1),
         ARM64_VMPIDR_EL2 = SystemRegEncoding::make(3, 4, 0, 0, 5),
