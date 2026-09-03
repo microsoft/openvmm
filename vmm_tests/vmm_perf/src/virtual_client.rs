@@ -424,6 +424,19 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalizes_windows_verbatim_paths_for_virtual_client() {
+        assert_eq!(
+            super::path_for_virtual_client(r"\\?\C:\work\vmm-perf".into()),
+            std::path::PathBuf::from(r"C:\work\vmm-perf")
+        );
+        assert_eq!(
+            super::path_for_virtual_client(r"\\?\UNC\server\share\vmm-perf".into()),
+            std::path::PathBuf::from(r"\\server\share\vmm-perf")
+        );
+    }
+
     #[test]
     fn stages_profile_specific_output_paths() {
         assert_eq!(

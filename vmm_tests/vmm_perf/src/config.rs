@@ -187,7 +187,12 @@ fn default_configs(capacity: HostCapacity) -> anyhow::Result<Vec<VmmPerfConfig>>
         ("CpuCount".into(), DEFAULT_CPU_COUNT.to_string()),
         ("MemoryMB".into(), DEFAULT_MEMORY_MB.to_string()),
     ]);
-    super::host::validate_requested_capacity(&parameters, capacity)?;
+    super::host::validate_requested_capacity(&parameters, capacity).with_context(|| {
+        format!(
+            "default VMM.Perf VM size requires {DEFAULT_CPU_COUNT} virtual processors and \
+             {DEFAULT_MEMORY_GIB} GiB of memory; select a smaller explicit VM size for this host"
+        )
+    })?;
 
     Ok(vec![VmmPerfConfig {
         name: shape_name(DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB),

@@ -26,7 +26,9 @@ cargo xflowey vmm-perf
 By default, scratch files are created under `target/vmm_perf/temp` and retained
 results are written to `target/vmm_perf/results`. Use `--dir` to select a
 different root directory with the same `temp` and `results` layout. The default
-VM shape is 16 virtual processors and 64 GiB of memory.
+VM shape is 16 virtual processors and 64 GiB of memory. Hosts with fewer than
+16 logical processors or 64 GiB of available memory must use
+`--vmm-perf-vmsizes` to select a smaller VM shape.
 
 To run one profile:
 
