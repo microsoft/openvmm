@@ -409,6 +409,20 @@ where
     )?;
     offset += heap_size;
 
+    // The page table region lives immediately after the relocation region and
+    // is deliberately excluded from it, but the identity map built below uses
+    // large pages. A loader performing relocation only fixes up a leaf entry if
+    // the region it maps overlaps the relocation region, so if the page table
+    // region began exactly on a large page boundary the leaf entry mapping it
+    // would be left identity mapped at its pre-relocation address. The
+    // relocated cr3 would then be unmapped, and the first access to the page
+    // tables through the identity map faults with no IDT loaded, triple
+    // faulting the VP. Pad by a page so the page table region always shares a
+    // large page with the relocation region.
+    if offset.is_multiple_of(X64_LARGE_PAGE_SIZE) {
+        offset += HV_PAGE_SIZE;
+    }
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
 
@@ -1154,6 +1168,13 @@ where
         &[],
     )?;
     next_addr += heap_size;
+
+    // See the equivalent comment in the x64 loader: the page table region must
+    // share a large page with the relocation region so that the leaf entry
+    // mapping it is fixed up when the image is relocated.
+    if next_addr.is_multiple_of(u64::from(Arm64PageSize::Large)) {
+        next_addr += HV_PAGE_SIZE;
+    }
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
