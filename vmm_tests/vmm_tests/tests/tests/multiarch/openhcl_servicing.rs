@@ -1774,12 +1774,18 @@ async fn configure_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> 
 /// FUTURE: Test traffic on the nic.
 async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
     let sh = agent.unix_shell();
-    cmd!(
-        sh,
-        "timeout 30 sh -c 'until [ \"$(cat /sys/class/net/eth0/carrier)\" = 1 ]; do sleep 1; done'"
-    )
-    .run()
-    .await?;
+    let output: String = cmd!(sh, "cat /sys/class/net/eth0/carrier").read().await?;
+    assert!(
+        output.trim() == "1",
+        "eth0 carrier link not detected: {}",
+        output
+    );
+    let output: String = cmd!(sh, "cat /sys/class/net/eth0/operstate").read().await?;
+    assert!(
+        output.trim() == "up",
+        "eth0 operstate is not up: {}",
+        output
+    );
     let output = cmd!(sh, "ifconfig eth0").read().await?;
     // Validate that we see a mana nic with the expected MAC address and IPs.
     assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
