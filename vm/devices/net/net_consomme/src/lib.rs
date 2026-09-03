@@ -278,6 +278,9 @@ pub enum ConsommeMessageError {
     /// Error executing request on current network instance.
     #[error("bind error")]
     Bind(consomme::BindError),
+    /// Error from a remote operation on the endpoint.
+    #[error(transparent)]
+    Remote(mesh::error::RemoteError),
     /// Error adding a static DNS record.
     #[error("dns record error: {0}")]
     DnsRecord(#[source] StaticDnsRecordError),
