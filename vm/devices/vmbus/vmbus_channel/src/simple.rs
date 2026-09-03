@@ -305,9 +305,13 @@ pub async fn offer_simple_device<T: 'static + SimpleVmbusDevice>(
     driver_source: &VmTaskDriverSource,
     bus: &(impl ParentBus + ?Sized),
     device: T,
+    start_before_offer: bool,
 ) -> anyhow::Result<SimpleDeviceHandle<T>> {
     let driver = driver_source.builder().target_vp(0).build("simple-vmbus");
-    let channel = SimpleDeviceWrapper::new(driver, device);
+    let mut channel = SimpleDeviceWrapper::new(driver, device);
+    if start_before_offer {
+        VmbusDevice::start(&mut channel);
+    }
     Ok(SimpleDeviceHandle(
         offer_channel(&driver_source.simple(), bus, channel).await?,
     ))

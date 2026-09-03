@@ -17,7 +17,7 @@ use guestmem::MemoryRead;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use mesh::rpc::Rpc;
+use mesh::rpc::FailableRpc;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::spec::cfg_space;
@@ -607,7 +607,7 @@ impl<T: RingMem> Connection<T> {
 pub struct VpciChannelState<T: RingMem = GpadlRingMem> {
     conn: Connection<T>,
     state: ProtocolState,
-    eject_recv: mesh::Receiver<Rpc<(), ()>>,
+    eject_recv: mesh::Receiver<FailableRpc<(), ()>>,
 }
 
 impl<T: RingMem> InspectMut for VpciChannelState<T> {
@@ -639,7 +639,7 @@ struct ReadyState {
     send_device: bool,
     send_completion: Option<u64>,
     vpci_version: protocol::ProtocolVersion,
-    pending_eject: Option<Rpc<(), ()>>,
+    pending_eject: Option<FailableRpc<(), ()>>,
 }
 
 impl<T: RingMem> VpciChannelState<T> {
@@ -760,7 +760,7 @@ impl ReadyState {
     async fn run(
         &mut self,
         conn: &mut Connection<impl RingMem>,
-        eject_recv: &mut mesh::Receiver<Rpc<(), ()>>,
+        eject_recv: &mut mesh::Receiver<FailableRpc<(), ()>>,
         dev: &mut VpciChannel,
     ) -> Result<(), WorkerError> {
         loop {
@@ -782,7 +782,7 @@ impl ReadyState {
 
             enum Event {
                 Packet(Result<(Result<PacketData, PacketError>, Option<u64>), WorkerError>),
-                Eject(Result<Rpc<(), ()>, mesh::RecvError>),
+                Eject(Result<FailableRpc<(), ()>, mesh::RecvError>),
             }
 
             let event = {
@@ -811,7 +811,10 @@ impl ReadyState {
             let (packet, transaction_id) = match event {
                 Event::Packet(packet) => packet?,
                 Event::Eject(Ok(request)) => {
-                    assert!(self.pending_eject.is_none());
+                    if self.pending_eject.is_some() {
+                        request.fail(anyhow::anyhow!("VPCI device eject already in progress"));
+                        continue;
+                    }
                     conn.send_packet(
                         &protocol::PdoMessage {
                             message_type: protocol::MessageType::EJECT,
@@ -892,7 +895,7 @@ impl ReadyState {
                 self.pending_eject
                     .take()
                     .ok_or(PacketError::UnexpectedEjectComplete)?
-                    .complete(());
+                    .complete(Ok(()));
             }
             PacketData::DeviceRequest { slot, request } => {
                 if u32::from(slot) != 0 {
@@ -2049,6 +2052,9 @@ mod tests {
         assert!(matches!(packet_info, ReadPacketInfo::NewTransaction));
         assert_eq!(request.message_type, protocol::MessageType::EJECT);
         assert_eq!(request.slot, SlotNumber::new());
+
+        let error = guest_driver.eject.eject().await.unwrap_err();
+        assert!(format!("{error:#}").contains("VPCI device eject already in progress"));
 
         guest_driver
             .write_packet(

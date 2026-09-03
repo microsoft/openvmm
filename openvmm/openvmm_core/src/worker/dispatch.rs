@@ -93,6 +93,7 @@ use pal_async::DefaultPool;
 use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use pci_core::PciInterruptPin;
 use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
@@ -103,9 +104,11 @@ use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::fs::File;
+use std::future::Future;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -177,6 +180,23 @@ const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 const MAX_DYNAMIC_VPCI_DEVICES: usize = 64;
+const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+enum VpciEjectResult {
+    Complete(anyhow::Result<()>),
+    TimedOut,
+}
+
+async fn wait_for_vpci_eject(
+    driver: &(impl pal_async::driver::Driver + ?Sized),
+    eject: impl Future<Output = anyhow::Result<()>>,
+    grace_period: Duration,
+) -> VpciEjectResult {
+    let eject = eject.map(VpciEjectResult::Complete);
+    let mut timer = PolledTimer::new(driver);
+    let timeout = timer.sleep(grace_period).map(|_| VpciEjectResult::TimedOut);
+    (eject, timeout).race().await
+}
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
@@ -4000,7 +4020,7 @@ impl LoadedVm {
                                 },
                                 vmbus.control(),
                                 &self.inner.chipset_devices,
-                                &self.state_units,
+                                &mut self.state_units,
                                 VpciBusConfig {
                                     instance_id,
                                     vtom: None,
@@ -4026,7 +4046,6 @@ impl LoadedVm {
                                     instance_id,
                                     device,
                                 });
-                            self.state_units.start_stopped_units().await;
                             anyhow::Ok(instance_id)
                         })
                         .await
@@ -4043,10 +4062,30 @@ impl LoadedVm {
                                         "no dynamically added VPCI device with instance ID '{instance_id}'"
                                     )
                                 })?;
-                            self.inner.dynamic_vpci_devices[index]
-                                .device
-                                .eject()
-                                .await?;
+                            if self.running {
+                                let driver = self.inner.driver_source.simple();
+                                let eject_result = wait_for_vpci_eject(
+                                    &driver,
+                                    self.inner.dynamic_vpci_devices[index].device.eject(),
+                                    VPCI_EJECT_GRACE_PERIOD,
+                                )
+                                .await;
+                                match eject_result {
+                                    VpciEjectResult::Complete(Ok(())) => {}
+                                    VpciEjectResult::Complete(Err(error)) => tracing::warn!(
+                                        %instance_id,
+                                        error = <anyhow::Error as AsRef<
+                                            dyn std::error::Error + Send + Sync,
+                                        >>::as_ref(&error),
+                                        "VPCI eject failed; forcing removal"
+                                    ),
+                                    VpciEjectResult::TimedOut => tracing::warn!(
+                                        %instance_id,
+                                        timeout_ms = VPCI_EJECT_GRACE_PERIOD.as_millis() as u64,
+                                        "VPCI eject timed out; forcing removal"
+                                    ),
+                                }
+                            }
                             let entry = self.inner.dynamic_vpci_devices.remove(index);
                             entry.device.remove().await;
                             anyhow::Ok(())

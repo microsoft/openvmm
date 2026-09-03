@@ -45,6 +45,7 @@ pub struct DynamicVpciDevice {
     pci_unit: DynamicDeviceUnit,
     vpci_unit: DynamicDeviceUnit,
     eject: vpci::bus::VpciBusEject,
+    vpci_bus: Arc<closeable_mutex::CloseableMutex<vpci::bus::VpciBus>>,
 }
 
 impl DynamicVpciDevice {
@@ -55,6 +56,7 @@ impl DynamicVpciDevice {
 
     /// Removes the VPCI bus before removing its underlying PCI device.
     pub async fn remove(self) {
+        self.vpci_bus.close().revoke().await;
         self.vpci_unit.remove().await;
         self.pci_unit.remove().await;
     }
@@ -65,7 +67,7 @@ pub async fn build_dynamic_vpci_device(
     ctx: PciDeviceResolveContext<'_>,
     vmbus: &VmbusServerControl,
     chipset_devices: &ChipsetDevices,
-    state_units: &StateUnits,
+    state_units: &mut StateUnits,
     bus_config: VpciBusConfig,
     guest_memory: GuestMemory,
     new_virtual_device: impl FnOnce(u64) -> anyhow::Result<(Arc<dyn SignalMsi>, VpciInterruptMapper)>,
@@ -106,6 +108,7 @@ pub async fn build_dynamic_vpci_device(
         .await?;
 
     let device_id = (instance_id.data2 as u64) << 16 | (instance_id.data3 as u64 & 0xfff8);
+    let mut pending_offer = None;
     let vpci_unit = chipset_devices
         .add_dyn_device(
             driver_source,
@@ -119,34 +122,45 @@ pub async fn build_dynamic_vpci_device(
                         instance_id.data3 as u64 & 0xfff8
                     ))?;
                 msi_conn.connect(msi_controller);
-                vpci::bus::VpciBus::new(
-                    driver_source,
+                let (bus, offer) = vpci::bus::VpciBus::new_unoffered(
                     bus_config,
                     device,
                     register_mmio,
-                    vmbus,
                     interrupt_mapper,
                 )
-                .await
-                .map_err(anyhow::Error::from)
+                .map_err(anyhow::Error::from)?;
+                pending_offer = Some(offer);
+                anyhow::Ok(bus)
             },
         )
         .await;
 
-    match vpci_unit {
-        Ok((vpci_unit, vpci_bus)) => {
-            let eject = vpci_bus.lock().eject_control();
-            Ok(DynamicVpciDevice {
-                pci_unit,
-                vpci_unit,
-                eject,
-            })
-        }
+    let (vpci_unit, vpci_bus) = match vpci_unit {
+        Ok(device) => device,
         Err(error) => {
             pci_unit.remove().await;
-            Err(error)
+            return Err(error);
         }
+    };
+
+    let pending_offer = pending_offer.context("missing deferred VPCI channel offer")?;
+    state_units.start_stopped_units().await;
+    if let Err(error) = pending_offer
+        .offer_registered(&vpci_bus, driver_source, vmbus, state_units.is_running())
+        .await
+    {
+        vpci_unit.remove().await;
+        pci_unit.remove().await;
+        return Err(error);
     }
+
+    let eject = vpci_bus.lock().eject_control();
+    Ok(DynamicVpciDevice {
+        pci_unit,
+        vpci_unit,
+        eject,
+        vpci_bus,
+    })
 }
 
 /// Resolves a PCI device resource, builds the corresponding device, and builds
