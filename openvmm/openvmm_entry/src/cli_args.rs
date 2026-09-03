@@ -2824,6 +2824,7 @@ pub enum Vtl0LateMapPolicyCli {
 }
 
 /// PCIe MSI controller selection for aarch64.
+#[cfg(guest_arch = "aarch64")]
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub enum GicMsiCli {
     /// Use ITS when available, fall back to GICv2m.
@@ -2838,6 +2839,7 @@ pub enum GicMsiCli {
     },
 }
 
+#[cfg(guest_arch = "aarch64")]
 impl FromStr for GicMsiCli {
     type Err = anyhow::Error;
 
@@ -2870,6 +2872,7 @@ impl FromStr for GicMsiCli {
     }
 }
 
+#[cfg(guest_arch = "aarch64")]
 impl GicMsiCli {
     pub fn into_config(self) -> openvmm_defs::config::GicMsiConfig {
         match self {
@@ -5009,6 +5012,7 @@ mod tests {
         );
     }
 
+    #[cfg(guest_arch = "aarch64")]
     #[test]
     fn test_gic_msi_cli_from_str() {
         assert_eq!(GicMsiCli::from_str("auto").unwrap(), GicMsiCli::Auto);
