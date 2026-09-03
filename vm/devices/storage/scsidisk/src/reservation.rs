@@ -242,6 +242,33 @@ impl SimpleScsiDisk {
         let mut data = PriFullStatusListHeader::new_zeroed().as_bytes().to_vec();
 
         for controller in &report.controllers {
+            // SCSI Transport ID of type SAS is defined as (24 bytes):
+            // 06 00 00 00 <8-byte SAS address> <12-byte reserved>
+            // The Host ID we receive from NVMe can be 8- or 16-bytes long. We
+            // dump it starting at the SAS address field (and into reserved if
+            // it's 16-bytes).
+            //
+            // Some NVMe controllers wrongly send the first 16
+            // bytes of a SAS SCSI Transport ID as the Host ID. If we detect
+            // that, we skip the first 4 bytes of the Host ID to avoid
+            // duplicating the SAS protocol id (6) in the Transport ID.
+            let host_id = if controller.host_id.starts_with(&[6, 0, 0, 0]) {
+                tracelimit::warn_ratelimited!(
+                    ?controller.controller_id,
+                    ?controller.key,
+                    ?controller.host_id,
+                    "NVMe controller sent SAS SCSI Transport ID as Host ID"
+                );
+                &controller.host_id[4..]
+            } else {
+                &controller.host_id[..]
+            };
+            let host_id_len = host_id.len().min(16);
+
+            let mut transport_id = [0u8; 24];
+            transport_id[0] = 0x06; // Protocol Identifier: SAS
+            transport_id[4..4 + host_id_len].copy_from_slice(&host_id[..host_id_len]);
+
             let header = PriFullStatusDescriptorHeader {
                 reservation_key: controller.key.into(),
                 flags: scsi::PriFullStatusDescriptorHeaderFlags::new()
@@ -255,12 +282,12 @@ impl SimpleScsiDisk {
                         .map_or(scsi::ReservationType(0), to_scsi_reservation_type),
                 ),
                 relative_target_port_identifier: controller.controller_id.into(),
-                additional_descriptor_length: (controller.host_id.len() as u32).into(),
+                additional_descriptor_length: (transport_id.len() as u32).into(),
                 ..FromZeros::new_zeroed()
             };
 
             data.extend(header.as_bytes());
-            data.extend(&controller.host_id);
+            data.extend(&transport_id);
         }
 
         let header = PriFullStatusListHeader {
