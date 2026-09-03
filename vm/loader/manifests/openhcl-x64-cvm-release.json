@@ -23,7 +23,7 @@
             }
         },
         {
-            "guest_svn": 12,
+            "guest_svn": 13,
             "max_vtl": 2,
             "isolation_type": {
                 "tdx": {
@@ -41,7 +41,7 @@
             }
         },
         {
-            "guest_svn": 12,
+            "guest_svn": 13,
             "max_vtl": 2,
             "isolation_type": {
                 "vbs": {
