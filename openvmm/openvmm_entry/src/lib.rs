@@ -1638,13 +1638,7 @@ async fn vm_config_from_command_line(
             // TODO: allow this to be configured from the command line
             gic_config: None,
             pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
-            gic_msi: match opt.gic_msi {
-                cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
-                cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
-                cli_args::GicMsiCli::V2m => {
-                    openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
-                }
-            },
+            gic_msi: opt.gic_msi.into_config(),
         },
     );
     #[cfg(guest_arch = "x86_64")]
