@@ -2371,6 +2371,7 @@ dependencies = [
  "powershell_builder",
  "serde",
  "serde_json",
+ "sha2",
  "target-lexicon",
  "tempfile",
  "toml_edit",
@@ -7836,6 +7837,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "snp_bootshim"
+version = "0.0.0"
+dependencies = [
+ "loader_defs",
+ "minimal_rt",
+ "minimal_rt_build",
+ "x86defs",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8071,7 +8082,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "symcrypt"
 version = "0.6.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#2d83888206139cb8cc522ea3617a1870674ac8a0"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?rev=2d83888206139cb8cc522ea3617a1870674ac8a0#2d83888206139cb8cc522ea3617a1870674ac8a0"
 dependencies = [
  "libc",
  "symcrypt-sys",
@@ -8080,7 +8091,7 @@ dependencies = [
 [[package]]
 name = "symcrypt-sys"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/rust-symcrypt.git?branch=release%2F0.6.0#2d83888206139cb8cc522ea3617a1870674ac8a0"
+source = "git+https://github.com/microsoft/rust-symcrypt.git?rev=2d83888206139cb8cc522ea3617a1870674ac8a0#2d83888206139cb8cc522ea3617a1870674ac8a0"
 dependencies = [
  "libc",
 ]
@@ -10687,6 +10698,24 @@ dependencies = [
  "inspect",
  "mesh",
  "virt",
+]
+
+[[package]]
+name = "vmm_perf"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs-err",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "test_with_tracing",
+ "tracing",
+ "tracing-subscriber",
+ "whp",
 ]
 
 [[package]]

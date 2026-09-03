@@ -591,6 +591,9 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         match kind {
             ShutdownKind::Shutdown => self.vm.stop().await?,
             ShutdownKind::Reboot => self.vm.restart().await?,
+            ShutdownKind::Hibernate => {
+                anyhow::bail!("hibernate is not yet supported on the Hyper-V backend")
+            }
         }
 
         Ok(())

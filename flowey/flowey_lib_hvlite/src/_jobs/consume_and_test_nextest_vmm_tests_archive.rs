@@ -57,6 +57,8 @@ flowey_request! {
         pub incubator_profile: Option<IncubatorProfileNameOrPath>,
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
+        /// Upload logs on success (logs are always uploaded on failure)
+        pub upload_logs_on_success: bool,
         /// Run the tests this number of times
         pub repetitions: std::num::NonZeroU64,
         /// Parameters to pass to Petri via environment variables
@@ -107,6 +109,7 @@ impl SimpleFlowNode for Node {
             prep_steps_variants,
             external_deps,
             incubator_profile,
+            upload_logs_on_success,
             fail_job_on_test_fail,
             repetitions,
             petri_params,
@@ -479,17 +482,17 @@ impl SimpleFlowNode for Node {
         let mut reported_results = Vec::new();
 
         for (i, (results, log_dir)) in all_results.iter().enumerate() {
-            let junit_xml = results.map(ctx, |r| r.junit_xml);
             let test_label = test_label_for_iteration(i);
             reported_results.push(
                 ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-                    junit_xml,
+                    test_results: results.clone(),
                     test_label,
                     attachments: BTreeMap::from([(
                         "logs".to_string(),
                         (log_dir.to_owned(), false),
                     )]),
                     output_dir: None,
+                    upload_logs_on_success,
                     done: v,
                 }),
             );

@@ -155,10 +155,14 @@ pub enum LoadMode {
         enable_vmbus: bool,
         force_dma_bounce: bool,
         enable_hv: bool,
+        /// Whether the guest firmware should enable hibernation (S4) support.
+        hibernation_enabled: bool,
     },
     Pcat {
         firmware: RomFileLocation,
         boot_order: [PcatBootDevice; 4],
+        /// Whether the guest firmware should enable hibernation (S4) support.
+        hibernation_enabled: bool,
     },
     Igvm {
         file: File,

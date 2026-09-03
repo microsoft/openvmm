@@ -3002,4 +3002,120 @@ mod tests {
         let read_buf = vmgs.read_file(FileId::PROVISIONING_MARKER).await.unwrap();
         assert_eq!(EXPECTED_MARKER.as_bytes(), read_buf);
     }
+
+    #[cfg(feature = "encryption")]
+    #[async_test]
+    async fn verify_no_zero_keys() {
+        let buf: Vec<u8> = (0..255).collect();
+        let encryption_key = [1; VMGS_ENCRYPTION_KEY_SIZE];
+
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+
+        // Add datastore key.
+        vmgs.add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.state.active_datastore_key_index, Some(0));
+
+        // Verify that the metadata key is consistent
+        assert_eq!(
+            vmgs.state.unused_metadata_key,
+            vmgs.state
+                .fcbs
+                .get(&FileId::EXTENDED_FILE_TABLE)
+                .unwrap()
+                .encryption_key
+        );
+        // ... and that it is not zero.
+        assert_ne!(
+            vmgs.state.unused_metadata_key,
+            VmgsDatastoreKey::new_zeroed()
+        );
+
+        // Write a file to the store.
+        vmgs.write_file_encrypted(FileId::BIOS_NVRAM, &buf)
+            .await
+            .unwrap();
+
+        // Verify that we can decrypt the file
+        let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
+        assert_eq!(buf, read_buf);
+        // Verify that the file key is not zero
+        let bios_nvram_key = vmgs
+            .state
+            .fcbs
+            .get(&FileId::BIOS_NVRAM)
+            .unwrap()
+            .encryption_key;
+        assert_ne!(bios_nvram_key, VmgsDatastoreKey::new_zeroed());
+
+        let metadata_key = vmgs
+            .state
+            .fcbs
+            .get(&FileId::EXTENDED_FILE_TABLE)
+            .unwrap()
+            .encryption_key;
+        let extended_file_table_data = vmgs
+            .read_file_internal(FileId::EXTENDED_FILE_TABLE, true, None)
+            .await
+            .unwrap();
+
+        drop(vmgs);
+
+        // Read the file, after closing and reopening the data store.
+        let mut vmgs = Vmgs::open(disk, None).await.unwrap();
+
+        // Verify that we can't read the extended file table with zeroed keys
+        let mut fcb = vmgs
+            .state
+            .fcbs
+            .get(&FileId::EXTENDED_FILE_TABLE)
+            .unwrap()
+            .clone();
+        assert_eq!(fcb.encryption_key, VmgsDatastoreKey::new_zeroed());
+        let encrypted_data = vmgs
+            .read_file_internal(FileId::EXTENDED_FILE_TABLE, false, None)
+            .await
+            .unwrap();
+        let result = fcb.decrypt(&encrypted_data);
+        assert!(result.is_err());
+        // Make sure we can with the correct key
+        fcb.encryption_key.copy_from_slice(&metadata_key);
+        let read_buf = fcb.decrypt(&encrypted_data).unwrap();
+        assert_eq!(extended_file_table_data, read_buf);
+
+        // Do the same for another file
+        let mut fcb = vmgs.state.fcbs.get(&FileId::BIOS_NVRAM).unwrap().clone();
+        assert_eq!(fcb.encryption_key, VmgsDatastoreKey::new_zeroed());
+        let encrypted_data = vmgs
+            .read_file_internal(FileId::BIOS_NVRAM, false, None)
+            .await
+            .unwrap();
+        let result = fcb.decrypt(&encrypted_data);
+        assert!(result.is_err());
+        // Make sure we can with the correct key
+        fcb.encryption_key.copy_from_slice(&bios_nvram_key);
+        let read_buf = fcb.decrypt(&encrypted_data).unwrap();
+        assert_eq!(buf, read_buf);
+
+        // Unlock the vmgs and verify that the metadata key is consistent
+        vmgs.unlock_with_encryption_key(&encryption_key)
+            .await
+            .unwrap();
+
+        assert_eq!(vmgs.state.active_datastore_key_index, Some(0));
+        assert_eq!(
+            vmgs.state.unused_metadata_key,
+            vmgs.state
+                .fcbs
+                .get(&FileId::EXTENDED_FILE_TABLE)
+                .unwrap()
+                .encryption_key
+        );
+        assert_ne!(
+            vmgs.state.unused_metadata_key,
+            VmgsDatastoreKey::new_zeroed()
+        );
+    }
 }

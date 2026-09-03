@@ -667,6 +667,7 @@ impl VirtioFs {
 /// A key/value map where the keys are automatically incremented identifiers.
 struct HandleMap<T> {
     values: HashMap<u64, T>,
+    initial_handle: u64,
     next_handle: u64,
 }
 
@@ -680,6 +681,7 @@ impl<T> HandleMap<T> {
     pub fn starting_at(next_handle: u64) -> Self {
         Self {
             values: HashMap::new(),
+            initial_handle: next_handle,
             next_handle,
         }
     }
@@ -714,7 +716,7 @@ impl<T> HandleMap<T> {
     /// Clears the map and resets the handle values.
     pub fn clear(&mut self) {
         self.values.clear();
-        self.next_handle = 1;
+        self.next_handle = self.initial_handle;
     }
 }
 
@@ -806,7 +808,6 @@ impl InodeMap {
             // Node 1 is synthetic and not stored here; drop everything and resume
             // allocating node IDs after the reserved root id.
             self.inodes_by_node_id.clear();
-            self.inodes_by_node_id.next_handle = FUSE_ROOT_ID + 1;
             self.inodes_by_key.clear();
             return;
         }
