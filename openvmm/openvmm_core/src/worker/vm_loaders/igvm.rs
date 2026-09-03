@@ -1217,6 +1217,14 @@ fn load_igvm_x86(
             relocation_region.base_gpa..=relocation_region.base_gpa + relocation_region.size - 1,
             offset as i64,
         );
+        // The page table region is itself relocatable and must stay identity
+        // mapped, so its own range needs fixing up too. Otherwise the leaf
+        // entry mapping it keeps the pre-relocation VA and the root is
+        // unmapped.
+        reloc_regions.insert(
+            page_table_fixup.gpa..=page_table_fixup.gpa + page_table_fixup.size - 1,
+            offset as i64,
+        );
         let page_table = page_table_fixup
             .build(offset as i64, reloc_regions, page_table_cpu_state)
             .map_err(Error::PageTableBuilder)?;
