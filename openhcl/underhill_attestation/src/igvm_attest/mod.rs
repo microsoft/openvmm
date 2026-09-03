@@ -76,6 +76,8 @@ pub enum ReportType {
     Cca,
     /// Trusted VM report
     Tvm,
+    /// Trusted VM report signed by the host IDK_S key
+    TvmHostCertified,
 }
 
 impl ReportType {
@@ -86,7 +88,7 @@ impl ReportType {
             Self::Snp => IgvmAttestReportType::SNP_VM_REPORT,
             Self::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
             Self::Cca => IgvmAttestReportType::CCA_VM_REPORT,
-            Self::Tvm => IgvmAttestReportType::TVM_REPORT,
+            Self::Tvm | Self::TvmHostCertified => IgvmAttestReportType::TVM_REPORT,
         }
     }
 }
@@ -120,6 +122,7 @@ impl IgvmAttestRequestHelper {
             TeeType::Tdx => ReportType::Tdx,
             TeeType::Cca => ReportType::Cca,
             TeeType::Vbs => ReportType::Vbs,
+            TeeType::Host => ReportType::TvmHostCertified,
         };
 
         let attestation_vm_config =
@@ -157,6 +160,7 @@ impl IgvmAttestRequestHelper {
             Some(TeeType::Tdx) => ReportType::Tdx,
             Some(TeeType::Cca) => ReportType::Cca,
             Some(TeeType::Vbs) => ReportType::Vbs,
+            Some(TeeType::Host) => ReportType::TvmHostCertified,
             None => ReportType::Tvm,
         };
 
@@ -339,6 +343,7 @@ fn get_report_size(report_type: &ReportType) -> usize {
         ReportType::Snp => openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
         ReportType::Tdx => openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
         ReportType::Tvm => openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE,
+        ReportType::TvmHostCertified => tee_call::TVM_REPORT_SIZE,
         ReportType::Cca => todo!(),
     }
 }
@@ -389,6 +394,201 @@ mod tests {
             IgvmAttestHashType::SHA_256,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_tvm_requests() {
+        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
+
+        let legacy = create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &[],
+            &ReportType::Tvm,
+            IgvmAttestHashType::SHA_256,
+        );
+        assert!(legacy.is_ok());
+
+        let host_certified = create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &[0u8; tee_call::TVM_REPORT_SIZE],
+            &ReportType::TvmHostCertified,
+            IgvmAttestHashType::SHA_256,
+        );
+        assert!(host_certified.is_ok());
+
+        let missing_report = create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &[],
+            &ReportType::TvmHostCertified,
+            IgvmAttestHashType::SHA_256,
+        );
+        assert!(missing_report.is_err());
+    }
+
+    #[test]
+    fn test_tvm_host_certified_report_size_boundary_rejected() {
+        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
+
+        let too_small = create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &[0u8; tee_call::TVM_REPORT_SIZE - 1],
+            &ReportType::TvmHostCertified,
+            IgvmAttestHashType::SHA_256,
+        );
+        assert!(matches!(
+            too_small,
+            Err(Error::InvalidAttestationReportSize {
+                report_size,
+                expected_size,
+            }) if report_size == tee_call::TVM_REPORT_SIZE - 1
+                && expected_size == tee_call::TVM_REPORT_SIZE
+        ));
+
+        let too_large = create_request(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &[],
+            &[0u8; tee_call::TVM_REPORT_SIZE + 1],
+            &ReportType::TvmHostCertified,
+            IgvmAttestHashType::SHA_256,
+        );
+        assert!(matches!(
+            too_large,
+            Err(Error::InvalidAttestationReportSize {
+                report_size,
+                expected_size,
+            }) if report_size == tee_call::TVM_REPORT_SIZE + 1
+                && expected_size == tee_call::TVM_REPORT_SIZE
+        ));
+    }
+
+    #[test]
+    fn test_tvm_host_certified_request_bytes() {
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
+
+        let runtime_claims = vec![7u8, 8, 9];
+        let attestation_report: Vec<u8> = (0..tee_call::TVM_REPORT_SIZE).map(|i| i as u8).collect();
+
+        let buffer = create_request(
+            IgvmAttestRequestVersion::VERSION_2,
+            IgvmAttestRequestType::AK_CERT_REQUEST,
+            &runtime_claims,
+            &attestation_report,
+            &ReportType::TvmHostCertified,
+            IgvmAttestHashType::SHA_256,
+        )
+        .expect("request generation");
+
+        let (request, _) =
+            IgvmAttestRequestBase::read_from_prefix(&buffer).expect("parse IgvmAttestRequest");
+
+        assert_eq!(
+            request.header.report_size,
+            (size_of::<IgvmAttestRequestBase>()
+                + size_of::<openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt>(
+                )
+                + runtime_claims.len()) as u32
+        );
+        assert_eq!(
+            &request.attestation_report[..tee_call::TVM_REPORT_SIZE],
+            attestation_report.as_slice()
+        );
+        assert!(
+            request.attestation_report[tee_call::TVM_REPORT_SIZE..]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        assert_eq!(
+            request.request_data.report_type,
+            IgvmAttestReportType::TVM_REPORT
+        );
+        assert_eq!(
+            request.request_data.variable_data_size,
+            runtime_claims.len() as u32
+        );
+
+        let header_size = size_of::<IgvmAttestRequestBase>();
+        let extension_size =
+            size_of::<openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt>();
+        assert_eq!(
+            &buffer[header_size + extension_size..],
+            runtime_claims.as_slice()
+        );
+    }
+
+    #[test]
+    fn test_prepare_ak_cert_request_host_report_size() {
+        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
+
+        let attestation_vm_config = AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            secure_boot: false,
+            tpm_enabled: false,
+            tpm_persisted: false,
+            hardware_sealing_policy: HardwareSealingPolicy::None,
+            filtered_vpci_devices_allowed: true,
+            vm_unique_id: String::new(),
+            vmgs_provisioner: None,
+        };
+
+        let host_report = [0u8; tee_call::TVM_REPORT_SIZE];
+
+        let host_helper = IgvmAttestRequestHelper::prepare_ak_cert_request(
+            Some(TeeType::Host),
+            &[],
+            &[],
+            &[],
+            &[],
+            &attestation_vm_config,
+            &[],
+        );
+        assert!(
+            host_helper
+                .create_request(IGVM_ATTEST_REQUEST_CURRENT_VERSION, &host_report)
+                .is_ok()
+        );
+
+        let legacy_helper = IgvmAttestRequestHelper::prepare_ak_cert_request(
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            &attestation_vm_config,
+            &[],
+        );
+        assert!(
+            legacy_helper
+                .create_request(IGVM_ATTEST_REQUEST_CURRENT_VERSION, &host_report)
+                .is_err()
+        );
+
+        let vbs_helper = IgvmAttestRequestHelper::prepare_ak_cert_request(
+            Some(TeeType::Vbs),
+            &[],
+            &[],
+            &[],
+            &[],
+            &attestation_vm_config,
+            &[],
+        );
+        assert!(
+            vbs_helper
+                .create_request(IGVM_ATTEST_REQUEST_CURRENT_VERSION, &host_report)
+                .is_err()
+        );
     }
 
     #[test]

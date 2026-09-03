@@ -80,3 +80,42 @@ pub trait RequestAkCert: Send + Sync {
         request: Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestRequestAkCertHelper;
+
+    #[async_trait::async_trait]
+    impl RequestAkCert for TestRequestAkCertHelper {
+        fn create_ak_cert_request(
+            &self,
+            _ak_pub_modulus: &[u8],
+            _ak_pub_exponent: &[u8],
+            _ek_pub_modulus: &[u8],
+            _ek_pub_exponent: &[u8],
+            _guest_input: &[u8],
+            _is_attestation_report: bool,
+        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(Vec::new())
+        }
+
+        async fn request_ak_cert(
+            &self,
+            _request: Vec<u8>,
+        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn sw_attested_is_attested_and_trusted_is_not() {
+        let helper: Arc<dyn RequestAkCert> = Arc::new(TestRequestAkCertHelper);
+
+        assert!(TpmAkCertType::SwAttested(helper.clone()).attested());
+        assert!(TpmAkCertType::HwAttested(helper.clone()).attested());
+        assert!(!TpmAkCertType::Trusted(helper.clone(), None).attested());
+        assert!(!TpmAkCertType::None.attested());
+    }
+}
