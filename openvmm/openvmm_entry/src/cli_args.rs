@@ -612,7 +612,7 @@ options:
     #[clap(long, default_value = "auto", value_parser = parse_x2apic)]
     pub x2apic: X2ApicConfig,
 
-    /// configure PCIe MSI controller for aarch64 (auto | its | v2m)
+    /// configure PCIe MSI controller for aarch64 (auto | its | v2m[,spi_count=N])
     #[cfg(guest_arch = "aarch64")]
     #[clap(long, default_value = "auto")]
     pub gic_msi: GicMsiCli,
@@ -2824,7 +2824,7 @@ pub enum Vtl0LateMapPolicyCli {
 }
 
 /// PCIe MSI controller selection for aarch64.
-#[derive(Debug, Copy, Clone, Default, ValueEnum)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub enum GicMsiCli {
     /// Use ITS when available, fall back to GICv2m.
     #[default]
@@ -2832,7 +2832,52 @@ pub enum GicMsiCli {
     /// Force GICv3 ITS (LPI-based MSIs).
     Its,
     /// Force GICv2m (SPI-based MSIs).
-    V2m,
+    V2m {
+        /// Number of SPIs reserved for MSI delivery.
+        spi_count: Option<u32>,
+    },
+}
+
+impl FromStr for GicMsiCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "auto" => return Ok(Self::Auto),
+            "its" => return Ok(Self::Its),
+            "v2m" => return Ok(Self::V2m { spi_count: None }),
+            _ => {}
+        }
+
+        let options = value
+            .strip_prefix("v2m,")
+            .context("expected auto, its, v2m, or v2m,spi_count=N")?;
+        let mut spi_count = None;
+        for option in options.split(',') {
+            let count = option
+                .strip_prefix("spi_count=")
+                .context("expected v2m,spi_count=N")?
+                .parse::<u32>()
+                .context("spi_count must be a positive integer")?;
+            anyhow::ensure!(count != 0, "spi_count must be a positive integer");
+            anyhow::ensure!(
+                spi_count.replace(count).is_none(),
+                "duplicate spi_count option"
+            );
+        }
+
+        Ok(Self::V2m { spi_count })
+    }
+}
+
+impl GicMsiCli {
+    pub fn into_config(self) -> openvmm_defs::config::GicMsiConfig {
+        match self {
+            Self::Auto => openvmm_defs::config::GicMsiConfig::Auto,
+            Self::Its => openvmm_defs::config::GicMsiConfig::Its,
+            Self::V2m { spi_count } => openvmm_defs::config::GicMsiConfig::V2m { spi_count },
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, ValueEnum)]
@@ -4962,6 +5007,36 @@ mod tests {
             Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus", "--hv"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn test_gic_msi_cli_from_str() {
+        assert_eq!(GicMsiCli::from_str("auto").unwrap(), GicMsiCli::Auto);
+        assert_eq!(GicMsiCli::from_str("its").unwrap(), GicMsiCli::Its);
+        assert_eq!(
+            GicMsiCli::from_str("v2m").unwrap(),
+            GicMsiCli::V2m { spi_count: None }
+        );
+        assert_eq!(
+            GicMsiCli::from_str("v2m,spi_count=512").unwrap(),
+            GicMsiCli::V2m {
+                spi_count: Some(512)
+            }
+        );
+        assert!(matches!(
+            GicMsiCli::from_str("v2m,spi_count=512")
+                .unwrap()
+                .into_config(),
+            openvmm_defs::config::GicMsiConfig::V2m {
+                spi_count: Some(512)
+            }
+        ));
+
+        assert!(GicMsiCli::from_str("v2m,spi_count=0").is_err());
+        assert!(GicMsiCli::from_str("v2m,spi_count=abc").is_err());
+        assert!(GicMsiCli::from_str("v2m,spi_count=64,spi_count=512").is_err());
+        assert!(GicMsiCli::from_str("v2m,unknown=512").is_err());
+        assert!(GicMsiCli::from_str("other").is_err());
     }
 
     #[test]
