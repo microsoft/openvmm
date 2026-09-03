@@ -12,6 +12,18 @@ use super::VpInfo;
 use super::VpTopologyInfo;
 use aarch64defs::MpidrEl1;
 
+fn mpidr_for_vp_index(vp_index: u32, uni_proc: bool) -> MpidrEl1 {
+    // ICC_SGIxR directly addresses 16 CPUs at affinity level 0. Match KVM's
+    // vCPU ID mapping by carrying higher bits into affinity levels 1 and 2.
+    MpidrEl1::new()
+        .with_res1_31(true)
+        .with_u(uni_proc)
+        .with_aff0((vp_index & 0xf) as u8)
+        .with_aff1(((vp_index >> 4) & 0xff) as u8)
+        .with_aff2(((vp_index >> 12) & 0xff) as u8)
+        .with_aff3(0)
+}
+
 /// ARM64-specific topology information.
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 #[derive(Debug, Copy, Clone)]
@@ -190,17 +202,8 @@ impl TopologyBuilder<Aarch64Topology> {
             return Err(InvalidTopology::InvalidGicNrIrqs(nr));
         }
         let mpidrs = (0..proc_count).map(|vp_index| {
-            // TODO: construct mpidr appropriately for the specified
-            // topology.
             let uni_proc = proc_count == 1;
-            let mut aff = (0..4).map(|i| (vp_index >> (8 * i)) as u8);
-            MpidrEl1::new()
-                .with_res1_31(true)
-                .with_u(uni_proc)
-                .with_aff0(aff.next().unwrap())
-                .with_aff1(aff.next().unwrap())
-                .with_aff2(aff.next().unwrap())
-                .with_aff3(aff.next().unwrap())
+            mpidr_for_vp_index(vp_index, uni_proc)
         });
         let gic_version = self.arch.platform.gic_version;
         self.build_with_vp_info(mpidrs.enumerate().map(move |(id, mpidr)| {
@@ -281,5 +284,22 @@ impl ProcessorTopology<Aarch64Topology> {
     /// Returns the total number of GIC interrupts to configure.
     pub fn gic_nr_irqs(&self) -> u32 {
         self.arch.platform.gic_nr_irqs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mpidr_rolls_over_aff0_after_sixteen_vps() {
+        let vp15 = mpidr_for_vp_index(15, false);
+        assert_eq!((vp15.aff2(), vp15.aff1(), vp15.aff0()), (0, 0, 15));
+
+        let vp16 = mpidr_for_vp_index(16, false);
+        assert_eq!((vp16.aff2(), vp16.aff1(), vp16.aff0()), (0, 1, 0));
+
+        let vp111 = mpidr_for_vp_index(111, false);
+        assert_eq!((vp111.aff2(), vp111.aff1(), vp111.aff0()), (0, 6, 15));
     }
 }
