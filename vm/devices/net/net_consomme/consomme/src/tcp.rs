@@ -1023,7 +1023,8 @@ impl<T: Client> Access<'_, T> {
                             let guest_has_seen_connection = !matches!(
                                 conn.inner.state,
                                 TcpState::Connecting | TcpState::SynSent | TcpState::SynReceived
-                            ) || conn.inner.tx_syn != TxSynState::None;
+                            ) || conn.inner.tx_syn
+                                != TxSynState::None;
                             if guest_has_seen_connection && sender.client.rx_mtu() != 0 {
                                 let ack_number = (conn.inner.tx_syn != TxSynState::Syn)
                                     .then_some(conn.inner.rx_seq);
@@ -1069,12 +1070,9 @@ impl<T: Client> Access<'_, T> {
                 client: self.client,
             };
             let now = TimerInstant::now();
-            let timed_out = conn
-                .inner
-                .next_timer_deadline()
-                .is_some_and(|deadline| {
-                    deadline <= now && conn.inner.process_expired_timers(now, &mut sender)
-                });
+            let timed_out = conn.inner.next_timer_deadline().is_some_and(|deadline| {
+                deadline <= now && conn.inner.process_expired_timers(now, &mut sender)
+            });
             let keep = if timed_out {
                 tracing::debug!(
                     src = %ft.src,
@@ -1099,8 +1097,8 @@ impl<T: Client> Access<'_, T> {
                             TcpState::Connecting | TcpState::SynSent | TcpState::SynReceived
                         ) || conn.inner.tx_syn != TxSynState::None;
                         if guest_has_seen_connection && sender.client.rx_mtu() != 0 {
-                            let ack_number = (conn.inner.tx_syn != TxSynState::Syn)
-                                .then_some(conn.inner.rx_seq);
+                            let ack_number =
+                                (conn.inner.tx_syn != TxSynState::Syn).then_some(conn.inner.rx_seq);
                             if sender.try_rst(conn.inner.tx_send, ack_number) {
                                 conn.inner.stats.rsts_tx.increment();
                             }
@@ -1113,12 +1111,8 @@ impl<T: Client> Access<'_, T> {
                 match &mut conn.backend {
                     TcpBackend::Dns(dns_handler) => {
                         if dns.can_answer_queries() {
-                            conn.inner.poll_dns_backend(
-                                &mut conn_cx,
-                                &mut sender,
-                                dns_handler,
-                                dns,
-                            )
+                            conn.inner
+                                .poll_dns_backend(&mut conn_cx, &mut sender, dns_handler, dns)
                         } else {
                             tracelimit::warn_ratelimited!(
                                 src = %ft.src,
