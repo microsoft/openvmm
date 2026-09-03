@@ -565,6 +565,7 @@ impl LoadedVm {
             }
         };
 
+        self.stop().await;
         let _client_notify_send = self.partition_unit.teardown().await;
 
         // Terminate the vmbus relay before vmbus to avoid sending channel

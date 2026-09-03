@@ -3964,6 +3964,7 @@ impl LoadedVm {
             }
         }
 
+        self.pause().await;
         self.inner.partition_unit.teardown().await;
         if let Some(vmbus) = self.inner.vmbus_server {
             vmbus.remove().await.shutdown().await;
