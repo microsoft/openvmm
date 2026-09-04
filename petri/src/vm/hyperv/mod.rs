@@ -276,6 +276,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
+        // TODO: Set vTPM version via WMI
+
         // Map VMBus storage controllers (SCSI and NVMe).
         let mut storage_controllers = HashMap::new();
         for (

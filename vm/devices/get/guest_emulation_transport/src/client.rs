@@ -278,6 +278,7 @@ impl GuestEmulationTransportClient {
                 battery_enabled: json.v1.enable_battery,
                 processor_idle_enabled: json.v1.enable_processor_idle,
                 tpm_enabled: json.v1.enable_tpm,
+                tpm_version: json.v2.r#static.tpm_version,
                 com1_enabled: json.v1.com1.enable_port,
                 com1_debugger_mode: json.v1.com1.debugger_mode,
                 com1_vmbus_redirector: json.v1.com1.enable_vmbus_redirector,

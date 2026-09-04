@@ -8,6 +8,7 @@ use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::dps_json::GuestStateLifetime;
 use get_resources::ged::EfiDiagnosticsLogLevelType;
+use get_resources::ged::GedTpmVersion;
 use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
 use get_resources::ged::GuestSecureBootTemplateType;
@@ -178,7 +179,10 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 com2: resource.com2,
                 serial_tx_only: resource.serial_tx_only,
                 vmbus_redirection: resource.vmbus_redirection,
-                enable_tpm: resource.enable_tpm,
+                tpm_version: resource.tpm_version.map(|v| match v {
+                    GedTpmVersion::V185 => get_protocol::dps_json::GetTpmVersion::V185,
+                    GedTpmVersion::V138 => get_protocol::dps_json::GetTpmVersion::V138,
+                }),
                 vtl2_settings: resource.vtl2_settings,
                 secure_boot_enabled: resource.secure_boot_enabled,
                 secure_boot_template: match resource.secure_boot_template {

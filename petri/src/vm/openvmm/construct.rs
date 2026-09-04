@@ -14,6 +14,7 @@ use crate::MemoryConfig;
 use crate::OpenHclConfig;
 use crate::PcieNvmeDrive;
 use crate::PetriLogSource;
+use crate::PetriTpmVersion;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
@@ -82,6 +83,7 @@ use storvsp_resources::ScsiPath;
 use tempfile::TempPath;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
 use uidevices_resources::SynthVideoHandle;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
@@ -1082,7 +1084,10 @@ impl PetriVmConfigSetupCore<'_> {
             vmgs: memdiff_vmgs(self.vmgs).await?,
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
-            enable_tpm: self.tpm_config.is_some(),
+            tpm_version: self.tpm_config.map(|c| match c.version {
+                PetriTpmVersion::V185 => get_resources::ged::GedTpmVersion::V185,
+                PetriTpmVersion::V138 => get_resources::ged::GedTpmVersion::V138,
+            }),
             firmware_event_send: Some(firmware_event_send.clone()),
             secure_boot_enabled: *secure_boot_enabled,
             secure_boot_template: match secure_boot_template {
@@ -1160,12 +1165,18 @@ impl PetriVmConfigSetupCore<'_> {
         if !self.firmware.is_openhcl()
             && let Some(TpmConfig {
                 no_persistent_secrets,
+                version,
                 ..
             }) = self.tpm_config
         {
             let register_layout = match self.arch {
                 MachineArch::X86_64 => TpmRegisterLayout::IoPort,
                 MachineArch::Aarch64 => TpmRegisterLayout::Mmio,
+            };
+
+            let tpm_version = match version {
+                PetriTpmVersion::V185 => TpmVersion::V185,
+                PetriTpmVersion::V138 => TpmVersion::V138,
             };
 
             let (ppi_store, nvram_store) = if self.vmgs.disk().is_none() || *no_persistent_secrets {
@@ -1176,7 +1187,7 @@ impl PetriVmConfigSetupCore<'_> {
             } else {
                 (
                     VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                    VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
+                    VmgsFileHandle::new(tpm_version.to_nvram_vmgs_file_id(), true).into_resource(),
                 )
             };
 
@@ -1184,6 +1195,7 @@ impl PetriVmConfigSetupCore<'_> {
                 name: "tpm".to_string(),
                 resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                     device: TpmDeviceHandle {
+                        version: tpm_version,
                         ppi_store,
                         nvram_store,
                         refresh_tpm_seeds: false,
