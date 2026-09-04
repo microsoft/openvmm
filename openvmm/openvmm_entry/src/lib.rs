@@ -2600,20 +2600,42 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
                     cli_args::RpcTransportCli::Ttrpc => ttrpc::RpcTransport::Ttrpc,
                     cli_args::RpcTransportCli::Grpc => ttrpc::RpcTransport::Grpc,
                 };
-                (rpc.path.as_path(), transport)
+                (rpc.path.as_path(), rpc.listener, transport)
             })
             .or_else(|| {
-                opt.ttrpc
-                    .as_deref()
-                    .map(|p| (p, ttrpc::RpcTransport::Ttrpc))
+                opt.ttrpc.as_deref().map(|p| {
+                    (
+                        p,
+                        cli_args::RpcListenerCli::Unix,
+                        ttrpc::RpcTransport::Ttrpc,
+                    )
+                })
             })
-            .or_else(|| opt.grpc.as_deref().map(|p| (p, ttrpc::RpcTransport::Grpc)));
+            .or_else(|| {
+                opt.grpc
+                    .as_deref()
+                    .map(|p| (p, cli_args::RpcListenerCli::Unix, ttrpc::RpcTransport::Grpc))
+            });
 
-        if let Some((path, transport)) = rpc {
+        if let Some((path, listener, transport)) = rpc {
             return block_on(async {
-                let _ = std::fs::remove_file(path);
-                let listener =
-                    unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
+                let listener = match listener {
+                    cli_args::RpcListenerCli::Unix => {
+                        let _ = std::fs::remove_file(path);
+                        ttrpc::Listener::Unix(
+                            unix_socket::UnixListener::bind(path)
+                                .context("failed to bind to socket")?,
+                        )
+                    }
+                    cli_args::RpcListenerCli::Pipe => {
+                        #[cfg(windows)]
+                        {
+                            ttrpc::Listener::Pipe(path.to_string_lossy().into_owned())
+                        }
+                        #[cfg(not(windows))]
+                        anyhow::bail!("named-pipe RPC listeners are only supported on Windows");
+                    }
+                };
 
                 // This is a local launch
                 let mut handle =

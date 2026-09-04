@@ -155,8 +155,15 @@ fn parse_arch_topology_overrides(
 
 #[derive(mesh::MeshPayload)]
 pub struct Parameters {
-    pub listener: UnixListener,
+    pub listener: Listener,
     pub transport: RpcTransport,
+}
+
+#[derive(mesh::MeshPayload)]
+pub enum Listener {
+    Unix(UnixListener),
+    #[cfg(windows)]
+    Pipe(String),
 }
 
 #[derive(Copy, Clone, mesh::MeshPayload)]
@@ -232,6 +239,10 @@ impl ResolvedTransport {
 mod dispatch {
     use super::FdRegistry;
     use super::ResolvedTransport;
+    #[cfg(windows)]
+    use futures::AsyncReadExt;
+    #[cfg(windows)]
+    use futures::AsyncWrite;
     use futures::FutureExt;
     use pal_async::driver::Driver;
     use pal_async::socket::AsSockRef;
@@ -265,6 +276,41 @@ mod dispatch {
                 let registry = registry.clone();
                 tasks.push(async move {
                     let _ = serve(server, conn, transport, &registry)
+                        .await
+                        .map_err(|err| {
+                            tracing::error!(
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "connection error"
+                            )
+                        });
+                });
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(super) async fn run_pipe(
+        server: &mesh_rpc::Server,
+        driver: &(impl Driver + ?Sized),
+        listener: pal_async::windows::pipe::NamedPipeServer,
+        cancel: mesh::OneshotReceiver<()>,
+        transport: ResolvedTransport,
+        registry: FdRegistry,
+    ) -> anyhow::Result<()> {
+        let mut tasks = FuturesUnordered::new();
+        let mut cancel = cancel.fuse();
+        loop {
+            let mut accept = std::pin::pin!(listener.accept(driver)?.fuse());
+            let conn = futures::select! { // merge semantics
+                r = accept => r,
+                _ = tasks.next() => continue,
+                _ = cancel => break,
+            };
+            if let Ok(conn) = conn.and_then(|conn| pal_async::pipe::PolledPipe::new(driver, conn)) {
+                let registry = registry.clone();
+                tasks.push(async move {
+                    let _ = serve_pipe(server, conn, transport, &registry)
                         .await
                         .map_err(|err| {
                             tracing::error!(
@@ -314,6 +360,82 @@ mod dispatch {
         }
     }
 
+    #[cfg(windows)]
+    async fn serve_pipe(
+        server: &mesh_rpc::Server,
+        mut conn: pal_async::pipe::PolledPipe,
+        transport: ResolvedTransport,
+        registry: &FdRegistry,
+    ) -> anyhow::Result<()> {
+        let mut first_byte = [0];
+        if conn.read(&mut first_byte).await? == 0 {
+            return Ok(());
+        }
+        let conn = PrefixedStream {
+            prefix: Some(first_byte[0]),
+            inner: conn,
+        };
+        let _ = registry;
+        match first_byte[0] {
+            #[cfg(feature = "ttrpc")]
+            0x00 if transport.allows_ttrpc() => server.serve_connection(conn).await,
+            #[cfg(feature = "grpc")]
+            b'P' if transport.allows_grpc() => server.serve_connection_grpc(conn).await,
+            byte => {
+                anyhow::bail!("unrecognized or disallowed rpc protocol (first byte {byte:#04x})")
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    struct PrefixedStream<T> {
+        prefix: Option<u8>,
+        inner: T,
+    }
+
+    #[cfg(windows)]
+    impl<T: futures::AsyncRead + Unpin> futures::AsyncRead for PrefixedStream<T> {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if let Some(prefix) = self.prefix.take() {
+                if !buf.is_empty() {
+                    buf[0] = prefix;
+                    return std::task::Poll::Ready(Ok(1));
+                }
+                self.prefix = Some(prefix);
+            }
+            std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    #[cfg(windows)]
+    impl<T: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<T> {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_close(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_close(cx)
+        }
+    }
+
     /// Waits for the first byte of the stream to be available and returns it
     /// without consuming it, so the chosen protocol handler sees a pristine
     /// stream.
@@ -329,7 +451,7 @@ mod dispatch {
 }
 
 pub struct TtrpcWorker {
-    listener: UnixListener,
+    listener: Listener,
     transport: ResolvedTransport,
 }
 
@@ -383,7 +505,7 @@ impl Worker for TtrpcWorker {
 impl VmService {
     async fn run(
         &mut self,
-        listener: UnixListener,
+        listener: Listener,
         mut recv: mesh::Receiver<WorkerRpc<()>>,
     ) -> anyhow::Result<()> {
         let mut server = mesh_rpc::Server::new();
@@ -396,8 +518,26 @@ impl VmService {
         let server_task = self.driver.spawn("ttrpc-server", {
             let driver = self.driver.clone();
             async move {
-                let r = dispatch::run(&server, &driver, listener, cancel_recv, transport, registry)
-                    .await;
+                let r = match listener {
+                    Listener::Unix(listener) => {
+                        dispatch::run(&server, &driver, listener, cancel_recv, transport, registry)
+                            .await
+                    }
+                    #[cfg(windows)]
+                    Listener::Pipe(path) => {
+                        let listener = pal_async::windows::pipe::NamedPipeServer::create(path)
+                            .context("failed to create named pipe")?;
+                        dispatch::run_pipe(
+                            &server,
+                            &driver,
+                            listener,
+                            cancel_recv,
+                            transport,
+                            registry,
+                        )
+                        .await
+                    }
+                };
                 match &r {
                     Ok(()) => tracing::debug!("ttrpc server shutting down"),
                     Err(err) => tracing::error!(

@@ -1,10 +1,11 @@
 # gRPC / ttrpc
 
 To enable a gRPC or ttrpc management interface, pass `--rpc`. This spawns an
-OpenVMM process acting as an RPC server on the given Unix socket:
+OpenVMM process acting as an RPC server on the given Unix socket, or a Windows
+named pipe:
 
 ```bash
---rpc path=/path/to/openvmm.sock[,transport=<TRANSPORT>]
+--rpc path=<PATH>[,listener=<LISTENER>][,transport=<TRANSPORT>]
 ```
 
 `transport` selects which wire protocol the server accepts:
@@ -13,10 +14,21 @@ OpenVMM process acting as an RPC server on the given Unix socket:
 * `ttrpc` — accept ttrpc clients only
 * `grpc` — accept gRPC clients only
 
+`listener` selects the endpoint type:
+
+* `unix` (default) — listen on a Unix socket
+* `pipe` — listen on a Windows named pipe
+
 For example, to accept ttrpc clients only:
 
 ```bash
 --rpc path=/path/to/openvmm.sock,transport=ttrpc
+```
+
+On Windows, a named-pipe endpoint uses `listener=pipe`:
+
+```bash
+--rpc path=\\.\pipe\openvmm,listener=pipe
 ```
 
 Here is a list of supported RPCs:
