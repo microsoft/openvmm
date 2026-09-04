@@ -388,6 +388,7 @@ impl VpciDeviceDescription {
             isolation_type,
             vtom,
             target_vtl,
+            implemented_bars(&requirements.bars),
         );
 
         // After this, the device is considered initialized and the caller is
@@ -1458,6 +1459,48 @@ pub(crate) struct ActiveMmioBar {
     pub base_address: u64,
     /// The length of the range in bytes.
     pub length_bytes: u64,
+}
+
+/// Which BAR indices the device actually implements.
+///
+/// A slot is a BAR in its own right only if the device reports a nonzero size
+/// mask for it and it is not the upper half of a preceding 64-bit BAR. The
+/// upper half is not independently addressable, so nothing refers to it by
+/// index, the TDI interface report included.
+///
+/// * `bar_masks` - The size masks the device reported for each BAR.
+pub(crate) fn implemented_bars(bar_masks: &[u32; 6]) -> [bool; 6] {
+    let mut present = [false; 6];
+    let mut i = 0usize;
+
+    while i < bar_masks.len() {
+        let mask = bar_masks[i];
+        if mask == 0 {
+            i += 1;
+            continue;
+        }
+
+        let bits = pci_core::spec::cfg_space::BarEncodingBits::from(mask);
+
+        let (full_mask, next_i) = if bits.type_64_bit() && i + 1 < 6 {
+            // Combine both halves before testing for zero. A 64-bit BAR of
+            // 4GiB or more has no address bits in its low mask at all, with
+            // the whole size carried in the high one, so testing the halves
+            // separately would call it unimplemented.
+            (
+                ((bar_masks[i + 1] as u64) << 32) | ((mask & !0xF_u32) as u64),
+                i + 2,
+            )
+        } else {
+            ((mask & !0xF_u32) as u64, i + 1)
+        };
+
+        present[i] = full_mask != 0;
+
+        i = next_i;
+    }
+
+    present
 }
 
 /// Decode the guest-programmed BARs into the MMIO ranges that are actually

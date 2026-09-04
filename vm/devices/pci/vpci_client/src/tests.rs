@@ -231,7 +231,7 @@ mod active_mmio_bars {
 
     /// Build the size mask a device reports for a 32-bit memory BAR of `size`
     /// bytes. `size` must be a power of two.
-    fn mask_32(size: u32, prefetchable: bool) -> u32 {
+    pub(super) fn mask_32(size: u32, prefetchable: bool) -> u32 {
         let mut mask = (!(size - 1)) & !0xF;
         if prefetchable {
             mask |= 0b1000;
@@ -241,7 +241,7 @@ mod active_mmio_bars {
 
     /// Build the low and high size masks a device reports for a 64-bit memory
     /// BAR of `size` bytes. `size` must be a power of two.
-    fn mask_64(size: u64, prefetchable: bool) -> (u32, u32) {
+    pub(super) fn mask_64(size: u64, prefetchable: bool) -> (u32, u32) {
         let full = (!(size - 1)) & !0xF;
         let mut low = full as u32;
         // Bits 2:1 == 0b10 marks the BAR as 64-bit.
@@ -542,6 +542,102 @@ mod active_mmio_bars {
                     length_bytes: 0x1000,
                 },
             ]
+        );
+    }
+}
+
+mod implemented_bars {
+    use super::active_mmio_bars::mask_32;
+    use super::active_mmio_bars::mask_64;
+    use crate::implemented_bars;
+
+    #[test]
+    fn no_bars_implemented() {
+        assert_eq!(implemented_bars(&[0; 6]), [false; 6]);
+    }
+
+    #[test]
+    fn thirty_two_bit_bars_in_some_slots() {
+        let mut masks = [0u32; 6];
+        masks[0] = mask_32(0x1000, false);
+        masks[4] = mask_32(0x1_0000, true);
+
+        assert_eq!(
+            implemented_bars(&masks),
+            [true, false, false, false, true, false]
+        );
+    }
+
+    #[test]
+    fn sixty_four_bit_bar_marks_only_its_lower_half() {
+        let mut masks = [0u32; 6];
+        let (low, high) = mask_64(0x20_0000, true);
+        masks[0] = low;
+        masks[1] = high;
+
+        // The upper half is not addressable in its own right, so it is not a
+        // BAR even though its mask is nonzero.
+        assert_eq!(
+            implemented_bars(&masks),
+            [true, false, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn exactly_4gib_64_bit_bar_is_implemented() {
+        let mut masks = [0u32; 6];
+        // A 4GiB BAR has no address bits in its low mask at all: the whole
+        // size sits in the high one. Testing the halves separately would call
+        // this BAR unimplemented.
+        let (low, high) = mask_64(0x1_0000_0000, true);
+        masks[0] = low;
+        masks[1] = high;
+        assert_eq!(low & !0xF, 0, "the low mask must have no address bits");
+
+        assert_eq!(
+            implemented_bars(&masks),
+            [true, false, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn sixty_four_bit_bar_larger_than_4gib_is_implemented() {
+        let mut masks = [0u32; 6];
+        let (low, high) = mask_64(0x2_0000_0000, true);
+        masks[0] = low;
+        masks[1] = high;
+
+        assert_eq!(
+            implemented_bars(&masks),
+            [true, false, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn all_six_slots_used_by_three_64_bit_bars() {
+        let mut masks = [0u32; 6];
+        for pair in 0..3 {
+            let (low, high) = mask_64(0x1000, false);
+            masks[pair * 2] = low;
+            masks[pair * 2 + 1] = high;
+        }
+
+        assert_eq!(
+            implemented_bars(&masks),
+            [true, false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn sixty_four_bit_bar_in_the_last_slot_has_no_upper_half() {
+        let mut masks = [0u32; 6];
+        // Malformed, but it must not read past the end of the array.
+        let (low, _high) = mask_64(0x1000, false);
+        masks[5] = low;
+
+        assert_eq!(
+            implemented_bars(&masks),
+            [false, false, false, false, false, true]
         );
     }
 }

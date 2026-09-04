@@ -193,6 +193,11 @@ pub struct VpciClientTdispState {
     #[inspect(debug)]
     target_vtl: Vtl,
     mutable_state: VpciClientTdispMutableState,
+    /// Which BAR indices the device actually implements, so a BAR the TDI
+    /// report omits can be told apart from a slot that is not a BAR at all.
+    /// Fixed for the life of the device.
+    #[inspect(iter_by_index)]
+    present_bars: [bool; 6],
     /// Platform hooks used to gate attestation and unblock device resources.
     /// Required: a device driven through the TDISP flow must always have a
     /// validator, so that no platform silently skips validation. Platforms with
@@ -210,6 +215,7 @@ impl VpciClientTdispState {
         isolation_type: IsolationType,
         vtom: u64,
         target_vtl: Vtl,
+        present_bars: [bool; 6],
     ) -> Self {
         Self {
             worker_req,
@@ -225,6 +231,7 @@ impl VpciClientTdispState {
             isolation_type,
             vtom,
             target_vtl,
+            present_bars,
             resource_validator,
         }
     }
@@ -992,8 +999,9 @@ impl VpciClientTdispState {
     /// This is the single source of truth for the question, so that what is
     /// reported to the guest and what is actually unblocked cannot disagree:
     /// `Private` is exactly a BAR that gets unblocked, `Shared` is one that is
-    /// deliberately skipped, and `Invalid` means the BAR has no entry in the
-    /// report.
+    /// deliberately skipped, and `Invalid` means there is nothing to classify,
+    /// either because the device does not implement the BAR or because no
+    /// interface report is cached.
     ///
     /// * `bar_id` - The PCI BAR index to classify.
     fn classify_bar(&self, bar_id: u16) -> TdispResourceIsolation {
@@ -1010,15 +1018,22 @@ impl VpciClientTdispState {
             return TdispResourceIsolation::Invalid;
         };
 
-        // `range_id` == PCI BAR index for the guest protocols we
-        // support. A missing entry is an unused slot or the upper half
-        // of a 64-bit BAR (not reported independently).
+        // `range_id` == PCI BAR index for the guest protocols we support. A
+        // BAR the report does not list is one the TDI does not claim as
+        // protected memory, which makes it host-visible like any other non-TEE
+        // range. A slot the device does not implement, the upper half of a
+        // 64-bit BAR included, is not a resource at all and has no
+        // classification.
         let Some(range) = report
             .mmio_interface_info
             .iter()
             .find(|r| r.range_id == bar_id)
         else {
-            return TdispResourceIsolation::Invalid;
+            return if self.present_bars[usize::from(bar_id)] {
+                TdispResourceIsolation::Shared
+            } else {
+                TdispResourceIsolation::Invalid
+            };
         };
 
         // `is_non_tee_mem` ranges have no protected backing and must
@@ -1074,10 +1089,11 @@ impl VpciClientTdispState {
     /// range accessible to the guest if it is private memory.
     ///
     /// Only ranges the device reports as TEE memory are unblocked. Ranges the
-    /// device reports as non-TEE memory, and BARs the paravisor has marked
-    /// intercepted, are skipped: neither is protected memory, so there is
-    /// nothing to flip. A BAR with no entry in the report at all is an error,
-    /// since it means the device was never attested.
+    /// device reports as non-TEE memory, BARs the paravisor has marked
+    /// intercepted, and BARs the device implements but the report does not
+    /// list are all skipped: none of them is protected memory, so there is
+    /// nothing to flip. Having no report at all is an error, since it means the
+    /// device was never attested.
     ///
     /// Doing this on reconfiguration rather than at attestation time is what
     /// lets the platform validate against the addresses the guest actually
@@ -1116,13 +1132,34 @@ impl VpciClientTdispState {
 
         match self.classify_bar(bar_id) {
             TdispResourceIsolation::Shared => {
-                tracing::info!(
-                    bar_id,
-                    base_address,
-                    length,
-                    "skipping MMIO unblock for BAR classified SHARED \
-                     (intercepted or non-TEE memory)"
-                );
+                let listed = self
+                    .mutable_state
+                    .tdi_report
+                    .as_ref()
+                    .is_some_and(|report| {
+                        report
+                            .mmio_interface_info
+                            .iter()
+                            .any(|r| r.range_id == bar_id)
+                    });
+
+                if listed {
+                    tracing::info!(
+                        bar_id,
+                        base_address,
+                        length,
+                        "skipping MMIO unblock for BAR classified SHARED \
+                         (intercepted or non-TEE memory)"
+                    );
+                } else {
+                    tracing::info!(
+                        bar_id,
+                        base_address,
+                        length,
+                        "BAR is implemented by the device but has no entry in the TDI \
+                         interface report; treating it as SHARED and skipping the MMIO unblock"
+                    );
+                }
                 // Record the range so we don't repeatedly fall through here
                 // on subsequent reconfigurations. Marked `Shared`, which
                 // tells the unbind path there is no block call to undo.
@@ -1138,9 +1175,9 @@ impl VpciClientTdispState {
             }
             TdispResourceIsolation::Invalid => {
                 anyhow::bail!(
-                    "tdisp_on_mmio_reconfigured: BAR {bar_id} has no entry in \
-                     the TDI interface report (or report not available); \
-                     device has not been attested"
+                    "tdisp_on_mmio_reconfigured: BAR {bar_id} cannot be classified \
+                     because no TDI interface report is cached; the device has not \
+                     been attested"
                 );
             }
             TdispResourceIsolation::Private => {}
@@ -1429,6 +1466,13 @@ mod tests {
     /// returned value, but `isolation_snapshot` and the mutable-state
     /// fields it inspects are safe to poke directly.
     fn new_state() -> VpciClientTdispState {
+        new_state_with_bars([false; 6])
+    }
+
+    /// Build a state whose device implements the given BAR slots. Only the
+    /// report-miss path consults this, so tests that never miss can use
+    /// `new_state`.
+    fn new_state_with_bars(present_bars: [bool; 6]) -> VpciClientTdispState {
         let (worker_req, _worker_recv) = mesh::channel::<WorkerRequest>();
         VpciClientTdispState::new(
             worker_req,
@@ -1438,6 +1482,7 @@ mod tests {
             IsolationType::None,
             /* vtom = */ 0,
             Vtl::Vtl0,
+            present_bars,
         )
     }
 
@@ -1529,6 +1574,56 @@ mod tests {
             ]
         );
         assert_eq!(dma, TdispResourceIsolation::Private);
+    }
+
+    #[test]
+    fn unlisted_bar_is_shared_when_the_device_implements_it() {
+        // The device has BARs 0 and 2; the report only describes BAR 0. BAR 2
+        // is a real BAR the TDI does not claim, so it is host-visible, while
+        // the slots the device does not implement stay unclassified.
+        let mut state = new_state_with_bars([true, false, true, false, false, false]);
+        state.mutable_state.tdi_report = Some(make_report(vec![tee_range(0)]));
+
+        assert_eq!(state.classify_bar(0), TdispResourceIsolation::Private);
+        assert_eq!(state.classify_bar(2), TdispResourceIsolation::Shared);
+        for bar_id in [1, 3, 4, 5] {
+            assert_eq!(
+                state.classify_bar(bar_id),
+                TdispResourceIsolation::Invalid,
+                "bar {bar_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn unlisted_bar_reaches_the_guest_as_shared() {
+        // The same device seen through the reply the guest actually receives.
+        let mut state = new_state_with_bars([true, false, true, false, false, false]);
+        state.mutable_state.tdi_report = Some(make_report(vec![tee_range(0)]));
+
+        let TdispIsolationReport::Ready { bars, dma } = state.isolation_snapshot() else {
+            panic!("expected Ready");
+        };
+        assert_eq!(
+            bars,
+            [
+                TdispResourceIsolation::Private,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Shared,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Invalid,
+                TdispResourceIsolation::Invalid,
+            ]
+        );
+        assert_eq!(dma, TdispResourceIsolation::Private);
+    }
+
+    #[test]
+    fn unlisted_bar_is_invalid_without_a_report() {
+        // No report at all is the not-attested case, which stays unclassified
+        // even for a BAR the device implements.
+        let state = new_state_with_bars([true; 6]);
+        assert_eq!(state.classify_bar(0), TdispResourceIsolation::Invalid);
     }
 
     #[test]
