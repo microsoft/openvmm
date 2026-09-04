@@ -1089,10 +1089,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let request = get_protocol::VpciDeviceControlRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
             .0;
-        let status = if request.code == get_protocol::VpciDeviceControlCode::OFFER {
-            get_protocol::VpciDeviceControlStatus::SUCCESS
-        } else {
-            get_protocol::VpciDeviceControlStatus::INVALID_REQUEST
+        let status = match request.code {
+            get_protocol::VpciDeviceControlCode::OFFER
+            | get_protocol::VpciDeviceControlCode::REVOKE
+            | get_protocol::VpciDeviceControlCode::RESET => {
+                get_protocol::VpciDeviceControlStatus::SUCCESS
+            }
+            _ => get_protocol::VpciDeviceControlStatus::INVALID_REQUEST,
         };
         let response = get_protocol::VpciDeviceControlResponse::new(status);
         self.channel
