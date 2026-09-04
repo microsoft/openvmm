@@ -400,12 +400,12 @@ mod dispatch {
             cx: &mut std::task::Context<'_>,
             buf: &mut [u8],
         ) -> std::task::Poll<std::io::Result<usize>> {
+            if buf.is_empty() {
+                return std::task::Poll::Ready(Ok(0));
+            }
             if let Some(prefix) = self.prefix.take() {
-                if !buf.is_empty() {
-                    buf[0] = prefix;
-                    return std::task::Poll::Ready(Ok(1));
-                }
-                self.prefix = Some(prefix);
+                buf[0] = prefix;
+                return std::task::Poll::Ready(Ok(1));
             }
             std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
         }
