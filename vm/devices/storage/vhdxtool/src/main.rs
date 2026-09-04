@@ -112,7 +112,8 @@ enum Command {
         /// Parent VHDX path. Required for, and only valid with, differencing images.
         #[arg(long)]
         parent: Option<PathBuf>,
-        /// VHDX payload block size. Accepts binary size suffixes.
+        /// VHDX payload block size. Must be a multiple of 1 MiB between 1 MiB
+        /// and 256 MiB. Defaults to 2 MiB. Accepts binary size suffixes.
         #[arg(long, value_parser = util::parse_size)]
         block_size: Option<u64>,
         /// Logical sector size in bytes: 512 or 4096.
@@ -166,7 +167,9 @@ enum Command {
         /// Allocation type for VHDX output.
         #[arg(long = "type", value_enum, default_value = "dynamic")]
         disk_type: DiskType,
-        /// Payload block size for VHDX output. Accepts binary size suffixes.
+        /// Payload block size for VHDX output. Must be a multiple of 1 MiB
+        /// between 1 MiB and 256 MiB. Defaults to 2 MiB. Accepts binary size
+        /// suffixes.
         #[arg(long, value_parser = util::parse_size)]
         block_size: Option<u64>,
         /// Replace the output file if it already exists.
