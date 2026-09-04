@@ -154,8 +154,6 @@ async fn mana_nic_vf_reconfig(
     validate_mana_nic(&agent, "eth1").await?;
     validate_vtl0_mana_vf(&agent).await?;
 
-    let sh = agent.unix_shell();
-
     mana.inject_vf_reset(revoke_vtl0_vf).await?;
     validate_mana_nic(&agent, "eth1").await?;
     validate_vtl0_mana_vf(&agent).await?;
