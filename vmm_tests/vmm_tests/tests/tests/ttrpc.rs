@@ -55,12 +55,43 @@ async fn test_ttrpc_interface(
     driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
 ) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    let endpoints = [RpcEndpointKind::Unix, RpcEndpointKind::Pipe];
+    #[cfg(not(windows))]
+    let endpoints = [RpcEndpointKind::Unix];
+
+    for endpoint in endpoints {
+        test_ttrpc_interface_inner(
+            &params,
+            driver.clone(),
+            [&openvmm, &kernel_path, &initrd_path, &pipette_path],
+            endpoint,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn test_ttrpc_interface_inner(
+    params: &petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    [openvmm, kernel_path, initrd_path, pipette_path]: [&ResolvedArtifact; 4],
+    endpoint_kind: RpcEndpointKind,
+) -> anyhow::Result<()> {
     // All temporary files for this test live under a single temp directory
     // that is cleaned up automatically when it is dropped at the end of the
     // test.
     let tempdir = tempfile::tempdir()?;
     let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
+    #[cfg(windows)]
+    let pipe_name = format!(r"\\.\pipe\openvmm-ttrpc-{}", Guid::new_random());
+    let endpoint = match endpoint_kind {
+        RpcEndpointKind::Unix => RpcEndpoint::Unix(&socket_path),
+        #[cfg(windows)]
+        RpcEndpointKind::Pipe => RpcEndpoint::Pipe(&pipe_name),
+    };
 
     let initrd = std::fs::read(initrd_path.get()).context("failed to read test initrd")?;
     let pipette = std::fs::read(pipette_path.get()).context("failed to read pipette")?;
@@ -79,14 +110,8 @@ async fn test_ttrpc_interface(
         petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
     };
 
-    let (mut child, client, _stderr_task) = launch_openvmm(
-        &driver,
-        &params,
-        &openvmm,
-        RpcEndpoint::Unix(&socket_path),
-        &pidfile_path,
-    )
-    .await?;
+    let (mut child, client, _stderr_task) =
+        launch_openvmm(&driver, params, openvmm, endpoint, &pidfile_path).await?;
 
     let query_props = || {
         client.call().start(
@@ -667,66 +692,6 @@ async fn test_ttrpc_interface(
         "pidfile should be removed after exit"
     );
 
-    #[cfg(windows)]
-    test_ttrpc_named_pipe(&driver, &params, &openvmm).await?;
-
-    Ok(())
-}
-
-#[cfg(windows)]
-async fn test_ttrpc_named_pipe(
-    driver: &DefaultDriver,
-    params: &petri::PetriTestParams<'_>,
-    openvmm: &ResolvedArtifact,
-) -> anyhow::Result<()> {
-    let tempdir = tempfile::tempdir()?;
-    let pipe_name = format!(r"\\.\pipe\openvmm-ttrpc-{}", Guid::new_random());
-    let pidfile_path = tempdir.path().join("openvmm.pid");
-    let (mut child, client, _stderr_task) = launch_openvmm(
-        driver,
-        params,
-        openvmm,
-        RpcEndpoint::Pipe(&pipe_name),
-        &pidfile_path,
-    )
-    .await?;
-
-    let capabilities = client
-        .call()
-        .start(vmservice::Vm::CapabilitiesVm, ())
-        .await
-        .map_err(|err| anyhow::anyhow!("CapabilitiesVm over named pipe: {err:?}"))?;
-    assert!(
-        !capabilities.supported_resources.is_empty(),
-        "named-pipe RPC server returned no supported resources"
-    );
-
-    let properties = client
-        .call()
-        .start(
-            vmservice::Vm::PropertiesVm,
-            vmservice::PropertiesVmRequest { types: Vec::new() },
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!("PropertiesVm over named pipe: {err:?}"))?;
-    assert_eq!(
-        properties.state,
-        vmservice::VmState::Uninitialized as i32,
-        "named-pipe RPC server should begin uninitialized"
-    );
-
-    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
-    let exit_status = child.wait().await?;
-    assert!(
-        exit_status.success(),
-        "openvmm named-pipe RPC server exited abnormally: {:?}",
-        exit_status
-    );
-    assert!(
-        !pidfile_path.exists(),
-        "named-pipe RPC server pidfile should be removed after exit"
-    );
-
     Ok(())
 }
 
@@ -1006,6 +971,13 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
             vmservice::VirtioDevice { kind: Some(kind) },
         )),
     }
+}
+
+#[derive(Copy, Clone)]
+enum RpcEndpointKind {
+    Unix,
+    #[cfg(windows)]
+    Pipe,
 }
 
 enum RpcEndpoint<'a> {
