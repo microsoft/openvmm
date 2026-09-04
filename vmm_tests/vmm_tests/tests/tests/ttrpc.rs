@@ -484,8 +484,6 @@ async fn test_ttrpc_interface(
             );
         }
 
-        let mut vpci_supported = false;
-
         // On iteration 0, exercise AddPcieDevice/RemovePcieDevice with
         // both a simple virtio device and one with a host backend.
         if i == 0 {
@@ -553,7 +551,6 @@ async fn test_ttrpc_interface(
                     )
                     .await
                     .unwrap();
-                vpci_supported = true;
                 client
                     .call()
                     .start(
@@ -641,15 +638,14 @@ async fn test_ttrpc_interface(
                     )
                     .await?;
                     validate_pcie_config(&agent).await?;
-                    if vpci_supported {
-                        validate_vpci_virtio_fs_hotplug(
-                            &client,
-                            &agent,
-                            &hotplug_virtiofs_root,
-                            &second_hotplug_virtiofs_root,
-                        )
-                        .await?;
-                    }
+                    validate_vpci_virtio_fs_hotplug(
+                        &client,
+                        &agent,
+                        &hotplug_virtiofs_root,
+                        &second_hotplug_virtiofs_root,
+                    )
+                    .await?;
+
                     validate_smbios(&agent).await?;
                     agent.power_off().await?;
                 }
