@@ -74,6 +74,10 @@ pub struct VmmPerfCli {
     #[clap(long, value_name = "KEY=VALUE")]
     vmm_perf_parameter: Vec<String>,
 
+    /// Use a local VMM.Perf runtime archive instead of downloading the pinned version.
+    #[clap(long = "vmm-perf-runtime-archive", value_name = "PATH")]
+    vmm_perf_runtime_archive: Option<PathBuf>,
+
     /// Release build instead of debug build.
     #[clap(long)]
     release: bool,
@@ -107,6 +111,7 @@ impl IntoPipeline for VmmPerfCli {
             dir,
             vmm_perf_vm_sizes,
             vmm_perf_parameter,
+            vmm_perf_runtime_archive,
             release,
             build_only,
             install_missing_deps,
@@ -147,6 +152,18 @@ impl IntoPipeline for VmmPerfCli {
         )
         .context("failed to resolve VMM.Perf root directory")?;
         std::fs::create_dir_all(&root_dir)?;
+        let runtime_archive = vmm_perf_runtime_archive
+            .map(|path| {
+                let path = std::path::absolute(path)
+                    .context("failed to resolve local VMM.Perf runtime archive")?;
+                anyhow::ensure!(
+                    path.is_file(),
+                    "local VMM.Perf runtime archive does not exist or is not a file: {}",
+                    path.display()
+                );
+                Ok(path)
+            })
+            .transpose()?;
 
         let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
             ReadVar::from_static(crate::repo_root()),
@@ -193,6 +210,7 @@ impl IntoPipeline for VmmPerfCli {
                 profiles,
                 vm_sizes_json,
                 parameters_json,
+                runtime_archive,
                 build_only,
                 done: ctx.new_done_handle(),
             },

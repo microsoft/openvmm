@@ -21,6 +21,8 @@ flowey_request! {
         pub profiles: Vec<VmmPerfProfile>,
         pub vm_sizes_json: Option<String>,
         pub parameters_json: Option<String>,
+        /// Local runtime archive override. CI always uses the pinned download.
+        pub runtime_archive: Option<ReadVar<PathBuf>>,
         /// Local-only root directory. CI uses a job-local staging directory.
         pub root_dir: Option<ReadVar<PathBuf>>,
         pub hugetlb_2mb_overcommit_pages: Option<u64>,
@@ -49,6 +51,7 @@ impl SimpleFlowNode for Node {
             profiles,
             vm_sizes_json,
             parameters_json,
+            runtime_archive,
             root_dir,
             hugetlb_2mb_overcommit_pages,
             done,
@@ -56,6 +59,9 @@ impl SimpleFlowNode for Node {
 
         if root_dir.is_some() && !matches!(ctx.backend(), FlowBackend::Local) {
             anyhow::bail!("custom VMM.Perf root directories are local-only");
+        }
+        if runtime_archive.is_some() && !matches!(ctx.backend(), FlowBackend::Local) {
+            anyhow::bail!("custom VMM.Perf runtime archives are local-only");
         }
 
         let external_deps = match ctx.platform() {
@@ -80,10 +86,13 @@ impl SimpleFlowNode for Node {
             arch: CommonArch::X86_64,
             msvm_fd: v,
         });
-        let runtime_archive = ctx.reqv(|v| crate::download_vmm_perf_runtime::Request::Get {
-            arch: CommonArch::X86_64,
-            runtime_archive: v,
-        });
+        let runtime_archive = match runtime_archive {
+            Some(runtime_archive) => runtime_archive,
+            None => ctx.reqv(|v| crate::download_vmm_perf_runtime::Request::Get {
+                arch: CommonArch::X86_64,
+                runtime_archive: v,
+            }),
+        };
         let job_root = match ctx.backend() {
             FlowBackend::Local => root_dir
                 .ok_or_else(|| anyhow::anyhow!("local VMM.Perf runs require a root directory"))?,

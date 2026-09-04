@@ -1869,6 +1869,7 @@ impl IntoPipeline for CheckinGatesCli {
                             profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
                             vm_sizes_json: None,
                             parameters_json: None,
+                            runtime_archive: None,
                             root_dir: None,
                             hugetlb_2mb_overcommit_pages: hugetlb_pages,
                             done: ctx.new_done_handle(),
