@@ -59,7 +59,7 @@ async fn test_ttrpc_interface(
     let endpoint_paths = [
         tempdir.path().join("ttrpc.sock"),
         #[cfg(windows)]
-        format!(r"\\.\pipe\openvmm-ttrpc-{}", Guid::new_random()).into(),
+        format!(r"\\.\PIPE\openvmm-ttrpc-{}", Guid::new_random()).into(),
     ];
 
     for endpoint_path in &endpoint_paths {
@@ -1045,7 +1045,7 @@ async fn launch_openvmm(
     );
 
     #[cfg(windows)]
-    let client = if endpoint_path.to_string_lossy().starts_with(r"\\.\pipe\") {
+    let client = if mesh_rpc::is_named_pipe_path(endpoint_path) {
         mesh_rpc::Client::new(
             driver,
             NamedPipeDialer::new(driver.clone(), endpoint_path.to_string_lossy()),

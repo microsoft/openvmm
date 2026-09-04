@@ -166,6 +166,26 @@ pub enum Listener {
     Pipe(String),
 }
 
+#[cfg(windows)]
+pub fn listener_from_path(path: &std::path::Path) -> anyhow::Result<Listener> {
+    if mesh_rpc::is_named_pipe_path(path) {
+        Ok(Listener::Pipe(path.to_string_lossy().into_owned()))
+    } else {
+        let _ = std::fs::remove_file(path);
+        Ok(Listener::Unix(
+            UnixListener::bind(path).context("failed to bind to socket")?,
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn listener_from_path(path: &std::path::Path) -> anyhow::Result<Listener> {
+    let _ = std::fs::remove_file(path);
+    Ok(Listener::Unix(
+        unix_socket::UnixListener::bind(path).context("failed to bind to socket")?,
+    ))
+}
+
 #[derive(Copy, Clone, mesh::MeshPayload)]
 pub enum RpcTransport {
     Ttrpc,
@@ -239,9 +259,9 @@ impl ResolvedTransport {
 mod dispatch {
     use super::FdRegistry;
     use super::ResolvedTransport;
+    use futures::AsyncRead;
     #[cfg(windows)]
     use futures::AsyncReadExt;
-    #[cfg(windows)]
     use futures::AsyncWrite;
     use futures::FutureExt;
     use pal_async::driver::Driver;
@@ -324,23 +344,16 @@ mod dispatch {
         Ok(())
     }
 
-    /// Services a single connection.
-    ///
-    /// The protocol is always determined by peeking the first byte of the
-    /// stream; the configured `transport` only restricts which protocols are
-    /// permitted (e.g. a ttrpc-only server rejects a gRPC client).
-    async fn serve(
+    async fn serve_by_protocol<T>(
         server: &mesh_rpc::Server,
-        mut conn: PolledSocket<UnixStream>,
+        conn: T,
+        first_byte: u8,
         transport: ResolvedTransport,
         registry: &FdRegistry,
-    ) -> anyhow::Result<()> {
-        // Wait for the client to send data (returning early if it hangs up
-        // first) and classify the protocol from its first byte.
-        let Some(first_byte) = peek_first_byte(&mut conn).await? else {
-            return Ok(());
-        };
-
+    ) -> anyhow::Result<()>
+    where
+        T: AsyncRead + AsyncWrite + Unpin,
+    {
         // The fd-passing protocol (UNIX only) is allowed in every transport
         // mode; it shares the socket with ttrpc/gRPC and is selected by its
         // distinct magic first byte.
@@ -360,6 +373,26 @@ mod dispatch {
         }
     }
 
+    /// Services a single connection.
+    ///
+    /// The protocol is always determined by peeking the first byte of the
+    /// stream; the configured `transport` only restricts which protocols are
+    /// permitted (e.g. a ttrpc-only server rejects a gRPC client).
+    async fn serve(
+        server: &mesh_rpc::Server,
+        mut conn: PolledSocket<UnixStream>,
+        transport: ResolvedTransport,
+        registry: &FdRegistry,
+    ) -> anyhow::Result<()> {
+        // Wait for the client to send data (returning early if it hangs up
+        // first) and classify the protocol from its first byte.
+        let Some(first_byte) = peek_first_byte(&mut conn).await? else {
+            return Ok(());
+        };
+
+        serve_by_protocol(server, conn, first_byte, transport, registry).await
+    }
+
     #[cfg(windows)]
     async fn serve_pipe(
         server: &mesh_rpc::Server,
@@ -375,16 +408,7 @@ mod dispatch {
             prefix: Some(first_byte[0]),
             inner: conn,
         };
-        let _ = registry;
-        match first_byte[0] {
-            #[cfg(feature = "ttrpc")]
-            0x00 if transport.allows_ttrpc() => server.serve_connection(conn).await,
-            #[cfg(feature = "grpc")]
-            b'P' if transport.allows_grpc() => server.serve_connection_grpc(conn).await,
-            byte => {
-                anyhow::bail!("unrecognized or disallowed rpc protocol (first byte {byte:#04x})")
-            }
-        }
+        serve_by_protocol(server, conn, first_byte[0], transport, registry).await
     }
 
     #[cfg(windows)]
@@ -394,7 +418,7 @@ mod dispatch {
     }
 
     #[cfg(windows)]
-    impl<T: futures::AsyncRead + Unpin> futures::AsyncRead for PrefixedStream<T> {
+    impl<T: AsyncRead + Unpin> AsyncRead for PrefixedStream<T> {
         fn poll_read(
             mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,

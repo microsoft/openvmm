@@ -2611,24 +2611,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
 
         if let Some((path, transport)) = rpc {
             return block_on(async {
-                #[cfg(windows)]
-                let listener = if path.to_string_lossy().starts_with(r"\\.\pipe\") {
-                    ttrpc::Listener::Pipe(path.to_string_lossy().into_owned())
-                } else {
-                    let _ = std::fs::remove_file(path);
-                    ttrpc::Listener::Unix(
-                        unix_socket::UnixListener::bind(path)
-                            .context("failed to bind to socket")?,
-                    )
-                };
-                #[cfg(not(windows))]
-                let listener = {
-                    let _ = std::fs::remove_file(path);
-                    ttrpc::Listener::Unix(
-                        unix_socket::UnixListener::bind(path)
-                            .context("failed to bind to socket")?,
-                    )
-                };
+                let listener = ttrpc::listener_from_path(path)?;
 
                 // This is a local launch
                 let mut handle =
