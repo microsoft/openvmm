@@ -38,15 +38,15 @@ pub use server::Server;
 /// Returns whether `path` names a Windows named pipe.
 #[cfg(windows)]
 pub fn is_named_pipe_path(path: &std::path::Path) -> bool {
-	path.components().next().is_some_and(|component| {
-		matches!(
-			component,
-			std::path::Component::Prefix(prefix)
-				if matches!(
-					prefix.kind(),
-					std::path::Prefix::DeviceNS(device_name)
-						if device_name.eq_ignore_ascii_case("pipe")
-				)
-		)
-	})
+    path.components().next().is_some_and(|component| {
+        matches!(
+            component,
+            std::path::Component::Prefix(prefix)
+                if matches!(
+                    prefix.kind(),
+                    std::path::Prefix::DeviceNS(device_name)
+                        if device_name.eq_ignore_ascii_case("pipe")
+                )
+        )
+    })
 }
