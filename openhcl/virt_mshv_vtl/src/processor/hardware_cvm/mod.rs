@@ -2852,6 +2852,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // Process interrupts.
             self.update_synic(vtl, false);
 
+            #[cfg(guest_arch = "x86_64")]
             B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr);
         }
         *first_scan_irr = false;
