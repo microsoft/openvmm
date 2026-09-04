@@ -675,6 +675,10 @@ impl ManaTestControl {
 
     /// Requests VF reconfiguration through the emulated hardware channel.
     ///
+    /// Completion means the reset EQE has been posted to the HWC EQ.
+    /// It may take time for the EQE to be processed.
+    /// Then, VF Reconfiguration will be completed asynchronously.
+    ///
     /// `revoke_vtl0_vf`: when `true` the guest VTL0 VF is revoked as part of
     /// the reconfiguration.
     pub async fn inject_vf_reset(&self, revoke_vtl0_vf: bool) -> Result<(), mesh::rpc::RpcError> {

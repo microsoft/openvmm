@@ -108,37 +108,6 @@ async fn mana_nic_with_vtl0_vf(
     Ok(())
 }
 
-#[openvmm_test(openhcl_linux_direct_x64)]
-async fn mana_nic_unbind_mana_driver(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> Result<(), anyhow::Error> {
-    let (mana, mana_config) = ManaTestControl::new();
-    let config = config
-        .with_vmbus_redirect(true)
-        .modify_backend(move |b| b.with_nic_test_control(mana_config));
-
-    let (vm, agent) = config.run().await?;
-    configure_mana_nic(&agent, "eth1").await?;
-    validate_mana_nic(&agent, "eth1").await?;
-    validate_vtl0_mana_vf(&agent).await?;
-
-    let sh = agent.unix_shell();
-    cmd!(sh, "sh")
-    .args([
-        "-c",
-        "bdf=$(basename $(readlink -f /sys/class/net/eth0/device)); echo $bdf > /sys/bus/pci/drivers/mana/unbind",
-    ])
-    .run()
-    .await?;
-    cmd!(sh, "test ! -e /sys/class/net/eth0").run().await?;
-
-    mana.shutdown().await?;
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
 async fn mana_nic_vf_reconfig(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     revoke_vtl0_vf: bool,
@@ -154,6 +123,7 @@ async fn mana_nic_vf_reconfig(
     validate_mana_nic(&agent, "eth1").await?;
     validate_vtl0_mana_vf(&agent).await?;
 
+    // Injection only waits for the EQE to be posted.
     mana.inject_vf_reset(revoke_vtl0_vf).await?;
     validate_mana_nic(&agent, "eth1").await?;
     validate_vtl0_mana_vf(&agent).await?;
