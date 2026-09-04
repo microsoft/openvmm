@@ -572,6 +572,11 @@ message VMConfig {
     // Actions to take on guest power events. Each unset action uses its
     // default.
     GuestPowerActions guest_power_actions = 12;
+
+    // SMBIOS (DMI) identity overrides. Applied to whichever boot type is
+    // selected; note that PCAT boot honors only the system UUID and serial
+    // number.
+    SMBIOSConfig smbios_config = 13;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
@@ -593,6 +598,53 @@ message SerialConfig {
 
 message HVSocketConfig {
     string path = 1;
+}
+
+// SMBIOS (DMI) identity overrides, grouped by SMBIOS structure type to mirror
+// the `type=N` grouping of the OpenVMM `--smbios` CLI option. Each unset field
+// falls through to the loader's default identity.
+message SMBIOSConfig {
+    // SMBIOS Type 0 (BIOS Information) overrides.
+    message BIOS {
+        // System BIOS Major/Minor Release (e.g. 4.1). Presence of this message
+        // sets the release; both components are supplied together.
+        message Release {
+            uint32 major = 1;
+            uint32 minor = 2;
+        }
+
+        // BIOS vendor string.
+        optional string vendor = 1;
+        // BIOS version string.
+        optional string version = 2;
+        // BIOS release date string.
+        optional string release_date = 3;
+        // System BIOS Major/Minor Release. Absent => loader default.
+        Release release = 4;
+    }
+
+    // SMBIOS Type 1 (System Information) overrides.
+    message System {
+        // System manufacturer string.
+        optional string manufacturer = 1;
+        // System product name string.
+        optional string product_name = 2;
+        // System version string.
+        optional string version = 3;
+        // System serial number string.
+        optional string serial_number = 4;
+        // System SKU number string.
+        optional string sku_number = 5;
+        // System family string.
+        optional string family = 6;
+        // System UUID (the VM's BIOS GUID).
+        optional string uuid = 7; // GUID
+    }
+
+    // Type 0 (BIOS Information) overrides.
+    BIOS bios = 1;
+    // Type 1 (System Information) overrides.
+    System system = 2;
 }
 
 message CreateVMRequest {

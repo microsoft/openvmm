@@ -49,9 +49,7 @@ On x86_64, OpenVMM follows the standard Linux boot protocol:
    table, which lives in its own reserved region in low memory just above the
    ACPI tables (so it can grow well past the 64 KiB F-segment). Both regions
    are reserved in the e820 map so they are not overwritten before the scan.
-   Guests can then read `/sys/class/dmi/id/*`. There is no configuration
-   surface yet, so every direct-boot VM reports a fixed default OpenVMM
-   identity.
+   Guests can then read `/sys/class/dmi/id/*`.
 6. A GDT and initial page tables are set up.
 7. The BSP register state is configured and execution begins.
 
@@ -104,6 +102,23 @@ from the DT; no EFI structures or ACPI tables are involved.
 Device tree mode is not supported on x86_64. Passing `--device-tree` on x86
 will result in an error.
 ```
+
+## SMBIOS / DMI Identity
+
+On both architectures the synthesized SMBIOS tables expose a default identity,
+so `/sys/class/dmi/id/*` reads consistently regardless of boot path:
+
+| sysfs file | Default value |
+|------------|---------------|
+| `sys_vendor` | `OpenVMM` |
+| `product_name` | `OpenVMM Virtual Machine` |
+| `product_uuid` | Not exposed unless the VM's BIOS GUID is set |
+
+The `product_uuid` is sourced from the same VM BIOS GUID used by the UEFI boot
+path, so a guest reports the same UUID whether booted via UEFI or direct boot.
+The SMBIOS UUID defaults to the all-zero GUID, which Linux treats as not
+present and therefore does not expose as `product_uuid`. Pass
+`--smbios type=1,uuid=<GUID>` (or `uuid=random`) to set it.
 
 ## CLI Usage
 

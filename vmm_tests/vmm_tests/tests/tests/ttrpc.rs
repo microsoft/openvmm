@@ -340,6 +340,29 @@ async fn test_ttrpc_interface(
             )
         };
 
+        // Exercise SMBIOS identity overrides on iteration 0, where pipette
+        // is available to read back the guest's DMI.
+        let smbios_config = (i == 0).then(|| vmservice::SmbiosConfig {
+            bios: Some(vmservice::smbios_config::Bios {
+                vendor: Some(SMBIOS_BIOS_VENDOR.to_string()),
+                version: Some(SMBIOS_BIOS_VERSION.to_string()),
+                release_date: Some(SMBIOS_BIOS_DATE.to_string()),
+                release: Some(vmservice::smbios_config::bios::Release {
+                    major: SMBIOS_BIOS_RELEASE_MAJOR,
+                    minor: SMBIOS_BIOS_RELEASE_MINOR,
+                }),
+            }),
+            system: Some(vmservice::smbios_config::System {
+                manufacturer: Some(SMBIOS_SYS_MANUFACTURER.to_string()),
+                product_name: Some(SMBIOS_SYS_PRODUCT.to_string()),
+                version: Some(SMBIOS_SYS_VERSION.to_string()),
+                serial_number: Some(SMBIOS_SYS_SERIAL.to_string()),
+                sku_number: Some(SMBIOS_SYS_SKU.to_string()),
+                family: Some(SMBIOS_SYS_FAMILY.to_string()),
+                uuid: Some(SMBIOS_SYS_UUID.to_string()),
+            }),
+        });
+
         client
             .call()
             .start(
@@ -400,6 +423,7 @@ async fn test_ttrpc_interface(
                         hvsocket_config: (i == 0).then(|| vmservice::HvSocketConfig {
                             path: hvsocket_path.to_string_lossy().to_string(),
                         }),
+                        smbios_config,
                         ..Default::default()
                     }),
                     log_id: String::new(),
@@ -559,6 +583,7 @@ async fn test_ttrpc_interface(
                     )
                     .await?;
                     validate_pcie_config(&agent).await?;
+                    validate_smbios(&agent).await?;
                     agent.power_off().await?;
                 }
 
@@ -1075,6 +1100,53 @@ fn file_disk(path: &Path) -> vmservice::DiskBackend {
             direct: false,
         })),
     }
+}
+
+const SMBIOS_BIOS_VENDOR: &str = "Contoso BIOS";
+const SMBIOS_BIOS_VERSION: &str = "1.2.3";
+const SMBIOS_BIOS_DATE: &str = "01/01/2026";
+const SMBIOS_BIOS_RELEASE_MAJOR: u32 = 4;
+const SMBIOS_BIOS_RELEASE_MINOR: u32 = 1;
+const SMBIOS_SYS_MANUFACTURER: &str = "Contoso";
+const SMBIOS_SYS_PRODUCT: &str = "Contoso Virtual Machine";
+const SMBIOS_SYS_VERSION: &str = "9.8.7";
+const SMBIOS_SYS_SERIAL: &str = "SN-0123456789";
+const SMBIOS_SYS_SKU: &str = "SKU-CONTOSO-42";
+const SMBIOS_SYS_FAMILY: &str = "Contoso VM Family";
+const SMBIOS_SYS_UUID: &str = "12345678-9abc-def0-1234-56789abcdef0";
+
+async fn validate_smbios(agent: &pipette_client::PipetteClient) -> anyhow::Result<()> {
+    for (file, expected) in [
+        ("bios_vendor", SMBIOS_BIOS_VENDOR),
+        ("bios_version", SMBIOS_BIOS_VERSION),
+        ("bios_date", SMBIOS_BIOS_DATE),
+        ("sys_vendor", SMBIOS_SYS_MANUFACTURER),
+        ("product_name", SMBIOS_SYS_PRODUCT),
+        ("product_version", SMBIOS_SYS_VERSION),
+        ("product_serial", SMBIOS_SYS_SERIAL),
+        ("product_sku", SMBIOS_SYS_SKU),
+        ("product_family", SMBIOS_SYS_FAMILY),
+        ("product_uuid", SMBIOS_SYS_UUID),
+    ] {
+        let actual = String::from_utf8(agent.read_file(format!("/sys/class/dmi/id/{file}")).await?)
+            .with_context(|| format!("dmi id {file} is not UTF-8"))?;
+        anyhow::ensure!(
+            actual.trim() == expected,
+            "dmi id {file}: expected {expected:?}, got {:?}",
+            actual.trim()
+        );
+    }
+
+    let bios_release = String::from_utf8(agent.read_file("/sys/class/dmi/id/bios_release").await?)
+        .context("dmi id bios_release is not UTF-8")?;
+    let expected = format!("{SMBIOS_BIOS_RELEASE_MAJOR}.{SMBIOS_BIOS_RELEASE_MINOR}");
+    anyhow::ensure!(
+        bios_release.trim() == expected,
+        "dmi id bios_release: expected {expected:?}, got {:?}",
+        bios_release.trim()
+    );
+
+    Ok(())
 }
 
 async fn validate_pcie_config(agent: &pipette_client::PipetteClient) -> anyhow::Result<()> {

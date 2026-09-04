@@ -2736,11 +2736,29 @@ async fn new_underhill_vm(
                 num_lock_enabled: dps.general.num_lock_enabled,
                 smbios: firmware_pcat::config::SmbiosConstants {
                     bios_guid: dps.general.bios_guid,
-                    system_serial_number: dps.smbios.serial_number.clone(),
-                    base_board_serial_number: (dps.smbios).base_board_serial_number.clone(),
-                    chassis_serial_number: (dps.smbios).chassis_serial_number.clone(),
-                    chassis_asset_tag: (dps.smbios).chassis_asset_tag.clone(),
-                    bios_lock_string: dps.smbios.bios_lock_string.clone(),
+                    // Truncate rather than fail: the serial comes from the host
+                    // via DPS, and the PCAT config port caps each string at a
+                    // fixed length regardless.
+                    system_serial_number: {
+                        let mut serial = dps.smbios.serial_number.clone().into_bytes();
+                        if serial.len() > firmware_pcat::config::SMBIOS_STRING_MAX_LEN {
+                            tracing::warn!(
+                                len = serial.len(),
+                                max = firmware_pcat::config::SMBIOS_STRING_MAX_LEN,
+                                "SMBIOS system serial number too long; truncating for PCAT"
+                            );
+                            serial.truncate(firmware_pcat::config::SMBIOS_STRING_MAX_LEN);
+                        }
+                        serial
+                    },
+                    base_board_serial_number: dps
+                        .smbios
+                        .base_board_serial_number
+                        .clone()
+                        .into_bytes(),
+                    chassis_serial_number: dps.smbios.chassis_serial_number.clone().into_bytes(),
+                    chassis_asset_tag: dps.smbios.chassis_asset_tag.clone().into_bytes(),
+                    bios_lock_string: dps.smbios.bios_lock_string.clone().into_bytes(),
                     processor_manufacturer: dps.smbios.processor_manufacturer.clone(),
                     processor_version: dps.smbios.processor_version.clone(),
                     cpu_info_bundle: Some(firmware_pcat::config::SmbiosProcessorInfoBundle {

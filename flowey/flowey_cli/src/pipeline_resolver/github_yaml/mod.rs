@@ -747,6 +747,7 @@ EOF
             .iter()
             .map(|s| github_yaml_defs::Cron {
                 cron: s.cron.clone(),
+                timezone: s.timezone.clone(),
             })
             .collect(),
     };

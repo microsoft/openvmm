@@ -918,6 +918,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_serial: self.enable_serial,
                     isolation: openvmm_defs::config::LinuxIsolationConfig::None,
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    smbios: Default::default(),
                 }
             }
             (
@@ -935,6 +936,7 @@ impl PetriVmConfigSetupCore<'_> {
                     firmware,
                     boot_order: DEFAULT_PCAT_BOOT_ORDER,
                     hibernation_enabled: self.hibernation_enabled,
+                    smbios: Box::new(openvmm_defs::config::SmbiosConfig::default()),
                 }
             }
             (
@@ -974,7 +976,13 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_vpci_boot: *enable_vpci_boot,
                     uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: *default_boot_always_attempt,
-                    bios_guid: Guid::new_random(),
+                    smbios: Box::new(openvmm_defs::config::SmbiosConfig {
+                        system: openvmm_defs::config::SmbiosSystemOverrides {
+                            uuid: Guid::new_random(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
                     enable_vmbus: !self.no_vmbus,
                     force_dma_bounce: *force_dma_bounce,
                     enable_hv: !self.no_hv,
@@ -1209,6 +1217,7 @@ impl PetriVmConfigSetupCore<'_> {
                 }
             },
             force_dma_bounce_enabled: *force_dma_bounce,
+            smbios: Default::default(),
         };
 
         Ok((ged, guest_request_send))

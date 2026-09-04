@@ -2949,6 +2949,7 @@ registers! {
         Cpsr = 0x00020023,
         SpsrEl2 = 0x00021002,
 
+        MpidrEl1 = 0x00040001,
         SctlrEl1 = 0x00040002,
         Ttbr0El1 = 0x00040005,
         Ttbr1El1 = 0x00040006,
