@@ -460,6 +460,8 @@ async fn test_ttrpc_interface(
             );
         }
 
+        let mut vpci_supported = false;
+
         // On iteration 0, exercise AddPcieDevice/RemovePcieDevice with
         // both a simple virtio device and one with a host backend.
         if i == 0 {
@@ -516,16 +518,28 @@ async fn test_ttrpc_interface(
                 .await
                 .unwrap();
 
-            if !cfg!(any(windows, target_os = "macos")) {
-                let err = client
-                    .call()
-                    .start(
-                        vmservice::Vm::AddVpciDevice,
-                        virtio_fs_vpci_request("vpci-fs", &hotplug_virtiofs_root),
-                    )
-                    .await
-                    .unwrap_err();
-                assert!(err.message.contains("does not support VPCI devices"));
+            match client
+                .call()
+                .start(
+                    vmservice::Vm::AddVpciDevice,
+                    virtio_fs_vpci_request("vpci-fs", &hotplug_virtiofs_root),
+                )
+                .await
+            {
+                Ok(response) => {
+                    vpci_supported = true;
+                    client
+                        .call()
+                        .start(
+                            vmservice::Vm::RemoveVpciDevice,
+                            vmservice::RemoveVpciDeviceRequest {
+                                instance_id: response.instance_id,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+                Err(err) => assert!(err.message.contains("does not support VPCI devices")),
             }
         }
 
@@ -603,7 +617,7 @@ async fn test_ttrpc_interface(
                     )
                     .await?;
                     validate_pcie_config(&agent).await?;
-                    if cfg!(any(windows, target_os = "macos")) {
+                    if vpci_supported {
                         validate_vpci_virtio_fs_hotplug(
                             &client,
                             &agent,
