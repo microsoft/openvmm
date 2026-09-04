@@ -861,6 +861,7 @@ async fn assigned_device_smmu_accel_fault_aarch64_tcg(
 /// to be a separate non-SMT configuration from [`smt_topology_aarch64_tcg`].
 ///
 /// The `_aarch64_tcg` name suffix opts this test into the QEMU incubator pass.
+/// TODO: enable this for non-TCG passes (WHP, MSHV) as well, once this is convenient.
 #[openvmm_test(linux_direct_aarch64)]
 async fn mpidr_affinity_rollover_aarch64_tcg(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
