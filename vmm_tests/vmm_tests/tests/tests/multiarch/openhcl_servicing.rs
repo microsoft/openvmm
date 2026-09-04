@@ -1760,19 +1760,38 @@ async fn create_keepalive_test_config_custom(
         .await
 }
 
+async fn configure_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+    cmd!(sh, "ifconfig eth0 up").run().await?;
+    cmd!(sh, "udhcpc -i eth0").run().await?;
+
+    Ok(())
+}
+
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
-/// implementation.
+/// implementation. Also sends one Ping.
 ///
 /// FUTURE: Test traffic on the nic.
 async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
     let sh = agent.unix_shell();
-    cmd!(sh, "ifconfig eth0 up").run().await?;
-    cmd!(sh, "udhcpc eth0").run().await?;
+    let output: String = cmd!(sh, "cat /sys/class/net/eth0/carrier").read().await?;
+    assert!(
+        output.trim() == "1",
+        "eth0 carrier link not detected: {}",
+        output
+    );
+    let output: String = cmd!(sh, "cat /sys/class/net/eth0/operstate").read().await?;
+    assert!(
+        output.trim() == "up",
+        "eth0 operstate is not up: {}",
+        output
+    );
     let output = cmd!(sh, "ifconfig eth0").read().await?;
     // Validate that we see a mana nic with the expected MAC address and IPs.
     assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
     assert!(output.contains("inet addr:10.0.0.2"));
     assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
+    cmd!(sh, "ping -c 1 -W 5 -I eth0 10.0.0.1").run().await?;
 
     Ok(())
 }
@@ -1785,13 +1804,18 @@ async fn mana_nic_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    let flags = config.default_servicing_flags();
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    flags.enable_nvme_keepalive = false;
+    flags.enable_mana_keepalive = false;
+
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
         .run()
         .await?;
 
+    configure_mana_nic(&agent).await?;
     validate_mana_nic(&agent).await?;
 
     vm.restart_openhcl(igvm_file, flags).await?;
@@ -1803,33 +1827,33 @@ async fn mana_nic_servicing(
 
     Ok(())
 }
+
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
-/// nic is still functional.
+/// the MANA emulator), and vmbus relay. Perform servicing with VF keepalive
+/// and validate that the nic is still functional.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn mana_nic_servicing_keepalive(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    let default_flags = config.default_servicing_flags();
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    // When { VF KA: false, NVME KA : true }, `validate_restore` fails.
+    // The default value of both is true.
+    // TODO: Should OpenHCL support that scenario?
+    flags.enable_nvme_keepalive = true;
+    flags.enable_mana_keepalive = true;
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .run()
         .await?;
 
+    configure_mana_nic(&agent).await?;
     validate_mana_nic(&agent).await?;
 
-    vm.restart_openhcl(
-        igvm_file,
-        OpenHclServicingFlags {
-            enable_mana_keepalive: true,
-            ..default_flags
-        },
-    )
-    .await?;
+    vm.restart_openhcl(igvm_file, flags).await?;
 
     validate_mana_nic(&agent).await?;
 
