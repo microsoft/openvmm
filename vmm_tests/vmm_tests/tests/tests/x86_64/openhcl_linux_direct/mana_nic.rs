@@ -10,35 +10,39 @@ use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
 use vmm_test_macros::openvmm_test;
 
-/// Validates that the nic can get an IP address via consomme's DHCP implementation.
+/// Get an IP address via consomme's DHCP implementation.
+async fn configure_mana_nic(agent: &PipetteClient, interface: &str) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+    cmd!(sh, "ifconfig {interface} up").run().await?;
+    cmd!(sh, "udhcpc -i {interface}").run().await?;
+
+    Ok(())
+}
+
 /// Validates ICMP by testing that the nic can ping consomme's IP address.
 ///
 /// FUTURE: TCP / UDP traffic?
-async fn validate_mana_nic(
-    agent: &PipetteClient,
-    has_vtl0_mana_vf: bool,
-) -> Result<(), anyhow::Error> {
+async fn validate_mana_nic(agent: &PipetteClient, interface: &str) -> Result<(), anyhow::Error> {
     let sh = agent.unix_shell();
-    let interface = if has_vtl0_mana_vf { "eth1" } else { "eth0" };
-    cmd!(sh, "ifconfig {interface} up").run().await?;
-    cmd!(sh, "udhcpc -i {interface}").run().await?;
     let output = cmd!(sh, "ifconfig {interface}").read().await?;
     // Validate that we see a mana nic with the expected MAC address and IPs.
     assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
     assert!(output.contains("inet addr:10.0.0.2"));
-    if has_vtl0_mana_vf {
-        let vf_output = cmd!(sh, "ifconfig eth0").read().await?;
-        assert!(vf_output.contains("HWaddr 00:15:5D:12:12:12"));
-        let vf_master = cmd!(sh, "readlink /sys/class/net/eth0/master")
-            .read()
-            .await?;
-        assert_eq!(vf_master.rsplit('/').next(), Some("eth1"));
-    } else {
-        assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
-    }
     cmd!(sh, "ping -c 1 -W 5 -I {interface} 10.0.0.1")
         .run()
         .await?;
+
+    Ok(())
+}
+
+async fn validate_vtl0_mana_vf(agent: &PipetteClient) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+    let vf_output = cmd!(sh, "ifconfig eth0").read().await?;
+    assert!(vf_output.contains("HWaddr 00:15:5D:12:12:12"));
+    let vf_master = cmd!(sh, "readlink /sys/class/net/eth0/master")
+        .read()
+        .await?;
+    assert_eq!(vf_master.rsplit('/').next(), Some("eth1"));
 
     Ok(())
 }
@@ -53,7 +57,8 @@ async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), any
         .run()
         .await?;
 
-    validate_mana_nic(&agent, false).await?;
+    configure_mana_nic(&agent, "eth0").await?;
+    validate_mana_nic(&agent, "eth0").await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -73,7 +78,8 @@ async fn mana_nic_shared_pool(
         .run()
         .await?;
 
-    validate_mana_nic(&agent, false).await?;
+    configure_mana_nic(&agent, "eth0").await?;
+    validate_mana_nic(&agent, "eth0").await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -91,7 +97,9 @@ async fn mana_nic_with_vtl0_vf(
         .modify_backend(move |b| b.with_nic_test_control(mana_config));
 
     let (vm, agent) = config.run().await?;
-    validate_mana_nic(&agent, true).await?;
+    configure_mana_nic(&agent, "eth1").await?;
+    validate_mana_nic(&agent, "eth1").await?;
+    validate_vtl0_mana_vf(&agent).await?;
 
     mana.shutdown().await?;
     agent.power_off().await?;
@@ -110,7 +118,9 @@ async fn mana_nic_unbind_mana_driver(
         .modify_backend(move |b| b.with_nic_test_control(mana_config));
 
     let (vm, agent) = config.run().await?;
-    validate_mana_nic(&agent, true).await?;
+    configure_mana_nic(&agent, "eth1").await?;
+    validate_mana_nic(&agent, "eth1").await?;
+    validate_vtl0_mana_vf(&agent).await?;
 
     let sh = agent.unix_shell();
     cmd!(sh, "sh")
@@ -140,7 +150,9 @@ async fn mana_nic_vf_reconfig(
 
     let (vm, agent) = config.run().await?;
 
-    validate_mana_nic(&agent, true).await?;
+    configure_mana_nic(&agent, "eth1").await?;
+    validate_mana_nic(&agent, "eth1").await?;
+    validate_vtl0_mana_vf(&agent).await?;
 
     let sh = agent.unix_shell();
 
@@ -151,7 +163,8 @@ async fn mana_nic_vf_reconfig(
     )
     .run()
     .await?;
-    validate_mana_nic(&agent, true).await?;
+    validate_mana_nic(&agent, "eth1").await?;
+    validate_vtl0_mana_vf(&agent).await?;
 
     mana.shutdown().await?;
     agent.power_off().await?;
@@ -187,7 +200,9 @@ async fn mana_nic_vport_link_state(
         .modify_backend(move |b| b.with_nic_test_control(mana_config));
 
     let (vm, agent) = config.run().await?;
-    validate_mana_nic(&agent, true).await?;
+    configure_mana_nic(&agent, "eth1").await?;
+    validate_mana_nic(&agent, "eth1").await?;
+    validate_vtl0_mana_vf(&agent).await?;
 
     let sh = agent.unix_shell();
     mana.set_vport_link_state(0, false).await?;
@@ -205,7 +220,8 @@ async fn mana_nic_vport_link_state(
     )
     .run()
     .await?;
-    validate_mana_nic(&agent, true).await?;
+    validate_mana_nic(&agent, "eth1").await?;
+    validate_vtl0_mana_vf(&agent).await?;
 
     mana.shutdown().await?;
     agent.power_off().await?;
