@@ -132,6 +132,13 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
 
+        vmfd.set_partition_property(
+            HvPartitionPropertyCode::UnimplementedMsrAction.0,
+            mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
+                as u64,
+        )
+        .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+
         if snp {
             let snp_policy = mshv_bindings::snp::get_default_snp_guest_policy();
             let vmgexit_offloads = snp_vmgexit_offloads(self.snp_disable_cpuid_offload);
@@ -144,11 +151,6 @@ impl virt::Hypervisor for LinuxMshv {
                 (
                     HvPartitionPropertyCode::SevVmgexitOffloads,
                     vmgexit_offloads,
-                ),
-                (
-                    HvPartitionPropertyCode::UnimplementedMsrAction,
-                    mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
-                        as u64,
                 ),
                 (HvPartitionPropertyCode::TimeFreeze, 1),
             ] {
