@@ -30,6 +30,8 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
+#[cfg(windows)]
+use std::{fs::OpenOptions, io};
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
@@ -77,8 +79,14 @@ async fn test_ttrpc_interface(
         petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
     };
 
-    let (mut child, client, _stderr_task) =
-        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        &params,
+        &openvmm,
+        RpcEndpoint::Unix(&socket_path),
+        &pidfile_path,
+    )
+    .await?;
 
     let query_props = || {
         client.call().start(
@@ -659,6 +667,66 @@ async fn test_ttrpc_interface(
         "pidfile should be removed after exit"
     );
 
+    #[cfg(windows)]
+    test_ttrpc_named_pipe(&driver, &params, &openvmm).await?;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn test_ttrpc_named_pipe(
+    driver: &DefaultDriver,
+    params: &petri::PetriTestParams<'_>,
+    openvmm: &ResolvedArtifact,
+) -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let pipe_name = format!(r"\\.\pipe\openvmm-ttrpc-{}", Guid::new_random());
+    let pidfile_path = tempdir.path().join("openvmm.pid");
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        driver,
+        params,
+        openvmm,
+        RpcEndpoint::Pipe(&pipe_name),
+        &pidfile_path,
+    )
+    .await?;
+
+    let capabilities = client
+        .call()
+        .start(vmservice::Vm::CapabilitiesVm, ())
+        .await
+        .map_err(|err| anyhow::anyhow!("CapabilitiesVm over named pipe: {err:?}"))?;
+    assert!(
+        !capabilities.supported_resources.is_empty(),
+        "named-pipe RPC server returned no supported resources"
+    );
+
+    let properties = client
+        .call()
+        .start(
+            vmservice::Vm::PropertiesVm,
+            vmservice::PropertiesVmRequest { types: Vec::new() },
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("PropertiesVm over named pipe: {err:?}"))?;
+    assert_eq!(
+        properties.state,
+        vmservice::VmState::Uninitialized as i32,
+        "named-pipe RPC server should begin uninitialized"
+    );
+
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+    let exit_status = child.wait().await?;
+    assert!(
+        exit_status.success(),
+        "openvmm named-pipe RPC server exited abnormally: {:?}",
+        exit_status
+    );
+    assert!(
+        !pidfile_path.exists(),
+        "named-pipe RPC server pidfile should be removed after exit"
+    );
+
     Ok(())
 }
 
@@ -702,8 +770,14 @@ async fn test_ttrpc_uefi_boot(
     let pidfile_path = tempdir.path().join("openvmm.pid");
     let com1_path = tempdir.path().join("com1.sock");
 
-    let (mut child, client, _stderr_task) =
-        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        &params,
+        &openvmm,
+        RpcEndpoint::Unix(&socket_path),
+        &pidfile_path,
+    )
+    .await?;
 
     client
             .call()
@@ -934,7 +1008,13 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
-/// Spawns `openvmm --rpc path=<socket_path>,transport=ttrpc --pidfile
+enum RpcEndpoint<'a> {
+    Unix(&'a Path),
+    #[cfg(windows)]
+    Pipe(&'a str),
+}
+
+/// Spawns `openvmm --rpc path=<endpoint>,transport=ttrpc --pidfile
 /// <pidfile_path>`, waits for it to signal readiness (by closing stdout),
 /// validates the pidfile, and connects a ttrpc client.
 ///
@@ -944,16 +1024,21 @@ async fn launch_openvmm(
     driver: &DefaultDriver,
     params: &petri::PetriTestParams<'_>,
     openvmm: &ResolvedArtifact,
-    socket_path: &Path,
+    endpoint: RpcEndpoint<'_>,
     pidfile_path: &Path,
 ) -> anyhow::Result<(OpenvmmChild, mesh_rpc::Client, Task<anyhow::Result<()>>)> {
-    tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
+    let rpc_arg = match endpoint {
+        RpcEndpoint::Unix(path) => format!("path={},transport=ttrpc", path.display()),
+        #[cfg(windows)]
+        RpcEndpoint::Pipe(path) => format!("path={path},listener=pipe,transport=ttrpc"),
+    };
+    tracing::info!(rpc = %rpc_arg, "launching OpenVMM with ttrpc");
 
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
     let (stdout_read, stdout_write) = pal::pipe_pair()?;
     let child = std::process::Command::new(openvmm)
         .arg("--rpc")
-        .arg(format!("path={},transport=ttrpc", socket_path.display()))
+        .arg(rpc_arg)
         .arg("--pidfile")
         .arg(pidfile_path)
         .stdin(Stdio::null())
@@ -1015,12 +1100,44 @@ async fn launch_openvmm(
         "pidfile should contain the child PID"
     );
 
-    let client = mesh_rpc::Client::new(
-        driver,
-        mesh_rpc::client::UnixDialier::new(driver.clone(), socket_path.to_path_buf()),
-    );
+    let client = match endpoint {
+        RpcEndpoint::Unix(path) => mesh_rpc::Client::new(
+            driver,
+            mesh_rpc::client::UnixDialier::new(driver.clone(), path.to_path_buf()),
+        ),
+        #[cfg(windows)]
+        RpcEndpoint::Pipe(path) => {
+            mesh_rpc::Client::new(driver, NamedPipeDialer::new(driver.clone(), path))
+        }
+    };
 
     Ok((child, client, stderr_task))
+}
+
+#[cfg(windows)]
+struct NamedPipeDialer {
+    driver: DefaultDriver,
+    path: String,
+}
+
+#[cfg(windows)]
+impl NamedPipeDialer {
+    fn new(driver: DefaultDriver, path: impl Into<String>) -> Self {
+        Self {
+            driver,
+            path: path.into(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl mesh_rpc::client::Dial for NamedPipeDialer {
+    type Stream = PolledPipe;
+
+    async fn dial(&mut self) -> io::Result<Self::Stream> {
+        let pipe = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        PolledPipe::new(&self.driver, pipe)
+    }
 }
 
 /// Owns the OpenVMM process launched by [`launch_openvmm`], killing it on drop.
