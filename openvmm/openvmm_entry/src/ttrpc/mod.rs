@@ -672,6 +672,14 @@ impl VmService {
                 let r = self.remove_pcie_device(request);
                 self.start_rpc(response, r);
             }
+            vmservice::Vm::AddVpciDevice(request, response) => {
+                let r = self.add_vpci_device(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::RemoveVpciDevice(request, response) => {
+                let r = self.remove_vpci_device(request);
+                self.start_rpc(response, r);
+            }
         }
         HandleAction::None
     }
@@ -1324,7 +1332,7 @@ impl VmService {
         let registry = self.registry.clone();
         Ok(async move {
             let vmservice::AddPcieDeviceRequest { port_name, device } = request;
-            let resource = build_pcie_device(device.context("missing device")?, &registry).await?;
+            let resource = build_pci_device(device.context("missing device")?, &registry).await?;
             worker_rpc
                 .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
                 .await
@@ -1342,6 +1350,51 @@ impl VmService {
             .context("VM not created yet")?
             .worker_rpc
             .call_failable(VmRpc::RemovePcieDevice, request.port_name);
+        Ok(async move { recv.await.map_err(anyhow::Error::from) })
+    }
+
+    fn add_vpci_device(
+        &self,
+        request: vmservice::AddVpciDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let worker_rpc = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .clone();
+        let registry = self.registry.clone();
+        Ok(async move {
+            let instance_id = request
+                .instance_id
+                .parse()
+                .context("invalid VPCI instance ID")?;
+            let resource =
+                build_pci_device(request.device.context("missing device")?, &registry).await?;
+            worker_rpc
+                .call_failable(
+                    VmRpc::AddVpciDevice,
+                    (DeviceVtl::Vtl0, instance_id, resource),
+                )
+                .await
+                .map_err(anyhow::Error::from)
+        })
+    }
+
+    fn remove_vpci_device(
+        &self,
+        request: vmservice::RemoveVpciDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let instance_id = request
+            .instance_id
+            .parse()
+            .context("invalid VPCI instance ID")?;
+        let recv = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .call_failable(VmRpc::RemoveVpciDevice, instance_id);
         Ok(async move { recv.await.map_err(anyhow::Error::from) })
     }
 
@@ -1801,7 +1854,7 @@ async fn build_pcie_topology(
 
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
-        let resource = build_pcie_device(device, registry).await?;
+        let resource = build_pci_device(device, registry).await?;
         devices.push(PcieDeviceConfig {
             port_name,
             resource,
@@ -1883,7 +1936,7 @@ fn walk_pcie_attachment(
 
 /// Builds the resource for a single endpoint PCIe device function (a virtio
 /// function, an NVMe controller, or a VFIO-assigned host device).
-async fn build_pcie_device(
+async fn build_pci_device(
     device: vmservice::PcieDeviceKind,
     registry: &FdRegistry,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
@@ -2062,6 +2115,34 @@ async fn build_virtio_device(
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
+        Kind::Fs(vmservice::VirtioFs { tag, root_path }) => {
+            const VIRTIO_FS_TAG_LEN: usize = 36;
+            anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
+            anyhow::ensure!(
+                !tag.contains('\0'),
+                "virtio-fs tag must not contain NUL bytes"
+            );
+            anyhow::ensure!(
+                tag.len() <= VIRTIO_FS_TAG_LEN,
+                "virtio-fs tag exceeds the {VIRTIO_FS_TAG_LEN}-byte protocol limit"
+            );
+            anyhow::ensure!(
+                !root_path.is_empty(),
+                "virtio-fs root path must not be empty"
+            );
+            anyhow::ensure!(
+                !root_path.contains('\0'),
+                "virtio-fs root path must not contain NUL bytes"
+            );
+            virtio_resources::fs::VirtioFsHandle {
+                tag,
+                fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+                    root_path,
+                    mount_options: String::new(),
+                },
+            }
+            .into_resource()
+        }
     })
 }
 
