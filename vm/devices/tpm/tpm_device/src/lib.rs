@@ -2085,6 +2085,12 @@ mod save_restore {
             let saved_version = version.unwrap_or(state::SavedTpmVersion::V138);
             let configured_version = self.tpm_engine_helper.tpm_engine.version();
             if saved_version != state::SavedTpmVersion::from(configured_version) {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    saved_version = ?saved_version,
+                    configured_version = ?configured_version,
+                    "Saved TPM version does not match configured TPM version"
+                );
                 return Err(RestoreError::Other(
                     TpmRestoreError::VersionMismatch {
                         saved: saved_version,
