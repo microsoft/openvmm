@@ -879,14 +879,14 @@ options:
     #[clap(long, value_name = "SOCKETPATH", conflicts_with("ttrpc"))]
     pub grpc: Option<PathBuf>,
 
-    /// run as an RPC server on the specified Unix socket
+    /// run as an RPC server on the specified Unix socket or Windows named pipe
     #[clap(long_help = r#"
-Run as an RPC server on the specified Unix socket.
+Run as an RPC server on the specified Unix socket or Windows named pipe.
 
 syntax: path=<PATH>[,transport=<TRANSPORT>]
 
 options:
-    `path=<PATH>`                  Unix socket path to listen on (required)
+    `path=<PATH>`                  socket path or named pipe name (required)
     `transport=<TRANSPORT>`        wire transport to accept (default: auto)
 
 valid transports:
@@ -897,6 +897,7 @@ valid transports:
 Examples:
     --rpc path=/tmp/openvmm.sock
     --rpc path=/tmp/openvmm.sock,transport=ttrpc
+    --rpc path=\\.\pipe\openvmm
 "#)]
     #[clap(
         long,
@@ -2214,7 +2215,7 @@ pub enum RpcTransportCli {
 /// RPC server configuration parsed from `--rpc`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcCli {
-    /// Unix socket path to listen on.
+    /// Socket path or named pipe name to listen on.
     pub path: PathBuf,
     /// Wire transport to accept.
     pub transport: RpcTransportCli,
@@ -3794,11 +3795,15 @@ mod tests {
             assert_eq!(rpc.transport, transport);
         }
 
+        let rpc = RpcCli::from_str(r"path=\\.\pipe\openvmm").unwrap();
+        assert_eq!(rpc.path, Path::new(r"\\.\pipe\openvmm"));
+
         // errors
         assert!(RpcCli::from_str("").is_err());
         assert!(RpcCli::from_str("transport=ttrpc").is_err());
         assert!(RpcCli::from_str("path=").is_err());
         assert!(RpcCli::from_str("path=/tmp/s.sock,transport=bogus").is_err());
+        assert!(RpcCli::from_str("path=/tmp/s.sock,listener=unix").is_err());
         assert!(RpcCli::from_str("path=/tmp/s.sock,bogus=1").is_err());
         assert!(RpcCli::from_str("path=/a,path=/b").is_err());
     }

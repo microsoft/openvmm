@@ -30,6 +30,8 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
+#[cfg(windows)]
+use std::{fs::OpenOptions, io};
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
@@ -53,11 +55,37 @@ async fn test_ttrpc_interface(
     driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
 ) -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let endpoint_paths = [
+        tempdir.path().join("ttrpc.sock"),
+        #[cfg(windows)]
+        format!(r"\\.\PIPE\openvmm-ttrpc-{}", Guid::new_random()).into(),
+    ];
+
+    for endpoint_path in &endpoint_paths {
+        test_ttrpc_interface_inner(
+            &params,
+            driver.clone(),
+            [&openvmm, &kernel_path, &initrd_path, &pipette_path],
+            &tempdir,
+            endpoint_path,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn test_ttrpc_interface_inner(
+    params: &petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    [openvmm, kernel_path, initrd_path, pipette_path]: [&ResolvedArtifact; 4],
+    tempdir: &tempfile::TempDir,
+    endpoint_path: &Path,
+) -> anyhow::Result<()> {
     // All temporary files for this test live under a single temp directory
     // that is cleaned up automatically when it is dropped at the end of the
     // test.
-    let tempdir = tempfile::tempdir()?;
-    let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
 
     let initrd = std::fs::read(initrd_path.get()).context("failed to read test initrd")?;
@@ -78,7 +106,7 @@ async fn test_ttrpc_interface(
     };
 
     let (mut child, client, _stderr_task) =
-        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+        launch_openvmm(&driver, params, openvmm, endpoint_path, &pidfile_path).await?;
 
     let query_props = || {
         client.call().start(
@@ -959,7 +987,7 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
-/// Spawns `openvmm --rpc path=<socket_path>,transport=ttrpc --pidfile
+/// Spawns `openvmm --rpc path=<endpoint>,transport=ttrpc --pidfile
 /// <pidfile_path>`, waits for it to signal readiness (by closing stdout),
 /// validates the pidfile, and connects a ttrpc client.
 ///
@@ -969,16 +997,17 @@ async fn launch_openvmm(
     driver: &DefaultDriver,
     params: &petri::PetriTestParams<'_>,
     openvmm: &ResolvedArtifact,
-    socket_path: &Path,
+    endpoint_path: &Path,
     pidfile_path: &Path,
 ) -> anyhow::Result<(OpenvmmChild, mesh_rpc::Client, Task<anyhow::Result<()>>)> {
-    tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
+    let rpc_arg = format!("path={},transport=ttrpc", endpoint_path.display());
+    tracing::info!(rpc = %rpc_arg, "launching OpenVMM with ttrpc");
 
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
     let (stdout_read, stdout_write) = pal::pipe_pair()?;
     let child = std::process::Command::new(openvmm)
         .arg("--rpc")
-        .arg(format!("path={},transport=ttrpc", socket_path.display()))
+        .arg(rpc_arg)
         .arg("--pidfile")
         .arg(pidfile_path)
         .stdin(Stdio::null())
@@ -1040,12 +1069,51 @@ async fn launch_openvmm(
         "pidfile should contain the child PID"
     );
 
+    #[cfg(windows)]
+    let client = if mesh_rpc::is_named_pipe_path(endpoint_path) {
+        mesh_rpc::Client::new(
+            driver,
+            NamedPipeDialer::new(driver.clone(), endpoint_path.to_string_lossy()),
+        )
+    } else {
+        mesh_rpc::Client::new(
+            driver,
+            mesh_rpc::client::UnixDialer::new(driver.clone(), endpoint_path.to_path_buf()),
+        )
+    };
+    #[cfg(not(windows))]
     let client = mesh_rpc::Client::new(
         driver,
-        mesh_rpc::client::UnixDialier::new(driver.clone(), socket_path.to_path_buf()),
+        mesh_rpc::client::UnixDialer::new(driver.clone(), endpoint_path.to_path_buf()),
     );
 
     Ok((child, client, stderr_task))
+}
+
+#[cfg(windows)]
+struct NamedPipeDialer {
+    driver: DefaultDriver,
+    path: String,
+}
+
+#[cfg(windows)]
+impl NamedPipeDialer {
+    fn new(driver: DefaultDriver, path: impl Into<String>) -> Self {
+        Self {
+            driver,
+            path: path.into(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl mesh_rpc::client::Dial for NamedPipeDialer {
+    type Stream = PolledPipe;
+
+    async fn dial(&mut self) -> io::Result<Self::Stream> {
+        let pipe = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        PolledPipe::new(&self.driver, pipe)
+    }
 }
 
 /// Owns the OpenVMM process launched by [`launch_openvmm`], killing it on drop.

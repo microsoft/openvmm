@@ -19,6 +19,7 @@ use crate::service::GenericRpc;
 use crate::service::ServiceRpc;
 use crate::service::ServiceRpcError;
 use crate::service::Status;
+use futures::AsyncReadExt;
 use futures::FutureExt;
 use futures::Stream;
 use futures::StreamExt;
@@ -164,7 +165,7 @@ impl Server {
     /// prefix byte.
     pub async fn serve_connection(
         &self,
-        stream: PolledSocket<impl AsSockRef + Read + Write>,
+        stream: impl futures::AsyncRead + futures::AsyncWrite + Unpin,
     ) -> anyhow::Result<()> {
         let (mut reader, mut writer) = stream.split();
         let (stream_send, mut stream_recv) = mesh::channel();
@@ -297,7 +298,7 @@ mod grpc {
     use crate::service::GenericRpc;
     use crate::service::Status;
     use anyhow::Context as _;
-    use futures::AsyncRead as _;
+    use futures::AsyncRead;
     use futures::AsyncWrite;
     use futures::FutureExt;
     use futures::StreamExt;
@@ -308,12 +309,9 @@ mod grpc {
     use http::HeaderValue;
     use mesh::CancelContext;
     use pal_async::driver::Driver;
-    use pal_async::socket::AsSockRef;
     use pal_async::socket::Listener;
     use pal_async::socket::PolledSocket;
     use prost::bytes::Bytes;
-    use std::io::Read;
-    use std::io::Write;
     use std::pin::Pin;
     use std::task::ready;
     use thiserror::Error;
@@ -377,11 +375,11 @@ mod grpc {
         /// prefix byte.
         pub async fn serve_connection_grpc(
             &self,
-            stream: PolledSocket<impl AsSockRef + Read + Write>,
+            stream: impl AsyncRead + AsyncWrite + Unpin,
         ) -> anyhow::Result<()> {
             struct Wrap<T>(T);
 
-            impl<T: AsSockRef + Read> tokio::io::AsyncRead for Wrap<PolledSocket<T>> {
+            impl<T: AsyncRead + Unpin> tokio::io::AsyncRead for Wrap<T> {
                 fn poll_read(
                     self: Pin<&mut Self>,
                     cx: &mut std::task::Context<'_>,
@@ -395,7 +393,7 @@ mod grpc {
                 }
             }
 
-            impl<T: AsSockRef + Write> tokio::io::AsyncWrite for Wrap<PolledSocket<T>> {
+            impl<T: AsyncWrite + Unpin> tokio::io::AsyncWrite for Wrap<T> {
                 fn poll_write(
                     self: Pin<&mut Self>,
                     cx: &mut std::task::Context<'_>,
