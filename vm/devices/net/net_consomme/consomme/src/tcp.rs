@@ -969,14 +969,11 @@ impl<T: Client> Access<'_, T> {
                 }
                 Err(_) => false,
             });
-        let timer_expired = self.inner.tcp.timer_deadline.is_some_and(|deadline| {
-            self.inner
-                .tcp
-                .timer
-                .get_or_insert_with(|| TcpTimer::new(self.client.driver()))
-                .poll_until(cx, deadline)
-                .is_ready()
-        });
+        let timer_expired = self
+            .inner
+            .tcp
+            .timer_deadline
+            .is_some_and(|deadline| deadline <= TimerInstant::now());
         let mut next_deadline = if timer_expired {
             None
         } else {
@@ -1069,8 +1066,8 @@ impl<T: Client> Access<'_, T> {
                 state,
                 client: self.client,
             };
-            let now = TimerInstant::now();
             let timed_out = conn.inner.next_timer_deadline().is_some_and(|deadline| {
+                let now = TimerInstant::now();
                 deadline <= now && conn.inner.process_expired_timers(now, &mut sender)
             });
             let keep = if timed_out {
