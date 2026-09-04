@@ -120,6 +120,7 @@ vpci_relay.workspace = true
 watchdog_core.workspace = true
 watchdog_vmgs_format.workspace = true
 scsi_buffers.workspace = true
+
 acpi_spec = { workspace = true, features = ["std"] }
 hvdef.workspace = true
 igvm.workspace = true

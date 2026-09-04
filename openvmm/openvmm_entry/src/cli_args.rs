@@ -308,14 +308,13 @@ Examples:
 
 Syntax: type=N,key=value[,key=value...]
 
-`type` selects the SMBIOS structure and is required (matching QEMU's
-`-smbios`; there is no default). Key names follow QEMU's `-smbios`
-convention. Unset keys use the loader's built-in default identity. Repeat
---smbios to set fields across multiple structure types.
+`type` selects the SMBIOS structure and is required; there is no default.
+Unset keys use the loader's built-in default identity. Repeat --smbios to set
+fields across multiple structure types.
 
-Linux direct boot supports all listed fields. UEFI boot supports Type 1
-fields only. PCAT boot supports only Type 1 `serial` and `uuid`. Unsupported
-fields are rejected with an error.
+OpenVMM Linux direct boot supports all listed fields. OpenHCL Linux direct
+boot and UEFI boot support Type 1 fields only. PCAT boot supports only Type 1
+`serial` and `uuid`. Unsupported fields are rejected with an error.
 
 Type 0 (BIOS Information):
     vendor=<STRING>          BIOS vendor
@@ -1691,7 +1690,7 @@ fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
 }
 
 /// A parsed SMBIOS `release=MAJOR.MINOR` value: exactly two `u8` components
-/// separated by a dot, matching QEMU's `sscanf("%hhu.%hhu")`.
+/// separated by a dot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmbiosRelease(pub u8, pub u8);
 
@@ -1855,10 +1854,10 @@ fn merge_smbios_field<T>(
 
 /// Parse a single `--smbios` argument: `type=N,key=value[,key=value...]`.
 ///
-/// Matches QEMU's `-smbios` syntax: `type=N` is required (there is no default)
-/// and selects the key namespace; the remaining `key=value` pairs are parsed by
-/// the matching per-type `KeyValueArgs` struct. Unknown types and unknown keys
-/// are hard errors (no silent drop).
+/// `type=N` is required (there is no default) and selects the key namespace;
+/// the remaining `key=value` pairs are parsed by the matching per-type
+/// `KeyValueArgs` struct. Unknown types and unknown keys are hard errors (no
+/// silent drop).
 fn parse_smbios(s: &str) -> anyhow::Result<SmbiosCli> {
     let mut typ: Option<u8> = None;
     let mut rest = Vec::new();
@@ -5139,7 +5138,7 @@ mod tests {
 
     #[test]
     fn test_smbios_requires_type() {
-        // Matching QEMU, `type=` is mandatory — there is no default.
+        // `type=` is mandatory; there is no default.
         assert!(parse_smbios("manufacturer=Contoso,family=Foo").is_err());
     }
 
@@ -5201,7 +5200,7 @@ mod tests {
             Some(SmbiosRelease(255, 0))
         );
         // Missing the dot, extra components, out-of-range, and non-numeric all
-        // error (matching QEMU's strict two-`u8` parse).
+        // error.
         assert!(parse_smbios("type=0,release=4").is_err());
         assert!(parse_smbios("type=0,release=4.1.0").is_err());
         assert!(parse_smbios("type=0,release=256.0").is_err());

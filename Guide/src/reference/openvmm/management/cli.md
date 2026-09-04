@@ -184,44 +184,18 @@ describes the source definitions.
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
   `file=<PATH>`.
 * `--smbios <PARAMS>`: Override the SMBIOS (DMI) identity reported to the
-  guest (repeatable). Uses the format
-  `type=N,key=value[,key=value...]`, following QEMU's `-smbios` syntax and
-  key names. As with QEMU, `type=N` is required (there is no default). Keys
-  left unset use the selected boot path's built-in default identity — for
-  example, the OpenVMM direct loader defaults to `OpenVMM` / `OpenVMM Virtual
-  Machine`, OpenHCL direct boot to `OpenHCL` / `OpenHCL Virtual Machine`, and
-  firmware-backed (UEFI/PCAT) paths keep their own built-in defaults. The
-  system UUID defaults to the all-zero GUID unless overridden with
-  `uuid=<GUID>`; `uuid=random` requests a freshly generated per-VM GUID.
-  Unknown types and unknown keys are rejected.
+  guest (repeatable), using `type=N,key=value[,key=value...]`.
+  Type 0 supports `vendor`, `version`, `date`, and `release`; Type 1 supports
+  `manufacturer`, `product`, `version`, `serial`, `uuid`, `sku`, and `family`.
+  Use `uuid=random` to generate a per-VM system UUID.
 
-  Applies to Linux direct, UEFI, and PCAT boot. On UEFI boot the firmware
-  builds the SMBIOS tables, so only `type=1` (System) fields can be
-  overridden — the firmware self-describes the BIOS, so setting any `type=0`
-  (BIOS) field is rejected with an error rather than silently ignored. On
-  PCAT boot, only the `type=1` `serial` and `uuid` fields can be overridden;
-  all other fields are rejected with an error.
-
-  Supported keys:
-
-  | `type` | Keys | Linux `/sys/class/dmi/id/` |
-  | --- | --- | --- |
-  | `0` (BIOS) | `vendor`, `version`, `date`, `release` | `bios_vendor`, `bios_version`, `bios_date`, `bios_release` |
-  | `1` (System) | `manufacturer`, `product`, `version`, `serial`, `uuid`, `sku`, `family` | `sys_vendor`, `product_name`, `product_version`, `product_serial`, `product_uuid`, `product_sku`, `product_family` |
-
-  `version` is the free-form BIOS version string, whereas `release` is the
-  numeric System BIOS Major/Minor Release, given as `MAJOR.MINOR` (each a
-  number in `0..=255`, e.g. `release=4.1`), matching QEMU.
+  OpenVMM Linux direct boot supports both types. OpenHCL Linux direct and UEFI
+  support Type 1 only. PCAT supports only Type 1 `serial` and `uuid`.
+  Unsupported fields are rejected.
 
   ```bash
   --smbios type=1,manufacturer=Contoso,product="Virtual Machine"
-  --smbios type=1,uuid=12345678-9abc-def0-1234-56789abcdef0
-  --smbios type=1,uuid=random
-  --smbios type=1,manufacturer=Contoso --smbios type=0,vendor=Contoso,version=1.0,release=4.1
   ```
-
-  See [Linux Direct Boot](../../devices/firmware/linux_direct.md) for how the
-  tables are delivered to the guest.
 * `--pidfile <PATH>`: Write the process ID to the specified file on startup,
   and remove it on clean exit. If the process is killed with `SIGKILL` or
   crashes, the pidfile is not removed — consumers should verify the PID is

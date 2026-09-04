@@ -110,19 +110,12 @@ fn complete_snp_direct_ram_imports(
 /// Merges the owned SMBIOS override config into the borrowed table view the
 /// builder consumes, substituting the `loader` crate's default strings for any
 /// unset (`None`) override.
-///
-/// This merge lives here in `openvmm_core` because it is the only crate that
-/// sees both the `loader` crate's default string constants and `openvmm_defs`'
-/// override config — `openvmm_defs` deliberately does not duplicate the default
-/// literals, and `loader` does not depend on `openvmm_defs`.
 fn smbios_tables_from_config(
     config: &openvmm_defs::config::SmbiosConfig,
 ) -> loader::smbios::SmbiosTables<'_> {
     use loader::smbios;
 
-    // Destructure fully so that adding a field to `SmbiosConfig` (or either of
-    // its per-type override sub-structs) is a compile error here until it is
-    // wired into the table view, rather than being silently dropped.
+    // Destructure fully so new fields must be wired into the table view.
     let openvmm_defs::config::SmbiosConfig { bios, system } = config;
     let openvmm_defs::config::SmbiosBiosOverrides {
         vendor,
