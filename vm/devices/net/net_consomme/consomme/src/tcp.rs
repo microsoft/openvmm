@@ -102,6 +102,7 @@ struct ReadyList {
 struct ReadyInner {
     queue: VecDeque<FourTuple>,
     queued: HashSet<FourTuple>,
+    blocked_on_rx: HashSet<FourTuple>,
     outer: Option<Waker>,
 }
 
@@ -112,6 +113,28 @@ impl ReadyList {
         let mut inner = self.inner.lock();
         if inner.queued.insert(ft) {
             inner.queue.push_back(ft);
+        }
+    }
+
+    /// Records a connection that could not make progress because the client
+    /// had no receive capacity.
+    fn block_on_rx(&self, ft: FourTuple) {
+        self.inner.lock().blocked_on_rx.insert(ft);
+    }
+
+    fn forget(&self, ft: FourTuple) {
+        let mut inner = self.inner.lock();
+        inner.queued.remove(&ft);
+        inner.blocked_on_rx.remove(&ft);
+    }
+
+    /// Re-enqueues connections that were blocked on client receive capacity.
+    fn retry_rx_blocked(&self) {
+        let mut inner = self.inner.lock();
+        for ft in std::mem::take(&mut inner.blocked_on_rx) {
+            if inner.queued.insert(ft) {
+                inner.queue.push_back(ft);
+            }
         }
     }
 
@@ -885,6 +908,9 @@ impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
         let ready = self.inner.tcp.ready.clone();
         ready.set_outer(cx.waker());
+        if self.client.rx_mtu() != 0 {
+            ready.retry_rx_blocked();
+        }
 
         // Check for any new incoming connections
         self.inner
@@ -1032,6 +1058,7 @@ impl<T: Client> Access<'_, T> {
                             aggregate_stats.record_timeout_close();
                         }
                     }
+                    ready.forget(*ft);
                     return false;
                 }
 
@@ -1134,10 +1161,16 @@ impl<T: Client> Access<'_, T> {
                         .record_close(conn.inner.last_close_reason);
                 }
                 tcp.connections.remove(&ft);
-            } else if let Some(deadline) = conn.inner.next_timer_deadline() {
-                next_deadline = Some(
-                    next_deadline.map_or(deadline, |next_deadline| next_deadline.min(deadline)),
-                );
+                ready.forget(ft);
+            } else {
+                if sender.client.rx_mtu() == 0 {
+                    ready.block_on_rx(ft);
+                }
+                if let Some(deadline) = conn.inner.next_timer_deadline() {
+                    next_deadline = Some(
+                        next_deadline.map_or(deadline, |next_deadline| next_deadline.min(deadline)),
+                    );
+                }
             }
         }
 
@@ -1156,6 +1189,7 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.tcp.timer = Some(TcpTimer::new(self.client.driver()));
+        let ready = self.inner.tcp.ready.clone();
         self.inner.tcp.connections.retain(|ft, conn| {
             let TcpBackend::Socket {
                 socket: opt_socket, ..
@@ -1180,6 +1214,7 @@ impl<T: Client> Access<'_, T> {
                         dst = %ft.dst,
                         "failed to update driver for tcp connection"
                     );
+                    ready.forget(*ft);
                     false
                 }
             }
@@ -1188,7 +1223,6 @@ impl<T: Client> Access<'_, T> {
         // The sockets were rebuilt on a new driver, so any previously
         // registered readiness wakeups are gone. Mark every connection ready so
         // the next poll re-registers each one with the new driver.
-        let ready = self.inner.tcp.ready.clone();
         for ft in self.inner.tcp.connections.keys() {
             ready.enqueue(*ft);
         }
@@ -1227,6 +1261,7 @@ impl<T: Client> Access<'_, T> {
         );
         let inspect_static_dns =
             ft.dst.port() == crate::DNS_PORT && self.inner.dns.should_intercept_static_queries();
+        let ready = self.inner.tcp.ready.clone();
 
         let replace_time_wait = tcp.control == TcpControl::Syn
             && tcp.ack_number.is_none()
@@ -1234,6 +1269,7 @@ impl<T: Client> Access<'_, T> {
                 conn.inner.state == TcpState::TimeWait && tcp.seq_number > conn.inner.rx_seq
             });
         if replace_time_wait && let Some(conn) = self.inner.tcp.connections.remove(&ft) {
+            ready.forget(ft);
             if matches!(
                 conn.backend,
                 TcpBackend::Dns(ref handler) if handler.is_in_flight()
@@ -1280,6 +1316,7 @@ impl<T: Client> Access<'_, T> {
                         TcpBackend::Dns(ref h) if h.is_in_flight()
                     );
                     e.remove();
+                    ready.forget(ft);
                     if dns_in_flight {
                         self.inner.dns.complete_tcp_query();
                     }
@@ -1348,7 +1385,7 @@ impl<T: Client> Access<'_, T> {
             }
         }
         if mark_ready {
-            self.inner.tcp.ready.enqueue(ft);
+            ready.enqueue(ft);
         }
         Ok(())
     }
