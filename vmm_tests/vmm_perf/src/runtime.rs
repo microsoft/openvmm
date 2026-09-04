@@ -33,11 +33,10 @@ impl VmmPerfRuntime {
         })
     }
 
-    pub(crate) fn validate_profile(&self, profile: VmmPerfProfile) -> anyhow::Result<()> {
-        ensure_file(
-            &self.root.join("profiles").join(profile.file()),
-            "VMM.Perf profile",
-        )
+    pub(crate) fn prepare_profile(&self, profile: VmmPerfProfile) -> anyhow::Result<()> {
+        let profile_path = self.root.join("profiles").join(profile.file());
+        ensure_file(&profile_path, "VMM.Perf profile")?;
+        enable_guest_serial_log(&profile_path)
     }
 
     pub(crate) fn root(&self) -> &Path {
@@ -63,6 +62,62 @@ impl VmmPerfRuntime {
         }
         Ok(())
     }
+}
+
+fn enable_guest_serial_log(profile_path: &Path) -> anyhow::Result<()> {
+    let profile = fs_err::read(profile_path)
+        .with_context(|| format!("failed to read VMM.Perf profile {}", profile_path.display()))?;
+    let mut profile: serde_json::Value = serde_json::from_slice(&profile).with_context(|| {
+        format!(
+            "failed to parse VMM.Perf profile {}",
+            profile_path.display()
+        )
+    })?;
+    let actions = profile
+        .get_mut("Actions")
+        .and_then(serde_json::Value::as_array_mut)
+        .with_context(|| {
+            format!(
+                "VMM.Perf profile {} does not contain an Actions array",
+                profile_path.display()
+            )
+        })?;
+
+    let mut found_executor = false;
+    let mut updated = false;
+    for action in actions {
+        if action.get("Type").and_then(serde_json::Value::as_str)
+            != Some("NestedVirtualizationExecutor")
+        {
+            continue;
+        }
+        found_executor = true;
+        let parameters = action
+            .get_mut("Parameters")
+            .and_then(serde_json::Value::as_object_mut)
+            .with_context(|| {
+                format!(
+                    "NestedVirtualizationExecutor in {} does not contain Parameters",
+                    profile_path.display()
+                )
+            })?;
+        updated |= parameters.insert("Guest.SerialLog".into(), true.into()) != Some(true.into());
+    }
+
+    anyhow::ensure!(
+        found_executor,
+        "VMM.Perf profile {} does not contain NestedVirtualizationExecutor",
+        profile_path.display()
+    );
+    if updated {
+        fs_err::write(profile_path, serde_json::to_vec_pretty(&profile)?).with_context(|| {
+            format!(
+                "failed to enable guest serial logging in VMM.Perf profile {}",
+                profile_path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn extract_runtime(archive: &Path) -> anyhow::Result<PathBuf> {
@@ -219,6 +274,7 @@ fn ensure_file(path: &Path, description: &str) -> anyhow::Result<()> {
 mod tests {
     use super::archive_cache_name;
     use super::archive_signature;
+    use super::enable_guest_serial_log;
     use super::find_runtime_dir;
     use super::virtual_client_name;
     use crate::test_support;
@@ -279,6 +335,29 @@ mod tests {
         let second = archive_signature(&archive)?;
 
         assert_ne!(first, second);
+        Ok(())
+    }
+
+    #[test]
+    fn enables_guest_serial_logging_in_nested_executor() -> anyhow::Result<()> {
+        let scratch = test_support::tempdir("runtime-profile")?;
+        let profile = scratch.path().join("profile.json");
+        fs_err::write(
+            &profile,
+            r#"{
+                "Actions": [{
+                    "Type": "NestedVirtualizationExecutor",
+                    "Parameters": {
+                        "Guest.Channel": "agent"
+                    }
+                }]
+            }"#,
+        )?;
+
+        enable_guest_serial_log(&profile)?;
+
+        let profile: serde_json::Value = serde_json::from_slice(&fs_err::read(profile)?)?;
+        assert_eq!(profile["Actions"][0]["Parameters"]["Guest.SerialLog"], true);
         Ok(())
     }
 }

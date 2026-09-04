@@ -52,8 +52,8 @@ impl VmmPerfProfile {
         };
         let boot_mode = "UEFI";
         let profile = match self {
-            Self::Fio => "FIO",
-            Self::Iperf3 => "IPERF3",
+            Self::Fio => "FIO-VMBUS",
+            Self::Iperf3 => "IPERF3-VMBUS",
             Self::BootTime => "BOOTTIME",
         };
         format!("PERF-OPENVMM-{architecture}-{platform}-{boot_mode}-{profile}.json")
@@ -354,8 +354,8 @@ mod tests {
     #[test]
     fn builds_profile_file_names_for_supported_platforms() {
         for (profile, suffix) in [
-            (VmmPerfProfile::Fio, "FIO"),
-            (VmmPerfProfile::Iperf3, "IPERF3"),
+            (VmmPerfProfile::Fio, "FIO-VMBUS"),
+            (VmmPerfProfile::Iperf3, "IPERF3-VMBUS"),
             (VmmPerfProfile::BootTime, "BOOTTIME"),
         ] {
             assert_eq!(
