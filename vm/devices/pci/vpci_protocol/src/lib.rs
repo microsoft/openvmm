@@ -218,8 +218,9 @@ open_enum! {
     /// Returned per-entry in `VpciIsolatedResourcesReply`.
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ResourceIsolation: u32 {
-        /// Entry not populated / not applicable. Never emitted on a
-        /// `Status::SUCCESS` reply per the wire contract.
+        /// Entry not populated / not applicable. On a `Status::SUCCESS` reply
+        /// this marks a slot that is not part of the device's BAR ID set, as
+        /// described on `VpciIsolatedResourcesReply`.
         INVALID = 0,
         /// Host-visible, bounce-buffered.
         SHARED = 1,
