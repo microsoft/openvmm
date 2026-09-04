@@ -883,8 +883,7 @@ async fn mpidr_affinity_rollover_aarch64_tcg(
 
     let sh = agent.unix_shell();
 
-    // VP 16 is the one that only comes online if the MADT and KVM agree on its
-    // MPIDR, so this assertion is the point of the test.
+    // VP 16 only comes online if the MADT and KVM agree on its MPIDR.
     let online = sh.read_file("/sys/devices/system/cpu/online").await?;
     assert_eq!(
         online.trim(),

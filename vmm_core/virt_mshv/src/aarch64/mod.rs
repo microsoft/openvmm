@@ -387,8 +387,8 @@ impl virt::BindProcessor for MshvProcessorBinder {
             self.vcpufd.as_ref().unwrap()
         };
 
-        // The hypervisor assigns its own MPIDR otherwise, which would not match
-        // the identity firmware advertises for this VP.
+        // Set the MPIDR for this VP; otherwise, the hypervisor assigns a value
+        // that would not match the identity firmware advertises.
         vcpufd
             .set_hvdef_regs(&[HvRegisterAssoc::from((
                 HvArm64RegisterName::MpidrEl1,
