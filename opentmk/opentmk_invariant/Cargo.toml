@@ -1,0 +1,23 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "opentmk_invariant"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hvdef.workspace = true
+log.workspace = true
+opentmk_core.workspace = true
+spin.workspace = true
+zerocopy.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+inv_packet.workspace = true
+inv_decoder.workspace = true
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

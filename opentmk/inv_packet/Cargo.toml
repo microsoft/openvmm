@@ -1,0 +1,13 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "inv_packet"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive", "alloc"]}
+
+[lints]
+workspace = true

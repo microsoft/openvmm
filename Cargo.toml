@@ -61,6 +61,7 @@ members = [
   "vm/vmgs/vmgstool",
   # opentmk
   "opentmk",
+  "opentmk/opentmk_invariant",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
 ]
@@ -83,6 +84,10 @@ xtask_fuzz = { path = "xtask/xtask_fuzz" }
 opentmk_protocol = { path = "opentmk/opentmk_protocol" }
 opentmk_core = { path = "opentmk/opentmk_core" }
 opentmk_disk = { path = "opentmk/opentmk_disk" }
+
+# opentmk invariant
+inv_packet = { path = "opentmk/inv_packet" }
+inv_decoder = { path = "opentmk/inv_decoder" }
 
 flowey = { path = "flowey/flowey" }
 flowey_cli = { path = "flowey/flowey_cli" }
@@ -524,6 +529,7 @@ hex = "0.4"
 pbjson = "0.5"
 pbjson-build = "0.5"
 pbjson-types = "0.5"
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 prost = "0.11"
 prost-build = "0.11"
 prost-types = "0.11"
@@ -565,6 +571,7 @@ arrayvec = { version = "0.7", default-features = false }
 bitfield-struct = "0.11.0"
 bitvec = { version = "1.1", default-features = false }
 heapless = { version = "0.8", default-features = false }
+num-traits = { version = "0.2.19", default-features = false }
 petgraph = "0.8.0"
 range_map_vec = "0.2.0"
 rustc-hash = "2.1.1"
