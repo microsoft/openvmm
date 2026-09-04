@@ -552,14 +552,7 @@ impl VmService {
                     Listener::Pipe(path) => {
                         let listener = pal_async::windows::pipe::NamedPipeServer::create(path)
                             .context("failed to create named pipe")?;
-                        dispatch::run_pipe(
-                            &server,
-                            &driver,
-                            listener,
-                            cancel_recv,
-                            transport,
-                        )
-                        .await
+                        dispatch::run_pipe(&server, &driver, listener, cancel_recv, transport).await
                     }
                 };
                 match &r {
