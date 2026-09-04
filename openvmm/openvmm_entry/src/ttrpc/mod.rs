@@ -316,29 +316,29 @@ mod dispatch {
         listener: pal_async::windows::pipe::NamedPipeServer,
         cancel: mesh::OneshotReceiver<()>,
         transport: ResolvedTransport,
-        registry: FdRegistry,
     ) -> anyhow::Result<()> {
         let mut tasks = FuturesUnordered::new();
         let mut cancel = cancel.fuse();
+        let mut accept = std::pin::pin!(listener.accept(driver)?.fuse());
         loop {
-            let mut accept = std::pin::pin!(listener.accept(driver)?.fuse());
-            let conn = futures::select! { // merge semantics
-                r = accept => r,
+            futures::select! { // merge semantics
+                result = accept => {
+                    accept.set(listener.accept(driver)?.fuse());
+                    if let Ok(conn) = result.and_then(|conn| pal_async::pipe::PolledPipe::new(driver, conn)) {
+                        tasks.push(async move {
+                            let _ = serve_pipe(server, conn, transport)
+                                .await
+                                .map_err(|err| {
+                                    tracing::error!(
+                                        error = err.as_ref() as &dyn std::error::Error,
+                                        "connection error"
+                                    )
+                                });
+                        });
+                    }
+                }
                 _ = tasks.next() => continue,
                 _ = cancel => break,
-            };
-            if let Ok(conn) = conn.and_then(|conn| pal_async::pipe::PolledPipe::new(driver, conn)) {
-                let registry = registry.clone();
-                tasks.push(async move {
-                    let _ = serve_pipe(server, conn, transport, &registry)
-                        .await
-                        .map_err(|err| {
-                            tracing::error!(
-                                error = err.as_ref() as &dyn std::error::Error,
-                                "connection error"
-                            )
-                        });
-                });
             }
         }
         Ok(())
@@ -384,11 +384,15 @@ mod dispatch {
         // The fd-passing protocol is allowed in every transport mode; it
         // shares the socket with ttrpc/gRPC and is selected by its distinct
         // magic first byte.
+        #[cfg(unix)]
         if first_byte == super::fd_passing::MAGIC_FIRST_BYTE {
-            super::fd_passing::serve(conn, registry).await
-        } else {
-            serve_by_protocol(server, conn, first_byte, transport).await
+            return super::fd_passing::serve(conn, registry).await;
         }
+
+        #[cfg(not(unix))]
+        let _ = registry;
+
+        serve_by_protocol(server, conn, first_byte, transport).await
     }
 
     #[cfg(windows)]
@@ -396,7 +400,6 @@ mod dispatch {
         server: &mesh_rpc::Server,
         mut conn: pal_async::pipe::PolledPipe,
         transport: ResolvedTransport,
-        registry: &FdRegistry,
     ) -> anyhow::Result<()> {
         let mut first_byte = [0];
         if conn.read(&mut first_byte).await? == 0 {
@@ -406,7 +409,7 @@ mod dispatch {
             prefix: Some(first_byte[0]),
             inner: conn,
         };
-        serve_by_protocol(server, conn, first_byte[0], transport, registry).await
+        serve_by_protocol(server, conn, first_byte[0], transport).await
     }
 
     #[cfg(windows)]
@@ -555,7 +558,6 @@ impl VmService {
                             listener,
                             cancel_recv,
                             transport,
-                            registry,
                         )
                         .await
                     }
