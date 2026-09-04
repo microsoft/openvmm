@@ -182,7 +182,7 @@ pub fn listener_from_path(path: &std::path::Path) -> anyhow::Result<Listener> {
 pub fn listener_from_path(path: &std::path::Path) -> anyhow::Result<Listener> {
     let _ = std::fs::remove_file(path);
     Ok(Listener::Unix(
-        unix_socket::UnixListener::bind(path).context("failed to bind to socket")?,
+        UnixListener::bind(path).context("failed to bind to socket")?,
     ))
 }
 
@@ -349,24 +349,15 @@ mod dispatch {
         conn: T,
         first_byte: u8,
         transport: ResolvedTransport,
-        registry: &FdRegistry,
     ) -> anyhow::Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
-        // The fd-passing protocol (UNIX only) is allowed in every transport
-        // mode; it shares the socket with ttrpc/gRPC and is selected by its
-        // distinct magic first byte.
-        #[cfg(not(unix))]
-        let _ = registry;
-
         match first_byte {
             #[cfg(feature = "ttrpc")]
             0x00 if transport.allows_ttrpc() => server.serve_connection(conn).await,
             #[cfg(feature = "grpc")]
             b'P' if transport.allows_grpc() => server.serve_connection_grpc(conn).await,
-            #[cfg(unix)]
-            super::fd_passing::MAGIC_FIRST_BYTE => super::fd_passing::serve(conn, registry).await,
             byte => {
                 anyhow::bail!("unrecognized or disallowed rpc protocol (first byte {byte:#04x})")
             }
@@ -390,7 +381,14 @@ mod dispatch {
             return Ok(());
         };
 
-        serve_by_protocol(server, conn, first_byte, transport, registry).await
+        // The fd-passing protocol is allowed in every transport mode; it
+        // shares the socket with ttrpc/gRPC and is selected by its distinct
+        // magic first byte.
+        if first_byte == super::fd_passing::MAGIC_FIRST_BYTE {
+            super::fd_passing::serve(conn, registry).await
+        } else {
+            serve_by_protocol(server, conn, first_byte, transport).await
+        }
     }
 
     #[cfg(windows)]
