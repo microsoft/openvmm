@@ -284,6 +284,7 @@ missing_dev_resources = { path = "vm/devices/missing_dev_resources" }
 gdma = { path = "vm/devices/net/gdma" }
 gdma_defs = { path = "vm/devices/net/gdma_defs" }
 gdma_resources = { path = "vm/devices/net/gdma_resources" }
+gdma_test = { path = "vm/devices/net/gdma_test" }
 linux_net_bindings = { path = "vm/devices/net/linux_net_bindings" }
 mana_driver = { path = "vm/devices/net/mana_driver" }
 vfio_sys = { path = "vm/devices/user_driver/vfio_sys" }

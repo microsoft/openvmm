@@ -654,6 +654,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::CREATE_RAM_GPA_RANGE => self.handle_create_ram_gpa_range(message_buf)?,
             HostRequests::RESET_RAM_GPA_RANGE => self.handle_reset_ram_gpa_range(message_buf)?,
             HostRequests::LOAD_FIRMWARE => self.handle_load_firmware(message_buf)?,
+            HostRequests::VPCI_DEVICE_CONTROL => self.handle_vpci_device_control(message_buf)?,
             _ => {
                 tracing::error!(message_id = ?header.message_id(), "unexpected message");
                 return Err(Error::InvalidSequence);
@@ -1091,6 +1092,24 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
         Ok(())
+    }
+
+    fn handle_vpci_device_control(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+        let request = get_protocol::VpciDeviceControlRequest::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0;
+        let status = match request.code {
+            get_protocol::VpciDeviceControlCode::OFFER
+            | get_protocol::VpciDeviceControlCode::REVOKE
+            | get_protocol::VpciDeviceControlCode::RESET => {
+                get_protocol::VpciDeviceControlStatus::SUCCESS
+            }
+            _ => get_protocol::VpciDeviceControlStatus::INVALID_REQUEST,
+        };
+        let response = get_protocol::VpciDeviceControlResponse::new(status);
+        self.channel
+            .try_send(response.as_bytes())
+            .map_err(Error::Vmbus)
     }
 
     fn handle_host_notification(

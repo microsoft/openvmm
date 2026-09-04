@@ -15,9 +15,12 @@ use chipset_resources::battery::HostBatteryUpdate;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use gdma_resources::GdmaDeviceHandle;
+use gdma_resources::GdmaTestDeviceHandle;
+use gdma_resources::GdmaTestRequest;
 use gdma_resources::VportDefinition;
 use get_resources::ged::IgvmAttestTestConfig;
 use guid::Guid;
+use mesh::rpc::RpcSend;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
@@ -34,6 +37,8 @@ use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
+
+const MANA_VTL0_INSTANCE: Guid = guid::guid!("f8615163-d915-4743-a7d8-efa75db7b85a");
 
 impl PetriVmConfigOpenVmm {
     /// Enable the VTL0 alias map.
@@ -176,6 +181,64 @@ impl PetriVmConfigOpenVmm {
             }
             .into_resource(),
         });
+
+        self
+    }
+
+    /// Add a test-controllable VTL2 PCIe NIC and its paired VTL0 VF.
+    pub fn with_nic_test_control(mut self, test_config: ManaTestConfig) -> Self {
+        let vtl2_endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+            recv: None,
+        }
+        .into_resource();
+        let vtl0_endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+            recv: None,
+        }
+        .into_resource();
+
+        if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
+            self.config.vpci_devices.extend([
+                VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: MANA_INSTANCE,
+                    resource: GdmaTestDeviceHandle {
+                        vports: vec![VportDefinition {
+                            mac_address: NIC_MAC_ADDRESS,
+                            endpoint: vtl2_endpoint,
+                        }],
+                        request_recv: test_config.request_recv,
+                    }
+                    .into_resource(),
+                    vnode: None,
+                },
+                VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl0,
+                    instance_id: MANA_VTL0_INSTANCE,
+                    resource: GdmaDeviceHandle {
+                        vports: vec![VportDefinition {
+                            mac_address: NIC_MAC_ADDRESS,
+                            endpoint: vtl0_endpoint,
+                        }],
+                    }
+                    .into_resource(),
+                    vnode: None,
+                },
+            ]);
+
+            vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
+                vtl2_settings_proto::NicDeviceLegacy {
+                    instance_id: MANA_INSTANCE.to_string(),
+                    subordinate_instance_id: Some(MANA_VTL0_INSTANCE.to_string()),
+                    max_sub_channels: None,
+                },
+            );
+        } else {
+            panic!("with_nic_test_control requires VTL2 settings");
+        }
 
         self
     }
@@ -613,5 +676,47 @@ impl PetriVmConfigOpenVmm {
             (!allow).then_some(openvmm_defs::config::LateMapVtl0MemoryPolicy::InjectException);
 
         self
+    }
+}
+
+/// Control interface for issuing test requests to the MANA emulator.
+///
+/// Created with [`ManaTestControl::new`] and connected with
+/// [`PetriVmConfigOpenVmm::with_nic_test_control`].
+pub struct ManaTestControl {
+    request_send: mesh::Sender<mesh::rpc::Rpc<GdmaTestRequest, ()>>,
+}
+
+/// Configuration token for a test-controllable MANA emulator.
+pub struct ManaTestConfig {
+    request_recv: mesh::Receiver<mesh::rpc::Rpc<GdmaTestRequest, ()>>,
+}
+
+impl ManaTestControl {
+    /// Creates a test control and its corresponding device configuration.
+    pub fn new() -> (Self, ManaTestConfig) {
+        let (request_send, request_recv) = mesh::channel();
+        (Self { request_send }, ManaTestConfig { request_recv })
+    }
+
+    /// Requests VF reconfiguration through the emulated hardware channel.
+    ///
+    /// Completion means the reset EQE has been posted to the HWC EQ.
+    /// It may take time for the EQE to be processed.
+    /// Then, VF Reconfiguration will be completed asynchronously.
+    ///
+    /// `revoke_vtl0_vf`: when `true` the guest VTL0 VF is revoked as part of
+    /// the reconfiguration.
+    pub async fn inject_vf_reset(&self, revoke_vtl0_vf: bool) -> Result<(), mesh::rpc::RpcError> {
+        self.request_send
+            .call(|rpc| rpc, GdmaTestRequest::VfReset { revoke_vtl0_vf })
+            .await
+    }
+
+    /// Shuts down test control after all preceding requests have completed.
+    pub async fn shutdown(self) -> Result<(), mesh::rpc::RpcError> {
+        self.request_send
+            .call(|rpc| rpc, GdmaTestRequest::Shutdown)
+            .await
     }
 }

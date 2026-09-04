@@ -35,6 +35,7 @@ use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
 use gdma_defs::bnic::ManaDestroyWqobjReq;
+use gdma_defs::bnic::ManaMoveFilterVTL2PrivilegedReq;
 use gdma_defs::bnic::ManaTxShortOob;
 use gdma_defs::bnic::Tristate;
 use guestmem::GuestMemory;
@@ -190,6 +191,7 @@ struct Vport {
     task: TaskControl<TxRxState, TxRxTask>,
     queue_cfg: QueueCfg,
     serial_no: u32,
+    direction_to_vtl0: bool,
 }
 
 impl InspectMut for Vport {
@@ -201,6 +203,7 @@ impl InspectMut for Vport {
             .field("tx_cq", self.queue_cfg.tx.map(|(_wq, cq)| cq))
             .field("rx_wq", self.queue_cfg.rx.map(|(wq, _cq)| wq))
             .field("rx_cq", self.queue_cfg.rx.map(|(_wq, cq)| cq))
+            .field("direction_to_vtl0", self.direction_to_vtl0)
             .merge(&mut self.task);
     }
 }
@@ -228,6 +231,7 @@ impl BasicNic {
                         task: TaskControl::new(TxRxState),
                         queue_cfg: QueueCfg { tx: None, rx: None },
                         serial_no: 0,
+                        direction_to_vtl0: false,
                     }
                 },
             )
@@ -424,19 +428,30 @@ impl BasicNic {
                 }
             }
             ManaCommandCode::MANA_VTL2_MOVE_FILTER => {
-                anyhow::bail!("unsupported command MANA_VTL2_MOVE_FILTER");
+                let req: ManaMoveFilterVTL2PrivilegedReq = read
+                    .read_plain()
+                    .context("reading move vport filter request")?;
+                let vport = self
+                    .vports
+                    .get_mut(req.vport as usize)
+                    .context("invalid vport")?;
+                vport.direction_to_vtl0 = match req.direction_to_vtl0 {
+                    0 => false,
+                    1 => true,
+                    value => anyhow::bail!("invalid filter direction {value}"),
+                };
             }
             ManaCommandCode::MANA_VTL2_QUERY_FILTER_STATE => {
                 let req: gdma_defs::bnic::ManaQueryFilterStateReq = read
                     .read_plain()
                     .context("reading query vport filter state request")?;
-                let _ = self
+                let vport = self
                     .vports
-                    .get_mut(req.vport as usize)
+                    .get(req.vport as usize)
                     .context("invalid vport")?;
 
                 let resp = gdma_defs::bnic::ManaQueryFilterStateResponse {
-                    direction_to_vtl0: 0,
+                    direction_to_vtl0: vport.direction_to_vtl0.into(),
                     reserved: [0; 7],
                 };
 
