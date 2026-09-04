@@ -335,6 +335,7 @@ disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disklayer_vhdx = { path = "vm/devices/storage/disklayer_vhdx" }
+disklayer_qcow2 = { path = "vm/devices/storage/disklayer_qcow2" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
 disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
 disklayer_sqlite = { path = "vm/devices/storage/disklayer_sqlite" }

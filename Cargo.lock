@@ -1756,6 +1756,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "disklayer_qcow2"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blocking",
+ "disk_backend",
+ "disk_backend_resources",
+ "disk_layered",
+ "futures",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "scsi_buffers",
+ "tempfile",
+ "vm_resource",
+]
+
+[[package]]
 name = "disklayer_ram"
 version = "0.0.0"
 dependencies = [
@@ -5991,6 +6010,7 @@ dependencies = [
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
+ "disklayer_qcow2",
  "disklayer_vhdx",
  "fs-err",
  "get_resources",
@@ -6048,6 +6068,7 @@ dependencies = [
  "disk_prwrap",
  "disk_vhd1",
  "disk_vhdmp",
+ "disklayer_qcow2",
  "disklayer_ram",
  "disklayer_sqlite",
  "disklayer_vhdx",
