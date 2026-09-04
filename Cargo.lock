@@ -5727,6 +5727,8 @@ version = "0.1.0"
 dependencies = [
  "crypto",
  "embed-resource",
+ "ms-tcg-tpm-sys",
+ "ms-tpm-20-ref",
  "openvmm_entry",
  "openvmm_hypervisors",
  "openvmm_resources",
@@ -5969,6 +5971,8 @@ name = "openvmm_hcl"
 version = "0.0.0"
 dependencies = [
  "crypto",
+ "ms-tcg-tpm-sys",
+ "ms-tpm-20-ref",
  "openssl_crypto_only",
  "openvmm_hcl_resources",
  "tracing",
