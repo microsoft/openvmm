@@ -53,7 +53,7 @@ service VM {
 
     // AddVpciDevice hot-adds a PCI device over the Hyper-V VPCI transport.
     // A VM may have up to 64 dynamically added VPCI devices.
-    rpc AddVpciDevice(AddVpciDeviceRequest) returns (AddVpciDeviceResponse);
+    rpc AddVpciDevice(AddVpciDeviceRequest) returns (google.protobuf.Empty);
 
     // RemoveVpciDevice hot-removes a dynamically added VPCI device. Removing
     // an unknown or previously removed instance ID returns an error.
@@ -874,16 +874,13 @@ message RemovePcieDeviceRequest {
 message AddVpciDeviceRequest {
     // The device to attach. VTL assignment is not modeled; this targets VTL0.
     PcieDeviceKind device = 1;
-}
-
-// Response identifying a dynamically added VPCI device.
-message AddVpciDeviceResponse {
-    // VPCI instance ID. Pass this to RemoveVpciDevice to remove the device.
-    string instance_id = 1;
+    // Guest-visible VPCI instance ID. Pass this to RemoveVpciDevice to remove
+    // the device.
+    string instance_id = 2;
 }
 
 // Request to hot-remove a dynamically added VPCI device.
 message RemoveVpciDeviceRequest {
-    // Instance ID returned by AddVpciDevice.
+    // Instance ID supplied to AddVpciDevice.
     string instance_id = 1;
 }

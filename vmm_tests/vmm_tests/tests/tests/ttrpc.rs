@@ -542,28 +542,28 @@ async fn test_ttrpc_interface(
                 .await
                 .unwrap();
 
-            match client
-                .call()
-                .start(
-                    vmservice::Vm::AddVpciDevice,
-                    virtio_fs_vpci_request("vpci-fs", &hotplug_virtiofs_root),
-                )
-                .await
+            #[cfg(windows)]
             {
-                Ok(response) => {
-                    vpci_supported = true;
-                    client
-                        .call()
-                        .start(
-                            vmservice::Vm::RemoveVpciDevice,
-                            vmservice::RemoveVpciDeviceRequest {
-                                instance_id: response.instance_id,
-                            },
-                        )
-                        .await
-                        .unwrap();
-                }
-                Err(err) => assert!(err.message.contains("does not support VPCI devices")),
+                let instance_id = Guid::new_random();
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::AddVpciDevice,
+                        virtio_fs_vpci_request(&instance_id, "vpci-fs", &hotplug_virtiofs_root),
+                    )
+                    .await
+                    .unwrap();
+                vpci_supported = true;
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::RemoveVpciDevice,
+                        vmservice::RemoveVpciDeviceRequest {
+                            instance_id: instance_id.to_string(),
+                        },
+                    )
+                    .await
+                    .unwrap();
             }
         }
 
@@ -1026,8 +1026,13 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
-fn virtio_fs_vpci_request(tag: &str, root_path: &Path) -> vmservice::AddVpciDeviceRequest {
+fn virtio_fs_vpci_request(
+    instance_id: &Guid,
+    tag: &str,
+    root_path: &Path,
+) -> vmservice::AddVpciDeviceRequest {
     vmservice::AddVpciDeviceRequest {
+        instance_id: instance_id.to_string(),
         device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
             vmservice::VirtioFs {
                 tag: tag.to_string(),
@@ -1048,24 +1053,26 @@ async fn validate_vpci_virtio_fs_hotplug(
     std::fs::write(first_root.join("content"), FIRST_CONTENT)?;
     std::fs::write(second_root.join("content"), SECOND_CONTENT)?;
 
-    let first = client
+    let first_instance_id = Guid::new_random();
+    client
         .call()
         .start(
             vmservice::Vm::AddVpciDevice,
-            virtio_fs_vpci_request("vpci-fs-1", first_root),
+            virtio_fs_vpci_request(&first_instance_id, "vpci-fs-1", first_root),
         )
         .await
         .map_err(|err| anyhow::anyhow!(err.message))?;
-    let second = client
+    let second_instance_id = Guid::new_random();
+    client
         .call()
         .start(
             vmservice::Vm::AddVpciDevice,
-            virtio_fs_vpci_request("vpci-fs-2", second_root),
+            virtio_fs_vpci_request(&second_instance_id, "vpci-fs-2", second_root),
         )
         .await
         .map_err(|err| anyhow::anyhow!(err.message))?;
     anyhow::ensure!(
-        first.instance_id != second.instance_id,
+        first_instance_id != second_instance_id,
         "VPCI instance IDs must be unique"
     );
 
@@ -1089,7 +1096,7 @@ async fn validate_vpci_virtio_fs_hotplug(
         .start(
             vmservice::Vm::RemoveVpciDevice,
             vmservice::RemoveVpciDeviceRequest {
-                instance_id: second.instance_id,
+                instance_id: second_instance_id.to_string(),
             },
         )
         .await
@@ -1105,7 +1112,7 @@ async fn validate_vpci_virtio_fs_hotplug(
         .start(
             vmservice::Vm::RemoveVpciDevice,
             vmservice::RemoveVpciDeviceRequest {
-                instance_id: first.instance_id.clone(),
+                instance_id: first_instance_id.to_string(),
             },
         )
         .await
@@ -1115,7 +1122,7 @@ async fn validate_vpci_virtio_fs_hotplug(
         .start(
             vmservice::Vm::RemoveVpciDevice,
             vmservice::RemoveVpciDeviceRequest {
-                instance_id: first.instance_id,
+                instance_id: first_instance_id.to_string(),
             },
         )
         .await

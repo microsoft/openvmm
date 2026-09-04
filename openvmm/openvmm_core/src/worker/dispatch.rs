@@ -3970,7 +3970,7 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::AddVpciDevice(rpc) => {
-                        rpc.handle_failable(async |(device_vtl, resource)| {
+                        rpc.handle_failable(async |(device_vtl, instance_id, resource)| {
                             anyhow::ensure!(
                                 self.inner.dynamic_vpci_devices.len()
                                     < MAX_DYNAMIC_VPCI_DEVICES,
@@ -3997,7 +3997,6 @@ impl LoadedVm {
                             let vmbus = vmbus.context(
                                 "VMBus is not available for the requested VTL",
                             )?;
-                            let instance_id = guid::Guid::new_random();
                             let device = vmm_core::device_builder::build_dynamic_vpci_device(
                                 vmm_core::device_builder::PciDeviceResolveContext {
                                     driver_source: &self.inner.driver_source,
@@ -4038,7 +4037,7 @@ impl LoadedVm {
                                     instance_id,
                                     device,
                                 });
-                            anyhow::Ok(instance_id)
+                            anyhow::Ok(())
                         })
                         .await
                     }
