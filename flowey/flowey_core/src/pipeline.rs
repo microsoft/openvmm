@@ -257,6 +257,8 @@ pub enum AdoResourcesRepositoryRef<P = UseParameter<String>> {
 pub struct GhScheduleTriggers {
     /// Run the pipeline in a schedule, as specified by a cron string
     pub cron: String,
+    /// IANA timezone string
+    pub timezone: Option<String>,
 }
 
 /// Trigger Github Actions pipelines per PR

@@ -1638,6 +1638,7 @@ impl InitializedVm {
                 firmware,
                 boot_order,
                 hibernation_enabled,
+                smbios,
             } => {
                 tracing::debug!(?firmware, "Loading BIOS firmware.");
                 let rom_builder = RomBuilder::new("bios".into(), Box::new(mapper.clone()));
@@ -1715,23 +1716,7 @@ impl InitializedVm {
                                 })
                             },
                             num_lock_enabled: false,
-                            // TODO: these are all very bogus values, and need to be swapped out with something better
-                            smbios: firmware_pcat::config::SmbiosConstants {
-                                bios_guid: guid::Guid {
-                                    data1: 0xC4066C45,
-                                    data2: 0x503D,
-                                    data3: 0x40E8,
-                                    data4: [0xB1, 0x5C, 0x31, 0x26, 0x4E, 0x5F, 0xE1, 0xD9],
-                                },
-                                system_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                base_board_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                chassis_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                chassis_asset_tag: "9583-9572-9874-4843-7295-1653-92".into(),
-                                bios_lock_string: "00000000000000000000000000000000".into(),
-                                processor_manufacturer: b"\0".to_vec(),
-                                processor_version: b"\0".to_vec(),
-                                cpu_info_bundle: None,
-                            },
+                            smbios: super::vm_loaders::pcat::smbios_constants_from_config(smbios)?,
                         }
                     },
                 })
@@ -3282,6 +3267,7 @@ impl LoadedVmInner {
                 enable_serial,
                 isolation,
                 boot_mode,
+                ref smbios,
             } => {
                 match boot_mode {
                     openvmm_defs::config::LinuxDirectBootMode::DeviceTree => {
@@ -3322,6 +3308,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation,
+                    smbios,
                 };
                 super::vm_loaders::linux::load_linux_x86(
                     &kernel_config,
@@ -3358,6 +3345,7 @@ impl LoadedVmInner {
                 enable_serial,
                 isolation,
                 boot_mode,
+                ref smbios,
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
 
@@ -3370,6 +3358,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: super::vm_loaders::linux::KernelIsolationConfig::None,
+                    smbios,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -3415,7 +3404,7 @@ impl LoadedVmInner {
                 enable_vpci_boot,
                 uefi_console_mode,
                 default_boot_always_attempt,
-                bios_guid,
+                ref smbios,
                 enable_vmbus,
                 force_dma_bounce,
                 enable_hv,
@@ -3453,7 +3442,7 @@ impl LoadedVmInner {
                     serial: enable_serial,
                     uefi_console_mode,
                     default_boot_always_attempt,
-                    bios_guid,
+                    smbios: (**smbios).clone(),
                     vmbus: enable_vmbus,
                     force_dma_bounce,
                     hv: enable_hv,

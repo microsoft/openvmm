@@ -99,6 +99,8 @@ pub mod ged {
         pub force_dma_bounce_enabled: bool,
         /// Enable hibernation.
         pub enable_hibernation: bool,
+        /// SMBIOS identity overrides delivered to the guest firmware.
+        pub smbios: smbios_defs::SmbiosConfig,
     }
 
     /// The firmware and chipset configuration for the guest.

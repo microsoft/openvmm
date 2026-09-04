@@ -183,6 +183,19 @@ describes the source definitions.
   `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
   `file=<PATH>`.
+* `--smbios <PARAMS>`: Override the SMBIOS (DMI) identity reported to the
+  guest (repeatable), using `type=N,key=value[,key=value...]`.
+  Type 0 supports `vendor`, `version`, `date`, and `release`; Type 1 supports
+  `manufacturer`, `product`, `version`, `serial`, `uuid`, `sku`, and `family`.
+  Use `uuid=random` to generate a per-VM system UUID.
+
+  OpenVMM Linux direct boot supports both types. OpenHCL Linux direct and UEFI
+  support Type 1 only. PCAT supports only Type 1 `serial` and `uuid`.
+  Unsupported fields are rejected.
+
+  ```bash
+  --smbios type=1,manufacturer=Contoso,product="Virtual Machine"
+  ```
 * `--pidfile <PATH>`: Write the process ID to the specified file on startup,
   and remove it on clean exit. If the process is killed with `SIGKILL` or
   crashes, the pidfile is not removed — consumers should verify the PID is

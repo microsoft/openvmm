@@ -337,9 +337,9 @@ dependencies = [
 
 [[package]]
 name = "bitfield-struct"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8769c4854c5ada2852ddf6fd09d15cf43d4c2aaeccb4de6432f5402f08a6003b"
+checksum = "3ca6739863c590881f038d033a146c51ddae239186a4327014839fd864f44ed5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2944,6 +2944,7 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh",
+ "smbios_defs",
  "thiserror 2.0.16",
  "vm_resource",
  "vmgs_resources",
@@ -3102,6 +3103,7 @@ dependencies = [
  "power_resources",
  "scsi_buffers",
  "serde_json",
+ "smbios_defs",
  "task_control",
  "test_igvm_agent_lib",
  "thiserror 2.0.16",
@@ -3818,9 +3820,9 @@ dependencies = [
 [[package]]
 name = "igvm"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=7184dce1086956342c1bf561f82ff268d06d2c73#7184dce1086956342c1bf561f82ff268d06d2c73"
+source = "git+https://github.com/microsoft/igvm?rev=b7e717d40653f8c2382342eb7097dcd3ec0568de#b7e717d40653f8c2382342eb7097dcd3ec0568de"
 dependencies = [
- "bitfield-struct 0.12.1",
+ "bitfield-struct 0.13.0",
  "corim",
  "crc32fast",
  "hex",
@@ -3838,9 +3840,9 @@ dependencies = [
 [[package]]
 name = "igvm_defs"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=7184dce1086956342c1bf561f82ff268d06d2c73#7184dce1086956342c1bf561f82ff268d06d2c73"
+source = "git+https://github.com/microsoft/igvm?rev=b7e717d40653f8c2382342eb7097dcd3ec0568de#b7e717d40653f8c2382342eb7097dcd3ec0568de"
 dependencies = [
- "bitfield-struct 0.12.1",
+ "bitfield-struct 0.13.0",
  "open-enum",
  "static_assertions",
  "zerocopy",
@@ -5829,6 +5831,7 @@ dependencies = [
  "mesh_worker",
  "net_backend_resources",
  "openvmm_pcat_locator",
+ "smbios_defs",
  "thiserror 2.0.16",
  "unix_socket",
  "virt",
@@ -6524,6 +6527,7 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
+ "smbios_defs",
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
@@ -7798,6 +7802,14 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "smbios_defs"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "mesh",
+]
 
 [[package]]
 name = "smmu"

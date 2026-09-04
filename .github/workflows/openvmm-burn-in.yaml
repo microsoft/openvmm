@@ -13,9 +13,11 @@ on:
         type: boolean
   schedule:
   - cron: 0 19 * * 1-5
+    timezone: America/Los_Angeles
 jobs:
   job0:
     name: run vmm-tests [x64-windows-all-snp]
+    timeout-minutes: 900
     runs-on:
     - self-hosted
     - Windows
