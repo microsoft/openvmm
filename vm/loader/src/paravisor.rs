@@ -81,6 +81,14 @@ pub const HCL_SECURE_VTL: Vtl = Vtl::Vtl2;
 /// Size of the persisted region (2MB).
 const PERSISTED_REGION_SIZE: u64 = 2 * 1024 * 1024;
 
+fn avoid_page_table_large_page_boundary(offset: u64, large_page_size: u64) -> u64 {
+    if offset.is_multiple_of(large_page_size) {
+        offset + HV_PAGE_SIZE
+    } else {
+        offset
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("memory is unaligned: {0}")]
@@ -485,9 +493,7 @@ where
 
     // Some loaders only fix up identity map entries that overlap the relocation
     // region, so keep the page table region in the same large page as it.
-    if offset.is_multiple_of(X64_LARGE_PAGE_SIZE) {
-        offset += HV_PAGE_SIZE;
-    }
+    offset = avoid_page_table_large_page_boundary(offset, X64_LARGE_PAGE_SIZE);
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
@@ -1250,9 +1256,7 @@ where
 
     // Some loaders only fix up identity map entries that overlap the relocation
     // region, so keep the page table region in the same large page as it.
-    if next_addr.is_multiple_of(u64::from(Arm64PageSize::Large)) {
-        next_addr += HV_PAGE_SIZE;
-    }
+    next_addr = avoid_page_table_large_page_boundary(next_addr, u64::from(Arm64PageSize::Large));
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
@@ -1580,6 +1584,28 @@ where
     importer.set_expected_page_hashes_config_page(expected_page_hashes_base);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod page_table_layout_tests {
+    use super::*;
+
+    #[test]
+    fn page_table_region_avoids_large_page_boundary() {
+        for large_page_size in [X64_LARGE_PAGE_SIZE, u64::from(Arm64PageSize::Large)] {
+            assert_eq!(
+                avoid_page_table_large_page_boundary(large_page_size, large_page_size),
+                large_page_size + HV_PAGE_SIZE
+            );
+            assert_eq!(
+                avoid_page_table_large_page_boundary(
+                    large_page_size - HV_PAGE_SIZE,
+                    large_page_size
+                ),
+                large_page_size - HV_PAGE_SIZE
+            );
+        }
+    }
 }
 
 #[cfg(test)]
