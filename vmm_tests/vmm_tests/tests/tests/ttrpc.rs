@@ -55,17 +55,20 @@ async fn test_ttrpc_interface(
     driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
 ) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    let endpoints = [RpcEndpointKind::Unix, RpcEndpointKind::Pipe];
-    #[cfg(not(windows))]
-    let endpoints = [RpcEndpointKind::Unix];
+    let tempdir = tempfile::tempdir()?;
+    let endpoint_paths = [
+        tempdir.path().join("ttrpc.sock"),
+        #[cfg(windows)]
+        format!(r"\\.\pipe\openvmm-ttrpc-{}", Guid::new_random()).into(),
+    ];
 
-    for endpoint in endpoints {
+    for endpoint_path in &endpoint_paths {
         test_ttrpc_interface_inner(
             &params,
             driver.clone(),
             [&openvmm, &kernel_path, &initrd_path, &pipette_path],
-            endpoint,
+            &tempdir,
+            endpoint_path,
         )
         .await?;
     }
@@ -77,21 +80,13 @@ async fn test_ttrpc_interface_inner(
     params: &petri::PetriTestParams<'_>,
     driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [&ResolvedArtifact; 4],
-    endpoint_kind: RpcEndpointKind,
+    tempdir: &tempfile::TempDir,
+    endpoint_path: &Path,
 ) -> anyhow::Result<()> {
     // All temporary files for this test live under a single temp directory
     // that is cleaned up automatically when it is dropped at the end of the
     // test.
-    let tempdir = tempfile::tempdir()?;
-    let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
-    #[cfg(windows)]
-    let pipe_name = format!(r"\\.\pipe\openvmm-ttrpc-{}", Guid::new_random());
-    let endpoint = match endpoint_kind {
-        RpcEndpointKind::Unix => RpcEndpoint::Unix(&socket_path),
-        #[cfg(windows)]
-        RpcEndpointKind::Pipe => RpcEndpoint::Pipe(&pipe_name),
-    };
 
     let initrd = std::fs::read(initrd_path.get()).context("failed to read test initrd")?;
     let pipette = std::fs::read(pipette_path.get()).context("failed to read pipette")?;
@@ -111,7 +106,7 @@ async fn test_ttrpc_interface_inner(
     };
 
     let (mut child, client, _stderr_task) =
-        launch_openvmm(&driver, params, openvmm, endpoint, &pidfile_path).await?;
+        launch_openvmm(&driver, params, openvmm, endpoint_path, &pidfile_path).await?;
 
     let query_props = || {
         client.call().start(
@@ -735,14 +730,8 @@ async fn test_ttrpc_uefi_boot(
     let pidfile_path = tempdir.path().join("openvmm.pid");
     let com1_path = tempdir.path().join("com1.sock");
 
-    let (mut child, client, _stderr_task) = launch_openvmm(
-        &driver,
-        &params,
-        &openvmm,
-        RpcEndpoint::Unix(&socket_path),
-        &pidfile_path,
-    )
-    .await?;
+    let (mut child, client, _stderr_task) =
+        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
     client
             .call()
@@ -973,19 +962,6 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
-#[derive(Copy, Clone)]
-enum RpcEndpointKind {
-    Unix,
-    #[cfg(windows)]
-    Pipe,
-}
-
-enum RpcEndpoint<'a> {
-    Unix(&'a Path),
-    #[cfg(windows)]
-    Pipe(&'a str),
-}
-
 /// Spawns `openvmm --rpc path=<endpoint>,transport=ttrpc --pidfile
 /// <pidfile_path>`, waits for it to signal readiness (by closing stdout),
 /// validates the pidfile, and connects a ttrpc client.
@@ -996,14 +972,10 @@ async fn launch_openvmm(
     driver: &DefaultDriver,
     params: &petri::PetriTestParams<'_>,
     openvmm: &ResolvedArtifact,
-    endpoint: RpcEndpoint<'_>,
+    endpoint_path: &Path,
     pidfile_path: &Path,
 ) -> anyhow::Result<(OpenvmmChild, mesh_rpc::Client, Task<anyhow::Result<()>>)> {
-    let rpc_arg = match endpoint {
-        RpcEndpoint::Unix(path) => format!("path={},transport=ttrpc", path.display()),
-        #[cfg(windows)]
-        RpcEndpoint::Pipe(path) => format!("path={path},listener=pipe,transport=ttrpc"),
-    };
+    let rpc_arg = format!("path={},transport=ttrpc", endpoint_path.display());
     tracing::info!(rpc = %rpc_arg, "launching OpenVMM with ttrpc");
 
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
@@ -1072,16 +1044,23 @@ async fn launch_openvmm(
         "pidfile should contain the child PID"
     );
 
-    let client = match endpoint {
-        RpcEndpoint::Unix(path) => mesh_rpc::Client::new(
+    #[cfg(windows)]
+    let client = if endpoint_path.to_string_lossy().starts_with(r"\\.\pipe\") {
+        mesh_rpc::Client::new(
             driver,
-            mesh_rpc::client::UnixDialier::new(driver.clone(), path.to_path_buf()),
-        ),
-        #[cfg(windows)]
-        RpcEndpoint::Pipe(path) => {
-            mesh_rpc::Client::new(driver, NamedPipeDialer::new(driver.clone(), path))
-        }
+            NamedPipeDialer::new(driver.clone(), endpoint_path.to_string_lossy()),
+        )
+    } else {
+        mesh_rpc::Client::new(
+            driver,
+            mesh_rpc::client::UnixDialer::new(driver.clone(), endpoint_path.to_path_buf()),
+        )
     };
+    #[cfg(not(windows))]
+    let client = mesh_rpc::Client::new(
+        driver,
+        mesh_rpc::client::UnixDialer::new(driver.clone(), endpoint_path.to_path_buf()),
+    );
 
     Ok((child, client, stderr_task))
 }

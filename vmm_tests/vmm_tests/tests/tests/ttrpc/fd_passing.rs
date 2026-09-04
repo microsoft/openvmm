@@ -59,14 +59,8 @@ async fn fd_passing_tap(
     let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
 
-    let (mut child, client, _stderr_task) = super::launch_openvmm(
-        &driver,
-        &params,
-        &openvmm,
-        ttrpc::RpcEndpoint::Unix(&socket_path),
-        &pidfile_path,
-    )
-    .await?;
+    let (mut child, client, _stderr_task) =
+        super::launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
     // Open a dedicated fd-passing connection and exercise the wire protocol
     // against the live server. Async IO keeps the single-threaded executor

@@ -69,16 +69,16 @@ pub trait Dial: 'static + Send {
 }
 
 /// A [`Dial`] implementation that connects to a Unix domain socket.
-pub struct UnixDialier<T>(T, std::path::PathBuf);
+pub struct UnixDialer<T>(T, std::path::PathBuf);
 
-impl<T: Driver> UnixDialier<T> {
-    /// Returns a new dialier that connects to `path`.
+impl<T: Driver> UnixDialer<T> {
+    /// Returns a new dialer that connects to `path`.
     pub fn new(driver: T, path: impl Into<std::path::PathBuf>) -> Self {
         Self(driver, path.into())
     }
 }
 
-impl<T: Driver> Dial for UnixDialier<T> {
+impl<T: Driver> Dial for UnixDialer<T> {
     type Stream = PolledSocket<UnixStream>;
 
     fn dial(&mut self) -> impl Future<Output = std::io::Result<Self::Stream>> + Send {
@@ -92,7 +92,7 @@ impl<T: Driver> Dial for UnixDialier<T> {
 pub struct ExistingConnection<T>(Option<T>);
 
 impl<T: 'static + Send + AsyncRead + AsyncWrite> ExistingConnection<T> {
-    /// Returns a new dialier that uses `socket`, once.
+    /// Returns a new dialer that uses `socket`, once.
     pub fn new(socket: T) -> Self {
         Self(Some(socket))
     }

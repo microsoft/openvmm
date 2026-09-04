@@ -842,11 +842,10 @@ options:
     #[clap(long_help = r#"
 Run as an RPC server on the specified Unix socket or Windows named pipe.
 
-syntax: path=<PATH>[,listener=<LISTENER>][,transport=<TRANSPORT>]
+syntax: path=<PATH>[,transport=<TRANSPORT>]
 
 options:
     `path=<PATH>`                  socket path or named pipe name (required)
-    `listener=<LISTENER>`          unix (default) or pipe (Windows only)
     `transport=<TRANSPORT>`        wire transport to accept (default: auto)
 
 valid transports:
@@ -857,11 +856,11 @@ valid transports:
 Examples:
     --rpc path=/tmp/openvmm.sock
     --rpc path=/tmp/openvmm.sock,transport=ttrpc
-    --rpc path=\\.\pipe\openvmm,listener=pipe
+    --rpc path=\\.\pipe\openvmm
 "#)]
     #[clap(
         long,
-        value_name = "path=PATH[,listener=LISTENER][,transport=TRANSPORT]",
+        value_name = "path=PATH[,transport=TRANSPORT]",
         conflicts_with("ttrpc"),
         conflicts_with("grpc")
     )]
@@ -1950,23 +1949,11 @@ pub enum RpcTransportCli {
     Grpc,
 }
 
-/// Listener type selection for `--rpc`.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub enum RpcListenerCli {
-    /// Listen on a Unix domain socket.
-    #[default]
-    Unix,
-    /// Listen on a Windows named pipe.
-    Pipe,
-}
-
 /// RPC server configuration parsed from `--rpc`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcCli {
     /// Socket path or named pipe name to listen on.
     pub path: PathBuf,
-    /// Listener type to create.
-    pub listener: RpcListenerCli,
     /// Wire transport to accept.
     pub transport: RpcTransportCli,
 }
@@ -1976,7 +1963,6 @@ impl FromStr for RpcCli {
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
         let mut path = None;
-        let mut listener = None;
         let mut transport = None;
         for part in s.split(',') {
             let (key, value) = part
@@ -1987,14 +1973,6 @@ impl FromStr for RpcCli {
                     anyhow::ensure!(path.is_none(), "duplicate option 'path'");
                     anyhow::ensure!(!value.is_empty(), "'path' requires a value");
                     path = Some(PathBuf::from(value));
-                }
-                "listener" => {
-                    anyhow::ensure!(listener.is_none(), "duplicate option 'listener'");
-                    listener = Some(match value {
-                        "unix" => RpcListenerCli::Unix,
-                        "pipe" => RpcListenerCli::Pipe,
-                        _ => anyhow::bail!("invalid listener '{value}', expected unix or pipe"),
-                    });
                 }
                 "transport" => {
                     anyhow::ensure!(transport.is_none(), "duplicate option 'transport'");
@@ -2013,7 +1991,6 @@ impl FromStr for RpcCli {
 
         Ok(RpcCli {
             path: path.context("'path' is required")?,
-            listener: listener.unwrap_or_default(),
             transport: transport.unwrap_or_default(),
         })
     }
@@ -3542,7 +3519,6 @@ mod tests {
         // explicit path, default transport
         let rpc = RpcCli::from_str("path=/tmp/openvmm.sock").unwrap();
         assert_eq!(rpc.path, Path::new("/tmp/openvmm.sock"));
-        assert_eq!(rpc.listener, RpcListenerCli::Unix);
         assert_eq!(rpc.transport, RpcTransportCli::Auto);
 
         // explicit transport
@@ -3556,15 +3532,15 @@ mod tests {
             assert_eq!(rpc.transport, transport);
         }
 
-        let rpc = RpcCli::from_str(r"path=\\.\pipe\openvmm,listener=pipe").unwrap();
+        let rpc = RpcCli::from_str(r"path=\\.\pipe\openvmm").unwrap();
         assert_eq!(rpc.path, Path::new(r"\\.\pipe\openvmm"));
-        assert_eq!(rpc.listener, RpcListenerCli::Pipe);
 
         // errors
         assert!(RpcCli::from_str("").is_err());
         assert!(RpcCli::from_str("transport=ttrpc").is_err());
         assert!(RpcCli::from_str("path=").is_err());
         assert!(RpcCli::from_str("path=/tmp/s.sock,transport=bogus").is_err());
+        assert!(RpcCli::from_str("path=/tmp/s.sock,listener=unix").is_err());
         assert!(RpcCli::from_str("path=/tmp/s.sock,bogus=1").is_err());
         assert!(RpcCli::from_str("path=/a,path=/b").is_err());
     }

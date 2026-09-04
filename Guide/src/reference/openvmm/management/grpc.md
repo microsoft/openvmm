@@ -5,7 +5,7 @@ OpenVMM process acting as an RPC server on the given Unix socket, or a Windows
 named pipe:
 
 ```bash
---rpc path=<PATH>[,listener=<LISTENER>][,transport=<TRANSPORT>]
+--rpc path=<PATH>[,transport=<TRANSPORT>]
 ```
 
 `transport` selects which wire protocol the server accepts:
@@ -14,21 +14,16 @@ named pipe:
 * `ttrpc` — accept ttrpc clients only
 * `grpc` — accept gRPC clients only
 
-`listener` selects the endpoint type:
-
-* `unix` (default) — listen on a Unix socket
-* `pipe` — listen on a Windows named pipe
-
 For example, to accept ttrpc clients only:
 
 ```bash
 --rpc path=/path/to/openvmm.sock,transport=ttrpc
 ```
 
-On Windows, a named-pipe endpoint uses `listener=pipe`:
+On Windows, a path beginning with `\\.\pipe\` selects a named-pipe endpoint:
 
 ```bash
---rpc path=\\.\pipe\openvmm,listener=pipe
+--rpc path=\\.\pipe\openvmm
 ```
 
 Here is a list of supported RPCs:
