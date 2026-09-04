@@ -9509,6 +9509,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhdxtool"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "blocking",
+ "clap",
+ "fs-err",
+ "guid",
+ "pal_async",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "vhdx",
+]
+
+[[package]]
 name = "vhost_user_backend"
 version = "0.0.0"
 dependencies = [
