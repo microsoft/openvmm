@@ -683,20 +683,6 @@ impl ManaTestControl {
             .await
     }
 
-    /// Changes the link state of `vport`.
-    pub async fn set_vport_link_state(
-        &self,
-        vport: u32,
-        connected: bool,
-    ) -> Result<(), mesh::rpc::RpcError> {
-        self.request_send
-            .call(
-                |rpc| rpc,
-                GdmaTestRequest::VportLinkState { vport, connected },
-            )
-            .await
-    }
-
     /// Shuts down test control after all preceding requests have completed.
     pub async fn shutdown(self) -> Result<(), mesh::rpc::RpcError> {
         self.request_send

@@ -48,13 +48,6 @@ pub enum GdmaTestRequest {
         /// Whether OpenHCL should revoke the VTL0 VF during reset.
         revoke_vtl0_vf: bool,
     },
-    /// Change a vport's link state.
-    VportLinkState {
-        /// The zero-based vport index.
-        vport: u32,
-        /// Whether the link should be connected.
-        connected: bool,
-    },
 }
 
 /// A basic NIC vport definition.

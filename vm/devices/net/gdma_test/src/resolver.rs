@@ -9,12 +9,8 @@ use gdma::GdmaDevice;
 use gdma::resolver::Error;
 use gdma::test_helpers::hwc_eq_injector;
 use gdma::test_helpers::resolve_vports;
-use gdma_defs::EqeDataReconfig;
 use gdma_defs::EqeVfReset;
-use gdma_defs::GDMA_EQE_HWC_RECONFIG_DATA;
 use gdma_defs::GDMA_EQE_HWC_RESET_REQUEST;
-use gdma_defs::HWC_DATA_TYPE_HW_VPORT_LINK_CONNECT;
-use gdma_defs::HWC_DATA_TYPE_HW_VPORT_LINK_DISCONNECT;
 use gdma_resources::GdmaTestDeviceHandle;
 use gdma_resources::GdmaTestRequest;
 use pal_async::task::Spawn;
@@ -41,21 +37,18 @@ declare_static_async_resolver! {
 
 enum EncodedTestRequest {
     VfReset(EqeVfReset),
-    VportLinkState(EqeDataReconfig),
 }
 
 impl EncodedTestRequest {
     fn eqe_type(&self) -> u8 {
         match self {
             Self::VfReset(_) => GDMA_EQE_HWC_RESET_REQUEST,
-            Self::VportLinkState(_) => GDMA_EQE_HWC_RECONFIG_DATA,
         }
     }
 
     fn data(&self) -> &[u8] {
         match self {
             Self::VfReset(data) => data.as_bytes(),
-            Self::VportLinkState(data) => data.as_bytes(),
         }
     }
 }
@@ -65,23 +58,6 @@ fn encode_request(request: GdmaTestRequest) -> EncodedTestRequest {
         GdmaTestRequest::Shutdown => unreachable!("shutdown requests are handled by the loop"),
         GdmaTestRequest::VfReset { revoke_vtl0_vf } => {
             EncodedTestRequest::VfReset(EqeVfReset::new().with_revoke_vtl0_vf(revoke_vtl0_vf))
-        }
-        GdmaTestRequest::VportLinkState { vport, connected } => {
-            let data_type = if connected {
-                HWC_DATA_TYPE_HW_VPORT_LINK_CONNECT
-            } else {
-                HWC_DATA_TYPE_HW_VPORT_LINK_DISCONNECT
-            };
-            assert!(
-                vport <= 0x00ff_ffff,
-                "vport index does not fit in the 24-bit EQE field"
-            );
-            let vport = vport.to_le_bytes();
-            EncodedTestRequest::VportLinkState(EqeDataReconfig {
-                data: [vport[0], vport[1], vport[2]],
-                data_type,
-                reserved1: [0; 8],
-            })
         }
     }
 }
@@ -146,30 +122,8 @@ mod tests {
         for revoke_vtl0_vf in [false, true] {
             let request = encode_request(GdmaTestRequest::VfReset { revoke_vtl0_vf });
             assert_eq!(request.eqe_type(), GDMA_EQE_HWC_RESET_REQUEST);
-            let EncodedTestRequest::VfReset(data) = request else {
-                panic!("VF reset encoded as the wrong event type");
-            };
+            let EncodedTestRequest::VfReset(data) = request;
             assert_eq!(data.revoke_vtl0_vf(), revoke_vtl0_vf);
-        }
-    }
-
-    #[test]
-    fn encode_vport_link_state() {
-        for (connected, expected_data_type) in [
-            (false, HWC_DATA_TYPE_HW_VPORT_LINK_DISCONNECT),
-            (true, HWC_DATA_TYPE_HW_VPORT_LINK_CONNECT),
-        ] {
-            let request = encode_request(GdmaTestRequest::VportLinkState {
-                vport: 0x00ab_cdef,
-                connected,
-            });
-            assert_eq!(request.eqe_type(), GDMA_EQE_HWC_RECONFIG_DATA);
-            let EncodedTestRequest::VportLinkState(data) = request else {
-                panic!("vport link state encoded as the wrong event type");
-            };
-            assert_eq!(data.data, [0xef, 0xcd, 0xab]);
-            assert_eq!(data.data_type, expected_data_type);
-            assert_eq!(data.reserved1, [0; 8]);
         }
     }
 }
