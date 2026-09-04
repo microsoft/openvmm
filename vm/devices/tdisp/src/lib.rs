@@ -140,10 +140,11 @@ pub enum TdispResourceIsolation {
     Shared,
     /// Host-inaccessible after TDI validation; backed by guest-private memory.
     Private,
-    /// Paravisor has no classification for this slot (e.g. the cached
-    /// TDI interface report has no entry for this BAR index, including
-    /// the upper half of a 64-bit BAR which is not reported
-    /// independently).
+    /// There is no resource here to classify: the device does not implement
+    /// this BAR, which includes the upper half of a 64-bit BAR since that is
+    /// not addressable in its own right, or the paravisor holds no interface
+    /// report for the device at all. A BAR the device does have but the report
+    /// omits is `Shared`, not this.
     Invalid,
 }
 
