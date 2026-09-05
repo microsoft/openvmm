@@ -72,6 +72,9 @@ fn copy_profile_diagnostics<'a>(
                     extension.as_str(),
                 ) {
                     (Some("metrics.csv"), _) => "results",
+                    (Some(filename), "raw") if filename.ends_with("-seeded.raw") => {
+                        "disk-diagnostics"
+                    }
                     (_, "log") => "openvmm-logs",
                     _ => continue,
                 };
@@ -191,6 +194,12 @@ mod tests {
         write_file(&profile_work_dir.join("nested").join("metrics.csv"))?;
         write_file(&profile_work_dir.join("nested").join("result.json"))?;
         write_file(&profile_work_dir.join("nested").join("guest.log"))?;
+        write_file(
+            &profile_work_dir
+                .join("nested")
+                .join("failed-guest-seeded.raw"),
+        )?;
+        write_file(&profile_work_dir.join("nested").join("data.raw"))?;
         write_file(&temp_dir.join("nested").join("samples.csv"))?;
         write_file(&runtime_logs.join("nested").join("vc_runtime.metrics"))?;
         write_file(&runtime_logs.join("nested").join("runtime.log"))?;
@@ -213,6 +222,12 @@ mod tests {
         assert_eq!(
             collect_relative_files(&config_output_dir)?,
             Vec::from([
+                path(&[
+                    "disk-diagnostics",
+                    "data",
+                    "nested",
+                    "failed-guest-seeded.raw",
+                ]),
                 path(&["openvmm-logs", "data", "nested", "guest.log"]),
                 path(&["results", "data", "nested", "metrics.csv"]),
                 path(&["virtual-client", "logs", "console.log"]),

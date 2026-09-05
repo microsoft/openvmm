@@ -76,7 +76,7 @@ impl VmmPerfRunner {
     }
 
     fn run_profile(&self, profile: VmmPerfProfile) -> Vec<String> {
-        if let Err(err) = self.runtime.validate_profile(profile) {
+        if let Err(err) = self.runtime.prepare_profile(profile) {
             return vec![format!("{}: {err:#}", profile.name())];
         }
 
