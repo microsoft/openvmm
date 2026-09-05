@@ -658,10 +658,10 @@ impl PortIoIntercept for PitDevice {
                                 .enumerate()
                         {
                             if select {
-                                if command.status() {
+                                if !command.status() {
                                     self.timers[i].state.latch_status();
                                 }
-                                if command.count() {
+                                if !command.count() {
                                     self.timers[i].state.latch_counter();
                                 }
                             }
