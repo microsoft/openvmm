@@ -12,6 +12,8 @@ test_tpm = ["dep:ms-tpm-20-ref", "dep:ms-tcg-tpm-sys"]
 
 [dependencies]
 tpm_protocol.workspace = true
+ms-tpm-20-ref = { optional = true, workspace = true }
+ms-tcg-tpm-sys = { optional = true, workspace = true }
 cvm_tracing.workspace = true
 inspect.workspace = true
 
@@ -19,16 +21,6 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
-[target.'cfg(target_env = "musl")'.dependencies]
-# TODO: Change this to symcrypt if the OSS TPM 1.38 can be made to work with it
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
-# TODO: Change this to symcrypt once it's ready
-ms-tcg-tpm-sys = { optional = true, workspace = true, features = ["openssl"] }
-
-[target.'cfg(not(target_env = "musl"))'.dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
-ms-tcg-tpm-sys = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 
 [dev-dependencies]
 getrandom.workspace = true
