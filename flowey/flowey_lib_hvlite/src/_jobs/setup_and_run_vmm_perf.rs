@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 flowey_request! {
     pub struct Params {
         pub label: String,
-        pub arch: CommonArch,
         pub runner: ReadVar<VmmPerfOutput>,
         pub openvmm: ReadVar<OpenvmmOutput>,
         pub profiles: Vec<VmmPerfProfile>,
@@ -47,7 +46,6 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             label,
-            arch,
             runner,
             openvmm,
             profiles,
@@ -84,12 +82,14 @@ impl SimpleFlowNode for Node {
         });
         let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_external_deps::Request::Install)];
 
-        let firmware =
-            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v });
+        let firmware = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+            arch: CommonArch::X86_64,
+            msvm_fd: v,
+        });
         let runtime_archive = match runtime_archive {
             Some(runtime_archive) => runtime_archive,
             None => ctx.reqv(|v| crate::download_vmm_perf_runtime::Request::Get {
-                arch,
+                arch: CommonArch::X86_64,
                 runtime_archive: v,
             }),
         };

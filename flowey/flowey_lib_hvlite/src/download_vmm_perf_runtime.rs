@@ -21,8 +21,6 @@ const VMM_PERF_RUNTIME_LINUX_ARM64_SHA256: &str =
     "2b0a650caa8ebc9515a884aa6d93ec4d9ba9e8972b1bce5eac36f9c3d15e3f79";
 const VMM_PERF_RUNTIME_WINDOWS_X64_SHA256: &str =
     "bf348a4c3e8a1dc5ad0f9714a70d8916bb0c944affdfb264196ff013802c5327";
-const VMM_PERF_RUNTIME_WINDOWS_ARM64_SHA256: &str =
-    "a4fcce1794ce16e74778d5d4b529be13045d50929789f9ee56670868507aab8f";
 
 flowey_request! {
     pub enum Request {
@@ -150,10 +148,6 @@ fn runtime_archive_info(
         (FlowPlatform::Windows, CommonArch::X86_64) => {
             Ok(("vmm-perf-win-x64.zip", VMM_PERF_RUNTIME_WINDOWS_X64_SHA256))
         }
-        (FlowPlatform::Windows, CommonArch::Aarch64) => Ok((
-            "vmm-perf-win-arm64.zip",
-            VMM_PERF_RUNTIME_WINDOWS_ARM64_SHA256,
-        )),
         _ => anyhow::bail!("no VMM.Perf runtime archive for {arch:?} on {platform:?}"),
     }
 }

@@ -68,7 +68,6 @@ impl SimpleFlowNode for Node {
         } else {
             ctx.req(crate::_jobs::setup_and_run_vmm_perf::Params {
                 label: "vmm-perf".into(),
-                arch: crate::common::CommonArch::X86_64,
                 runner,
                 openvmm,
                 profiles,
