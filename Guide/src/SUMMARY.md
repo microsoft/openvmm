@@ -53,6 +53,7 @@
   - [`cargo xtask`](./dev_guide/dev_tools/xtask.md)
   - [`cargo xflowey`](./dev_guide/dev_tools/xflowey.md)
   - [VmgsTool](./dev_guide/dev_tools/vmgstool.md)
+  - [tpm_utils](./dev_guide/dev_tools/tpm_utils.md)
   - [update-rootfs.py]()
   - [igvmfilegen]()
   - [guest_test_uefi](./dev_guide/dev_tools/guest_test_uefi.md)

@@ -2333,6 +2333,36 @@ mod tests {
         }
     }
 
+    /// Boot from a pre-provisioned 1.85 NVRAM blob and check that its
+    /// owner-defined state survives. See the test_data README for how the blob
+    /// is generated.
+    #[async_test]
+    async fn test_pre_provisioned_nvram_blob_for_v185() {
+        let blob = include_bytes!("../../test_data/vTpmState-1.85.blob").to_vec();
+        let mut tpm = new_test_tpm(
+            TpmVersion::V185,
+            Some(default_vtpm_size(TpmVersion::V185)),
+            Some(blob),
+        )
+        .await
+        .expect("pre-provisioned 1.85 blob must boot");
+
+        assert!(
+            tpm.tpm_engine_helper
+                .find_object(tpm_protocol::TPM_RSA_SRK_HANDLE)
+                .unwrap()
+                .is_some()
+        );
+
+        let res = tpm
+            .tpm_engine_helper
+            .find_nv_index(TPM_NV_INDEX_AIK_CERT)
+            .expect("find_nv_index should succeed")
+            .expect("AKCert NV index present");
+        assert!(!TpmaNvBits::from(res.nv_public.nv_public.attributes.0.get()).nv_platformcreate());
+        assert_eq!(res.nv_public.nv_public.data_size.get(), 1024);
+    }
+
     async fn new_test_tpm(
         version: TpmVersion,
         nvram_size: Option<usize>,
