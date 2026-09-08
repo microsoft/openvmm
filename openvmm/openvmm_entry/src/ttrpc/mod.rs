@@ -476,8 +476,14 @@ mod dispatch {
 }
 
 pub struct TtrpcWorker {
-    listener: Listener,
+    listener: BoundListener,
     transport: ResolvedTransport,
+}
+
+enum BoundListener {
+    Unix(UnixListener),
+    #[cfg(windows)]
+    Pipe(pal_async::windows::pipe::NamedPipeServer),
 }
 
 pub const TTRPC_WORKER: WorkerId<Parameters> = WorkerId::new("TtrpcWorker");
@@ -489,7 +495,14 @@ impl Worker for TtrpcWorker {
 
     fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
         Ok(Self {
-            listener: parameters.listener,
+            listener: match parameters.listener {
+                Listener::Unix(listener) => BoundListener::Unix(listener),
+                #[cfg(windows)]
+                Listener::Pipe(path) => BoundListener::Pipe(
+                    pal_async::windows::pipe::NamedPipeServer::create(path)
+                        .context("failed to create named pipe")?,
+                ),
+            },
             transport: match parameters.transport {
                 #[cfg(feature = "ttrpc")]
                 RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
@@ -530,7 +543,7 @@ impl Worker for TtrpcWorker {
 impl VmService {
     async fn run(
         &mut self,
-        listener: Listener,
+        listener: BoundListener,
         mut recv: mesh::Receiver<WorkerRpc<()>>,
     ) -> anyhow::Result<()> {
         let mut server = mesh_rpc::Server::new();
@@ -544,14 +557,12 @@ impl VmService {
             let driver = self.driver.clone();
             async move {
                 let r = match listener {
-                    Listener::Unix(listener) => {
+                    BoundListener::Unix(listener) => {
                         dispatch::run(&server, &driver, listener, cancel_recv, transport, registry)
                             .await
                     }
                     #[cfg(windows)]
-                    Listener::Pipe(path) => {
-                        let listener = pal_async::windows::pipe::NamedPipeServer::create(path)
-                            .context("failed to create named pipe")?;
+                    BoundListener::Pipe(listener) => {
                         dispatch::run_pipe(&server, &driver, listener, cancel_recv, transport).await
                     }
                 };
@@ -2296,6 +2307,34 @@ fn build_vhost_user_device(
     _vhost_user: vmservice::VhostUser,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     anyhow::bail!("vhost-user is only supported on unix hosts")
+}
+
+#[cfg(all(test, windows))]
+mod named_pipe_tests {
+    use super::*;
+    use pal_async::windows::pipe::NamedPipeServer;
+    use test_with_tracing::test;
+
+    #[test]
+    fn worker_construction_reserves_pipe() {
+        let mut random = [0; 16];
+        getrandom::fill(&mut random).unwrap();
+        let path = format!(
+            r"\\.\pipe\openvmm-rpc-test-{:032x}",
+            u128::from_ne_bytes(random)
+        );
+        let parameters = || Parameters {
+            listener: Listener::Pipe(path.clone()),
+            transport: RpcTransport::Auto,
+        };
+
+        let worker = TtrpcWorker::new(parameters()).unwrap();
+        assert!(NamedPipeServer::create(&path).is_err());
+        assert!(TtrpcWorker::new(parameters()).is_err());
+
+        drop(worker);
+        NamedPipeServer::create(&path).unwrap();
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
