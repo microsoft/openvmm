@@ -19,10 +19,16 @@ use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+use windows_sys::Win32::Security::Authorization::GetSecurityInfo;
 use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
+use windows_sys::Win32::Security::Authorization::SE_KERNEL_OBJECT;
+use windows_sys::Win32::Security::CopySid;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
 use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::GetSecurityDescriptorLength;
+use windows_sys::Win32::Security::GetTokenInformation;
 use windows_sys::Win32::Security::LABEL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
@@ -30,7 +36,12 @@ use windows_sys::Win32::Security::PSID;
 use windows_sys::Win32::Security::SACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+use windows_sys::Win32::Security::TOKEN_QUERY;
+use windows_sys::Win32::Security::TOKEN_USER;
+use windows_sys::Win32::Security::TokenUser;
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+use windows_sys::Win32::System::Threading::OpenProcessToken;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
 
@@ -46,6 +57,55 @@ pub struct Sid<T: ?Sized = [u32]> {
 
 /// A SID that can contain the maximum number of subauthorities.
 pub type MaximumSid = Sid<[u32; MAX_SUBAUTHORITY_COUNT]>;
+
+/// Returns the user SID from the current process's primary token.
+pub fn current_process_user_sid() -> std::io::Result<MaximumSid> {
+    #[repr(C)]
+    struct TokenUserBuffer {
+        user: TOKEN_USER,
+        sid: MaximumSid,
+    }
+
+    let mut buffer = std::mem::MaybeUninit::<TokenUserBuffer>::zeroed();
+    let mut returned_length = 0;
+    let mut sid = Sid::new([0; 6], [0; MAX_SUBAUTHORITY_COUNT]);
+    let mut token = null_mut();
+    // SAFETY: the current process handle is valid and the output is writable.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: OpenProcessToken succeeded and returned a new owned handle.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    // SAFETY: the token is valid and the aligned output buffer has room for
+    // TOKEN_USER and the largest SID.
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            size_of::<TokenUserBuffer>() as u32,
+            &mut returned_length,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the successful query initialized TOKEN_USER in the buffer.
+    let user_sid = unsafe { (*buffer.as_ptr()).user.User.Sid };
+    // SAFETY: the source SID is valid while buffer is alive, and the destination
+    // is writable, aligned, and large enough for any SID.
+    if unsafe {
+        CopySid(
+            size_of::<MaximumSid>() as u32,
+            std::ptr::from_mut(&mut sid).cast(),
+            user_sid,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(sid)
+}
 
 impl<const N: usize> Sid<[u32; N]> {
     /// Creates a new SID.
@@ -122,6 +182,23 @@ impl From<&Sid> for MaximumSid {
 // This is mostly useful for interacting with Win32 APIs that allocate SIDs.
 #[repr(transparent)]
 pub struct LocalSid(NonNull<Sid>);
+
+impl FromStr for LocalSid {
+    type Err = std::io::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let value = U16CString::from_str(s)
+            .map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))?;
+        let mut sid = null_mut();
+        // SAFETY: the input is nul-terminated and the output is writable.
+        if unsafe { ConvertStringSidToSidW(value.as_ptr(), &mut sid) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: the successful call returned an exclusively owned SID
+        // allocated with LocalAlloc.
+        Ok(unsafe { Self::from_raw_sid(sid) })
+    }
+}
 
 impl Debug for LocalSid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -210,6 +287,37 @@ impl Drop for LocalSid {
 /// Guaranteed to be in self-relative form.
 #[derive(Clone)]
 pub struct LocalSecurityDescriptor(NonNull<c_void>, usize);
+
+impl LocalSecurityDescriptor {
+    /// Queries the selected security information from a kernel object.
+    pub fn from_handle(
+        handle: BorrowedHandle<'_>,
+        security_information: u32,
+    ) -> std::io::Result<Self> {
+        let mut descriptor = null_mut();
+        // SAFETY: the handle and output pointer are valid; unused outputs
+        // may be null.
+        let error = unsafe {
+            GetSecurityInfo(
+                handle.as_raw_handle(),
+                SE_KERNEL_OBJECT,
+                security_information,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        if error != 0 {
+            return Err(std::io::Error::from_raw_os_error(error as i32));
+        }
+        // SAFETY: GetSecurityInfo succeeded and returned a valid self-relative
+        // security descriptor allocated with LocalAlloc.
+        let length = unsafe { GetSecurityDescriptorLength(descriptor) } as usize;
+        Ok(Self(NonNull::new(descriptor).unwrap(), length))
+    }
+}
 
 impl Debug for LocalSecurityDescriptor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

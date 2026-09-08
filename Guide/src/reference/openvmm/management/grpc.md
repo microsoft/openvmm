@@ -5,7 +5,7 @@ OpenVMM process acting as an RPC server on the given Unix socket, or a Windows
 named pipe:
 
 ```bash
---rpc path=<PATH>[,transport=<TRANSPORT>]
+--rpc path=<PATH>[,transport=<TRANSPORT>][,allow-sid=<SID>]
 ```
 
 `transport` selects which wire protocol the server accepts:
@@ -25,6 +25,10 @@ On Windows, a path beginning with `\\.\pipe\` selects a named-pipe endpoint:
 ```bash
 --rpc path=\\.\pipe\openvmm
 ```
+
+Use `allow-sid=<SID>` to restrict a Windows named pipe to the specified user or
+group and OpenVMM's own process user. If omitted, Windows default pipe security
+applies. This option is supported only for Windows named pipes.
 
 Here is a list of supported RPCs:
 

@@ -21,6 +21,8 @@ use pal::windows::pipe::FILE_PIPE_WRITE_READY;
 use pal::windows::pipe::PipeExt;
 use pal::windows::pipe::PipeMode;
 use pal::windows::pipe::new_named_pipe;
+use pal::windows::pipe::new_named_pipe_with_security;
+use pal::windows::security::SecurityDescriptor;
 use pal_event::Event;
 use std::fs::File;
 use std::future::Future;
@@ -300,10 +302,27 @@ pub struct NamedPipeServer {
 impl NamedPipeServer {
     /// Creates a new server at `path`.
     pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::create_with_security(path, None)
+    }
+
+    /// Creates a server with an optional explicit security descriptor.
+    ///
+    /// The descriptor is applied when reserving the name. Windows shares the
+    /// pipe's security descriptor across all instances opened at that name.
+    pub fn create_with_security(
+        path: impl AsRef<Path>,
+        security_descriptor: Option<&SecurityDescriptor>,
+    ) -> io::Result<Self> {
         // Open the pipe with no access to reserve the name without providing a
         // pipe for clients to connect to. This is needed so that a client
         // connection blocks until the server is actually ready.
-        let root_pipe = new_named_pipe(path.as_ref(), 0, Disposition::Create, PipeMode::Byte)?;
+        let root_pipe = new_named_pipe_with_security(
+            path.as_ref(),
+            0,
+            Disposition::Create,
+            PipeMode::Byte,
+            security_descriptor,
+        )?;
         Ok(Self {
             _root_pipe: root_pipe,
             path: path.as_ref().to_owned(),

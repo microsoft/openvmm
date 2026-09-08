@@ -163,23 +163,26 @@ pub struct Parameters {
 pub enum Listener {
     Unix(UnixListener),
     #[cfg(windows)]
-    Pipe(String),
+    Pipe {
+        path: String,
+        allow_sid: Option<String>,
+    },
 }
 
-#[cfg(windows)]
-pub fn listener_from_path(path: &std::path::Path) -> anyhow::Result<Listener> {
+pub fn listener_from_path(
+    path: &std::path::Path,
+    allow_sid: Option<&str>,
+) -> anyhow::Result<Listener> {
+    #[cfg(windows)]
     if mesh_rpc::is_named_pipe_path(path) {
-        Ok(Listener::Pipe(path.to_string_lossy().into_owned()))
-    } else {
-        let _ = std::fs::remove_file(path);
-        Ok(Listener::Unix(
-            UnixListener::bind(path).context("failed to bind to socket")?,
-        ))
+        return Ok(Listener::Pipe {
+            path: path.to_string_lossy().into_owned(),
+            allow_sid: allow_sid.map(str::to_owned),
+        });
     }
-}
 
-#[cfg(not(windows))]
-pub fn listener_from_path(path: &std::path::Path) -> anyhow::Result<Listener> {
+    #[cfg(not(windows))]
+    let _ = allow_sid;
     let _ = std::fs::remove_file(path);
     Ok(Listener::Unix(
         UnixListener::bind(path).context("failed to bind to socket")?,
@@ -488,6 +491,28 @@ enum BoundListener {
 
 pub const TTRPC_WORKER: WorkerId<Parameters> = WorkerId::new("TtrpcWorker");
 
+#[cfg(windows)]
+fn rpc_pipe_security_descriptor(
+    allow_sid: &str,
+) -> anyhow::Result<pal::windows::security::LocalSecurityDescriptor> {
+    use pal::windows::security::LocalSid;
+    use pal::windows::security::current_process_user_sid;
+    use windows_sys::Win32::Storage::FileSystem::FILE_APPEND_DATA;
+    use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+
+    let client: LocalSid = allow_sid.parse().context("invalid RPC 'allow-sid'")?;
+    let server = current_process_user_sid().context("failed to query RPC pipe owner")?;
+    let client_access = (FILE_GENERIC_READ | FILE_GENERIC_WRITE) & !FILE_APPEND_DATA;
+    format!(
+        "O:{server}D:P(A;;FA;;;{server})(A;;0x{client_access:x};;;{client})",
+        server = server.to_string_sid(),
+        client = client.to_string_sid(),
+    )
+    .parse()
+    .context("failed to build RPC pipe security descriptor")
+}
+
 impl Worker for TtrpcWorker {
     type Parameters = Parameters;
     type State = ();
@@ -498,10 +523,19 @@ impl Worker for TtrpcWorker {
             listener: match parameters.listener {
                 Listener::Unix(listener) => BoundListener::Unix(listener),
                 #[cfg(windows)]
-                Listener::Pipe(path) => BoundListener::Pipe(
-                    pal_async::windows::pipe::NamedPipeServer::create(path)
+                Listener::Pipe { path, allow_sid } => {
+                    let security_descriptor = allow_sid
+                        .as_deref()
+                        .map(rpc_pipe_security_descriptor)
+                        .transpose()?;
+                    BoundListener::Pipe(
+                        pal_async::windows::pipe::NamedPipeServer::create_with_security(
+                            path,
+                            security_descriptor.as_deref(),
+                        )
                         .context("failed to create named pipe")?,
-                ),
+                    )
+                }
             },
             transport: match parameters.transport {
                 #[cfg(feature = "ttrpc")]
@@ -2312,19 +2346,79 @@ fn build_vhost_user_device(
 #[cfg(all(test, windows))]
 mod named_pipe_tests {
     use super::*;
+    use pal::windows::security::LocalSecurityDescriptor;
+    use pal::windows::security::current_process_user_sid;
     use pal_async::windows::pipe::NamedPipeServer;
+    use std::fs::OpenOptions;
+    use std::os::windows::io::AsHandle;
     use test_with_tracing::test;
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
+
+    fn pipe_path() -> String {
+        let mut random = [0; 16];
+        getrandom::fill(&mut random).unwrap();
+        format!(
+            r"\\.\pipe\openvmm-rpc-test-{:032x}",
+            u128::from_ne_bytes(random)
+        )
+    }
+
+    fn assert_pipe_security(file: &File, expected: &str) {
+        let descriptor = LocalSecurityDescriptor::from_handle(
+            file.as_handle(),
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        )
+        .unwrap();
+        assert_eq!(descriptor.to_sddl().unwrap(), expected);
+    }
+
+    #[test]
+    fn reject_invalid_pipe_sid() {
+        for sid in ["", "not-a-sid", "S-1-5-19)(A;;FA;;;WD)", "S-1-5-19\0"] {
+            assert!(rpc_pipe_security_descriptor(sid).is_err());
+        }
+    }
+
+    #[test]
+    fn worker_pipe_authorizes_configured_sid() {
+        DefaultPool::run_with(async |driver| {
+            let path = pipe_path();
+            let worker = TtrpcWorker::new(Parameters {
+                listener: listener_from_path(path.as_ref(), Some("S-1-5-19")).unwrap(),
+                transport: RpcTransport::Auto,
+            })
+            .unwrap();
+            let BoundListener::Pipe(listener) = &worker.listener else {
+                panic!("expected named pipe listener");
+            };
+            let user = current_process_user_sid().unwrap();
+            let expected: LocalSecurityDescriptor = format!(
+                "O:{user}D:P(A;;FA;;;{user})(A;;0x12019b;;;S-1-5-19)",
+                user = user.to_string_sid()
+            )
+            .parse()
+            .unwrap();
+            let expected = expected.to_sddl().unwrap();
+            for _ in 0..2 {
+                let accept = listener.accept(&driver).unwrap();
+                let client = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap();
+                let server = accept.await.unwrap();
+                assert_pipe_security(&client, &expected);
+                assert_pipe_security(&server, &expected);
+            }
+        });
+    }
 
     #[test]
     fn worker_construction_reserves_pipe() {
-        let mut random = [0; 16];
-        getrandom::fill(&mut random).unwrap();
-        let path = format!(
-            r"\\.\pipe\openvmm-rpc-test-{:032x}",
-            u128::from_ne_bytes(random)
-        );
+        let path = pipe_path();
         let parameters = || Parameters {
-            listener: Listener::Pipe(path.clone()),
+            listener: listener_from_path(path.as_ref(), None).unwrap(),
             transport: RpcTransport::Auto,
         };
 

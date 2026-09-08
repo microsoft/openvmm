@@ -2611,7 +2611,10 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
 
         if let Some((path, transport)) = rpc {
             return block_on(async {
-                let listener = ttrpc::listener_from_path(path)?;
+                let listener = ttrpc::listener_from_path(
+                    path,
+                    opt.rpc.as_ref().and_then(|rpc| rpc.allow_sid.as_deref()),
+                )?;
 
                 // This is a local launch
                 let mut handle =

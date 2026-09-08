@@ -4,6 +4,7 @@
 use super::UnicodeString;
 use super::chk_status;
 use super::dos_to_nt_path;
+use super::security::SecurityDescriptor;
 use super::status_to_error;
 // TODO: Revert this ntapi fallback once windows/windows-sys expose
 // NtCreateNamedPipeFile directly.
@@ -141,6 +142,17 @@ pub fn new_named_pipe(
     disposition: Disposition,
     mode: PipeMode,
 ) -> io::Result<File> {
+    new_named_pipe_with_security(path, access, disposition, mode, None)
+}
+
+/// Creates a named pipe with an optional explicit security descriptor.
+pub fn new_named_pipe_with_security(
+    path: impl AsRef<Path>,
+    access: u32,
+    disposition: Disposition,
+    mode: PipeMode,
+    security_descriptor: Option<&SecurityDescriptor>,
+) -> io::Result<File> {
     create_named_pipe(
         null_mut(),
         path.as_ref(),
@@ -151,6 +163,7 @@ pub fn new_named_pipe(
         },
         true,
         mode == PipeMode::Message,
+        security_descriptor,
     )
 }
 
@@ -161,6 +174,7 @@ fn create_named_pipe(
     disposition: u32,
     overlapped: bool,
     message_mode: bool,
+    security_descriptor: Option<&SecurityDescriptor>,
 ) -> Result<File, io::Error> {
     unsafe {
         let mut pathu = if root.is_null() {
@@ -174,7 +188,8 @@ fn create_named_pipe(
             RootDirectory: root.cast::<c_void>(),
             ObjectName: pathu.as_mut_ptr(),
             Attributes: OBJ_CASE_INSENSITIVE,
-            SecurityDescriptor: null_mut(),
+            SecurityDescriptor: security_descriptor
+                .map_or(std::ptr::null(), |descriptor| descriptor.as_ptr().cast()),
             SecurityQualityOfService: null_mut(),
         };
 
@@ -222,6 +237,7 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
             FILE_CREATE,
             false,
             message_mode,
+            None,
         )?;
 
         let mut empty_name = zeroed();
