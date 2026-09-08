@@ -11,10 +11,8 @@
 //! page the validator owns), TDG.TDI.START authorizes the host to start it, and
 //! a post-start TDG.TDI.RD confirms the TDX Module sees it in TDISP RUN.
 
-use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
 use crate::TdispTdiState;
-use crate::new_unblock_mmio_range_command;
 use anyhow::Context as _;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvVtl;
@@ -27,8 +25,6 @@ use std::future::Future;
 use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
 use tdisp::devicereport::TdispTdiReportMmioInterfaceInfo;
-use tdisp_proto::GuestToHostResponseExt as _;
-use tdisp_proto::TdispCommandResponseModifyMmioRange;
 use user_driver::DmaClient;
 use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::memory::MemoryBlock;
@@ -637,10 +633,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         );
     }
 
-    #[tracing::instrument(
-        skip(self, host),
-        fields(device_id, range_id, base_offset, length_in_bytes)
-    )]
+    #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     fn tdisp_unblock_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -649,7 +642,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         base_offset: u32,
         length_in_bytes: u64,
         range_id: u16,
-        host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
         Box::pin(async move {
             if length_in_bytes == 0 {
@@ -663,41 +655,14 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             let mshv_vtl = Self::open_mshv_vtl()?;
             self.probe_tdi(&mshv_vtl, device_id)?;
 
+            // The caller has already told the host to unblock the range, so its
+            // pages are ready to be accepted into the TD below.
             tracing::info!(
-                "TDX Connect tdisp_unblock_mmio: telling the host to unblock the MMIO range: \
+                "TDX Connect tdisp_unblock_mmio: unblocking the MMIO range: \
                  device_id={device_id:#x}, range_id={range_id}, base_gpa={base_gpa:#x}, \
                  base_offset={base_offset:#x}, length_in_bytes={length_in_bytes:#x}, \
                  target_vtl={target_vtl:?}, vtom={:#x}",
                 self.vtom
-            );
-
-            // The host command is addressed by VPCI slot, which `host` supplies.
-            let res = host
-                .send_tdisp_command(new_unblock_mmio_range_command(
-                    0,
-                    range_id,
-                    base_gpa,
-                    length_in_bytes,
-                ))
-                .await
-                .context("failed to send the ModifyMmioRange unblock command")?;
-
-            let tdi_state_before = res.tdi_state_before_enum();
-            let tdi_state_after = res.tdi_state_after_enum();
-
-            res.response::<TdispCommandResponseModifyMmioRange>()
-                .map_err(|err| {
-                    anyhow::anyhow!(
-                        "host rejected the ModifyMmioRange unblock command for range {range_id} \
-                         at {base_gpa:#x} (tdi state {tdi_state_before:?} -> {tdi_state_after:?}): \
-                         {err}"
-                    )
-                })?;
-
-            tracing::info!(
-                "TDX Connect tdisp_unblock_mmio: host accepted the MMIO range unblock: \
-                 device_id={device_id:#x}, range_id={range_id}, base_gpa={base_gpa:#x}, \
-                 length_in_bytes={length_in_bytes:#x}"
             );
 
             let function_id = Self::function_id(device_id);

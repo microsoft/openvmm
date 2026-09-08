@@ -5,7 +5,6 @@
 //! TDISP devices. This is used by OpenHCL devices that are exposed to SEV guests and need to
 //! communicate with the SEV firmware to unblock device resources after attestation.
 
-use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
 use crate::TdispTdiState;
 use anyhow::Context;
@@ -189,10 +188,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         tracing::info!(device_id, "SEV-TIO tdisp_clear_tdi_report: no-op");
     }
 
-    #[tracing::instrument(
-        skip(self, _host),
-        fields(device_id, range_id, base_offset, length_in_bytes)
-    )]
+    #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     fn tdisp_unblock_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -201,7 +197,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         base_offset: u32,
         length_in_bytes: u64,
         range_id: u16,
-        _host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
         Box::pin(async move {
             let base_pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;

@@ -7,7 +7,6 @@ use parking_lot::Mutex;
 
 use hvdef::Vtl;
 
-use crate::TdispHostCommandSender;
 use crate::TdispResourceValidationInterface;
 use crate::TdispTdiState;
 use std::future::Future;
@@ -117,7 +116,6 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         base_offset: u32,
         length_in_bytes: u64,
         range_id: u16,
-        _host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
         Box::pin(async move {
             tracing::info!(

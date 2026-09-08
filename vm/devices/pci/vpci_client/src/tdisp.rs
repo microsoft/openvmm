@@ -21,11 +21,8 @@ use openhcl_tdisp::TdispDeviceInterfaceInfo;
 use openhcl_tdisp::TdispGuestOperationErrorCode;
 use openhcl_tdisp::TdispGuestProtocolType;
 use openhcl_tdisp::TdispGuestUnbindReason;
-use openhcl_tdisp::TdispHostCommandSender;
 use openhcl_tdisp::TdispReportType;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
-use std::future::Future;
-use std::pin::Pin;
 use tdisp::TdispIsolationReport;
 use tdisp::TdispResourceIsolation;
 use tdisp::TdispTdiState;
@@ -106,59 +103,6 @@ struct ValidatedMmio {
     /// means it was deliberately skipped and there is nothing to undo.
     #[inspect(debug)]
     isolation: TdispResourceIsolation,
-}
-
-/// Sends guest-to-host TDISP commands for one device, handed to the resource
-/// validator so platform code can issue commands without owning the channel.
-///
-/// This does not track the TDI's state, so it suits only commands that do not
-/// transition the TDI.
-struct VpciTdispHostSender {
-    worker_req: mesh::Sender<WorkerRequest>,
-    vpci_device_id: u64,
-}
-
-impl TdispHostCommandSender for VpciTdispHostSender {
-    fn send_tdisp_command<'a>(
-        &'a self,
-        mut command: GuestToHostCommand,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<GuestToHostResponse>> + Send + Sync + 'a>> {
-        Box::pin(async move {
-            // The validator does not know the VPCI slot, so address the command
-            // here rather than requiring every caller to supply it.
-            command.device_id = self.vpci_device_id;
-
-            let serialized = openhcl_tdisp::serialize_command(&command);
-            if serialized.len() > MAX_VPCI_TDISP_COMMAND_SIZE {
-                anyhow::bail!(
-                    "serialized TDISP command exceeds VMBUS maximum packet size ({} > {})",
-                    serialized.len(),
-                    MAX_VPCI_TDISP_COMMAND_SIZE
-                );
-            }
-
-            self.worker_req
-                .call_failable(
-                    WorkerRequest::TdispCommand,
-                    vpci_protocol::VpciTdispCommand {
-                        header: vpci_protocol::VpciTdispCommandHeader {
-                            message_type: vpci_protocol::MessageType::VPCI_TDISP_COMMAND,
-                            slot: SlotNumber::from_bits(self.vpci_device_id as u32),
-                            data_length: serialized.len() as u64,
-                        },
-                        data: serialized,
-                    },
-                )
-                .await
-                .map_err(|err: mesh::rpc::RpcError<mesh::error::RemoteError>| {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to send tdisp command"
-                    );
-                    anyhow::anyhow!("failed to send tdisp command")
-                })
-        })
-    }
 }
 
 impl VpciClientTdispMutableState {
@@ -1192,27 +1136,22 @@ impl VpciClientTdispState {
                  TDI device id is known"
             );
         };
-        let host = VpciTdispHostSender {
-            worker_req: self.worker_req.clone(),
-            vpci_device_id: self.vpci_device_id,
-        };
-
         tracing::info!(
             "tdisp_on_mmio_reconfigured: unblocking MMIO for BAR classified PRIVATE: \
              device_id={device_id:#x}, bar_id={bar_id}, base_address={base_address:#x}, \
              length={length:#x}"
         );
 
+        // Tell the host before the platform unblocks. The host is what puts the
+        // range's pages into a state the platform can then accept, so here the
+        // host has to lead, which is the reverse of the ordering on the block
+        // path in `tdisp_unbind`.
+        self.tdisp_host_unblock_mmio_range(bar_id, base_address, length)
+            .await
+            .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO on the host")?;
+
         self.resource_validator
-            .tdisp_unblock_mmio(
-                self.target_vtl,
-                device_id,
-                base_address,
-                0,
-                length,
-                bar_id,
-                &host,
-            )
+            .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
             .await
             .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO")?;
 

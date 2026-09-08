@@ -233,7 +233,6 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     ///   unblocking from. Necessary for cases where the host splits the MMIO range
     ///   into multiple subranges for unblocking.
     /// * `length_in_bytes` - The length in bytes of the MMIO range to unblock starting from `base_offset`.
-    /// * `host` - Used to send guest-to-host TDISP commands for this device.
     fn tdisp_unblock_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -242,7 +241,6 @@ pub trait TdispResourceValidationInterface: Send + Sync {
         base_offset: u32,
         length_in_bytes: u64,
         range_id: u16,
-        host: &'a dyn TdispHostCommandSender,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>>;
 
     /// Unblock DMA access for the device's IOMMU domain.
@@ -281,19 +279,6 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     /// * `target_vtl` - The VTL to block DMA for.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
-}
-
-/// Sends a guest-to-host TDISP command on behalf of a single device.
-///
-/// Implemented by the VPCI layer and handed to
-/// [`TdispResourceValidationInterface`] methods, so platform code can issue
-/// commands without owning the channel or knowing the device's VPCI slot.
-pub trait TdispHostCommandSender: Send + Sync {
-    /// Send `command` to the host and return its response.
-    fn send_tdisp_command<'a>(
-        &'a self,
-        command: GuestToHostCommand,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<GuestToHostResponse>> + Send + Sync + 'a>>;
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.
