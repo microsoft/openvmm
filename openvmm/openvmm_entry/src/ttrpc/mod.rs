@@ -501,6 +501,10 @@ fn rpc_pipe_security_descriptor(
     use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
 
+    anyhow::ensure!(
+        !allow_sid.contains('\0'),
+        "invalid RPC 'allow-sid': contains NUL"
+    );
     let client: LocalSid = allow_sid.parse().context("invalid RPC 'allow-sid'")?;
     let server = current_process_user_sid().context("failed to query RPC pipe owner")?;
     let client_access = (FILE_GENERIC_READ | FILE_GENERIC_WRITE) & !FILE_APPEND_DATA;
@@ -2375,8 +2379,18 @@ mod named_pipe_tests {
 
     #[test]
     fn reject_invalid_pipe_sid() {
-        for sid in ["", "not-a-sid", "S-1-5-19)(A;;FA;;;WD)", "S-1-5-19\0"] {
-            assert!(rpc_pipe_security_descriptor(sid).is_err());
+        for sid in [
+            "",
+            "not-a-sid",
+            "S-1-5-19)(A;;FA;;;WD)",
+            "S-1-5-19\0",
+            "S-1-5-19\0\0",
+            "S-1-5-19\0trailing",
+        ] {
+            assert!(
+                rpc_pipe_security_descriptor(sid).is_err(),
+                "accepted invalid SID: {sid:?}"
+            );
         }
     }
 
