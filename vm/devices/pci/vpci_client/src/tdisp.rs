@@ -145,7 +145,7 @@ pub struct VpciClientTdispState {
     /// Platform hooks used to gate attestation and unblock device resources.
     /// Required: a device driven through the TDISP flow must always have a
     /// validator, so that no platform silently skips validation. Platforms with
-    /// nothing to do use `mocks::TdispNoopResourceValidator`.
+    /// nothing to do use `noop::TdispNoopResourceValidator`.
     #[inspect(skip)]
     resource_validator: Arc<dyn TdispResourceValidationInterface>,
 }
@@ -1417,7 +1417,7 @@ mod tests {
             worker_req,
             /* device_id = */ 0,
             /* resource_validator = */
-            Arc::new(openhcl_tdisp::mocks::TdispNoopResourceValidator::new()),
+            Arc::new(openhcl_tdisp::noop::TdispNoopResourceValidator::new()),
             IsolationType::None,
             /* vtom = */ 0,
             Vtl::Vtl0,

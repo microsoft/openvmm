@@ -3387,7 +3387,7 @@ async fn new_underhill_vm(
                 #[cfg(feature = "dev_snp_ohcl_tio_support")]
                 use openhcl_tdisp::TdispSevTioResourceValidator;
                 use openhcl_tdisp::TdispTdxConnectResourceValidator;
-                use openhcl_tdisp::mocks::TdispNoopResourceValidator;
+                use openhcl_tdisp::noop::TdispNoopResourceValidator;
 
                 use vpci_relay::*;
 

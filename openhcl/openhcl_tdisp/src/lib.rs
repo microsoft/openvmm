@@ -13,7 +13,7 @@ mod sevtio;
 
 mod tdxconnect;
 
-pub mod mocks;
+pub mod noop;
 
 // Re-export the TDISP protocol types necessary for OpenHCL from top level tdisp crates
 // to avoid a direct dependency on tdisp_proto and tdisp.

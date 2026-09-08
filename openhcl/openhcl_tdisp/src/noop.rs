@@ -1,7 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Mock implementations of TDISP traits for use in tests.
+//! A resource validator for platforms that have no resource validation to do.
+//!
+//! Used on every isolation type without a platform validator of its own, and by
+//! the mocked TDISP flow the OpenVMM tests drive. Unblocking and blocking do
+//! nothing, but each request is recorded so a test can check which resources
+//! the TDISP flow asked for.
 
 use parking_lot::Mutex;
 
@@ -13,7 +18,7 @@ use std::future::Future;
 use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
 
-/// A single MMIO unblock request recorded by the mock validator.
+/// A single MMIO unblock request recorded by the validator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnblockedMmioRange {
     /// The VTL the MMIO range was unblocked for.
@@ -30,10 +35,11 @@ pub struct UnblockedMmioRange {
     pub range_id: u16,
 }
 
-/// Mock implementation of [`TdispResourceValidationInterface`] for testing.
+/// A [`TdispResourceValidationInterface`] that validates nothing.
 ///
-/// Unblocking does nothing, but every MMIO and DMA unblock request is recorded
-/// so tests can verify the correct resources were unblocked.
+/// A device driven through the TDISP flow always has a validator, so this
+/// stands in wherever the platform has no resources to validate. Every MMIO and
+/// DMA request is recorded, so a test can assert on what the flow asked for.
 #[derive(Default)]
 pub struct TdispNoopResourceValidator {
     unblocked_mmio_ranges: Mutex<Vec<UnblockedMmioRange>>,
@@ -62,7 +68,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         tracing::info!(
             ?target_vtl,
             ?device_id,
-            "mock resource validator on_pre_bind"
+            "no-op resource validator on_pre_bind"
         );
         Ok(())
     }
@@ -71,7 +77,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         tracing::info!(
             ?target_vtl,
             ?device_id,
-            "mock resource validator on_pre_start"
+            "no-op resource validator on_pre_start"
         );
         Ok(())
     }
@@ -80,7 +86,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         tracing::info!(
             ?target_vtl,
             ?device_id,
-            "mock resource validator on_post_start"
+            "no-op resource validator on_post_start"
         );
         Ok(())
     }
@@ -90,22 +96,25 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         target_vtl: Vtl,
         device_id: u16,
     ) -> anyhow::Result<Option<TdispTdiState>> {
-        // The mock has no firmware to ask, so it reports that it cannot answer
+        // There is no firmware to ask, so report that it cannot answer
         // rather than inventing a state for callers to check against.
         tracing::info!(
             ?target_vtl,
             ?device_id,
-            "mock resource validator get_tsm_tdi_state"
+            "no-op resource validator get_tsm_tdi_state"
         );
         Ok(None)
     }
 
     fn tdisp_set_tdi_report(&self, device_id: u16, _report: &TdiReportStruct) {
-        tracing::info!(?device_id, "mock resource validator tdisp_set_tdi_report");
+        tracing::info!(?device_id, "no-op resource validator tdisp_set_tdi_report");
     }
 
     fn tdisp_clear_tdi_report(&self, device_id: u16) {
-        tracing::info!(?device_id, "mock resource validator tdisp_clear_tdi_report");
+        tracing::info!(
+            ?device_id,
+            "no-op resource validator tdisp_clear_tdi_report"
+        );
     }
 
     fn tdisp_unblock_mmio<'a>(
@@ -125,7 +134,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
                 ?base_offset,
                 ?length_in_bytes,
                 ?range_id,
-                "mock resource validator recording MMIO unblock"
+                "no-op resource validator recording MMIO unblock"
             );
             self.unblocked_mmio_ranges.lock().push(UnblockedMmioRange {
                 target_vtl,
@@ -143,7 +152,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         tracing::info!(
             ?target_vtl,
             ?device_id,
-            "mock resource validator recording DMA unblock"
+            "no-op resource validator recording DMA unblock"
         );
         *self.dma_unblocked.lock() = true;
         Ok(())
@@ -166,7 +175,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
                 ?base_offset,
                 ?length_in_bytes,
                 ?range_id,
-                "mock resource validator recording MMIO block"
+                "no-op resource validator recording MMIO block"
             );
             self.unblocked_mmio_ranges
                 .lock()
@@ -179,7 +188,7 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
         tracing::info!(
             ?target_vtl,
             ?device_id,
-            "mock resource validator recording DMA block"
+            "no-op resource validator recording DMA block"
         );
         *self.dma_unblocked.lock() = false;
         Ok(())

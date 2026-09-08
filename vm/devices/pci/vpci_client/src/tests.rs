@@ -16,7 +16,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use hvdef::Vtl;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
-use openhcl_tdisp::mocks::TdispNoopResourceValidator;
+use openhcl_tdisp::noop::TdispNoopResourceValidator;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::task::Spawn;
