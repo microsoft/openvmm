@@ -28,6 +28,8 @@ use std::io::Write;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 #[cfg(windows)]
@@ -35,7 +37,9 @@ use std::{fs::OpenOptions, io};
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
-petri::test!(test_ttrpc_interface, |resolver| {
+fn resolve_ttrpc_interface_artifacts(
+    resolver: &petri::ArtifactResolver<'_>,
+) -> Option<[ResolvedArtifact; 4]> {
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
     let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
     let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
@@ -47,33 +51,61 @@ petri::test!(test_ttrpc_interface, |resolver| {
             .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64)
             .erase(),
     };
-    Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
-});
 
-async fn test_ttrpc_interface(
+    Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
+}
+
+petri::multitest!(vec![
+    petri::SimpleTest::new_async(
+        "test_ttrpc_interface_uds",
+        resolve_ttrpc_interface_artifacts,
+        test_ttrpc_interface_uds,
+    )
+    .into(),
+    #[cfg(windows)]
+    petri::SimpleTest::new_async(
+        "test_ttrpc_interface_named_pipe",
+        resolve_ttrpc_interface_artifacts,
+        test_ttrpc_interface_named_pipe,
+    )
+    .into(),
+]);
+
+async fn test_ttrpc_interface_uds(
     params: petri::PetriTestParams<'_>,
     driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
 ) -> anyhow::Result<()> {
     let tempdir = tempfile::tempdir()?;
-    let endpoint_paths = [
-        tempdir.path().join("ttrpc.sock"),
-        #[cfg(windows)]
-        format!(r"\\.\PIPE\openvmm-ttrpc-{}", Guid::new_random()).into(),
-    ];
+    let endpoint_path = tempdir.path().join("ttrpc.sock");
 
-    for endpoint_path in &endpoint_paths {
-        test_ttrpc_interface_inner(
-            &params,
-            driver.clone(),
-            [&openvmm, &kernel_path, &initrd_path, &pipette_path],
-            &tempdir,
-            endpoint_path,
-        )
-        .await?;
-    }
+    test_ttrpc_interface_inner(
+        &params,
+        driver,
+        [&openvmm, &kernel_path, &initrd_path, &pipette_path],
+        &tempdir,
+        &endpoint_path,
+    )
+    .await
+}
 
-    Ok(())
+#[cfg(windows)]
+async fn test_ttrpc_interface_named_pipe(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
+) -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let endpoint_path: PathBuf = format!(r"\\.\PIPE\openvmm-ttrpc-{}", Guid::new_random()).into();
+
+    test_ttrpc_interface_inner(
+        &params,
+        driver,
+        [&openvmm, &kernel_path, &initrd_path, &pipette_path],
+        &tempdir,
+        &endpoint_path,
+    )
+    .await
 }
 
 async fn test_ttrpc_interface_inner(
