@@ -2075,6 +2075,38 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     Ok(in_public)
 }
 
+/// Returns the public template for the RSA storage root key (SRK).
+pub fn rsa_srk_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
+    let symmetric = TpmtSymDefObject::new(
+        AlgIdEnum::AES.into(),
+        Some(128),
+        Some(AlgIdEnum::CFB.into()),
+    );
+    let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, RSA_2K_MODULUS_BITS, 0);
+
+    let object_attributes = TpmaObjectBits::new()
+        .with_fixed_tpm(true)
+        .with_fixed_parent(true)
+        .with_sensitive_data_origin(true)
+        .with_user_with_auth(true)
+        .with_no_da(true)
+        .with_restricted(true)
+        .with_decrypt(true);
+
+    let in_public = TpmtPublic::new(
+        AlgIdEnum::RSA.into(),
+        AlgIdEnum::SHA256.into(),
+        object_attributes,
+        &[],
+        rsa_params,
+        &[0u8; RSA_2K_MODULUS_SIZE],
+    )
+    .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
+
+    Ok(in_public)
+}
+
 /// Helper function for converting `Tpm2bPublic` to `TpmRsa2kPublic`.
 fn export_rsa_public(public: &Tpm2bPublic) -> Result<TpmRsa2kPublic, TpmHelperUtilityError> {
     if public.public_area.parameters.exponent.get() != 0 {
