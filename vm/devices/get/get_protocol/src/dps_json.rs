@@ -172,6 +172,16 @@ pub enum HardwareSealingPolicy {
     Signer,
 }
 
+/// Version of the Microsoft TPM reference implementation to expose to the
+/// guest.
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+pub enum GetTpmVersion {
+    /// TPM reference implementation version 1.38
+    V138,
+    /// TPM reference implementation version 1.85
+    V185,
+}
+
 /// Management VTL Feature Flags
 #[bitfield(u64)]
 #[derive(Deserialize, Serialize)]
@@ -248,6 +258,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub force_dma_bounce_enabled: bool,
     #[serde(default)]
     pub hardware_sealing_policy_id: HardwareSealingPolicy,
+    #[serde(default)]
+    pub tpm_version: Option<GetTpmVersion>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -304,12 +316,16 @@ mod test {
     use super::*;
 
     #[test]
-    fn smoke_test_sample() {
+    fn ipmi_defaults_false_and_parses_true() {
         let settings = serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
             "dps_test_json.json"
         ))
         .unwrap();
         assert!(!settings.v1.enable_ipmi);
+
+        let settings =
+            serde_json::from_str::<HclDevicePlatformSettings>(r#"{"EnableIpmi":true}"#).unwrap();
+        assert!(settings.enable_ipmi);
     }
 
     #[test]
@@ -318,12 +334,5 @@ mod test {
             "dps_test_json_with_vtl2settings.json"
         ))
         .unwrap();
-    }
-
-    #[test]
-    fn parse_ipmi_enabled() {
-        let settings =
-            serde_json::from_str::<HclDevicePlatformSettings>(r#"{"EnableIpmi":true}"#).unwrap();
-        assert!(settings.enable_ipmi);
     }
 }

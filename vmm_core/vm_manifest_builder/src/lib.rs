@@ -1091,23 +1091,19 @@ mod tests {
     }
 
     #[test]
-    fn ipmi_kcs_is_disabled_by_default() {
-        let manifest = uefi_builder(MachineArch::X86_64).build().unwrap();
-
-        assert!(
-            manifest
-                .chipset_devices
-                .iter()
-                .all(|device| device.name != "ipmi-kcs")
-        );
-    }
-
-    #[test]
-    fn ipmi_kcs_opt_in_uses_arch_specific_resource() {
+    fn ipmi_kcs_is_opt_in_and_uses_arch_specific_resource() {
         for (arch, resource_id) in [
             (MachineArch::X86_64, "ipmi-kcs-x64"),
             (MachineArch::Aarch64, "ipmi-kcs-aarch64"),
         ] {
+            let manifest = uefi_builder(arch).build().unwrap();
+            assert!(
+                manifest
+                    .chipset_devices
+                    .iter()
+                    .all(|device| device.name != "ipmi-kcs")
+            );
+
             let manifest = uefi_builder(arch).with_ipmi_kcs().build().unwrap();
             let ipmi_devices: Vec<_> = manifest
                 .chipset_devices

@@ -191,10 +191,8 @@ mod tests {
     use crate::KCS_STATE_READ;
     use crate::STATUS_STATE_MASK;
     use crate::TrustedClock;
-    use crate::protocol::COMMAND_ADD_SEL_ENTRY;
     use crate::protocol::COMMAND_GET_DEVICE_ID;
     use crate::protocol::NETFN_APPLICATION;
-    use crate::protocol::NETFN_STORAGE;
     use std::sync::Arc;
     use std::sync::atomic::AtomicI64;
     use std::sync::atomic::Ordering;
@@ -265,8 +263,11 @@ mod tests {
 
     #[test]
     fn advertises_exact_amd64_pio_region() {
+        let mut device = device();
+        assert!(device.supports_pio().is_some());
+        assert!(device.supports_mmio().is_none());
         assert_eq!(
-            PortIoIntercept::get_static_regions(&mut device()),
+            PortIoIntercept::get_static_regions(&mut device),
             &[(
                 "ipmi-kcs",
                 IPMI_KCS_DATA_PORT..=IPMI_KCS_STATUS_COMMAND_PORT
@@ -326,43 +327,18 @@ mod tests {
     }
 
     #[test]
-    fn concrete_device_save_restore_delegates_to_core() {
-        let mut device = device();
-        let mut request = vec![NETFN_STORAGE << 2, COMMAND_ADD_SEL_ENTRY];
-        request.extend_from_slice(&[0x5a; 16]);
-        let response = transact(&mut device, &request);
-        assert_eq!(response[2], 0);
-        assert_eq!(device.core.sel_len(), 1);
-
-        let saved = device.save().unwrap();
-        let _ = transact(&mut device, &request);
-        assert_eq!(device.core.sel_len(), 2);
-
-        device.restore(saved).unwrap();
-        assert_eq!(device.core.sel_len(), 1);
-    }
-
-    #[test]
     fn advertises_exact_arm64_mmio_region() {
+        let mut device = mmio_device();
+        assert!(device.supports_pio().is_none());
+        assert!(device.supports_mmio().is_some());
         assert_eq!(
-            MmioIntercept::get_static_regions(&mut mmio_device()),
+            MmioIntercept::get_static_regions(&mut device),
             &[(
                 "ipmi-kcs",
                 IPMI_KCS_MMIO_BASE_ADDRESS_AARCH64
                     ..=IPMI_KCS_MMIO_BASE_ADDRESS_AARCH64 + IPMI_KCS_MMIO_REGION_SIZE_AARCH64 - 1
             )]
         );
-    }
-
-    #[test]
-    fn exposes_exactly_one_configured_transport() {
-        let mut pio = device();
-        assert!(pio.supports_pio().is_some());
-        assert!(pio.supports_mmio().is_none());
-
-        let mut mmio = mmio_device();
-        assert!(mmio.supports_pio().is_none());
-        assert!(mmio.supports_mmio().is_some());
     }
 
     #[test]

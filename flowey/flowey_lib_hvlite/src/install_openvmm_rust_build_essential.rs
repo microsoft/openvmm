@@ -36,15 +36,14 @@ impl FlowNode for Node {
             ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled),
         ];
 
-        // On Ubuntu, we need the `build-essential` package to ensure that
-        // the system has a working linker.
+        // On Ubuntu, install the native build tools required by Rust crates.
         if matches!(
             ctx.platform(),
             FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
         ) {
             side_effects.push(ctx.reqv(|v| {
                 flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec!["build-essential".into()],
+                    package_names: vec!["build-essential".into(), "cmake".into()],
                     done: v,
                 }
             }));

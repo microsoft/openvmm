@@ -69,8 +69,8 @@ pub mod ged {
         pub serial_tx_only: bool,
         /// Enable vmbus redirection.
         pub vmbus_redirection: bool,
-        /// Enable the TPM.
-        pub enable_tpm: bool,
+        /// The TPM reference implementation version to expose to the guest.
+        pub tpm_version: Option<GedTpmVersion>,
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
         /// The disk to back the GET's VMGS interface.
@@ -99,6 +99,8 @@ pub mod ged {
         pub force_dma_bounce_enabled: bool,
         /// Enable hibernation.
         pub enable_hibernation: bool,
+        /// SMBIOS identity overrides delivered to the guest firmware.
+        pub smbios: smbios_defs::SmbiosConfig,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -158,6 +160,15 @@ pub mod ged {
         Info,
         /// All logs
         Full,
+    }
+
+    /// The TPM reference implementation version to expose to the guest.
+    #[derive(MeshPayload, Clone, Debug, Copy)]
+    pub enum GedTpmVersion {
+        /// TPM reference implementation version 1.38
+        V138,
+        /// TPM reference implementation version 1.85
+        V185,
     }
 
     /// The boot devices for a PC/AT BIOS.

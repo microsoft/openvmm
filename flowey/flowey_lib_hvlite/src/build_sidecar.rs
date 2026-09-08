@@ -85,8 +85,12 @@ impl FlowNode for Node {
                 extra_env: Some(ReadVar::from_static(
                     [
                         ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
-                        // Forbid cc-rs from compiling anything
+                        // Forbid cc-rs and CMake from compiling anything
                         ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                        (
+                            "CMAKE".to_string(),
+                            "cmake-is-forbidden-during-openvmm-hcl-build".to_string(),
+                        ),
                     ]
                     .into_iter()
                     .collect(),
