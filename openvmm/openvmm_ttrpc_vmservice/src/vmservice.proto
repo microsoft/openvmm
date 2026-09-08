@@ -794,6 +794,7 @@ message PortConfig {
     uint32 guest_port = 2;
     // The protocol to forward.
     IpProtocol protocol = 3;
+    string host_address = 4;
 }
 
 message ConsommeBackend {
@@ -813,6 +814,7 @@ message WindowsPCIDevice {
 message VirtioFs {
     string tag = 1;
     string root_path = 2;
+    bool read_only = 3;
 }
 
 message VirtioConsoleConfig {

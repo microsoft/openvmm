@@ -411,6 +411,7 @@ async fn test_ttrpc_interface(
                             virtiofs_config: vec![vmservice::VirtioFs {
                                 tag: "testfs".to_string(),
                                 root_path: virtiofs_root.to_string_lossy().into(),
+                                read_only: false,
                             }],
                             // A SCSI controller keeps a request channel
                             // alive for the lifetime of the VM, which used
@@ -467,6 +468,7 @@ async fn test_ttrpc_interface(
                                             host_port: 8080,
                                             guest_port: 80,
                                             protocol: 99,
+                                            host_address: String::new(),
                                         }],
                                     },
                                 )),
@@ -522,6 +524,7 @@ async fn test_ttrpc_interface(
                             vmservice::VirtioFs {
                                 tag: "hotplugfs".to_string(),
                                 root_path: hotplug_virtiofs_root.to_string_lossy().into(),
+                                read_only: false,
                             },
                         ))),
                     },
@@ -1034,6 +1037,7 @@ fn virtio_fs_vpci_request(
             vmservice::VirtioFs {
                 tag: tag.to_string(),
                 root_path: root_path.to_string_lossy().into_owned(),
+                read_only: false,
             },
         ))),
     }
