@@ -1085,7 +1085,6 @@ async fn validate_vpci_virtio_fs_hotplug(
         agent.read_file(format!("{second_mount}/content")).await? == SECOND_CONTENT,
         "second VPCI virtio-fs share returned unexpected contents"
     );
-
     let sh = agent.unix_shell();
     cmd!(sh, "umount {second_mount}").run().await?;
     client

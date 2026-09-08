@@ -63,6 +63,7 @@ pub struct VpciBus {
 #[inspect(tag = "state")]
 enum VpciBusChannelState {
     Unoffered,
+    Offering,
     Offered {
         #[inspect(flatten)]
         channel: SimpleDeviceHandle<VpciChannel>,
@@ -236,6 +237,9 @@ impl VpciBus {
     }
 
     /// Revokes the VMBus channel and waits for revocation to complete.
+    ///
+    /// If an offer is in progress, the offering task revokes its channel when
+    /// the offer completes.
     pub async fn revoke(&mut self) {
         if let VpciBusChannelState::Offered { channel } =
             std::mem::replace(&mut self.channel, VpciBusChannelState::Revoked)
@@ -262,7 +266,8 @@ impl PendingVpciBusOffer {
 
     /// Publishes the VMBus channel for an already-registered VPCI bus.
     ///
-    /// Returns an error if the channel has already been offered or revoked.
+    /// Returns an error if the bus is closed or the channel is already being
+    /// offered, has been offered, or has been revoked.
     pub async fn offer_registered(
         self,
         bus: &Arc<CloseableMutex<VpciBus>>,
@@ -271,10 +276,13 @@ impl PendingVpciBusOffer {
         started: bool,
     ) -> anyhow::Result<()> {
         {
-            let mut bus = bus.lock();
+            let mut bus = bus.lock_if_open().context("VPCI bus is closed")?;
             match bus.channel {
                 VpciBusChannelState::Unoffered => {
-                    bus.channel = VpciBusChannelState::Revoked;
+                    bus.channel = VpciBusChannelState::Offering;
+                }
+                VpciBusChannelState::Offering => {
+                    anyhow::bail!("VPCI channel offer is already in progress")
                 }
                 VpciBusChannelState::Offered { .. } => {
                     anyhow::bail!("VPCI channel has already been offered")
@@ -284,9 +292,26 @@ impl PendingVpciBusOffer {
                 }
             }
         }
-        let channel = self.offer(driver_source, vmbus, started).await?;
-        bus.lock().channel = VpciBusChannelState::Offered { channel };
-        Ok(())
+        let result = self.offer(driver_source, vmbus, started).await;
+        {
+            if let Some(mut bus) = bus.lock_if_open()
+                && matches!(bus.channel, VpciBusChannelState::Offering)
+            {
+                match result {
+                    Ok(channel) => {
+                        bus.channel = VpciBusChannelState::Offered { channel };
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        bus.channel = VpciBusChannelState::Revoked;
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        let channel = result?;
+        channel.revoke().await;
+        anyhow::bail!("VPCI bus was closed or revoked while offering the channel")
     }
 }
 

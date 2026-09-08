@@ -1372,10 +1372,7 @@ impl VmService {
             let resource =
                 build_pci_device(request.device.context("missing device")?, &registry).await?;
             worker_rpc
-                .call_failable(
-                    VmRpc::AddVpciDevice,
-                    (DeviceVtl::Vtl0, instance_id, resource),
-                )
+                .call_failable(VmRpc::AddVpciDevice, (instance_id, resource))
                 .await
                 .map_err(anyhow::Error::from)
         })

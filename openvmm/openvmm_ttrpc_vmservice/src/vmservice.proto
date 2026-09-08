@@ -52,7 +52,6 @@ service VM {
     rpc RemovePcieDevice(RemovePcieDeviceRequest) returns (google.protobuf.Empty);
 
     // AddVpciDevice hot-adds a PCI device over the Hyper-V VPCI transport.
-    // A VM may have up to 64 dynamically added VPCI devices.
     rpc AddVpciDevice(AddVpciDeviceRequest) returns (google.protobuf.Empty);
 
     // RemoveVpciDevice hot-removes a dynamically added VPCI device. Removing

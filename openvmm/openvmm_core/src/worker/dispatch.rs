@@ -179,7 +179,6 @@ use watchdog_core::resources::StaticWatchdogPlatformResolver;
 const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
-const MAX_DYNAMIC_VPCI_DEVICES: usize = 64;
 const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 enum VpciEjectResult {
@@ -3970,33 +3969,25 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::AddVpciDevice(rpc) => {
-                        rpc.handle_failable(async |(device_vtl, instance_id, resource)| {
+                        rpc.handle_failable(async |(instance_id, resource)| {
                             anyhow::ensure!(
-                                self.inner.dynamic_vpci_devices.len()
-                                    < MAX_DYNAMIC_VPCI_DEVICES,
-                                "dynamic VPCI device limit ({MAX_DYNAMIC_VPCI_DEVICES}) reached"
+                                !self
+                                    .inner
+                                    .dynamic_vpci_devices
+                                    .iter()
+                                    .any(|entry| entry.instance_id == instance_id),
+                                "a dynamically added VPCI device with instance ID '{instance_id}' already exists"
                             );
                             anyhow::ensure!(
                                 self.inner.partition.supports_virtual_devices(),
                                 "partition does not support VPCI devices"
                             );
 
-                            let (vtl, vmbus) = match device_vtl {
-                                DeviceVtl::Vtl0 => (
-                                    Vtl::Vtl0,
-                                    self.inner.vmbus_server.as_ref(),
-                                ),
-                                DeviceVtl::Vtl1 => anyhow::bail!(
-                                    "VTL1 VPCI devices are not supported"
-                                ),
-                                DeviceVtl::Vtl2 => (
-                                    Vtl::Vtl2,
-                                    self.inner.vtl2_vmbus_server.as_ref(),
-                                ),
-                            };
-                            let vmbus = vmbus.context(
-                                "VMBus is not available for the requested VTL",
-                            )?;
+                            let vmbus = self
+                                .inner
+                                .vmbus_server
+                                .as_ref()
+                                .context("VTL0 VMBus is not available")?;
                             let device = vmm_core::device_builder::build_dynamic_vpci_device(
                                 vmm_core::device_builder::PciDeviceResolveContext {
                                     driver_source: &self.inner.driver_source,
@@ -4006,7 +3997,7 @@ impl LoadedVm {
                                         .inner
                                         .partition
                                         .clone()
-                                        .into_doorbell_registration(vtl),
+                                        .into_doorbell_registration(Vtl::Vtl0),
                                     shared_mem_mapper: None,
                                 },
                                 vmbus.control(),
@@ -4022,7 +4013,7 @@ impl LoadedVm {
                                     let hv_device = self
                                         .inner
                                         .partition
-                                        .new_virtual_device(vtl, device_id)?;
+                                        .new_virtual_device(Vtl::Vtl0, device_id)?;
                                     Ok((
                                         hv_device.clone().target(),
                                         hv_device.interrupt_mapper(),

@@ -44,9 +44,9 @@ before their implementation is connected end to end.
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
-hypervisor backend must support virtual devices. The response contains an
-instance ID that identifies the device for `RemoveVpciDevice`. Up to 64
-dynamically added VPCI devices may exist in a VM at once. Removing an unknown
+hypervisor backend must support virtual devices. The caller supplies the
+guest-visible instance ID in `AddVpciDeviceRequest.instance_id` and uses the
+same ID for `RemoveVpciDevice`. The response is empty. Removing an unknown
 or previously removed instance ID returns an error.
 
 Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared

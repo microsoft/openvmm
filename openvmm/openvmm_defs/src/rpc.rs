@@ -40,8 +40,8 @@ pub enum VmRpc {
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a PCIe device from a named port at runtime.
     RemovePcieDevice(FailableRpc<String, ()>),
-    /// Hot-add a VPCI device at runtime with the supplied instance ID.
-    AddVpciDevice(FailableRpc<(DeviceVtl, Guid, Resource<PciDeviceHandleKind>), ()>),
+    /// Hot-add a VPCI device to VTL0 at runtime with the supplied instance ID.
+    AddVpciDevice(FailableRpc<(Guid, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a dynamically added VPCI device by instance ID.
     RemoveVpciDevice(FailableRpc<Guid, ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
