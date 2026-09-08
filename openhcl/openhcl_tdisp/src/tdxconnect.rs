@@ -10,6 +10,10 @@
 //! probes the TDI (including the two hash field codes that write into a private
 //! page the validator owns), TDG.TDI.START authorizes the host to start it, and
 //! a post-start TDG.TDI.RD confirms the TDX Module sees it in TDISP RUN.
+//!
+//! The block direction is asymmetric: TDX Connect gives the guest no inverse
+//! for either accept leaf, so re-blocking a resource is the host's job and the
+//! block methods here do nothing.
 
 use crate::TdispResourceValidationInterface;
 use crate::TdispTdiState;
@@ -877,6 +881,16 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     }
 
     #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
+    /// Does nothing on TDX Connect.
+    ///
+    /// TDX Connect gives the guest no way to re-block an MMIO range it has
+    /// accepted. The ABI has TDG.TDI.MMIO.ACCEPT but no inverse, so once a
+    /// range's pages are MMIO_MAPPED in the L1 Secure EPT the TD cannot walk
+    /// that back itself. Releasing them is the host's job, via the TDH-side
+    /// teardown that follows the unbind the caller has already sent.
+    ///
+    /// This is therefore a permanent property of the platform rather than
+    /// something left to implement.
     fn tdisp_block_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -895,7 +909,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 base_offset,
                 length_in_bytes,
                 range_id,
-                "TDX Connect tdisp_block_mmio: no-op stub"
+                "TDX Connect tdisp_block_mmio: nothing to do, the guest cannot re-block MMIO"
             );
             Ok(())
         })
