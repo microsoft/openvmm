@@ -344,7 +344,7 @@ impl SevGuestDevice {
         }
 
         // The Linux sev-guest driver's TIO_GUEST_REQUEST ioctl returns 0 from
-        // the syscall even when the ASP/VMM rejected the request — the actual
+        // the syscall even when the ASP/VMM rejected the request; the actual
         // firmware/VMM status is communicated out-of-band via the exitinfo1 and
         // exitinfo2 fields on the in/out struct. When the driver detects such a
         // failure it also disables VMPCK0 to prevent IV reuse making future

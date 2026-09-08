@@ -2272,7 +2272,7 @@ mod tests {
     /// supported version. Unsupported versions still return
     /// `REVISION_MISMATCH` with `VB`.
     #[async_test]
-    async fn verify_version_negotiation_RB_gated(driver: DefaultDriver) {
+    async fn verify_version_negotiation_rb_gated(driver: DefaultDriver) {
         let msi_controller = TestVpciInterruptController::new();
         let pci_config = HardwareIds {
             vendor_id: 0x123,
@@ -2643,9 +2643,8 @@ mod tests {
     impl tdisp::TdispIsolationReporter for TestDevice {
         fn tdisp_isolation_report(
             &mut self,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = tdisp::TdispIsolationReport> + Send + 'static>,
-        > {
+        ) -> std::pin::Pin<Box<dyn Future<Output = tdisp::TdispIsolationReport> + Send + 'static>>
+        {
             let report = self
                 .isolation_report
                 .expect("isolation_report must be set when supports_tdisp_isolation returns Some");

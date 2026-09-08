@@ -2239,7 +2239,7 @@ pub mod hypercall {
     /// `ModifySparsePageVisibilityWithImmutability` variant used during SEV-TIO
     /// end-to-end bring-up. Layout matches `ModifyHostVisibility` plus a single
     /// `immutability` bit reinterpreting one of the reserved bits. Only valid
-    /// on internal builds of Hyper-V. Only valid on internal Hyper-V builds.
+    /// on internal Hyper-V builds.
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     #[bitfield(u32)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]

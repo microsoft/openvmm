@@ -163,7 +163,6 @@ message GuestToHostCommand {
   }
 }
 
-
 // Represents a response from a TDISP command sent to the host by a guest. The
 // active variant of `response` identifies the command that was processed and
 // carries any payload returned by that command.

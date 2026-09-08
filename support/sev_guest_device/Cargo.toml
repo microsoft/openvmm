@@ -15,11 +15,9 @@ zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true, features = ["ioctl"] }
-static_assertions.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }
 x86defs.workspace = true
-zerocopy.workspace = true
 sev_guest_device_tio = { workspace = true, optional = true }
 
 [lints]
