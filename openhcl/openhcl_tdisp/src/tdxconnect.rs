@@ -3,13 +3,11 @@
 
 //! Intel TDX Connect implementation of [`TdispResourceValidationInterface`].
 //!
-//! Boilerplate scaffolding: the resource-unblock methods are no-op stubs today.
-//! The real implementation will issue guest-side TDCALLs (TDG.DMAR.ACCEPT,
-//! TDG.TDI.MMIO.ACCEPT) via the `hcl` `MshvVtl` handle to unblock MMIO and DMA
-//! for an attested TDI. What is wired up is the attestation gate: TDG.TDI.RD
-//! probes the TDI (including the two hash field codes that write into a private
-//! page the validator owns), TDG.TDI.START authorizes the host to start it, and
-//! a post-start TDG.TDI.RD confirms the TDX Module sees it in TDISP RUN.
+//! Issues the guest-side TDCALLs that gate a TDI and hand its resources to the
+//! guest, through the `hcl` `MshvVtl` handle: TDG.TDI.START authorizes the host
+//! to start a bound TDI, a post-start TDG.TDI.RD confirms the TDX Module sees
+//! it in TDISP RUN, and TDG.TDI.MMIO.ACCEPT plus TDG.DMAR.ACCEPT accept its
+//! MMIO and DMA into the TD.
 //!
 //! The block direction is asymmetric: TDX Connect gives the guest no inverse
 //! for either accept leaf, so re-blocking a resource is the host's job and the
@@ -29,9 +27,6 @@ use std::future::Future;
 use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
 use tdisp::devicereport::TdispTdiReportMmioInterfaceInfo;
-use user_driver::DmaClient;
-use user_driver::lockmem::LockedMemorySpawner;
-use user_driver::memory::MemoryBlock;
 use x86defs::tdx::DmarTarget;
 use x86defs::tdx::GpaVmAttributes;
 use x86defs::tdx::GpaVmAttributesMask;
@@ -47,9 +42,6 @@ use x86defs::tdx::TdiRdField;
 use x86defs::tdx::TdispInterfaceState;
 use x86defs::tdx::TdxFunctionId;
 
-/// The TDG.TDI.RD output buffer is a single 4K private page.
-const TDI_HASH_BUF_SIZE: usize = HV_PAGE_SIZE as usize;
-
 /// Intel TDX Connect implementation of [`TdispResourceValidationInterface`].
 ///
 /// After a device has been attested and placed in the Run state, this struct
@@ -62,12 +54,6 @@ pub struct TdispTdxConnectResourceValidator {
     /// start in the CVM. Retained for the forthcoming TDCALL work (shared-GPA
     /// boundary masking) and referenced in the stub trace output.
     vtom: u64,
-    /// Private VTL2 page handed to TDG.TDI.RD in R8 as the output buffer for
-    /// the hash field codes. The mutex serializes the write-then-read against
-    /// concurrent probes on other TDIs.
-    hash_buf: Mutex<MemoryBlock>,
-    /// GPA of `hash_buf`'s single page, resolved once at construction.
-    hash_buf_gpa: u64,
     /// The MMIO range list from each device's TDI interface report, keyed by
     /// TDI device id and recorded by [`Self::tdisp_set_tdi_report`].
     ///
@@ -84,55 +70,11 @@ impl TdispTdxConnectResourceValidator {
     /// The signature mirrors `TdispSevTioResourceValidator::new` so the
     /// selection site in `underhill_core` is identical in shape.
     ///
-    /// Allocates the TDG.TDI.RD hash output page, so a TD without TDX Connect
-    /// enabled also pays for it.
-    ///
     /// * `vtom` - The address mask with the VTOM bit set to signify where VTOM
     ///   addresses start in the CVM.
     pub fn new(vtom: u64) -> anyhow::Result<Self> {
-        use anyhow::Context;
-
-        // Ordinary VTL2 RAM is what TDG.TDI.RD wants for its output buffer: on
-        // a TD it is private, below VTOM, and accepted at boot, and the
-        // paravisor kernel's PFNs are TD GPA PFNs.
-        let hash_buf = LockedMemorySpawner
-            .allocate_dma_buffer(TDI_HASH_BUF_SIZE)
-            .context("failed to allocate the TDG.TDI.RD hash output page")?;
-
-        // Handing the TDX Module a shared or misaligned GPA fails the TDCALL
-        // with a status that is hard to attribute back to the buffer.
-        anyhow::ensure!(
-            hash_buf.pfn_bias() == 0,
-            "TDG.TDI.RD hash output page has a nonzero pfn bias {:#x}, so it is shared, not private",
-            hash_buf.pfn_bias()
-        );
-        anyhow::ensure!(
-            hash_buf.offset_in_page() == 0,
-            "TDG.TDI.RD hash output page is not page aligned: offset {:#x}",
-            hash_buf.offset_in_page()
-        );
-        let &[pfn] = hash_buf.pfns() else {
-            anyhow::bail!(
-                "TDG.TDI.RD hash output page resolved to {} pfns, expected exactly one",
-                hash_buf.pfns().len()
-            );
-        };
-        let hash_buf_gpa = pfn * HV_PAGE_SIZE;
-        if vtom != 0 {
-            anyhow::ensure!(
-                hash_buf_gpa < vtom,
-                "TDG.TDI.RD hash output page gpa {hash_buf_gpa:#x} is at or above vtom {vtom:#x}"
-            );
-        }
-
-        // Trace the GPA once: it is what a debugger needs to watch the page
-        // while the probe runs.
-        tracing::info!(vtom, hash_buf_gpa, "allocated TDG.TDI.RD hash output page");
-
         Ok(Self {
             vtom,
-            hash_buf: Mutex::new(hash_buf),
-            hash_buf_gpa,
             tdi_mmio_ranges: Mutex::new(HashMap::new()),
         })
     }
@@ -328,126 +270,15 @@ impl TdispTdxConnectResourceValidator {
     /// result into a private page instead of returning it in RCX. `field` must
     /// be `GET_TDISP_REPORT_HASH` or `GET_DEVICE_ATTESTATION_INFO_HASH`, the
     /// only two codes that take a nonzero output buffer gpa.
-    fn read_hash(
-        &self,
-        mshv_vtl: &MshvVtl,
-        function_id: TdxFunctionId,
-        field: TdiRdField,
-    ) -> anyhow::Result<Vec<u8>> {
-        use anyhow::Context;
-
-        let hash_buf = self.hash_buf.lock();
-
-        // The page is reused across TDIs and both field codes, and the TDX
-        // Module writes only the hash bytes, so zero it first.
-        hash_buf.write_zeros(0, TDI_HASH_BUF_SIZE);
-
-        let hash_len = mshv_vtl
-            .tdx_tdi_rd(function_id, field, self.hash_buf_gpa)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "TDG.TDI.RD({field:?}) failed for requester id {:#x}: {}",
-                    function_id.requester_id(),
-                    Self::describe_status(e)
-                )
-            })?;
-
-        // RCX is the hash length for these field codes. Bound it before it
-        // becomes a slice length.
-        let hash_len = usize::try_from(hash_len)
-            .ok()
-            .filter(|&len| len != 0 && len <= TDI_HASH_BUF_SIZE)
-            .with_context(|| {
-                format!("TDG.TDI.RD({field:?}) returned out of range hash length {hash_len}")
-            })?;
-
-        let mut hash = vec![0; hash_len];
-        hash_buf.read_at(0, &mut hash);
-        Ok(hash)
-    }
-
-    /// Issue TDG.TDI.RD against `device_id` to confirm the TDX Connect TDCALLs
-    /// operate on this TDI.
+    /// Fails unless this TD has TDX Connect enabled.
     ///
-    /// This is the capability-plumbing probe. It reads the two field codes that
-    /// need no output buffer:
-    ///
-    /// * `GET_TDISP_VERSION` - the cheapest TDI-scoped call. It exercises
-    ///   FUNCTION_ID validation and the TDIMT lookup without walking the DMAR
-    ///   table, so it isolates "can we address this TDI at all" from anything
-    ///   about its DMA state.
-    /// * `GET_TDISP_STATE` - success means the TDI is bound, and the value
-    ///   decodes to the TDISP interface state the TDX Module last observed.
-    ///
-    /// It then reads `GET_TDISP_REPORT_HASH` and
-    /// `GET_DEVICE_ATTESTATION_INFO_HASH`, which exercise the buffer-carrying
-    /// form of the leaf where the TD supplies a private gpa in R8.
-    ///
-    /// The resource-unblock TDCALLs (TDG.DMAR.ACCEPT, TDG.TDI.MMIO.ACCEPT) land
-    /// in a follow-up change.
-    fn probe_tdi(&self, mshv_vtl: &MshvVtl, device_id: u16) -> anyhow::Result<()> {
-        tracing::info!(
-            vtom = self.vtom,
-            device_id,
-            "TDX Connect validator issuing TDG.TDI.RD probe"
-        );
-
-        // The Connect leaves are only present on a TD that enabled the feature,
-        // so check before issuing one rather than diagnosing a fault later.
-        let config_flags = mshv_vtl.tdx_get_config_flags();
-        tracing::info!(
-            vtom = self.vtom,
-            tdx_connect = config_flags.tdx_connect(),
-            page_release = config_flags.page_release(),
-            "TDX Connect validator issued TDG.VM.RD(CONFIG_FLAGS)"
-        );
-        if !config_flags.tdx_connect() {
+    /// The TDI-scoped leaves only exist on a TD that turned the feature on, so
+    /// callers check first rather than attributing the resulting TDCALL status
+    /// back to a missing feature.
+    fn ensure_tdx_connect(mshv_vtl: &MshvVtl) -> anyhow::Result<()> {
+        if !mshv_vtl.tdx_get_config_flags().tdx_connect() {
             anyhow::bail!("TDX Connect is not enabled on this TD; cannot issue TDI TDCALLs");
         }
-
-        let function_id = Self::function_id(device_id);
-
-        let version = mshv_vtl
-            .tdx_tdi_rd(function_id, TdiRdField::GET_TDISP_VERSION, 0)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "TDG.TDI.RD(GET_TDISP_VERSION) failed for requester id {device_id:#x}: {}",
-                    Self::describe_status(e)
-                )
-            })?;
-
-        let state = mshv_vtl
-            .tdx_tdi_rd(function_id, TdiRdField::GET_TDISP_STATE, 0)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "TDG.TDI.RD(GET_TDISP_STATE) failed for requester id {device_id:#x}: {}",
-                    Self::describe_status(e)
-                )
-            })?;
-
-        tracing::info!(
-            "TDX Connect validator reached TDI via TDG.TDI.RD: requester id {device_id:#x}, TDISP version {version}, TDISP state {:?}",
-            TdispInterfaceState(state)
-        );
-
-        let report_hash =
-            self.read_hash(mshv_vtl, function_id, TdiRdField::GET_TDISP_REPORT_HASH)?;
-        let attestation_info_hash = self.read_hash(
-            mshv_vtl,
-            function_id,
-            TdiRdField::GET_DEVICE_ATTESTATION_INFO_HASH,
-        )?;
-
-        tracing::info!(
-            hash_buf_gpa = self.hash_buf_gpa,
-            report_hash_len = report_hash.len(),
-            attestation_info_hash_len = attestation_info_hash.len(),
-            "TDX Connect validator read TDI hashes via TDG.TDI.RD: requester id {device_id:#x}, \
-             TDISP report hash {:02x?}, device attestation info hash {:02x?}",
-            report_hash.as_slice(),
-            attestation_info_hash.as_slice()
-        );
-
         Ok(())
     }
 }
@@ -469,7 +300,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         // The TDI is bound but not yet running, which is the first point in the
         // flow where TDG.TDI.RD should succeed. Probe it to confirm the Connect
         // TDCALLs reach this TDI.
-        self.probe_tdi(&mshv_vtl, device_id)?;
+        Self::ensure_tdx_connect(&mshv_vtl)?;
 
         let function_id = Self::function_id(device_id);
 
@@ -657,7 +488,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
             // TDISP TODO: This needs to be refactored a lot more.
             let mshv_vtl = Self::open_mshv_vtl()?;
-            self.probe_tdi(&mshv_vtl, device_id)?;
+            Self::ensure_tdx_connect(&mshv_vtl)?;
 
             // The caller has already told the host to unblock the range, so its
             // pages are ready to be accepted into the TD below.
@@ -838,7 +669,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         let mshv_vtl = Self::open_mshv_vtl()?;
-        self.probe_tdi(&mshv_vtl, device_id)?;
+        Self::ensure_tdx_connect(&mshv_vtl)?;
 
         // VM_IDX 0 is the non-partitioned TD or L1; 1-3 select L2 VM1-VM3.
         // OpenHCL is the L1 paravisor with the guest in an L2 VM, so the DMA

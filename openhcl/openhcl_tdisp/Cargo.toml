@@ -21,7 +21,6 @@ parking_lot.workspace = true
 sev_guest_device.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true
-user_driver.workspace = true
 x86defs.workspace = true
 
 anyhow.workspace = true

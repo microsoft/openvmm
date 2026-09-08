@@ -5598,7 +5598,6 @@ dependencies = [
  "tdisp",
  "tdisp_proto",
  "tracing",
- "user_driver",
  "x86defs",
 ]
 
