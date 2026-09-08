@@ -3,12 +3,6 @@
 
 //! Guest-side decoder for per-hypercall static metadata sent from the
 //! host fuzzer.
-//!
-//! See `hvfuzztest/src/targets/hyperv.rs` on the producer side. The
-//! struct definition here **must** stay byte-compatible with the
-//! producer's `HvcallMeta` — they're intentionally duplicated to keep
-//! `opentmk_invariant`'s dep graph small (TODO: unify in a shared crate
-//! later).
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

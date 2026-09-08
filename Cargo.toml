@@ -59,7 +59,7 @@ members = [
   "vm/vmgs/vmgstool",
   # opentmk
   "opentmk",
-  "opentmk/opentmk_invariant",
+  "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
 ]
@@ -83,9 +83,9 @@ opentmk_protocol = { path = "opentmk/opentmk_protocol" }
 opentmk_core = { path = "opentmk/opentmk_core" }
 opentmk_disk = { path = "opentmk/opentmk_disk" }
 
-# opentmk invariant
-inv_packet = { path = "opentmk/inv_packet" }
-inv_decoder = { path = "opentmk/inv_decoder" }
+# opentmk executor
+opentmk_exec_packet = { path = "opentmk/opentmk_exec_packet" }
+opentmk_decoder = { path = "opentmk/opentmk_decoder" }
 
 flowey = { path = "flowey/flowey" }
 flowey_cli = { path = "flowey/flowey_cli" }

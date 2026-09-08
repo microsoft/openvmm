@@ -9,7 +9,7 @@ use crate::functions::{FuzzFunctionVariable, VerifyFuzzVariables};
 #[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 
-use inv_decoder::SafeMemoryMap;
+use opentmk_decoder::SafeMemoryMap;
 
 use opentmk_core::arch;
 

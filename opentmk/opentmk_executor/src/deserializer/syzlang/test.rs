@@ -5,7 +5,7 @@ use spin::mutex::Mutex;
 
 use super::*;
 use crate::functions::{FunctionRegistry, FuzzFunctionVariable};
-use inv_packet::OpenTMKFuzzTest;
+use opentmk_exec_packet::OpenTMKFuzzTest;
 
 static SYZLANG_EXEC_TEST_LOCK: Mutex<()> = Mutex::new(());
 static RECORDED_CALLS: Mutex<Vec<(String, Vec<u64>)>> = Mutex::new(Vec::new());
@@ -168,7 +168,7 @@ fn deserialize_syzkaller_pointers() {
     // Case: a decoded syzlang program with memory pointers
     clear_recorded_calls();
 
-    let ptr = inv_decoder::ADDR_SYZ_BEGIN;
+    let ptr = opentmk_decoder::ADDR_SYZ_BEGIN;
     let mut deserializer = SyzlangDeserializer::new();
     install_function_registry(&mut deserializer);
     deserializer

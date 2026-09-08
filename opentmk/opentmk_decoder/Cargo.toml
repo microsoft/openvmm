@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "inv_decoder"
+name = "opentmk_decoder"
 edition.workspace = true
 rust-version.workspace = true
 

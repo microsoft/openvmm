@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use inv_decoder::SafeMemoryMap;
+use opentmk_decoder::SafeMemoryMap;
 
 #[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;

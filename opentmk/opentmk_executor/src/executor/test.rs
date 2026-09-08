@@ -7,7 +7,7 @@ use core::cell::RefCell;
 
 use super::*;
 use crate::comms::{SerialCommsServer, test::MockSerialIo};
-use inv_packet::{COMMS_PACKET_FOOTER_MAGIC, COMMS_PACKET_HEADER_MAGIC};
+use opentmk_exec_packet::{COMMS_PACKET_FOOTER_MAGIC, COMMS_PACKET_HEADER_MAGIC};
 
 #[derive(Clone)]
 struct TestDeserializerState {

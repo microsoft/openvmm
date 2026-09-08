@@ -4042,22 +4042,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inv_decoder"
-version = "0.0.0"
-dependencies = [
- "num-traits",
- "spin",
- "zerocopy",
-]
-
-[[package]]
-name = "inv_packet"
-version = "0.0.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "io-uring"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5688,6 +5672,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentmk_decoder"
+version = "0.0.0"
+dependencies = [
+ "num-traits",
+ "spin",
+ "zerocopy",
+]
+
+[[package]]
 name = "opentmk_disk"
 version = "0.0.0"
 dependencies = [
@@ -5702,14 +5695,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "opentmk_invariant"
+name = "opentmk_exec_packet"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "opentmk_executor"
 version = "0.0.0"
 dependencies = [
  "hvdef",
- "inv_decoder",
- "inv_packet",
  "log",
  "opentmk_core",
+ "opentmk_decoder",
+ "opentmk_exec_packet",
  "postcard",
  "spin",
  "uefi",

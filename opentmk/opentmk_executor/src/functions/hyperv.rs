@@ -6,9 +6,9 @@ use crate::functions::{FuzzFunctionVariable, VerifyFuzzVariables};
 #[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 use hvdef::Vtl;
-use inv_decoder::SafeMemoryMap;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::{HvTestCtx, HyperVHypercallConfig};
+use opentmk_decoder::SafeMemoryMap;
 use spin::Mutex;
 
 const HVCALL_SANE_LIMIT: usize = 0x100000;

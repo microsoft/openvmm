@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use inv_decoder::SafeMemoryMap;
+use opentmk_decoder::SafeMemoryMap;
 
 use crate::functions::{FuzzFunction, FuzzFunctionVariable};
 

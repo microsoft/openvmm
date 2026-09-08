@@ -10,8 +10,8 @@ use crate::{
     functions::{FunctionRegistry, FuzzFunctionVariable},
     prelude::*,
 };
-use inv_decoder::{InputCase, InputResult, SafeMemoryMap, exec_testcases_safe};
-use inv_packet::OpenTMKFuzzTest;
+use opentmk_decoder::{InputCase, InputResult, SafeMemoryMap, exec_testcases_safe};
+use opentmk_exec_packet::OpenTMKFuzzTest;
 use spin::Mutex;
 
 // For now we are using the syz-decoder library, and unfortunately to get it to work here, is not clean as it has a different design.
@@ -96,11 +96,11 @@ pub struct SyzlangDeserializer {
 impl SyzlangDeserializer {
     pub fn new() -> Self {
         Self {
-            tc_slice: vec![0; inv_decoder::SUPPORTED_INPUT_SIZE],
+            tc_slice: vec![0; opentmk_decoder::SUPPORTED_INPUT_SIZE],
             st: Default::default(),
             mem: (
-                vec![0; inv_decoder::EXEC_INPUT_REQ_SIZE],
-                inv_decoder::ADDR_SYZ_BEGIN as usize,
+                vec![0; opentmk_decoder::EXEC_INPUT_REQ_SIZE],
+                opentmk_decoder::ADDR_SYZ_BEGIN as usize,
             ),
         }
     }

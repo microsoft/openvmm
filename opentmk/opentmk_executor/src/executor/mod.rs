@@ -9,7 +9,7 @@ use crate::{
     serial::{OpenTmkSerialIo, SerialIo, SerialPort},
 };
 
-use inv_packet::{
+use opentmk_exec_packet::{
     OpenTMKAckPacket, OpenTMKConfigurationPacket, OpenTMKErrorPacket, OpenTMKFuzzTest,
     OpenTMKGrammarDeserializer, OpenTMKPacket,
 };

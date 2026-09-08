@@ -8,7 +8,7 @@ use crate::{
     executor::ExecutorError,
     serial::{OpenTmkSerialIo, SerialIo, SerialPort},
 };
-use inv_packet::{
+use opentmk_exec_packet::{
     COMMS_ACK_MAGIC, COMMS_PACKET_FOOTER_MAGIC, COMMS_PACKET_HEADER_MAGIC, COMMS_SYN_ACK_MAGIC,
     COMMS_SYN_MAGIC, OpenTMKPacket,
 };

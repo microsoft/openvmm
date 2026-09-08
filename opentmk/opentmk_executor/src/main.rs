@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This is the main entrypoint for opentmk_invariant.
+//! This is the main entrypoint for opentmk_executor.
 //!
-//! Opentmk Invariant is a bare-bones operating system based off of opentmk
+//! Opentmk Executor is a bare-bones operating system based off of opentmk
 //! framework used to accept custom-crafted program consisting of an encoded
 //! series of functions that would invoke specific functions into this OS
 
@@ -34,7 +34,7 @@ fn uefi_entry() -> uefi::Status {
 }
 
 fn main() {
-    println!("Invariant OpenTMK kernel");
+    println!("OpenTMK executor kernel");
 
     #[cfg(target_os = "uefi")]
     {

@@ -2,17 +2,17 @@
 // Licensed under the MIT License.
 
 #![no_std]
-//! This contains the packet API library used for communication between the inv-agent and opentmk
-//! components.
+//! This contains the packet API library used for communication between a UM agent
+//! and opentmk components.
 //!
-//! In general, a communication channel between the inv-agent and opentmk works first by
+//! In general, a communication channel between the agent and opentmk works first by
 //! establishing a three-way-handshake (SYN, SYN-ACK, ACK) which is entirely just a magic number
-//! being exchanged between the two parties. Currently we assume that the inv-agent would start the
+//! being exchanged between the two parties. Currently we assume that the agent would start the
 //! communication.
 //!
 //! Then after that, packets of type [`OpenTMKPacket`], with corresponding magic header and footer
 //! value (defined in [`COMMS_PACKET_HEADER_MAGIC`] and [`COMMS_PACKET_FOOTER_MAGIC`]) will be
-//! exchanged as the inv-agent executes test cases. Usually this is done with sending a single
+//! exchanged as the agent executes test cases. Usually this is done with sending a single
 //! configuration packet followed by a back and forth exchange of test case packets with the
 //! opentmk ack'ing each packet.
 extern crate alloc;

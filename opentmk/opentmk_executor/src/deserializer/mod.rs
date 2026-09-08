@@ -7,7 +7,7 @@ use spin::Mutex;
 
 use crate::{executor::ExecutorError, functions::FunctionRegistry, prelude::*};
 
-use inv_packet::OpenTMKFuzzTest;
+use opentmk_exec_packet::OpenTMKFuzzTest;
 
 pub trait Deserializer {
     fn deserialize_and_execute(
