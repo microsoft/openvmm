@@ -3,9 +3,11 @@
 
 use super::*;
 use crate::protocol::*;
-use std::cell::Cell;
-use std::cell::RefCell;
-use std::rc::Rc;
+use parking_lot::Mutex;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicI64;
+use std::sync::atomic::Ordering;
 use test_with_tracing::test;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveRestore;
@@ -15,21 +17,21 @@ const APPLICATION_REQUEST: u8 = NETFN_APPLICATION << 2;
 const STORAGE_REQUEST: u8 = NETFN_STORAGE << 2;
 
 #[derive(Clone)]
-struct FakeClock(Rc<Cell<i64>>);
+struct FakeClock(Arc<AtomicI64>);
 
 impl FakeClock {
     fn new(seconds: i64) -> Self {
-        Self(Rc::new(Cell::new(seconds)))
+        Self(Arc::new(AtomicI64::new(seconds)))
     }
 
     fn set(&self, seconds: i64) {
-        self.0.set(seconds);
+        self.0.store(seconds, Ordering::Relaxed);
     }
 }
 
 impl TrustedClock for FakeClock {
     fn unix_seconds(&mut self) -> i64 {
-        self.0.get()
+        self.0.load(Ordering::Relaxed)
     }
 }
 
@@ -39,16 +41,16 @@ struct SinkState {
 }
 
 struct SharedSink {
-    state: Rc<RefCell<SinkState>>,
-    accept: Rc<Cell<bool>>,
+    state: Arc<Mutex<SinkState>>,
+    accept: Arc<AtomicBool>,
 }
 
 impl SelEventSink for SharedSink {
     fn try_send(&mut self, record_id: u16, record: [u8; 16]) -> SelEventDisposition {
-        if !self.accept.get() {
+        if !self.accept.load(Ordering::Relaxed) {
             return SelEventDisposition::Dropped;
         }
-        self.state.borrow_mut().records.push((record_id, record));
+        self.state.lock().records.push((record_id, record));
         SelEventDisposition::Accepted
     }
 }
@@ -197,7 +199,7 @@ fn abort_exposes_status_byte_then_returns_idle() {
 }
 
 #[test]
-fn malformed_kcs_sequences_match_legacy_behavior_without_panicking() {
+fn malformed_kcs_sequences_are_handled_without_panicking() {
     let (_, mut device) = device(0);
 
     device.write_data(0);
@@ -616,8 +618,8 @@ fn sel_time_supports_positive_negative_and_wrapping_offsets() {
 #[test]
 fn sink_results_do_not_change_committed_records() {
     let clock = FakeClock::new(10);
-    let sink_state = Rc::new(RefCell::new(SinkState::default()));
-    let accept = Rc::new(Cell::new(true));
+    let sink_state = Arc::new(Mutex::new(SinkState::default()));
+    let accept = Arc::new(AtomicBool::new(true));
     let sink = SharedSink {
         state: sink_state.clone(),
         accept: accept.clone(),
@@ -625,7 +627,7 @@ fn sink_results_do_not_change_committed_records() {
     let mut device = IpmiKcs::with_event_sink(clock, sink);
 
     add_record(&mut device, 0x11);
-    accept.set(false);
+    accept.store(false, Ordering::Relaxed);
     add_record(&mut device, 0x22);
 
     assert_eq!(device.sel_len(), 2);
@@ -638,7 +640,7 @@ fn sink_results_do_not_change_committed_records() {
             sink_dropped: 1,
         }
     );
-    let state = sink_state.borrow();
+    let state = sink_state.lock();
     assert_eq!(state.records.len(), 1);
     assert_eq!(state.records[0].0, 1);
     assert_eq!(state.records[0].1, *device.sel_record(0).unwrap());
@@ -647,10 +649,10 @@ fn sink_results_do_not_change_committed_records() {
 #[test]
 fn sink_forwarding_is_limited_to_256_per_trusted_second() {
     let clock = FakeClock::new(10);
-    let sink_state = Rc::new(RefCell::new(SinkState::default()));
+    let sink_state = Arc::new(Mutex::new(SinkState::default()));
     let sink = SharedSink {
         state: sink_state.clone(),
-        accept: Rc::new(Cell::new(true)),
+        accept: Arc::new(AtomicBool::new(true)),
     };
     let mut device = IpmiKcs::with_event_sink(clock.clone(), sink);
 
@@ -670,7 +672,7 @@ fn sink_forwarding_is_limited_to_256_per_trusted_second() {
     assert_eq!(device.stats().committed, 257);
     assert_eq!(device.stats().forwarded, 256);
     assert_eq!(device.stats().rate_limited, 1);
-    assert_eq!(sink_state.borrow().records.len(), 256);
+    assert_eq!(sink_state.lock().records.len(), 256);
 
     clock.set(11);
     clear(&mut device, 0, 0xaa);

@@ -532,13 +532,14 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_no_time() {
-        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"signer"}"#;
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"ipmi-enabled":true,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"signer"}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
             root_cert_thumbprint: String::new(),
             console_enabled: false,
             interactive_console_enabled: false,
+            ipmi_enabled: true,
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
@@ -563,6 +564,7 @@ mod tests {
             root_cert_thumbprint: String::new(),
             console_enabled: false,
             interactive_console_enabled: false,
+            ipmi_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,

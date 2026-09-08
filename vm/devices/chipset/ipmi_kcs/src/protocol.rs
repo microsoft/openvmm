@@ -21,6 +21,7 @@ pub(crate) const COMMAND_SET_SEL_TIME: u8 = 0x49;
 pub(crate) const COMPLETION_SUCCESS: u8 = 0x00;
 pub(crate) const COMPLETION_INVALID_COMMAND: u8 = 0xc1;
 pub(crate) const COMPLETION_SEL_FULL: u8 = 0xc4;
+#[expect(dead_code)]
 pub(crate) const COMPLETION_RESERVATION_CANCELED: u8 = 0xc5;
 pub(crate) const COMPLETION_INVALID_REQUEST_LENGTH: u8 = 0xc7;
 pub(crate) const COMPLETION_PARAMETER_OUT_OF_RANGE: u8 = 0xc9;

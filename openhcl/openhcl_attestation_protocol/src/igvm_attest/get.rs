@@ -468,6 +468,10 @@ pub mod runtime_claims {
         Signer,
     }
 
+    fn is_false(value: &bool) -> bool {
+        !value
+    }
+
     /// VM configuration to be included in the `RuntimeClaims`.
     #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
     #[serde(rename_all = "kebab-case")]
@@ -481,6 +485,9 @@ pub mod runtime_claims {
         pub console_enabled: bool,
         /// Whether the serial console, if enabled, is interactive
         pub interactive_console_enabled: bool,
+        /// Whether the IPMI KCS interface is enabled
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub ipmi_enabled: bool,
         /// Whether secure boot is enabled
         pub secure_boot: bool,
         /// Whether the TPM is enabled
@@ -515,6 +522,7 @@ pub mod runtime_claims {
                 root_cert_thumbprint: String::new(),
                 console_enabled: false,
                 interactive_console_enabled: false,
+                ipmi_enabled: false,
                 secure_boot: false,
                 tpm_enabled: true,
                 tpm_persisted: true,

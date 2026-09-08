@@ -1,20 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A transport-independent virtual IPMI BMC with a byte-oriented KCS interface.
+//! A minimal virtual IPMI BMC with a byte-oriented KCS interface.
 //!
-//! This crate implements the KCS register state machine and a bounded System
-//! Event Log (SEL). Platform adapters are intentionally separate: callers map
-//! [`IpmiKcs::read_data`], [`IpmiKcs::read_status`],
-//! [`IpmiKcs::write_data`], and [`IpmiKcs::write_command`] onto their chosen
-//! PIO or MMIO transport.
+//! This crate implements the KCS register state machine, a bounded System Event
+//! Log (SEL), architecture-specific PIO and MMIO chipset devices, and resource
+//! resolution for the device's time source and SEL event sink.
 
 #![forbid(unsafe_code)]
 
+pub mod device;
 mod protocol;
+pub mod resolver;
 mod save_restore;
 mod sel;
 
+pub use chipset_resources::SelEventDisposition;
+pub use chipset_resources::SelEventSink;
 use sel::RateLimiter;
 use sel::SelState;
 
@@ -55,27 +57,12 @@ pub const KCS_DATA_READ_NEXT: u8 = 0x68;
 /// Implementations must return UTC seconds since the Unix epoch. Negative
 /// values are accepted so that startup and test clocks can be represented
 /// without lossy conversion.
-pub trait TrustedClock {
+pub trait TrustedClock: Send {
     /// Returns the current trusted host time in Unix seconds.
     fn unix_seconds(&mut self) -> i64;
 }
 
-/// Result of a nonblocking SEL event-forwarding attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelEventDisposition {
-    /// The event was accepted by the sink.
-    Accepted,
-    /// The sink dropped the event without blocking the virtual BMC.
-    Dropped,
-}
-
-/// Best-effort, nonblocking sink for finalized SEL records.
-pub trait SelEventSink {
-    /// Attempts to forward one committed SEL record.
-    fn try_send(&mut self, record_id: u16, record: [u8; 16]) -> SelEventDisposition;
-}
-
-/// Lifetime diagnostic counters for SEL additions.
+/// Diagnostic counters for SEL additions.
 ///
 /// These counters are intentionally excluded from saved state.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +152,10 @@ impl IpmiKcs {
         Self::from_boxed_parts(Box::new(clock), Some(Box::new(sink)))
     }
 
-    fn from_boxed_parts(clock: Box<dyn TrustedClock>, sink: Option<Box<dyn SelEventSink>>) -> Self {
+    pub(crate) fn from_boxed_parts(
+        clock: Box<dyn TrustedClock>,
+        sink: Option<Box<dyn SelEventSink>>,
+    ) -> Self {
         Self {
             transaction: KcsTransaction::default(),
             sel: SelState::new(),
@@ -174,11 +164,6 @@ impl IpmiKcs {
             rate_limiter: RateLimiter::default(),
             stats: SelStats::default(),
         }
-    }
-
-    /// Replaces or removes the nonblocking SEL event sink.
-    pub fn set_event_sink(&mut self, sink: Option<Box<dyn SelEventSink>>) {
-        self.sink = sink;
     }
 
     /// Reads the KCS data register and clears OBF.

@@ -26,6 +26,8 @@ use chipset_resources::i440bx_host_pci_bridge::I440BX_HOST_PCI_BRIDGE_BDF;
 use chipset_resources::i440bx_host_pci_bridge::I440BxHostPciBridgeDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::ioapic::GenericIoApicDeviceHandle;
+use chipset_resources::ipmi_kcs::IpmiKcsDeviceHandleAArch64;
+use chipset_resources::ipmi_kcs::IpmiKcsDeviceHandleX64;
 use chipset_resources::isa_dma::GenericIsaDmaDeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
@@ -78,6 +80,7 @@ pub struct VmManifestBuilder {
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
     framebuffer: bool,
     guest_watchdog: bool,
+    ipmi_kcs: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
     uefi: Option<UefiManifest>,
@@ -290,6 +293,7 @@ impl VmManifestBuilder {
             battery_status_recv: None,
             framebuffer: false,
             guest_watchdog: false,
+            ipmi_kcs: false,
             psp: false,
             platform_pm_timer_assist: false,
             uefi: None,
@@ -385,6 +389,15 @@ impl VmManifestBuilder {
     /// Enable the guest watchdog device.
     pub fn with_guest_watchdog(mut self) -> Self {
         self.guest_watchdog = true;
+        self
+    }
+
+    /// Enable the architecture-specific IPMI KCS virtual BMC.
+    ///
+    /// This is supported only for UEFI-booted guests.
+    pub fn with_ipmi_kcs(mut self) -> Self {
+        assert!(matches!(self.ty, BaseChipsetType::HypervGen2Uefi));
+        self.ipmi_kcs = true;
         self
     }
 
@@ -622,6 +635,9 @@ impl VmManifestBuilder {
                     result.attach_guest_watchdog();
                 }
                 if matches!(self.ty, BaseChipsetType::HypervGen2Uefi) {
+                    if self.ipmi_kcs {
+                        result.attach_ipmi_kcs(self.arch);
+                    }
                     result.attach_uefi(
                         self.uefi
                             .expect("must have called .with_uefi to enable uefi"),
@@ -784,6 +800,26 @@ impl VmChipsetResult {
             .into_resource(),
         });
         self.capabilities.with_guest_watchdog = true;
+        self
+    }
+
+    fn attach_ipmi_kcs(&mut self, arch: MachineArch) -> &mut Self {
+        let resource = match arch {
+            MachineArch::X86_64 => IpmiKcsDeviceHandleX64 {
+                event_sink: PlatformResource.into_resource(),
+                time_source: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+            MachineArch::Aarch64 => IpmiKcsDeviceHandleAArch64 {
+                event_sink: PlatformResource.into_resource(),
+                time_source: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+        };
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "ipmi-kcs".to_owned(),
+            resource,
+        });
         self
     }
 
@@ -1032,6 +1068,19 @@ mod tests {
         [(); 4].map(|_| None)
     }
 
+    fn uefi_builder(arch: MachineArch) -> VmManifestBuilder {
+        VmManifestBuilder::new(BaseChipsetType::HypervGen2Uefi, arch).with_uefi(UefiManifest::new(
+            arch,
+            None,
+            None,
+            false,
+            LogLevel::default(),
+            None,
+            PlatformResource.into_resource(),
+            None,
+        ))
+    }
+
     #[test]
     fn serial_debugger_mode_builder_flag_defaults_false_and_can_enable() {
         let builder = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64);
@@ -1039,6 +1088,43 @@ mod tests {
 
         let builder = builder.with_serial_debugger_mode([true, false, false, true]);
         assert_eq!(builder.serial_debugger_mode, [true, false, false, true]);
+    }
+
+    #[test]
+    fn ipmi_kcs_is_disabled_by_default() {
+        let manifest = uefi_builder(MachineArch::X86_64).build().unwrap();
+
+        assert!(
+            manifest
+                .chipset_devices
+                .iter()
+                .all(|device| device.name != "ipmi-kcs")
+        );
+    }
+
+    #[test]
+    fn ipmi_kcs_opt_in_uses_arch_specific_resource() {
+        for (arch, resource_id) in [
+            (MachineArch::X86_64, "ipmi-kcs-x64"),
+            (MachineArch::Aarch64, "ipmi-kcs-aarch64"),
+        ] {
+            let manifest = uefi_builder(arch).with_ipmi_kcs().build().unwrap();
+            let ipmi_devices: Vec<_> = manifest
+                .chipset_devices
+                .iter()
+                .filter(|device| device.name == "ipmi-kcs")
+                .collect();
+
+            assert_eq!(ipmi_devices.len(), 1);
+            assert_eq!(ipmi_devices[0].resource.id(), resource_id);
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn ipmi_kcs_rejects_non_uefi_boot() {
+        let _ = VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, MachineArch::X86_64)
+            .with_ipmi_kcs();
     }
 
     #[test]

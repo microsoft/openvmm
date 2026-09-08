@@ -18,6 +18,9 @@ pub use get_protocol::ProtocolVersion;
 pub use get_protocol::SaveGuestVtl2StateFlags;
 pub use get_protocol::VmgsIoStatus;
 
+/// A completed IPMI System Event Log record.
+pub type IpmiSelRecord = [u8; get_protocol::IPMI_SEL_RECORD_SIZE];
+
 use guid::Guid;
 use mesh::MeshPayload;
 use std::time::Duration;
@@ -87,6 +90,7 @@ pub mod platform_settings {
         pub battery_enabled: bool,
         pub processor_idle_enabled: bool,
         pub tpm_enabled: bool,
+        pub ipmi_enabled: bool,
 
         pub com1_enabled: bool,
         pub com1_debugger_mode: bool,

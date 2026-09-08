@@ -278,6 +278,8 @@ impl GuestEmulationTransportClient {
                 battery_enabled: json.v1.enable_battery,
                 processor_idle_enabled: json.v1.enable_processor_idle,
                 tpm_enabled: json.v1.enable_tpm,
+                ipmi_enabled: json.v1.enable_ipmi,
+
                 com1_enabled: json.v1.com1.enable_port,
                 com1_debugger_mode: json.v1.com1.debugger_mode,
                 com1_vmbus_redirector: json.v1.com1.enable_vmbus_redirector,
@@ -483,6 +485,13 @@ impl GuestEmulationTransportClient {
     /// shutdown prior to having processed all outstanding requests.
     pub fn event_log(&self, event_log_id: crate::api::EventLogId) {
         self.control.notify(msg::Msg::EventLog(event_log_id.into()));
+    }
+
+    /// Forwards a completed IPMI System Event Log record to the host.
+    ///
+    /// This function is non-blocking and does not wait for a host response.
+    pub fn ipmi_sel(&self, record_id: u16, record: crate::api::IpmiSelRecord) {
+        self.control.notify(msg::Msg::IpmiSel { record_id, record });
     }
 
     /// This async method will only resolve after all outstanding event logs

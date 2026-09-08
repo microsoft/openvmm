@@ -1102,6 +1102,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostNotifications::EVENT_LOG => {
                 self.handle_event_log(state, message_buf)?;
             }
+            HostNotifications::IPMI_SEL => {
+                self.handle_ipmi_sel(message_buf)?;
+            }
             HostNotifications::RESTORE_GUEST_VTL2_STATE_COMPLETED => {
                 self.handle_restore_guest_vtl2_state_completed(message_buf)?;
             }
@@ -1121,6 +1124,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 return Err(Error::InvalidFieldValue);
             }
         }
+        Ok(())
+    }
+
+    fn handle_ipmi_sel(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+        let _ = get_protocol::IpmiSelNotification::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         Ok(())
     }
 
