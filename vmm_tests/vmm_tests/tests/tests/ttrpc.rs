@@ -539,7 +539,6 @@ async fn test_ttrpc_interface(
                 )
                 .await
                 .unwrap();
-
             #[cfg(windows)]
             {
                 let instance_id = Guid::new_random();
@@ -1023,6 +1022,7 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
+#[cfg(windows)]
 fn virtio_fs_vpci_request(
     instance_id: &Guid,
     tag: &str,
@@ -1039,6 +1039,7 @@ fn virtio_fs_vpci_request(
     }
 }
 
+#[cfg(windows)]
 async fn validate_vpci_virtio_fs_hotplug(
     client: &mesh_rpc::Client,
     agent: &pipette_client::PipetteClient,
@@ -1131,6 +1132,7 @@ async fn validate_vpci_virtio_fs_hotplug(
     Ok(())
 }
 
+#[cfg(windows)]
 async fn mount_virtio_fs(
     agent: &pipette_client::PipetteClient,
     tag: &str,
