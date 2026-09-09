@@ -69,10 +69,12 @@ pub fn provision(params: &ProvisionParams) -> anyhow::Result<Vec<u8>> {
             (None, Some(cert)) => cert.len(),
             (None, None) => TPM_DEFAULT_AKCERT_SIZE,
         };
+        // A zero-size index is accepted by the TPM but is useless, so reject it
+        // here rather than exporting a blob that cannot hold an AK cert.
         anyhow::ensure!(
-            requested_size <= max_nv_index_size as usize,
-            "AK cert NV index size ({requested_size} bytes) exceeds the largest NV index this \
-             TPM supports ({max_nv_index_size} bytes)"
+            (1..=max_nv_index_size as usize).contains(&requested_size),
+            "AK cert NV index size must be between 1 and {max_nv_index_size} bytes, \
+             got {requested_size}"
         );
         let size = requested_size as u16;
 
