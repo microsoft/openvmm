@@ -233,6 +233,8 @@ pub struct PetriVmConfig {
     pub firmware: Firmware,
     /// Whether to enable guest hibernation support.
     pub hibernation_enabled: bool,
+    /// Whether to expose an IPMI KCS interface to the guest.
+    pub ipmi_enabled: bool,
     /// The amount of memory, in bytes, to assign to the VM
     pub memory: MemoryConfig,
     /// The processor topology for the VM
@@ -461,6 +463,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 host_log_levels: None,
                 firmware: artifacts.firmware,
                 hibernation_enabled: false,
+                ipmi_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -543,6 +546,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 host_log_levels: None,
                 firmware: artifacts.firmware,
                 hibernation_enabled: false,
+                ipmi_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -1540,6 +1544,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// firmware's hibernation support.
     pub fn with_hibernation_enabled(mut self, enable: bool) -> Self {
         self.config.hibernation_enabled = enable;
+        self
+    }
+
+    /// Enable the IPMI KCS interface for an OpenHCL UEFI VM.
+    pub fn with_ipmi(mut self, enable: bool) -> Self {
+        self.config.ipmi_enabled = enable;
         self
     }
 

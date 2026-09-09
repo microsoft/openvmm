@@ -190,6 +190,7 @@ pub struct PetriVmConfigOpenVmm {
 struct PetriVmResourcesOpenVmm {
     log_stream_tasks: Vec<Task<anyhow::Result<()>>>,
     firmware_event_recv: Receiver<FirmwareEvent>,
+    ipmi_sel_event_recv: Receiver<get_resources::ged::IpmiSelEvent>,
     shutdown_ic_send: Option<Sender<ShutdownRpc>>,
     kvp_ic_send: Option<Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,

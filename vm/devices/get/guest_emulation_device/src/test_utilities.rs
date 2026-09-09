@@ -266,6 +266,7 @@ pub fn create_host_channel(
         secure_boot_enabled: false,
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,
         enable_battery: false,
+        enable_ipmi: false,
         enable_hibernation: false,
         no_persistent_secrets: true,
         guest_state_lifetime: Default::default(),
@@ -293,6 +294,7 @@ pub fn create_host_channel(
     let mut ged_state: GuestEmulationDevice = GuestEmulationDevice::new(
         guest_config,
         halt.into(),
+        None,
         None,
         recv,
         None,

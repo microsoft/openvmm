@@ -81,12 +81,16 @@ pub mod ged {
         pub guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         /// Notification of firmware events.
         pub firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
+        /// Test observer for IPMI SEL notifications received from OpenHCL.
+        pub ipmi_sel_event_send: Option<mesh::Sender<IpmiSelEvent>>,
         /// Enable secure boot.
         pub secure_boot_enabled: bool,
         /// The secure boot template type.
         pub secure_boot_template: GuestSecureBootTemplateType,
         /// Enable battery.
         pub enable_battery: bool,
+        /// Enable the IPMI KCS interface.
+        pub enable_ipmi: bool,
         /// Suppress attestation and disable TPM state persistence.
         pub no_persistent_secrets: bool,
         /// Test configuration for IGVM Attest message.
@@ -101,6 +105,15 @@ pub mod ged {
         pub enable_hibernation: bool,
         /// SMBIOS identity overrides delivered to the guest firmware.
         pub smbios: smbios_defs::SmbiosConfig,
+    }
+
+    /// An IPMI SEL notification received from OpenHCL.
+    #[derive(Debug, Clone, Copy, MeshPayload, PartialEq, Eq)]
+    pub struct IpmiSelEvent {
+        /// BMC-assigned SEL record identifier.
+        pub record_id: u16,
+        /// Completed SEL record.
+        pub record: [u8; 16],
     }
 
     /// The firmware and chipset configuration for the guest.
