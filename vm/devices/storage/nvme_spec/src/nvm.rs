@@ -320,7 +320,7 @@ pub struct Cdw10ReservationRelease {
 }
 
 const RESERVATION_ACTION_BITS: usize = 3;
-/// Width of the action field of a reservation command, for use by fuzzer
+/// Width of the action field of a reservation command, for use by the fuzzer
 pub const RESERVATION_ACTION_MAX: u8 = (1u8 << RESERVATION_ACTION_BITS) - 1;
 
 const _: () = assert!(Cdw10ReservationRegister::RREGA_BITS == RESERVATION_ACTION_BITS);
