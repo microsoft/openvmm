@@ -5,6 +5,7 @@
 
 use crate::engine;
 use anyhow::Context as _;
+use tpm_lib::TpmEngine as _;
 use tpm_protocol::TPM_AZURE_AIK_HANDLE;
 use tpm_protocol::TPM_DEFAULT_AKCERT_SIZE;
 use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
@@ -61,12 +62,19 @@ pub fn provision(params: &ProvisionParams) -> anyhow::Result<Vec<u8>> {
     }
 
     if params.ak_cert_index != AkCertIndexKind::None {
-        let size = params.ak_cert_index_size.unwrap_or_else(|| {
-            params
-                .ak_cert
-                .as_ref()
-                .map_or(TPM_DEFAULT_AKCERT_SIZE as u16, |cert| cert.len() as u16)
-        });
+        let max_nv_index_size = helper.tpm_engine.max_nv_index_size();
+
+        let requested_size = match (params.ak_cert_index_size, &params.ak_cert) {
+            (Some(size), _) => size as usize,
+            (None, Some(cert)) => cert.len(),
+            (None, None) => TPM_DEFAULT_AKCERT_SIZE,
+        };
+        anyhow::ensure!(
+            requested_size <= max_nv_index_size as usize,
+            "AK cert NV index size ({requested_size} bytes) exceeds the largest NV index this \
+             TPM supports ({max_nv_index_size} bytes)"
+        );
+        let size = requested_size as u16;
 
         if let Some(cert) = &params.ak_cert {
             anyhow::ensure!(
