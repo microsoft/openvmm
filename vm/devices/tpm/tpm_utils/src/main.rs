@@ -150,6 +150,14 @@ mod cli {
                 mitigation_marker,
             } => {
                 let version = TpmVersion::from(tpm_version);
+
+                anyhow::ensure!(
+                    ak_cert_index != AkCertIndexKind::None
+                        || (ak_cert.is_none() && ak_cert_index_size.is_none()),
+                    "--ak-cert and --ak-cert-index-size have no effect with \
+                     --ak-cert-index none"
+                );
+
                 let ak_cert = ak_cert
                     .map(|path| fs_err::read(&path))
                     .transpose()
