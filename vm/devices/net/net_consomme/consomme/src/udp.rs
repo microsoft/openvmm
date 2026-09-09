@@ -936,6 +936,23 @@ mod tests {
         Consomme::new(params)
     }
 
+    async fn recv_udp(driver: &DefaultDriver, socket: &UdpSocket) -> (Vec<u8>, SocketAddr) {
+        socket.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut buffer = [0; 64];
+        loop {
+            match socket.recv_from(&mut buffer) {
+                Ok((n, addr)) => return (buffer[..n].to_vec(), addr),
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                Err(err) => panic!("failed to receive UDP packet: {err}"),
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for packet");
+            pal_async::timer::PolledTimer::new(driver)
+                .sleep(Duration::from_millis(10))
+                .await;
+        }
+    }
+
     #[pal_async::async_test]
     async fn test_udp_connection_timeout(driver: DefaultDriver) {
         let driver = Arc::new(driver);
@@ -1081,9 +1098,6 @@ mod tests {
 
         // A host client socket that will receive the guest's reply.
         let host_client = UdpSocket::bind("127.0.0.1:0").unwrap();
-        host_client
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
 
         let packets = client.received_packets.clone();
         let mut access = consomme.access(&mut client);
@@ -1142,11 +1156,8 @@ mod tests {
         );
 
         // The host client must receive the reply from the published host port.
-        let mut recv_buf = [0u8; 64];
-        let (n, src) = host_client
-            .recv_from(&mut recv_buf)
-            .expect("client should receive the reply");
-        assert_eq!(&recv_buf[..n], payload);
+        let (received, src) = recv_udp(&driver, &host_client).await;
+        assert_eq!(received, payload);
         assert_eq!(
             src.port(),
             host_addr.port(),
@@ -1176,13 +1187,6 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_udp_remote_reply_source_port(driver: DefaultDriver) {
-        let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
-        probe.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).unwrap();
-        let IpAddr::V4(host_ip) = probe.local_addr().unwrap().ip() else {
-            unreachable!();
-        };
-        assert!(!host_ip.is_loopback());
-
         let driver = Arc::new(driver);
         let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
         let mut client = TestClient::new(driver.clone());
@@ -1203,41 +1207,24 @@ mod tests {
             .unwrap()
             .port();
 
-        let remote_client = UdpSocket::bind((host_ip, 0)).unwrap();
-        remote_client
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-
-        let packets = client.received_packets.clone();
+        let remote_client = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let remote_addr = SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            remote_client.local_addr().unwrap().port(),
+        )
+        .into();
         let mut access = consomme.access(&mut client);
         access
             .bind_udp_port(listener_socket, guest_port)
             .expect("bind should succeed");
-
-        remote_client
-            .send_to(b"request", SocketAddrV4::new(host_ip, host_port))
+        let listener = access
+            .inner
+            .udp
+            .listeners
+            .get_mut(&PortForwardKey::new(IpVersion::Ipv4, guest_port))
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            std::future::poll_fn(|cx| {
-                access.poll(cx);
-                Poll::Ready(())
-            })
-            .await;
-            if !packets.lock().is_empty() {
-                break;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for request");
-            pal_async::timer::PolledTimer::new(&*driver)
-                .sleep(Duration::from_millis(10))
-                .await;
-        }
+        UdpListener::record_peer(&mut listener.peers, remote_addr);
 
-        let request = packets.lock()[0].clone();
-        let request = EthernetFrame::new_unchecked(request.as_slice());
-        let request = Ipv4Packet::new_unchecked(request.payload());
-        let target_ip = request.src_addr();
-        let request = UdpPacket::new_unchecked(request.payload());
         let payload = b"reply";
         let mut buffer =
             vec![0u8; ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
@@ -1246,9 +1233,9 @@ mod tests {
         let packet_len = build_udp_packet(
             &mut eth_frame,
             IpAddress::Ipv4(guest_ip),
-            IpAddress::Ipv4(target_ip),
+            IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED),
             guest_port,
-            request.src_port(),
+            remote_addr.port(),
             payload.len(),
             guest_mac,
             gateway_mac,
@@ -1259,10 +1246,9 @@ mod tests {
             .unwrap();
         assert_eq!(access.udp_connection_count(), 0);
 
-        let mut recv_buf = [0u8; 64];
-        let (n, src) = remote_client.recv_from(&mut recv_buf).unwrap();
-        assert_eq!(&recv_buf[..n], payload);
-        assert_eq!(src, SocketAddrV4::new(host_ip, host_port).into());
+        let (received, src) = recv_udp(&driver, &remote_client).await;
+        assert_eq!(received, payload);
+        assert_eq!(src.port(), host_port);
     }
 
     #[pal_async::async_test]
