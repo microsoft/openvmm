@@ -545,6 +545,8 @@ pub struct HypervisorConfig {
     /// rejects it rather than silently ignoring it (see
     /// `virt::Hypervisor::recognizes_nested_virt`).
     pub nested_virt: bool,
+    /// Optional host-provided data included in SNP launch finish.
+    pub snp_host_data: Option<[u8; 32]>,
 }
 
 #[derive(Debug, MeshPayload)]

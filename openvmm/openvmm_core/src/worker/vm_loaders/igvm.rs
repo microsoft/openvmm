@@ -195,8 +195,11 @@ fn selected_platform_header(
     }
 }
 
-/// Extract backend-owned SNP configuration from an IGVM file.
-pub fn snp_isolation_config(igvm_file: &IgvmFile) -> Result<virt::SnpConfig, Error> {
+/// Build effective SNP configuration from an IGVM file and host launch parameters.
+pub fn snp_isolation_config(
+    igvm_file: &IgvmFile,
+    host_data: Option<[u8; 32]>,
+) -> Result<virt::SnpConfig, Error> {
     let IgvmPlatformHeader::SupportedPlatform(platform) = snp_platform_header(igvm_file)?;
     let policy = igvm_file
         .initializations()
@@ -282,6 +285,7 @@ pub fn snp_isolation_config(igvm_file: &IgvmFile) -> Result<virt::SnpConfig, Err
     }
 
     Ok(virt::SnpConfig {
+        host_data,
         policy,
         highest_vtl: platform.highest_vtl,
         shared_gpa_boundary: platform.shared_gpa_boundary,

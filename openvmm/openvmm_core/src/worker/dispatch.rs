@@ -746,6 +746,7 @@ fn resolve_proto_partition_isolation(
     isolation: virt::IsolationType,
     load_mode: &LoadMode,
     igvm_file: Option<&IgvmFile>,
+    snp_host_data: Option<[u8; 32]>,
 ) -> anyhow::Result<virt::ProtoPartitionIsolation> {
     Ok(match isolation {
         virt::IsolationType::None => virt::ProtoPartitionIsolation::None,
@@ -766,6 +767,7 @@ fn resolve_proto_partition_isolation(
                 LoadMode::Igvm { .. } => virt::SnpPartitionConfig::Igvm(Box::new(
                     super::vm_loaders::igvm::snp_isolation_config(
                         igvm_file.context("missing parsed SNP IGVM file")?,
+                        snp_host_data,
                     )
                     .context("reading IGVM SNP configuration failed")?,
                 )),
@@ -802,7 +804,7 @@ mod tests {
                 restricted_injection,
             });
             assert_eq!(
-                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None)
+                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None, None)
                     .unwrap(),
                 virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
                     restricted_injection,
@@ -818,7 +820,7 @@ mod tests {
             linux_load_mode(openvmm_defs::config::LinuxIsolationConfig::None),
         ] {
             assert!(
-                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None)
+                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None, None)
                     .is_err()
             );
         }
@@ -836,7 +838,7 @@ mod tests {
             (virt::IsolationType::Cca, virt::ProtoPartitionIsolation::Cca),
         ] {
             assert_eq!(
-                resolve_proto_partition_isolation(isolation, &LoadMode::None, None).unwrap(),
+                resolve_proto_partition_isolation(isolation, &LoadMode::None, None, None).unwrap(),
                 expected,
             );
         }
@@ -1158,6 +1160,7 @@ impl InitializedVm {
             partition_isolation,
             &cfg.load_mode,
             igvm_file.as_ref(),
+            cfg.hypervisor.snp_host_data,
         )?;
 
         let hv_config = if cfg.hypervisor.with_hv {
