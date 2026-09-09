@@ -10,7 +10,7 @@ use crate::{
     functions::{FunctionRegistry, FuzzFunctionVariable},
     prelude::*,
 };
-use opentmk_decoder::{InputCase, InputResult, SafeMemoryMap, exec_testcases_safe};
+use opentmk_decoder::{InputCase, InputResult, SafeMemoryMap, SingleMap, exec_testcases_safe};
 use opentmk_exec_packet::OpenTMKFuzzTest;
 use spin::Mutex;
 
@@ -27,9 +27,9 @@ struct SyzlangState {
 
 impl SyzlangState {
     /// Executes a testcase with this state object
-    fn exec_syzlang_testcase_line(
+    fn exec_syzlang_testcase_line<M: SafeMemoryMap>(
         &mut self,
-        mem: &mut dyn SafeMemoryMap,
+        mem: M,
         input_struct: InputCase,
     ) -> InputResult {
         // resolve the call number to a pseudo syscall
@@ -90,7 +90,7 @@ impl SyzlangState {
 pub struct SyzlangDeserializer {
     tc_slice: Vec<u8>,
     st: Mutex<SyzlangState>,
-    mem: (Vec<u8>, usize),
+    mem: SingleMap<Vec<u8>>,
 }
 
 impl SyzlangDeserializer {
@@ -98,7 +98,7 @@ impl SyzlangDeserializer {
         Self {
             tc_slice: vec![0; opentmk_decoder::SUPPORTED_INPUT_SIZE],
             st: Default::default(),
-            mem: (
+            mem: SingleMap::new(
                 vec![0; opentmk_decoder::EXEC_INPUT_REQ_SIZE],
                 opentmk_decoder::ADDR_SYZ_BEGIN as usize,
             ),
@@ -152,22 +152,19 @@ impl Deserializer for SyzlangDeserializer {
             )));
         }
         self.tc_slice[..src.len()].copy_from_slice(src);
-        self.mem.0.as_mut_slice().fill(0);
+        self.mem.fill(0);
 
         // Borrow choreography:
         //   - `&mut self.mem` and `&mut self.tc_slice` are disjoint fields (split borrow).
         //   - The closure captures `&self.st` only (Rust 2021 disjoint capture), not
         //     `&self`, so it doesn't conflict with the &mut borrows above.
-        //   - `decoder` is `&DecodedProgram` (shared); `&mut decoder` borrows the local
-        //     binding, not the program. SafeMemoryMap is impl'd for `&DecodedProgram`
-        //     with interior mutability via the inner Mutex<MyMemoryMap>.
         //   - `self.st` is locked per-call inside the closure and again at
         //     `dump_errors()` below; safe because exec_testcases_safe is synchronous
         //     and the closure is dropped before we return here. We also need to
         //     ensure that `self.st` is Sync + Send (which means the underlying
         //     state should be `Send`)
-        let results = exec_testcases_safe(&mut self.mem, &mut self.tc_slice, |mut decoder, inp| {
-            self.st.lock().exec_syzlang_testcase_line(&mut decoder, inp)
+        let results = exec_testcases_safe(&mut self.mem, &mut self.tc_slice, |mem, inp| {
+            self.st.lock().exec_syzlang_testcase_line(mem, inp)
         });
 
         // See if we hit any errors.

@@ -8,13 +8,10 @@
 #[macro_use]
 extern crate alloc;
 
-mod atomicrefqueue;
 mod safememory;
 mod wire;
 
-pub use safememory::SafeMemoryMap;
-
-use spin::Mutex;
+pub use safememory::{SafeMemoryMap, SingleMap};
 
 use core::{
     marker::PhantomData,
@@ -22,10 +19,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{collections::vec_deque::VecDeque, string::String, sync::Arc, vec::Vec};
 use zerocopy::{FromBytes, Immutable, IntoBytes, SizeError};
-
-use crate::atomicrefqueue::AtomicRefQueue;
 
 const K_MAX_COMMANDS: usize = 1000;
 
@@ -46,10 +41,6 @@ const _SYZKALLER_CALL_END_FAILED: u64 = 3;
 
 /// Results produced by executing the calls in a syzkaller program.
 pub type TestcaseResults = [ResT; K_MAX_COMMANDS];
-
-/// Callback used to execute a decoded syzkaller input.
-pub type Executor<'f> =
-    dyn Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + 'f + Send + Sync;
 
 /// An enumeration of possible decoder errors
 #[derive(Debug, PartialEq)]
@@ -112,12 +103,12 @@ impl DecoderError {
 ///
 /// 'm - lifetime of the memory map instance
 /// 'f - lifetime of the executor function
-pub struct DecodedProgram<'m, 'f> {
-    instr_vec: Arc<AtomicRefQueue<InstrEntry>>,
+pub struct DecodedProgram<M, F> {
+    instr_vec: VecDeque<InstrEntry>,
     /// Memory-layout that holds the address layout of the syzkaller program
-    mem: Arc<Mutex<dyn SafeMemoryMap + 'm>>,
+    mem: M,
     /// The executor function
-    exec: Arc<Executor<'f>>,
+    exec: F,
     /// Holds the results for each call. Due to syzkaller internals, this only
     /// tracks results for calls that have direct return values (i.e. calls that are assigned
     /// a copyout index). Calls that are not assigned a copyout index are tracked in the custom_results)
@@ -132,29 +123,46 @@ pub struct DecodedProgram<'m, 'f> {
 /// `&mut DecodedProgram` (we need this loosening of restrictions internally, i.e. so that
 /// the reentrancy fuzz loop could perform read/write operations while holding only a
 /// shared global reference to it).
-impl SafeMemoryMap for &DecodedProgram<'_, '_> {
+impl<M, F> SafeMemoryMap for DecodedProgram<M, F>
+where
+    M: SafeMemoryMap,
+    F: Fn(&M, InputCase) -> InputResult + Send + Sync,
+{
     fn partial_write_mem(&mut self, base: usize, val: &[u8]) -> usize {
-        self.mem.lock().partial_write_mem(base, val)
+        self.mem.partial_write_mem(base, val)
     }
 
     fn partial_read_mem(&mut self, base: usize, val: &mut [u8]) -> usize {
-        self.mem.lock().partial_read_mem(base, val)
+        self.mem.partial_read_mem(base, val)
     }
 }
 
-impl<'m, 'f> DecodedProgram<'m, 'f> {
+impl<F> DecodedProgram<Vec<u8>, F>
+where
+    F: Fn(&mut Vec<u8>, InputCase) -> InputResult + Send + Sync,
+{
+    #[cfg(test)]
+    fn test_new(exec: F, results: Arc<TestcaseResults>) -> Self {
+        DecodedProgram {
+            instr_vec: VecDeque::new(),
+            mem: vec![0u8; 8],
+            exec,
+            results,
+            custom_results: Arc::new([const { ResT::new() }; K_MAX_COMMANDS]),
+        }
+    }
+}
+
+impl<M, F> DecodedProgram<M, F>
+where
+    M: SafeMemoryMap,
+    F: Fn(&mut M, InputCase) -> InputResult + Send + Sync,
+{
     /// Creates a new [`DecodedProgram`] that decodes the syzkaller program from the provided input
     /// buffer and exec callback.
-    fn new<
-        M: SafeMemoryMap + 'm,
-        F: Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + Send + Sync + 'f,
-    >(
-        mem: M,
-        syz_input_buffer: &[u8],
-        exec: F,
-    ) -> Result<Self, DecoderError> {
+    fn new(mem: M, syz_input_buffer: &[u8], exec: F) -> Result<Self, DecoderError> {
         let mut decoder = Decoder::new(syz_input_buffer)?;
-        let mut instr_vec_tmp: Vec<InstrEntry> = Vec::new();
+        let mut instr_vec: Vec<InstrEntry> = Vec::new();
         {
             let mut call = None;
             let mut instrout: Vec<InstrCopyOut> = Vec::new();
@@ -167,13 +175,13 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                     }
                     Instr::CopyIn(i) => {
                         let entry = InstrEntry::CopyIn(i);
-                        instr_vec_tmp.push(entry);
+                        instr_vec.push(entry);
                     }
                     Instr::Call(i) => {
                         // Process any cached call + copyouts if present
                         if let Some(call_entry) = call.take() {
                             let entry = InstrEntry::Call(call_entry, instrout.clone());
-                            instr_vec_tmp.push(entry);
+                            instr_vec.push(entry);
                             // Clear the collected CopyOuts vector.
                             instrout.clear();
                         }
@@ -191,44 +199,19 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
             // We do this here.
             if let Some(call_entry) = call.take() {
                 let entry = InstrEntry::Call(call_entry, instrout.clone());
-                instr_vec_tmp.push(entry);
+                instr_vec.push(entry);
                 // Clear the collected CopyOuts vector.
                 instrout.clear();
             }
         }
 
-        let results = Arc::new([const { ResT::new() }; K_MAX_COMMANDS]);
-        let custom_results = Arc::new([const { ResT::new() }; K_MAX_COMMANDS]);
         Ok(Self {
-            mem: Arc::new(Mutex::new(mem)),
-            instr_vec: Arc::new(AtomicRefQueue::new(instr_vec_tmp)),
-            exec: Arc::new(exec),
-            results: results.clone(),
-            custom_results: custom_results.clone(),
+            mem,
+            instr_vec: instr_vec.into(),
+            exec,
+            results: Arc::new([const { ResT::new() }; K_MAX_COMMANDS]),
+            custom_results: Arc::new([const { ResT::new() }; K_MAX_COMMANDS]),
         })
-    }
-
-    /// Checks if the instruction is a call, and if so whether it depends on the results of
-    /// another call that has not executed yet
-    fn is_instr_call_ready(&self, instr_entry: &InstrEntry) -> bool {
-        // Get a reference to the global results array we're working with
-        let results = self.results.as_ref();
-        // Check if Instr is a call and if it depends on any unexecuted calls
-        if let InstrEntry::Call(i, _) = &instr_entry {
-            for arg in i.args.iter() {
-                if let Arg::Result(a) = arg {
-                    let r = &results[a.idx as usize];
-                    if !r.executed.load(Ordering::SeqCst) {
-                        // Found a dependent call that has not executed yet.
-                        // Return false to indicate this call is not ready to be executed.
-                        return false;
-                    }
-                }
-            }
-        }
-        // Either Instr was not a call, or it was a call and all dependent calls have executed.
-        // Return true to indicate this Instr is ready to be executed.
-        true
     }
 
     /// Check if the provided call was executed and returned success, based on the contents
@@ -255,37 +238,8 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
         Ok(r.was_successful())
     }
 
-    /// Continues execution of the instructions contains in our own instruction vector
-    pub fn continue_execution(&self) -> Result<(), DecoderError> {
-        // SAFETY: This should always be sound because we cannot reach this point without having a valid
-        // execution function.
-        // We can _only_ take an immutable borrow here because this function is reentrant and we may have
-        // other references to the execution function in higher stack frames.
-        let instr_vec = self.instr_vec.clone();
-        while let Some(entry) = instr_vec.pop_ref_conditional(|ent| self.is_instr_call_ready(ent)) {
-            // Execute all the instructions, regardless of their type
-            let instr_target = entry.get_inner_instr();
-            self.exec_single(instr_target)?;
-
-            // If the instr was a Call, it may have copyouts to execute.
-            if let InstrEntry::Call(instr_call, copyouts) = entry {
-                // Only execute copyouts if the call itself was successful, otherwise the values being
-                // copied out may be invalid.
-                if self.was_call_successful(instr_call)? {
-                    for copyout_entry in copyouts.iter() {
-                        self.exec_single(Instr::CopyOut(*copyout_entry))?;
-                    }
-                }
-            } // No copyouts to process if the instruction was not a call
-        }
-
-        Ok(())
-    }
-
-    /// Executes the instructions in the provided instruction vector.
-    fn exec_instrs(&self) -> Result<(), DecoderError> {
-        let instr_vec = self.instr_vec.clone();
-        while let Some(entry) = instr_vec.pop_ref_conditional(|ent| self.is_instr_call_ready(ent)) {
+    fn exec_instrs(&mut self) -> Result<(), DecoderError> {
+        while let Some(entry) = self.instr_vec.pop_front() {
             // Execute all the instructions, regardless of their type
             self.exec_single(entry.get_inner_instr())?;
 
@@ -293,7 +247,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
             if let InstrEntry::Call(instr_call, copyouts) = entry {
                 // Only execute copyouts if the call itself was successful, otherwise the values being
                 // copied out may be invalid.
-                if self.was_call_successful(instr_call)? {
+                if self.was_call_successful(&instr_call)? {
                     for copyout_entry in copyouts.iter() {
                         self.exec_single(Instr::CopyOut(*copyout_entry))?;
                     }
@@ -307,11 +261,10 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
     /// Executes the provided instruction.
     /// If the instruction is a call, the provided exec function is called with the provided input case
     /// and the results are stored in the results array if the call has a valid copyout index.
-    fn exec_single(&self, instr: Instr) -> Result<(), DecoderError> {
+    fn exec_single(&mut self, instr: Instr) -> Result<(), DecoderError> {
         /// The number of bytes to offset all data operations by.
         const COPYIN_OFFSET: u64 = 0;
 
-        let mut mem = self.mem.lock();
         match instr {
             Instr::CopyIn(i) => match i.arg {
                 Arg::Const(a) => {
@@ -322,7 +275,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                     let val = a.val + ((a.meta >> 32) * i.rpid);
 
                     copyin(
-                        &mut *mem,
+                        &mut self.mem,
                         i.wire.addr + COPYIN_OFFSET,
                         val,
                         size,
@@ -344,10 +297,18 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                         a.arg
                     };
 
-                    copyin(&mut *mem, i.wire.addr + COPYIN_OFFSET, val, size, bf, 0, 0)?;
+                    copyin(
+                        &mut self.mem,
+                        i.wire.addr + COPYIN_OFFSET,
+                        val,
+                        size,
+                        bf,
+                        0,
+                        0,
+                    )?;
                 }
                 Arg::Data((a, d)) => {
-                    mem.write_mem(
+                    self.mem.write_mem(
                         (i.wire.addr + COPYIN_OFFSET) as usize,
                         &d.as_bytes()[..a.size as usize],
                     );
@@ -356,7 +317,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
 
             Instr::CopyOut(i) => {
                 let mut val = 0u64;
-                copyout(&mut *mem, i.wire.addr, i.wire.size, &mut val)?;
+                copyout(&mut self.mem, i.wire.addr, i.wire.size, &mut val)?;
 
                 let r = &self.results[i.wire.index as usize];
                 // Its assumed if we're executing a CopyOut, that the associated call was
@@ -398,11 +359,6 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                     }
                 }
 
-                // Ensure that we don't keep a lock to the safe memory map
-                // when we pass execution to the executor. That way we can
-                // perform reentrancy as needed.
-                drop(mem);
-
                 let exec_result = if skip {
                     // Skipped function call because we couldn't fill out all
                     // the values needed from dependent calls
@@ -419,7 +375,7 @@ impl<'m, 'f> DecodedProgram<'m, 'f> {
                         num_args: i.args.len() as u64,
                         _priv: PhantomData,
                     };
-                    (self.exec)(self, input_struct)
+                    (self.exec)(&mut self.mem, input_struct)
                 };
 
                 // If the call has a valid associated copyout index, we need to set the result in the results array.
@@ -840,9 +796,9 @@ pub fn exec_testcases_safe<M: SafeMemoryMap, F>(
     exec: F,
 ) -> Result<TestcaseResults, DecoderError>
 where
-    F: Fn(&DecodedProgram<'_, '_>, InputCase) -> InputResult + Send + Sync,
+    F: Fn(&mut M, InputCase) -> InputResult + Send + Sync,
 {
-    let decoded = DecodedProgram::new(syz_exec_mem, syz_input_buffer, exec)?;
+    let mut decoded = DecodedProgram::new(syz_exec_mem, syz_input_buffer, exec)?;
     decoded.exec_instrs()?;
     Ok(decoded.results.as_ref().clone())
 }
@@ -1162,16 +1118,14 @@ mod tests {
         assert_eq!(mem, expected);
     }
 
-    fn make_noop_prog_with_results(
-        mem: Box<dyn SafeMemoryMap>,
+    fn make_noop_prog_with_results<M: SafeMemoryMap>(
+        mem: M,
         results: Arc<TestcaseResults>,
-    ) -> DecodedProgram<'static, 'static> {
-        let noop_exec: Arc<Executor<'static>> =
-            Arc::new(|_: &DecodedProgram<'_, '_>, _: InputCase| InputResult::default());
+    ) -> DecodedProgram<M, fn(&mut M, InputCase) -> InputResult> {
         DecodedProgram {
-            instr_vec: Arc::new(AtomicRefQueue::new(vec![])),
-            mem: Arc::new(Mutex::new(mem)),
-            exec: noop_exec,
+            instr_vec: VecDeque::new(),
+            mem,
+            exec: |_, _| InputResult::default(),
             results,
             custom_results: Arc::new([const { ResT::new() }; K_MAX_COMMANDS]),
         }
@@ -1186,7 +1140,7 @@ mod tests {
 
         let mem = Box::new([0u8; 8]);
         let addr = mem.as_ptr() as u64;
-        let prog = make_noop_prog_with_results(mem, results);
+        let mut prog = make_noop_prog_with_results(mem, results);
 
         let instr = Instr::CopyIn(InstrCopyIn {
             wire: wire::InstrCopyIn { addr },
@@ -1203,7 +1157,7 @@ mod tests {
         prog.exec_single(instr).unwrap();
 
         let mut buf = [0u8; 4];
-        prog.mem.lock().read_mem(addr as usize, &mut buf);
+        prog.mem.read_mem(addr as usize, &mut buf);
         let written = u32::from_le_bytes(buf);
         assert_eq!(written, 60); // (200 / 4) + 10
     }
@@ -1217,7 +1171,7 @@ mod tests {
 
         let mem = Box::new([0u8; 8]);
         let addr = mem.as_ptr() as u64;
-        let prog = make_noop_prog_with_results(mem, results);
+        let mut prog = make_noop_prog_with_results(mem, results);
 
         let instr = Instr::CopyIn(InstrCopyIn {
             wire: wire::InstrCopyIn { addr },
@@ -1234,7 +1188,7 @@ mod tests {
         prog.exec_single(instr).unwrap();
 
         let mut buf = [0u8; 4];
-        prog.mem.lock().read_mem(addr as usize, &mut buf);
+        prog.mem.read_mem(addr as usize, &mut buf);
         let written = u32::from_le_bytes(buf);
         assert_eq!(written, 107); // 100 + 7
     }
@@ -1248,7 +1202,7 @@ mod tests {
 
         let mem = Box::new([0u8; 8]);
         let addr = mem.as_ptr() as u64;
-        let prog = make_noop_prog_with_results(mem, results);
+        let mut prog = make_noop_prog_with_results(mem, results);
 
         let instr = Instr::CopyIn(InstrCopyIn {
             wire: wire::InstrCopyIn { addr },
@@ -1265,7 +1219,7 @@ mod tests {
         prog.exec_single(instr).unwrap();
 
         let mut buf = [0u8; 4];
-        prog.mem.lock().read_mem(addr as usize, &mut buf);
+        prog.mem.read_mem(addr as usize, &mut buf);
         let written = u32::from_le_bytes(buf);
         assert_eq!(written, 42); // default, op_div/op_add not applied
     }
@@ -1279,8 +1233,9 @@ mod tests {
 
         let captured_arg = Arc::new(AtomicU64::new(0));
         let captured_clone = captured_arg.clone();
-        let exec_fn: Arc<Executor<'static>> = Arc::new(
-            move |_: &DecodedProgram<'_, '_>, input: InputCase| -> InputResult {
+
+        let mut prog = DecodedProgram::test_new(
+            move |_, input| {
                 captured_clone.store(input.args[0], Ordering::SeqCst);
                 InputResult {
                     code: 0,
@@ -1288,16 +1243,8 @@ mod tests {
                     is_success: true,
                 }
             },
-        );
-
-        let mem: Box<dyn SafeMemoryMap> = Box::new([0u8; 8]);
-        let prog = DecodedProgram {
-            instr_vec: Arc::new(AtomicRefQueue::new(vec![])),
-            mem: Arc::new(Mutex::new(mem)),
-            exec: exec_fn,
             results,
-            custom_results: Arc::new([const { ResT::new() }; K_MAX_COMMANDS]),
-        };
+        );
 
         let instr = Instr::Call(InstrCall {
             wire: wire::InstrCall {
@@ -1331,21 +1278,14 @@ mod tests {
 
         let was_called = Arc::new(AtomicBool::new(false));
         let was_called_clone = was_called.clone();
-        let exec_fn: Arc<Executor<'static>> = Arc::new(
-            move |_: &DecodedProgram<'_, '_>, _: InputCase| -> InputResult {
+
+        let mut prog = DecodedProgram::test_new(
+            |_, _| {
                 was_called_clone.store(true, Ordering::SeqCst);
                 InputResult::default()
             },
-        );
-
-        let mem: Box<dyn SafeMemoryMap> = Box::new([0u8; 8]);
-        let prog = DecodedProgram {
-            instr_vec: Arc::new(AtomicRefQueue::new(vec![])),
-            mem: Arc::new(Mutex::new(mem)),
-            exec: exec_fn,
             results,
-            custom_results: Arc::new([const { ResT::new() }; K_MAX_COMMANDS]),
-        };
+        );
 
         let instr = Instr::Call(InstrCall {
             wire: wire::InstrCall {

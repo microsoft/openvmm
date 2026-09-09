@@ -26,9 +26,9 @@ impl FunctionRegistry {
         });
     }
 
-    pub fn exec(
+    pub fn exec<M: SafeMemoryMap>(
         &self,
-        mem: &mut dyn SafeMemoryMap,
+        mut mem: M,
         function_name: &str,
         input: Vec<FuzzFunctionVariable>,
     ) -> FuzzFunctionVariable {
@@ -50,6 +50,6 @@ impl FunctionRegistry {
             Some(f) => f,
         };
 
-        (func.call)(mem, input).into()
+        (func.call)(&mut mem, input).into()
     }
 }
