@@ -134,6 +134,22 @@ impl SimpleFlowNode for Node {
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
+        // On Windows & Mac we can't build with all features since the TPM
+        // requires OpenSSL for crypto, which isn't supported in CI on those
+        // platforms today.
+        //
+        // We don't add the CI feature here, as it's used purely to exclude
+        // tests that can't run in CI. We still want those tests to be linted.
+        let features = if matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
+        ) {
+            CargoFeatureSet::None
+        } else {
+            CargoFeatureSet::All
+        };
+        let all_features = matches!(features, CargoFeatureSet::All);
+
         let exclude = ctx.emit_rust_stepv("determine clippy exclusions", |ctx| {
             let xtask = xtask.claim(ctx);
             let repo_path = openvmm_repo_path.clone().claim(ctx);
@@ -146,8 +162,10 @@ impl SimpleFlowNode for Node {
 
                 // tpm_utils selects a TPM crypto backend with non-additive
                 // features, so it can't be built with --all-features. It is
-                // handled separately below.
-                exclude.push("tpm_utils".into());
+                // handled separately below on those targets.
+                if all_features {
+                    exclude.push("tpm_utils".into());
+                }
 
                 // packages depending on libfuzzer-sys are currently x86 only
                 if !(matches!(target.architecture, target_lexicon::Architecture::X86_64)
@@ -180,21 +198,6 @@ impl SimpleFlowNode for Node {
                 Ok(Some(exclude))
             }
         });
-
-        // On Windows & Mac we can't build with all features since the TPM
-        // requires OpenSSL for crypto, which isn't supported in CI on those
-        // platforms today.
-        //
-        // We don't add the CI feature here, as it's used purely to exclude
-        // tests that can't run in CI. We still want those tests to be linted.
-        let features = if matches!(
-            target.operating_system,
-            target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
-        ) {
-            CargoFeatureSet::None
-        } else {
-            CargoFeatureSet::All
-        };
 
         let mut reqs = vec![ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
             in_folder: openvmm_repo_path.clone(),
