@@ -14,10 +14,30 @@ This is useful for exercising the state import path at VM boot without needing
 a real provisioning service.
 
 ```admonish warning
-The TPM reference implementations need an OpenSSL crypto backend, so the tool
-must be built with the `tpm` feature and is only supported where OpenSSL is
+The TPM reference implementations need a crypto backend, so the tool must be
+built with the `tpm` feature and is only supported where that backend is
 available. Building the v1.85 backend also requires `cmake`.
 ```
+
+## Crypto backend
+
+The state a TPM commits is tied to the library that produced it, so `tpm_utils`
+should be built against the same backend as the build the state is destined
+for. Exactly one backend feature must be enabled alongside `tpm`:
+
+| Feature | Backend |
+| --- | --- |
+| `openssl` | OpenSSL. Enabled by default. |
+| `symcrypt` | [SymCrypt](https://github.com/microsoft/SymCrypt) for v1.85. The v1.38 library has no SymCrypt backend and stays on OpenSSL. |
+
+These features are non-additive — enabling both is a build error — so select
+SymCrypt by turning off the default:
+
+```bash
+cargo run -p tpm_utils --no-default-features --features tpm,symcrypt -- ...
+```
+
+The examples below use the default OpenSSL backend.
 
 ## Preparing a blob
 
