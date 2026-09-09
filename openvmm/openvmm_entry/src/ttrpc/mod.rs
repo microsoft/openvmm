@@ -182,7 +182,10 @@ pub fn listener_from_path(
     }
 
     #[cfg(not(windows))]
-    let _ = allow_sid;
+    anyhow::ensure!(
+        allow_sid.is_none(),
+        "allow_sid is only supported on Windows"
+    );
     let _ = std::fs::remove_file(path);
     Ok(Listener::Unix(
         UnixListener::bind(path).context("failed to bind to socket")?,
