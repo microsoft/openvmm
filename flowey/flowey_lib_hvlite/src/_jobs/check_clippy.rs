@@ -295,12 +295,14 @@ impl SimpleFlowNode for Node {
 
             // tpm_utils is excluded from the workspace run because its TPM
             // crypto backend features are non-additive. Lint it here against
-            // the default (OpenSSL) backend.
+            // the default (OpenSSL) backend. `vendored` is required because
+            // the 1.85 library needs OpenSSL 3.5, which is newer than what the
+            // CI images provide.
             reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
                 in_folder: openvmm_repo_path.clone(),
                 package: CargoPackage::Crate("tpm_utils".into()),
                 profile: profile.clone(),
-                features: CargoFeatureSet::Specific(vec!["tpm".into()]),
+                features: CargoFeatureSet::Specific(vec!["tpm".into(), "vendored".into()]),
                 target: target.clone(),
                 extra_env: None,
                 exclude: ReadVar::from_static(None),
