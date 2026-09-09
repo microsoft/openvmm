@@ -143,13 +143,19 @@ impl FlowNode for Node {
 
             features.extend(max_trace_level.features());
 
-            // Forbid cc-rs from compiling anything for the openvmm_hcl build.
+            // Forbid cc-rs and CMake from compiling anything for the openvmm_hcl build.
             // Every C library it links comes prebuilt out of the openvmm-deps
-            // sdk sysroot, so a build script reaching for cc-rs is a bug.
+            // sdk sysroot, so a build script reaching for either is a bug.
             let extra_env = Some(ReadVar::from_static(
-                [("CC_FORCE_DISABLE".to_string(), "1".to_string())]
-                    .into_iter()
-                    .collect(),
+                [
+                    ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                    (
+                        "CMAKE".to_string(),
+                        "cmake-is-forbidden-during-openvmm-hcl-build".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
             ));
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {

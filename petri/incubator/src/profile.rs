@@ -173,7 +173,7 @@ pub struct QemuTcgConfig {
 impl IncubatorProfile {
     /// Load a profile from a TOML file.
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let contents = std::fs::read_to_string(path).context("failed to read incubator profile")?;
+        let contents = fs_err::read_to_string(path).context("failed to read incubator profile")?;
         Self::from_toml(&contents)
     }
 

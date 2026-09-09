@@ -93,6 +93,7 @@ use pal_async::DefaultPool;
 use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use pci_core::PciInterruptPin;
 use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
@@ -103,9 +104,11 @@ use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::fs::File;
+use std::future::Future;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -176,6 +179,23 @@ use watchdog_core::resources::StaticWatchdogPlatformResolver;
 const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
+const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+enum VpciEjectResult {
+    Complete(anyhow::Result<()>),
+    TimedOut,
+}
+
+async fn wait_for_vpci_eject(
+    driver: &(impl pal_async::driver::Driver + ?Sized),
+    eject: impl Future<Output = anyhow::Result<()>>,
+    grace_period: Duration,
+) -> VpciEjectResult {
+    let eject = eject.map(VpciEjectResult::Complete);
+    let mut timer = PolledTimer::new(driver);
+    let timeout = timer.sleep(grace_period).map(|_| VpciEjectResult::TimedOut);
+    (eject, timeout).race().await
+}
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
@@ -760,6 +780,11 @@ pub(crate) struct LoadedVm {
     running: bool,
 }
 
+struct DynamicVpciDeviceEntry {
+    instance_id: guid::Guid,
+    device: vmm_core::device_builder::DynamicVpciDevice,
+}
+
 /// Most of the VM state for [`LoadedVm`], excluding things that are necessary
 /// for state machine transitions.
 struct LoadedVmInner {
@@ -839,6 +864,7 @@ struct LoadedVmInner {
         vmotherboard::DynamicDeviceUnit,
         Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
     )>,
+    dynamic_vpci_devices: Vec<DynamicVpciDeviceEntry>,
 }
 
 /// Helper to determine the x86 IOMMU shared state for a given root complex.
@@ -1611,6 +1637,7 @@ impl InitializedVm {
                 firmware,
                 boot_order,
                 hibernation_enabled,
+                smbios,
             } => {
                 tracing::debug!(?firmware, "Loading BIOS firmware.");
                 let rom_builder = RomBuilder::new("bios".into(), Box::new(mapper.clone()));
@@ -1688,23 +1715,7 @@ impl InitializedVm {
                                 })
                             },
                             num_lock_enabled: false,
-                            // TODO: these are all very bogus values, and need to be swapped out with something better
-                            smbios: firmware_pcat::config::SmbiosConstants {
-                                bios_guid: guid::Guid {
-                                    data1: 0xC4066C45,
-                                    data2: 0x503D,
-                                    data3: 0x40E8,
-                                    data4: [0xB1, 0x5C, 0x31, 0x26, 0x4E, 0x5F, 0xE1, 0xD9],
-                                },
-                                system_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                base_board_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                chassis_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                chassis_asset_tag: "9583-9572-9874-4843-7295-1653-92".into(),
-                                bios_lock_string: "00000000000000000000000000000000".into(),
-                                processor_manufacturer: b"\0".to_vec(),
-                                processor_version: b"\0".to_vec(),
-                                cpu_info_bundle: None,
-                            },
+                            smbios: super::vm_loaders::pcat::smbios_constants_from_config(smbios)?,
                         }
                     },
                 })
@@ -3118,6 +3129,7 @@ impl InitializedVm {
                 pcie_root_complexes,
                 generic_initiator_sources,
                 pcie_hotplug_devices: Vec::new(),
+                dynamic_vpci_devices: Vec::new(),
             },
         };
 
@@ -3254,6 +3266,7 @@ impl LoadedVmInner {
                 enable_serial,
                 isolation,
                 boot_mode,
+                ref smbios,
             } => {
                 match boot_mode {
                     openvmm_defs::config::LinuxDirectBootMode::DeviceTree => {
@@ -3294,6 +3307,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation,
+                    smbios,
                 };
                 super::vm_loaders::linux::load_linux_x86(
                     &kernel_config,
@@ -3330,6 +3344,7 @@ impl LoadedVmInner {
                 enable_serial,
                 isolation,
                 boot_mode,
+                ref smbios,
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
 
@@ -3342,6 +3357,7 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                     isolation: super::vm_loaders::linux::KernelIsolationConfig::None,
+                    smbios,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -3387,7 +3403,7 @@ impl LoadedVmInner {
                 enable_vpci_boot,
                 uefi_console_mode,
                 default_boot_always_attempt,
-                bios_guid,
+                ref smbios,
                 enable_vmbus,
                 force_dma_bounce,
                 enable_hv,
@@ -3425,7 +3441,7 @@ impl LoadedVmInner {
                     serial: enable_serial,
                     uefi_console_mode,
                     default_boot_always_attempt,
-                    bios_guid,
+                    smbios: (**smbios).clone(),
                     vmbus: enable_vmbus,
                     force_dma_bounce,
                     hv: enable_hv,
@@ -3952,6 +3968,112 @@ impl LoadedVm {
                         })
                         .await
                     }
+                    VmRpc::AddVpciDevice(rpc) => {
+                        rpc.handle_failable(async |(instance_id, resource)| {
+                            anyhow::ensure!(
+                                !self
+                                    .inner
+                                    .dynamic_vpci_devices
+                                    .iter()
+                                    .any(|entry| entry.instance_id == instance_id),
+                                "a dynamically added VPCI device with instance ID '{instance_id}' already exists"
+                            );
+                            anyhow::ensure!(
+                                self.inner.partition.supports_virtual_devices(),
+                                "partition does not support VPCI devices"
+                            );
+
+                            let vmbus = self
+                                .inner
+                                .vmbus_server
+                                .as_ref()
+                                .context("VTL0 VMBus is not available")?;
+                            let device = vmm_core::device_builder::build_dynamic_vpci_device(
+                                vmm_core::device_builder::PciDeviceResolveContext {
+                                    driver_source: &self.inner.driver_source,
+                                    resolver: &self.inner.resolver,
+                                    resource,
+                                    doorbell_registration: self
+                                        .inner
+                                        .partition
+                                        .clone()
+                                        .into_doorbell_registration(Vtl::Vtl0),
+                                    shared_mem_mapper: None,
+                                },
+                                vmbus.control(),
+                                &self.inner.chipset_devices,
+                                &mut self.state_units,
+                                VpciBusConfig {
+                                    instance_id,
+                                    vtom: None,
+                                    vnode: None,
+                                },
+                                self.inner.gm.clone(),
+                                |device_id| {
+                                    let hv_device = self
+                                        .inner
+                                        .partition
+                                        .new_virtual_device(Vtl::Vtl0, device_id)?;
+                                    Ok((
+                                        hv_device.clone().target(),
+                                        hv_device.interrupt_mapper(),
+                                    ))
+                                },
+                            )
+                            .await?;
+
+                            self.inner
+                                .dynamic_vpci_devices
+                                .push(DynamicVpciDeviceEntry {
+                                    instance_id,
+                                    device,
+                                });
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
+                    VmRpc::RemoveVpciDevice(rpc) => {
+                        rpc.handle_failable(async |instance_id: guid::Guid| {
+                            let index = self
+                                .inner
+                                .dynamic_vpci_devices
+                                .iter()
+                                .position(|entry| entry.instance_id == instance_id)
+                                .with_context(|| {
+                                    format!(
+                                        "no dynamically added VPCI device with instance ID '{instance_id}'"
+                                    )
+                                })?;
+                            if self.running {
+                                let driver = self.inner.driver_source.simple();
+                                let eject_result = wait_for_vpci_eject(
+                                    &driver,
+                                    self.inner.dynamic_vpci_devices[index].device.eject(),
+                                    VPCI_EJECT_GRACE_PERIOD,
+                                )
+                                .await;
+                                match eject_result {
+                                    VpciEjectResult::Complete(Ok(())) => {}
+                                    VpciEjectResult::Complete(Err(error)) => tracing::warn!(
+                                        %instance_id,
+                                        error = <anyhow::Error as AsRef<
+                                            dyn std::error::Error + Send + Sync,
+                                        >>::as_ref(&error),
+                                        "VPCI eject failed; forcing removal"
+                                    ),
+                                    VpciEjectResult::TimedOut => tracing::warn!(
+                                        %instance_id,
+                                        timeout_ms = VPCI_EJECT_GRACE_PERIOD.as_millis() as u64,
+                                        "VPCI eject timed out; forcing removal"
+                                    ),
+                                }
+                            }
+                            let entry = self.inner.dynamic_vpci_devices.remove(index);
+                            entry.device.remove().await;
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
                     VmRpc::DumpState(rpc) => {
                         rpc.handle_failable(async |file| self.dump_state(file).await)
                             .await
@@ -3964,6 +4086,9 @@ impl LoadedVm {
             }
         }
 
+        while let Some(entry) = self.inner.dynamic_vpci_devices.pop() {
+            entry.device.remove().await;
+        }
         self.inner.partition_unit.teardown().await;
         if let Some(vmbus) = self.inner.vmbus_server {
             vmbus.remove().await.shutdown().await;

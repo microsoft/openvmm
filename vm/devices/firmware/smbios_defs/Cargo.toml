@@ -2,19 +2,13 @@
 # Licensed under the MIT License.
 
 [package]
-name = "get_resources"
+name = "smbios_defs"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-smbios_defs.workspace = true
-
-vm_resource.workspace = true
-vmgs_resources.workspace = true
+guid = { workspace = true, features = ["mesh"] }
 mesh.workspace = true
-inspect.workspace = true
-
-thiserror.workspace = true
 
 [lints]
 workspace = true

@@ -16,6 +16,7 @@ flowey_request! {
         pub profiles: Vec<VmmPerfProfile>,
         pub vm_sizes_json: Option<String>,
         pub parameters_json: Option<String>,
+        pub runtime_archive: Option<PathBuf>,
         pub build_only: bool,
         pub done: WriteVar<SideEffect>,
     }
@@ -40,6 +41,7 @@ impl SimpleFlowNode for Node {
             profiles,
             vm_sizes_json,
             parameters_json,
+            runtime_archive,
             build_only,
             done,
         } = request;
@@ -71,6 +73,7 @@ impl SimpleFlowNode for Node {
                 profiles,
                 vm_sizes_json,
                 parameters_json,
+                runtime_archive: runtime_archive.map(ReadVar::from_static),
                 root_dir: Some(ReadVar::from_static(root_dir)),
                 hugetlb_2mb_overcommit_pages: None,
                 done,

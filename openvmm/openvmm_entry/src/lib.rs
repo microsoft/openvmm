@@ -35,6 +35,7 @@ use cli_args::IgvmPersonalityCli;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
+use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
@@ -119,6 +120,7 @@ use std::time::Duration;
 use storvsp_resources::ScsiControllerRequest;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
 use uidevices_resources::SynthKeyboardHandle;
 use uidevices_resources::SynthMouseHandle;
 use uidevices_resources::SynthVideoHandle;
@@ -253,6 +255,62 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
     } else {
         BaseChipsetType::UnenlightenedLinuxDirect
     }
+}
+
+/// Build the loader's [`SmbiosConfig`](openvmm_defs::config::SmbiosConfig) from
+/// the parsed `--smbios` arguments.
+///
+/// Multiple `--smbios` arguments are merged (erroring on a field set twice).
+/// String overrides left unset fall through to the loader's default identity.
+/// The system UUID defaults to the all-zero GUID unless overridden with
+/// `uuid=GUID`; `uuid=random` requests a freshly generated per-VM GUID.
+fn smbios_config_from_cli(
+    args: &[cli_args::SmbiosCli],
+) -> anyhow::Result<openvmm_defs::config::SmbiosConfig> {
+    let mut merged = cli_args::SmbiosCli::default();
+    for arg in args {
+        merged.merge(arg.clone())?;
+    }
+    let cli_args::SmbiosCli {
+        bios:
+            cli_args::SmbiosBiosCli {
+                vendor: bios_vendor,
+                version: bios_version,
+                release_date: bios_release_date,
+                release: bios_release,
+            },
+        system:
+            cli_args::SmbiosSystemCli {
+                manufacturer: system_manufacturer,
+                product_name: system_product,
+                version: system_version,
+                serial_number: system_serial,
+                sku_number: system_sku,
+                family: system_family,
+                uuid: system_uuid,
+            },
+    } = merged;
+    Ok(openvmm_defs::config::SmbiosConfig {
+        bios: openvmm_defs::config::SmbiosBiosOverrides {
+            vendor: bios_vendor,
+            version: bios_version,
+            release_date: bios_release_date,
+            release: bios_release.map(|r| (r.0, r.1)),
+        },
+        system: openvmm_defs::config::SmbiosSystemOverrides {
+            manufacturer: system_manufacturer,
+            product_name: system_product,
+            version: system_version,
+            serial_number: system_serial,
+            sku_number: system_sku,
+            family: system_family,
+            uuid: match system_uuid {
+                None => Guid::ZERO,
+                Some(cli_args::SmbiosUuid::Random) => Guid::new_random(),
+                Some(cli_args::SmbiosUuid::Fixed(guid)) => guid,
+            },
+        },
+    })
 }
 
 async fn vm_config_from_command_line(
@@ -1247,8 +1305,17 @@ async fn vm_config_from_command_line(
         ));
     }
 
-    // TODO: load from VMGS file if it exists
-    let bios_guid = Guid::new_random();
+    // Build the SMBIOS config once, up front, so that UEFI and Linux direct
+    // boot share a single source for the VM's BIOS GUID / system UUID. The TPM
+    // also keys off this GUID.
+    let smbios = Box::new(smbios_config_from_cli(&opt.smbios)?);
+    let bios_guid = smbios.system.uuid;
+
+    // Capture the SMBIOS config for the OpenHCL/GED path before `smbios` is
+    // potentially moved into a non-VTL2 LoadMode below. The GED forwards only
+    // the system identity to the paravisor and fails closed on BIOS overrides
+    // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
+    let ged_smbios = (*smbios).clone();
 
     let layout_config = chipset.layout_config();
     let VmChipsetResult {
@@ -1289,6 +1356,17 @@ async fn vm_config_from_command_line(
                 irq: ComPort::Com3.irq().into(),
             }),
         };
+
+        // An IGVM launch carries no SMBIOS field of its own; the identity is
+        // only delivered over the GET/GED channel, which is absent here. Reject
+        // overrides that would otherwise be silently dropped.
+        let smbios_requested = !opt.smbios.is_empty();
+        let smbios_delivered_via_get = with_get && with_hv;
+        if smbios_requested && !smbios_delivered_via_get {
+            anyhow::bail!(
+                "--smbios is not supported for IGVM launches without an OpenHCL GET channel"
+            );
+        }
     } else if opt.pcat {
         // Emit a nice error early instead of complaining about missing firmware.
         if arch != MachineArch::X86_64 {
@@ -1304,6 +1382,7 @@ async fn vm_config_from_command_line(
                 .map(|x| x.0)
                 .unwrap_or(DEFAULT_PCAT_BOOT_ORDER),
             hibernation_enabled: opt.hibernation,
+            smbios,
         };
     } else if opt.uefi {
         use openvmm_defs::config::UefiConsoleMode;
@@ -1328,7 +1407,7 @@ async fn vm_config_from_command_line(
             enable_debugging: opt.uefi_debug,
             enable_memory_protections: opt.uefi_enable_memory_protections,
             disable_frontpage: opt.disable_frontpage,
-            enable_tpm: opt.tpm,
+            enable_tpm: opt.tpm.is_some(),
             enable_battery: opt.battery,
             enable_serial: any_serial_configured,
             enable_vpci_boot: false,
@@ -1339,7 +1418,7 @@ async fn vm_config_from_command_line(
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
-            bios_guid,
+            smbios,
             enable_vmbus: !opt.no_vmbus,
             force_dma_bounce: opt.uefi_force_dma_bounce,
             enable_hv: !opt.no_hv,
@@ -1394,6 +1473,7 @@ async fn vm_config_from_command_line(
             } else {
                 openvmm_defs::config::LinuxDirectBootMode::Acpi
             },
+            smbios,
         };
     }
 
@@ -1491,7 +1571,10 @@ async fn vm_config_from_command_line(
                         .vtl2_gfx
                         .then(|| SharedFramebufferHandle.into_resource()),
                     guest_request_recv,
-                    enable_tpm: opt.tpm,
+                    tpm_version: opt.tpm.map(|v| match v {
+                        TpmVersionCli::V138 => get_resources::ged::GedTpmVersion::V138,
+                        TpmVersionCli::V185 => get_resources::ged::GedTpmVersion::V185,
+                    }),
                     firmware_event_send: None,
                     secure_boot_enabled: opt.secure_boot,
                     secure_boot_template: match opt.secure_boot_template {
@@ -1518,23 +1601,31 @@ async fn vm_config_from_command_line(
                         }
                     },
                     force_dma_bounce_enabled: opt.uefi_force_dma_bounce,
+                    smbios: ged_smbios,
                 }
                 .into_resource(),
             ),
         ]);
     }
 
-    if opt.tpm && !opt.vtl2 {
+    if let Some(tpm_version) = opt.tpm
+        && !opt.vtl2
+    {
         let register_layout = if cfg!(guest_arch = "x86_64") {
             TpmRegisterLayout::IoPort
         } else {
             TpmRegisterLayout::Mmio
         };
 
+        let tpm_version = match tpm_version {
+            TpmVersionCli::V138 => TpmVersion::V138,
+            TpmVersionCli::V185 => TpmVersion::V185,
+        };
+
         let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
             (
                 VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
+                VmgsFileHandle::new(tpm_version.to_nvram_vmgs_file_id(), true).into_resource(),
             )
         } else {
             (
@@ -1547,6 +1638,7 @@ async fn vm_config_from_command_line(
             name: "tpm".to_string(),
             resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
+                    version: tpm_version,
                     ppi_store,
                     nvram_store,
                     nvram_size: None,

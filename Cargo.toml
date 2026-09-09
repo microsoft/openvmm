@@ -257,6 +257,7 @@ uefi_specs = { path = "vm/devices/firmware/uefi_specs" }
 uefi_nvram_specvars = { path = "vm/devices/firmware/uefi_nvram_specvars" }
 hyperv_secure_boot_templates = { path = "vm/devices/firmware/hyperv_secure_boot_templates" }
 hyperv_uefi_custom_vars_json = { path = "vm/devices/firmware/hyperv_uefi_custom_vars_json" }
+smbios_defs = { path = "vm/devices/firmware/smbios_defs" }
 framebuffer = { path = "vm/devices/framebuffer" }
 hcl_compat_uefi_nvram_resources = { path = "vm/devices/firmware/hcl_compat_uefi_nvram_resources" }
 hcl_compat_uefi_nvram_storage = { path = "vm/devices/firmware/hcl_compat_uefi_nvram_storage" }
@@ -547,7 +548,6 @@ constant_time_eq = "0.5"
 cms = { version = "0.3.0-pre.2", default-features = false }
 der = "0.8"
 getrandom = "0.4"
-ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
 openssl = "0.10.79"
 openssl-sys = "0.9"
 pkcs1 = "0.8.0-rc.4"
@@ -558,6 +558,12 @@ sha2 = { version = "0.11.0", default-features = false }
 signature = { version = "3.0.0", default-features = false }
 symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", rev = "2d83888206139cb8cc522ea3617a1870674ac8a0" }
 x509-cert = { version = "0.3.0-rc.4", default-features = false }
+
+# --- TPMs ---
+# TPM 1.38
+ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
+# TPM 1.85
+ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f", default-features = false }
 
 # --- Data structures / collections ---
 arrayvec = { version = "0.7", default-features = false }
@@ -632,8 +638,8 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_xop",
   "no_d3now",
 ] }
-igvm = { git = "https://github.com/microsoft/igvm", rev = "7184dce1086956342c1bf561f82ff268d06d2c73" }
-igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "7184dce1086956342c1bf561f82ff268d06d2c73", default-features = false }
+igvm = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2382342eb7097dcd3ec0568de" }
+igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2382342eb7097dcd3ec0568de", default-features = false }
 kvm-bindings = "0.14.0"
 mshv-bindings = "0.6.8"
 mshv-ioctls = "0.6.8"

@@ -337,9 +337,9 @@ dependencies = [
 
 [[package]]
 name = "bitfield-struct"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8769c4854c5ada2852ddf6fd09d15cf43d4c2aaeccb4de6432f5402f08a6003b"
+checksum = "3ca6739863c590881f038d033a146c51ddae239186a4327014839fd864f44ed5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -831,6 +831,15 @@ name = "closeable_mutex"
 version = "0.0.0"
 dependencies = [
  "parking_lot",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.54"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -2427,9 +2436,9 @@ dependencies = [
 
 [[package]]
 name = "fs-err"
-version = "3.1.1"
+version = "3.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88d7be93788013f265201256d58f04936a8079ad5dc898743aa20525f503b683"
+checksum = "b91aa448ca50d7e79433bdf3ee8d99215430d2ec02ade5aefab2a073a1822e8a"
 dependencies = [
  "autocfg",
 ]
@@ -2944,6 +2953,7 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh",
+ "smbios_defs",
  "thiserror 2.0.16",
  "vm_resource",
  "vmgs_resources",
@@ -3102,6 +3112,7 @@ dependencies = [
  "power_resources",
  "scsi_buffers",
  "serde_json",
+ "smbios_defs",
  "task_control",
  "test_igvm_agent_lib",
  "thiserror 2.0.16",
@@ -3818,9 +3829,9 @@ dependencies = [
 [[package]]
 name = "igvm"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=7184dce1086956342c1bf561f82ff268d06d2c73#7184dce1086956342c1bf561f82ff268d06d2c73"
+source = "git+https://github.com/microsoft/igvm?rev=b7e717d40653f8c2382342eb7097dcd3ec0568de#b7e717d40653f8c2382342eb7097dcd3ec0568de"
 dependencies = [
- "bitfield-struct 0.12.1",
+ "bitfield-struct 0.13.0",
  "corim",
  "crc32fast",
  "hex",
@@ -3838,9 +3849,9 @@ dependencies = [
 [[package]]
 name = "igvm_defs"
 version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=7184dce1086956342c1bf561f82ff268d06d2c73#7184dce1086956342c1bf561f82ff268d06d2c73"
+source = "git+https://github.com/microsoft/igvm?rev=b7e717d40653f8c2382342eb7097dcd3ec0568de#b7e717d40653f8c2382342eb7097dcd3ec0568de"
 dependencies = [
- "bitfield-struct 0.12.1",
+ "bitfield-struct 0.13.0",
  "open-enum",
  "static_assertions",
  "zerocopy",
@@ -3916,6 +3927,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "fs-err",
  "futures",
  "futures-concurrency",
  "initrd_cpio",
@@ -4860,6 +4872,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ms-tcg-tpm-sys"
+version = "0.0.0"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f#fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f"
+dependencies = [
+ "bitfield-struct 0.13.0",
+ "cmake",
+ "fs-err",
+ "openssl-sys",
+ "postcard",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "ms-tpm-20-ref"
 version = "0.0.0"
 source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?rev=9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d#9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d"
@@ -5601,18 +5627,18 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openssl-src"
-version = "300.6.1+3.6.3"
+version = "300.5.4+3.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846"
+checksum = "a507b3792995dae9b0df8a1c1e3771e8418b7c2d9f0baeba32e6fe8b06c7cb72"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.116"
+version = "0.9.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f28a22dc7140cda5f096e5e7724a6962ca81a7f8bfd2979f9b18c11af56318c4"
+checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
 dependencies = [
  "cc",
  "libc",
@@ -5702,6 +5728,8 @@ version = "0.1.0"
 dependencies = [
  "crypto",
  "embed-resource",
+ "ms-tcg-tpm-sys",
+ "ms-tpm-20-ref",
  "openvmm_entry",
  "openvmm_hypervisors",
  "openvmm_resources",
@@ -5829,6 +5857,7 @@ dependencies = [
  "mesh_worker",
  "net_backend_resources",
  "openvmm_pcat_locator",
+ "smbios_defs",
  "thiserror 2.0.16",
  "unix_socket",
  "virt",
@@ -5943,6 +5972,8 @@ name = "openvmm_hcl"
 version = "0.0.0"
 dependencies = [
  "crypto",
+ "ms-tcg-tpm-sys",
+ "ms-tpm-20-ref",
  "openssl_crypto_only",
  "openvmm_hcl_resources",
  "tracing",
@@ -6524,6 +6555,7 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
+ "smbios_defs",
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
@@ -7800,6 +7832,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
+name = "smbios_defs"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "mesh",
+]
+
+[[package]]
 name = "smmu"
 version = "0.0.0"
 dependencies = [
@@ -8568,6 +8608,7 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "ms-tcg-tpm-sys",
  "ms-tpm-20-ref",
  "open_enum",
  "pal_async",
@@ -8603,6 +8644,7 @@ dependencies = [
  "cvm_tracing",
  "getrandom 0.4.2",
  "inspect",
+ "ms-tcg-tpm-sys",
  "ms-tpm-20-ref",
  "thiserror 2.0.16",
  "tpm_protocol",
@@ -8628,6 +8670,7 @@ dependencies = [
  "inspect",
  "mesh",
  "vm_resource",
+ "vmgs_format",
 ]
 
 [[package]]

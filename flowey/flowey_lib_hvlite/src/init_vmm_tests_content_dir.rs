@@ -140,6 +140,8 @@ flowey_request! {
         pub is_repo_root: bool,
         /// Whether the tests require that release igvm files are downloaded
         pub needs_release_igvm: bool,
+        /// Whether to copy incubator profiles into the test content directory.
+        pub needs_incubator_profiles: bool,
 
         pub done: WriteVar<SideEffect>
     }
@@ -166,6 +168,7 @@ impl SimpleFlowNode for Node {
             built_artifacts,
             is_repo_root,
             needs_release_igvm,
+            needs_incubator_profiles,
             done,
         } = request;
 
@@ -335,7 +338,7 @@ impl SimpleFlowNode for Node {
                         test_content_dir.join(&crate_cargo_toml_file),
                     )?;
 
-                    if incubator.is_some() {
+                    if needs_incubator_profiles {
                         let incubator_profile_dir = incubator_profile_dir();
                         fs_err::create_dir_all(test_content_dir.join(&incubator_profile_dir))?;
                         for entry in
