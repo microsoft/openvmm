@@ -7,12 +7,22 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+default = ["openssl"]
 
 # Without this feature, the tool is a no-op. Disabled by default because the TPM
-# reference implementations require an OpenSSL crypto backend, which isn't
-# available everywhere the workspace is built.
+# reference implementations require a crypto backend, which isn't available
+# everywhere the workspace is built.
 tpm = ["dep:ms-tpm-20-ref", "dep:ms-tcg-tpm-sys"]
+
+# Crypto backend for the TPM libraries. Exactly one must be enabled alongside
+# `tpm`, and it should match the backend of the build the state is destined for,
+# since the state a TPM commits is tied to the library that produced it.
+#
+# These are non-additive, so `tpm_utils` is excluded from the workspace-wide
+# `--all-features` clippy run and linted on its own.
+openssl = ["ms-tpm-20-ref?/openssl", "ms-tcg-tpm-sys?/openssl"]
+# The 1.38 library has no SymCrypt backend, so it stays on OpenSSL.
+symcrypt = ["ms-tpm-20-ref?/openssl", "ms-tcg-tpm-sys?/symcrypt"]
 
 # Build OpenSSL from source instead of linking against the system library.
 vendored = ["ms-tpm-20-ref?/vendored", "ms-tcg-tpm-sys?/vendored"]
@@ -21,8 +31,8 @@ vendored = ["ms-tpm-20-ref?/vendored", "ms-tcg-tpm-sys?/vendored"]
 tpm_lib.workspace = true
 tpm_protocol.workspace = true
 tpm_resources.workspace = true
-ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl"] }
-ms-tcg-tpm-sys = { optional = true, workspace = true, features = ["openssl"] }
+ms-tpm-20-ref = { optional = true, workspace = true }
+ms-tcg-tpm-sys = { optional = true, workspace = true }
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }

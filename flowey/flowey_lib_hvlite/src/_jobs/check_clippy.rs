@@ -144,6 +144,11 @@ impl SimpleFlowNode for Node {
                 // guest_test_uefi is uefi-only, and is handled separately below
                 let mut exclude = vec!["guest_test_uefi".into()];
 
+                // tpm_utils selects a TPM crypto backend with non-additive
+                // features, so it can't be built with --all-features. It is
+                // handled separately below.
+                exclude.push("tpm_utils".into());
+
                 // packages depending on libfuzzer-sys are currently x86 only
                 if !(matches!(target.architecture, target_lexicon::Architecture::X86_64)
                     && matches!(flowey_arch, FlowArch::X86_64))
@@ -276,6 +281,23 @@ impl SimpleFlowNode for Node {
                 package: CargoPackage::Crate("crypto".into()),
                 profile: profile.clone(),
                 features: CargoFeatureSet::All,
+                target: target.clone(),
+                extra_env: None,
+                exclude: ReadVar::from_static(None),
+                keep_going: true,
+                all_targets: true,
+                pre_build_deps: pre_build_deps.clone(),
+                done: v,
+            }));
+
+            // tpm_utils is excluded from the workspace run because its TPM
+            // crypto backend features are non-additive. Lint it here against
+            // the default (OpenSSL) backend.
+            reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+                in_folder: openvmm_repo_path.clone(),
+                package: CargoPackage::Crate("tpm_utils".into()),
+                profile: profile.clone(),
+                features: CargoFeatureSet::Specific(vec!["tpm".into()]),
                 target: target.clone(),
                 extra_env: None,
                 exclude: ReadVar::from_static(None),
