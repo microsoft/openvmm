@@ -312,10 +312,15 @@ impl LocalSecurityDescriptor {
         if error != 0 {
             return Err(std::io::Error::from_raw_os_error(error as i32));
         }
+        let descriptor = NonNull::new(descriptor).ok_or_else(|| {
+            std::io::Error::other(
+                "GetSecurityInfo succeeded but returned a null security descriptor",
+            )
+        })?;
         // SAFETY: GetSecurityInfo succeeded and returned a valid self-relative
         // security descriptor allocated with LocalAlloc.
-        let length = unsafe { GetSecurityDescriptorLength(descriptor) } as usize;
-        Ok(Self(NonNull::new(descriptor).unwrap(), length))
+        let length = unsafe { GetSecurityDescriptorLength(descriptor.as_ptr()) } as usize;
+        Ok(Self(descriptor, length))
     }
 }
 

@@ -46,6 +46,29 @@ pub struct Server {
     services: HashMap<&'static str, mesh::Sender<(CancelContext, GenericRpc)>>,
 }
 
+/// Controls how a connection shuts down its transport's write side.
+#[derive(Debug, Copy, Clone)]
+pub enum ShutdownPolicy {
+    /// Forward shutdown directly to the transport's close operation.
+    Close,
+    /// Flush a transport that does not support half-close, without calling close.
+    NoHalfClose,
+}
+
+#[cfg(feature = "grpc")]
+impl ShutdownPolicy {
+    fn poll_shutdown(
+        self,
+        stream: Pin<&mut (impl futures::AsyncWrite + ?Sized)>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self {
+            Self::Close => stream.poll_close(cx),
+            Self::NoHalfClose => stream.poll_flush(cx),
+        }
+    }
+}
+
 /// A receiver for RPC requests for a given service.
 ///
 /// Returned by [`Server::add_service`].
@@ -293,6 +316,7 @@ fn handle_message(message: ReadResult) -> Result<Request, Status> {
 #[cfg(feature = "grpc")]
 mod grpc {
     use super::Server;
+    use super::ShutdownPolicy;
     use crate::rpc::status_from_err;
     use crate::service::Code;
     use crate::service::GenericRpc;
@@ -355,12 +379,15 @@ mod grpc {
                 };
                 if let Ok(conn) = conn.and_then(|(conn, _)| PolledSocket::new(driver, conn)) {
                     tasks.push(async {
-                        let _ = self.serve_connection_grpc(conn).await.map_err(|err| {
-                            tracing::error!(
-                                error = err.as_ref() as &dyn std::error::Error,
-                                "connection error"
-                            )
-                        });
+                        let _ = self
+                            .serve_connection_grpc(conn, ShutdownPolicy::Close)
+                            .await
+                            .map_err(|err| {
+                                tracing::error!(
+                                    error = err.as_ref() as &dyn std::error::Error,
+                                    "connection error"
+                                )
+                            });
                     });
                 }
             }
@@ -372,12 +399,14 @@ mod grpc {
         ///
         /// This is useful when the caller owns the accept loop, for example to
         /// dispatch a connection to gRPC or another protocol based on a sniffed
-        /// prefix byte.
+        /// prefix byte. `shutdown_policy` selects the transport's write-side
+        /// shutdown behavior.
         pub async fn serve_connection_grpc(
             &self,
             stream: impl AsyncRead + AsyncWrite + Unpin,
+            shutdown_policy: ShutdownPolicy,
         ) -> anyhow::Result<()> {
-            struct Wrap<T>(T);
+            struct Wrap<T>(T, ShutdownPolicy);
 
             impl<T: AsyncRead + Unpin> tokio::io::AsyncRead for Wrap<T> {
                 fn poll_read(
@@ -413,11 +442,12 @@ mod grpc {
                     self: Pin<&mut Self>,
                     cx: &mut std::task::Context<'_>,
                 ) -> std::task::Poll<Result<(), std::io::Error>> {
-                    Pin::new(&mut self.get_mut().0).poll_close(cx)
+                    let this = self.get_mut();
+                    this.1.poll_shutdown(Pin::new(&mut this.0), cx)
                 }
             }
 
-            let mut conn = h2::server::handshake(Wrap(stream))
+            let mut conn = h2::server::handshake(Wrap(stream, shutdown_policy))
                 .await
                 .context("failed http2 handshake")?;
 
@@ -636,6 +666,120 @@ mod tests {
     #[expect(clippy::allow_attributes)]
     mod items {
         include!(concat!(env!("OUT_DIR"), "/ttrpc.example.v1.rs"));
+    }
+
+    #[cfg(feature = "grpc")]
+    #[test]
+    fn grpc_shutdown_policy() {
+        use super::ShutdownPolicy;
+        use futures::AsyncWrite;
+        use std::io;
+        use std::pin::Pin;
+        use std::task::Context;
+        use std::task::Poll;
+        use std::task::Waker;
+
+        struct Writer {
+            flush: Poll<Result<(), io::ErrorKind>>,
+            close: Poll<Result<(), io::ErrorKind>>,
+            calls: Vec<&'static str>,
+        }
+
+        impl AsyncWrite for Writer {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                unreachable!()
+            }
+
+            fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                self.calls.push("flush");
+                self.flush.map(|r| r.map_err(io::Error::from))
+            }
+
+            fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                self.calls.push("close");
+                self.close.map(|r| r.map_err(io::Error::from))
+            }
+        }
+
+        let outcomes = [
+            Poll::Pending,
+            Poll::Ready(Ok(())),
+            Poll::Ready(Err(io::ErrorKind::Unsupported)),
+            Poll::Ready(Err(io::ErrorKind::BrokenPipe)),
+        ];
+        let mut cx = Context::from_waker(Waker::noop());
+        for flush in outcomes {
+            for close in outcomes {
+                for policy in [ShutdownPolicy::Close, ShutdownPolicy::NoHalfClose] {
+                    let mut writer = Writer {
+                        flush,
+                        close,
+                        calls: Vec::new(),
+                    };
+                    let (expected, calls) = match policy {
+                        ShutdownPolicy::Close => (close, vec!["close"]),
+                        ShutdownPolicy::NoHalfClose => (flush, vec!["flush"]),
+                    };
+                    let result = policy
+                        .poll_shutdown(Pin::new(&mut writer), &mut cx)
+                        .map(|r| r.map_err(|err| err.kind()));
+                    assert_eq!(
+                        result, expected,
+                        "{policy:?}, flush={flush:?}, close={close:?}"
+                    );
+                    assert_eq!(writer.calls, calls);
+                }
+            }
+        }
+    }
+
+    #[cfg(all(windows, feature = "grpc"))]
+    #[test]
+    fn grpc_named_pipe_shutdown() {
+        use futures::AsyncWriteExt;
+        use futures::FutureExt;
+        use pal_async::pipe::PolledPipe;
+        use pal_async::timer::PolledTimer;
+        use std::time::Duration;
+
+        block_with_io(async |driver| {
+            let (mut client, stream) = PolledPipe::pair(&driver).unwrap();
+            let server = Server::new();
+            let mut timer = PolledTimer::new(&driver);
+            let exchange = async {
+                client
+                    .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+                    .await
+                    .unwrap();
+                // Empty SETTINGS, followed by GOAWAY with last-stream-id 0
+                // and NO_ERROR. No RPCs are outstanding.
+                client
+                    .write_all(&[
+                        0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0,
+                    ])
+                    .await
+                    .unwrap();
+
+                // Keep the peer open so shutdown is driven by GOAWAY,
+                // rather than a broken pipe masking the unsupported close.
+                server
+                    .serve_connection_grpc(stream, super::ShutdownPolicy::NoHalfClose)
+                    .await
+            };
+            futures::select! {
+                result = exchange.fuse() => {
+                    result.expect("clean HTTP/2 shutdown over a named pipe should succeed");
+                }
+                _ = timer.sleep(Duration::from_secs(5)).fuse() => {
+                    panic!("timed out waiting for named-pipe HTTP/2 shutdown");
+                }
+            }
+        });
     }
 
     #[test]
