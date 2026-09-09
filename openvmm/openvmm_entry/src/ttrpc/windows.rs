@@ -60,11 +60,8 @@ impl BoundListener {
                     .map(rpc_pipe_security_descriptor)
                     .transpose()?;
                 Self::Pipe(
-                    NamedPipeServer::create_with_security(
-                        path,
-                        security_descriptor.as_deref(),
-                    )
-                    .context("failed to create named pipe")?,
+                    NamedPipeServer::create_with_security(path, security_descriptor.as_deref())
+                        .context("failed to create named pipe")?,
                 )
             }
         })
@@ -234,10 +231,10 @@ fn rpc_pipe_security_descriptor(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::Parameters;
     use super::super::RpcTransport;
     use super::super::TtrpcWorker;
+    use super::*;
     use mesh_worker::Worker;
     use pal::windows::security::LocalSecurityDescriptor;
     use pal::windows::security::current_process_user_sid;
