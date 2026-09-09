@@ -538,6 +538,8 @@ pub struct HypervisorConfig {
     pub with_hv: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
+    /// Optional host-provided data included in SNP launch finish.
+    pub snp_host_data: Option<[u8; 32]>,
     /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
     /// its own hypervisor. A backend that does not recognize this request
     /// rejects it rather than silently ignoring it (see

@@ -84,6 +84,8 @@ message IsolationConfig {
     }
 
     Type isolation_type = 1;
+    // Optional 32-byte host data bound to the SNP guest.
+    bytes host_data = 2;
 }
 
 message UEFI {

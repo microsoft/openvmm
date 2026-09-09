@@ -1058,7 +1058,12 @@ impl InitializedVm {
             virt::IsolationType::Snp => virt::ProtoPartitionIsolation::Snp(
                 igvm_file
                     .as_ref()
-                    .map(super::vm_loaders::igvm::snp_isolation_config)
+                    .map(|file| {
+                        super::vm_loaders::igvm::snp_isolation_config(
+                            file,
+                            cfg.hypervisor.snp_host_data,
+                        )
+                    })
                     .transpose()
                     .context("reading IGVM SNP configuration failed")?
                     .map(Box::new),

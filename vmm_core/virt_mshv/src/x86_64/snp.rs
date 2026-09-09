@@ -66,6 +66,8 @@ pub(crate) enum SnpLaunchState {
 
 #[derive(Debug, inspect::Inspect)]
 pub(crate) struct MshvSnpConfig {
+    #[inspect(skip)]
+    host_data: Option<[u8; 32]>,
     #[inspect(hex)]
     snp_policy: u64,
     #[inspect(rename = "id_block_enabled", with = "Option::is_some")]
@@ -135,6 +137,7 @@ pub(super) fn prepare_snp_config(
     let restricted_injection = parsed_vmsa.sev_features.restrict_injection();
 
     Ok(MshvSnpConfig {
+        host_data: config.host_data,
         snp_policy: config.policy,
         id_block: config.id_block.clone(),
         vmsa_gpa,
@@ -900,6 +903,12 @@ impl MshvPartitionInner {
     }
 }
 
+fn complete_snp_guest_request(ghcb: &mut x86defs::snp::GhcbPage) {
+    ghcb.save.sw_exit_info1 = 0;
+    ghcb.save.sw_exit_info2 = 0;
+    ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO1_VALID_BIT | GHCB_SW_EXIT_INFO2_VALID_BIT;
+}
+
 /// Builds the PSP launch-finish data from the prepared MSHV SNP configuration.
 ///
 /// The returned `u64` is the effective SNP policy, which the caller records in
@@ -917,6 +926,7 @@ fn snp_launch_finish_data(
         |config| config.snp_policy,
     );
     parameters.id_block.policy = mshv_bindings::hv_snp_guest_policy { as_uint64: policy };
+    parameters.host_data = config.and_then(|config| config.host_data).unwrap_or_default();
 
     if let Some(source) = config.and_then(|config| config.id_block.as_ref()) {
         let id_block = virt::x86::snp::snp_id_block(source, policy);
@@ -1698,6 +1708,9 @@ impl MshvProcessor<'_> {
             exit_code if exit_code == u64::from(SVM_EXITCODE_SNP_AP_CREATION) => {
                 self.handle_snp_ap_create(info, ghcb_gpa)?;
             }
+            exit_code if exit_code == u64::from(SVM_EXITCODE_SNP_GUEST_REQUEST) => {
+                self.handle_snp_guest_request(info)?;
+            }
             exit_code => {
                 tracelimit::warn_ratelimited!(
                     exit_code,
@@ -1710,6 +1723,59 @@ impl MshvProcessor<'_> {
             }
         }
 
+        Ok(())
+    }
+
+    fn handle_snp_guest_request(
+        &mut self,
+        info: &hvdef::HvX64VmgexitInterceptMessage,
+    ) -> Result<(), VpHaltReason> {
+        let request_gpa = info.ghcb_page.standard.sw_exit_info1;
+        let response_gpa = info.ghcb_page.standard.sw_exit_info2;
+        let request_end = request_gpa
+            .checked_add(hvdef::HV_PAGE_SIZE)
+            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+        let response_end = response_gpa
+            .checked_add(hvdef::HV_PAGE_SIZE)
+            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+        let ghcb = self
+            .runner
+            .ghcb_page()
+            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+        if !ghcb_exit_info2_is_valid(ghcb)
+            || ghcb.save.sw_exit_info2 != response_gpa
+            || !request_gpa.is_multiple_of(hvdef::HV_PAGE_SIZE)
+            || !response_gpa.is_multiple_of(hvdef::HV_PAGE_SIZE)
+            || !self.partition.mem_layout.ram().iter().any(|range| {
+                range.range.contains(&MemoryRange::new(request_gpa..request_end))
+            })
+            || !self.partition.mem_layout.ram().iter().any(|range| {
+                range.range.contains(&MemoryRange::new(response_gpa..response_end))
+            })
+        {
+            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        }
+
+        let request = mshv_bindings::mshv_issue_psp_guest_request {
+            req_gpa: request_gpa,
+            rsp_gpa: response_gpa,
+        };
+        self.partition
+            .vmfd
+            .psp_issue_guest_request(&request)
+            .map_err(|err| {
+                tracing::error!(
+                    error = &err as &dyn std::error::Error,
+                    "MSHV SNP guest request failed"
+                );
+                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+            })?;
+
+        let ghcb = self
+            .runner
+            .ghcb_page()
+            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
+        complete_snp_guest_request(ghcb);
         Ok(())
     }
 
@@ -1832,6 +1898,19 @@ impl MshvProcessor<'_> {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn completes_snp_guest_request() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+        ghcb.save.sw_exit_info1 = 0x400000;
+        ghcb.save.sw_exit_info2 = 0x500000;
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_CODE_VALID_BIT;
+        complete_snp_guest_request(&mut ghcb);
+        assert_eq!(ghcb.save.sw_exit_info1, 0);
+        assert_eq!(ghcb.save.sw_exit_info2, 0);
+        assert!(ghcb_exit_fields_are_valid(&ghcb));
+        assert!(ghcb_exit_info2_is_valid(&ghcb));
+    }
 
     #[test]
     fn snp_hypercall_requires_valid_consistent_registers() {

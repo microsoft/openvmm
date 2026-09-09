@@ -781,14 +781,24 @@ impl VmService {
         // move it into whichever LoadMode is selected below.
         let smbios = Box::new(smbios_config_from_proto(req_config.smbios_config.take())?);
 
-        let isolation = match req_config
-            .isolation_config
-            .take()
-            .unwrap_or_default()
-            .isolation_type()
-        {
+        let isolation_config = req_config.isolation_config.take().unwrap_or_default();
+        let isolation = match isolation_config.isolation_type() {
             vmservice::isolation_config::Type::None => None,
             vmservice::isolation_config::Type::Snp => Some(IsolationType::Snp),
+        };
+        let snp_host_data = if isolation_config.host_data.is_empty() {
+            None
+        } else {
+            if isolation != Some(IsolationType::Snp) {
+                bail!("VM-service host data supports only SNP isolation");
+            }
+            Some(
+                isolation_config
+                    .host_data
+                    .as_slice()
+                    .try_into()
+                    .context("SNP host data must be exactly 32 bytes")?,
+            )
         };
 
         // The boot configuration also determines the base chipset, since the
@@ -1014,6 +1024,7 @@ impl VmService {
             hypervisor: HypervisorConfig {
                 with_hv: true,
                 with_isolation: isolation,
+                snp_host_data,
                 ..Default::default()
             },
             #[cfg(windows)]
