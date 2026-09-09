@@ -10,6 +10,7 @@ use crate::cmdline::SidecarOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
+use crate::host_params::MAX_HOST_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
@@ -70,6 +71,236 @@ pub enum DtError {
     /// Host provided MMIO range is insufficient to cover VTL2.
     #[error("host provided MMIO range is insufficient to cover VTL2")]
     NotEnoughVtl2Mmio,
+}
+
+// This must match the minimum eager registration granularity used by
+// underhill_mem for SNP VTL0 RAM.
+const SNP_VTL0_MEMORY_ALIGNMENT: u64 = 2 * 1024 * 1024;
+const MAX_IGNORED_VTL0_RAM_RANGES: usize = 2 * (MAX_PARTITION_RAM_RANGES + MAX_VTL2_RAM_RANGES);
+
+fn compatible_memory_entries(left: &MemoryEntry, right: &MemoryEntry) -> bool {
+    left.mem_type == right.mem_type && left.vnode == right.vnode
+}
+
+fn coalesce_vtl2_ram(vtl2_ram: &mut ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>) {
+    vtl2_ram.sort_unstable_by_key(|entry| entry.range.start());
+
+    let mut index = 1;
+    while index < vtl2_ram.len() {
+        let previous = vtl2_ram[index - 1];
+        let current = vtl2_ram[index];
+        if previous.range.end() == current.range.start()
+            && compatible_memory_entries(&previous, &current)
+        {
+            vtl2_ram[index - 1].range =
+                MemoryRange::new(previous.range.start()..current.range.end());
+            vtl2_ram.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn add_reclaimed_vtl2_ram(
+    vtl2_ram: &mut ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>,
+    entry: MemoryEntry,
+) -> bool {
+    let insert_index =
+        vtl2_ram.partition_point(|existing| existing.range.start() < entry.range.start());
+
+    if insert_index > 0 {
+        let previous = vtl2_ram[insert_index - 1];
+        if previous.range.end() == entry.range.start()
+            && compatible_memory_entries(&previous, &entry)
+        {
+            let mut end = entry.range.end();
+            if insert_index < vtl2_ram.len() {
+                let next = vtl2_ram[insert_index];
+                if end == next.range.start() && compatible_memory_entries(&entry, &next) {
+                    end = next.range.end();
+                    vtl2_ram.remove(insert_index);
+                }
+            }
+            vtl2_ram[insert_index - 1].range = MemoryRange::new(previous.range.start()..end);
+            return true;
+        }
+    }
+
+    if insert_index < vtl2_ram.len() {
+        let next = vtl2_ram[insert_index];
+        if entry.range.end() == next.range.start() && compatible_memory_entries(&entry, &next) {
+            vtl2_ram[insert_index].range = MemoryRange::new(entry.range.start()..next.range.end());
+            return true;
+        }
+    }
+
+    if vtl2_ram.len() == vtl2_ram.capacity() {
+        return false;
+    }
+
+    vtl2_ram.insert(insert_index, entry);
+    true
+}
+
+fn reclaim_vtl0_edge(
+    vtl2_ram: &mut ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>,
+    vtl0_fragments: &[MemoryEntry],
+    edge: MemoryRange,
+    edge_is_reserved: &impl Fn(MemoryRange) -> bool,
+    ignored_vtl0_ram: &mut ArrayVec<MemoryRange, MAX_IGNORED_VTL0_RAM_RANGES>,
+) {
+    if edge_is_reserved(edge) {
+        log::warn!("unaligned VTL0 edge {edge:#x?} overlaps required imported memory");
+        return;
+    }
+
+    for fragment in vtl0_fragments {
+        let start = fragment.range.start().max(edge.start());
+        let end = fragment.range.end().min(edge.end());
+        if start < end {
+            let entry = MemoryEntry {
+                range: MemoryRange::new(start..end),
+                mem_type: fragment.mem_type,
+                vnode: fragment.vnode,
+            };
+            if add_reclaimed_vtl2_ram(vtl2_ram, entry) {
+                log::warn!(
+                    "converting unaligned VTL0 edge {:#x?} on vnode {} with memory type {:?} to VTL2 RAM",
+                    entry.range,
+                    entry.vnode,
+                    entry.mem_type
+                );
+            } else {
+                log::warn!(
+                    "discarding unaligned VTL0 edge {:#x?} on vnode {} with memory type {:?}: \
+                     the VTL2 RAM range list is full",
+                    entry.range,
+                    entry.vnode,
+                    entry.mem_type
+                );
+                ignored_vtl0_ram
+                    .try_push(entry.range)
+                    .expect("ignored VTL0 edge count is bounded by partition memory ranges");
+            }
+        }
+    }
+}
+
+fn reclaim_unaligned_vtl0_edges(
+    partition_memory: &[MemoryEntry],
+    vtl2_ram: &mut ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>,
+    edge_is_reserved: impl Fn(MemoryRange) -> bool,
+    ignored_vtl0_ram: &mut ArrayVec<MemoryRange, MAX_IGNORED_VTL0_RAM_RANGES>,
+) {
+    coalesce_vtl2_ram(vtl2_ram);
+
+    let mut vtl0_ram = off_stack!(
+        ArrayVec<MemoryEntry, { MAX_PARTITION_RAM_RANGES + MAX_VTL2_RAM_RANGES }>,
+        ArrayVec::new_const()
+    );
+    vtl0_ram.clear();
+    for (range, result) in walk_ranges(
+        partition_memory.iter().map(|entry| (entry.range, *entry)),
+        vtl2_ram.iter().map(|entry| (entry.range, ())),
+    ) {
+        match result {
+            memory_range::RangeWalkResult::Left(entry) => vtl0_ram
+                .try_push(MemoryEntry {
+                    range,
+                    mem_type: entry.mem_type,
+                    vnode: entry.vnode,
+                })
+                .expect("partition memory range count is bounded"),
+            memory_range::RangeWalkResult::Neither
+            | memory_range::RangeWalkResult::Right(_)
+            | memory_range::RangeWalkResult::Both(_, _) => {}
+        }
+    }
+
+    let mut span_start_index = 0;
+    while span_start_index < vtl0_ram.len() {
+        let mut span_end_index = span_start_index + 1;
+        // Registration only cares about contiguous GPA spans, so NUMA and
+        // memory-type boundaries inside a span do not create additional edges.
+        while span_end_index < vtl0_ram.len()
+            && vtl0_ram[span_end_index - 1].range.end() == vtl0_ram[span_end_index].range.start()
+        {
+            span_end_index += 1;
+        }
+
+        let span = MemoryRange::new(
+            vtl0_ram[span_start_index].range.start()..vtl0_ram[span_end_index - 1].range.end(),
+        );
+        let aligned_start = span
+            .start()
+            .checked_add(SNP_VTL0_MEMORY_ALIGNMENT - 1)
+            .map(|address| address & !(SNP_VTL0_MEMORY_ALIGNMENT - 1));
+        let aligned_end = span.end() & !(SNP_VTL0_MEMORY_ALIGNMENT - 1);
+        let fragments = &vtl0_ram[span_start_index..span_end_index];
+
+        match aligned_start {
+            Some(aligned_start) if aligned_start < aligned_end => {
+                if span.start() < aligned_start {
+                    reclaim_vtl0_edge(
+                        vtl2_ram,
+                        fragments,
+                        MemoryRange::new(span.start()..aligned_start),
+                        &edge_is_reserved,
+                        ignored_vtl0_ram,
+                    );
+                }
+                if aligned_end < span.end() {
+                    reclaim_vtl0_edge(
+                        vtl2_ram,
+                        fragments,
+                        MemoryRange::new(aligned_end..span.end()),
+                        &edge_is_reserved,
+                        ignored_vtl0_ram,
+                    );
+                }
+            }
+            _ => reclaim_vtl0_edge(
+                vtl2_ram,
+                fragments,
+                span,
+                &edge_is_reserved,
+                ignored_vtl0_ram,
+            ),
+        }
+
+        span_start_index = span_end_index;
+    }
+}
+
+fn remove_ignored_vtl0_ram(
+    partition_memory: &[MemoryEntry],
+    ignored_vtl0_ram: &[MemoryRange],
+) -> OffStackRef<'static, ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>> {
+    let mut usable_memory = off_stack!(
+        ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
+        ArrayVec::new_const()
+    );
+    usable_memory.clear();
+
+    for (range, result) in walk_ranges(
+        partition_memory.iter().map(|entry| (entry.range, *entry)),
+        ignored_vtl0_ram.iter().map(|range| (*range, ())),
+    ) {
+        match result {
+            memory_range::RangeWalkResult::Left(entry) => usable_memory.push(MemoryEntry {
+                range,
+                mem_type: entry.mem_type,
+                vnode: entry.vnode,
+            }),
+            memory_range::RangeWalkResult::Both(_, _) => {}
+            memory_range::RangeWalkResult::Right(_) => {
+                panic!("ignored VTL0 range {range:#x?} is outside partition RAM")
+            }
+            memory_range::RangeWalkResult::Neither => {}
+        }
+    }
+
+    usable_memory
 }
 
 /// Allocate the private pool across NUMA nodes.
@@ -485,8 +716,12 @@ fn init_heap(params: &ShimParams) {
     }
 }
 
-type ParsedDt =
-    ParsedDeviceTree<MAX_PARTITION_RAM_RANGES, MAX_CPU_COUNT, COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>;
+type ParsedDt = ParsedDeviceTree<
+    MAX_HOST_PARTITION_RAM_RANGES,
+    MAX_CPU_COUNT,
+    COMMAND_LINE_SIZE,
+    MAX_ENTROPY_SIZE,
+>;
 
 /// Add common ranges to [`AddressSpaceManagerBuilder`] regardless if creating
 /// topology from the host or from saved state.
@@ -516,6 +751,9 @@ fn add_common_ranges<'a, I: Iterator<Item = MemoryRange>>(
 #[derive(Debug, PartialEq, Eq)]
 struct PartitionTopology {
     vtl2_ram: &'static [MemoryEntry],
+    /// Replacement partition map when ranges were removed or restored from
+    /// persisted state. `None` means the parsed host map can be used directly.
+    partition_ram_override: Option<&'static [MemoryEntry]>,
     vtl0_mmio: ArrayVec<MemoryRange, 2>,
     vtl2_mmio: ArrayVec<MemoryRange, 2>,
     memory_allocation_mode: MemoryAllocationMode,
@@ -551,6 +789,9 @@ fn topology_from_host_dt(
 
     let mut vtl2_ram =
         off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
+    let mut ignored_vtl0_ram =
+        off_stack!(ArrayVec<MemoryRange, MAX_IGNORED_VTL0_RAM_RANGES>, ArrayVec::new_const());
+    ignored_vtl0_ram.clear();
 
     // TODO: Decide if isolated guests always use VTL2 allocation mode.
 
@@ -572,6 +813,23 @@ fn topology_from_host_dt(
                 .expect("vtl2 ram should only be 64 big");
         }
     }
+
+    if params.isolation_type == IsolationType::Snp {
+        reclaim_unaligned_vtl0_edges(
+            &parsed.memory,
+            &mut vtl2_ram,
+            |edge| {
+                params
+                    .imported_regions()
+                    .any(|(range, _)| range.start() < edge.end() && edge.start() < range.end())
+            },
+            &mut ignored_vtl0_ram,
+        );
+    }
+    let partition_ram_override = (!ignored_vtl0_ram.is_empty())
+        .then(|| remove_ignored_vtl0_ram(&parsed.memory, &ignored_vtl0_ram))
+        .map(OffStackRef::leak)
+        .map(|memory| memory.as_slice());
 
     // The host is responsible for allocating MMIO ranges for non-isolated
     // guests when it also provides the ram VTL2 should use.
@@ -736,6 +994,7 @@ fn topology_from_host_dt(
 
     Ok(PartitionTopology {
         vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+        partition_ram_override,
         vtl0_mmio,
         vtl2_mmio,
         memory_allocation_mode,
@@ -818,6 +1077,22 @@ fn topology_from_persisted_state(
 
     let mut vtl2_ram =
         off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
+    let mut restored_partition_ram =
+        off_stack!(ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>, ArrayVec::new_const());
+    restored_partition_ram.clear();
+    restored_partition_ram.extend(
+        memory_range::merge_adjacent_ranges(partition_memory.iter().filter_map(|entry| {
+            entry
+                .vtl_type
+                .ram()
+                .then_some((entry.range, (entry.igvm_type.clone().into(), entry.vnode)))
+        }))
+        .map(|(range, (mem_type, vnode))| MemoryEntry {
+            range,
+            mem_type,
+            vnode,
+        }),
+    );
 
     // Determine which ranges are memory ranges used by VTL2.
     let previous_vtl2_ram = partition_memory.iter().filter_map(|entry| {
@@ -853,10 +1128,28 @@ fn topology_from_persisted_state(
     // FUTURE: When VTL2 itself did allocation, we should verify that all ranges
     // are still within the provided memory map.
     if matches!(memory_allocation_mode, MemoryAllocationMode::Host) {
-        let host_vtl2_ram = parse_host_vtl2_ram(params, &parsed.memory);
+        let mut host_vtl2_ram =
+            off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
+        host_vtl2_ram
+            .try_extend_from_slice(parse_host_vtl2_ram(params, &parsed.memory).as_ref())
+            .expect("vtl2 ram should only be 64 big");
+        if params.isolation_type == IsolationType::Snp {
+            let mut ignored_vtl0_ram = off_stack!(ArrayVec<MemoryRange, MAX_IGNORED_VTL0_RAM_RANGES>, ArrayVec::new_const());
+            ignored_vtl0_ram.clear();
+            reclaim_unaligned_vtl0_edges(
+                &parsed.memory,
+                &mut host_vtl2_ram,
+                |edge| {
+                    params
+                        .imported_regions()
+                        .any(|(range, _)| range.start() < edge.end() && edge.start() < range.end())
+                },
+                &mut ignored_vtl0_ram,
+            );
+        }
         assert_eq!(
             vtl2_ram.as_slice(),
-            host_vtl2_ram.as_ref(),
+            host_vtl2_ram.as_slice(),
             "vtl2 ram from persisted state does not match host provided ram"
         );
     }
@@ -947,6 +1240,7 @@ fn topology_from_persisted_state(
     Ok(PersistedPartitionTopology {
         topology: PartitionTopology {
             vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+            partition_ram_override: Some(OffStackRef::leak(restored_partition_ram)),
             vtl0_mmio,
             vtl2_mmio,
             memory_allocation_mode,
@@ -1132,7 +1426,13 @@ impl PartitionInfo {
         vtl2_ram.clear();
         vtl2_ram.extend(topology.vtl2_ram.iter().copied());
         partition_ram.clear();
-        partition_ram.extend(parsed.memory.iter().copied());
+        partition_ram.extend(
+            topology
+                .partition_ram_override
+                .unwrap_or(&parsed.memory)
+                .iter()
+                .copied(),
+        );
         *memory_allocation_mode = topology.memory_allocation_mode;
 
         // Set vmbus fields. The connection ID comes from the host, but mmio
@@ -1171,5 +1471,140 @@ impl PartitionInfo {
         *boot_options = options;
 
         Ok(storage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(
+        range: core::ops::Range<u64>,
+        mem_type: MemoryMapEntryType,
+        vnode: u32,
+    ) -> MemoryEntry {
+        MemoryEntry {
+            range: MemoryRange::new(range),
+            mem_type,
+            vnode,
+        }
+    }
+
+    #[test]
+    fn reclaims_unaligned_vtl0_edges() {
+        let memory = [
+            entry(
+                0x10_0000..0x30_0000,
+                MemoryMapEntryType::VTL2_PROTECTABLE,
+                1,
+            ),
+            entry(0x30_0000..0x70_0000, MemoryMapEntryType::MEMORY, 2),
+            entry(
+                0x1000_0000..0x1030_0000,
+                MemoryMapEntryType::VTL2_PROTECTABLE,
+                3,
+            ),
+            entry(
+                0x1030_0000..0x1060_0000,
+                MemoryMapEntryType::VTL2_PROTECTABLE,
+                4,
+            ),
+            entry(
+                0x2001_0000..0x2010_0000,
+                MemoryMapEntryType::VTL2_PROTECTABLE,
+                5,
+            ),
+            entry(
+                0xc000_0000..0xe000_0000,
+                MemoryMapEntryType::VTL2_PROTECTABLE,
+                0,
+            ),
+        ];
+        let mut vtl2_ram = ArrayVec::new();
+        vtl2_ram.push(entry(
+            0xd815_0000..0xe000_0000,
+            MemoryMapEntryType::VTL2_PROTECTABLE,
+            0,
+        ));
+
+        let imported_range = MemoryRange::new(0x2001_0000..0x2002_0000);
+        let mut ignored_vtl0_ram = ArrayVec::new();
+        reclaim_unaligned_vtl0_edges(
+            &memory,
+            &mut vtl2_ram,
+            |edge| imported_range.start() < edge.end() && edge.start() < imported_range.end(),
+            &mut ignored_vtl0_ram,
+        );
+
+        assert_eq!(
+            vtl2_ram.as_slice(),
+            &[
+                entry(
+                    0x10_0000..0x20_0000,
+                    MemoryMapEntryType::VTL2_PROTECTABLE,
+                    1
+                ),
+                entry(0x60_0000..0x70_0000, MemoryMapEntryType::MEMORY, 2),
+                entry(
+                    0xd800_0000..0xe000_0000,
+                    MemoryMapEntryType::VTL2_PROTECTABLE,
+                    0
+                ),
+            ]
+        );
+        assert!(ignored_vtl0_ram.is_empty());
+
+        let discarded = MemoryRange::new(0x30_0000..0x40_0000);
+        let usable_memory = remove_ignored_vtl0_ram(&memory[..2], &[discarded]);
+        assert_eq!(
+            usable_memory.as_slice(),
+            &[
+                entry(
+                    0x10_0000..0x30_0000,
+                    MemoryMapEntryType::VTL2_PROTECTABLE,
+                    1,
+                ),
+                entry(0x40_0000..0x70_0000, MemoryMapEntryType::MEMORY, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn full_range_list_only_accepts_mergeable_edges() {
+        let mut vtl2_ram = ArrayVec::new();
+        for index in 0..MAX_VTL2_RAM_RANGES {
+            let start = 0x10_0000 + index as u64 * 0x40_0000;
+            vtl2_ram.push(entry(
+                start..start + 0x10_0000,
+                MemoryMapEntryType::VTL2_PROTECTABLE,
+                0,
+            ));
+        }
+        let original_second = vtl2_ram[1];
+        let unreclaimed_edge = entry(
+            original_second.range.start() - 0x10_0000..original_second.range.start(),
+            MemoryMapEntryType::MEMORY,
+            1,
+        );
+
+        assert!(add_reclaimed_vtl2_ram(
+            &mut vtl2_ram,
+            entry(0..0x10_0000, MemoryMapEntryType::VTL2_PROTECTABLE, 0,),
+        ));
+        assert!(!add_reclaimed_vtl2_ram(&mut vtl2_ram, unreclaimed_edge,));
+
+        assert_eq!(vtl2_ram.len(), MAX_VTL2_RAM_RANGES);
+        assert_eq!(vtl2_ram[0].range, MemoryRange::new(0..0x20_0000));
+        assert_eq!(vtl2_ram[1], original_second);
+
+        let mut ignored_vtl0_ram = ArrayVec::new();
+        reclaim_vtl0_edge(
+            &mut vtl2_ram,
+            &[unreclaimed_edge],
+            unreclaimed_edge.range,
+            &|_| false,
+            &mut ignored_vtl0_ram,
+        );
+        assert_eq!(ignored_vtl0_ram.as_slice(), &[unreclaimed_edge.range]);
     }
 }

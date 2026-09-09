@@ -1192,57 +1192,88 @@ fn build_vtl0_memory_layout(
     vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
     chipset_mmio: &ChipsetMmioRanges,
     mut shared_pool_size: u64,
+    shared_pool_alignment: u64,
 ) -> anyhow::Result<BuiltVtl0MemoryLayout> {
     let mmio: Vec<MemoryRange> = [chipset_mmio.low, chipset_mmio.high]
         .into_iter()
         .filter(|r| !r.is_empty())
         .collect();
-    // Allocate shared_pool memory starting from the last (top of memory)
-    // continuing downward until the size is covered.
-    //
-    // Note that we must only allocate from memory entries that are actually
-    // ram, not reserved or pmem. Keep track of the ranges that are skipped to
-    // re-add to the memory map later.
-    let mut filtered_vtl0_memory_map = vtl0_memory_map.clone();
-    let mut skipped = Vec::new();
-    let mut shared_pool = Vec::new();
-    while shared_pool_size != 0 {
-        let (last, last_typ) = filtered_vtl0_memory_map.last_mut().with_context(|| {
-            format!(
-                "unable to allocate shared_pool of size {shared_pool_size} from VTL0 memory map"
-            )
-        })?;
+    assert!(shared_pool_alignment.is_power_of_two());
+    assert!(shared_pool_size.is_multiple_of(shared_pool_alignment));
 
-        if *last_typ != MemoryMapEntryType::MEMORY {
-            skipped.push(filtered_vtl0_memory_map.pop().expect("is element"));
+    // Select aligned subranges from normal RAM runs, starting at high
+    // addresses. Aligning both sides of every carve preserves the registration
+    // alignment of the VTL0 spans on either side, even when an adjacent
+    // reserved entry ends at an unaligned address.
+    let mut shared_pool_ranges = Vec::new();
+    let mut run_end_index = vtl0_memory_map.len();
+    while run_end_index != 0 {
+        let last_index = run_end_index - 1;
+        if !matches!(
+            vtl0_memory_map[last_index].1,
+            MemoryMapEntryType::MEMORY | MemoryMapEntryType::VTL2_PROTECTABLE
+        ) {
+            run_end_index = last_index;
             continue;
         }
 
-        if last.range.len() > shared_pool_size {
-            // Split this memory range, with the top being given to the shared
-            // pool and the remainder back to VTL0.
-            let shared_start = last.range.end() - shared_pool_size;
-            let vtl0 = MemoryRangeWithNode {
-                range: MemoryRange::new(last.range.start()..shared_start),
-                vnode: last.vnode,
-            };
-
-            shared_pool.push(MemoryRangeWithNode {
-                range: MemoryRange::new(shared_start..last.range.end()),
-                vnode: last.vnode,
-            });
-            *last = vtl0;
-            break;
-        } else {
-            shared_pool_size -= last.range.len();
-            shared_pool.push(last.clone());
-            filtered_vtl0_memory_map.pop();
+        let mut run_start_index = last_index;
+        while run_start_index != 0
+            && vtl0_memory_map[run_start_index - 1].0.range.end()
+                == vtl0_memory_map[run_start_index].0.range.start()
+            && matches!(
+                vtl0_memory_map[run_start_index - 1].1,
+                MemoryMapEntryType::MEMORY | MemoryMapEntryType::VTL2_PROTECTABLE
+            )
+        {
+            run_start_index -= 1;
         }
+
+        let run_start = vtl0_memory_map[run_start_index].0.range.start();
+        let run_end = vtl0_memory_map[last_index].0.range.end();
+        let aligned_start = (run_start + shared_pool_alignment - 1) & !(shared_pool_alignment - 1);
+        let aligned_end = run_end & !(shared_pool_alignment - 1);
+        if aligned_start < aligned_end {
+            let allocation_size = shared_pool_size.min(aligned_end - aligned_start);
+            shared_pool_ranges.push(MemoryRange::new(aligned_end - allocation_size..aligned_end));
+            shared_pool_size -= allocation_size;
+            if shared_pool_size == 0 {
+                break;
+            }
+        }
+
+        run_end_index = run_start_index;
     }
 
-    // Skipped entries are added in reverse order to maintain the sorted list.
-    for entry in skipped.into_iter().rev() {
-        filtered_vtl0_memory_map.push(entry);
+    anyhow::ensure!(
+        shared_pool_size == 0,
+        "unable to allocate shared_pool of size {shared_pool_size} from aligned VTL0 memory spans"
+    );
+    shared_pool_ranges.sort_unstable_by_key(|range| range.start());
+
+    let mut filtered_vtl0_memory_map = Vec::new();
+    let mut shared_pool = Vec::new();
+    for (entry, typ) in &vtl0_memory_map {
+        filtered_vtl0_memory_map.extend(
+            memory_range::subtract_ranges([entry.range], shared_pool_ranges.iter().copied()).map(
+                |range| {
+                    (
+                        MemoryRangeWithNode {
+                            range,
+                            vnode: entry.vnode,
+                        },
+                        *typ,
+                    )
+                },
+            ),
+        );
+        shared_pool.extend(
+            memory_range::overlapping_ranges([entry.range], shared_pool_ranges.iter().copied())
+                .map(|range| MemoryRangeWithNode {
+                    range,
+                    vnode: entry.vnode,
+                }),
+        );
     }
 
     // TODO: SGX ranges get reported as memory here. Correct or not? Probably should remove?
@@ -1299,6 +1330,118 @@ fn build_vtl0_memory_layout(
         shared_pool,
         complete_memory_layout,
     })
+}
+
+#[cfg(test)]
+mod memory_layout_tests {
+    use super::*;
+
+    #[test]
+    fn shared_pool_uses_vtl2_protectable_ram_at_top_of_memory() {
+        let vtl0_memory_map = vec![
+            (
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..0x60_0000),
+                    vnode: 0,
+                },
+                MemoryMapEntryType::MEMORY,
+            ),
+            (
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0x60_0000..0xa0_0000),
+                    vnode: 0,
+                },
+                MemoryMapEntryType::VTL2_PROTECTABLE,
+            ),
+        ];
+        let chipset_mmio = ChipsetMmioRanges {
+            low: MemoryRange::EMPTY,
+            high: MemoryRange::EMPTY,
+        };
+
+        let built =
+            build_vtl0_memory_layout(vtl0_memory_map, &chipset_mmio, 0x20_0000, 0x20_0000).unwrap();
+
+        assert_eq!(
+            built.vtl0_memory_map,
+            vec![
+                (
+                    MemoryRangeWithNode {
+                        range: MemoryRange::new(0..0x60_0000),
+                        vnode: 0,
+                    },
+                    MemoryMapEntryType::MEMORY,
+                ),
+                (
+                    MemoryRangeWithNode {
+                        range: MemoryRange::new(0x60_0000..0x80_0000),
+                        vnode: 0,
+                    },
+                    MemoryMapEntryType::VTL2_PROTECTABLE,
+                ),
+            ]
+        );
+        assert_eq!(
+            built.shared_pool,
+            vec![MemoryRangeWithNode {
+                range: MemoryRange::new(0x80_0000..0xa0_0000),
+                vnode: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn shared_pool_preserves_alignment_around_reserved_memory() {
+        let vtl0_memory_map = vec![
+            (
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..0x80_0000),
+                    vnode: 0,
+                },
+                MemoryMapEntryType::MEMORY,
+            ),
+            (
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0x1000_0000..0x10d0_0000),
+                    vnode: 1,
+                },
+                MemoryMapEntryType::MEMORY,
+            ),
+            (
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0x10d0_0000..0x1100_0000),
+                    vnode: 1,
+                },
+                MemoryMapEntryType::PLATFORM_RESERVED,
+            ),
+        ];
+        let chipset_mmio = ChipsetMmioRanges {
+            low: MemoryRange::EMPTY,
+            high: MemoryRange::EMPTY,
+        };
+
+        let built =
+            build_vtl0_memory_layout(vtl0_memory_map, &chipset_mmio, 0x20_0000, 0x20_0000).unwrap();
+
+        assert_eq!(
+            built.shared_pool,
+            vec![MemoryRangeWithNode {
+                range: MemoryRange::new(0x10a0_0000..0x10c0_0000),
+                vnode: 1,
+            }]
+        );
+        assert!(
+            memory_range::merge_adjacent_ranges(
+                built
+                    .vtl0_memory_layout
+                    .ram()
+                    .iter()
+                    .map(|entry| (entry.range, ()))
+            )
+            .all(|(range, ())| range.start().is_multiple_of(0x20_0000)
+                && range.end().is_multiple_of(0x20_0000))
+        );
+    }
 }
 
 fn round_up_to_2mb(bytes: u64) -> u64 {
@@ -1778,7 +1921,16 @@ async fn new_underhill_vm(
         vtl0_memory_layout: mem_layout,
         shared_pool,
         complete_memory_layout,
-    } = build_vtl0_memory_layout(vtl0_memory_map, &chipset_mmio, shared_pool_size)?;
+    } = build_vtl0_memory_layout(
+        vtl0_memory_map,
+        &chipset_mmio,
+        shared_pool_size,
+        if isolation == virt::IsolationType::Snp {
+            2 * 1024 * 1024
+        } else {
+            hvdef::HV_PAGE_SIZE
+        },
+    )?;
 
     // Determine if x2apic is supported so that the topology matches
     // reality.

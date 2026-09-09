@@ -28,14 +28,19 @@ pub const MAX_NUMA_NODES: usize = 64;
 
 pub const COMMAND_LINE_SIZE: usize = 0x2000;
 
-/// Each ram range reported by the host for VTL2 is split per NUMA node.
+/// Maximum number of VTL2 RAM ranges.
 ///
-/// Today, Hyper-V has a max limit of 64 NUMA nodes, so we should only ever see
-/// 64 ram ranges.
+/// The primary ranges are bounded by Hyper-V's limit of 64 NUMA nodes.
+/// Additional alignment padding is merged into those ranges when possible and
+/// otherwise reclaimed only while capacity remains.
 pub const MAX_VTL2_RAM_RANGES: usize = 64;
 
-/// The maximum number of ram ranges that can be read from the host.
-const MAX_PARTITION_RAM_RANGES: usize = 1024;
+/// The maximum number of RAM ranges that can be read from the host.
+const MAX_HOST_PARTITION_RAM_RANGES: usize = 1024;
+
+/// The maximum number of partition RAM ranges after removing unusable VTL0
+/// edges. Each VTL2 range can introduce two additional boundaries.
+const MAX_PARTITION_RAM_RANGES: usize = MAX_HOST_PARTITION_RAM_RANGES + 2 * MAX_VTL2_RAM_RANGES;
 
 /// Maximum size of the host-provided entropy
 pub const MAX_ENTROPY_SIZE: usize = 256;
@@ -48,7 +53,8 @@ pub struct PartitionInfo {
     ///
     /// This vec is guaranteed to be sorted, and non-overlapping.
     pub vtl2_ram: ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>,
-    /// The full memory map provided by the host.
+    /// The host memory map after removing RAM that cannot be assigned safely
+    /// to either VTL.
     pub partition_ram: ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
     /// The partiton's isolation type.
     pub isolation: IsolationType,
