@@ -1189,6 +1189,9 @@ impl IntoPipeline for CheckinGatesCli {
                         format!("verify openhcl binary size [{}]", arch_tag),
                     )
                     .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
+                    .gh_dangerous_override_if(
+                        "github.repository == 'microsoft/openvmm' && github.event.pull_request.draft == false",
+                    )
                     .side_effect(|done| {
                         flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
                             target: CommonTriple::Common {

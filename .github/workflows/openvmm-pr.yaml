@@ -613,7 +613,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -1138,7 +1138,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
