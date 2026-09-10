@@ -177,6 +177,10 @@ impl ChipsetDevice for ErasedChipsetDevice {
     fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         self.0.supports_tdisp()
     }
+
+    fn supports_tdisp_isolation(&mut self) -> Option<&mut dyn tdisp::TdispIsolationReporter> {
+        self.0.supports_tdisp_isolation()
+    }
 }
 
 impl ProtobufSaveRestore for ErasedChipsetDevice {
