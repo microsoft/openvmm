@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 chipset_device.workspace = true
+hvdef.workspace = true
 memory_range.workspace = true
 pci_core.workspace = true
 state_unit.workspace = true
@@ -16,6 +17,7 @@ openhcl_tdisp.workspace = true
 user_driver.workspace = true
 vpci_client.workspace = true
 vpci.workspace = true
+virt.workspace = true
 vmbus_client.workspace = true
 vmbus_server.workspace = true
 vmcore.workspace = true
@@ -32,7 +34,6 @@ tracing.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 fs-err.workspace = true
 hcl.workspace = true
-hvdef.workspace = true
 sparse_mmap.workspace = true
 tracelimit.workspace = true
 
