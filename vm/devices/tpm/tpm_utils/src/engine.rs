@@ -14,11 +14,11 @@ use tpm_resources::TpmVersion;
 
 /// Handle to the NVRAM blob captured from the library's commit callback.
 #[derive(Clone, Default)]
-pub struct NvramBlob(Arc<Mutex<Vec<u8>>>);
+pub(crate) struct NvramBlob(Arc<Mutex<Vec<u8>>>);
 
 impl NvramBlob {
     /// Returns a copy of the most recently committed NVRAM state.
-    pub fn get(&self) -> Vec<u8> {
+    pub(crate) fn get(&self) -> Vec<u8> {
         self.0.lock().clone()
     }
 }
@@ -59,7 +59,7 @@ impl_callbacks!(ms_tpm_20_ref);
 impl_callbacks!(ms_tcg_tpm_sys);
 
 /// Wrapper around the TPM reference implementations.
-pub enum TpmRefLib {
+pub(crate) enum TpmRefLib {
     /// The TPM 1.38 reference implementation.
     V138(ms_tpm_20_ref::MsTpm20RefPlatform),
     /// The TPM 1.85 reference implementation.
@@ -103,7 +103,7 @@ impl TpmRefLib {
 }
 
 /// Returns the NVRAM size the reference implementation was compiled for.
-pub fn default_nvram_size(version: TpmVersion) -> usize {
+pub(crate) fn default_nvram_size(version: TpmVersion) -> usize {
     match version {
         TpmVersion::V138 => ms_tpm_20_ref::NV_MEMORY_SIZE,
         TpmVersion::V185 => ms_tcg_tpm_sys::NV_MEMORY_SIZE,
@@ -115,7 +115,7 @@ pub fn default_nvram_size(version: TpmVersion) -> usize {
 ///
 /// The reference implementations are process-global singletons, so this may only
 /// be called once per version per process.
-pub fn create(
+pub(crate) fn create(
     version: TpmVersion,
     nvram_size: usize,
     existing_blob: Option<&[u8]>,
