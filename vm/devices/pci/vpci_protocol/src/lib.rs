@@ -106,8 +106,16 @@ open_enum! {
         CREATE_INTERRUPT3 = 0x4249001b,
         /// Reset a device
         RESET_DEVICE = 0x4249001c,
-        /// TDISP command from guest to host
+        /// TDISP command from guest to host.
+        ///
+        /// Only valid on protocol version >= `ProtocolVersion::RB`.
         VPCI_TDISP_COMMAND = 0x4249001D,
+        /// Query per-BAR and DMA isolation state for a TDISP device.
+        ///
+        /// Paravisor-only: this message is intercepted by the OpenHCL paravisor
+        /// on the guest-facing VPCI channel and is not forwarded to the host VSP.
+        /// Only valid on protocol version >= `ProtocolVersion::RB`.
+        VPCI_QUERY_ISOLATED_RESOURCES = 0x4249001E,
     }
 }
 
@@ -159,6 +167,9 @@ open_enum! {
         GE = 0x00010005,
         /// Windows DT version (allows Windows guests to dynamically map interrupts)
         DT = 0x00010006,
+        /// Windows RB version (adds TDISP support: `VPCI_TDISP_COMMAND`
+        /// and `VPCI_QUERY_ISOLATED_RESOURCES`).
+        RB = 0x00010007,
     }
 }
 
@@ -186,12 +197,36 @@ open_enum! {
     pub enum Status: u32 {
         /// Operation completed successfully
         SUCCESS = 0,
+        /// Generic failure.
+        UNSUCCESSFUL = 0xC0000001,
         /// Protocol revision mismatch
         REVISION_MISMATCH = 0xC0000059,
         /// Bad data provided
         BAD_DATA = 0xC000090B,
         /// Operation not supported
         NOT_SUPPORTED = 0xC00000BB,
+        /// The device is not in a valid state to service the request.
+        /// Used for `VPCI_QUERY_ISOLATED_RESOURCES` when the TDI has not
+        /// reached Run, so the paravisor cannot yet classify resources.
+        INVALID_DEVICE_STATE = 0xC0000184,
+    }
+}
+
+open_enum! {
+    /// Isolation classification for a single VPCI resource (a BAR or DMA).
+    ///
+    /// Returned per-entry in `VpciIsolatedResourcesReply`.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum ResourceIsolation: u32 {
+        /// Entry not populated / not applicable. On a `Status::SUCCESS` reply
+        /// this marks a slot that is not part of the device's BAR ID set, as
+        /// described on `VpciIsolatedResourcesReply`.
+        INVALID = 0,
+        /// Host-visible, bounce-buffered.
+        SHARED = 1,
+        /// Host-inaccessible after TDI validation; backed by guest-private
+        /// (encrypted) memory.
+        PRIVATE = 2,
     }
 }
 
@@ -861,3 +896,45 @@ pub struct VpciTdispCommand {
 /// Maximum size of a TDISP command in bytes. Property of the VMBUS implementation on the host.
 pub const MAX_VPCI_TDISP_COMMAND_SIZE: usize =
     MAXIMUM_PACKET_SIZE - size_of::<VpciTdispCommandHeader>();
+
+/// Request for `MessageType::VPCI_QUERY_ISOLATED_RESOURCES`.
+///
+/// Sent by the in-guest VPCI VSC to the OpenHCL paravisor to discover, for a
+/// given device slot, which of the six BARs and whether the DMA path are
+/// host-inaccessible (TDISP-bound) vs host-visible (bounce-buffered).
+///
+/// Only valid when the negotiated protocol version is
+/// `>= ProtocolVersion::RB`.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct VpciQueryIsolatedResources {
+    /// Must be `MessageType::VPCI_QUERY_ISOLATED_RESOURCES`.
+    pub message_type: MessageType,
+    /// Target device's PCI slot number.
+    pub slot: SlotNumber,
+}
+
+const _: () = assert!(size_of::<VpciQueryIsolatedResources>() == 8);
+
+/// Reply to `MessageType::VPCI_QUERY_ISOLATED_RESOURCES`.
+///
+/// Synthesized entirely by the paravisor from local TDISP state. If `status ==
+/// Status::SUCCESS`, each entry in `bar_isolation` is one of `SHARED`,
+/// `PRIVATE`, or `INVALID`. `INVALID` is used for BAR slots that are not part
+/// of the device's known BAR ID set (including the upper halves of 64-bit BARs,
+/// which are not tracked independently). `dma_isolation` is always `SHARED` or
+/// `PRIVATE` on success. On any non-success status, all BAR entries are
+/// `INVALID`.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct VpciIsolatedResourcesReply {
+    /// NTSTATUS. `Status::SUCCESS` means the per-resource fields are
+    /// authoritative.
+    pub status: Status,
+    /// Classification for each of the device's six BARs.
+    pub bar_isolation: [ResourceIsolation; 6],
+    /// Classification for the device's DMA path.
+    pub dma_isolation: ResourceIsolation,
+}
+
+const _: () = assert!(size_of::<VpciIsolatedResourcesReply>() == 32);
