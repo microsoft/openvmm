@@ -74,7 +74,13 @@ message DirectBoot {
 }
 
 message IgvmBoot {
+    enum Personality {
+        LINUX_DIRECT = 0;
+        UEFI = 1;
+    }
+
     string igvm_path = 1;
+    Personality personality = 2;
 }
 
 message IsolationConfig {

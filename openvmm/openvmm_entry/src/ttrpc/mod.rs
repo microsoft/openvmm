@@ -777,8 +777,8 @@ impl VmService {
         #[cfg(guest_arch = "x86_64")]
         let arch = vm_manifest_builder::MachineArch::X86_64;
 
-        // SMBIOS identity is applied regardless of boot type; build it once and
-        // move it into whichever LoadMode is selected below.
+        // Build SMBIOS identity for direct Linux or UEFI boot.
+        let smbios_requested = req_config.smbios_config.is_some();
         let smbios = Box::new(smbios_config_from_proto(req_config.smbios_config.take())?);
 
         let isolation = match req_config
@@ -825,9 +825,22 @@ impl VmService {
                 )
             }
             vmservice::vm_config::BootConfig::Igvm(boot) => {
+                if smbios_requested {
+                    bail!("VM-service IGVM boot does not support SMBIOS overrides");
+                }
                 if isolation != Some(IsolationType::Snp) {
                     bail!("VM-service IGVM boot currently supports only SNP isolation");
                 }
+                let base_chipset_type =
+                    match vmservice::igvm_boot::Personality::from_i32(boot.personality) {
+                        Some(vmservice::igvm_boot::Personality::LinuxDirect) => {
+                            vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect
+                        }
+                        Some(vmservice::igvm_boot::Personality::Uefi) => {
+                            bail!("VM-service IGVM boot with UEFI personality is not yet supported");
+                        }
+                        None => bail!("unsupported IGVM personality {}", boot.personality),
+                    };
                 let igvm_path = PathBuf::from(&boot.igvm_path);
                 let file = File::open(&igvm_path)
                     .with_context(|| format!("failed to open IGVM {}", igvm_path.display()))?;
@@ -838,7 +851,7 @@ impl VmService {
                         vtl2_base_address: Vtl2BaseAddressType::File,
                         com_serial: None,
                     },
-                    vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect,
+                    base_chipset_type,
                     None,
                     Some(igvm_path),
                     None,
