@@ -186,6 +186,12 @@ pub fn provision(params: &ProvisionParams) -> anyhow::Result<Vec<u8>> {
             "AK cert NV index is missing from the exported blob"
         );
     }
+    if params.mitigation_marker {
+        anyhow::ensure!(
+            helper.find_nv_index(TPM_NV_INDEX_MITIGATED)?.is_some(),
+            "mitigation marker NV index is missing from the exported blob"
+        );
+    }
 
     Ok(blob)
 }
