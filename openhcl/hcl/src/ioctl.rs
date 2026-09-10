@@ -55,6 +55,9 @@ use hvdef::hypercall::HvInterceptType;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::hypercall::ModifyHostVisibility;
+#[cfg(feature = "dev_snp_ohcl_tio_support")]
+use hvdef::hypercall::ModifyHostVisibilityWithImmutability;
+use inspect::Inspect;
 use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
@@ -919,6 +922,59 @@ impl MshvHvcall {
         Ok(())
     }
 
+    /// Modifies the host visibility and immutability of the given pages using
+    /// the private-hypervisor `ModifySparsePageVisibilityWithImmutability`
+    /// variant. Intended for SEV-TIO end-to-end bring-up against a
+    /// privately-built Hyper-V hypervisor.
+    ///
+    /// [`HypercallCode::HvCallModifySparseGpaPageHostVisibility`] must be
+    /// allowed.
+    ///
+    /// Returns on error, the hypervisor error and the number of pages
+    /// processed.
+    #[cfg(feature = "dev_snp_ohcl_tio_support")]
+    pub fn modify_gpa_visibility_and_immutability(
+        &self,
+        host_visibility: HostVisibilityType,
+        immutability: bool,
+        mut gpns: &[u64],
+    ) -> Result<(), (HvError, usize)> {
+        const GPNS_PER_CALL: usize = (HV_PAGE_SIZE as usize
+            - size_of::<hvdef::hypercall::ModifySparsePageVisibilityWithImmutability>())
+            / size_of::<u64>();
+
+        while !gpns.is_empty() {
+            let n = gpns.len().min(GPNS_PER_CALL);
+            // SAFETY: The input header and rep slice are the correct types for this hypercall.
+            //         The hypercall output is validated right after the hypercall is issued.
+            let result = unsafe {
+                self.hvcall_rep(
+                    HypercallCode::HvCallModifySparseGpaPageHostVisibility,
+                    &hvdef::hypercall::ModifySparsePageVisibilityWithImmutability {
+                        partition_id: HV_PARTITION_ID_SELF,
+                        host_visibility: ModifyHostVisibilityWithImmutability::new()
+                            .with_host_visibility(host_visibility)
+                            .with_immutability(immutability),
+                        reserved: 0,
+                    },
+                    HvcallRepInput::Elements(&gpns[..n]),
+                    None::<&mut [u8]>,
+                )
+                .unwrap()
+            };
+
+            match result.result() {
+                Ok(()) => {
+                    assert_eq!({ result.elements_processed() }, n);
+                }
+                Err(HvError::Timeout) => {}
+                Err(e) => return Err((e, result.elements_processed())),
+            }
+            gpns = &gpns[result.elements_processed()..];
+        }
+        Ok(())
+    }
+
     /// Given a constructed hcl_hvcall protocol object, issues an IOCTL to invoke a hypercall via
     /// the direct hypercall kernel interface. This function will retry hypercalls if the hypervisor
     /// times out the hypercall.
@@ -1410,6 +1466,12 @@ impl IsolationType {
     /// Returns whether the isolation type is hardware-backed.
     pub fn is_hardware_isolated(&self) -> bool {
         matches!(self, Self::Snp | Self::Tdx | Self::Cca)
+    }
+}
+
+impl Inspect for IsolationType {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.value(format!("{self:?}"))
     }
 }
 
