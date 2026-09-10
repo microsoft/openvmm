@@ -1,18 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::comms::SerialCommsServer;
+use crate::deserializer::Deserializer;
+use crate::deserializer::syzlang::SyzlangDeserializer;
+use crate::functions::FunctionRegistry;
+use crate::functions::hyperv;
 use crate::prelude::*;
-use crate::{
-    comms::SerialCommsServer,
-    deserializer::{Deserializer, syzlang::SyzlangDeserializer},
-    functions::{FunctionRegistry, hyperv},
-    serial::{OpenTmkSerialIo, SerialIo, SerialPort},
-};
+use crate::serial::OpenTmkSerialIo;
+use crate::serial::SerialIo;
+use crate::serial::SerialPort;
 
-use opentmk_exec_packet::{
-    OpenTMKAckPacket, OpenTMKConfigurationPacket, OpenTMKErrorPacket, OpenTMKFuzzTest,
-    OpenTMKGrammarDeserializer, OpenTMKPacket,
-};
+use opentmk_exec_packet::OpenTMKAckPacket;
+use opentmk_exec_packet::OpenTMKConfigurationPacket;
+use opentmk_exec_packet::OpenTMKErrorPacket;
+use opentmk_exec_packet::OpenTMKFuzzTest;
+use opentmk_exec_packet::OpenTMKGrammarDeserializer;
+use opentmk_exec_packet::OpenTMKPacket;
 
 use spin::Mutex;
 

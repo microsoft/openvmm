@@ -1,13 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::functions::FuzzFunctionVariable;
+use crate::functions::VerifyFuzzVariables;
 use crate::functions::hvcall_meta::unpack_hvcall_meta;
-use crate::functions::{FuzzFunctionVariable, VerifyFuzzVariables};
 #[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 use hvdef::Vtl;
 use opentmk_core::context::HypercallPlatformTrait;
-use opentmk_core::platform::hyperv::ctx::{HvTestCtx, HyperVHypercallConfig};
+use opentmk_core::platform::hyperv::ctx::HvTestCtx;
+use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use opentmk_decoder::SafeMemoryMap;
 use spin::Mutex;
 

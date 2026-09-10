@@ -4,13 +4,16 @@
 #[cfg(test)]
 mod test;
 
-use crate::{
-    deserializer::Deserializer,
-    executor::ExecutorError,
-    functions::{FunctionRegistry, FuzzFunctionVariable},
-    prelude::*,
-};
-use opentmk_decoder::{InputCase, InputResult, SafeMemoryMap, SingleMap, exec_testcases_safe};
+use crate::deserializer::Deserializer;
+use crate::executor::ExecutorError;
+use crate::functions::FunctionRegistry;
+use crate::functions::FuzzFunctionVariable;
+use crate::prelude::*;
+use opentmk_decoder::InputCase;
+use opentmk_decoder::InputResult;
+use opentmk_decoder::SafeMemoryMap;
+use opentmk_decoder::SingleMap;
+use opentmk_decoder::exec_testcases_safe;
 use opentmk_exec_packet::OpenTMKFuzzTest;
 use spin::Mutex;
 

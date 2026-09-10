@@ -2,9 +2,11 @@
 // Licensed under the MIT License.
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub use opentmk_core::arch::serial::SerialPort;
+use opentmk_core::arch::serial::InstrIoAccess;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use opentmk_core::arch::serial::{InstrIoAccess, Serial};
+use opentmk_core::arch::serial::Serial;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub use opentmk_core::arch::serial::SerialPort;
 
 /// Copy of the x86 serial ports, used as a polyfill for those architectures
 /// that are not currently supported yet

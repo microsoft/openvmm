@@ -4,7 +4,10 @@
 //! Guest-side decoder for per-hypercall static metadata sent from the
 //! host fuzzer.
 
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Per-call static metadata. Wire-compatible with
 /// `hvfuzztest::targets::hyperv::HvcallMeta`.

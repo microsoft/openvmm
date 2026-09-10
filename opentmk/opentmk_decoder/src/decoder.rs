@@ -1,7 +1,11 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
+use alloc::vec::Vec;
 use zerocopy::FromBytes;
 use zerocopy::SizeError;
 

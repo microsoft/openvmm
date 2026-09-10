@@ -5,7 +5,9 @@ pub mod syzlang;
 
 use spin::Mutex;
 
-use crate::{executor::ExecutorError, functions::FunctionRegistry, prelude::*};
+use crate::executor::ExecutorError;
+use crate::functions::FunctionRegistry;
+use crate::prelude::*;
 
 use opentmk_exec_packet::OpenTMKFuzzTest;
 

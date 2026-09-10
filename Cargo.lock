@@ -5676,7 +5676,6 @@ name = "opentmk_decoder"
 version = "0.0.0"
 dependencies = [
  "num-traits",
- "spin",
  "zerocopy",
 ]
 

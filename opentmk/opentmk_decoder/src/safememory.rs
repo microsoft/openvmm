@@ -1,9 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
+use core::ops::DerefMut;
 
-use alloc::{boxed::Box, format, string::String, vec::Vec};
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// This represents a virtual memory map that can be used to safely write/read from
 /// memory for syzkaller calls that use executor memory

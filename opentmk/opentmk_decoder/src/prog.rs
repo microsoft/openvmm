@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use crate::K_MAX_COMMANDS;
 use crate::MAX_ARGS;
 use crate::decoder::Decoder;
@@ -10,14 +13,19 @@ use crate::instr::InstrEntry;
 use crate::safememory::SafeMemoryMap;
 use crate::wire;
 
-use core::{
-    marker::PhantomData,
-    ops,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-};
+use core::marker::PhantomData;
+use core::ops;
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 
-use alloc::{collections::vec_deque::VecDeque, string::String, sync::Arc, vec::Vec};
-use zerocopy::{FromBytes, Immutable, IntoBytes};
+use alloc::collections::vec_deque::VecDeque;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
 
 /// Results produced by executing the calls in a syzkaller program.
 pub type TestcaseResults = [ResT; K_MAX_COMMANDS];

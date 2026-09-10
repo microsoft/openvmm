@@ -17,9 +17,11 @@
 //! opentmk ack'ing each packet.
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
+use alloc::vec::Vec;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Magic value used in the SYN packet
 pub const COMMS_SYN_MAGIC: u64 = 0x4142434445464748;

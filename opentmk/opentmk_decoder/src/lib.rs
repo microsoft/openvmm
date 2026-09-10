@@ -15,14 +15,16 @@ mod safememory;
 mod wire;
 
 pub use decoder::DecoderError;
+use prog::DecodedProgram;
+pub use prog::InputCase;
+pub use prog::InputResult;
 pub use prog::TestcaseResults;
-pub use safememory::{SafeMemoryMap, SingleMap};
+pub use safememory::SafeMemoryMap;
+pub use safememory::SingleMap;
 
-use zerocopy::{FromBytes, Immutable, IntoBytes};
-
-use crate::prog::DecodedProgram;
-use crate::prog::InputCase;
-use crate::prog::InputResult;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
 
 const K_MAX_COMMANDS: usize = 1000;
 

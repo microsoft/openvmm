@@ -5,7 +5,9 @@ extern crate alloc;
 
 use super::*;
 use alloc::collections::VecDeque;
-use opentmk_exec_packet::{OpenTMKAckPacket, OpenTMKErrorPacket, OpenTMKPacket};
+use opentmk_exec_packet::OpenTMKAckPacket;
+use opentmk_exec_packet::OpenTMKErrorPacket;
+use opentmk_exec_packet::OpenTMKPacket;
 
 #[derive(Default)]
 pub(crate) struct MockSerialIo {

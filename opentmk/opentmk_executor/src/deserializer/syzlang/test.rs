@@ -4,7 +4,8 @@
 use spin::mutex::Mutex;
 
 use super::*;
-use crate::functions::{FunctionRegistry, FuzzFunctionVariable};
+use crate::functions::FunctionRegistry;
+use crate::functions::FuzzFunctionVariable;
 use opentmk_exec_packet::OpenTMKFuzzTest;
 
 static SYZLANG_EXEC_TEST_LOCK: Mutex<()> = Mutex::new(());

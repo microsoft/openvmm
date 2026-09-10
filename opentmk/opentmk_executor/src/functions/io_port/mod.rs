@@ -5,7 +5,8 @@
 // context
 #![expect(unsafe_code)]
 
-use crate::functions::{FuzzFunctionVariable, VerifyFuzzVariables};
+use crate::functions::FuzzFunctionVariable;
+use crate::functions::VerifyFuzzVariables;
 #[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
 
