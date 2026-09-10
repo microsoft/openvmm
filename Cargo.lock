@@ -5590,12 +5590,16 @@ name = "openhcl_tdisp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "hcl",
  "hvdef",
+ "memory_range",
  "parking_lot",
+ "sev_guest_device",
  "tdisp",
  "tdisp_proto",
  "tracing",
  "virt",
+ "x86defs",
 ]
 
 [[package]]
