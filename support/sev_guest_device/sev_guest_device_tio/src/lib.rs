@@ -52,6 +52,39 @@ pub struct TioMsgTdiInfoRsp {
     pub _reserved1: u64,
 }
 
+/// Encoding of the `tdi_status` field of [`TioMsgTdiInfoRsp`]. See
+/// "SEV-TIO Firmware Interface Specification", Revision 0.91, Table 61.
+///
+/// Despite the name, this is NOT the TDISP TDI state enumeration; it is a
+/// SEV-TIO firmware status code describing the outcome of the `TDI_INFO`
+/// lookup for the given guest device id.
+#[repr(u16)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TioMsgTdiStatus {
+    /// The TDI is bound to the guest and currently in the RUN state.
+    Success = 0,
+    /// The firmware considers the request invalid (for example, an unknown
+    /// guest device id or a mismatch against the firmware's bookkeeping).
+    Invalid = 1,
+    /// The TDI exists but is currently unbound (i.e. in the CONFIG_UNLOCKED
+    /// state from the TDISP perspective).
+    Unbound = 2,
+}
+
+impl TioMsgTdiStatus {
+    /// Convert a raw `tdi_status` value from a firmware response into
+    /// [`TioMsgTdiStatus`]. Returns `None` if the value is not a known
+    /// encoding.
+    pub fn from_u16(value: u16) -> Option<Self> {
+        match value {
+            0 => Some(Self::Success),
+            1 => Some(Self::Invalid),
+            2 => Some(Self::Unbound),
+            _ => None,
+        }
+    }
+}
+
 // Assert the size of the response field
 static_assertions::const_assert_eq!(192, size_of::<TioMsgTdiInfoRsp>());
 
