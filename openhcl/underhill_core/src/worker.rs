@@ -1495,6 +1495,12 @@ async fn new_underhill_vm(
         control_send,
     } = params;
 
+    // Register before platform security initialization. GET callbacks only
+    // latch a bounded wakeup; no hardware or VMGS I/O runs on the GET loop.
+    let migration_notification = Arc::new(crate::hardware_reseal::MigrationNotification::default());
+    let notification = migration_notification.clone();
+    get_client.set_post_live_migration_callback(Box::new(move || notification.notify()));
+
     if let Ok(kernel_boot_time) = std::env::var("KERNEL_BOOT_TIME") {
         if let Ok(kernel_boot_time_ns) = kernel_boot_time.parse::<u64>() {
             tracing::info!(CVM_ALLOWED, kernel_boot_time_ns, "kernel boot time");
@@ -2249,6 +2255,14 @@ async fn new_underhill_vm(
     // Make the GET available for other resources.
     resolver.add_resolver(get_client.clone());
 
+    let hardware_reseal_enabled = vmgs.as_ref().is_some_and(|(_, vmgs)| vmgs.encrypted())
+        && !matches!(hardware_sealing_policy, HardwareSealingPolicy::None)
+        && tee_call.as_ref().is_some_and(|tee| {
+            tee.supports_get_derived_key().is_some()
+                && !(matches!(tee.tee_type(), tee_call::TeeType::Tdx)
+                    && matches!(hardware_sealing_policy, HardwareSealingPolicy::Signer))
+        });
+
     let (vmgs_client, vmgs) = if let Some((meta, vmgs)) = vmgs {
         // Spawn the VMGS client for multi-task access.
         let (vmgs_client, vmgs_handle) = spawn_vmgs_broker(get_spawner, vmgs);
@@ -2808,8 +2822,32 @@ async fn new_underhill_vm(
     };
     get_client.set_debug_interrupt_callback(Box::new(debug_interrupt_callback));
 
-    // Set do-nothing callback.
-    get_client.set_post_live_migration_callback(Box::new(|| {}));
+    let hardware_reseal = if hardware_reseal_enabled {
+        if is_restoring {
+            // Restored VMGS metadata may include a write whose final flush
+            // failed before save. Force a durable rewrite, not a cached check.
+            // This is an explicit local restore signal, not startup or periodic
+            // verification. Isolated-VM servicing remains unsupported.
+            migration_notification.notify();
+        }
+        let resealer = crate::hardware_reseal::HardwareReseal::new(
+            migration_notification,
+            pal_async::timer::PolledTimer::new(tp.driver(0)),
+            vmgs_client
+                .as_ref()
+                .expect("resealing requires VMGS")
+                .clone(),
+            tee_call.expect("resealing requires a TEE"),
+            attestation_vm_config.clone(),
+        );
+        Some(
+            state_units
+                .add("hardware_reseal")
+                .spawn(tp, |recv| resealer.run(recv))?,
+        )
+    } else {
+        None
+    };
 
     let mut input_distributor = InputDistributor::new(remote_console_cfg.input);
     resolver.add_async_resolver::<KeyboardInputHandleKind, _, MultiplexedInputHandle, _>(
@@ -3964,6 +4002,7 @@ async fn new_underhill_vm(
         measured_product_policy: measured_vtl2_info.measured_product_policy().clone(),
 
         _input_distributor: input_distributor,
+        hardware_reseal,
 
         crash_notification_recv,
         control_send,
