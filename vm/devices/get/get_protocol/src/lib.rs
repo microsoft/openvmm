@@ -378,7 +378,7 @@ impl EventLogNotification {
     }
 }
 
-pub const IPMI_SEL_RECORD_SIZE: usize = 16;
+pub use ipmi_protocol::SEL_RECORD_SIZE as IPMI_SEL_RECORD_SIZE;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]

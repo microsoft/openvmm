@@ -11,11 +11,13 @@ chipset_device.workspace = true
 chipset_device_resources.workspace = true
 chipset_resources.workspace = true
 inspect.workspace = true
+ipmi_protocol.workspace = true
 local_clock = { workspace = true, features = ["inspect"] }
 mesh.workspace = true
 thiserror.workspace = true
 vm_resource.workspace = true
 vmcore.workspace = true
+zerocopy.workspace = true
 
 async-trait.workspace = true
 

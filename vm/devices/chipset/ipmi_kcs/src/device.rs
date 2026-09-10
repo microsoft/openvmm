@@ -191,8 +191,8 @@ mod tests {
     use crate::KCS_STATE_READ;
     use crate::STATUS_STATE_MASK;
     use crate::TrustedClock;
-    use crate::protocol::COMMAND_GET_DEVICE_ID;
-    use crate::protocol::NETFN_APPLICATION;
+    use ipmi_protocol::COMMAND_GET_DEVICE_ID;
+    use ipmi_protocol::NETFN_APPLICATION;
     use std::sync::Arc;
     use std::sync::atomic::AtomicI64;
     use std::sync::atomic::Ordering;
@@ -214,11 +214,11 @@ mod tests {
     }
 
     fn device() -> IpmiKcsDevice {
-        IpmiKcsDevice::new_pio(IpmiKcs::new(FakeClock::new(100)))
+        IpmiKcsDevice::new_pio(IpmiKcs::new(Box::new(FakeClock::new(100))))
     }
 
     fn mmio_device() -> IpmiKcsDevice {
-        IpmiKcsDevice::new_mmio(IpmiKcs::new(FakeClock::new(100)))
+        IpmiKcsDevice::new_mmio(IpmiKcs::new(Box::new(FakeClock::new(100))))
     }
 
     fn read(device: &mut IpmiKcsDevice, port: u16) -> u8 {

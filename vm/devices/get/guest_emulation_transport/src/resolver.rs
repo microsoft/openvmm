@@ -4,11 +4,11 @@
 //! Resource definitions for the GET client.
 
 use crate::GuestEmulationTransportClient;
-use chipset_resources::IPMI_SEL_RECORD_SIZE;
-use chipset_resources::IpmiSelEventSinkHandleKind;
-use chipset_resources::ResolvedIpmiSelEventSink;
-use chipset_resources::SelEventDisposition;
-use chipset_resources::SelEventSink;
+use chipset_resources::ipmi_kcs::IpmiSelEventSinkHandleKind;
+use chipset_resources::ipmi_kcs::ResolvedIpmiSelEventSink;
+use chipset_resources::ipmi_kcs::SelEventSink;
+use chipset_resources::ipmi_kcs::SendOutcome;
+use get_protocol::IPMI_SEL_RECORD_SIZE;
 use std::convert::Infallible;
 use vm_resource::CanResolveTo;
 use vm_resource::PlatformResource;
@@ -44,13 +44,9 @@ impl ResolveResource<GetClientKind, PlatformResource> for GuestEmulationTranspor
 struct GetIpmiSelEventSink(GuestEmulationTransportClient);
 
 impl SelEventSink for GetIpmiSelEventSink {
-    fn try_send(
-        &mut self,
-        record_id: u16,
-        record: [u8; IPMI_SEL_RECORD_SIZE],
-    ) -> SelEventDisposition {
+    fn try_send(&mut self, record_id: u16, record: [u8; IPMI_SEL_RECORD_SIZE]) -> SendOutcome {
         self.0.ipmi_sel(record_id, record);
-        SelEventDisposition::Accepted
+        SendOutcome::Accepted
     }
 }
 

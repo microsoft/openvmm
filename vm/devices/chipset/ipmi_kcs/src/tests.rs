@@ -1,8 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Unit tests for KCS protocol, SEL, and save/restore behavior.
+
 use super::*;
-use crate::protocol::*;
+use ipmi_protocol::*;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -46,18 +48,18 @@ struct SharedSink {
 }
 
 impl SelEventSink for SharedSink {
-    fn try_send(&mut self, record_id: u16, record: [u8; 16]) -> SelEventDisposition {
+    fn try_send(&mut self, record_id: u16, record: SelRecord) -> SendOutcome {
         if !self.accept.load(Ordering::Relaxed) {
-            return SelEventDisposition::Dropped;
+            return SendOutcome::Dropped;
         }
         self.state.lock().records.push((record_id, record));
-        SelEventDisposition::Accepted
+        SendOutcome::Accepted
     }
 }
 
 fn device(seconds: i64) -> (FakeClock, IpmiKcs) {
     let clock = FakeClock::new(seconds);
-    (clock.clone(), IpmiKcs::new(clock))
+    (clock.clone(), IpmiKcs::new(Box::new(clock)))
 }
 
 fn storage_request(command: u8, data: &[u8]) -> Vec<u8> {
@@ -520,7 +522,7 @@ fn record_and_reservation_ids_roll_over_without_reserved_values() {
 #[test]
 fn clear_sel_validates_fields_and_resets_store() {
     let clock = FakeClock::new(100);
-    let mut device = IpmiKcs::new(clock.clone());
+    let mut device = IpmiKcs::new(Box::new(clock.clone()));
     add_record(&mut device, 0x33);
 
     let bad_signature = transact(
@@ -575,7 +577,7 @@ fn clear_sel_validates_fields_and_resets_store() {
 #[test]
 fn sel_time_supports_positive_negative_and_wrapping_offsets() {
     let clock = FakeClock::new(1000);
-    let mut device = IpmiKcs::new(clock.clone());
+    let mut device = IpmiKcs::new(Box::new(clock.clone()));
 
     let time = transact(&mut device, &storage_request(COMMAND_GET_SEL_TIME, &[]));
     assert_eq!(u32::from_le_bytes(time[3..7].try_into().unwrap()), 1000);
@@ -624,7 +626,7 @@ fn sink_results_do_not_change_committed_records() {
         state: sink_state.clone(),
         accept: accept.clone(),
     };
-    let mut device = IpmiKcs::with_event_sink(clock, sink);
+    let mut device = IpmiKcs::with_event_sink(Box::new(clock), Box::new(sink));
 
     add_record(&mut device, 0x11);
     accept.store(false, Ordering::Relaxed);
@@ -654,7 +656,7 @@ fn sink_forwarding_is_limited_to_256_per_trusted_second() {
         state: sink_state.clone(),
         accept: Arc::new(AtomicBool::new(true)),
     };
-    let mut device = IpmiKcs::with_event_sink(clock.clone(), sink);
+    let mut device = IpmiKcs::with_event_sink(Box::new(clock.clone()), Box::new(sink));
 
     for _ in 0..256 {
         assert_completion(
@@ -695,7 +697,7 @@ fn sink_forwarding_is_limited_to_256_per_trusted_second() {
 #[test]
 fn reset_preserves_sel_time_reservation_and_stats() {
     let clock = FakeClock::new(100);
-    let mut device = IpmiKcs::new(clock);
+    let mut device = IpmiKcs::new(Box::new(clock));
     transact(
         &mut device,
         &storage_request(COMMAND_SET_SEL_TIME, &200u32.to_le_bytes()),
@@ -770,7 +772,7 @@ fn save_restore_idle_write_and_read_transactions() {
 #[test]
 fn save_restore_full_sel_and_adjusted_time() {
     let clock = FakeClock::new(1000);
-    let mut source = IpmiKcs::new(clock.clone());
+    let mut source = IpmiKcs::new(Box::new(clock.clone()));
     transact(
         &mut source,
         &storage_request(COMMAND_SET_SEL_TIME, &1500u32.to_le_bytes()),

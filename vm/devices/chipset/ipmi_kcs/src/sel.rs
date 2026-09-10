@@ -1,33 +1,55 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! System Event Log command handling and emulator state.
+
 use crate::IpmiKcs;
 use crate::KCS_MESSAGE_MAX;
-use crate::SelEventDisposition;
-use crate::protocol::COMMAND_ADD_SEL_ENTRY;
-use crate::protocol::COMMAND_CLEAR_SEL;
-use crate::protocol::COMMAND_GET_SEL_ENTRY;
-use crate::protocol::COMMAND_GET_SEL_INFO;
-use crate::protocol::COMMAND_GET_SEL_TIME;
-use crate::protocol::COMMAND_RESERVE_SEL;
-use crate::protocol::COMMAND_SET_SEL_TIME;
-use crate::protocol::COMPLETION_INVALID_COMMAND;
-use crate::protocol::COMPLETION_INVALID_DATA_FIELD;
-use crate::protocol::COMPLETION_PARAMETER_OUT_OF_RANGE;
-use crate::protocol::COMPLETION_RECORD_NOT_PRESENT;
-use crate::protocol::COMPLETION_SEL_FULL;
-use crate::protocol::COMPLETION_SUCCESS;
+use crate::SendOutcome;
 use crate::protocol::completion;
 use crate::protocol::invalid_length;
+use crate::protocol::write_response;
+use ipmi_protocol::AddSelEntryRequest;
+use ipmi_protocol::AddSelEntryResponse;
+use ipmi_protocol::CLEAR_SEL_ERASE_COMPLETE;
+use ipmi_protocol::CLEAR_SEL_GET_STATUS;
+use ipmi_protocol::CLEAR_SEL_INITIATE_ERASE;
+use ipmi_protocol::CLEAR_SEL_SIGNATURE;
+use ipmi_protocol::COMMAND_ADD_SEL_ENTRY;
+use ipmi_protocol::COMMAND_CLEAR_SEL;
+use ipmi_protocol::COMMAND_GET_SEL_ENTRY;
+use ipmi_protocol::COMMAND_GET_SEL_INFO;
+use ipmi_protocol::COMMAND_GET_SEL_TIME;
+use ipmi_protocol::COMMAND_RESERVE_SEL;
+use ipmi_protocol::COMMAND_SET_SEL_TIME;
+use ipmi_protocol::COMPLETION_INVALID_COMMAND;
+use ipmi_protocol::COMPLETION_INVALID_DATA_FIELD;
+use ipmi_protocol::COMPLETION_PARAMETER_OUT_OF_RANGE;
+use ipmi_protocol::COMPLETION_RECORD_NOT_PRESENT;
+use ipmi_protocol::COMPLETION_SEL_FULL;
+use ipmi_protocol::COMPLETION_SUCCESS;
+use ipmi_protocol::ClearSelRequest;
+use ipmi_protocol::ClearSelResponse;
+use ipmi_protocol::GetSelEntryRequest;
+use ipmi_protocol::GetSelEntryResponseHeader;
+use ipmi_protocol::GetSelInfoResponse;
+use ipmi_protocol::GetSelTimeResponse;
+use ipmi_protocol::ReserveSelResponse;
+use ipmi_protocol::SEL_OPERATION_SUPPORT_RESERVE;
+use ipmi_protocol::SEL_RECORD_SIZE;
+use ipmi_protocol::SEL_VERSION;
+use ipmi_protocol::SelRecord;
+use ipmi_protocol::SetSelTimeRequest;
+use zerocopy::FromBytes;
+use zerocopy::U16;
+use zerocopy::U32;
 
-pub(crate) const SEL_RECORD_SIZE: usize = 16;
 pub(crate) const SEL_CAPACITY: usize = 128;
-const SEL_VERSION: u8 = 0x51;
 const SEL_FORWARD_LIMIT: u32 = 256;
 
 #[derive(Default)]
 pub(crate) struct SelState {
-    pub(crate) records: Vec<[u8; SEL_RECORD_SIZE]>,
+    pub(crate) records: Vec<SelRecord>,
     pub(crate) next_record_id: u16,
     pub(crate) reservation_id: u16,
     pub(crate) time_offset_seconds: i64,
@@ -73,6 +95,7 @@ impl RateLimiter {
 }
 
 impl IpmiKcs {
+    /// Dispatches an IPMI storage command implemented by the SEL.
     pub(crate) fn handle_sel_command(
         &mut self,
         command: u8,
@@ -100,17 +123,18 @@ impl IpmiKcs {
             .last()
             .map(|record| u32::from_le_bytes([record[3], record[4], record[5], record[6]]))
             .unwrap_or(0);
-        let mut pos = 0;
-        out[pos] = COMPLETION_SUCCESS;
-        pos += 1;
-        out[pos] = SEL_VERSION;
-        pos += 1;
-        put_u16(out, &mut pos, count);
-        put_u16(out, &mut pos, free_bytes);
-        put_u32(out, &mut pos, last_addition_timestamp);
-        put_u32(out, &mut pos, self.sel.last_erase_timestamp);
-        out[pos] = 0x02;
-        pos + 1
+        write_response(
+            out,
+            &GetSelInfoResponse {
+                completion_code: COMPLETION_SUCCESS,
+                sel_version: SEL_VERSION,
+                entry_count: U16::new(count),
+                free_space: U16::new(free_bytes),
+                last_addition_timestamp: U32::new(last_addition_timestamp),
+                last_erase_timestamp: U32::new(self.sel.last_erase_timestamp),
+                operation_support: SEL_OPERATION_SUPPORT_RESERVE,
+            },
+        )
     }
 
     fn reserve_sel(&mut self, out: &mut [u8; KCS_MESSAGE_MAX]) -> usize {
@@ -119,22 +143,26 @@ impl IpmiKcs {
             self.sel.reservation_id = 1;
         }
 
-        out[0] = COMPLETION_SUCCESS;
-        out[1..3].copy_from_slice(&self.sel.reservation_id.to_le_bytes());
-        3
+        write_response(
+            out,
+            &ReserveSelResponse {
+                completion_code: COMPLETION_SUCCESS,
+                reservation_id: U16::new(self.sel.reservation_id),
+            },
+        )
     }
 
     fn get_sel_entry(&mut self, data: &[u8], out: &mut [u8; KCS_MESSAGE_MAX]) -> usize {
-        let Some(data) = data.get(..6) else {
+        let Ok((request, _)) = GetSelEntryRequest::read_from_prefix(data) else {
             return invalid_length(out);
         };
 
-        let offset = usize::from(data[4]);
+        let offset = usize::from(request.offset);
         if offset >= SEL_RECORD_SIZE {
             return completion(out, COMPLETION_PARAMETER_OUT_OF_RANGE);
         }
 
-        let record_id = u16::from_le_bytes([data[2], data[3]]);
+        let record_id = request.record_id.get();
         let Some(index) = self.find_record(record_id) else {
             return completion(out, COMPLETION_RECORD_NOT_PRESENT);
         };
@@ -146,23 +174,27 @@ impl IpmiKcs {
             .map(|record| u16::from_le_bytes([record[0], record[1]]))
             .unwrap_or(0xffff);
         let end = offset
-            .saturating_add(usize::from(data[5]))
+            .saturating_add(usize::from(request.bytes_to_read))
             .min(SEL_RECORD_SIZE);
         let record = &self.sel.records[index];
         let bytes = &record[offset..end];
 
-        out[0] = COMPLETION_SUCCESS;
-        out[1..3].copy_from_slice(&next_record_id.to_le_bytes());
-        out[3..3 + bytes.len()].copy_from_slice(bytes);
-        3 + bytes.len()
+        let header_len = write_response(
+            out,
+            &GetSelEntryResponseHeader {
+                completion_code: COMPLETION_SUCCESS,
+                next_record_id: U16::new(next_record_id),
+            },
+        );
+        out[header_len..header_len + bytes.len()].copy_from_slice(bytes);
+        header_len + bytes.len()
     }
 
     fn add_sel_entry(&mut self, data: &[u8], out: &mut [u8; KCS_MESSAGE_MAX]) -> usize {
-        let Some(data) = data.get(..SEL_RECORD_SIZE) else {
+        let Ok((request, _)) = AddSelEntryRequest::read_from_prefix(data) else {
             return invalid_length(out);
         };
-        let mut record = [0; SEL_RECORD_SIZE];
-        record.copy_from_slice(data);
+        let mut record = request.record;
 
         if self.sel.records.len() >= SEL_CAPACITY {
             return completion(out, COMPLETION_SEL_FULL);
@@ -182,10 +214,10 @@ impl IpmiKcs {
         if let Some(sink) = self.sink.as_mut() {
             if self.rate_limiter.allow(trusted_seconds) {
                 match sink.try_send(record_id, record) {
-                    SelEventDisposition::Accepted => {
+                    SendOutcome::Accepted => {
                         self.stats.forwarded = self.stats.forwarded.saturating_add(1);
                     }
-                    SelEventDisposition::Dropped => {
+                    SendOutcome::Dropped => {
                         self.stats.sink_dropped = self.stats.sink_dropped.saturating_add(1);
                     }
                 }
@@ -194,52 +226,65 @@ impl IpmiKcs {
             }
         }
 
-        out[0] = COMPLETION_SUCCESS;
-        out[1..3].copy_from_slice(&record_id.to_le_bytes());
-        3
+        write_response(
+            out,
+            &AddSelEntryResponse {
+                completion_code: COMPLETION_SUCCESS,
+                record_id: U16::new(record_id),
+            },
+        )
     }
 
     fn clear_sel(&mut self, data: &[u8], out: &mut [u8; KCS_MESSAGE_MAX]) -> usize {
-        let Some(data) = data.get(..6) else {
+        let Ok((request, _)) = ClearSelRequest::read_from_prefix(data) else {
             return invalid_length(out);
         };
 
-        if data[2..5] != *b"CLR" {
+        if request.signature != CLEAR_SEL_SIGNATURE {
             return completion(out, COMPLETION_INVALID_DATA_FIELD);
         }
 
-        match data[5] {
-            0xaa => {
+        match request.operation {
+            CLEAR_SEL_INITIATE_ERASE => {
                 self.sel.records.clear();
                 self.sel.next_record_id = 1;
                 let trusted_seconds = self.clock.unix_seconds();
                 self.sel.last_erase_timestamp =
                     adjusted_timestamp(trusted_seconds, self.sel.time_offset_seconds);
             }
-            0x00 => {}
+            CLEAR_SEL_GET_STATUS => {}
             _ => return completion(out, COMPLETION_INVALID_DATA_FIELD),
         }
 
-        out[0] = COMPLETION_SUCCESS;
-        out[1] = 1;
-        2
+        write_response(
+            out,
+            &ClearSelResponse {
+                completion_code: COMPLETION_SUCCESS,
+                erase_status: CLEAR_SEL_ERASE_COMPLETE,
+            },
+        )
     }
 
     fn get_sel_time(&mut self, out: &mut [u8; KCS_MESSAGE_MAX]) -> usize {
         let trusted_seconds = self.clock.unix_seconds();
-        out[0] = COMPLETION_SUCCESS;
-        out[1..5].copy_from_slice(
-            &adjusted_timestamp(trusted_seconds, self.sel.time_offset_seconds).to_le_bytes(),
-        );
-        5
+        write_response(
+            out,
+            &GetSelTimeResponse {
+                completion_code: COMPLETION_SUCCESS,
+                timestamp: U32::new(adjusted_timestamp(
+                    trusted_seconds,
+                    self.sel.time_offset_seconds,
+                )),
+            },
+        )
     }
 
     fn set_sel_time(&mut self, data: &[u8], out: &mut [u8; KCS_MESSAGE_MAX]) -> usize {
-        let Some(data) = data.get(..4) else {
+        let Ok((request, _)) = SetSelTimeRequest::read_from_prefix(data) else {
             return invalid_length(out);
         };
 
-        let requested = i64::from(u32::from_le_bytes([data[0], data[1], data[2], data[3]]));
+        let requested = i64::from(request.timestamp.get());
         self.sel.time_offset_seconds = requested.saturating_sub(self.clock.unix_seconds());
         completion(out, COMPLETION_SUCCESS)
     }
@@ -289,14 +334,4 @@ fn increment_record_id(record_id: u16) -> u16 {
 fn adjusted_timestamp(trusted_seconds: i64, offset_seconds: i64) -> u32 {
     let adjusted = trusted_seconds.saturating_add(offset_seconds);
     if adjusted < 0 { 0 } else { adjusted as u32 }
-}
-
-fn put_u16(out: &mut [u8; KCS_MESSAGE_MAX], pos: &mut usize, value: u16) {
-    out[*pos..*pos + 2].copy_from_slice(&value.to_le_bytes());
-    *pos += 2;
-}
-
-fn put_u32(out: &mut [u8; KCS_MESSAGE_MAX], pos: &mut usize, value: u32) {
-    out[*pos..*pos + 4].copy_from_slice(&value.to_le_bytes());
-    *pos += 4;
 }

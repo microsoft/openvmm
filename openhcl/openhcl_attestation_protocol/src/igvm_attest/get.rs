@@ -468,10 +468,6 @@ pub mod runtime_claims {
         Signer,
     }
 
-    fn is_false(value: &bool) -> bool {
-        !value
-    }
-
     /// TPM reference implementation version.
     #[derive(Clone, Copy, Debug, Deserialize, Serialize, MeshPayload)]
     pub enum AttestationTpmVersion {
@@ -497,7 +493,7 @@ pub mod runtime_claims {
         /// Whether the serial console, if enabled, is interactive
         pub interactive_console_enabled: bool,
         /// Whether the IPMI KCS interface is enabled
-        #[serde(default, skip_serializing_if = "is_false")]
+        #[serde(default)]
         pub ipmi_enabled: bool,
         /// Whether secure boot is enabled
         pub secure_boot: bool,

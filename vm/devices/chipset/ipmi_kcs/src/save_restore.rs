@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Save and restore support for the KCS transaction and SEL state.
+
 use crate::IpmiKcs;
 use crate::KCS_MESSAGE_MAX;
 use crate::KCS_STATE_ERROR;
@@ -12,8 +14,8 @@ use crate::STATUS_IBF;
 use crate::STATUS_STATE_MASK;
 use crate::SelStats;
 use crate::sel::SEL_CAPACITY;
-use crate::sel::SEL_RECORD_SIZE;
 use crate::sel::SelState;
+use ipmi_protocol::SEL_RECORD_SIZE;
 use mesh::payload::Protobuf;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;

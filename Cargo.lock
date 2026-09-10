@@ -716,6 +716,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "inspect",
+ "ipmi_protocol",
  "local_clock",
  "memory_range",
  "mesh",
@@ -2939,6 +2940,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "guid",
+ "ipmi_protocol",
  "open_enum",
  "serde",
  "serde_helpers",
@@ -4083,6 +4085,7 @@ dependencies = [
  "chipset_device_resources",
  "chipset_resources",
  "inspect",
+ "ipmi_protocol",
  "local_clock",
  "mesh",
  "parking_lot",
@@ -4090,6 +4093,15 @@ dependencies = [
  "thiserror 2.0.16",
  "vm_resource",
  "vmcore",
+ "zerocopy",
+]
+
+[[package]]
+name = "ipmi_protocol"
+version = "0.0.0"
+dependencies = [
+ "static_assertions",
+ "zerocopy",
 ]
 
 [[package]]

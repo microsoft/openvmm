@@ -10,11 +10,11 @@ use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_resources::CmosRtcTimeSourceHandleKind;
-use chipset_resources::IpmiSelEventSinkHandleKind;
 use chipset_resources::ResolvedCmosRtcTimeSource;
-use chipset_resources::ResolvedIpmiSelEventSink;
 use chipset_resources::ipmi_kcs::IpmiKcsDeviceHandleAArch64;
 use chipset_resources::ipmi_kcs::IpmiKcsDeviceHandleX64;
+use chipset_resources::ipmi_kcs::IpmiSelEventSinkHandleKind;
+use chipset_resources::ipmi_kcs::ResolvedIpmiSelEventSink;
 use local_clock::InspectableLocalClock;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
@@ -69,9 +69,9 @@ async fn resolve_core(
         .await
         .map_err(ResolveIpmiKcsError::EventSink)?;
 
-    Ok(IpmiKcs::from_boxed_parts(
+    Ok(IpmiKcs::with_event_sink(
         Box::new(TrustedClockAdapter(time_source)),
-        Some(event_sink),
+        event_sink,
     ))
 }
 

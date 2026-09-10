@@ -26,50 +26,16 @@ impl CanResolveTo<ResolvedCmosRtcTimeSource> for CmosRtcTimeSourceHandleKind {
     type Input<'a> = ();
 }
 
-/// The size of an IPMI System Event Log record.
-pub const IPMI_SEL_RECORD_SIZE: usize = 16;
-
-/// Result of attempting to forward an IPMI SEL record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelEventDisposition {
-    /// The sink accepted the record.
-    Accepted,
-    /// The sink dropped the record without blocking the virtual BMC.
-    Dropped,
-}
-
-/// Non-blocking sink for completed IPMI SEL records.
-pub trait SelEventSink: Send {
-    /// Attempts to forward a completed SEL record.
-    fn try_send(
-        &mut self,
-        record_id: u16,
-        record: [u8; IPMI_SEL_RECORD_SIZE],
-    ) -> SelEventDisposition;
-}
-
-/// Resource kind for IPMI SEL event sinks.
-pub enum IpmiSelEventSinkHandleKind {}
-
-impl ResourceKind for IpmiSelEventSinkHandleKind {
-    const NAME: &'static str = "ipmi_sel_event_sink";
-}
-
-/// Resolved runtime IPMI SEL event sink.
-pub struct ResolvedIpmiSelEventSink(pub Box<dyn SelEventSink>);
-
-impl CanResolveTo<ResolvedIpmiSelEventSink> for IpmiSelEventSinkHandleKind {
-    type Input<'a> = ();
-}
-
 pub mod ipmi_kcs {
     //! Resource definitions for the IPMI KCS virtual BMC.
 
     use super::CmosRtcTimeSourceHandleKind;
-    use super::IpmiSelEventSinkHandleKind;
+    use ipmi_protocol::SelRecord;
     use mesh::MeshPayload;
+    use vm_resource::CanResolveTo;
     use vm_resource::Resource;
     use vm_resource::ResourceId;
+    use vm_resource::ResourceKind;
     use vm_resource::kind::ChipsetDeviceHandleKind;
 
     /// AMD64 KCS data-register port.
@@ -87,6 +53,35 @@ pub mod ipmi_kcs {
         IPMI_KCS_MMIO_BASE_ADDRESS_AARCH64 + IPMI_KCS_MMIO_REGISTER_SPACING_AARCH64;
     /// Size of the ARM64 KCS MMIO aperture.
     pub const IPMI_KCS_MMIO_REGION_SIZE_AARCH64: u64 = 0x1000;
+
+    /// Result of attempting to forward an IPMI SEL record.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SendOutcome {
+        /// The sink accepted the record.
+        Accepted,
+        /// The sink dropped the record without blocking the virtual BMC.
+        Dropped,
+    }
+
+    /// Non-blocking sink for completed IPMI SEL records.
+    pub trait SelEventSink: Send {
+        /// Attempts to forward a completed SEL record.
+        fn try_send(&mut self, record_id: u16, record: SelRecord) -> SendOutcome;
+    }
+
+    /// Resource kind for IPMI SEL event sinks.
+    pub enum IpmiSelEventSinkHandleKind {}
+
+    impl ResourceKind for IpmiSelEventSinkHandleKind {
+        const NAME: &'static str = "ipmi_sel_event_sink";
+    }
+
+    /// Resolved runtime IPMI SEL event sink.
+    pub struct ResolvedIpmiSelEventSink(pub Box<dyn SelEventSink>);
+
+    impl CanResolveTo<ResolvedIpmiSelEventSink> for IpmiSelEventSinkHandleKind {
+        type Input<'a> = ();
+    }
 
     /// A handle to an AMD64 IPMI KCS virtual BMC.
     #[derive(MeshPayload)]

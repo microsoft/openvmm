@@ -316,16 +316,21 @@ mod test {
     use super::*;
 
     #[test]
-    fn ipmi_defaults_false_and_parses_true() {
-        let settings = serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
+    fn smoke_test_sample() {
+        serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
             "dps_test_json.json"
         ))
         .unwrap();
-        assert!(!settings.v1.enable_ipmi);
+    }
 
-        let settings =
+    #[test]
+    fn ipmi_defaults_false_and_parses_true() {
+        let default = serde_json::from_str::<HclDevicePlatformSettings>("{}").unwrap();
+        assert!(!default.enable_ipmi);
+
+        let enabled =
             serde_json::from_str::<HclDevicePlatformSettings>(r#"{"EnableIpmi":true}"#).unwrap();
-        assert!(settings.enable_ipmi);
+        assert!(enabled.enable_ipmi);
     }
 
     #[test]

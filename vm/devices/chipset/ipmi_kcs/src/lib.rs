@@ -14,43 +14,30 @@ mod protocol;
 pub mod resolver;
 mod save_restore;
 mod sel;
+#[cfg(test)]
+mod tests;
 
-pub use chipset_resources::SelEventDisposition;
-pub use chipset_resources::SelEventSink;
+pub use chipset_resources::ipmi_kcs::SelEventSink;
+pub use chipset_resources::ipmi_kcs::SendOutcome;
+pub use ipmi_protocol::KCS_COMMAND_GET_STATUS_ABORT;
+pub use ipmi_protocol::KCS_COMMAND_WRITE_END;
+pub use ipmi_protocol::KCS_COMMAND_WRITE_START;
+pub use ipmi_protocol::KCS_DATA_READ_NEXT;
+pub use ipmi_protocol::KCS_STATE_ERROR;
+pub use ipmi_protocol::KCS_STATE_IDLE;
+pub use ipmi_protocol::KCS_STATE_READ;
+pub use ipmi_protocol::KCS_STATE_WRITE;
+pub use ipmi_protocol::STATUS_CD;
+pub use ipmi_protocol::STATUS_IBF;
+pub use ipmi_protocol::STATUS_OBF;
+pub use ipmi_protocol::STATUS_SMS_ATN;
+pub use ipmi_protocol::STATUS_STATE_MASK;
+use ipmi_protocol::SelRecord;
 use sel::RateLimiter;
 use sel::SelState;
 
 /// Maximum KCS request or response size.
 pub const KCS_MESSAGE_MAX: usize = 64;
-
-/// KCS output-buffer-full status bit.
-pub const STATUS_OBF: u8 = 0x01;
-/// KCS input-buffer-full status bit.
-pub const STATUS_IBF: u8 = 0x02;
-/// KCS system-management-software-attention status bit.
-pub const STATUS_SMS_ATN: u8 = 0x04;
-/// KCS command/data status bit.
-pub const STATUS_CD: u8 = 0x08;
-/// KCS state field mask.
-pub const STATUS_STATE_MASK: u8 = 0xc0;
-
-/// KCS idle state.
-pub const KCS_STATE_IDLE: u8 = 0x00;
-/// KCS read state.
-pub const KCS_STATE_READ: u8 = 0x40;
-/// KCS write state.
-pub const KCS_STATE_WRITE: u8 = 0x80;
-/// KCS error state.
-pub const KCS_STATE_ERROR: u8 = 0xc0;
-
-/// KCS Get Status/Abort command.
-pub const KCS_COMMAND_GET_STATUS_ABORT: u8 = 0x60;
-/// KCS Write Start command.
-pub const KCS_COMMAND_WRITE_START: u8 = 0x61;
-/// KCS Write End command.
-pub const KCS_COMMAND_WRITE_END: u8 = 0x62;
-/// KCS Read Next control byte.
-pub const KCS_DATA_READ_NEXT: u8 = 0x68;
 
 /// Trusted wall-clock source used for SEL timestamps and rate limiting.
 ///
@@ -140,22 +127,16 @@ pub struct IpmiKcs {
 
 impl IpmiKcs {
     /// Creates a virtual BMC without a SEL event sink.
-    pub fn new(clock: impl TrustedClock + 'static) -> Self {
-        Self::from_boxed_parts(Box::new(clock), None)
+    pub fn new(clock: Box<dyn TrustedClock>) -> Self {
+        Self::from_parts(clock, None)
     }
 
     /// Creates a virtual BMC with a best-effort SEL event sink.
-    pub fn with_event_sink(
-        clock: impl TrustedClock + 'static,
-        sink: impl SelEventSink + 'static,
-    ) -> Self {
-        Self::from_boxed_parts(Box::new(clock), Some(Box::new(sink)))
+    pub fn with_event_sink(clock: Box<dyn TrustedClock>, sink: Box<dyn SelEventSink>) -> Self {
+        Self::from_parts(clock, Some(sink))
     }
 
-    pub(crate) fn from_boxed_parts(
-        clock: Box<dyn TrustedClock>,
-        sink: Option<Box<dyn SelEventSink>>,
-    ) -> Self {
+    fn from_parts(clock: Box<dyn TrustedClock>, sink: Option<Box<dyn SelEventSink>>) -> Self {
         Self {
             transaction: KcsTransaction::default(),
             sel: SelState::new(),
@@ -235,7 +216,7 @@ impl IpmiKcs {
     }
 
     /// Returns a stored SEL record by insertion index.
-    pub fn sel_record(&self, index: usize) -> Option<&[u8; 16]> {
+    pub fn sel_record(&self, index: usize) -> Option<&SelRecord> {
         self.sel.records.get(index)
     }
 
@@ -286,6 +267,3 @@ impl IpmiKcs {
         self.transaction.set_state(KCS_STATE_ERROR);
     }
 }
-
-#[cfg(test)]
-mod tests;
