@@ -6,6 +6,11 @@ name = "vpci_relay"
 rust-version.workspace = true
 edition.workspace = true
 
+[features]
+# Enable TIO support for SEV-SNP in the TDISP resource validator the relay
+# selects for its devices.
+dev_snp_ohcl_tio_support = ["openhcl_tdisp/dev_snp_ohcl_tio_support"]
+
 [dependencies]
 chipset_device.workspace = true
 hvdef.workspace = true
