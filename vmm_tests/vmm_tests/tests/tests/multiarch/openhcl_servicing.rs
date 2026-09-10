@@ -1838,9 +1838,6 @@ async fn mana_nic_servicing_keepalive(
 ) -> Result<(), anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
-    // When { VF KA: false, NVME KA : true }, `validate_restore` fails.
-    // The default value of both is true.
-    // TODO: Should OpenHCL support that scenario?
     flags.enable_nvme_keepalive = true;
     flags.enable_mana_keepalive = true;
 
