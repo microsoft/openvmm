@@ -51,6 +51,16 @@ pub enum Error {
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     #[error("TIO_GUEST_REQUEST ioctl failed")]
     TioGuestRequestIoctl(#[source] nix::Error),
+    #[cfg(feature = "dev_snp_ohcl_tio_support")]
+    #[error(
+        "TIO_GUEST_REQUEST reported an ASP/VMM error: msg_type={msg_type} exitinfo1={{fw_error={fw_error:#x}, vmm_error={vmm_error:#x}}} exitinfo2={exitinfo2:#x}"
+    )]
+    TioGuestRequestFirmware {
+        msg_type: u64,
+        fw_error: u32,
+        vmm_error: u32,
+        exitinfo2: u64,
+    },
     #[error("Invalid TIO request parameters")]
     InvalidTioRequestParameters(String),
 }
@@ -113,7 +123,7 @@ pub enum TioGuestMessageId {
 
 /// VMM error code.
 #[repr(C)]
-#[derive(FromZeros, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, FromZeros, Immutable, KnownLayout)]
 struct VmmErrorCode {
     /// Firmware error
     fw_error: u32,
@@ -333,6 +343,32 @@ impl SevGuestDevice {
                 .map_err(Error::TioGuestRequestIoctl)?;
         }
 
+        // The Linux sev-guest driver's TIO_GUEST_REQUEST ioctl returns 0 from
+        // the syscall even when the ASP/VMM rejected the request; the actual
+        // firmware/VMM status is communicated out-of-band via the exitinfo1 and
+        // exitinfo2 fields on the in/out struct. When the driver detects such a
+        // failure it also disables VMPCK0 to prevent IV reuse making future
+        // calls fail. We must surface that as an error here rather than
+        // returning the zero-initialized response body as if the request had
+        // succeeded.
+        let exitinfo1 = snp_guest_request.exitinfo1;
+        let exitinfo2 = snp_guest_request.exitinfo2;
+        if exitinfo1.fw_error != 0 || exitinfo1.vmm_error != 0 || exitinfo2 != 0 {
+            tracing::error!(
+                msg_type,
+                fw_error = exitinfo1.fw_error,
+                vmm_error = exitinfo1.vmm_error,
+                exitinfo2 = format_args!("{:#x}", exitinfo2),
+                "tio_guest_request: ASP/VMM reported an error. Ioctl returned 0 but the request was not performed"
+            );
+            return Err(Error::TioGuestRequestFirmware {
+                msg_type,
+                fw_error: exitinfo1.fw_error,
+                vmm_error: exitinfo1.vmm_error,
+                exitinfo2,
+            });
+        }
+
         tracing::info!(?resp, "tio_guest_request completed successfully");
 
         Ok(resp)
@@ -420,8 +456,9 @@ impl SevGuestDevice {
     pub fn tio_msg_sdte_write_req(
         &self,
         guest_device_id: u16,
+        enable_dma: bool,
         vtom: u32,
-        vmpl: u64,
+        vmpl: u8,
     ) -> Result<TioMsgSdteWriteRsp, Error> {
         use sev_guest_device_tio::Sdte;
         use sev_guest_device_tio::SdtePart1;
@@ -432,14 +469,19 @@ impl SevGuestDevice {
         tracing::info!(?vmpl, ?vtom, "sending SDTE write request");
         let msg_type = TioGuestMessageId::SdteWriteReq;
         let sdte = Sdte {
-            part1: SdtePart1::new().with_v(true).with_ir(true).with_iw(true),
+            part1: SdtePart1::new()
+                .with_v(enable_dma)
+                .with_ir(enable_dma)
+                .with_iw(enable_dma),
             _reserved0: 0,
             _reserved1: 0,
-            part2: SdtePart2::new().with_vmpl(vmpl),
+            part2: SdtePart2::new().with_vmpl(vmpl as u64),
             _reserved2: 0,
             // 2MB PFN
             // TDISP TODO: Update with proper VTOM
-            part3: SdtePart3::new().with_vtom_en(true).with_virtual_tom(vtom),
+            part3: SdtePart3::new()
+                .with_vtom_en(enable_dma)
+                .with_virtual_tom(vtom),
             _reserved3: 0,
             _reserved4: 0,
         };
