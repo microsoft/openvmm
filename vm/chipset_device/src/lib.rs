@@ -68,6 +68,18 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
     fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         None
     }
+
+    /// Optionally returns a trait object which can report the device's VPCI
+    /// resource-isolation state for `VpciMsgQueryIsolatedResources`.
+    ///
+    /// This is implemented only by the OpenHCL VPCI relay's
+    /// `RelayedVpciDevice`. Emulated devices return `None` by default (and
+    /// therefore trigger the "no reporter" reply path on the guest-facing VPCI
+    /// server).
+    #[inline(always)]
+    fn supports_tdisp_isolation(&mut self) -> Option<&mut dyn tdisp::TdispIsolationReporter> {
+        None
+    }
 }
 
 /// Shared by `mmio` and `pio`
