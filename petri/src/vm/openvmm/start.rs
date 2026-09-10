@@ -58,6 +58,17 @@ impl PetriVmConfigOpenVmm {
             rc.iommu = Some(iommu_config.clone());
         }
 
+        if arch == MachineArch::X86_64
+            && config
+                .pcie_root_complexes
+                .iter()
+                .any(|rc| rc.segment == 0 && rc.start_bus == 0 && rc.end_bus == u8::MAX)
+        {
+            config
+                .chipset_devices
+                .retain(|device| device.name != "missing-pci");
+        }
+
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?

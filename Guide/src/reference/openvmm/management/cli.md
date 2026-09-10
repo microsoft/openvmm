@@ -120,12 +120,14 @@ describes the source definitions.
   `--isolation snp`.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
-  and only by backends that support nested virtualization (currently WHP and
-  KVM); requesting it with a backend that does not support it fails early. The
-  host must expose virtualization extensions to the VM running OpenVMM. When
-  enabled, a guest may detect nested virtualization and turn on features such
-  as Virtual Secure Mode (VSM), which can hurt performance and interfere with
-  VMBus devices; nested virt cannot currently be combined with `--hv`/VMBus or
+  and only by backends that support nested virtualization (currently WHP,
+  KVM, and MSHV); requesting it with a backend that does not support it fails
+  early.
+  The host must expose virtualization extensions to the VM running OpenVMM.
+  When enabled, a guest may detect nested virtualization and turn on features
+  such as Virtual Secure Mode (VSM), which can hurt performance and interfere
+  with VMBus devices; nested virt cannot currently be combined with
+  `--hv`/VMBus or
   `--hypervisor whp:user_mode_apic`.
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
