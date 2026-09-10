@@ -11,6 +11,9 @@ use vmgs::Vmgs;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
 
+#[cfg(all(test, feature = "encryption"))]
+mod tests;
+
 /// An error returned by a VMGS broker operation.
 #[derive(Protobuf, Error, Debug)]
 pub enum VmgsBrokerError {
@@ -56,6 +59,13 @@ pub enum VmgsBrokerRpc {
     WriteFileEncrypted(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
     DeleteFile(Rpc<BrokerFileId, Result<(), VmgsBrokerError>>),
+    // These payloads contain sensitive keys. Do not derive Debug or Inspect.
+    #[cfg(feature = "encryption")]
+    ActiveEncryptionKey(Rpc<(), Result<[u8; 32], VmgsBrokerError>>),
+    #[cfg(feature = "encryption")]
+    WriteFileIfEncryptionKeyMatches(
+        Rpc<(BrokerFileId, Vec<u8>, [u8; 32]), Result<bool, VmgsBrokerError>>,
+    ),
 }
 
 pub struct VmgsBrokerTask {
@@ -113,6 +123,30 @@ impl VmgsBrokerTask {
                 .await
             }
             VmgsBrokerRpc::Save(rpc) => rpc.handle_sync(|()| self.vmgs.save()),
+            #[cfg(feature = "encryption")]
+            VmgsBrokerRpc::ActiveEncryptionKey(rpc) => rpc.handle_sync(|()| {
+                self.vmgs
+                    .active_encryption_key()
+                    .copied()
+                    .map_err(Into::into)
+            }),
+            #[cfg(feature = "encryption")]
+            VmgsBrokerRpc::WriteFileIfEncryptionKeyMatches(rpc) => {
+                rpc.handle(async |(file_id, buf, expected_key)| {
+                    // Keep the comparison, write, and final flush in this one
+                    // serially processed request: no intervening broker RPC
+                    // may change the active key after the comparison.
+                    let active_key = self.vmgs.active_encryption_key()?;
+                    if !constant_time_eq::constant_time_eq_32(active_key, &expected_key) {
+                        return Ok(false);
+                    }
+
+                    self.vmgs.write_file(file_id.into(), &buf).await?;
+                    self.vmgs.flush().await?;
+                    Ok(true)
+                })
+                .await
+            }
             VmgsBrokerRpc::DeleteFile(rpc) => {
                 rpc.handle(async |file_id| {
                     self.vmgs
