@@ -28,7 +28,10 @@ for. Exactly one backend feature must be enabled alongside `tpm`:
 | Feature | Backend |
 | --- | --- |
 | `openssl` | OpenSSL. Enabled by default. |
-| `symcrypt` | [SymCrypt](https://github.com/microsoft/SymCrypt) for v1.85. The v1.38 library has no SymCrypt backend and stays on OpenSSL. |
+| `symcrypt` | [SymCrypt] for the v1.85 library. |
+
+The v1.38 library has no SymCrypt backend, so it stays on OpenSSL even when
+`symcrypt` is selected.
 
 These features are non-additive — enabling both is a build error — so select
 SymCrypt by turning off the default:
@@ -38,6 +41,8 @@ cargo run -p tpm_utils --no-default-features --features tpm,symcrypt -- ...
 ```
 
 The examples below use the default OpenSSL backend.
+
+[SymCrypt]: https://github.com/microsoft/SymCrypt
 
 ## Preparing a blob
 

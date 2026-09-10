@@ -2367,6 +2367,15 @@ mod tests {
             .expect("AKCert NV index present");
         assert!(!TpmaNvBits::from(res.nv_public.nv_public.attributes.0.get()).nv_platformcreate());
         assert_eq!(res.nv_public.nv_public.data_size.get(), 1024);
+
+        // The blob is provisioned with an AK cert of 1024 0x06 bytes.
+        let mut ak_cert = [0u8; 1024];
+        let state = tpm
+            .tpm_engine_helper
+            .read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert)
+            .expect("AKCert NV index readable");
+        assert!(matches!(state, tpm_lib::NvIndexState::Available));
+        assert_eq!(ak_cert, [6u8; 1024]);
     }
 
     async fn new_test_tpm(
