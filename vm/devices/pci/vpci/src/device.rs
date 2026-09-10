@@ -286,6 +286,7 @@ enum DeviceRequest {
     TdispCommand {
         data: Vec<u8>,
     },
+    QueryIsolatedResources,
 }
 
 #[derive(Debug)]
@@ -527,6 +528,15 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
                 request: DeviceRequest::TdispCommand { data },
             }
         }
+        protocol::MessageType::VPCI_QUERY_ISOLATED_RESOURCES => {
+            let msg = protocol::VpciQueryIsolatedResources::read_from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("query_isolated_resources"))?
+                .0;
+            PacketData::DeviceRequest {
+                slot: msg.slot,
+                request: DeviceRequest::QueryIsolatedResources,
+            }
+        }
         typ => return Err(PacketError::UnknownType(typ)),
     };
     Ok(data)
@@ -668,13 +678,26 @@ impl<T: RingMem> VpciChannelState<T> {
                             | protocol::ProtocolVersion::VB
                             | protocol::ProtocolVersion::FE
                             | protocol::ProtocolVersion::GE
-                            | protocol::ProtocolVersion::DT => protocol::Status::SUCCESS,
+                            | protocol::ProtocolVersion::DT
+                            | protocol::ProtocolVersion::RB => protocol::Status::SUCCESS,
                             _ => protocol::Status::REVISION_MISMATCH,
+                        };
+
+                        // Echo `VB` for every legacy version (unchanged).
+                        // Echo `RB` only when the guest requested it
+                        // so it enables new tdisp interfaces without
+                        // confusing downlevel consumers.
+                        let reply_version = if status == protocol::Status::SUCCESS
+                            && version == protocol::ProtocolVersion::RB
+                        {
+                            protocol::ProtocolVersion::RB
+                        } else {
+                            protocol::ProtocolVersion::VB
                         };
 
                         let reply = protocol::QueryProtocolVersionReply {
                             status,
-                            protocol_version: protocol::ProtocolVersion::VB,
+                            protocol_version: reply_version,
                         };
 
                         self.conn.send_completion(transaction_id, &reply, &[])?;
@@ -994,6 +1017,51 @@ impl ReadyState {
                             &[],
                         )?;
                     }
+                    DeviceRequest::QueryIsolatedResources => {
+                        let all_invalid = [protocol::ResourceIsolation::INVALID; 6];
+                        let reply = if self.vpci_version < protocol::ProtocolVersion::RB {
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                negotiated_version = ?self.vpci_version,
+                                "VPCI_QUERY_ISOLATED_RESOURCES on downlevel protocol. Replying NOT_SUPPORTED."
+                            );
+                            protocol::VpciIsolatedResourcesReply {
+                                status: protocol::Status::NOT_SUPPORTED,
+                                bar_isolation: all_invalid,
+                                dma_isolation: protocol::ResourceIsolation::INVALID,
+                            }
+                        } else {
+                            // The reporter returns a `'static` boxed future, so
+                            // we can drop the sync device guard before awaiting
+                            // it. This avoids holding the chipset device lock
+                            // across attestation work.
+                            let fut = {
+                                let mut locked_dev = dev.device.lock();
+                                locked_dev
+                                    .supports_tdisp_isolation()
+                                    .map(|r| r.tdisp_isolation_report())
+                            };
+                            let report = match fut {
+                                Some(f) => Some(f.await),
+                                None => None,
+                            };
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                ?report,
+                                "VPCI_QUERY_ISOLATED_RESOURCES isolation report"
+                            );
+                            let reply = build_isolation_reply(report);
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                status = ?reply.status,
+                                bar_isolation = ?reply.bar_isolation,
+                                dma_isolation = ?reply.dma_isolation,
+                                "VPCI_QUERY_ISOLATED_RESOURCES reply"
+                            );
+                            reply
+                        };
+                        conn.send_completion(transaction_id, &reply, &[])?;
+                    }
                     DeviceRequest::TdispCommand { data } => {
                         let command = match tdisp::serialize_proto::deserialize_command(&data) {
                             Ok(cmd) => cmd,
@@ -1077,6 +1145,61 @@ enum InvalidBars {
     },
     #[error("resource {index} sized {len:#x} was too large for {mask:#x}")]
     TooLarge { index: usize, len: u64, mask: u64 },
+}
+
+/// Convert a `TdispIsolationReport` (or `None`, when the chipset device
+/// does not support the isolation reporter) into the wire reply for
+/// `VPCI_QUERY_ISOLATED_RESOURCES`.
+fn build_isolation_reply(
+    report: Option<tdisp::TdispIsolationReport>,
+) -> protocol::VpciIsolatedResourcesReply {
+    use protocol::ResourceIsolation;
+    use tdisp::TdispIsolationReport;
+    use tdisp::TdispResourceIsolation;
+
+    fn to_wire(r: TdispResourceIsolation) -> ResourceIsolation {
+        match r {
+            TdispResourceIsolation::Shared => ResourceIsolation::SHARED,
+            TdispResourceIsolation::Private => ResourceIsolation::PRIVATE,
+            TdispResourceIsolation::Invalid => ResourceIsolation::INVALID,
+        }
+    }
+
+    let all_invalid = [ResourceIsolation::INVALID; 6];
+    match report {
+        None => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::NOT_SUPPORTED,
+            bar_isolation: all_invalid,
+            dma_isolation: ResourceIsolation::INVALID,
+        },
+        Some(TdispIsolationReport::NotTdispCapable) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::SUCCESS,
+            bar_isolation: [ResourceIsolation::SHARED; 6],
+            dma_isolation: ResourceIsolation::SHARED,
+        },
+        Some(TdispIsolationReport::NotReady) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::INVALID_DEVICE_STATE,
+            bar_isolation: all_invalid,
+            dma_isolation: ResourceIsolation::INVALID,
+        },
+        Some(TdispIsolationReport::Error) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::UNSUCCESSFUL,
+            bar_isolation: all_invalid,
+            dma_isolation: ResourceIsolation::INVALID,
+        },
+        Some(TdispIsolationReport::Ready { bars, dma }) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::SUCCESS,
+            bar_isolation: [
+                to_wire(bars[0]),
+                to_wire(bars[1]),
+                to_wire(bars[2]),
+                to_wire(bars[3]),
+                to_wire(bars[4]),
+                to_wire(bars[5]),
+            ],
+            dma_isolation: to_wire(dma),
+        },
+    }
 }
 
 impl VpciChannel {
@@ -1576,6 +1699,7 @@ mod tests {
     use tdisp::GuestToHostResponseExt;
     use tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
     use tdisp::TdispHostDeviceTargetEmulator;
+    use tdisp::TdispTdiState;
     use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
     use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
     use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
@@ -1945,6 +2069,26 @@ mod tests {
                 _ => panic!("unexpected incoming packet type"),
             }
         }
+
+        /// Send a `VPCI_QUERY_ISOLATED_RESOURCES` packet for slot 0 and
+        /// read the completion reply.
+        async fn send_query_isolated_resources(&mut self) -> protocol::VpciIsolatedResourcesReply {
+            let msg = protocol::VpciQueryIsolatedResources {
+                message_type: protocol::MessageType::VPCI_QUERY_ISOLATED_RESOURCES,
+                slot: SlotNumber::new(),
+            };
+            let transaction_id = self.transaction_id.fetch_add(1, Ordering::Relaxed);
+            self.write_packet(Some(transaction_id), &msg).await.unwrap();
+
+            let mut pkt_info = ReadPacketInfo::None;
+            let reply: protocol::VpciIsolatedResourcesReply =
+                self.read_packet(&mut pkt_info).await.unwrap();
+            match pkt_info {
+                ReadPacketInfo::Completion(id) => assert_eq!(id, transaction_id),
+                _ => panic!("expected completion for QueryIsolatedResources"),
+            }
+            reply
+        }
     }
 
     struct NullDevice {
@@ -2093,6 +2237,119 @@ mod tests {
         guest_driver.protocol_version = protocol::ProtocolVersion(0x00020000);
         let base_address = 0x140000000;
         guest_driver.start_device(base_address).await;
+    }
+
+    /// Sends a single `QueryProtocolVersion` packet with `requested` and
+    /// returns the `(status, echoed_version)` from the reply without asserting
+    /// anything about the echoed version (unlike `negotiate_version`, which
+    /// expects the echo to match the request).
+    async fn query_version_reply(
+        guest: &mut MockVpciGuestDevice,
+        requested: protocol::ProtocolVersion,
+    ) -> (protocol::Status, protocol::ProtocolVersion) {
+        let query = protocol::QueryProtocolVersion {
+            message_type: protocol::MessageType::QUERY_PROTOCOL_VERSION,
+            protocol_version: requested,
+        };
+        let transaction_id = guest.transaction_id.fetch_add(1, Ordering::Relaxed);
+        guest
+            .write_packet(Some(transaction_id), &query)
+            .await
+            .unwrap();
+
+        let mut pkt_info = ReadPacketInfo::None;
+        let reply: protocol::QueryProtocolVersionReply =
+            guest.read_packet(&mut pkt_info).await.unwrap();
+        match pkt_info {
+            ReadPacketInfo::Completion(id) => assert_eq!(id, transaction_id),
+            _ => panic!("expected completion"),
+        }
+        (reply.status, reply.protocol_version)
+    }
+
+    /// Verify that `QUERY_PROTOCOL_VERSION` only echoes back `RB` when
+    /// the guest requested `RB`, and echoes `VB` for every other
+    /// supported version. Unsupported versions still return
+    /// `REVISION_MISMATCH` with `VB`.
+    #[async_test]
+    async fn verify_version_negotiation_rb_gated(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let pci_config = HardwareIds {
+            vendor_id: 0x123,
+            device_id: 0x789,
+            revision_id: 1,
+            prog_if: ProgrammingInterface::NONE,
+            base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+            sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+            type0_sub_vendor_id: 0x456,
+            type0_sub_system_id: 0x1,
+        };
+
+        // Legacy versions: server accepts them and echoes `VB`.
+        for requested in [
+            protocol::ProtocolVersion::RS1,
+            protocol::ProtocolVersion::VB,
+            protocol::ProtocolVersion::FE,
+            protocol::ProtocolVersion::GE,
+            protocol::ProtocolVersion::DT,
+        ] {
+            let pci = Arc::new(CloseableMutex::new(NullDevice {
+                config_space: ConfigSpaceType0Emulator::new(
+                    pci_config,
+                    Vec::new(),
+                    Vec::new(),
+                    DeviceBars::new(),
+                ),
+            }));
+            let mut guest = connected_device(&driver, pci, msi_controller.clone());
+            let (status, echoed) = query_version_reply(&mut guest, requested).await;
+            assert_eq!(
+                status,
+                protocol::Status::SUCCESS,
+                "request {:?} should succeed",
+                requested
+            );
+            assert_eq!(
+                echoed,
+                protocol::ProtocolVersion::VB,
+                "request {:?} must echo VB",
+                requested
+            );
+        }
+
+        // RB: server accepts and echoes `RB`.
+        {
+            let pci = Arc::new(CloseableMutex::new(NullDevice {
+                config_space: ConfigSpaceType0Emulator::new(
+                    pci_config,
+                    Vec::new(),
+                    Vec::new(),
+                    DeviceBars::new(),
+                ),
+            }));
+            let mut guest = connected_device(&driver, pci, msi_controller.clone());
+            let (status, echoed) =
+                query_version_reply(&mut guest, protocol::ProtocolVersion::RB).await;
+            assert_eq!(status, protocol::Status::SUCCESS);
+            assert_eq!(echoed, protocol::ProtocolVersion::RB);
+        }
+
+        // Unknown version: rejected with VB.
+        {
+            let pci = Arc::new(CloseableMutex::new(NullDevice {
+                config_space: ConfigSpaceType0Emulator::new(
+                    pci_config,
+                    Vec::new(),
+                    Vec::new(),
+                    DeviceBars::new(),
+                ),
+            }));
+            let mut guest = connected_device(&driver, pci, msi_controller);
+            let (status, echoed) =
+                query_version_reply(&mut guest, protocol::ProtocolVersion(0x00020000)).await;
+            assert_eq!(status, protocol::Status::REVISION_MISMATCH);
+            assert_eq!(echoed, protocol::ProtocolVersion::VB);
+        }
     }
 
     #[async_test]
@@ -2278,6 +2535,11 @@ mod tests {
     struct TestDevice {
         config_space: ConfigSpaceType0Emulator,
         tdisp_interface: TdispHostDeviceTargetEmulator,
+        /// If `Some`, the device also advertises
+        /// `TdispIsolationReporter` and returns the stored report from
+        /// `tdisp_isolation_report()`. If `None`, the device behaves as
+        /// non-TDISP-isolation-aware (the chipset-device default).
+        isolation_report: Option<tdisp::TdispIsolationReport>,
     }
     impl TestDevice {
         fn new(register_mmio: &mut dyn RegisterMmioIntercept) -> Self {
@@ -2306,7 +2568,13 @@ mod tests {
                         ),
                 ),
                 tdisp_interface: tdisp::test_helpers::new_null_tdisp_interface("vpci-unit-test"),
+                isolation_report: None,
             }
+        }
+
+        fn with_isolation_report(mut self, report: tdisp::TdispIsolationReport) -> Self {
+            self.isolation_report = Some(report);
+            self
         }
 
         fn read_bar_u32(&self, bar: u8, offset: u64) -> u32 {
@@ -2361,6 +2629,26 @@ mod tests {
 
         fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
             Some(&mut self.tdisp_interface)
+        }
+
+        fn supports_tdisp_isolation(&mut self) -> Option<&mut dyn tdisp::TdispIsolationReporter> {
+            if self.isolation_report.is_some() {
+                Some(self)
+            } else {
+                None
+            }
+        }
+    }
+
+    impl tdisp::TdispIsolationReporter for TestDevice {
+        fn tdisp_isolation_report(
+            &mut self,
+        ) -> std::pin::Pin<Box<dyn Future<Output = tdisp::TdispIsolationReport> + Send + 'static>>
+        {
+            let report = self
+                .isolation_report
+                .expect("isolation_report must be set when supports_tdisp_isolation returns Some");
+            Box::pin(async move { report })
         }
     }
 
@@ -2498,9 +2786,11 @@ mod tests {
             TDISP_MOCK_GUEST_PROTOCOL,
         );
         let response = guest_driver.send_tdisp_command(command).await;
+        let tdi_state_before = response.tdi_state_before_enum();
+        let tdi_state_after = response.tdi_state_after_enum();
 
-        let response = response.response::<TdispCommandResponseGetDeviceInterfaceInfo>();
-        match response {
+        let response_unpacked = response.response::<TdispCommandResponseGetDeviceInterfaceInfo>();
+        match response_unpacked {
             Ok(info_resp) => {
                 let interface_info = info_resp
                     .interface_info
@@ -2515,12 +2805,131 @@ mod tests {
                     TDISP_MOCK_SUPPORTED_FEATURES
                 );
                 assert_eq!(interface_info.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
+                assert_eq!(tdi_state_before, Some(TdispTdiState::Unlocked));
+                assert_eq!(tdi_state_after, Some(TdispTdiState::Unlocked));
             }
             _ => panic!(
                 "expected GetDeviceInterfaceInfo response, got {:?}",
-                response
+                response_unpacked
             ),
         }
+    }
+
+    /// Verify that `VPCI_QUERY_ISOLATED_RESOURCES` is answered locally on a
+    /// TDISP-isolation-capable mock device after negotiating `RB`.
+    ///
+    /// Exercises every branch of `build_isolation_reply`:
+    /// - `Ready` → `SUCCESS` with the per-BAR/DMA classifications echoed.
+    /// - `NotReady` → `INVALID_DEVICE_STATE` with all entries `INVALID`.
+    /// - `NotTdispCapable` → `SUCCESS` with all entries `SHARED`.
+    /// - `Error` → `UNSUCCESSFUL`.
+    /// - Downlevel negotiation (no `RB`) → `NOT_SUPPORTED`.
+    #[async_test]
+    async fn verify_query_isolated_resources(driver: DefaultDriver) {
+        use tdisp::TdispIsolationReport;
+        use tdisp::TdispResourceIsolation;
+
+        // Ready: BAR 0 PRIVATE (TEE), BAR 2 SHARED (non-TEE), BAR 4
+        // SHARED (intercepted), others INVALID. DMA PRIVATE.
+        let ready_bars = [
+            TdispResourceIsolation::Private,
+            TdispResourceIsolation::Invalid,
+            TdispResourceIsolation::Shared,
+            TdispResourceIsolation::Invalid,
+            TdispResourceIsolation::Shared,
+            TdispResourceIsolation::Invalid,
+        ];
+
+        let cases: &[(TdispIsolationReport, _, _)] = &[
+            (
+                TdispIsolationReport::Ready {
+                    bars: ready_bars,
+                    dma: TdispResourceIsolation::Private,
+                },
+                protocol::Status::SUCCESS,
+                [
+                    protocol::ResourceIsolation::PRIVATE,
+                    protocol::ResourceIsolation::INVALID,
+                    protocol::ResourceIsolation::SHARED,
+                    protocol::ResourceIsolation::INVALID,
+                    protocol::ResourceIsolation::SHARED,
+                    protocol::ResourceIsolation::INVALID,
+                ],
+            ),
+            (
+                TdispIsolationReport::NotTdispCapable,
+                protocol::Status::SUCCESS,
+                [protocol::ResourceIsolation::SHARED; 6],
+            ),
+            (
+                TdispIsolationReport::NotReady,
+                protocol::Status::INVALID_DEVICE_STATE,
+                [protocol::ResourceIsolation::INVALID; 6],
+            ),
+            (
+                TdispIsolationReport::Error,
+                protocol::Status::UNSUCCESSFUL,
+                [protocol::ResourceIsolation::INVALID; 6],
+            ),
+        ];
+
+        for (report, expected_status, expected_bars) in cases.iter().copied() {
+            let msi_controller = TestVpciInterruptController::new();
+            let vm_chipset = TestChipset::default();
+            let pci = vm_chipset
+                .device_builder("test")
+                .with_external_pci()
+                .add(|services| {
+                    TestDevice::new(&mut services.register_mmio()).with_isolation_report(report)
+                })
+                .unwrap();
+            let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+            guest_driver.protocol_version = protocol::ProtocolVersion::RB;
+            guest_driver.start_device(0x1000000).await;
+
+            let reply = guest_driver.send_query_isolated_resources().await;
+            assert_eq!(reply.status, expected_status, "report {:?}", report);
+            assert_eq!(reply.bar_isolation, expected_bars, "report {:?}", report);
+            let expected_dma = match (report, expected_status) {
+                (TdispIsolationReport::Ready { dma, .. }, _) => match dma {
+                    TdispResourceIsolation::Private => protocol::ResourceIsolation::PRIVATE,
+                    TdispResourceIsolation::Shared => protocol::ResourceIsolation::SHARED,
+                    TdispResourceIsolation::Invalid => protocol::ResourceIsolation::INVALID,
+                },
+                (TdispIsolationReport::NotTdispCapable, _) => protocol::ResourceIsolation::SHARED,
+                _ => protocol::ResourceIsolation::INVALID,
+            };
+            assert_eq!(reply.dma_isolation, expected_dma, "report {:?}", report);
+        }
+
+        // Downlevel: negotiate `VB` instead of `RB`. A `TestDevice` that
+        // exposes a valid isolation report still replies `NOT_SUPPORTED`
+        // because the protocol gate is checked before consulting the device.
+        let msi_controller = TestVpciInterruptController::new();
+        let vm_chipset = TestChipset::default();
+        let pci = vm_chipset
+            .device_builder("test")
+            .with_external_pci()
+            .add(|services| {
+                TestDevice::new(&mut services.register_mmio()).with_isolation_report(
+                    TdispIsolationReport::Ready {
+                        bars: ready_bars,
+                        dma: TdispResourceIsolation::Private,
+                    },
+                )
+            })
+            .unwrap();
+        let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+        guest_driver.protocol_version = protocol::ProtocolVersion::VB;
+        guest_driver.start_device(0x1000000).await;
+
+        let reply = guest_driver.send_query_isolated_resources().await;
+        assert_eq!(reply.status, protocol::Status::NOT_SUPPORTED);
+        assert_eq!(
+            reply.bar_isolation,
+            [protocol::ResourceIsolation::INVALID; 6]
+        );
+        assert_eq!(reply.dma_isolation, protocol::ResourceIsolation::INVALID);
     }
 
     #[async_test]
