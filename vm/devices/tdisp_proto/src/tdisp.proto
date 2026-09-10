@@ -77,6 +77,16 @@ enum TdispGuestUnbindReason {
   // The guest requested to unbind the device because the device is being
   // detached.
   TDISP_GUEST_UNBIND_REASON_GRACEFUL = 1;
+
+  // The paravisor is tearing down the VPCI channel for this device (e.g.
+  // guest eject, host-initiated eject, or relay shutdown). Sent
+  // automatically from `RelayedDevice::remove` so the host returns the
+  // TDI to Unlocked.
+  TDISP_GUEST_UNBIND_REASON_DEVICE_TEARDOWN = 2;
+
+  // The paravisor is unbinding the TDI because post-attestation resource
+  // setup failed during activation (for example, unblocking MMIO or DMA).
+  TDISP_GUEST_UNBIND_REASON_RESOURCE_SETUP_FAILURE = 3;
 }
 
 // Represents a type of report that can be requested from the TDI (VF).
@@ -99,6 +109,18 @@ enum TdispReportType {
 
   // Guest requests whether the physical device is registered.
   TDISP_REPORT_TYPE_IS_REGISTERED = 5;
+}
+
+// The operation a TdispCommandRequestModifyMmioRange applies to an MMIO range.
+enum TdispMmioRangeAction {
+  // Invalid action. All usages of this action should be treated as an error.
+  TDISP_MMIO_RANGE_ACTION_INVALID = 0;
+
+  // Unblock the range, making it accessible to the guest's private context.
+  TDISP_MMIO_RANGE_ACTION_UNBLOCK_MMIO_RANGE = 1;
+
+  // Block the range, reversing a previous unblock.
+  TDISP_MMIO_RANGE_ACTION_BLOCK_MMIO_RANGE = 2;
 }
 
 // Represents the type of CVM technology the guest requests to use.
@@ -137,6 +159,7 @@ message GuestToHostCommand {
     TdispCommandRequestGetTdiReport get_tdi_report = 4;
     TdispCommandRequestStartTdi start_tdi = 5;
     TdispCommandRequestUnbind unbind = 6;
+    TdispCommandRequestModifyMmioRange modify_mmio_range = 7;
   }
 }
 
@@ -160,6 +183,7 @@ message GuestToHostResponse {
     TdispCommandResponseGetTdiReport get_tdi_report = 6;
     TdispCommandResponseStartTdi start_tdi = 7;
     TdispCommandResponseUnbind unbind = 8;
+    TdispCommandResponseModifyMmioRange modify_mmio_range = 9;
   }
 }
 
@@ -194,6 +218,23 @@ message TdispCommandRequestUnbind {
   TdispGuestUnbindReason unbind_reason = 1;
 }
 
+// Block or unblock an MMIO range in the guest's private context. The TDI must
+// be in the Locked or Run state; any other state is an error. Does not
+// transition the TDI.
+message TdispCommandRequestModifyMmioRange {
+  // The operation to apply to the range.
+  TdispMmioRangeAction action = 1;
+
+  // Identifies which MMIO range is being modified. This is the PCI BAR index.
+  uint32 range_id = 2;
+
+  // The guest physical base address of the range.
+  uint64 gpa_base = 3;
+
+  // The length of the range, in bytes.
+  uint64 range_len_bytes = 4;
+}
+
 // ----------------------------------------------------------------------------
 // Response messages (one per command)
 // ----------------------------------------------------------------------------
@@ -221,6 +262,9 @@ message TdispCommandResponseStartTdi {}
 
 // Response to TdispCommandRequestUnbind. Carries no payload.
 message TdispCommandResponseUnbind {}
+
+// Response to TdispCommandRequestModifyMmioRange. Carries no payload.
+message TdispCommandResponseModifyMmioRange {}
 
 // ----------------------------------------------------------------------------
 // Shared info structs
