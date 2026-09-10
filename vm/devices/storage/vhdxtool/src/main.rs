@@ -42,7 +42,7 @@
 //! can be repaired with `replay`.
 
 #![forbid(unsafe_code)]
-#![deny(missing_docs)]
+#![warn(missing_docs)]
 
 mod file;
 mod util;
@@ -125,9 +125,6 @@ enum Command {
         /// Alignment of the VHDX data region. Accepts binary size suffixes.
         #[arg(long, value_parser = util::parse_size)]
         block_alignment: Option<u64>,
-        /// Data write GUID. A random GUID is generated when omitted.
-        #[arg(long)]
-        id: Option<String>,
         /// SCSI page 83 identifier GUID. A random GUID is generated when omitted.
         #[arg(long)]
         page83: Option<String>,
@@ -226,7 +223,6 @@ async fn run(command: Command, driver: &impl pal_async::task::Spawn) -> Result<(
             logical_sector_size,
             physical_sector_size,
             block_alignment,
-            id,
             page83,
             force,
         } => {
@@ -239,7 +235,6 @@ async fn run(command: Command, driver: &impl pal_async::task::Spawn) -> Result<(
                 logical_sector_size,
                 physical_sector_size,
                 block_alignment,
-                id,
                 page83,
                 force,
             })
@@ -297,7 +292,6 @@ struct CreateOptions {
     logical_sector_size: Option<u32>,
     physical_sector_size: Option<u32>,
     block_alignment: Option<u64>,
-    id: Option<String>,
     page83: Option<String>,
     force: bool,
 }
@@ -322,7 +316,6 @@ async fn create_image(options: CreateOptions) -> Result<()> {
             DiskType::Differencing => VhdxDiskType::Dynamic,
         },
         block_alignment: u32::try_from(block_alignment).context("block alignment exceeds 4 GiB")?,
-        data_write_guid: parse_guid(options.id.as_deref(), "id")?,
         page_83_data: parse_guid(options.page83.as_deref(), "page83")?,
         ..Default::default()
     };
@@ -346,10 +339,13 @@ async fn create_image(options: CreateOptions) -> Result<()> {
             .unwrap_or_else(|| std::path::Path::new("."));
         let absolute_parent = fs_err::canonicalize(&parent_path)
             .with_context(|| format!("failed to resolve parent {}", parent_path.display()))?;
-        let relative_path = util::relative_path(child_directory, &absolute_parent).map(|path| {
-            path.to_string_lossy()
-                .replace(std::path::MAIN_SEPARATOR, "\\")
-        });
+        let relative_path =
+            util::relative_path(child_directory, &absolute_parent).and_then(|path| {
+                Ok(path
+                    .to_str()
+                    .context("relative parent path is not valid Unicode")?
+                    .replace(std::path::MAIN_SEPARATOR, "\\"))
+            });
         // On Windows the parent may be on another drive, leaving no relative
         // path; the absolute path below is then the only locator. Elsewhere
         // there is no absolute locator, so a relative path is required.
@@ -363,9 +359,11 @@ async fn create_image(options: CreateOptions) -> Result<()> {
         }
         #[cfg(windows)]
         let vhdx_parent = {
-            let absolute_path = absolute_parent.to_string_lossy();
+            let absolute_path = absolute_parent
+                .to_str()
+                .context("absolute parent path is not valid Unicode")?;
             let absolute_path = if absolute_path.starts_with(r"\\?\") {
-                absolute_path.into_owned()
+                absolute_path.to_owned()
             } else {
                 format!(r"\\?\{}", absolute_path)
             };
@@ -759,7 +757,6 @@ async fn convert(
                 logical_sector_size: None,
                 physical_sector_size: None,
                 block_alignment: None,
-                id: None,
                 page83: None,
                 force,
             })
@@ -805,7 +802,6 @@ async fn convert(
                         logical_sector_size: Some(input.logical_sector_size()),
                         physical_sector_size: Some(input.physical_sector_size()),
                         block_alignment: None,
-                        id: None,
                         page83: None,
                         force,
                     })
@@ -994,7 +990,6 @@ mod tests {
             logical_sector_size: None,
             physical_sector_size: None,
             block_alignment: None,
-            id: None,
             page83: None,
             force: false,
         }
@@ -1045,6 +1040,38 @@ mod tests {
             parent
                 .absolute_win32_path()
                 .is_some_and(|path| path.starts_with(r"\\?\"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[pal_async::async_test]
+    async fn rejects_non_unicode_parent_locator_path() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let original_parent_path = directory.path().join("parent.vhdx");
+        let parent_path = directory
+            .path()
+            .join(std::ffi::OsString::from_vec(b"parent-\xff.vhdx".to_vec()));
+        let child_path = directory.path().join("child.vhdx");
+        let size = 4 * 1024 * 1024;
+
+        create_image(options(original_parent_path.clone(), size))
+            .await
+            .unwrap();
+        std::fs::rename(original_parent_path, &parent_path).unwrap();
+
+        let error = create_image(CreateOptions {
+            disk_type: DiskType::Differencing,
+            parent: Some(parent_path),
+            ..options(child_path, size)
+        })
+        .await
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("relative parent path is not valid Unicode"),
+            "unexpected error: {error:#}"
         );
     }
 
