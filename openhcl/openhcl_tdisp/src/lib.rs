@@ -10,6 +10,8 @@
 
 pub mod client;
 pub mod noop;
+#[cfg(feature = "dev_snp_ohcl_tio_support")]
+mod sevtio;
 
 pub use client::TdispClient;
 pub use client::TdispCommandTransport;
@@ -40,6 +42,9 @@ pub use tdisp_proto::TdispGuestUnbindReason;
 pub use tdisp_proto::TdispMmioRangeAction;
 pub use tdisp_proto::TdispReportType;
 pub use tdisp_proto::TdispTdiState;
+
+#[cfg(feature = "dev_snp_ohcl_tio_support")]
+pub use sevtio::TdispSevTioResourceValidator;
 
 use hvdef::Vtl;
 use std::future::Future;
@@ -220,8 +225,15 @@ pub fn new_resource_validator(
         return Ok(Arc::new(noop::TdispNoopResourceValidator::new()));
     }
 
-    // TODO: Add platform-specific resource validators based on the isolation type.
-    // This will follow in subsequent PRs.
+    // An `if` rather than a `match` arm: with the feature off this block is
+    // compiled out, and a `match` whose only remaining arm is the wildcard
+    // trips `clippy::match_single_binding`.
+    #[cfg(feature = "dev_snp_ohcl_tio_support")]
+    if matches!(isolation, IsolationType::Snp) {
+        return Ok(Arc::new(TdispSevTioResourceValidator::new(
+            vtom.unwrap_or(0),
+        )?));
+    }
 
     Ok(Arc::new(noop::TdispNoopResourceValidator::new()))
 }
