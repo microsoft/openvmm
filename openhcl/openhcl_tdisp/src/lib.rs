@@ -12,6 +12,8 @@ pub mod client;
 pub mod noop;
 #[cfg(target_os = "linux")]
 mod sevtio;
+#[cfg(target_os = "linux")]
+mod tdxconnect;
 
 pub use client::TdispClient;
 pub use client::TdispCommandTransport;
@@ -45,6 +47,8 @@ pub use tdisp_proto::TdispTdiState;
 
 #[cfg(target_os = "linux")]
 pub use sevtio::TdispSevTioResourceValidator;
+#[cfg(target_os = "linux")]
+pub use tdxconnect::TdispTdxConnectResourceValidator;
 
 #[cfg(target_os = "linux")]
 use anyhow::Context;
@@ -227,10 +231,19 @@ pub fn new_resource_validator(
         return Ok(Arc::new(noop::TdispNoopResourceValidator::new()));
     }
 
+    // A standalone `if` per platform rather than `match` arms, so that each
+    // platform's validator can be added independently of the others.
     #[cfg(target_os = "linux")]
     if matches!(isolation, IsolationType::Snp) {
         let vtom = vtom.context("an SNP partition requires a VTOM to validate resources")?;
         return Ok(Arc::new(TdispSevTioResourceValidator::new(vtom)?));
+    }
+
+    #[cfg(target_os = "linux")]
+    if matches!(isolation, IsolationType::Tdx) {
+        return Ok(Arc::new(TdispTdxConnectResourceValidator::new(
+            vtom.unwrap_or(0),
+        )?));
     }
 
     Ok(Arc::new(noop::TdispNoopResourceValidator::new()))
