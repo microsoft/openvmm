@@ -362,7 +362,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -635,7 +635,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -1019,7 +1019,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -1379,7 +1379,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -1669,7 +1669,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -2048,7 +2048,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -2439,7 +2439,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -2729,7 +2729,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -3083,7 +3083,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -3479,7 +3479,7 @@ jobs:
     - job2
     - job3
     - job7
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -3774,7 +3774,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -3965,7 +3965,7 @@ jobs:
     - job2
     - job3
     - job7
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -4260,7 +4260,7 @@ jobs:
     - job2
     - job3
     - job7
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -4560,7 +4560,7 @@ jobs:
     - job2
     - job3
     - job7
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -4861,7 +4861,7 @@ jobs:
     - job2
     - job3
     - job7
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -5160,7 +5160,7 @@ jobs:
     - job2
     - job3
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -5438,7 +5438,7 @@ jobs:
     - job2
     - job3
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -5765,7 +5765,7 @@ jobs:
     - job2
     - job3
     - job5
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -6087,7 +6087,7 @@ jobs:
     needs:
     - job3
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -6362,7 +6362,7 @@ jobs:
       id-token: write
     needs:
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -6491,7 +6491,7 @@ jobs:
       id-token: write
     needs:
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -6665,7 +6665,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -7071,7 +7071,7 @@ jobs:
     needs:
     - job6
     - job7
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -7195,7 +7195,7 @@ jobs:
     needs:
     - job6
     - job7
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -7704,7 +7704,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -7939,7 +7939,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -8259,7 +8259,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -8498,7 +8498,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -8826,7 +8826,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
@@ -9314,7 +9314,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     steps:
     - run: |
         set -x
