@@ -87,6 +87,46 @@ impl VmgsClient {
         Ok(())
     }
 
+    /// Returns a copy of the active root encryption key of an unlocked VMGS.
+    ///
+    /// This key is sensitive and must not be logged or inspected. It may become
+    /// stale after this call; use [`Self::write_file_if_encryption_key_matches`]
+    /// to publish data that depends on it.
+    #[cfg(feature = "encryption")]
+    #[instrument(skip_all)]
+    pub async fn active_encryption_key(&self) -> Result<[u8; 32], VmgsClientError> {
+        let key = self
+            .control
+            .call_failable(VmgsBrokerRpc::ActiveEncryptionKey, ())
+            .await?;
+        Ok(key)
+    }
+
+    /// Writes plaintext `buf` only if `expected_key` is still the active root key.
+    ///
+    /// The comparison, write, and flush are processed as one serial broker
+    /// operation. Returns `false` for a stale key without writing or flushing,
+    /// and `true` only after both the write and final flush succeed. A locked or
+    /// plaintext store returns an error, as does overwriting an encrypted file.
+    /// A flush error does not roll back a completed write.
+    #[cfg(feature = "encryption")]
+    #[instrument(skip_all, fields(file_id = %file_id))]
+    pub async fn write_file_if_encryption_key_matches(
+        &self,
+        file_id: FileId,
+        buf: Vec<u8>,
+        expected_key: [u8; 32],
+    ) -> Result<bool, VmgsClientError> {
+        let written = self
+            .control
+            .call_failable(
+                VmgsBrokerRpc::WriteFileIfEncryptionKeyMatches,
+                (file_id.into(), buf, expected_key),
+            )
+            .await?;
+        Ok(written)
+    }
+
     /// Deletes the specified `file_id`.
     #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn delete_file(&self, file_id: FileId) -> Result<(), VmgsClientError> {

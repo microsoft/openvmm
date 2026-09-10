@@ -13,6 +13,7 @@ mod hardware_key_sealing;
 mod igvm_attest;
 mod jwt;
 mod key_protector;
+pub mod runtime_sealing;
 mod secure_key_release;
 mod vmgs;
 
