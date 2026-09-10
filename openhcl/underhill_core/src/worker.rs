@@ -3376,7 +3376,23 @@ async fn new_underhill_vm(
             let connection = relay_filter.take();
 
             if enable_vpci_relay {
+                // Determine if we're doing a mock TDISP flow.
+                let test_tdisp_flow = matches!(
+                    env_cfg.test_configuration,
+                    Some(TestScenarioConfig::VpciTdispFlow)
+                );
+
+                use openhcl_tdisp::TdispResourceValidationInterface;
+                use openhcl_tdisp::noop::TdispNoopResourceValidator;
+
                 use vpci_relay::*;
+
+                // A device driven through the TDISP flow always has a
+                // validator, so no platform can silently skip resource
+                // validation. Isolation types with no platform validator of
+                // their own get the no-op one.
+                let resource_validator: Arc<dyn TdispResourceValidationInterface> =
+                    Arc::new(TdispNoopResourceValidator::new());
 
                 let mut relay = VpciRelay::new(
                     driver_source.clone(),
@@ -3404,13 +3420,12 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    resource_validator,
+                    isolation,
                     vtom,
                     VpciRelayOptions {
                         // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
-                        test_tdisp_flow: matches!(
-                            env_cfg.test_configuration,
-                            Some(TestScenarioConfig::VpciTdispFlow)
-                        ),
+                        test_tdisp_flow,
                     },
                 );
 
