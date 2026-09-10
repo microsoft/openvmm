@@ -2349,6 +2349,12 @@ mod tests {
 
         assert!(
             tpm.tpm_engine_helper
+                .find_object(tpm_protocol::TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            tpm.tpm_engine_helper
                 .find_object(tpm_protocol::TPM_RSA_SRK_HANDLE)
                 .unwrap()
                 .is_some()

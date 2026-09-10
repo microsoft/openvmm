@@ -83,7 +83,14 @@ pub fn inspect(version: TpmVersion, blob: &[u8]) -> anyhow::Result<()> {
                 Ok(NvIndexState::Available) => "initialized",
                 Ok(NvIndexState::Uninitialized) => "uninitialized",
                 Ok(NvIndexState::Unallocated) => "unallocated",
-                Err(_) => "unreadable",
+                Err(err) => {
+                    tracing::warn!(
+                        nv_index = *nv_index,
+                        error = &err as &dyn std::error::Error,
+                        "failed to read nv index contents"
+                    );
+                    "unreadable"
+                }
             }
         } else {
             "no owner read"

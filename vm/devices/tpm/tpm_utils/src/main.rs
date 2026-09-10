@@ -100,8 +100,8 @@ mod cli {
             ak_cert_index_size: Option<u16>,
 
             /// Password authorization for a platform-created AK cert index.
-            #[clap(long, default_value_t = 0, value_parser = parse_auth_value)]
-            auth_value: u64,
+            #[clap(long, value_parser = parse_auth_value)]
+            auth_value: Option<u64>,
 
             /// Create the small-vTPM mitigation marker NV index.
             #[clap(long)]
@@ -158,6 +158,14 @@ mod cli {
                      --ak-cert-index none"
                 );
 
+                anyhow::ensure!(
+                    auth_value.is_none()
+                        || ak_cert_index == AkCertIndexKind::Platform
+                        || mitigation_marker,
+                    "--auth-value only applies to --ak-cert-index platform and \
+                     --mitigation-marker"
+                );
+
                 let ak_cert = ak_cert
                     .map(|path| fs_err::read(&path))
                     .transpose()
@@ -172,7 +180,7 @@ mod cli {
                     ak_cert_index,
                     ak_cert_index_size,
                     ak_cert,
-                    auth_value,
+                    auth_value: auth_value.unwrap_or(0),
                     mitigation_marker,
                 })?;
 

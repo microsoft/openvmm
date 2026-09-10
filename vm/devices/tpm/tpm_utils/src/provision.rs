@@ -93,6 +93,8 @@ pub fn provision(params: &ProvisionParams) -> anyhow::Result<Vec<u8>> {
                     .context("failed to define the owner AK cert NV index")?;
 
                 if let Some(cert) = &params.ak_cert {
+                    // `write_to_nv_index` zero-pads to the index size, but only
+                    // works on platform-created indices, so pad by hand here.
                     let mut padded = cert.clone();
                     padded.resize(size as usize, 0);
                     helper
@@ -116,7 +118,8 @@ pub fn provision(params: &ProvisionParams) -> anyhow::Result<Vec<u8>> {
                         .context("failed to write the platform AK cert NV index")?;
                 }
             }
-            AkCertIndexKind::None => unreachable!(),
+            // Excluded by the enclosing `if`.
+            AkCertIndexKind::None => {}
         }
 
         tracing::info!(size, kind = ?params.ak_cert_index, "created AK cert NV index");
