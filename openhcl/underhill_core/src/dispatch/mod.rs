@@ -194,6 +194,7 @@ pub(crate) struct LoadedVm {
     pub measured_product_policy: product_policy::MeasuredProductPolicy,
 
     pub _input_distributor: SpawnedUnit<InputDistributor>,
+    pub hardware_reseal: Option<SpawnedUnit<crate::hardware_reseal::HardwareReseal>>,
 
     pub crash_notification_recv: mesh::Receiver<VtlCrash>,
     pub control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
@@ -564,6 +565,12 @@ impl LoadedVm {
                 }
             }
         };
+
+        // Drain resealing before tearing down any storage transport. Removing
+        // the unit closes its request stream; in-flight I/O finishes first.
+        if let Some(resealer) = self.hardware_reseal.take() {
+            resealer.remove().await;
+        }
 
         let _client_notify_send = self.partition_unit.teardown().await;
 
