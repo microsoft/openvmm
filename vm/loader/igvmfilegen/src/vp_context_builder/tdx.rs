@@ -85,6 +85,7 @@ impl VpContextBuilder for TdxHardwareContext {
                 }
             }
             X86Register::Rbp(rbp) => self.trampoline_context.rbp = rbp,
+            X86Register::Rbx(_) => panic!("rbx not allowed for tdx"),
             X86Register::Rip(rip) => self.trampoline_context.initial_rip = rip,
             X86Register::Rsi(rsi) => self.trampoline_context.rsi = rsi,
             X86Register::Rsp(rsp) => self.trampoline_context.rsp = rsp,

@@ -237,6 +237,7 @@ impl VpContextBuilder for SnpHardwareContext {
             }
             X86Register::Pat(reg) => self.vmsa.pat = reg,
             X86Register::Rbp(reg) => self.vmsa.rbp = reg,
+            X86Register::Rbx(reg) => self.vmsa.rbx = reg,
             X86Register::Rip(reg) => self.vmsa.rip = reg,
             X86Register::Rsi(reg) => self.vmsa.rsi = reg,
             X86Register::Rsp(reg) => match self.kind {

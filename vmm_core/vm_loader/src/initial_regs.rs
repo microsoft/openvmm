@@ -40,6 +40,7 @@ pub fn x86_initial_regs(
             X86Register::Efer(v) => state.registers.efer = v,
             X86Register::Pat(v) => state.pat.value = v,
             X86Register::Rbp(v) => state.registers.rbp = v,
+            X86Register::Rbx(v) => state.registers.rbx = v,
             X86Register::Rip(v) => state.registers.rip = v,
             X86Register::Rsi(v) => state.registers.rsi = v,
             X86Register::Rsp(v) => state.registers.rsp = v,
