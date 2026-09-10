@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 //! Structures representing on-the-wire data formats.
+use bitfield_struct::bitfield;
+
 use super::*;
 
 pub const INSTR_EOF: i64 = -1;
@@ -16,29 +18,43 @@ pub const ARG_DATA: u64 = 2;
 /// indicates we should skip any copying out of the call's result
 pub const COPYOUT_INDEX_INVALID: usize = usize::MAX;
 
+#[bitfield(u64)]
+#[derive(IntoBytes, FromBytes, Immutable, PartialEq, Eq)]
+pub struct EnvironmentFlags {
+    debug: bool,
+    coverage: bool,
+    sandbox_setuid: bool,
+    sandbox_namespace: bool,
+    sandbox_android_untrusted_app: bool,
+    enable_tun: bool,
+    enable_net_dev: bool,
+    enable_fault_injection: bool,
+    #[bits(56)]
+    _pad: u64,
+}
+
+#[bitfield(u64)]
+#[derive(IntoBytes, FromBytes, Immutable, PartialEq, Eq)]
+pub struct ExecutorFlags {
+    collect_cover: bool,
+    dedup_cover: bool,
+    inject_fault: bool,
+    collect_comps: bool,
+    thread: bool,
+    collide: bool,
+    #[bits(58)]
+    _pad: u64,
+}
+
 /// The header of a syzkaller program.
 #[derive(IntoBytes, FromBytes, Immutable, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct ProgramHeader {
     pub magic: u64,
     /// Environment flags bitfield:
-    /// 0: debug
-    /// 1: coverage
-    /// 2: sandbox_setuid
-    /// 3: sandbox_namespace
-    /// 4: sandbox_android_untrusted_app
-    /// 5: enable_tun
-    /// 6: enable_net_dev
-    /// 7: enable_fault_injection
-    pub env_flags: u64,
+    pub env_flags: EnvironmentFlags,
     /// Executor flags bitfield:
-    /// 0: collect_cover
-    /// 1: dedup_cover
-    /// 2: inject_fault
-    /// 3: collect_comps
-    /// 4: threaded
-    /// 5: collide
-    pub exec_flags: u64,
+    pub exec_flags: ExecutorFlags,
     /// Process ID
     pub pid: u64,
     /// Inject a fault in the corresponding index in the call table

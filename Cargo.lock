@@ -5675,6 +5675,7 @@ dependencies = [
 name = "opentmk_decoder"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
  "num-traits",
  "zerocopy",
 ]
