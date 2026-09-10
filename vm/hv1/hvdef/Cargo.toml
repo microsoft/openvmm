@@ -6,6 +6,9 @@ name = "hvdef"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+dev_snp_ohcl_tio_support = []
+
 [dependencies]
 open_enum.workspace = true
 bitfield-struct.workspace = true
