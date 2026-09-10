@@ -11081,6 +11081,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "user_driver",
+ "virt",
  "vmbus_client",
  "vmbus_server",
  "vmcore",
