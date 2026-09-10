@@ -50,6 +50,12 @@ open_enum! {
         VP_INVGLA = 27,
         MR_KEY_GET = 29,
         MEM_PAGE_RELEASE = 30,
+        // Intel TDX Connect (ABI EAS 2.1 v0.61); numeric leaves from the
+        // TDX Module Base Spec. TDG.TDI.VALIDATE (would be 69) is deprecated.
+        TDI_RD = 67,
+        TDI_START = 68,
+        DMAR_ACCEPT = 70,
+        TDI_MMIO_ACCEPT = 71,
     }
 }
 
@@ -215,14 +221,19 @@ pub struct TdgMemPageAttrGpaMappingReadRcxResult {
     /// The page number for this accept call.
     #[bits(40)]
     pub gpa_page_number: u64,
-    #[bits(10)]
+    #[bits(9)]
     pub reserved2: u64,
+    /// If this page is a private MMIO page rather than ordinary private
+    /// memory. Only meaningful on a TDX Connect capable module.
+    #[bits(1)]
+    pub mmio: bool,
     /// If this page's attributes are pending, meaning it will be applied when
-    /// the page is accepted.
+    /// the page is accepted. Also covers MMIO_PENDING on a TDX Connect capable
+    /// module.
     #[bits(1)]
-    pub pending: u8,
+    pub pending: bool,
     #[bits(1)]
-    pub reserved3: u64,
+    pub reserved3: u8,
 }
 
 /// RCX input to TDG.MEM.PAGE.ATTR.WR.
@@ -254,6 +265,85 @@ pub struct TdgMemPageAttrWriteR8 {
     /// Corresponds to ATTR_MASK3
     #[bits(16)]
     pub l2_vm3: GpaVmAttributesMask,
+}
+
+/// RDX (`DMAR_TARGET`) input to TDG.DMAR.ACCEPT. `vm_idx` = 0 for a
+/// non-partitioned TD or L1; 1-3 select L2 VM1-VM3 (reassignment path).
+#[bitfield(u64)]
+pub struct DmarTarget {
+    pub vm_idx: u8,
+    #[bits(56)]
+    pub reserved: u64,
+}
+
+/// RCX (`GPA_BASE_AND_LVL`) input to TDG.TDI.MMIO.ACCEPT; also decodes the
+/// resumed GPA returned in RCX. Mirrors [`TdgMemPageAcceptRcx`].
+#[bitfield(u64)]
+pub struct TdgTdiMmioAcceptRcx {
+    #[bits(3)]
+    pub level: TdgMemPageLevel,
+    #[bits(9)]
+    pub reserved: u64,
+    /// The MMIO page number for this accept call.
+    #[bits(40)]
+    pub gpa_page_number: u64,
+    #[bits(12)]
+    pub reserved2: u64,
+}
+
+/// R9 (`RANGE_SIZE_OFFSET`) input to TDG.TDI.MMIO.ACCEPT; also the remaining
+/// size/offset returned in R9 on resume (once the R9 output path is plumbed).
+#[bitfield(u64)]
+pub struct TdgTdiMmioAcceptR9 {
+    /// Number of pages to accept.
+    pub range_size: u32,
+    /// Starting sub-range offset, in pages.
+    pub range_offset: u32,
+}
+
+open_enum! {
+    /// RDX `FIELD` code selector for TDG.TDI.RD (field code, bits 7:0).
+    pub enum TdiRdField: u64 {
+        GET_TDISP_VERSION = 0x01,
+        GET_TDISP_STATE = 0x02,
+        GET_TDISP_REPORT_HASH = 0x03,
+        GET_DEVICE_ATTESTATION_INFO_HASH = 0x04,
+        GET_BIND_SESSION_ID = 0x05,
+    }
+}
+
+/// `FUNCTION_ID`, the TDISP identifier for a TDI. Passed zero-extended in RCX
+/// as `GFUNCTION_ID` to the TDI-scoped guest leaves (TDG.TDI.RD, TDG.TDI.START,
+/// TDG.DMAR.ACCEPT, TDG.TDI.MMIO.ACCEPT).
+///
+/// Defined by the TDISP standard; see the FUNCTION_ID table in the TDX Connect
+/// ABI EAS and [PCI-SIG, TDISP] v1.0.
+#[bitfield(u32)]
+pub struct TdxFunctionId {
+    /// The PCIe requester ID (bus/device/function) of the interface.
+    #[bits(16)]
+    pub requester_id: u16,
+    /// The requester segment. Reserved if `segment_valid` is clear.
+    #[bits(8)]
+    pub requester_segment: u8,
+    /// Whether `requester_segment` holds a valid value.
+    pub segment_valid: bool,
+    #[bits(7)]
+    pub reserved: u8,
+}
+
+open_enum! {
+    /// The TDISP interface state returned in RCX by
+    /// TDG.TDI.RD(`GET_TDISP_STATE`).
+    ///
+    /// The TDX Connect ABI EAS defers the encoding to [PCI-SIG, TDISP] v1.0,
+    /// which is where these values come from.
+    pub enum TdispInterfaceState: u64 {
+        CONFIG_UNLOCKED = 0,
+        CONFIG_LOCKED = 1,
+        RUN = 2,
+        ERROR = 3,
+    }
 }
 
 /// The value specified in `r11` when making a TD vmcall, specified by `r10 =
@@ -435,6 +525,17 @@ open_enum! {
         TD_EXIT_ON_L2_VM_EXIT = 0x00001141,
         TD_EXIT_ON_L2_TO_L1 = 0x00001142,
         GLA_NOT_CANONICAL = 0xC0001160,
+        // TDX Connect status codes (TDX Module Base Spec). Stored as the high
+        // 32 bits of the 64-bit RAX status, matching the convention used by the
+        // codes above (e.g. OPERAND_INVALID is Intel's 0xC0000100_00000000).
+        DMAR_INVALID_MAPPING_STATE = 0xC0000F07,
+        TDI_INVALID_STATE = 0xC0000F11,
+        IDE_STREAM_INVALID_STATE = 0xC0000F24,
+        MMIO_TDI_OWNER_MISMATCH = 0xC0000F27,
+        TDI_NOT_PRESENT = 0xC0000F40,
+        TDI_INVALID_METADATA = 0xC0000F41,
+        MMIO_PAGE_NOT_IN_ASSOC_RANGE = 0xC0000F4C,
+        MMIO_INVALID_HPA_OFFSET = 0xC0000F4D,
     }
 }
 
