@@ -29,6 +29,9 @@ dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
 # Enable VPCI device support
 vpci = []
 
+# Allow NVIDIA GPUs and their NVLink/NVSwitch fabric devices through the VPCI relay.
+nvidia_vpci_relay_allowed = []
+
 [target.'cfg(target_os = "linux")'.dependencies]
 vmotherboard = { workspace = true, features = [
     "dev_underhill_vga_proxy",

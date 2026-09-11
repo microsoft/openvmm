@@ -124,6 +124,10 @@ pub mod hwid {
             // Other values: 0x01 - 0x08, 0x80
             NETWORK_CONTROLLER_ETHERNET = 0x00,
 
+            // Display Controller (Class code: 0x03)
+            // Other values: 0x00 (VGA), 0x01 (XGA), 0x80 (Other)
+            DISPLAY_CONTROLLER_3D = 0x02,
+
             // Simple Communication Controller (Class code: 0x07)
             // Other values: 0x00 - 0x07
             SIMPLE_COMMUNICATION_CONTROLLER_OTHER = 0x80,
