@@ -63,7 +63,7 @@ pub enum VmgsBrokerRpc {
     #[cfg(feature = "encryption")]
     ActiveEncryptionKey(Rpc<(), Result<[u8; 32], VmgsBrokerError>>),
     #[cfg(feature = "encryption")]
-    WriteFileIfEncryptionKeyMatches(
+    WriteFileIfActiveKeyMatches(
         Rpc<(BrokerFileId, Vec<u8>, [u8; 32]), Result<bool, VmgsBrokerError>>,
     ),
 }
@@ -131,7 +131,7 @@ impl VmgsBrokerTask {
                     .map_err(Into::into)
             }),
             #[cfg(feature = "encryption")]
-            VmgsBrokerRpc::WriteFileIfEncryptionKeyMatches(rpc) => {
+            VmgsBrokerRpc::WriteFileIfActiveKeyMatches(rpc) => {
                 rpc.handle(async |(file_id, buf, expected_key)| {
                     // Keep the comparison, write, and final flush in this one
                     // serially processed request: no intervening broker RPC

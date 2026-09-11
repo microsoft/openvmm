@@ -11,7 +11,9 @@ use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationT
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::task::Spawn;
 use pal_async::task::Task;
+use parking_lot::Condvar;
 use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
 use std::future::Future;
@@ -235,6 +237,122 @@ impl TeeCallGetDerivedKey for MockTee {
         // Deliberately change hardware independently of the requested SVN.
         // Cryptographic policy binding is tested by runtime_sealing itself.
         Ok([self.0.identity.load(Ordering::SeqCst); HW_DERIVED_KEY_LENGTH])
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HardwareCall {
+    Report,
+    Derivation(usize),
+}
+
+#[derive(Default)]
+struct HardwareGateState {
+    calls: Vec<HardwareCall>,
+    active: bool,
+    reached: bool,
+    released: bool,
+}
+
+// Unlike GatedDisk, this blocks a synchronous hardware call, not an async
+// future. Only call-site metadata is recorded here, never key material.
+struct HardwareGate {
+    executor_thread: std::thread::ThreadId,
+    block_at: HardwareCall,
+    state: Mutex<HardwareGateState>,
+    release: Condvar,
+    progress: AtomicWaker,
+}
+
+impl HardwareGate {
+    fn new(block_at: HardwareCall) -> Arc<Self> {
+        Arc::new(Self {
+            executor_thread: std::thread::current().id(),
+            block_at,
+            state: Mutex::new(HardwareGateState::default()),
+            release: Condvar::new(),
+            progress: AtomicWaker::new(),
+        })
+    }
+
+    fn call<T>(&self, call: HardwareCall, hardware: impl FnOnce() -> T) -> T {
+        // Fail BEFORE waiting if synchronous TEE work regresses onto the test's
+        // single-thread executor: otherwise neither Stop nor release can run.
+        assert_ne!(std::thread::current().id(), self.executor_thread);
+        {
+            let mut state = self.state.lock();
+            assert!(!state.active, "parallel hardware calls: {call:?}");
+            state.active = true;
+            state.calls.push(call);
+            if call == self.block_at {
+                state.reached = true;
+                self.progress.wake();
+                // A failure elsewhere in the test must not strand a pool
+                // thread. This deadline is a fail-safe, not synchronization.
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                while !state.released {
+                    let timed_out = self.release.wait_until(&mut state, deadline).timed_out();
+                    assert!(!timed_out || state.released, "hardware gate not released");
+                }
+            }
+        }
+        let result = hardware();
+        self.state.lock().active = false;
+        result
+    }
+
+    async fn reached(&self) {
+        poll_fn(|cx| {
+            self.progress.register(cx.waker());
+            if self.state.lock().reached {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    fn unblock(&self) {
+        self.state.lock().released = true;
+        self.release.notify_all();
+    }
+}
+
+struct BlockingTee {
+    mock: MockTee,
+    gate: Arc<HardwareGate>,
+    derivations: AtomicUsize,
+}
+
+impl TeeCall for BlockingTee {
+    fn get_attestation_report(
+        &self,
+        report_data: &[u8; REPORT_DATA_SIZE],
+    ) -> Result<GetAttestationReportResult, tee_call::Error> {
+        self.gate.call(HardwareCall::Report, || {
+            self.mock.get_attestation_report(report_data)
+        })
+    }
+
+    fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey> {
+        Some(self)
+    }
+
+    fn tee_type(&self) -> TeeType {
+        self.mock.tee_type()
+    }
+}
+
+impl TeeCallGetDerivedKey for BlockingTee {
+    fn get_derived_key(
+        &self,
+        policy: KeyDerivationPolicy,
+    ) -> Result<[u8; HW_DERIVED_KEY_LENGTH], tee_call::Error> {
+        let count = self.derivations.fetch_add(1, Ordering::SeqCst) + 1;
+        self.gate.call(HardwareCall::Derivation(count), || {
+            self.mock.get_derived_key(policy)
+        })
     }
 }
 
@@ -512,11 +630,9 @@ async fn start_and_resume_without_event_do_no_hardware_or_io_even_when_due(drive
         fixture.worker.schedule.not_before = expired;
         for _ in 0..2 {
             fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
-            assert_eq!(fixture.worker.checks, 0);
-            assert_eq!(fixture.worker.reseals, 0);
-            assert!(!fixture.worker.degraded);
             assert!(!fixture.worker.schedule.running);
             assert!(!fixture.worker.schedule.force_reseal);
+            assert_eq!(fixture.worker.schedule.failures, 0);
             assert_eq!(fixture.worker.schedule.deadline, expired);
             assert_eq!(fixture.worker.schedule.not_before, expired);
             assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
@@ -540,10 +656,11 @@ async fn explicit_notification_reseals_even_matching_hardware_with_same_dek(driv
     fixture.worker.notification.notify();
     fixture.worker.notification.notify();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(1, 3)).await;
-    assert_eq!(fixture.worker.checks, 1);
-    assert_eq!(fixture.worker.reseals, 1);
+    assert!(!fixture.worker.schedule.force_reseal);
+    assert_eq!(fixture.worker.schedule.failures, 0);
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
+    assert!(fixture.io.state.lock().writes > 0);
     assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
     let protector = fixture
@@ -567,9 +684,10 @@ async fn event_recovers_migration_and_success_stays_idle_without_more_events(
     fixture.hardware.identity.store(0x73, Ordering::SeqCst);
     fixture.worker.notification.notify();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(1, 3)).await;
-    assert_eq!(fixture.worker.checks, 1);
-    assert_eq!(fixture.worker.reseals, 1);
-    assert!(!fixture.worker.degraded);
+    assert!(!fixture.worker.schedule.force_reseal);
+    assert_eq!(fixture.worker.schedule.failures, 0);
+    assert!(fixture.io.state.lock().writes > 0);
+    assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
 
     *fixture.io.state.lock() = IoState::default();
@@ -580,8 +698,7 @@ async fn event_recovers_migration_and_success_stays_idle_without_more_events(
         fixture.worker.schedule.deadline = Instant::from_nanos(0);
         fixture.worker.schedule.not_before = Instant::from_nanos(0);
         fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
-        assert_eq!(fixture.worker.checks, 1);
-        assert_eq!(fixture.worker.reseals, 1);
+        assert!(!fixture.worker.schedule.running);
         assert!(!fixture.worker.schedule.force_reseal);
         assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
         assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
@@ -628,14 +745,22 @@ async fn stopped_worker_keeps_notification_and_start_honors_not_before(driver: D
         .unwrap();
     drop(send);
     fixture.worker = run.await;
-    assert_eq!(fixture.worker.checks, 0);
+    assert!(!fixture.worker.schedule.running);
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.not_before, not_before);
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.io.state.lock().reads, 0);
+    assert_eq!(fixture.io.state.lock().writes, 0);
+    assert_eq!(fixture.io.state.lock().flushes, 0);
     fixture.worker.schedule.not_before = Instant::now();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(1, 3)).await;
-    assert_eq!(fixture.worker.checks, 1);
-    assert_eq!(fixture.worker.reseals, 1);
+    assert!(!fixture.worker.schedule.force_reseal);
+    assert_eq!(fixture.worker.schedule.failures, 0);
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
+    assert!(fixture.io.state.lock().writes > 0);
+    assert_eq!(fixture.io.state.lock().flushes, 2);
     fixture.close().await;
 }
 
@@ -665,16 +790,20 @@ async fn stop_drains_blocked_write_and_final_flush_and_retains_late_event(driver
         drop(send);
         fixture.worker = run.await;
         assert!(!fixture.worker.schedule.running);
-        assert_eq!(fixture.worker.checks, 1);
-        assert_eq!(fixture.worker.reseals, 1);
+        assert!(!fixture.worker.schedule.force_reseal);
+        assert_eq!(fixture.worker.schedule.failures, 0);
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
         assert_eq!(fixture.io.state.lock().flushes, 2);
         assert!(notification.pending.load(Ordering::SeqCst));
         assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
 
         fixture.worker.schedule.not_before = Instant::now();
         fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(2, 6)).await;
-        assert_eq!(fixture.worker.checks, 2);
-        assert_eq!(fixture.worker.reseals, 2);
+        assert!(!fixture.worker.schedule.force_reseal);
+        assert_eq!(fixture.worker.schedule.failures, 0);
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 6);
         assert!(!notification.pending.load(Ordering::SeqCst));
         assert_eq!(fixture.io.state.lock().flushes, 4);
         fixture.close().await;
@@ -682,14 +811,154 @@ async fn stop_drains_blocked_write_and_final_flush_and_retains_late_event(driver
 }
 
 #[async_test]
-async fn failed_report_marks_degraded_and_retries_successfully(driver: DefaultDriver) {
+async fn blocked_hardware_keeps_executor_responsive_and_stop_drains_attempt(driver: DefaultDriver) {
+    let calls = [
+        HardwareCall::Report,
+        HardwareCall::Derivation(1), // Protector creation.
+        HardwareCall::Derivation(2), // Pre-write verification (first job).
+        HardwareCall::Derivation(3), // Post-flush verification (second job).
+    ];
+    for (index, block_at) in calls.into_iter().enumerate() {
+        let mut fixture = Fixture::new(&driver, false).await;
+        let gate = HardwareGate::new(block_at);
+        fixture.worker.tee = Arc::new(BlockingTee {
+            mock: MockTee(fixture.hardware.clone()),
+            gate: gate.clone(),
+            derivations: AtomicUsize::new(0),
+        });
+        if index < 3 {
+            // After releasing the first hardware job, independently prove
+            // that Stop also waits for the remaining durable write/flush.
+            fixture.io.state.lock().block_at = Some((Operation::Flush, 2));
+        }
+        let notification = fixture.worker.notification.clone();
+        notification.notify();
+        let (send, recv) = mesh::mpsc_channel();
+        let mut run = pin!(fixture.worker.run(recv));
+        drive_until(run.as_mut(), send.call(StateRequest::Start, ()))
+            .await
+            .unwrap();
+        drive_until(run.as_mut(), gate.reached()).await;
+        {
+            let io = fixture.io.state.lock();
+            if index < 3 {
+                assert_eq!(io.writes, 0);
+                assert_eq!(io.flushes, 0);
+            } else {
+                assert!(io.writes > 0);
+                assert_eq!(io.flushes, 2);
+            }
+        }
+
+        let mut stop = pin!(send.call(StateRequest::Stop, ()));
+        assert!(futures::poll!(stop.as_mut()).is_pending());
+        // Each heartbeat is a separately scheduled task on the same executor,
+        // not merely another future polled inline by drive_until.
+        for _ in 0..3 {
+            notification.notify();
+            notification.notify();
+            let heartbeat_gate = gate.clone();
+            let heartbeat = driver.spawn("hardware-reseal-heartbeat", async move {
+                assert_eq!(std::thread::current().id(), heartbeat_gate.executor_thread);
+                let state = heartbeat_gate.state.lock();
+                assert!(state.reached && state.active && !state.released);
+                assert_eq!(state.calls, calls[..=index]);
+            });
+            drive_until(run.as_mut(), heartbeat).await;
+            assert!(
+                futures::poll!(stop.as_mut()).is_pending(),
+                "Stop acknowledged blocked hardware at {block_at:?}"
+            );
+            assert!(notification.pending.load(Ordering::SeqCst));
+        }
+
+        gate.unblock();
+        if index < 3 {
+            drive_until(run.as_mut(), fixture.io.blocked()).await;
+            assert!(futures::poll!(stop.as_mut()).is_pending());
+            assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
+            assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 2);
+            assert_eq!(gate.state.lock().calls, calls[..3]);
+            notification.notify();
+            fixture.io.unblock();
+        }
+        drive_until(run.as_mut(), stop).await.unwrap();
+        drop(send);
+        fixture.worker = run.await;
+        assert!(!fixture.worker.schedule.running);
+        assert!(!fixture.worker.schedule.force_reseal);
+        assert_eq!(fixture.worker.schedule.failures, 0);
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
+        assert_eq!(gate.state.lock().calls, calls);
+        assert!(!gate.state.lock().active);
+        assert!(fixture.io.state.lock().writes > 0);
+        assert_eq!(fixture.io.state.lock().flushes, 2);
+        assert!(notification.pending.load(Ordering::SeqCst));
+        assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
+        let protector = fixture
+            .worker
+            .vmgs
+            .read_file(FileId::HW_KEY_PROTECTOR)
+            .await
+            .unwrap();
+        // Verify outside the instrumented wrapper: only worker calls are
+        // required to run off-thread. Account for this extra mock derivation.
+        assert!(
+            runtime_sealing::protector_matches(
+                &MockTee(fixture.hardware.clone()),
+                &config(),
+                &protector,
+                &DEK,
+            )
+            .unwrap()
+        );
+        let derivations = fixture.hardware.derivations.load(Ordering::SeqCst);
+
+        // The event storm was one latched event, not parallel/queued jobs.
+        // Resume immediately without waiting for the production rate limit.
+        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker =
+            finish_attempt(fixture.worker, fixture.hardware.reached(2, derivations + 3)).await;
+        assert!(!notification.pending.load(Ordering::SeqCst));
+        assert!(!fixture.worker.schedule.force_reseal);
+        assert_eq!(fixture.worker.schedule.failures, 0);
+        assert_eq!(fixture.io.state.lock().flushes, 4);
+        fixture.worker.schedule.running = true;
+        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            fixture.hardware.derivations.load(Ordering::SeqCst),
+            derivations + 3
+        );
+        assert_eq!(fixture.io.state.lock().flushes, 4);
+        assert_eq!(
+            gate.state.lock().calls,
+            [
+                HardwareCall::Report,
+                HardwareCall::Derivation(1),
+                HardwareCall::Derivation(2),
+                HardwareCall::Derivation(3),
+                HardwareCall::Report,
+                HardwareCall::Derivation(4),
+                HardwareCall::Derivation(5),
+                HardwareCall::Derivation(6),
+            ]
+        );
+        assert!(!gate.state.lock().active);
+        fixture.close().await;
+    }
+}
+
+#[async_test]
+async fn failed_report_keeps_recovery_pending_and_retries_successfully(driver: DefaultDriver) {
     let mut fixture = Fixture::new(&driver, false).await;
     fixture.hardware.fail_report.store(true, Ordering::SeqCst);
     fixture.worker.notification.notify();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(1, 0)).await;
-    assert_eq!(fixture.worker.checks, 1);
-    assert_eq!(fixture.worker.reseals, 0);
-    assert!(fixture.worker.degraded);
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
     assert_eq!(
@@ -697,6 +966,7 @@ async fn failed_report_marks_degraded_and_retries_successfully(driver: DefaultDr
         fixture.worker.schedule.not_before
     );
     assert_eq!(fixture.io.state.lock().writes, 0);
+    assert_eq!(fixture.io.state.lock().flushes, 0);
 
     let deadline = fixture.worker.schedule.deadline;
     let not_before = fixture.worker.schedule.not_before;
@@ -711,9 +981,10 @@ async fn failed_report_marks_degraded_and_retries_successfully(driver: DefaultDr
     fixture.worker.schedule.deadline = Instant::now();
     fixture.worker.schedule.not_before = Instant::now();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(2, 3)).await;
-    assert_eq!(fixture.worker.checks, 2);
-    assert_eq!(fixture.worker.reseals, 1);
-    assert!(!fixture.worker.degraded);
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
+    assert!(fixture.io.state.lock().writes > 0);
+    assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(!fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 0);
     assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
@@ -737,16 +1008,22 @@ async fn migration_during_event_flush_is_detected_without_another_event(driver: 
     drive_until(run.as_mut(), stop).await.unwrap();
     drop(send);
     fixture.worker = run.await;
-    assert!(fixture.worker.degraded);
     assert!(fixture.worker.schedule.force_reseal);
-    assert_eq!(fixture.worker.reseals, 0);
+    assert_eq!(fixture.worker.schedule.failures, 1);
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
+    assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
 
     fixture.worker.schedule.deadline = Instant::now();
     fixture.worker.schedule.not_before = Instant::now();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(2, 6)).await;
-    assert!(!fixture.worker.degraded);
-    assert_eq!(fixture.worker.reseals, 1);
+    assert!(!fixture.worker.schedule.force_reseal);
+    assert_eq!(fixture.worker.schedule.failures, 0);
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 6);
+    assert_eq!(fixture.io.state.lock().flushes, 4);
+    assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
     let protector = fixture
         .worker
         .vmgs
@@ -764,7 +1041,9 @@ async fn migration_during_event_flush_is_detected_without_another_event(driver: 
 async fn reconstruction_rewrites_after_a_failed_flush(driver: DefaultDriver) {
     let fixture = Fixture::new(&driver, false).await;
     fixture.io.state.lock().fail_flush_at = Some(2);
-    assert!(fixture.worker.check().await.is_err());
+    assert!(fixture.worker.reseal().await.is_err());
+    assert!(fixture.io.state.lock().writes > 0);
+    assert_eq!(fixture.io.state.lock().flushes, 2);
     let saved = fixture.worker.vmgs.save().await.unwrap();
     let disk = fixture.disk.clone();
     let hardware = fixture.hardware.clone();
@@ -788,10 +1067,13 @@ async fn reconstruction_rewrites_after_a_failed_flush(driver: DefaultDriver) {
     *io.state.lock() = IoState::default();
     let derivations = hardware.derivations.load(Ordering::SeqCst);
     let worker = finish_attempt(worker, hardware.reached(2, derivations + 3)).await;
-    assert_eq!(worker.reseals, 1);
-    assert!(!worker.degraded);
+    assert!(!worker.schedule.force_reseal);
+    assert_eq!(worker.schedule.failures, 0);
+    assert_eq!(hardware.reports.load(Ordering::SeqCst), 2);
+    assert_eq!(hardware.derivations.load(Ordering::SeqCst), derivations + 3);
     assert!(io.state.lock().writes > 0);
     assert_eq!(io.state.lock().flushes, 2);
+    assert!(worker.vmgs.active_encryption_key().await.unwrap() == DEK);
     drop(worker);
     broker.await;
 }
@@ -818,9 +1100,8 @@ async fn failed_final_flush_retries_write_even_when_cached_protector_matches(
     drive_until(run.as_mut(), stop).await.unwrap();
     drop(send);
     fixture.worker = run.await;
-    assert_eq!(fixture.worker.checks, 1);
-    assert_eq!(fixture.worker.reseals, 0);
-    assert!(fixture.worker.degraded);
+    assert!(fixture.io.state.lock().writes > 0);
+    assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
     let cached = fixture
@@ -838,9 +1119,12 @@ async fn failed_final_flush_retries_write_even_when_cached_protector_matches(
     fixture.worker.schedule.not_before = Instant::now();
     fixture.worker =
         finish_attempt(fixture.worker, fixture.hardware.reached(2, derivations + 3)).await;
-    assert_eq!(fixture.worker.checks, 2);
-    assert_eq!(fixture.worker.reseals, 1);
-    assert!(!fixture.worker.degraded);
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        fixture.hardware.derivations.load(Ordering::SeqCst),
+        derivations + 3
+    );
+    assert!(!fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 0);
     assert!(fixture.io.state.lock().writes > 0);
     assert_eq!(fixture.io.state.lock().flushes, 2);

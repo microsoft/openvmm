@@ -106,7 +106,7 @@ impl Schedule {
     }
 }
 
-/// Managed with VM state units, so stop drains any active broker operation
+/// Managed with VM state units, so stop drains hardware work and broker I/O
 /// before VMGS is snapshotted. Keys are borrowed/copied only during an attempt.
 #[derive(Inspect)]
 pub(crate) struct HardwareReseal {
@@ -119,12 +119,9 @@ pub(crate) struct HardwareReseal {
     #[inspect(skip)]
     vmgs: VmgsClient,
     #[inspect(skip)]
-    tee: Box<dyn TeeCall>,
+    tee: Arc<dyn TeeCall>,
     #[inspect(skip)]
-    config: AttestationVmConfig,
-    checks: u64,
-    reseals: u64,
-    degraded: bool,
+    config: Arc<AttestationVmConfig>,
 }
 
 impl HardwareReseal {
@@ -140,11 +137,8 @@ impl HardwareReseal {
             notification,
             timer,
             vmgs,
-            tee,
-            config,
-            checks: 0,
-            reseals: 0,
-            degraded: false,
+            tee: tee.into(),
+            config: Arc::new(config),
         }
     }
 
@@ -152,7 +146,7 @@ impl HardwareReseal {
         loop {
             enum Event {
                 State(Option<StateRequest>),
-                Check,
+                Reseal,
             }
             let event = poll_fn(|cx| {
                 // State transitions win over a timer or an event storm.
@@ -170,30 +164,25 @@ impl HardwareReseal {
                 }
                 self.timer
                     .poll_until(cx, self.schedule.due())
-                    .map(|_| Event::Check)
+                    .map(|_| Event::Reseal)
             })
             .await;
             match event {
                 Event::State(Some(req)) => req.apply(&mut self).await,
                 Event::State(None) => break,
-                Event::Check => {
-                    // Do not cancel an in-flight VMGS write when Stop arrives.
-                    // The state request is acknowledged only after I/O drains.
-                    let result = self.check().await;
-                    self.checks = self.checks.saturating_add(1);
+                Event::Reseal => {
+                    // Await the whole attempt, including offloaded hardware
+                    // calls. Stop is acknowledged only after hardware work and
+                    // VMGS I/O drain; it must not detach a pending write.
+                    let result = self.reseal().await;
                     match &result {
-                        Ok(resealed) => {
-                            if *resealed {
-                                self.reseals = self.reseals.saturating_add(1);
-                                tracelimit::info_ratelimited!(
-                                    CVM_ALLOWED,
-                                    "VMGS hardware protector resealed"
-                                );
-                            }
-                            self.degraded = false;
+                        Ok(()) => {
+                            tracelimit::info_ratelimited!(
+                                CVM_ALLOWED,
+                                "VMGS hardware protector resealed"
+                            );
                         }
                         Err(error) => {
-                            self.degraded = true;
                             tracelimit::warn_ratelimited!(
                                 CVM_ALLOWED,
                                 error = error.as_ref() as &dyn std::error::Error,
@@ -213,31 +202,53 @@ impl HardwareReseal {
         self
     }
 
-    async fn check(&self) -> anyhow::Result<bool> {
+    /// Reseal the active DEK, durably publish its protector, and verify it
+    /// against fresh hardware derivations before and after persistence.
+    async fn reseal(&self) -> anyhow::Result<()> {
         let key = self.vmgs.active_encryption_key().await?;
-        let protector = runtime_sealing::create_protector(&*self.tee, &self.config, &key)?;
-        // Validate with a second hardware derivation, not the seal-time keys.
-        anyhow::ensure!(
-            runtime_sealing::protector_matches(&*self.tee, &self.config, &protector, &key)?,
-            "hardware changed while constructing the protector"
-        );
+        // TEE report/key ioctls are synchronous. Keep their latency off the VP
+        // executors (and the GET thread). Only one blocking job per worker is
+        // in flight, and each is awaited before advancing the attempt.
+        let tee = self.tee.clone();
+        let config = self.config.clone();
+        let span = tracing::Span::current();
+        let protector = blocking::unblock(move || {
+            span.in_scope(|| -> anyhow::Result<Vec<u8>> {
+                let protector = runtime_sealing::create_protector(&*tee, &config, &key)?;
+                // Validate with a second derivation, not the seal-time keys.
+                anyhow::ensure!(
+                    runtime_sealing::protector_matches(&*tee, &config, &protector, &key)?,
+                    "hardware changed while constructing the protector"
+                );
+                Ok(protector)
+            })
+        })
+        .await?;
+        // HW_KEY_PROTECTOR is written without VMGS-level encryption so it can
+        // be read before unlocking VMGS. The active-DEK comparison is defensive:
+        // although the broker currently cannot rotate the DEK, future concurrent
+        // rotation must not let us publish a protector for a stale key.
         anyhow::ensure!(
             self.vmgs
-                .write_file_if_encryption_key_matches(
-                    FileId::HW_KEY_PROTECTOR,
-                    protector.clone(),
-                    key,
-                )
+                .write_file_if_active_key_matches(FileId::HW_KEY_PROTECTOR, protector.clone(), key)
                 .await?,
             "VMGS key changed while constructing the protector"
         );
         // Migration can happen during the write/flush, too. An event arriving
         // here remains latched for another attempt regardless of this result.
-        anyhow::ensure!(
-            runtime_sealing::protector_matches(&*self.tee, &self.config, &protector, &key)?,
-            "hardware changed while persisting the protector"
-        );
-        Ok(true)
+        let tee = self.tee.clone();
+        let config = self.config.clone();
+        let span = tracing::Span::current();
+        blocking::unblock(move || {
+            span.in_scope(|| -> anyhow::Result<()> {
+                anyhow::ensure!(
+                    runtime_sealing::protector_matches(&*tee, &config, &protector, &key)?,
+                    "hardware changed while persisting the protector"
+                );
+                Ok(())
+            })
+        })
+        .await
     }
 }
 
