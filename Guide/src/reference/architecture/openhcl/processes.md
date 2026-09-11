@@ -98,6 +98,13 @@ completed write. Fresh hardware derivations verify the candidate before and
 after persistence. Neither remote key release nor a new migration protocol is
 required.
 
+Synchronous TEE report generation and key derivation run on the existing
+blocking executor, not a VP executor or the GET thread. Each attempt awaits
+protector creation and pre-write verification in one blocking job, performs
+asynchronous VMGS I/O, then awaits post-flush verification in a second job.
+Only one hardware job per resealing worker is in flight at a time. This isolates
+hardware-call latency; it does not reduce that latency or impose a timeout.
+
 Resealing is event-only: starting or resuming the worker does not verify or
 rewrite the protector. Each attempt creates a new protector using the current
 report's SVN, even if the hardware still matches. Failures retry with exponential
@@ -107,9 +114,12 @@ one second apart. After success, the worker stays idle until another event.
 These retry and rate-limit intervals are implementation constants, not a
 host-controlled setting.
 
-The `hardware_reseal` state unit exposes check/reseal counters and a degraded
-flag through inspection, but no key material. Stopping the unit drains in-flight
-I/O before VMGS save. Pending notifications and retries survive normal stop/start
+The `hardware_reseal` state unit logs successful reseals and failed attempts
+with rate limiting. Inspection exposes scheduling state, including pending
+recovery and consecutive failures used for backoff, but no key material.
+Stopping the unit waits for the complete attempt, including offloaded hardware
+work and VMGS I/O, before VMGS save. Pending notifications and retries survive
+normal stop/start
 without resetting retry backoff. Reconstruction from saved VMGS state explicitly
 latches a local restore signal to force a rewrite and flush, covering an earlier
 failed durability operation. This is not startup or periodic verification, and
