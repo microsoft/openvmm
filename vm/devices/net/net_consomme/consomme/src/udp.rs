@@ -364,7 +364,8 @@ impl<T: Client> Access<'_, T> {
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
 
-        if let Some(mut listeners) = self.inner.udp.listeners.try_lock() {
+        {
+            let mut listeners = self.inner.udp.listeners.lock();
             for listener in listeners.values_mut() {
                 listener.poll_listener(
                     cx,
@@ -513,10 +514,15 @@ impl<T: Client> Access<'_, T> {
             // This packet is destined for a local address. If the port matches a listener,
             // translate it so that the connection loops back to the expected destination.
             let key = PortForwardKey::from_socket_addr(dst_sock_addr, dst_sock_addr.port());
-            if let Some(listeners) = self.inner.udp.listeners.try_lock()
-                && let Some(listener) = listeners.get(&key)
-            {
-                dst_sock_addr.set_port(listener.host_addr.port());
+            let host_port = self
+                .inner
+                .udp
+                .listeners
+                .lock()
+                .get(&key)
+                .map(|listener| listener.host_addr.port());
+            if let Some(host_port) = host_port {
+                dst_sock_addr.set_port(host_port);
             }
         }
 

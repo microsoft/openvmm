@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::*;
+use futures::task::ArcWake;
 use pal_async::DefaultDriver;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::DnsQueryType;
@@ -16,6 +17,8 @@ use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
 use smoltcp::wire::UDP_HEADER_LEN;
 use smoltcp::wire::UdpPacket;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 
@@ -38,6 +41,62 @@ impl Client for TestClient {
 
     fn rx_mtu(&mut self) -> usize {
         1514
+    }
+}
+
+#[derive(Default)]
+struct WakeCounter(AtomicUsize);
+
+impl ArcWake for WakeCounter {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        arc_self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[pal_async::async_test]
+async fn listener_changes_wake_packet_queue(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let control = ListenerControl::new(Arc::new(driver.clone()), consomme.listener_control_inner());
+    let mut client = TestClient::new(driver);
+
+    for is_tcp in [true, false] {
+        let counter = Arc::new(WakeCounter::default());
+        let waker = futures::task::waker(counter.clone());
+        let mut cx = Context::from_waker(&waker);
+        consomme.access(&mut client).poll(&mut cx);
+
+        let socket = if is_tcp {
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+        } else {
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
+        }
+        .unwrap();
+        socket
+            .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())
+            .unwrap();
+
+        counter.0.store(0, Ordering::SeqCst);
+        if is_tcp {
+            control.bind_tcp_port(socket, 8080).unwrap();
+        } else {
+            control.bind_udp_port(socket, 8080).unwrap();
+        }
+        assert!(
+            counter.0.load(Ordering::SeqCst) > 0,
+            "bind must wake the queue"
+        );
+
+        consomme.access(&mut client).poll(&mut cx);
+        counter.0.store(0, Ordering::SeqCst);
+        if is_tcp {
+            control.unbind_tcp_port(IpVersion::Ipv4, 8080).unwrap();
+        } else {
+            control.unbind_udp_port(IpVersion::Ipv4, 8080).unwrap();
+        }
+        assert!(
+            counter.0.load(Ordering::SeqCst) > 0,
+            "unbind must wake the queue"
+        );
     }
 }
 

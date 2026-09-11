@@ -201,10 +201,11 @@ impl TcpListenerControl {
             .as_socket()
             .ok_or_else(|| BindError::Io(io::Error::other("socket local address is invalid")))?;
         let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        let listener = TcpListener::from_socket(driver, socket)?;
         match self.listeners.lock().entry(key) {
             hash_map::Entry::Occupied(_) => Err(BindError::PortAlreadyBound(guest_port)),
             hash_map::Entry::Vacant(entry) => {
-                entry.insert(TcpListener::from_socket(driver, socket)?);
+                entry.insert(listener);
                 Ok(())
             }
         }
@@ -824,7 +825,8 @@ impl TcpState {
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
         // Check for any new incoming connections
-        if let Some(mut listeners) = self.inner.tcp.listeners.try_lock() {
+        {
+            let mut listeners = self.inner.tcp.listeners.lock();
             listeners.retain(|key, listener| match listener.poll_listener(cx) {
                 Ok(result) => {
                     if let Some((socket, mut other_addr)) = result {
@@ -1148,13 +1150,20 @@ impl<T: Client> Access<'_, T> {
                         let is_local_address = sender.state.params.is_local_address(&resolved_dst);
                         let key =
                             PortForwardKey::from_socket_addr(resolved_dst, resolved_dst.port());
-                        let ft = if is_local_address
-                            && let Some(listeners) = self.inner.tcp.listeners.try_lock()
-                            && let Some(listener) = listeners.get(&key)
-                        {
+                        let host_port = if is_local_address {
+                            self.inner
+                                .tcp
+                                .listeners
+                                .lock()
+                                .get(&key)
+                                .map(|listener| listener.host_port)
+                        } else {
+                            None
+                        };
+                        let ft = if let Some(host_port) = host_port {
                             FourTuple {
                                 src: sender.ft.src,
-                                dst: SocketAddr::new(resolved_dst.ip(), listener.host_port),
+                                dst: SocketAddr::new(resolved_dst.ip(), host_port),
                             }
                         } else if resolved_dst != sender.ft.dst {
                             FourTuple {
