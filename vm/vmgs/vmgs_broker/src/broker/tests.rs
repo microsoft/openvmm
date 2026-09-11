@@ -142,7 +142,7 @@ async fn guarded_write_matches_and_flushes_header(driver: DefaultDriver) {
 
     assert!(
         client
-            .write_file_if_encryption_key_matches(FileId::ATTEST, b"sealed candidate".to_vec(), key)
+            .write_file_if_active_key_matches(FileId::ATTEST, b"sealed candidate".to_vec(), key)
             .await
             .unwrap()
     );
@@ -202,14 +202,14 @@ async fn guarded_write_mismatch_has_no_side_effects(driver: DefaultDriver) {
         stale_key[index] ^= 1;
         assert!(
             !client
-                .write_file_if_encryption_key_matches(FileId::ATTEST, b"stale".to_vec(), stale_key)
+                .write_file_if_active_key_matches(FileId::ATTEST, b"stale".to_vec(), stale_key)
                 .await
                 .unwrap()
         );
     }
     assert!(
         !client
-            .write_file_if_encryption_key_matches(FileId::TPM_PPI, b"stale".to_vec(), [0; 32])
+            .write_file_if_active_key_matches(FileId::TPM_PPI, b"stale".to_vec(), [0; 32])
             .await
             .unwrap()
     );
@@ -261,7 +261,7 @@ async fn guarded_write_rechecks_key_after_rotation() {
         .unwrap();
     *io.lock() = IoState::default();
     let result = send.call_failable(
-        VmgsBrokerRpc::WriteFileIfEncryptionKeyMatches,
+        VmgsBrokerRpc::WriteFileIfActiveKeyMatches,
         (
             FileId::ATTEST.into(),
             b"old key candidate".to_vec(),
@@ -278,7 +278,7 @@ async fn guarded_write_rechecks_key_after_rotation() {
     );
 
     let result = send.call_failable(
-        VmgsBrokerRpc::WriteFileIfEncryptionKeyMatches,
+        VmgsBrokerRpc::WriteFileIfActiveKeyMatches,
         (
             FileId::ATTEST.into(),
             b"replacement candidate".to_vec(),
@@ -317,7 +317,7 @@ async fn guarded_write_rejects_plaintext_and_locked_stores(driver: DefaultDriver
         ));
         assert!(matches!(
             client
-                .write_file_if_encryption_key_matches(FileId::ATTEST, vec![1], [1; 32])
+                .write_file_if_active_key_matches(FileId::ATTEST, vec![1], [1; 32])
                 .await,
             Err(VmgsClientError::Vmgs(_))
         ));
@@ -339,7 +339,7 @@ async fn guarded_write_preserves_encrypted_file(driver: DefaultDriver) {
     *io.lock() = IoState::default();
     assert!(matches!(
         client
-            .write_file_if_encryption_key_matches(FileId::BIOS_NVRAM, b"plaintext".to_vec(), key)
+            .write_file_if_active_key_matches(FileId::BIOS_NVRAM, b"plaintext".to_vec(), key)
             .await,
         Err(VmgsClientError::Vmgs(_))
     ));
@@ -372,7 +372,7 @@ async fn guarded_write_propagates_final_flush_error(driver: DefaultDriver) {
         ..Default::default()
     };
     let result = client
-        .write_file_if_encryption_key_matches(FileId::ATTEST, b"candidate".to_vec(), key)
+        .write_file_if_active_key_matches(FileId::ATTEST, b"candidate".to_vec(), key)
         .await;
     let Err(VmgsClientError::Vmgs(VmgsBrokerError::Other(error))) = result else {
         panic!("final flush failure must be returned as a VMGS error");
