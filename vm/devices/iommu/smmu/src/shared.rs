@@ -152,6 +152,8 @@ pub(crate) struct TranslationPolicy {
     pub(crate) strtab_base: u64,
     pub(crate) strtab_log2size: u8,
     pub(crate) oas_mask: u64,
+    pub(crate) ssid_bits: u8,
+    pub(crate) ats: bool,
 }
 
 /// Reduce a guest stage-1 STE to the double-words that are architecturally
@@ -171,10 +173,10 @@ pub(crate) struct TranslationPolicy {
 /// - `IDR1.ATTR_TYPES_OVR == 0` → MTCFG, MemAttr, SHCFG, ALLOCCFG are RES0;
 /// - `IDR1.ATTR_PERMS_OVR == 0` → NSCFG, PRIVCFG, INSTCFG are RES0;
 /// - `IDR0.HYP == 0` → STRW is fixed to NS-EL1 (0);
-/// - `IDR0.ATS == 0` → EATS is IGNORED;
-/// - `IDR1.SSIDSIZE == 0` → S1CDMax is IGNORED, and S1Fmt and S1DSS are in turn
-///   IGNORED ("substreams unsupported"), leaving `S1ContextPtr` addressing
-///   exactly one CD;
+/// - when `IDR0.ATS == 0`, EATS is IGNORED;
+/// - when `IDR1.SSIDSIZE == 0`, S1CDMax is IGNORED, and S1Fmt and S1DSS are in
+///   turn IGNORED ("substreams unsupported"), leaving `S1ContextPtr`
+///   addressing exactly one CD;
 /// - unadvertised optional features (S1PIE, S1MPAM, CONT, DCP, DRE, PPAR, MEV)
 ///   are RES0/IGNORED; the SW bits have no hardware effect.
 ///
@@ -182,27 +184,42 @@ pub(crate) struct TranslationPolicy {
 /// fetch address to the OAS (§3.4), so the pointer it acts on never contains
 /// bits above the advertised output address size.
 ///
-/// Retained — DW0: V, Config, S1ContextPtr; DW1: S1CIR, S1COR, S1CSH, S1STALLD.
-/// Rebuilding the words through the typed field setters keeps the selection
-/// tied to the spec definitions.
+/// Retained unconditionally — DW0: V, Config, S1ContextPtr; DW1: S1CIR, S1COR,
+/// S1CSH, S1STALLD. S1Fmt, S1CDMax, and S1DSS are additionally retained when
+/// SSID support is advertised; EATS is retained when ATS is advertised.
 ///
 /// NOTE: if this emulator ever advertises one of the above features, the
 /// retained set must grow to match (and attach-time capability resolution must
 /// gate the new field against the host SMMU).
-fn canonical_s1_ste_dwords(ste: &crate::spec::ste::Ste, oas_mask: u64) -> [u64; 2] {
+fn canonical_s1_ste_dwords(
+    ste: &crate::spec::ste::Ste,
+    oas_mask: u64,
+    ssid_bits: u8,
+    ats: bool,
+) -> [u64; 2] {
     use crate::spec::ste::SteDw0;
     use crate::spec::ste::SteDw1;
 
-    let dw0 = SteDw0::new()
+    let mut dw0 = SteDw0::new()
         .with_v(ste.qw0.v())
         .with_config(ste.qw0.config())
         .with_s1_context_ptr((ste.s1_context_ptr() & oas_mask) >> 6);
 
-    let dw1 = SteDw1::new()
+    let mut dw1 = SteDw1::new()
         .with_s1_cir(ste.qw1.s1_cir())
         .with_s1_cor(ste.qw1.s1_cor())
         .with_s1_csh(ste.qw1.s1_csh())
         .with_s1stalld(ste.qw1.s1stalld());
+
+    if ssid_bits != 0 {
+        dw0 = dw0
+            .with_s1_fmt(ste.qw0.s1_fmt())
+            .with_s1_cd_max(ste.qw0.s1_cd_max());
+        dw1 = dw1.with_s1_dss(ste.qw1.s1_dss());
+    }
+    if ats {
+        dw1 = dw1.with_eats(ste.qw1.eats());
+    }
 
     [dw0.into(), dw1.into()]
 }
@@ -373,6 +390,10 @@ struct SharedStateInner {
     /// Advertised output address size in bits. Reflected in IDR5.OAS and
     /// used to derive `oas_mask`.
     oas_bits: u8,
+    /// Advertised PASID/SSID width, resolved from the host before start.
+    ssid_bits: u8,
+    /// Whether ATS is advertised, resolved from the host before start.
+    ats: bool,
     /// Host SMMU capabilities, once an accelerated VFIO device has bound and
     /// [`SmmuSharedState::resolve_host_caps`] has resolved or validated the
     /// host-derived parameters. `None` until then (and always `None` for
@@ -466,6 +487,8 @@ impl SmmuSharedState {
                 strtab_base: 0,
                 strtab_log2size: 0,
                 oas_bits,
+                ssid_bits: 0,
+                ats: false,
                 resolved_host_caps: None,
                 oas_mask,
             }),
@@ -497,6 +520,16 @@ impl SmmuSharedState {
     /// Returns the currently advertised output address size in bits.
     pub(crate) fn oas_bits(&self) -> u8 {
         self.inner.read().oas_bits
+    }
+
+    /// Returns the currently advertised PASID/SSID width.
+    pub(crate) fn ssid_bits(&self) -> u8 {
+        self.inner.read().ssid_bits
+    }
+
+    /// Returns whether ATS is currently advertised.
+    pub fn ats_supported(&self) -> bool {
+        self.inner.read().ats
     }
 
     /// Freezes guest-visible capabilities before the VM can observe them.
@@ -605,6 +638,29 @@ impl SmmuSharedState {
             anyhow::bail!("host SMMU does not support the 4KB translation granule (IDR5.GRAN4K=0)");
         }
 
+        if caps.ssid_bits > 20 {
+            anyhow::bail!(
+                "host reported PASID width {} above the PCIe maximum of 20",
+                caps.ssid_bits
+            );
+        }
+
+        if !inner.capabilities_frozen {
+            inner.ssid_bits = caps.ssid_bits;
+            inner.ats = caps.ats;
+        } else {
+            if inner.ssid_bits > caps.ssid_bits {
+                anyhow::bail!(
+                    "advertised SMMU SSID width {} exceeds host PASID width {}",
+                    inner.ssid_bits,
+                    caps.ssid_bits
+                );
+            }
+            if inner.ats && !caps.ats {
+                anyhow::bail!("advertised SMMU ATS is not supported by the host device");
+            }
+        }
+
         // OAS: decode the host's IDR5.OAS encoding (may be a reserved value).
         // Before the device starts, `auto` adopts the host value. Once
         // capabilities are guest-visible, both policies only validate the
@@ -661,6 +717,8 @@ impl SmmuSharedState {
             strtab_base: inner.strtab_base,
             strtab_log2size: inner.strtab_log2size,
             oas_mask: inner.oas_mask,
+            ssid_bits: inner.ssid_bits,
+            ats: inner.ats,
         }
     }
 
@@ -1014,7 +1072,12 @@ impl SmmuSharedState {
         match translate::ste_config_action(&ste) {
             translate::SteAction::Bypass => StreamConfig::Bypass,
             translate::SteAction::S1Translate => StreamConfig::Translate {
-                ste_dwords: canonical_s1_ste_dwords(&ste, policy.oas_mask),
+                ste_dwords: canonical_s1_ste_dwords(
+                    &ste,
+                    policy.oas_mask,
+                    policy.ssid_bits,
+                    policy.ats,
+                ),
             },
             // Config[2]==0 (0b000 / reserved) aborts with no event; an illegal
             // config (0b110/0b111 on this stage-1-only SMMU) also aborts here —
@@ -1668,7 +1731,7 @@ mod tests {
             _qw2_7: [0; 6],
         };
 
-        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK);
+        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK, 0, false);
         // Retained fields survive untouched.
         assert_eq!(out0, u64::from(qw0));
         assert_eq!(out1, u64::from(qw1));
@@ -1682,7 +1745,7 @@ mod tests {
             qw1: SteDw1::from(u64::MAX),
             _qw2_7: [u64::MAX; 6],
         };
-        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK);
+        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK, 0, false);
 
         // DW0 retains V[0] | Config[3:1] | S1ContextPtr[55:6], the pointer
         // truncated to the 48-bit OAS. S1Fmt[5:4] and S1CDMax[63:59] are
@@ -1693,6 +1756,28 @@ mod tests {
         // IDR0.ATS == 0; everything else (STRW, SHCFG, NSCFG, PRIVCFG,
         // stage-2/override fields, ...) is RES0/IGNORED.
         assert_eq!(out1, 0x0800_00fc);
+    }
+
+    #[test]
+    fn test_canonical_s1_ste_dwords_preserves_pasid_and_ats_fields() {
+        let ste = Ste {
+            qw0: SteDw0::new()
+                .with_v(true)
+                .with_config(SteConfig::S1_TRANS.0)
+                .with_s1_fmt(2)
+                .with_s1_context_ptr(0x1234)
+                .with_s1_cd_max(14),
+            qw1: SteDw1::new().with_s1_dss(2).with_eats(1),
+            _qw2_7: [0; 6],
+        };
+
+        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK, 14, true);
+        let out0 = SteDw0::from(out0);
+        let out1 = SteDw1::from(out1);
+        assert_eq!(out0.s1_fmt(), 2);
+        assert_eq!(out0.s1_cd_max(), 14);
+        assert_eq!(out1.s1_dss(), 2);
+        assert_eq!(out1.eats(), 1);
     }
 
     /// A mock SignalMsi that records calls.
@@ -2354,6 +2439,8 @@ mod tests {
             ttf: registers::Idr0Ttf::new().with_aarch64(true),
             ttendian: registers::Idr0TtEndian::LE,
             gran4k: true,
+            ssid_bits: 14,
+            ats: true,
         }
     }
 
@@ -2371,6 +2458,22 @@ mod tests {
     fn resolve_host_caps_accepts_compatible_host() {
         let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
         state.resolve_host_caps(compatible_host_caps()).unwrap();
+    }
+
+    #[test]
+    fn resolve_host_caps_updates_ats_support() {
+        let supported = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        supported.resolve_host_caps(compatible_host_caps()).unwrap();
+        assert!(supported.ats_supported());
+
+        let unsupported = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        unsupported
+            .resolve_host_caps(crate::HostSmmuCaps {
+                ats: false,
+                ..compatible_host_caps()
+            })
+            .unwrap();
+        assert!(!unsupported.ats_supported());
     }
 
     #[test]
