@@ -67,6 +67,7 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
+use std::sync::Arc;
 use std::task::Context;
 use std::time::Duration;
 use thiserror::Error;
@@ -120,6 +121,58 @@ pub struct Consomme {
     icmp: icmp::Icmp,
     dns: dns_resolver::DnsResolver,
     host_has_ipv6: bool,
+    #[inspect(skip)]
+    listener_waker: Arc<futures::task::AtomicWaker>,
+}
+
+/// Control handle for listener-only operations that do not access connection
+/// or packet-processing state.
+#[derive(Clone)]
+pub struct ListenerControl {
+    driver: Arc<dyn Driver>,
+    inner: ListenerControlInner,
+}
+
+/// Cloneable listener registry retained across queue restarts.
+#[derive(Clone)]
+struct ListenerControlInner {
+    tcp: tcp::TcpListenerControl,
+    udp: udp::UdpListenerControl,
+    waker: Arc<futures::task::AtomicWaker>,
+}
+
+impl ListenerControl {
+    /// Binds a TCP listener to forward connections to the guest.
+    pub fn bind_tcp_port(&self, socket: socket2::Socket, guest_port: u16) -> Result<(), BindError> {
+        self.inner
+            .tcp
+            .bind(self.driver.as_ref(), socket, guest_port)?;
+        self.inner.waker.wake();
+        Ok(())
+    }
+
+    /// Binds a UDP listener to forward packets to the guest.
+    pub fn bind_udp_port(&self, socket: socket2::Socket, guest_port: u16) -> Result<(), BindError> {
+        self.inner
+            .udp
+            .bind(self.driver.as_ref(), socket, guest_port)?;
+        self.inner.waker.wake();
+        Ok(())
+    }
+
+    /// Unbinds a TCP listener.
+    pub fn unbind_tcp_port(&self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        self.inner.tcp.unbind(family, port)?;
+        self.inner.waker.wake();
+        Ok(())
+    }
+
+    /// Unbinds a UDP listener.
+    pub fn unbind_udp_port(&self, family: IpVersion, port: u16) -> Result<(), BindError> {
+        self.inner.udp.unbind(family, port)?;
+        self.inner.waker.wake();
+        Ok(())
+    }
 }
 
 #[derive(Inspect)]
@@ -847,6 +900,7 @@ impl Consomme {
             icmp: icmp::Icmp::new(),
             dns,
             host_has_ipv6,
+            listener_waker: Arc::new(futures::task::AtomicWaker::new()),
         }
     }
 
@@ -912,6 +966,18 @@ impl Consomme {
             client,
         }
     }
+
+    /// Creates a listener control handle using `driver` to register sockets.
+    pub fn listener_control(&self, driver: Arc<dyn Driver>) -> ListenerControl {
+        ListenerControl {
+            driver,
+            inner: ListenerControlInner {
+                tcp: self.tcp.listener_control(),
+                udp: self.udp.listener_control(),
+                waker: self.listener_waker.clone(),
+            },
+        }
+    }
 }
 
 impl<T: Client> Access<'_, T> {
@@ -927,6 +993,7 @@ impl<T: Client> Access<'_, T> {
 
     /// Polls for work, transmitting any ready packets to the client.
     pub fn poll(&mut self, cx: &mut Context<'_>) {
+        self.inner.listener_waker.register(cx.waker());
         self.poll_udp(cx);
         self.poll_tcp(cx);
         self.poll_icmp(cx);
