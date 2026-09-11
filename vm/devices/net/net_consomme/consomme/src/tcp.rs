@@ -1009,6 +1009,32 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.tcp.timer = Some(TcpTimer::new(self.client.driver()));
+        let mut listeners = self.inner.tcp.listeners.lock();
+        *listeners = listeners
+            .drain()
+            .filter_map(|(key, listener)| {
+                let socket = listener.socket.into_inner();
+                match PolledSocket::new(self.client.driver(), socket) {
+                    Ok(socket) => Some((
+                        key,
+                        TcpListener {
+                            socket,
+                            host_port: listener.host_port,
+                        },
+                    )),
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            guest_port = key.guest_port,
+                            family = %key.family,
+                            error = &err as &dyn std::error::Error,
+                            "failed to update driver for tcp listener"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+        drop(listeners);
         self.inner.tcp.connections.retain(|ft, conn| {
             let TcpBackend::Socket {
                 socket: opt_socket, ..
