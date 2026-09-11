@@ -9,7 +9,10 @@
 //! resource and power management, like Linux does, as opposed to the
 //! message-based interface, like Windows does.
 
+pub mod tdisp;
 mod tests;
+
+pub use tdisp::VpciClientTdispState;
 
 use anyhow::Context;
 use chipset_device::pci::ByteEnabledDwordRead;
@@ -23,21 +26,8 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
-use openhcl_tdisp::GuestToHostCommand;
-use openhcl_tdisp::GuestToHostCommandExt;
 use openhcl_tdisp::GuestToHostResponse;
-use openhcl_tdisp::GuestToHostResponseExt;
-use openhcl_tdisp::TdispCommandResponseBind;
-use openhcl_tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
-use openhcl_tdisp::TdispCommandResponseGetTdiReport;
-use openhcl_tdisp::TdispCommandResponseStartTdi;
-use openhcl_tdisp::TdispCommandResponseUnbind;
-use openhcl_tdisp::TdispDeviceInterfaceInfo;
-use openhcl_tdisp::TdispGuestOperationErrorCode;
-use openhcl_tdisp::TdispGuestProtocolType;
-use openhcl_tdisp::TdispGuestUnbindReason;
-use openhcl_tdisp::TdispReportType;
-use openhcl_tdisp::TdispVirtualDeviceInterface;
+use openhcl_tdisp::TdispResourceValidationInterface;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
@@ -47,8 +37,8 @@ use pci_core::spec::hwid::HardwareIds;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
-use tdisp::devicereport::TdiReportStruct;
 use thiserror::Error;
+use virt::IsolationType;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
@@ -136,8 +126,10 @@ impl<M: RingMem> VpciConnection<M> {
     }
 
     async fn negotiate(&mut self) -> anyhow::Result<protocol::ProtocolVersion> {
-        // Try to negotiate versions in order from newest to oldest
-        let versions = &[protocol::ProtocolVersion::VB];
+        // Try to negotiate versions in order from newest to oldest. Hosts
+        // that predate `RB` reply with `REVISION_MISMATCH`, so the
+        // loop falls through to `VB`.
+        let versions = &[protocol::ProtocolVersion::RB, protocol::ProtocolVersion::VB];
 
         for &version in versions {
             tracing::debug!(?version, "trying protocol version");
@@ -194,6 +186,17 @@ pub trait MemoryAccess: Send {
 /// The amount of MMIO space required by the VPCI bus.
 pub const MMIO_SIZE: u64 = 0x2000;
 
+struct InspectableAsyncMutex<T>(futures::lock::Mutex<T>);
+
+impl<T: Inspect> Inspect for InspectableAsyncMutex<T> {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        match self.0.try_lock() {
+            Some(guard) => guard.inspect(req),
+            None => req.value("locked"),
+        }
+    }
+}
+
 /// A device description, which represents a VPCI device available on a bus.
 #[derive(Inspect)]
 pub struct VpciDeviceDescription {
@@ -227,6 +230,7 @@ pub struct VpciDevice {
     #[inspect(hex, iter_by_index)]
     /// RAO == Read As One
     bar_rao: [u32; 6],
+    tdisp: InspectableAsyncMutex<VpciClientTdispState>,
 }
 
 #[derive(Inspect)]
@@ -350,7 +354,13 @@ impl VpciDeviceDescription {
     /// Initializes the device, returning a VPCI device instance that can be
     /// used to interact with it. Also returns an object to use to get notified
     /// when the device is ejected or surprise removed.
-    pub async fn init(self) -> anyhow::Result<(VpciDevice, VpciDeviceEject)> {
+    pub async fn init(
+        self,
+        resource_validator: Arc<dyn TdispResourceValidationInterface>,
+        isolation_type: IsolationType,
+        vtom: u64,
+        target_vtl: hvdef::Vtl,
+    ) -> anyhow::Result<(VpciDevice, VpciDeviceEject)> {
         let requirements = self
             .req
             .call_failable(WorkerRequest::QueryResourceRequirements, self.id)
@@ -370,6 +380,16 @@ impl VpciDeviceDescription {
             req,
             eject,
         } = self;
+
+        let tdisp = VpciClientTdispState::new(
+            req.clone(),
+            id.slot.into_bits() as u64,
+            resource_validator,
+            isolation_type,
+            vtom,
+            target_vtl,
+            implemented_bars(&requirements.bars),
+        );
 
         // After this, the device is considered initialized and the caller is
         // responsible notifying the worker when the device is no longer in use.
@@ -405,6 +425,7 @@ impl VpciDeviceDescription {
             numa_node,
             serial_num,
             dev,
+            tdisp: InspectableAsyncMutex(futures::lock::Mutex::new(tdisp)),
         };
 
         Ok((device, VpciDeviceEject(eject)))
@@ -536,6 +557,192 @@ impl VpciDevice {
         }
         accessor.write(self.dev.id, offset, value);
     }
+
+    /// Clear the MMIO-enable and bus-master bits in both the shadowed
+    /// command register and on the host-side device, as if the guest
+    /// had written a STATUS_COMMAND value with MMIO and bus-master
+    /// disabled. Called on the unbind path
+    /// ([`Self::tdisp_on_device_deactivate`]) to explicitly leave the command
+    /// register in the expected off state after the device is unbound.
+    ///
+    /// This is not safety critical, this is for cleanup purposes only.
+    fn clear_command_register(&self) {
+        let mut shadows = self.shadows.lock();
+        let mut cleared = shadows.command;
+        cleared.set_mmio_enabled(false);
+        cleared.set_bus_master(false);
+        shadows.command = cleared;
+        drop(shadows);
+
+        tracing::info!(
+            "clear_command_register: clearing command register MMIO and bus-master bits"
+        );
+
+        // Push the update through so the host observes MMIO and bus-master as
+        // disabled. Avoids re-entering vpci_relay logic.
+        let mut accessor = self.config_space.lock();
+        accessor.write(
+            self.dev.id,
+            HeaderType00::STATUS_COMMAND.0,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(u32::from(u16::from(cleared))),
+        );
+    }
+
+    /// Called on the STATUS_COMMAND MMIO disabled→enabled edge.
+    ///
+    /// If the TDI is not already in `Run`, this will drive a bind/attest cycle
+    /// first. If the TDI is already in `Run`, this will unbind and rebind the
+    /// TDI to attest the device again.
+    ///
+    /// Then writes `command_value` to the command register, which flushes the
+    /// shadowed BARs to the host device, and only after that notifies TDISP
+    /// about each currently active MMIO BAR via
+    /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`]. The BARs
+    /// must be mapped for the guest before the unblock operations run.
+    ///
+    /// Returns `true` only if attestation and every BAR notification succeeded
+    /// completely. On `false` the command register is left off: either it was
+    /// never written, or [`Self::tdisp_fail_attestation`] cleared it.
+    pub async fn tdisp_on_device_activate(&self, command_value: ByteEnabledDwordWrite) -> bool {
+        use tdisp::TdispVpciAttestationInterface;
+
+        tracing::info!(
+            "tdisp_on_device_activate: guest enabled MMIO, attesting device and notifying TDISP of MMIO bars"
+        );
+
+        // Attest the device.
+        let attest_result = match self.tdisp_query_capabilities().await {
+            Ok(interface_info) => self
+                .tdisp_attest_device(interface_info)
+                .await
+                .context("tdisp_attest_device failed"),
+            Err(err) => Err(err.context("tdisp_query_capabilities failed")),
+        };
+
+        if let Err(err) = attest_result {
+            tracing::error!(
+                error = &*err as &dyn std::error::Error,
+                "tdisp_on_device_activate: attestation failed, leaving command register off"
+            );
+            self.tdisp_fail_attestation().await;
+            return false;
+        }
+
+        // Attestation succeeded, so enable the command register now. This
+        // flushes the shadowed BARs to the host device, mapping the MMIO
+        // ranges for the guest before the unblock operations below run.
+        //
+        // On any failure past this point `tdisp_fail_attestation` clears the
+        // command register again.
+        self.write_cfg(HeaderType00::STATUS_COMMAND.0, command_value);
+
+        tracing::info!(
+            ?command_value,
+            "tdisp_on_device_activate: command register written at {:#x}, MMIO BARs are now mapped",
+            HeaderType00::STATUS_COMMAND.0,
+        );
+
+        let bars = self.shadows.lock().bars;
+
+        tracing::debug!(?bars, ?self.bar_masks, "command register write enabled mmio, notifying TDISP of MMIO bars");
+
+        for bar in active_mmio_bars(&bars, &self.bar_masks) {
+            let ActiveMmioBar {
+                bar_id,
+                base_address,
+                length_bytes,
+            } = bar;
+
+            tracing::info!(
+                bar_id,
+                base_address,
+                length_bytes,
+                "notifying TDISP state of active MMIO BAR"
+            );
+            if let Err(e) = self
+                .tdisp_on_mmio_reconfigured(bar_id, base_address, length_bytes)
+                .await
+            {
+                tracing::error!(
+                    bar_id,
+                    base_address,
+                    length_bytes,
+                    error = %e,
+                    "failed to notify TDISP of active MMIO BAR. Failing activation."
+                );
+                self.tdisp_fail_attestation().await;
+                return false;
+            }
+        }
+
+        tracing::info!(
+            "tdisp_on_device_activate: attestation and MMIO unblock complete, device activated"
+        );
+
+        true
+    }
+
+    /// Common teardown for any failure during the MMIO-enable activation
+    /// path: post-Bind attestation failure, per-BAR unblock failure, or
+    /// similar. Unbinds the device, clears the command register, and cleans up
+    /// resources.
+    async fn tdisp_fail_attestation(&self) {
+        use openhcl_tdisp::TdispGuestUnbindReason;
+        use openhcl_tdisp::TdispVirtualDeviceInterface;
+
+        tracing::error!(
+            "tdisp_fail_attestation: unbinding TDI back to Unlocked due to attestation failure"
+        );
+
+        let unbind_result = self
+            .tdisp_unbind(TdispGuestUnbindReason::ResourceSetupFailure)
+            .await;
+
+        if let Err(unbind_err) = &unbind_result {
+            tracing::warn!(
+                error = unbind_err.as_ref() as &dyn std::error::Error,
+                "tdisp_fail_attestation: unbind failed"
+            );
+        }
+
+        // Always clear the command register so the device is left in the
+        // expected off state after a failed activation.
+        self.clear_command_register();
+    }
+
+    /// Notifies TDISP that the guest has disabled MMIO on this device. If the
+    /// TDI is in `Run`, issues a full `tdisp_unbind` so the TDI returns to
+    /// `Unlocked` and *all* per-attest state (cached interface report, device
+    /// id, intercepted BARs, validated MMIO bars, DMA flag) is cleared. Mirrors
+    /// [`Self::tdisp_on_device_activate`] for the disable edge.
+    ///
+    /// Called when STATUS_COMMAND transitions MMIO from enabled to disabled. If
+    /// the TDI is not in `Run` (e.g. `Uninitialized`, `Unlocked`, or `Locked`),
+    /// this is a no-op.
+    pub async fn tdisp_on_device_deactivate(&self) {
+        use openhcl_tdisp::TdispGuestUnbindReason;
+        use openhcl_tdisp::TdispVirtualDeviceInterface;
+        use tdisp::TdispVpciAttestationInterface;
+
+        let state = self.tdisp_tdi_state().await;
+
+        tracing::info!(
+            ?state,
+            "tdisp_on_device_deactivate: guest disabled MMIO, unbinding TDI back to Unlocked"
+        );
+
+        if let Err(err) = self.tdisp_unbind(TdispGuestUnbindReason::Graceful).await {
+            tracing::warn!(
+                error = &*err as &dyn std::error::Error,
+                "tdisp_on_device_deactivate: unbind failed"
+            );
+        }
+
+        // Always clear the command register explicitly on the unbind path so the
+        // device is left in the expected off state regardless of the value the
+        // guest wrote or the outcome of the unbind.
+        self.clear_command_register();
+    }
 }
 
 #[derive(Error, Debug)]
@@ -621,173 +828,6 @@ impl MapVpciInterrupt for VpciDevice {
                     "failed to unregister interrupt"
                 );
             });
-    }
-}
-
-impl TdispVirtualDeviceInterface for VpciDevice {
-    async fn send_tdisp_command(
-        &self,
-        payload: GuestToHostCommand,
-    ) -> Result<GuestToHostResponse, anyhow::Error> {
-        let serialized = openhcl_tdisp::serialize_command(&payload);
-
-        // Ensure that the length does not exceed the VMBUS maximum packet size.
-        // This shouldn't be possible since the host should reject the command anyways,
-        // but fail earlier for safety.
-        if serialized.len() > MAX_VPCI_TDISP_COMMAND_SIZE {
-            return Err(anyhow::anyhow!(
-                "serialized TDISP command exceeds VMBUS maximum packet size ({} > {})",
-                serialized.len(),
-                MAX_VPCI_TDISP_COMMAND_SIZE
-            ));
-        }
-
-        // Make a mesh call to send the VMBUS packet to the host and await a response
-        // packet from the host.
-        let res = self
-            .dev
-            .req
-            .call_failable(
-                WorkerRequest::TdispCommand,
-                protocol::VpciTdispCommand {
-                    header: protocol::VpciTdispCommandHeader {
-                        message_type: protocol::MessageType::VPCI_TDISP_COMMAND,
-                        slot: self.dev.id.slot,
-                        data_length: serialized.len() as u64,
-                    },
-                    data: serialized,
-                },
-            )
-            .await
-            .map_err(|err: mesh::rpc::RpcError<mesh::error::RemoteError>| {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to send tdisp command"
-                );
-                anyhow::anyhow!("failed to send tdisp command")
-            })?;
-
-        match res.error_code() {
-            Some(TdispGuestOperationErrorCode::Success) => Ok(res),
-            _ => {
-                let err_msg = format!(
-                    "send_tdisp_command {:?} failed because host responded with an error: {:?}",
-                    payload.type_name(),
-                    res.result
-                );
-
-                tracing::error!(msg = err_msg);
-                Err(anyhow::anyhow!(err_msg))
-            }
-        }
-    }
-
-    async fn tdisp_get_device_interface_info(&self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
-        // TDISP TODO: Configure the correct guest protocol type when TDX support is added.
-        let target_protocol_type = TdispGuestProtocolType::AmdSevTioV1;
-
-        let res = self
-            .send_tdisp_command(openhcl_tdisp::new_get_device_interface_info_command(
-                self.dev.id.slot.into_bits() as u64,
-                target_protocol_type,
-            ))
-            .await?;
-
-        match res.response::<TdispCommandResponseGetDeviceInterfaceInfo>() {
-            Ok(info) => info.interface_info.ok_or_else(|| {
-                anyhow::anyhow!("missing interface_info after validation, this should never happen")
-            }),
-            Err(err) => Err(anyhow::anyhow!(
-                "error response in get_device_interface_info: {err}"
-            )),
-        }
-    }
-
-    async fn tdisp_bind_interface(&self) -> anyhow::Result<()> {
-        let res = self
-            .send_tdisp_command(openhcl_tdisp::new_bind_command(
-                self.dev.id.slot.into_bits() as u64,
-            ))
-            .await?;
-
-        match res.response::<TdispCommandResponseBind>() {
-            Ok(_) => Ok(()),
-            Err(err) => Err(anyhow::anyhow!(
-                "error response in tdisp_bind_interface: {err}"
-            )),
-        }
-    }
-
-    async fn tdisp_start_device(&self) -> anyhow::Result<()> {
-        let res = self
-            .send_tdisp_command(openhcl_tdisp::new_start_tdi_command(
-                self.dev.id.slot.into_bits() as u64,
-            ))
-            .await?;
-
-        match res.response::<TdispCommandResponseStartTdi>() {
-            Ok(_) => Ok(()),
-            Err(err) => Err(anyhow::anyhow!(
-                "error response in tdisp_start_device: {err}"
-            )),
-        }
-    }
-
-    async fn tdisp_get_device_report(
-        &self,
-        report_type: &TdispReportType,
-    ) -> anyhow::Result<Vec<u8>> {
-        let res = self
-            .send_tdisp_command(openhcl_tdisp::new_get_tdi_report_command(
-                self.dev.id.slot.into_bits() as u64,
-                *report_type,
-            ))
-            .await?;
-
-        match res.response::<TdispCommandResponseGetTdiReport>() {
-            Ok(r) => Ok(r.report_buffer),
-            Err(err) => Err(anyhow::anyhow!(
-                "error response in tdisp_get_device_report: {err}"
-            )),
-        }
-    }
-
-    async fn tdisp_get_tdi_report(&self) -> anyhow::Result<TdiReportStruct> {
-        let buffer = self
-            .tdisp_get_device_report(&TdispReportType::InterfaceReport)
-            .await
-            .context("failed to get TDI report")?;
-
-        tdisp::devicereport::deserialize_tdi_report(&buffer)
-            .context("failed to deserialize TDI report from host")
-    }
-
-    async fn tdisp_get_tdi_device_id(&self) -> anyhow::Result<u64> {
-        let buffer = self
-            .tdisp_get_device_report(&TdispReportType::GuestDeviceId)
-            .await
-            .context("failed to get TDI device ID")?;
-
-        // Ensure it's a u64
-        if buffer.len() != size_of::<u64>() {
-            return Err(anyhow::anyhow!("unexpected buffer size for TDI device ID"));
-        }
-
-        Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
-    }
-
-    async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
-        let res = self
-            .send_tdisp_command(openhcl_tdisp::new_unbind_command(
-                self.dev.id.slot.into_bits() as u64,
-                reason,
-            ))
-            .await?;
-
-        match res.response::<TdispCommandResponseUnbind>() {
-            Ok(_) => Ok(()),
-            Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
-        }
     }
 }
 
@@ -1406,4 +1446,115 @@ fn index_to_tx_id(index: usize) -> u64 {
 
 fn tx_id_to_index(tx_id: u64) -> usize {
     tx_id.saturating_sub(1) as usize
+}
+
+/// One MMIO range the guest has programmed into a BAR, decoded from the
+/// shadowed BAR values and the masks the device reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveMmioBar {
+    /// The BAR index. For a 64-bit BAR this is the lower half, which is the
+    /// index the TDI interface report uses for the pair.
+    pub bar_id: u16,
+    /// The guest physical base address the range is mapped at.
+    pub base_address: u64,
+    /// The length of the range in bytes.
+    pub length_bytes: u64,
+}
+
+/// Which BAR indices the device actually implements.
+///
+/// A slot is a BAR in its own right only if the device reports a nonzero size
+/// mask for it and it is not the upper half of a preceding 64-bit BAR. The
+/// upper half is not independently addressable, so nothing refers to it by
+/// index, the TDI interface report included.
+///
+/// * `bar_masks` - The size masks the device reported for each BAR.
+pub(crate) fn implemented_bars(bar_masks: &[u32; 6]) -> [bool; 6] {
+    let mut present = [false; 6];
+    let mut i = 0usize;
+
+    while i < bar_masks.len() {
+        let mask = bar_masks[i];
+        if mask == 0 {
+            i += 1;
+            continue;
+        }
+
+        let bits = pci_core::spec::cfg_space::BarEncodingBits::from(mask);
+
+        let (full_mask, next_i) = if bits.type_64_bit() && i + 1 < 6 {
+            // Combine both halves before testing for zero. A 64-bit BAR of
+            // 4GiB or more has no address bits in its low mask at all, with
+            // the whole size carried in the high one, so testing the halves
+            // separately would call it unimplemented.
+            (
+                ((bar_masks[i + 1] as u64) << 32) | ((mask & !0xF_u32) as u64),
+                i + 2,
+            )
+        } else {
+            ((mask & !0xF_u32) as u64, i + 1)
+        };
+
+        present[i] = full_mask != 0;
+
+        i = next_i;
+    }
+
+    present
+}
+
+/// Decode the guest-programmed BARs into the MMIO ranges that are actually
+/// mapped, in BAR order.
+///
+/// A 64-bit BAR occupies two consecutive slots and is reported once, under the
+/// index of its lower half; the upper half is consumed and never reported on
+/// its own. Unimplemented BARs (mask zero) are skipped, as are ranges the guest
+/// has not actually mapped, meaning a zero base address or a zero length.
+///
+/// * `bars` - The shadowed BAR values as the guest programmed them.
+/// * `bar_masks` - The size masks the device reported for each BAR.
+pub(crate) fn active_mmio_bars(bars: &[u32; 6], bar_masks: &[u32; 6]) -> Vec<ActiveMmioBar> {
+    let mut active = Vec::new();
+    let mut i = 0usize;
+
+    while i < bars.len() {
+        let mask = bar_masks[i];
+        if mask == 0 {
+            i += 1;
+            continue;
+        }
+
+        let bits = pci_core::spec::cfg_space::BarEncodingBits::from(mask);
+
+        // Decode the BAR values to determine the base address and length of the
+        // MMIO range the guest configured.
+        let (base_address, length_bytes, next_i) = if bits.type_64_bit() && i + 1 < 6 {
+            // Combine both 32-bit masks and bases into 64-bit values. Mask off
+            // the low 4 bits, which carry the encoding flags rather than
+            // address or size.
+            let base = ((bars[i + 1] as u64) << 32) | ((bars[i] & !0xF_u32) as u64);
+            let full_mask = ((bar_masks[i + 1] as u64) << 32) | ((mask & !0xF_u32) as u64);
+            let size = (!full_mask).wrapping_add(1);
+            (base, size, i + 2)
+        } else {
+            let base = (bars[i] & !0xF_u32) as u64;
+            // Keep the complement in u32 and widen the result. Doing this in
+            // u64 would turn a mask with no address bits set, which should
+            // yield zero and be skipped below, into a bogus 4GiB range.
+            let size = u64::from((!(mask & !0xF_u32)).wrapping_add(1));
+            (base, size, i + 1)
+        };
+
+        if base_address != 0 && length_bytes != 0 {
+            active.push(ActiveMmioBar {
+                bar_id: i as u16,
+                base_address,
+                length_bytes,
+            });
+        }
+
+        i = next_i;
+    }
+
+    active
 }

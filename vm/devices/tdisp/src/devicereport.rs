@@ -88,7 +88,7 @@ static_assertions::const_assert_eq!(size_of::<TdiReportStructSerialized>(), 0x10
 /// The deserialized form of a TDI interface report.
 #[derive(Debug)]
 pub struct TdiReportStruct {
-    /// See: `TdispTdiReportInterfaceInfo`
+    /// Capabilities and DMA/ATS/PRS behavior the TDI reports for itself.
     pub interface_info: TdispTdiReportInterfaceInfo,
 
     /// MSI-X capability message control register state. Must be Clear if
