@@ -2065,6 +2065,36 @@ async fn new_underhill_vm(
         tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
     }
 
+    // Validate UEFI-only settings before deriving runtime claims and hardware keys.
+    let (firmware_type, mut measured_vtl0_info, load_kind) = {
+        if let Some(firmware_type) = servicing_state.firmware_type {
+            (firmware_type.into(), None, LoadKind::None)
+        } else {
+            let config = MeasuredVtl0Info::read_from_memory(gm.vtl0())
+                .context("failed to read measured vtl0 info")?;
+            let load_kind = if let Some(kind) = env_cfg.force_load_vtl0_image {
+                tracing::info!(CVM_ALLOWED, kind, "overriding dps load type");
+                match kind.as_str() {
+                    "pcat" => LoadKind::Pcat,
+                    "uefi" => LoadKind::Uefi,
+                    "linux" => LoadKind::Linux,
+                    _ => anyhow::bail!("unexpected force load vtl0 type {kind}"),
+                }
+            } else if dps.general.firmware_mode_is_pcat {
+                LoadKind::Pcat
+            } else {
+                LoadKind::Uefi
+            };
+
+            let firmware_type: FirmwareType = load_kind.into();
+            (firmware_type, Some(config), load_kind)
+        }
+    };
+
+    if dps.general.ipmi_enabled && !matches!(firmware_type, FirmwareType::Uefi) {
+        anyhow::bail!("IPMI KCS is only supported with UEFI firmware");
+    }
+
     // Get VMGS provenance claims. If the provenance doc can't be read or if it
     // isn't valid, proceed as if it doesn't exist. In that case, OpenHCL will
     // not produce attestation claims for provenance. It's up to the VM owner's
@@ -2147,6 +2177,7 @@ async fn new_underhill_vm(
         root_cert_thumbprint: String::new(),
         console_enabled,
         interactive_console_enabled: interactive_console,
+        ipmi_enabled: dps.general.ipmi_enabled,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
         tpm_version: match tpm_version {
@@ -2248,6 +2279,9 @@ async fn new_underhill_vm(
     let mut resolver = ResourceResolver::new();
     // Make the GET available for other resources.
     resolver.add_resolver(get_client.clone());
+    resolver.add_resolver(
+        guest_emulation_transport::resolver::IpmiSelEventSinkResolver(get_client.clone()),
+    );
 
     let (vmgs_client, vmgs) = if let Some((meta, vmgs)) = vmgs {
         // Spawn the VMGS client for multi-task access.
@@ -2270,34 +2304,6 @@ async fn new_underhill_vm(
             },
         ),
     );
-
-    // Read measured config from VTL0 memory. When restoring, it is already gone.
-    let (firmware_type, mut measured_vtl0_info, load_kind) = {
-        if let Some(firmware_type) = servicing_state.firmware_type {
-            (firmware_type.into(), None, LoadKind::None)
-        } else {
-            let config = MeasuredVtl0Info::read_from_memory(gm.vtl0())
-                .context("failed to read measured vtl0 info")?;
-            let load_kind = if let Some(kind) = env_cfg.force_load_vtl0_image {
-                tracing::info!(CVM_ALLOWED, kind, "overriding dps load type");
-                match kind.as_str() {
-                    "pcat" => LoadKind::Pcat,
-                    "uefi" => LoadKind::Uefi,
-                    "linux" => LoadKind::Linux,
-                    _ => anyhow::bail!("unexpected force load vtl0 type {kind}"),
-                }
-            } else {
-                if dps.general.firmware_mode_is_pcat {
-                    LoadKind::Pcat
-                } else {
-                    LoadKind::Uefi
-                }
-            };
-
-            let firmware_type: FirmwareType = load_kind.into();
-            (firmware_type, Some(config), load_kind)
-        }
-    };
 
     // Only advertise extended IOAPIC on non-PCAT systems.
     #[cfg(guest_arch = "x86_64")]
@@ -2544,6 +2550,10 @@ async fn new_underhill_vm(
 
     if !isolation.is_hardware_isolated() {
         chipset = chipset.with_platform_pm_timer_assist();
+    }
+
+    if dps.general.ipmi_enabled {
+        chipset = chipset.with_ipmi_kcs();
     }
 
     if with_serial {
@@ -3990,6 +4000,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         // Attested to
         secure_boot_enabled,
         tpm_enabled: _,
+        ipmi_enabled: _,
         com1_enabled: _,
         com1_vmbus_redirector: _,
         com2_enabled: _,
@@ -4462,7 +4473,9 @@ impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResol
         self,
         resolver: &mut ResourceResolver,
     ) -> anyhow::Result<()> {
-        resolver.add_resolver(self.get);
+        resolver.add_resolver(self.get.clone());
+        resolver
+            .add_resolver(guest_emulation_transport::resolver::IpmiSelEventSinkResolver(self.get));
         if let Some(vmgs) = self.vmgs {
             resolver.add_resolver(vmgs);
         }

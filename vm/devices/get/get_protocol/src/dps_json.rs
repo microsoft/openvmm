@@ -41,6 +41,7 @@ pub struct HclDevicePlatformSettings {
     pub enable_battery: bool,
     pub enable_processor_idle: bool,
     pub enable_tpm: bool,
+    pub enable_ipmi: bool,
     pub com1: HclUartSettings,
     pub com2: HclUartSettings,
     #[serde(with = "serde_helpers::as_string")]
@@ -320,6 +321,16 @@ mod test {
             "dps_test_json.json"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn ipmi_defaults_false_and_parses_true() {
+        let default = serde_json::from_str::<HclDevicePlatformSettings>("{}").unwrap();
+        assert!(!default.enable_ipmi);
+
+        let enabled =
+            serde_json::from_str::<HclDevicePlatformSettings>(r#"{"EnableIpmi":true}"#).unwrap();
+        assert!(enabled.enable_ipmi);
     }
 
     #[test]

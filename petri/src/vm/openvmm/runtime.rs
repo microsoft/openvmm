@@ -20,6 +20,7 @@ use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
+use get_resources::ged::IpmiSelEvent;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::CancelContext;
 use mesh::Receiver;
@@ -275,6 +276,10 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>
     );
     petri_vm_fn!(
+        /// Waits for an IPMI SEL notification received from OpenHCL.
+        pub async fn wait_for_ipmi_sel(&mut self) -> anyhow::Result<IpmiSelEvent>
+    );
+    petri_vm_fn!(
         /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
         /// that will be closed when it is no longer ready. Returns `None` if
         /// the shutdown IC is not configured.
@@ -442,6 +447,15 @@ impl PetriVmInner {
             .recv()
             .await
             .context("Failed to get firmware boot event")
+    }
+
+    async fn wait_for_ipmi_sel(&mut self) -> anyhow::Result<IpmiSelEvent> {
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(30))
+            .until_cancelled(self.resources.ipmi_sel_event_recv.recv())
+            .await
+            .context("timed out waiting for an IPMI SEL host notification")?
+            .context("IPMI SEL host notification channel closed")
     }
 
     async fn wait_for_enlightened_shutdown_ready(

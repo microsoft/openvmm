@@ -17,6 +17,8 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
+use zerocopy::LittleEndian;
+use zerocopy::U16;
 
 pub mod crash;
 pub mod dps_json; // TODO: split into separate crate, so get_protocol can be no_std
@@ -117,6 +119,7 @@ open_enum! {
         START_VTL0_COMPLETED               = 7,
         VTL_CRASH                          = 8,
         TRIPLE_FAULT                       = 9,
+        IPMI_SEL                           = 13,
     }
 }
 
@@ -372,6 +375,60 @@ impl EventLogNotification {
             message_header: HeaderGeneric::new(HostNotifications::EVENT_LOG),
             event_log_id,
         }
+    }
+}
+
+pub use ipmi_protocol::SEL_RECORD_SIZE as IPMI_SEL_RECORD_SIZE;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct IpmiSelNotification {
+    pub message_header: HeaderHostNotification,
+    pub record_id: U16<LittleEndian>,
+    pub record: [u8; IPMI_SEL_RECORD_SIZE],
+}
+
+const_assert_eq!(22, size_of::<IpmiSelNotification>());
+const_assert_eq!(0, std::mem::offset_of!(IpmiSelNotification, message_header));
+const_assert_eq!(4, std::mem::offset_of!(IpmiSelNotification, record_id));
+const_assert_eq!(6, std::mem::offset_of!(IpmiSelNotification, record));
+
+impl IpmiSelNotification {
+    pub fn new(record_id: u16, record: [u8; IPMI_SEL_RECORD_SIZE]) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(HostNotifications::IPMI_SEL),
+            record_id: U16::new(record_id),
+            record,
+        }
+    }
+}
+
+#[cfg(test)]
+mod ipmi_sel_tests {
+    use super::*;
+
+    #[test]
+    fn notification_wire_layout() {
+        let record_id = 0x1234;
+        let record = [
+            0x34, 0x12, 0x02, 0x78, 0x56, 0x34, 0x12, 0x20, 0x00, 0x04, 0x01, 0x6f, 0xaa, 0xbb,
+            0xcc, 0xdd,
+        ];
+        let notification = IpmiSelNotification::new(record_id, record);
+
+        let mut expected = vec![1, 1, 13, 0, 0x34, 0x12];
+        expected.extend_from_slice(&record);
+        assert_eq!(notification.as_bytes(), expected);
+
+        let (decoded, remaining) =
+            IpmiSelNotification::read_from_prefix(&expected).expect("valid notification");
+        assert!(remaining.is_empty());
+        assert_eq!(
+            decoded.message_header.message_id(),
+            HostNotifications::IPMI_SEL
+        );
+        assert_eq!(decoded.record_id.get(), record_id);
+        assert_eq!(decoded.record, record);
     }
 }
 

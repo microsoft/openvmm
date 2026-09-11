@@ -336,8 +336,9 @@ pub struct Flags {
     pub vmbus_disabled: bool,
     pub pci_resources_pre_assigned: bool,
     pub force_dma_bounce_enabled: bool,
+    pub ipmi_enabled: bool,
 
-    #[bits(31)]
+    #[bits(30)]
     _reserved: u64,
 }
 
@@ -453,6 +454,11 @@ pub struct PcieBarApertureEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipmi_enabled_is_bit_33() {
+        assert_eq!(Flags::new().with_ipmi_enabled(true).into_bits(), 1 << 33);
+    }
 
     fn read<T>(bytes: &[u8]) -> T
     where

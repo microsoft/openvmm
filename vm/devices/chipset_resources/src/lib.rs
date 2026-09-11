@@ -26,6 +26,90 @@ impl CanResolveTo<ResolvedCmosRtcTimeSource> for CmosRtcTimeSourceHandleKind {
     type Input<'a> = ();
 }
 
+pub mod ipmi_kcs {
+    //! Resource definitions for the IPMI KCS virtual BMC.
+
+    use super::CmosRtcTimeSourceHandleKind;
+    use ipmi_protocol::SelRecord;
+    use mesh::MeshPayload;
+    use vm_resource::CanResolveTo;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::ResourceKind;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// AMD64 KCS data-register port.
+    pub const IPMI_KCS_DATA_PORT: u16 = 0xca2;
+    /// AMD64 KCS status-read/command-write port.
+    pub const IPMI_KCS_STATUS_COMMAND_PORT: u16 = IPMI_KCS_DATA_PORT + 1;
+    /// ARM64 KCS MMIO page base address.
+    pub const IPMI_KCS_MMIO_BASE_ADDRESS_AARCH64: u64 = 0xeffe_7000;
+    /// ARM64 KCS MMIO register spacing.
+    pub const IPMI_KCS_MMIO_REGISTER_SPACING_AARCH64: u64 = 4;
+    /// ARM64 KCS data-register address.
+    pub const IPMI_KCS_MMIO_DATA_ADDRESS_AARCH64: u64 = IPMI_KCS_MMIO_BASE_ADDRESS_AARCH64;
+    /// ARM64 KCS status-read/command-write address.
+    pub const IPMI_KCS_MMIO_STATUS_COMMAND_ADDRESS_AARCH64: u64 =
+        IPMI_KCS_MMIO_BASE_ADDRESS_AARCH64 + IPMI_KCS_MMIO_REGISTER_SPACING_AARCH64;
+    /// Size of the ARM64 KCS MMIO aperture.
+    pub const IPMI_KCS_MMIO_REGION_SIZE_AARCH64: u64 = 0x1000;
+
+    /// Result of attempting to forward an IPMI SEL record.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SendOutcome {
+        /// The sink accepted the record.
+        Accepted,
+        /// The sink dropped the record without blocking the virtual BMC.
+        Dropped,
+    }
+
+    /// Non-blocking sink for completed IPMI SEL records.
+    pub trait SelEventSink: Send {
+        /// Attempts to forward a completed SEL record.
+        fn try_send(&mut self, record_id: u16, record: SelRecord) -> SendOutcome;
+    }
+
+    /// Resource kind for IPMI SEL event sinks.
+    pub enum IpmiSelEventSinkHandleKind {}
+
+    impl ResourceKind for IpmiSelEventSinkHandleKind {
+        const NAME: &'static str = "ipmi_sel_event_sink";
+    }
+
+    /// Resolved runtime IPMI SEL event sink.
+    pub struct ResolvedIpmiSelEventSink(pub Box<dyn SelEventSink>);
+
+    impl CanResolveTo<ResolvedIpmiSelEventSink> for IpmiSelEventSinkHandleKind {
+        type Input<'a> = ();
+    }
+
+    /// A handle to an AMD64 IPMI KCS virtual BMC.
+    #[derive(MeshPayload)]
+    pub struct IpmiKcsDeviceHandleX64 {
+        /// Non-blocking sink for completed SEL records.
+        pub event_sink: Resource<IpmiSelEventSinkHandleKind>,
+        /// Trusted wall-clock source used for SEL timestamps.
+        pub time_source: Resource<CmosRtcTimeSourceHandleKind>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for IpmiKcsDeviceHandleX64 {
+        const ID: &'static str = "ipmi-kcs-x64";
+    }
+
+    /// A handle to an ARM64 IPMI KCS virtual BMC.
+    #[derive(MeshPayload)]
+    pub struct IpmiKcsDeviceHandleAArch64 {
+        /// Non-blocking sink for completed SEL records.
+        pub event_sink: Resource<IpmiSelEventSinkHandleKind>,
+        /// Trusted wall-clock source used for SEL timestamps.
+        pub time_source: Resource<CmosRtcTimeSourceHandleKind>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for IpmiKcsDeviceHandleAArch64 {
+        const ID: &'static str = "ipmi-kcs-aarch64";
+    }
+}
+
 pub mod cmos_rtc_time_source {
     //! Resource definitions and resolvers for CMOS RTC time sources.
 
