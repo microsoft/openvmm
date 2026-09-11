@@ -239,7 +239,9 @@ async fn read_differencing_not_present() {
     let file = InMemoryFile::new(0);
     let mut params = CreateParams {
         disk_size: format::GB1,
-        has_parent: true,
+        disk_type: crate::DiskType::Differencing(
+            crate::VhdxParent::new(Guid::new_random()).unwrap(),
+        ),
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();
@@ -2552,7 +2554,9 @@ async fn partial_write_diff_disk_allocates_sbm(driver: DefaultDriver) {
     let file = InMemoryFile::new(0);
     let mut params = CreateParams {
         disk_size: format::GB1,
-        has_parent: true,
+        disk_type: crate::DiskType::Differencing(
+            crate::VhdxParent::new(Guid::new_random()).unwrap(),
+        ),
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();
@@ -2592,7 +2596,9 @@ async fn partial_write_diff_disk_sbm_bits_set_correctly(driver: DefaultDriver) {
     let file = InMemoryFile::new(0);
     let mut params = CreateParams {
         disk_size: format::GB1,
-        has_parent: true,
+        disk_type: crate::DiskType::Differencing(
+            crate::VhdxParent::new(Guid::new_random()).unwrap(),
+        ),
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();
@@ -2635,7 +2641,9 @@ async fn full_block_write_diff_disk_no_sbm(driver: DefaultDriver) {
     let file = InMemoryFile::new(0);
     let mut params = CreateParams {
         disk_size: format::GB1,
-        has_parent: true,
+        disk_type: crate::DiskType::Differencing(
+            crate::VhdxParent::new(Guid::new_random()).unwrap(),
+        ),
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();
@@ -2665,7 +2673,9 @@ async fn second_partial_write_same_chunk_reuses_sbm(driver: DefaultDriver) {
     let file = InMemoryFile::new(0);
     let mut params = CreateParams {
         disk_size: format::GB1,
-        has_parent: true,
+        disk_type: crate::DiskType::Differencing(
+            crate::VhdxParent::new(Guid::new_random()).unwrap(),
+        ),
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();

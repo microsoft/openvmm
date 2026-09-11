@@ -859,7 +859,9 @@ mod tests {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            has_parent: true,
+            disk_type: crate::DiskType::Differencing(
+                crate::VhdxParent::new(Guid::new_random()).unwrap(),
+            ),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
@@ -868,12 +870,46 @@ mod tests {
         assert!(vhdx.has_parent());
     }
 
+    /// A differencing disk should not set `leave_blocks_allocated`, but opening
+    /// one that does is tolerated rather than reported as corruption.
+    #[async_test]
+    async fn open_differencing_disk_tolerates_leave_blocks_allocated() {
+        let file = InMemoryFile::new(0);
+        let mut params = CreateParams {
+            disk_size: format::GB1,
+            disk_type: crate::DiskType::Differencing(
+                crate::VhdxParent::new(Guid::new_random()).unwrap(),
+            ),
+            ..Default::default()
+        };
+        create::create(&file, &mut params).await.unwrap();
+
+        let regions = parse_region_tables(&file).await.unwrap();
+        let file_parameters_offset = regions.metadata_offset + format::METADATA_TABLE_SIZE;
+        let mut data = vec![0; size_of::<format::FileParameters>()];
+        file.read_at(file_parameters_offset, &mut data)
+            .await
+            .unwrap();
+        let mut file_parameters = format::FileParameters::read_from_prefix(&data)
+            .unwrap()
+            .0
+            .clone();
+        file_parameters.flags = file_parameters.flags.with_leave_blocks_allocated(true);
+        file.write_at(file_parameters_offset, file_parameters.as_bytes())
+            .await
+            .unwrap();
+
+        let vhdx = VhdxFile::open(file).read_only().await.unwrap();
+        assert!(vhdx.has_parent());
+        assert!(vhdx.is_fully_allocated());
+    }
+
     #[async_test]
     async fn open_fully_allocated() {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            is_fully_allocated: true,
+            disk_type: crate::DiskType::Fixed,
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
@@ -1095,106 +1131,22 @@ mod tests {
         assert!(vhdx.parent_locator().await.unwrap().is_none());
     }
 
-    /// Helper: inject a parent locator metadata entry and blob into a diff disk.
-    ///
-    /// Reads the existing metadata table, appends a new entry for the parent
-    /// locator GUID, writes the locator blob at the entry's data offset, and
-    /// updates the metadata table header's entry count.
-    async fn inject_parent_locator(file: &InMemoryFile, locator_blob: &[u8]) {
-        use crate::format::{MetadataTableEntry, MetadataTableEntryFlags, MetadataTableHeader};
-        use zerocopy::{FromBytes, IntoBytes};
-
-        let regions = parse_region_tables(file).await.unwrap();
-
-        // Read the full metadata table (first 64 KiB of metadata region).
-        let mut table_buf = vec![0u8; format::METADATA_TABLE_SIZE as usize];
-        file.read_at(regions.metadata_offset, &mut table_buf)
-            .await
-            .unwrap();
-
-        // Parse header to get current entry count.
-        let mut header = MetadataTableHeader::read_from_prefix(&table_buf)
-            .unwrap()
-            .0
-            .clone();
-        let old_count = header.entry_count as usize;
-        let entry_size = size_of::<MetadataTableEntry>();
-        let header_size = size_of::<MetadataTableHeader>();
-
-        // Find the max data offset used by existing entries to place our blob after them.
-        let mut max_data_end: u32 = format::METADATA_TABLE_SIZE as u32;
-        for i in 0..old_count {
-            let off = header_size + i * entry_size;
-            let entry = MetadataTableEntry::read_from_prefix(&table_buf[off..])
-                .unwrap()
-                .0
-                .clone();
-            if entry.length > 0 {
-                let end = entry.offset + entry.length;
-                if end > max_data_end {
-                    max_data_end = end;
-                }
-            }
-        }
-
-        // Place the parent locator blob right after existing data.
-        let locator_offset = max_data_end;
-
-        // Write the new entry.
-        let new_entry = MetadataTableEntry {
-            item_id: format::PARENT_LOCATOR_ITEM_GUID,
-            offset: locator_offset,
-            length: locator_blob.len() as u32,
-            flags: MetadataTableEntryFlags::new().with_is_required(true),
-            reserved2: 0,
-        };
-        let new_entry_file_offset = header_size + old_count * entry_size;
-        let e_bytes = new_entry.as_bytes();
-        table_buf[new_entry_file_offset..new_entry_file_offset + e_bytes.len()]
-            .copy_from_slice(e_bytes);
-
-        // Update header entry count.
-        header.entry_count = (old_count + 1) as u16;
-        let h_bytes = header.as_bytes();
-        table_buf[..h_bytes.len()].copy_from_slice(h_bytes);
-
-        // Write back the metadata table.
-        file.write_at(regions.metadata_offset, &table_buf)
-            .await
-            .unwrap();
-
-        // Write the locator blob into the metadata region data area.
-        file.write_at(
-            regions.metadata_offset + locator_offset as u64,
-            locator_blob,
-        )
-        .await
-        .unwrap();
-    }
-
     #[async_test]
     async fn differencing_has_locator() {
-        use crate::locator;
-
-        // Create a differencing disk.
         let file = InMemoryFile::new(0);
+        let parent_linkage = Guid::new_random();
+        let parent = crate::VhdxParent::new(parent_linkage)
+            .unwrap()
+            .with_relative_path(".\\parent.vhdx")
+            .unwrap()
+            .with_absolute_win32_path("C:\\VMs\\parent.vhdx")
+            .unwrap();
         let mut params = CreateParams {
             disk_size: format::GB1,
-            has_parent: true,
+            disk_type: crate::DiskType::Differencing(parent),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
-
-        // Build a parent locator blob and inject it into the metadata region.
-        let locator_blob = locator::build_locator(
-            format::PARENT_LOCATOR_VHDX_TYPE_GUID,
-            &[
-                ("parent_linkage", "{some-guid}"),
-                ("relative_path", ".\\parent.vhdx"),
-                ("absolute_win32_path", "C:\\VMs\\parent.vhdx"),
-            ],
-        );
-        inject_parent_locator(&file, &locator_blob).await;
 
         // Open and verify.
         let vhdx = VhdxFile::open(file).read_only().await.unwrap();
@@ -1206,7 +1158,10 @@ mod tests {
             .unwrap()
             .expect("should have locator");
         assert_eq!(loc.locator_type, format::PARENT_LOCATOR_VHDX_TYPE_GUID);
-        assert_eq!(loc.find("parent_linkage"), Some("{some-guid}"));
+        assert_eq!(
+            loc.find("parent_linkage"),
+            Some(format!("{{{parent_linkage}}}").as_str())
+        );
         assert_eq!(loc.find("relative_path"), Some(".\\parent.vhdx"));
         assert_eq!(
             loc.find("absolute_win32_path"),
@@ -1216,26 +1171,20 @@ mod tests {
 
     #[async_test]
     async fn parent_paths_extraction() {
-        use crate::locator;
-
-        // Create a differencing disk with a parent locator.
         let file = InMemoryFile::new(0);
+        let parent_linkage = Guid::new_random();
+        let parent = crate::VhdxParent::new(parent_linkage)
+            .unwrap()
+            .with_relative_path(".\\parent.vhdx")
+            .unwrap()
+            .with_absolute_win32_path("C:\\VMs\\parent.vhdx")
+            .unwrap();
         let mut params = CreateParams {
             disk_size: format::GB1,
-            has_parent: true,
+            disk_type: crate::DiskType::Differencing(parent),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
-
-        let locator_blob = locator::build_locator(
-            format::PARENT_LOCATOR_VHDX_TYPE_GUID,
-            &[
-                ("parent_linkage", "{some-guid}"),
-                ("relative_path", ".\\parent.vhdx"),
-                ("absolute_win32_path", "C:\\VMs\\parent.vhdx"),
-            ],
-        );
-        inject_parent_locator(&file, &locator_blob).await;
 
         let vhdx = VhdxFile::open(file).read_only().await.unwrap();
         let loc = vhdx
@@ -1243,28 +1192,51 @@ mod tests {
             .await
             .unwrap()
             .expect("should have locator");
-        let paths = loc.parent_paths();
-        assert_eq!(paths.parent_linkage.as_deref(), Some("{some-guid}"));
-        assert_eq!(paths.relative_path.as_deref(), Some(".\\parent.vhdx"));
-        assert_eq!(
-            paths.absolute_win32_path.as_deref(),
-            Some("C:\\VMs\\parent.vhdx")
-        );
-        assert!(paths.volume_path.is_none());
+        let parent = loc.vhdx_parent().unwrap();
+        assert_eq!(parent.linkage(), parent_linkage);
+        assert_eq!(parent.relative_path(), Some(".\\parent.vhdx"));
+        assert_eq!(parent.absolute_win32_path(), Some("C:\\VMs\\parent.vhdx"));
+        assert_eq!(parent.volume_path(), None);
     }
 
     #[async_test]
     async fn differencing_missing_locator_errors() {
-        // Create a diff disk but don't write any locator data.
-        // create() doesn't add a parent locator entry, so read_item() will
-        // return MissingRequiredMetadata.
+        use crate::format::{MetadataTableEntry, MetadataTableEntryFlags, MetadataTableHeader};
+        use zerocopy::{FromBytes, IntoBytes};
+
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            has_parent: true,
+            disk_type: crate::DiskType::Differencing(
+                crate::VhdxParent::new(Guid::new_random()).unwrap(),
+            ),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
+
+        let regions = parse_region_tables(&file).await.unwrap();
+        let mut table = vec![0; format::METADATA_TABLE_SIZE as usize];
+        file.read_at(regions.metadata_offset, &mut table)
+            .await
+            .unwrap();
+        let header = MetadataTableHeader::read_from_prefix(&table).unwrap().0;
+        for index in 0..header.entry_count as usize {
+            let offset = size_of::<MetadataTableHeader>() + index * size_of::<MetadataTableEntry>();
+            let mut entry = MetadataTableEntry::read_from_prefix(&table[offset..])
+                .unwrap()
+                .0
+                .clone();
+            if entry.item_id == format::PARENT_LOCATOR_ITEM_GUID {
+                entry.item_id = Guid::new_random();
+                entry.flags = MetadataTableEntryFlags::new();
+                table[offset..offset + size_of::<MetadataTableEntry>()]
+                    .copy_from_slice(entry.as_bytes());
+                break;
+            }
+        }
+        file.write_at(regions.metadata_offset, &table)
+            .await
+            .unwrap();
 
         let vhdx = VhdxFile::open(file).read_only().await.unwrap();
         assert!(vhdx.has_parent());

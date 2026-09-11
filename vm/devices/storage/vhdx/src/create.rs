@@ -20,9 +20,101 @@ use crate::format::MetadataTableHeader;
 use crate::format::RegionTableEntry;
 use crate::format::RegionTableEntryFlags;
 use crate::format::RegionTableHeader;
+use crate::locator::build_locator;
 use guid::Guid;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+/// The allocation and parent type of a new VHDX file.
+#[derive(Debug, Default)]
+pub enum DiskType {
+    /// A dynamically expanding VHDX file.
+    #[default]
+    Dynamic,
+    /// A fully provisioned VHDX file whose blocks remain allocated.
+    Fixed,
+    /// A VHDX file that stores changes relative to a parent.
+    Differencing(VhdxParent),
+}
+
+/// The identity and optional locator paths of a parent VHDX file.
+#[derive(Debug)]
+pub struct VhdxParent {
+    linkage: Guid,
+    relative_path: Option<String>,
+    volume_path: Option<String>,
+    absolute_win32_path: Option<String>,
+}
+
+impl VhdxParent {
+    /// Creates parent information from the parent's data-write GUID.
+    pub fn new(linkage: Guid) -> Result<Self, InvalidFormatReason> {
+        if linkage == Guid::ZERO {
+            return Err(InvalidFormatReason::MissingParentLinkage);
+        }
+
+        Ok(Self {
+            linkage,
+            relative_path: None,
+            volume_path: None,
+            absolute_win32_path: None,
+        })
+    }
+
+    /// Adds a path relative to the child VHDX file.
+    pub fn with_relative_path(
+        mut self,
+        path: impl Into<String>,
+    ) -> Result<Self, InvalidFormatReason> {
+        self.relative_path = validate_parent_path(path.into())?;
+        Ok(self)
+    }
+
+    /// Adds an absolute path containing the parent's volume GUID.
+    pub fn with_volume_path(
+        mut self,
+        path: impl Into<String>,
+    ) -> Result<Self, InvalidFormatReason> {
+        self.volume_path = validate_parent_path(path.into())?;
+        Ok(self)
+    }
+
+    /// Adds an absolute extended-length Win32 path to the parent.
+    pub fn with_absolute_win32_path(
+        mut self,
+        path: impl Into<String>,
+    ) -> Result<Self, InvalidFormatReason> {
+        self.absolute_win32_path = validate_parent_path(path.into())?;
+        Ok(self)
+    }
+
+    /// Returns the parent's data-write GUID.
+    pub fn linkage(&self) -> Guid {
+        self.linkage
+    }
+
+    /// Returns the path relative to the child VHDX file, if present.
+    pub fn relative_path(&self) -> Option<&str> {
+        self.relative_path.as_deref()
+    }
+
+    /// Returns the absolute path containing the parent's volume GUID, if present.
+    pub fn volume_path(&self) -> Option<&str> {
+        self.volume_path.as_deref()
+    }
+
+    /// Returns the absolute extended-length Win32 path, if present.
+    pub fn absolute_win32_path(&self) -> Option<&str> {
+        self.absolute_win32_path.as_deref()
+    }
+}
+
+fn validate_parent_path(path: String) -> Result<Option<String>, InvalidFormatReason> {
+    if path.contains('\0') {
+        return Err(InvalidFormatReason::ParentLocatorContainsNull);
+    }
+    Ok((!path.is_empty()).then_some(path))
+}
 
 /// Parameters for creating a new VHDX file.
 pub struct CreateParams {
@@ -40,8 +132,8 @@ pub struct CreateParams {
     /// Physical sector size. Must be 512 or 4096. Default: 512.
     pub physical_sector_size: u32,
 
-    /// Whether this is a differencing disk (has a parent).
-    pub has_parent: bool,
+    /// Whether to create a dynamic, fixed, or differencing VHDX file.
+    pub disk_type: DiskType,
 
     /// Block alignment for the data region. 0 means no special alignment.
     /// If non-zero, must be a power of 2.
@@ -50,9 +142,6 @@ pub struct CreateParams {
     /// If true, create the file in an incomplete state
     /// (adds an "incomplete file" metadata item that prevents open).
     pub create_incomplete: bool,
-
-    /// If true, mark all blocks as allocated (fixed VHD).
-    pub is_fully_allocated: bool,
 
     /// Data write GUID. If zero GUID, a random one will be generated.
     /// Callers can supply a specific GUID for re-parenting workflows.
@@ -69,10 +158,9 @@ impl Default for CreateParams {
             block_size: 0,
             logical_sector_size: 0,
             physical_sector_size: 0,
-            has_parent: false,
+            disk_type: DiskType::Dynamic,
             block_alignment: 0,
             create_incomplete: false,
-            is_fully_allocated: false,
             data_write_guid: Guid::ZERO,
             page_83_data: Guid::ZERO,
         }
@@ -106,6 +194,9 @@ pub(crate) fn chunk_block_count(block_size: u32, sector_size: u32) -> u32 {
 /// `block_size` becomes 2 MiB, zero GUIDs become random).
 pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<(), CreateError> {
     // --- Validate and default parameters ---
+
+    let has_parent = matches!(params.disk_type, DiskType::Differencing(_));
+    let leave_blocks_allocated = matches!(params.disk_type, DiskType::Fixed);
 
     if params.logical_sector_size == 0 {
         params.logical_sector_size = format::DEFAULT_SECTOR_SIZE;
@@ -182,7 +273,7 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
 
     let sector_bitmap_block_count = ceil_div(data_block_count, chunk_ratio as u64);
 
-    let bat_entry_count = if params.has_parent {
+    let bat_entry_count = if has_parent {
         sector_bitmap_block_count * (chunk_ratio as u64 + 1)
     } else {
         data_block_count + data_block_count.saturating_sub(1) / chunk_ratio as u64
@@ -329,6 +420,36 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
     let mut entry_write_offset = entries_start;
     let mut item_data_offset = format::METADATA_TABLE_SIZE as u32;
 
+    let parent_locator = if let DiskType::Differencing(parent) = &params.disk_type {
+        let parent_linkage = format!("{{{}}}", parent.linkage);
+        let mut values = vec![(
+            format::PARENT_LOCATOR_KEY_PARENT_LINKAGE,
+            parent_linkage.as_str(),
+        )];
+        if let Some(relative_path) = &parent.relative_path {
+            values.push((
+                format::PARENT_LOCATOR_KEY_RELATIVE_PATH,
+                relative_path.as_str(),
+            ));
+        }
+        if let Some(absolute_win32_path) = &parent.absolute_win32_path {
+            values.push((
+                format::PARENT_LOCATOR_KEY_ABSOLUTE_PATH,
+                absolute_win32_path.as_str(),
+            ));
+        }
+        if let Some(volume_path) = &parent.volume_path {
+            values.push((format::PARENT_LOCATOR_KEY_VOLUME_PATH, volume_path.as_str()));
+        }
+        Some(
+            build_locator(format::PARENT_LOCATOR_VHDX_TYPE_GUID, &values).ok_or(
+                CreateError::InvalidFormat(InvalidFormatReason::ParentLocatorTooLarge),
+            )?,
+        )
+    } else {
+        None
+    };
+
     // Helper: write a metadata table entry.
     let add_entry = |buf: &mut [u8],
                      entry_write_offset: &mut usize,
@@ -441,10 +562,36 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
         );
     }
 
-    // Verify initial metadata items fit within a single hosting sector.
-    assert!(
-        (item_data_offset as u64 - format::METADATA_TABLE_SIZE) <= format::MAX_HOSTING_SECTOR_SIZE
-    );
+    let parent_locator_data_offset = if let Some(locator) = &parent_locator {
+        let locator_len = u32::try_from(locator.len())
+            .map_err(|_| CreateError::InvalidFormat(InvalidFormatReason::ParentLocatorTooLarge))?;
+        add_entry(
+            meta_bytes,
+            &mut entry_write_offset,
+            &mut entry_count,
+            format::PARENT_LOCATOR_ITEM_GUID,
+            item_data_offset,
+            locator_len,
+            true,
+            false,
+        );
+        let offset = item_data_offset;
+        item_data_offset =
+            item_data_offset
+                .checked_add(locator_len)
+                .ok_or(CreateError::InvalidFormat(
+                    InvalidFormatReason::ParentLocatorTooLarge,
+                ))?;
+        Some(offset)
+    } else {
+        None
+    };
+
+    if item_data_offset as u64 - format::METADATA_TABLE_SIZE > format::MAX_HOSTING_SECTOR_SIZE {
+        return Err(CreateError::InvalidFormat(
+            InvalidFormatReason::ParentLocatorTooLarge,
+        ));
+    }
 
     // Write the metadata table header.
     table_header.entry_count = entry_count;
@@ -455,8 +602,8 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
     let fp = FileParameters {
         block_size: params.block_size,
         flags: FileParametersFlags::new()
-            .with_has_parent(params.has_parent)
-            .with_leave_blocks_allocated(params.is_fully_allocated),
+            .with_has_parent(has_parent)
+            .with_leave_blocks_allocated(leave_blocks_allocated),
     };
     let fp_bytes = fp.as_bytes();
     let fp_off = fp_data_offset as usize;
@@ -477,6 +624,11 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
     // Write the page 83 item data.
     let p83_off = p83_data_offset as usize;
     meta_bytes[p83_off..p83_off + 16].copy_from_slice(params.page_83_data.as_bytes());
+
+    if let (Some(offset), Some(locator)) = (parent_locator_data_offset, parent_locator) {
+        let offset = offset as usize;
+        meta_bytes[offset..offset + locator.len()].copy_from_slice(&locator);
+    }
 
     // Write the metadata region.
     file.write_from(metadata_offset, meta_buf)
@@ -514,6 +666,20 @@ mod tests {
     use crate::tests::support::InMemoryFile;
     use pal_async::async_test;
     use zerocopy::FromBytes;
+
+    #[test]
+    fn vhdx_parent_validates_identity_and_paths() {
+        assert!(matches!(
+            VhdxParent::new(Guid::ZERO),
+            Err(InvalidFormatReason::MissingParentLinkage)
+        ));
+        assert!(matches!(
+            VhdxParent::new(Guid::new_random())
+                .unwrap()
+                .with_relative_path("parent\0.vhdx"),
+            Err(InvalidFormatReason::ParentLocatorContainsNull)
+        ));
+    }
 
     /// Read a little-endian u64 from a byte slice at the given offset.
     fn read_u64(data: &[u8], offset: usize) -> u64 {
@@ -843,9 +1009,10 @@ mod tests {
     #[async_test]
     async fn create_differencing_disk() {
         let file = InMemoryFile::new(0);
+        let parent_linkage = Guid::new_random();
         let mut params = CreateParams {
             disk_size: format::GB1,
-            has_parent: true,
+            disk_type: DiskType::Differencing(VhdxParent::new(parent_linkage).unwrap()),
             ..Default::default()
         };
         create(&file, &mut params).await.unwrap();
@@ -865,6 +1032,11 @@ mod tests {
         .unwrap();
         assert!(fp.flags.has_parent());
 
+        let locator_entry = read_metadata_entry(&snapshot, meta_offset, 5);
+        assert_eq!(locator_entry.item_id, format::PARENT_LOCATOR_ITEM_GUID);
+        assert!(locator_entry.flags.is_required());
+        assert!(!locator_entry.flags.is_virtual_disk());
+
         // BAT entry count should include sector bitmap entries.
         let data_block_count = ceil_div(format::GB1, format::DEFAULT_BLOCK_SIZE as u64);
         let chunk_ratio = chunk_block_count(format::DEFAULT_BLOCK_SIZE, 512);
@@ -873,6 +1045,27 @@ mod tests {
         let bat_entry_count_nondiff = data_block_count + data_block_count / chunk_ratio as u64;
         // Differencing should have more entries.
         assert!(bat_entry_count_diff > bat_entry_count_nondiff);
+    }
+
+    #[async_test]
+    async fn create_rejects_oversized_parent_locator() {
+        let file = InMemoryFile::new(0);
+        let parent = VhdxParent::new(Guid::new_random())
+            .unwrap()
+            .with_relative_path("a".repeat(format::MAX_HOSTING_SECTOR_SIZE as usize))
+            .unwrap();
+        let mut params = CreateParams {
+            disk_size: format::GB1,
+            disk_type: DiskType::Differencing(parent),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            create(&file, &mut params).await,
+            Err(CreateError::InvalidFormat(
+                InvalidFormatReason::ParentLocatorTooLarge
+            ))
+        ));
     }
 
     #[async_test]
