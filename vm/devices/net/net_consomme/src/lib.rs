@@ -17,6 +17,7 @@ pub use consomme::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -225,18 +226,23 @@ impl ConsommeEndpoint {
             let polled = self.request_recv.as_mut().map(|recv| recv.poll_recv(cx));
             match polled {
                 Some(Poll::Ready(Ok(request))) => {
-                    if let Some(listener_control) = &self.listener_control {
-                        match process_listener_request(listener_control, request) {
-                            Ok(()) => {}
-                            Err(request) => {
-                                self.pending.push_back(PendingRequest::Request(request));
-                                restart_required = true;
-                            }
+                    restart_required |= match request {
+                        ConsommeRequest::Bind(rpc) => {
+                            self.handle_listener_request(ListenerRequest::Bind(rpc))
                         }
-                    } else {
-                        self.pending.push_back(PendingRequest::Request(request));
-                        restart_required = true;
-                    }
+                        ConsommeRequest::Unbind(rpc) => {
+                            self.handle_listener_request(ListenerRequest::Unbind(rpc))
+                        }
+                        ConsommeRequest::CreateVirtualAddress(rpc) => {
+                            self.pending
+                                .push_back(PendingRequest::CreateVirtualAddress(rpc));
+                            true
+                        }
+                        ConsommeRequest::AddDnsRecord(rpc) => {
+                            self.pending.push_back(PendingRequest::AddDnsRecord(rpc));
+                            true
+                        }
+                    };
                 }
                 Some(Poll::Ready(Err(err))) => {
                     tracing::warn!(
@@ -250,6 +256,16 @@ impl ConsommeEndpoint {
             }
         }
         restart_required
+    }
+
+    fn handle_listener_request(&mut self, request: ListenerRequest) -> bool {
+        if let Some(listener_control) = &self.listener_control {
+            process_listener_request(listener_control, request);
+            false
+        } else {
+            self.pending.push_back(PendingRequest::Listener(request));
+            true
+        }
     }
 }
 
@@ -319,10 +335,18 @@ impl From<IpProtocol> for HostPortProtocol {
     }
 }
 
-/// A request buffered until the endpoint regains ownership of the Consomme state.
+enum ListenerRequest {
+    Bind(FailableRpc<HostPortConfig, ()>),
+    Unbind(FailableRpc<HostPortConfig, ()>),
+}
+
+/// A request buffered until queue startup provides the required state or driver.
 enum PendingRequest {
-    Request(ConsommeRequest),
+    /// Listener requests received before a queue driver is available.
+    Listener(ListenerRequest),
     StateUpdate(StateUpdateRequest),
+    CreateVirtualAddress(Rpc<HostIpAddress, Option<HostIpAddress>>),
+    AddDnsRecord(FailableRpc<DnsRecordConfig, ()>),
 }
 
 impl ConsommeControl {
@@ -456,18 +480,11 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         assert_eq!(config.len(), 1);
         let config = config.into_iter().next().unwrap();
         let driver: Arc<dyn Driver> = config.driver.into();
-        let listener_control_inner = self
-            .endpoint_state
-            .lock()
-            .as_ref()
-            .unwrap()
-            .consomme
-            .listener_control_inner();
-        let listener_control =
-            consomme::ListenerControl::new(driver.clone(), listener_control_inner);
+        let endpoint_state = self.endpoint_state.lock().take().unwrap();
+        let listener_control = endpoint_state.consomme.listener_control(driver.clone());
         let mut queue = Box::new(ConsommeQueue {
             slot: self.endpoint_state.clone(),
-            endpoint_state: self.endpoint_state.lock().take(),
+            endpoint_state: Some(endpoint_state),
             state: QueueState {
                 rx_avail: VecDeque::new(),
                 rx_ready: VecDeque::new(),
@@ -478,65 +495,15 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             stats: Default::default(),
             driver,
         });
-        let port_forwards =
-            std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
-        let bind_result: Result<Vec<_>, _> = queue.with_consomme_no_pool(|c| {
-            c.refresh_driver();
-            let mut bound: Vec<(IpProtocol, IpVersion, u16)> = Vec::new();
-            for fwd in port_forwards {
-                let protocol = fwd.protocol;
-                let guest_port = fwd.guest_port;
-                let result = match socket_family(&fwd.socket) {
-                    Ok(family) => {
-                        let result = match protocol {
-                            IpProtocol::Tcp => c.bind_tcp_port(fwd.socket, guest_port),
-                            IpProtocol::Udp => c.bind_udp_port(fwd.socket, guest_port),
-                        };
-                        result.map(|()| (protocol, family, guest_port))
-                    }
-                    Err(err) => Err(err),
-                };
-                match result {
-                    Ok(bound_entry) => bound.push(bound_entry),
-                    Err(err) => {
-                        // Roll back successful binds before returning error.
-                        for (protocol, family, guest_port) in &bound {
-                            let _ = match protocol {
-                                IpProtocol::Tcp => c.unbind_tcp_port(*family, *guest_port),
-                                IpProtocol::Udp => c.unbind_udp_port(*family, *guest_port),
-                            };
-                        }
-                        return Err(anyhow::anyhow!(err).context("failed to bind port"));
-                    }
-                }
-            }
-            Ok(bound)
-        });
+        queue.with_consomme_no_pool(|c| c.refresh_driver());
+        let bind_result = queue.bind_static_ports();
 
         // Apply requests buffered while the queue owned the Consomme state (see
         // `wait_for_endpoint_action`). This runs regardless of whether the
         // static port-forward binding above succeeded, so the buffered RPCs
         // always complete here instead of stalling until some unrelated future
         // request triggers the next restart.
-        let pending = std::mem::take(&mut self.pending);
-        queue.with_consomme_no_pool(|c| {
-            for request in pending {
-                match request {
-                    PendingRequest::Request(request) => {
-                        if let Err(request) = process_listener_request(&listener_control, request) {
-                            process_request(c, request);
-                        }
-                    }
-                    PendingRequest::StateUpdate(rpc) => {
-                        rpc.handle_sync(|f| {
-                            f(c.get_mut().params_mut());
-                            c.get_mut().clear_local_addr_map();
-                            c.update_dns_nameservers()
-                        });
-                    }
-                }
-            }
-        });
+        queue.apply_pending_requests(std::mem::take(&mut self.pending), &listener_control);
 
         bind_result?;
 
@@ -604,6 +571,54 @@ impl Drop for ConsommeQueue {
 }
 
 impl ConsommeQueue {
+    fn bind_static_ports(&mut self) -> anyhow::Result<()> {
+        let port_forwards =
+            std::mem::take(&mut self.endpoint_state.as_mut().unwrap().port_forwards);
+        self.with_consomme_no_pool(|c| {
+            let mut bound: Vec<(IpProtocol, IpVersion, u16)> = Vec::new();
+            for fwd in port_forwards {
+                let protocol = fwd.protocol;
+                let guest_port = fwd.guest_port;
+                let result = match socket_family(&fwd.socket) {
+                    Ok(family) => {
+                        let result = match protocol {
+                            IpProtocol::Tcp => c.bind_tcp_port(fwd.socket, guest_port),
+                            IpProtocol::Udp => c.bind_udp_port(fwd.socket, guest_port),
+                        };
+                        result.map(|()| (protocol, family, guest_port))
+                    }
+                    Err(err) => Err(err),
+                };
+                match result {
+                    Ok(bound_entry) => bound.push(bound_entry),
+                    Err(err) => {
+                        // Roll back successful binds before returning error.
+                        for (protocol, family, guest_port) in &bound {
+                            let _ = match protocol {
+                                IpProtocol::Tcp => c.unbind_tcp_port(*family, *guest_port),
+                                IpProtocol::Udp => c.unbind_udp_port(*family, *guest_port),
+                            };
+                        }
+                        return Err(anyhow::anyhow!(err).context("failed to bind port"));
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn apply_pending_requests(
+        &mut self,
+        pending: VecDeque<PendingRequest>,
+        listener_control: &consomme::ListenerControl,
+    ) {
+        self.with_consomme_no_pool(|c| {
+            for request in pending {
+                process_pending_request(c, listener_control, request);
+            }
+        });
+    }
+
     fn with_consomme_no_pool<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut consomme::Access<'_, ClientNoPool<'_>>) -> R,
@@ -697,13 +712,12 @@ fn execute_unbind(
 }
 
 /// Handles a listener-only request without accessing the queue-owned state.
-/// Returns requests that require a queue restart unchanged.
 fn process_listener_request(
     listener_control: &consomme::ListenerControl,
-    request: ConsommeRequest,
-) -> Result<(), ConsommeRequest> {
+    request: ListenerRequest,
+) {
     match request {
-        ConsommeRequest::Bind(rpc) => {
+        ListenerRequest::Bind(rpc) => {
             rpc.handle_failable_sync(
                 |cfg| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let guest_port = cfg.guest_port;
@@ -712,9 +726,8 @@ fn process_listener_request(
                     Ok(())
                 },
             );
-            Ok(())
         }
-        ConsommeRequest::Unbind(rpc) => {
+        ListenerRequest::Unbind(rpc) => {
             rpc.handle_failable_sync(
                 |cfg| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     execute_unbind(listener_control, &cfg)?;
@@ -722,19 +735,28 @@ fn process_listener_request(
                     Ok(())
                 },
             );
-            Ok(())
         }
-        request => Err(request),
     }
 }
 
-/// Handles a request that needs access to the queue-owned Consomme state.
-fn process_request(
+/// Handles a request deferred until queue startup.
+fn process_pending_request(
     consomme: &mut consomme::Access<'_, impl consomme::Client>,
-    request: ConsommeRequest,
+    listener_control: &consomme::ListenerControl,
+    request: PendingRequest,
 ) {
     match request {
-        ConsommeRequest::CreateVirtualAddress(rpc) => {
+        PendingRequest::Listener(request) => {
+            process_listener_request(listener_control, request);
+        }
+        PendingRequest::StateUpdate(rpc) => {
+            rpc.handle_sync(|f| {
+                f(consomme.get_mut().params_mut());
+                consomme.get_mut().clear_local_addr_map();
+                consomme.update_dns_nameservers()
+            });
+        }
+        PendingRequest::CreateVirtualAddress(rpc) => {
             rpc.handle_sync(|destination| {
                 consomme
                     .get_mut()
@@ -742,15 +764,12 @@ fn process_request(
                     .map(HostIpAddress::from)
             });
         }
-        ConsommeRequest::AddDnsRecord(rpc) => {
+        PendingRequest::AddDnsRecord(rpc) => {
             rpc.handle_failable_sync(|cfg: DnsRecordConfig| {
                 consomme
                     .get_mut()
                     .add_dns_record(StaticDnsRecord::A(cfg.record), &cfg.name)
             });
-        }
-        ConsommeRequest::Bind(_) | ConsommeRequest::Unbind(_) => {
-            unreachable!("listener request was not handled by the endpoint")
         }
     }
 }

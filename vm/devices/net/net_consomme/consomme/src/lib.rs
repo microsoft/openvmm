@@ -135,18 +135,13 @@ pub struct ListenerControl {
 
 /// Cloneable listener registry retained across queue restarts.
 #[derive(Clone)]
-pub struct ListenerControlInner {
+struct ListenerControlInner {
     tcp: tcp::TcpListenerControl,
     udp: udp::UdpListenerControl,
     waker: Arc<futures::task::AtomicWaker>,
 }
 
 impl ListenerControl {
-    /// Creates a listener control handle using `driver` to register sockets.
-    pub fn new(driver: Arc<dyn Driver>, inner: ListenerControlInner) -> Self {
-        Self { driver, inner }
-    }
-
     /// Binds a TCP listener to forward connections to the guest.
     pub fn bind_tcp_port(&self, socket: socket2::Socket, guest_port: u16) -> Result<(), BindError> {
         self.inner
@@ -972,12 +967,15 @@ impl Consomme {
         }
     }
 
-    /// Returns the listener registry used to create control handles.
-    pub fn listener_control_inner(&self) -> ListenerControlInner {
-        ListenerControlInner {
-            tcp: self.tcp.listener_control(),
-            udp: self.udp.listener_control(),
-            waker: self.listener_waker.clone(),
+    /// Creates a listener control handle using `driver` to register sockets.
+    pub fn listener_control(&self, driver: Arc<dyn Driver>) -> ListenerControl {
+        ListenerControl {
+            driver,
+            inner: ListenerControlInner {
+                tcp: self.tcp.listener_control(),
+                udp: self.udp.listener_control(),
+                waker: self.listener_waker.clone(),
+            },
         }
     }
 }

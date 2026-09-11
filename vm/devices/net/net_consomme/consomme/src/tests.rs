@@ -56,7 +56,7 @@ impl ArcWake for WakeCounter {
 #[pal_async::async_test]
 async fn listener_changes_wake_packet_queue(driver: DefaultDriver) {
     let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
-    let control = ListenerControl::new(Arc::new(driver.clone()), consomme.listener_control_inner());
+    let control = consomme.listener_control(Arc::new(driver.clone()));
     let mut client = TestClient::new(driver);
 
     for is_tcp in [true, false] {
