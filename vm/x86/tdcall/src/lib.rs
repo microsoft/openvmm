@@ -10,6 +10,7 @@ use hvdef::hypercall::HypercallOutput;
 use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
 use thiserror::Error;
+use x86defs::tdx::DmarTarget;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
@@ -26,8 +27,12 @@ use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdgMemPageLevel;
 use x86defs::tdx::TdgMemPageReleaseRcx;
 use x86defs::tdx::TdgMemPageReleaseRcxResult;
+use x86defs::tdx::TdgTdiMmioAcceptR9;
+use x86defs::tdx::TdgTdiMmioAcceptRcx;
 use x86defs::tdx::TdgVmRdResult;
+use x86defs::tdx::TdiRdField;
 use x86defs::tdx::TdxExtendedFieldCode;
+use x86defs::tdx::TdxFunctionId;
 use x86defs::tdx::TdxGlaListInfo;
 
 /// Input to a tdcall. This is not defined in the TDX specification, but a
@@ -531,15 +536,27 @@ fn set_page_attr(
         Ok(()) => {
             #[cfg(debug_assertions)]
             {
-                let result =
-                    tdcall_page_attr_rd(call, mapping.gpa_page_number() * x86defs::X64_PAGE_SIZE)
-                        .unwrap();
-                assert_eq!(u64::from(mapping), result.mapping.into());
-                assert_eq!(attributes.l1(), result.attributes.l1());
-                assert_eq!(
-                    attributes.into_bits() & mask.with_reserved(0).into_bits(),
-                    result.attributes.into_bits() & mask.with_reserved(0).into_bits()
+                // TDX Connect gives MMIO pages different ATTR.WR/ATTR.RD rules,
+                // so a readback is not required to report back what the write
+                // asked for. Skip the check on a TDX Connect partition.
+                let config_flags = x86defs::tdx::TdConfigFlags::from_bits(
+                    tdcall_vm_rd(call, x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS)
+                        .expect("TDG.VM.RD should not fail for CONFIG_FLAGS"),
                 );
+
+                if !config_flags.tdx_connect() {
+                    let result = tdcall_page_attr_rd(
+                        call,
+                        mapping.gpa_page_number() * x86defs::X64_PAGE_SIZE,
+                    )
+                    .unwrap();
+                    assert_eq!(u64::from(mapping), result.mapping.into());
+                    assert_eq!(attributes.l1(), result.attributes.l1());
+                    assert_eq!(
+                        attributes.into_bits() & mask.with_reserved(0).into_bits(),
+                        result.attributes.into_bits() & mask.with_reserved(0).into_bits()
+                    );
+                }
             }
 
             Ok(())
@@ -953,6 +970,168 @@ pub fn tdcall_vm_rd(
     Ok(output.r8)
 }
 
+/// Builds the [`TdcallInput`] shared by the TDX Connect guest-side leaves.
+///
+/// All of them take `GFUNCTION_ID` in RCX and leave R10-R15 zero, which the
+/// runtime (ioctl-based) tdcall path requires.
+fn tdi_input(
+    leaf: TdCallLeaf,
+    function_id: TdxFunctionId,
+    rdx: u64,
+    r8: u64,
+    r9: u64,
+) -> TdcallInput {
+    TdcallInput {
+        leaf,
+        rcx: u32::from(function_id).into(),
+        rdx,
+        r8,
+        r9,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    }
+}
+
+/// Issue a TDG.TDI.RD call to read a field of a TDI's control structure.
+///
+/// `out_buf_gpa` is the GPA of a 4K private page receiving the hash for the
+/// `GET_TDISP_REPORT_HASH` and `GET_DEVICE_ATTESTATION_INFO_HASH` field codes,
+/// in which case the returned value is the hash length in bytes. It must be
+/// zero for every other field code, where the returned value is the field
+/// itself.
+///
+/// Note that a failure status is meaningful on its own: per the TDX Connect ABI
+/// EAS, a `GET_TDISP_STATE` read succeeds only while the TDI is bound, so
+/// `TDI_NOT_PRESENT`, `TDI_INVALID_METADATA`, and `TDI_INVALID_STATE` all
+/// report an unbound TDI rather than a malformed call.
+pub fn tdcall_tdi_rd(
+    call: &mut impl Tdcall,
+    function_id: TdxFunctionId,
+    field: TdiRdField,
+    out_buf_gpa: u64,
+) -> Result<u64, TdCallResult> {
+    #[cfg(feature = "tracing")]
+    tracing::trace!(?function_id, ?field, out_buf_gpa, "tdcall_tdi_rd");
+
+    let output = call.tdcall(tdi_input(
+        TdCallLeaf::TDI_RD,
+        function_id,
+        field.0,
+        out_buf_gpa,
+        0,
+    ));
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(output.rcx),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.TDI.START call to authorize starting a TDI's interface.
+///
+/// `exp_bind_session` is the bind session ID the TD expects the TDI to still be
+/// on, previously read with
+/// [`tdcall_tdi_rd`]`(.., TdiRdField::GET_BIND_SESSION_ID, 0)`.
+pub fn tdcall_tdi_start(
+    call: &mut impl Tdcall,
+    function_id: TdxFunctionId,
+    exp_bind_session: u64,
+) -> Result<(), TdCallResult> {
+    #[cfg(feature = "tracing")]
+    tracing::trace!(?function_id, exp_bind_session, "tdcall_tdi_start");
+
+    let output = call.tdcall(tdi_input(
+        TdCallLeaf::TDI_START,
+        function_id,
+        exp_bind_session,
+        0,
+        0,
+    ));
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.DMAR.ACCEPT call to accept a TDI's DMA remapping entry, allowing
+/// the device to DMA into the TD's private memory.
+pub fn tdcall_dmar_accept(
+    call: &mut impl Tdcall,
+    function_id: TdxFunctionId,
+    target: DmarTarget,
+) -> Result<(), TdCallResult> {
+    #[cfg(feature = "tracing")]
+    tracing::trace!(?function_id, ?target, "tdcall_dmar_accept");
+
+    let output = call.tdcall(tdi_input(
+        TdCallLeaf::DMAR_ACCEPT,
+        function_id,
+        target.into(),
+        0,
+        0,
+    ));
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.TDI.MMIO.ACCEPT call to accept a sub-range of a TDI's MMIO into
+/// the TD's private address space.
+///
+/// `mmio_range_idx` is the MMIO range index from the device interface report,
+/// i.e. which of the TDI's ranges `gpa_base_and_level` falls in.
+///
+/// The leaf is interruptible and architecturally returns how much of the range
+/// is left in R9 so the caller can resume. The runtime tdcall path cannot read
+/// R9 back (`struct mshv_tdcall` only surfaces R10/R11 as outputs), so callers
+/// on that path must pass a `range` of a single page and drive their own
+/// cursor. Once the R9 output is plumbed through the ioctl this helper should
+/// return the remaining range instead.
+pub fn tdcall_tdi_mmio_accept(
+    call: &mut impl Tdcall,
+    function_id: TdxFunctionId,
+    gpa_base_and_level: TdgTdiMmioAcceptRcx,
+    mmio_range_idx: u16,
+    range: TdgTdiMmioAcceptR9,
+) -> Result<(), TdCallResult> {
+    #[cfg(feature = "tracing")]
+    tracing::trace!(
+        ?function_id,
+        ?gpa_base_and_level,
+        mmio_range_idx,
+        ?range,
+        "tdcall_tdi_mmio_accept"
+    );
+
+    // Unlike the other Connect leaves, this one takes the GPA in RCX and the
+    // function id in R8.
+    let output = call.tdcall(TdcallInput {
+        leaf: TdCallLeaf::TDI_MMIO_ACCEPT,
+        rcx: gpa_base_and_level.into(),
+        rdx: mmio_range_idx.into(),
+        r8: u32::from(function_id).into(),
+        r9: range.into(),
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    });
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
 /// Outcome of a per-page TDCall operation.
 enum TdcallPageOperationOutcome {
     /// The operation succeeded; advance past this page.
@@ -996,4 +1175,197 @@ fn for_each_tdcall_page<E>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x86defs::tdx::TdispInterfaceState;
+
+    /// A [`Tdcall`] that records the input it was handed and replays a canned
+    /// output, so the tests can assert on register encoding without a TDX host.
+    struct RecordingTdcall {
+        input: Option<TdcallInput>,
+        rax: TdCallResultCode,
+        rcx: u64,
+    }
+
+    impl RecordingTdcall {
+        fn new(rax: TdCallResultCode) -> Self {
+            Self {
+                input: None,
+                rax,
+                rcx: 0,
+            }
+        }
+
+        fn with_rcx(mut self, rcx: u64) -> Self {
+            self.rcx = rcx;
+            self
+        }
+
+        /// The recorded input, panicking if no tdcall was issued.
+        fn input(&self) -> &TdcallInput {
+            self.input.as_ref().expect("no tdcall was issued")
+        }
+    }
+
+    impl Tdcall for RecordingTdcall {
+        fn tdcall(&mut self, input: TdcallInput) -> TdcallOutput {
+            // The runtime path only supports one tdcall per marshalled ioctl,
+            // so a helper issuing more than one would be a bug.
+            assert!(self.input.is_none(), "more than one tdcall issued");
+
+            // The runtime path asserts these are zero before marshalling; catch
+            // a violation here rather than as a panic on a live TD.
+            assert_eq!(input.r10, 0);
+            assert_eq!(input.r11, 0);
+            assert_eq!(input.r12, 0);
+            assert_eq!(input.r13, 0);
+            assert_eq!(input.r14, 0);
+            assert_eq!(input.r15, 0);
+
+            self.input = Some(input);
+
+            TdcallOutput {
+                rax: TdCallResult::new().with_code(self.rax),
+                rcx: self.rcx,
+                rdx: 0,
+                r8: 0,
+                r10: 0,
+                r11: 0,
+            }
+        }
+    }
+
+    fn test_function_id() -> TdxFunctionId {
+        TdxFunctionId::new().with_requester_id(0x1a2b)
+    }
+
+    #[test]
+    fn tdi_rd_encoding() {
+        let mut call =
+            RecordingTdcall::new(TdCallResultCode::SUCCESS).with_rcx(TdispInterfaceState::RUN.0);
+
+        let value = tdcall_tdi_rd(
+            &mut call,
+            test_function_id(),
+            TdiRdField::GET_TDISP_STATE,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(TdispInterfaceState(value), TdispInterfaceState::RUN);
+        let input = call.input();
+        assert_eq!(input.leaf, TdCallLeaf::TDI_RD);
+        assert_eq!(input.rcx, 0x1a2b);
+        assert_eq!(input.rdx, TdiRdField::GET_TDISP_STATE.0);
+        assert_eq!(input.r8, 0);
+    }
+
+    #[test]
+    fn tdi_rd_reports_failure_status() {
+        let mut call = RecordingTdcall::new(TdCallResultCode::TDI_NOT_PRESENT);
+
+        let err = tdcall_tdi_rd(
+            &mut call,
+            test_function_id(),
+            TdiRdField::GET_TDISP_VERSION,
+            0,
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), TdCallResultCode::TDI_NOT_PRESENT);
+    }
+
+    #[test]
+    fn tdi_rd_passes_out_buf() {
+        let mut call = RecordingTdcall::new(TdCallResultCode::SUCCESS).with_rcx(48);
+
+        let len = tdcall_tdi_rd(
+            &mut call,
+            test_function_id(),
+            TdiRdField::GET_TDISP_REPORT_HASH,
+            0x4000,
+        )
+        .unwrap();
+
+        assert_eq!(len, 48);
+        assert_eq!(call.input().r8, 0x4000);
+    }
+
+    #[test]
+    fn function_id_encodes_segment() {
+        let function_id = TdxFunctionId::new()
+            .with_requester_id(0x1a2b)
+            .with_requester_segment(0x7)
+            .with_segment_valid(true);
+
+        let mut call = RecordingTdcall::new(TdCallResultCode::SUCCESS);
+        tdcall_tdi_rd(&mut call, function_id, TdiRdField::GET_TDISP_VERSION, 0).unwrap();
+
+        // segment_valid in bit 24, segment in bits 23:16, requester id in 15:0.
+        assert_eq!(call.input().rcx, 0x0107_1a2b);
+    }
+
+    #[test]
+    fn tdi_start_encoding() {
+        let mut call = RecordingTdcall::new(TdCallResultCode::SUCCESS);
+
+        tdcall_tdi_start(&mut call, test_function_id(), 0xfeed).unwrap();
+
+        let input = call.input();
+        assert_eq!(input.leaf, TdCallLeaf::TDI_START);
+        assert_eq!(input.rcx, 0x1a2b);
+        assert_eq!(input.rdx, 0xfeed);
+    }
+
+    #[test]
+    fn dmar_accept_encoding() {
+        let mut call = RecordingTdcall::new(TdCallResultCode::SUCCESS);
+
+        tdcall_dmar_accept(
+            &mut call,
+            test_function_id(),
+            DmarTarget::new().with_vm_idx(0),
+        )
+        .unwrap();
+
+        let input = call.input();
+        assert_eq!(input.leaf, TdCallLeaf::DMAR_ACCEPT);
+        assert_eq!(input.rcx, 0x1a2b);
+        assert_eq!(input.rdx, 0);
+        assert_eq!(input.r8, 0);
+    }
+
+    #[test]
+    fn tdi_mmio_accept_encoding() {
+        let mut call = RecordingTdcall::new(TdCallResultCode::SUCCESS);
+
+        tdcall_tdi_mmio_accept(
+            &mut call,
+            test_function_id(),
+            TdgTdiMmioAcceptRcx::new()
+                .with_level(TdgMemPageLevel::Size4k)
+                .with_gpa_page_number(0x8000),
+            2,
+            TdgTdiMmioAcceptR9::new()
+                .with_range_size(1)
+                .with_range_offset(3),
+        )
+        .unwrap();
+
+        let input = call.input();
+        assert_eq!(input.leaf, TdCallLeaf::TDI_MMIO_ACCEPT);
+        // The GPA goes in RCX and the function id in R8 for this leaf, unlike
+        // the other Connect leaves.
+        assert_eq!(
+            TdgTdiMmioAcceptRcx::from(input.rcx).gpa_page_number(),
+            0x8000
+        );
+        assert_eq!(input.rdx, 2);
+        assert_eq!(input.r8, 0x1a2b);
+        assert_eq!(TdgTdiMmioAcceptR9::from(input.r9).range_size(), 1);
+        assert_eq!(TdgTdiMmioAcceptR9::from(input.r9).range_offset(), 3);
+    }
 }

@@ -5590,8 +5590,15 @@ name = "openhcl_tdisp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "hcl",
+ "hvdef",
+ "memory_range",
+ "parking_lot",
+ "sev_guest_device",
  "tdisp",
  "tdisp_proto",
+ "tracing",
+ "x86defs",
 ]
 
 [[package]]
@@ -9068,6 +9075,7 @@ dependencies = [
  "nvme_spec",
  "openhcl_attestation_protocol",
  "openhcl_dma_manager",
+ "openhcl_tdisp",
  "pal",
  "pal_async",
  "pal_uring",
@@ -11022,6 +11030,7 @@ dependencies = [
  "futures-concurrency",
  "guestmem",
  "guid",
+ "hvdef",
  "inspect",
  "mesh",
  "openhcl_tdisp",
@@ -11035,6 +11044,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
+ "virt",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_ring",
@@ -11076,6 +11086,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "user_driver",
+ "virt",
  "vmbus_client",
  "vmbus_server",
  "vmcore",

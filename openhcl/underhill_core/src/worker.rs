@@ -3376,7 +3376,43 @@ async fn new_underhill_vm(
             let connection = relay_filter.take();
 
             if enable_vpci_relay {
+                // Determine if we're doing a mock TDISP flow.
+                let test_tdisp_flow = matches!(
+                    env_cfg.test_configuration,
+                    Some(TestScenarioConfig::VpciTdispFlow)
+                );
+
+                // If we're doing a mock TDISP flow, we'll use a different resource validator.
+                use openhcl_tdisp::TdispResourceValidationInterface;
+                #[cfg(feature = "dev_snp_ohcl_tio_support")]
+                use openhcl_tdisp::TdispSevTioResourceValidator;
+                use openhcl_tdisp::TdispTdxConnectResourceValidator;
+                use openhcl_tdisp::noop::TdispNoopResourceValidator;
+
                 use vpci_relay::*;
+
+                // The mock TDISP flow always uses the no-op validator. Otherwise
+                // pick a validator by isolation type. SEV-TIO stays behind its
+                // feature; TDX Connect and the no-op validator are always
+                // available. Isolation types without a real validator (or with
+                // SEV-TIO compiled out) fall through to the no-op validator: a
+                // device driven through the TDISP flow always has one, so no
+                // platform can silently skip resource validation.
+                let resource_validator: Arc<dyn TdispResourceValidationInterface> =
+                    if test_tdisp_flow {
+                        Arc::new(TdispNoopResourceValidator::new())
+                    } else {
+                        match isolation {
+                            virt::IsolationType::Tdx => {
+                                Arc::new(TdispTdxConnectResourceValidator::new(vtom.unwrap_or(0))?)
+                            }
+                            #[cfg(feature = "dev_snp_ohcl_tio_support")]
+                            virt::IsolationType::Snp => {
+                                Arc::new(TdispSevTioResourceValidator::new(vtom.unwrap_or(0))?)
+                            }
+                            _ => Arc::new(TdispNoopResourceValidator::new()),
+                        }
+                    };
 
                 let mut relay = VpciRelay::new(
                     driver_source.clone(),
@@ -3404,13 +3440,12 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    resource_validator,
+                    isolation,
                     vtom,
                     VpciRelayOptions {
                         // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
-                        test_tdisp_flow: matches!(
-                            env_cfg.test_configuration,
-                            Some(TestScenarioConfig::VpciTdispFlow)
-                        ),
+                        test_tdisp_flow,
                     },
                 );
 

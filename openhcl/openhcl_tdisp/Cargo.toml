@@ -6,11 +6,25 @@ name = "openhcl_tdisp"
 rust-version.workspace = true
 edition.workspace = true
 
+[features]
+dev_snp_ohcl_tio_support = [
+    "hcl/dev_snp_ohcl_tio_support",
+    "hvdef/dev_snp_ohcl_tio_support",
+    "sev_guest_device/dev_snp_ohcl_tio_support",
+]
+
 [dependencies]
+hcl.workspace = true
+hvdef.workspace = true
+memory_range.workspace = true
+parking_lot.workspace = true
+sev_guest_device.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true
+x86defs.workspace = true
 
 anyhow.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
