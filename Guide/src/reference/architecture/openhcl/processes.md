@@ -78,6 +78,62 @@ The VM worker process (`underhill_vm`) is responsible for the high-performance d
 - **Device Emulation:** Coordinates device emulation for the guest VM. Some devices run in-process while others run in separate device worker processes for isolation.
 - **I/O Processing:** Handles high-speed I/O operations.
 
+### VMGS hardware resealing
+
+For encrypted VMGS with a supported hardware-sealing policy, the VM worker
+maintains a hardware protector for the active datastore key (DEK). This applies
+both to hardware-only protection and hardware recovery alongside other key
+protectors. It does not enable sealing for plaintext VMGS, change the configured
+policy, or enable unsupported TEE capabilities.
+
+The existing GET `NOTIFY_POST_LIVE_MIGRATION` event triggers asynchronous
+resealing. The callback only latches a notification; it never blocks GET on
+hardware calls or VMGS I/O. Duplicate notifications are coalesced, and an event
+received during an attempt remains pending for another attempt.
+
+The worker obtains a fresh local TEE report and hardware-derived keys, seals the
+**unchanged** active DEK, and writes `HW_KEY_PROTECTOR`. A serialized VMGS broker
+operation checks that the DEK has not changed before writing, then flushes the
+completed write. Fresh hardware derivations verify the candidate before and
+after persistence. Neither remote key release nor a new migration protocol is
+required.
+
+Synchronous TEE report generation and key derivation run on the existing
+blocking executor, not a VP executor or the GET thread. Each attempt awaits
+protector creation and pre-write verification in one blocking job, performs
+asynchronous VMGS I/O, then awaits post-flush verification in a second job.
+Only one hardware job per resealing worker is in flight at a time. This isolates
+hardware-call latency; it does not reduce that latency or impose a timeout.
+
+Resealing is event-only: starting or resuming the worker does not verify or
+rewrite the protector. Each attempt creates a new protector using the current
+report's SVN, even if the hardware still matches. Failures retry with exponential
+backoff and jitter, capped at 60 seconds, without downgrading protection.
+Notifications do not bypass retry backoff, and successful attempts are at least
+one second apart. After success, the worker stays idle until another event.
+These retry and rate-limit intervals are implementation constants, not a
+host-controlled setting.
+
+The `hardware_reseal` state unit logs successful reseals and failed attempts
+with rate limiting. Inspection exposes scheduling state, including pending
+recovery and consecutive failures used for backoff, but no key material.
+Stopping the unit waits for the complete attempt, including offloaded hardware
+work and VMGS I/O, before VMGS save. Pending notifications and retries survive
+normal stop/start
+without resetting retry backoff. Reconstruction from saved VMGS state explicitly
+latches a local restore signal to force a rewrite and flush, covering an earlier
+failed durability operation. This is not startup or periodic verification, and
+does not add isolated-VM servicing support.
+
+```admonish warning
+This is best-effort recovery. A crash after migration but before successful
+destination resealing can leave hardware-only VMGS unrecoverable. The GET event
+has no completion handshake. Missing notifications, including those lost before
+callback installation, have no periodic verification coverage: the protector
+can remain stale until another event triggers recovery. Flush durability also
+depends on the backing storage honoring the request.
+```
+
 ## Diagnostics Server (`diag_server`)
 
 The diagnostics server provides an interface for debugging and monitoring the OpenHCL environment.
