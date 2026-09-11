@@ -11,6 +11,8 @@ use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
 use futures::FutureExt;
+use pal::windows::security::LocalSid;
+use pal::windows::security::current_process_user_sid;
 use pal_async::driver::Driver;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
@@ -18,6 +20,9 @@ use pal_async::windows::pipe::NamedPipeServer;
 use unicycle::FuturesUnordered;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
+use windows_sys::Win32::Storage::FileSystem::FILE_APPEND_DATA;
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
 
 /// Placeholder for shared NIC configuration; Windows has no fd-passing protocol.
 #[derive(Clone, Default)]
@@ -207,12 +212,6 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<T> {
 fn rpc_pipe_security_descriptor(
     allow_sid: &str,
 ) -> anyhow::Result<pal::windows::security::LocalSecurityDescriptor> {
-    use pal::windows::security::LocalSid;
-    use pal::windows::security::current_process_user_sid;
-    use windows_sys::Win32::Storage::FileSystem::FILE_APPEND_DATA;
-    use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
-    use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
-
     anyhow::ensure!(
         !allow_sid.contains('\0'),
         "invalid RPC 'allow-sid': contains NUL"
