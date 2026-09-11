@@ -2116,6 +2116,7 @@ async fn vm_config_from_command_line(
             arch: Some(topology_arch),
         },
         hypervisor: HypervisorConfig {
+            snp_host_data: None,
             with_hv,
             with_vtl2: opt.vtl2.then_some(Vtl2Config {
                 vtl0_alias_map: !opt.no_alias_map,
