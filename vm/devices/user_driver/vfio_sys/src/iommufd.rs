@@ -225,6 +225,10 @@ pub struct IommuHwptArmSmmuv3 {
 /// HW info type: ARM SMMUv3.
 pub const IOMMU_HW_INFO_TYPE_ARM_SMMUV3: u32 = 2;
 
+pub const IOMMU_HW_CAP_PCI_PASID_EXEC: u64 = 1 << 1;
+pub const IOMMU_HW_CAP_PCI_PASID_PRIV: u64 = 1 << 2;
+pub const IOMMU_HW_CAP_PCI_ATS_NOT_SUPPORTED: u64 = 1 << 3;
+
 #[repr(C)]
 struct IommuGetHwInfo {
     size: u32,
@@ -567,13 +571,13 @@ impl IommufdCtx {
 
     /// Query hardware information for a device's IOMMU.
     ///
-    /// Returns `(out_data_type, out_capabilities)`. The type-specific data is
-    /// written into `out_info`.
+    /// Returns `(out_data_type, out_max_pasid_log2, out_capabilities)`. The
+    /// type-specific data is written into `out_info`.
     pub fn get_hw_info(
         &self,
         dev_id: u32,
         out_info: &mut IommuHwInfoArmSmmuv3,
-    ) -> anyhow::Result<(u32, u64)> {
+    ) -> anyhow::Result<(u32, u8, u64)> {
         let mut cmd = IommuGetHwInfo {
             size: size_of::<IommuGetHwInfo>() as u32,
             flags: 0,
@@ -595,7 +599,11 @@ impl IommufdCtx {
             ioctl::iommu_get_hw_info(self.file.as_raw_fd(), &mut cmd)
                 .context("IOMMU_GET_HW_INFO failed")?;
         }
-        Ok((cmd.out_data_type, cmd.out_capabilities))
+        Ok((
+            cmd.out_data_type,
+            cmd.out_max_pasid_log2,
+            cmd.out_capabilities,
+        ))
     }
 
     /// Invalidate IOMMU caches via a nested HWPT or vIOMMU.

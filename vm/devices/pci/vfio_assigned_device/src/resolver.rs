@@ -228,14 +228,24 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
         // StreamID here — PCI routing supplies the BDF one is derived from,
         // so it stays blocked until the guest assigns it.
         let mut accel_stream = None;
+        let mut pasid_capabilities = None;
         if let (Some(ctx), Some(nesting)) = (nesting_ctx, nesting) {
             // Bind the vSMMU to the physical SMMU and vIOMMU backing this
             // device, finalizing host-derived parameters (OAS, ...). Runs once
             // per vSMMU; a later device on a different physical SMMU or vIOMMU
             // is rejected here.
+            let host_caps = nesting.host_caps;
             ctx.shared
-                .bind_accel_viommu(nesting.host_caps, &nesting.accel_state)
+                .bind_accel_viommu(host_caps, &nesting.accel_state)
                 .with_context(|| format!("device {pci_id} is incompatible with the host SMMU"))?;
+
+            if nesting.device_caps.max_pasid_log2 != 0 {
+                pasid_capabilities = Some(crate::PasidCapabilities {
+                    width: nesting.device_caps.max_pasid_log2,
+                    exec: nesting.device_caps.pasid_exec,
+                    privileged: nesting.device_caps.pasid_priv,
+                });
+            }
 
             accel_stream = Some(
                 crate::iommufd_nesting::AccelStream::new(
@@ -263,6 +273,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             memory_mapper,
             bar_addresses,
             accel_stream,
+            pasid_capabilities,
         )
         .await?;
 
