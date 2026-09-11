@@ -621,13 +621,6 @@ impl virt::Processor for MshvProcessor<'_> {
     }
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
-        use virt::vp::AccessVpState;
-
-        let vp_info = self.inner.vp_info;
-        self.access_state(Vtl::Vtl0)
-            .reset_all(&vp_info)
-            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
-
         self.reset_synic_state();
 
         Ok::<(), Error>(())
