@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::K_MAX_COMMANDS;
 use crate::MAX_ARGS;
 use crate::decoder::Decoder;
 use crate::decoder::DecoderError;
@@ -26,6 +25,9 @@ use alloc::vec::Vec;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
+
+/// The maximum number of commands supported by syzkaller
+const K_MAX_COMMANDS: usize = 1000;
 
 /// Results produced by executing the calls in a syzkaller program.
 pub type TestcaseResults = [ResT; K_MAX_COMMANDS];
@@ -85,10 +87,8 @@ impl ResT {
 
 /// Instructions for a decoded syzkaller program alongside the required
 /// components to execute the program (e.g. the exec function and the results array).
-///
-/// 'm - lifetime of the memory map instance
-/// 'f - lifetime of the executor function
 pub(crate) struct DecodedProgram<M, F> {
+    /// The current queue of instructions that have yet to be executed.
     instr_vec: VecDeque<InstrEntry>,
     /// Memory-layout that holds the address layout of the syzkaller program
     mem: M,
@@ -103,11 +103,6 @@ pub(crate) struct DecodedProgram<M, F> {
     custom_results: Arc<TestcaseResults>,
 }
 
-/// Implementation for SafeMemoryMap. Note that because the memory map instance owned here
-/// is behind a [`spin::Mutex`], so we can do memory operations without requiring
-/// `&mut DecodedProgram` (we need this loosening of restrictions internally, i.e. so that
-/// the reentrancy fuzz loop could perform read/write operations while holding only a
-/// shared global reference to it).
 impl<M, F> SafeMemoryMap for DecodedProgram<M, F>
 where
     M: SafeMemoryMap,
@@ -223,8 +218,34 @@ where
         Ok(r.was_successful())
     }
 
+    /// Executes all the instructions in the current instruction queue. If an
+    /// error occurs in executing one of the instructions that instruction is
+    /// dropped and the following instructions if any are left on the queue.
+    ///
+    /// If an instruction is dependent on some earlier call that failed in such a
+    /// way, then this instruction is also skipped
     pub(crate) fn exec_instrs(&mut self) -> Result<(), DecoderError> {
         while let Some(entry) = self.instr_vec.pop_front() {
+            if let InstrEntry::Call(call, _) = &entry {
+                let mut ready = true;
+                for arg in &call.args {
+                    if let Arg::Result(arg) = arg {
+                        if !self.results[arg.idx as usize]
+                            .executed
+                            .load(Ordering::SeqCst)
+                        {
+                            // Found a dependent call that has not been executed yet,
+                            // i.e. this dependent call has failed.
+                            ready = false;
+                            break;
+                        }
+                    }
+                }
+
+                if !ready {
+                    continue;
+                }
+            }
             // Execute all the instructions, regardless of their type
             self.exec_single(entry.get_inner_instr())?;
 
