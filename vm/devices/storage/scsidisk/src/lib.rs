@@ -1259,6 +1259,13 @@ impl SimpleScsiDisk {
 }
 
 impl AsyncScsiDisk for SimpleScsiDisk {
+    fn clear_nexus_state(&self) {
+        // last_sector_count is deliberately left alone. It latches a capacity
+        // change so the unit attention is reported once; re-latching it here
+        // would raise a spurious one at the next initiator's first command.
+        self.sense_data.set(None);
+    }
+
     fn execute_scsi<'a>(
         &'a self,
         external_data: &'a RequestBuffers<'a>,
