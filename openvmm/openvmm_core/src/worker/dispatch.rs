@@ -2213,24 +2213,35 @@ impl InitializedVm {
                     chipset_builder
                         .arc_mutex_device(device_name)
                         .try_add(|services| {
+                            let mut register_mmio = services.register_mmio();
+                            #[cfg(guest_arch = "x86_64")]
+                            let mut register_pio = services.register_pio();
                             let root_port_definitions = rc
                                 .ports
                                 .iter()
                                 .map(pcie_topology::build_port_definition)
                                 .collect();
-                            GenericPcieRootComplex::builder(
-                                &mut services.register_mmio(),
+                            let builder = GenericPcieRootComplex::builder(
+                                &mut register_mmio,
                                 rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
-                            )
-                            .root_ports(
-                                root_port_definitions,
-                                &msi_conn.msi_target(rc_bus_range, 0),
-                            )
-                            .first_port_device_number(root_port_start_device)
-                            .reserved_device_numbers(reserved_device_numbers)
-                            .chbcr_range(chbcr_range)
-                            .build()
+                            );
+                            #[cfg(guest_arch = "x86_64")]
+                            let builder =
+                                if rc.segment == 0 && rc.start_bus == 0 && rc.end_bus == u8::MAX {
+                                    builder.pci_config_io(&mut register_pio)
+                                } else {
+                                    builder
+                                };
+                            builder
+                                .root_ports(
+                                    root_port_definitions,
+                                    &msi_conn.msi_target(rc_bus_range, 0),
+                                )
+                                .first_port_device_number(root_port_start_device)
+                                .reserved_device_numbers(reserved_device_numbers)
+                                .chbcr_range(chbcr_range)
+                                .build()
                         })?;
 
                 // Defer MSI wiring to after IOMMU setup so that
