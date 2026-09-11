@@ -1845,8 +1845,11 @@ jobs:
       run: flowey e 14 flowey_lib_common::run_cargo_clippy 3
       shell: bash
     - name: cargo clippy
+      run: flowey e 14 flowey_lib_common::run_cargo_clippy 1
+      shell: bash
+    - name: cargo clippy
       run: |-
-        flowey e 14 flowey_lib_common::run_cargo_clippy 1
+        flowey e 14 flowey_lib_common::run_cargo_clippy 5
         flowey e 14 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build xtask
@@ -1864,13 +1867,13 @@ jobs:
       run: flowey e 14 flowey_lib_hvlite::_jobs::check_clippy 0
       shell: bash
     - name: cargo clippy
-      run: flowey e 14 flowey_lib_common::run_cargo_clippy 5
-      shell: bash
-    - name: cargo clippy
       run: flowey e 14 flowey_lib_common::run_cargo_clippy 6
       shell: bash
     - name: cargo clippy
       run: flowey e 14 flowey_lib_common::run_cargo_clippy 7
+      shell: bash
+    - name: cargo clippy
+      run: flowey e 14 flowey_lib_common::run_cargo_clippy 8
       shell: bash
     - name: create cargo-nextest cache dir
       run: |-
@@ -2209,6 +2212,9 @@ jobs:
       shell: bash
     - name: cargo clippy
       run: flowey e 15 flowey_lib_common::run_cargo_clippy 1
+      shell: bash
+    - name: cargo clippy
+      run: flowey e 15 flowey_lib_common::run_cargo_clippy 8
       shell: bash
     - name: cargo clippy
       run: flowey e 15 flowey_lib_common::run_cargo_clippy 7
@@ -3037,8 +3043,11 @@ jobs:
         flowey e 17 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo clippy
+      run: flowey e 17 flowey_lib_common::run_cargo_clippy 1
+      shell: bash
+    - name: cargo clippy
       run: |-
-        flowey e 17 flowey_lib_common::run_cargo_clippy 1
+        flowey e 17 flowey_lib_common::run_cargo_clippy 5
         flowey e 17 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build xtask
@@ -3244,6 +3253,9 @@ jobs:
       shell: bash
     - name: cargo clippy
       run: flowey e 18 flowey_lib_common::run_cargo_clippy 1
+      shell: bash
+    - name: cargo clippy
+      run: flowey e 18 flowey_lib_common::run_cargo_clippy 8
       shell: bash
     - name: cargo clippy
       run: flowey e 18 flowey_lib_common::run_cargo_clippy 7

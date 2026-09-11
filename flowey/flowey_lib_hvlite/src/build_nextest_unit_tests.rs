@@ -119,6 +119,10 @@ impl FlowNode for Node {
                     "test_with_tracing_macro",
                     "pal_async_test",
                     "vmm_test_macros",
+                    // tpm_utils selects a TPM crypto backend with non-additive
+                    // features, so it can't be built with --all-features. It
+                    // has no unit tests, and clippy covers it separately.
+                    "tpm_utils",
                 ]
                 .map(|x| x.to_string())
                 .to_vec();

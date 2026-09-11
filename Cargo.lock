@@ -8674,6 +8674,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tpm_utils"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs-err",
+ "getrandom 0.4.2",
+ "ms-tcg-tpm-sys",
+ "ms-tpm-20-ref",
+ "parking_lot",
+ "tpm_lib",
+ "tpm_protocol",
+ "tpm_resources",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracelimit"
 version = "0.0.0"
 dependencies = [

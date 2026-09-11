@@ -199,8 +199,11 @@ jobs:
         flowey e 0 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo clippy
+      run: flowey e 0 flowey_lib_common::run_cargo_clippy 1
+      shell: bash
+    - name: cargo clippy
       run: |-
-        flowey e 0 flowey_lib_common::run_cargo_clippy 1
+        flowey e 0 flowey_lib_common::run_cargo_clippy 5
         flowey e 0 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build xtask
@@ -2387,6 +2390,9 @@ jobs:
       run: flowey e 17 flowey_lib_common::run_cargo_clippy 1
       shell: bash
     - name: cargo clippy
+      run: flowey e 17 flowey_lib_common::run_cargo_clippy 8
+      shell: bash
+    - name: cargo clippy
       run: flowey e 17 flowey_lib_common::run_cargo_clippy 7
       shell: bash
     - name: cargo clippy
@@ -3217,8 +3223,11 @@ jobs:
         flowey e 19 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo clippy
+      run: flowey e 19 flowey_lib_common::run_cargo_clippy 1
+      shell: bash
+    - name: cargo clippy
       run: |-
-        flowey e 19 flowey_lib_common::run_cargo_clippy 1
+        flowey e 19 flowey_lib_common::run_cargo_clippy 5
         flowey e 19 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build xtask
@@ -3614,6 +3623,9 @@ jobs:
       shell: bash
     - name: cargo clippy
       run: flowey e 20 flowey_lib_common::run_cargo_clippy 1
+      shell: bash
+    - name: cargo clippy
+      run: flowey e 20 flowey_lib_common::run_cargo_clippy 8
       shell: bash
     - name: cargo clippy
       run: flowey e 20 flowey_lib_common::run_cargo_clippy 7
