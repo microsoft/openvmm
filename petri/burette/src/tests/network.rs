@@ -17,6 +17,7 @@
 //! the NIC frontend, selected via the `--nic` flag.
 
 use crate::report::MetricResult;
+use crate::tests::common;
 use anyhow::Context as _;
 use petri::pipette::cmd;
 
@@ -74,30 +75,16 @@ pub struct NetworkTestState {
     driver: pal_async::DefaultDriver,
 }
 
-fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    petri::Firmware::linux_direct(resolver, MachineArch::host())
-}
-
-fn require_petritools_erofs(
-    resolver: &petri::ArtifactResolver<'_>,
-) -> petri_artifacts_core::ResolvedArtifact {
-    use petri_artifacts_vmm_test::artifacts::petritools::*;
-    match MachineArch::host() {
-        MachineArch::X86_64 => resolver.require(PETRITOOLS_EROFS_X64).erase(),
-        MachineArch::Aarch64 => resolver.require(PETRITOOLS_EROFS_AARCH64).erase(),
-    }
-}
-
 /// Register artifacts needed by the network test.
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
-    let firmware = build_firmware(resolver);
+    let firmware = common::build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
         resolver,
         firmware,
         MachineArch::host(),
         true,
     );
-    require_petritools_erofs(resolver);
+    common::require_petritools_erofs(resolver);
 }
 
 impl crate::harness::WarmPerfTest for NetworkTest {
@@ -182,7 +169,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
             None
         };
 
-        let firmware = build_firmware(resolver);
+        let firmware = common::build_firmware(resolver);
         let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
             resolver,
             firmware,
@@ -204,7 +191,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
         };
 
         // Open the perf rootfs erofs image for the virtio-blk device.
-        let erofs_path = require_petritools_erofs(resolver);
+        let erofs_path = common::require_petritools_erofs(resolver);
         let erofs_file = fs_err::File::open(&erofs_path)?;
 
         let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
