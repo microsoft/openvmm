@@ -90,7 +90,7 @@ impl VmgsClient {
     /// Returns a copy of the active root encryption key of an unlocked VMGS.
     ///
     /// This key is sensitive and must not be logged or inspected. It may become
-    /// stale after this call; use [`Self::write_file_if_encryption_key_matches`]
+    /// stale after this call; use [`Self::write_file_if_active_key_matches`]
     /// to publish data that depends on it.
     #[cfg(feature = "encryption")]
     #[instrument(skip_all)]
@@ -104,6 +104,10 @@ impl VmgsClient {
 
     /// Writes plaintext `buf` only if `expected_key` is still the active root key.
     ///
+    /// The key comparison is a defensive stale-key guard, not a request to
+    /// encrypt the entry. The broker currently exposes no key-rotation RPC;
+    /// this guard protects callers if concurrent rotation is added later.
+    ///
     /// The comparison, write, and flush are processed as one serial broker
     /// operation. Returns `false` for a stale key without writing or flushing,
     /// and `true` only after both the write and final flush succeed. A locked or
@@ -111,7 +115,7 @@ impl VmgsClient {
     /// A flush error does not roll back a completed write.
     #[cfg(feature = "encryption")]
     #[instrument(skip_all, fields(file_id = %file_id))]
-    pub async fn write_file_if_encryption_key_matches(
+    pub async fn write_file_if_active_key_matches(
         &self,
         file_id: FileId,
         buf: Vec<u8>,
@@ -120,7 +124,7 @@ impl VmgsClient {
         let written = self
             .control
             .call_failable(
-                VmgsBrokerRpc::WriteFileIfEncryptionKeyMatches,
+                VmgsBrokerRpc::WriteFileIfActiveKeyMatches,
                 (file_id.into(), buf, expected_key),
             )
             .await?;
