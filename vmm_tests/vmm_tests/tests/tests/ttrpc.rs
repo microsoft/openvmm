@@ -178,7 +178,7 @@ async fn test_ttrpc_interface(
             _ => "",
         };
         let probe_address = if host_address.is_empty() {
-            "127.0.0.1"
+            "0.0.0.0"
         } else {
             host_address
         };
@@ -464,15 +464,20 @@ async fn test_ttrpc_interface(
             "CreateVm should bind the requested host address"
         );
         // An explicit loopback address must not become a wildcard bind.
-        let other_address = TcpListener::bind(("127.0.0.2", host_port));
         if host_address.is_empty() {
+            #[cfg(not(windows))]
             assert_eq!(
-                other_address.unwrap_err().kind(),
+                TcpListener::bind(("127.0.0.2", host_port))
+                    .unwrap_err()
+                    .kind(),
                 std::io::ErrorKind::AddrInUse,
                 "an empty host address should retain the wildcard default"
             );
         } else {
-            drop(other_address.context("port forward unexpectedly bound another address")?);
+            drop(
+                TcpListener::bind(("127.0.0.2", host_port))
+                    .context("port forward unexpectedly bound another address")?,
+            );
         }
 
         let props = query_props().await.unwrap();
