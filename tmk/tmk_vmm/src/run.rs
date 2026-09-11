@@ -19,9 +19,13 @@ use virt::StopVpSource;
 use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState as _;
+#[cfg(guest_arch = "aarch64")]
+use virt_support_gic::GicV3Model;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
+#[cfg(guest_arch = "aarch64")]
+use vm_topology::processor::aarch64::GicVersion;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
@@ -218,14 +222,14 @@ impl CommonState {
         #[cfg(guest_arch = "aarch64")]
         let processor_topology =
             TopologyBuilder::new_aarch64(vm_topology::processor::arch::Aarch64PlatformConfig {
-                gic_distributor_base: 0xff000000,
-                gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
-                    redistributors_base: 0xff020000,
+                gic_distributor_base: tmk_protocol::aarch64::GIC_DISTRIBUTOR_BASE,
+                gic_version: GicVersion::V3 {
+                    redistributors_base: tmk_protocol::aarch64::GIC_REDISTRIBUTOR_BASE,
                 },
                 gic_msi: vm_topology::processor::aarch64::GicMsiController::None,
                 pmu_gsiv: None,
-                virt_timer_ppi: 20, // DEFAULT_VIRT_TIMER_PPI
-                gic_nr_irqs: 256,
+                virt_timer_ppi: tmk_protocol::aarch64::VIRTUAL_TIMER_PPI,
+                gic_nr_irqs: tmk_protocol::aarch64::GIC_INTERRUPT_COUNT,
             })
             .build(1)
             .context("failed to build processor topology")?;
@@ -377,6 +381,9 @@ impl RunContext<'_> {
     ) -> anyhow::Result<TestResult> {
         let (event_send, mut event_recv) = mesh::channel();
 
+        #[cfg(guest_arch = "aarch64")]
+        let gic = Arc::new(GicV3Model::new(&self.state.processor_topology)?);
+
         // Load the TMK.
         let tmk = fs_err::File::open(&self.state.opts.tmk).context("failed to open tmk")?;
         let regs = {
@@ -411,6 +418,8 @@ impl RunContext<'_> {
                 Arc::clone(&regs),
                 guest_memory.clone(),
                 event_send.clone(),
+                #[cfg(guest_arch = "aarch64")]
+                gic,
             ),
         )
         .await?;
@@ -454,6 +463,8 @@ struct IoHandler<'a> {
     guest_memory: &'a GuestMemory,
     event_send: &'a mesh::Sender<VpEvent>,
     stop: &'a StopVpSource,
+    #[cfg(guest_arch = "aarch64")]
+    gic: &'a GicV3Model,
 }
 
 fn widen(d: &[u8]) -> u64 {
@@ -463,8 +474,16 @@ fn widen(d: &[u8]) -> u64 {
 }
 
 impl CpuIo for IoHandler<'_> {
-    fn is_mmio(&self, _address: u64) -> bool {
-        false
+    fn is_mmio(&self, address: u64) -> bool {
+        #[cfg(guest_arch = "aarch64")]
+        {
+            self.gic.contains(address)
+        }
+        #[cfg(not(guest_arch = "aarch64"))]
+        {
+            let _ = address;
+            false
+        }
     }
 
     fn acknowledge_pic_interrupt(&self) -> Option<u8> {
@@ -476,6 +495,10 @@ impl CpuIo for IoHandler<'_> {
     }
 
     async fn read_mmio(&self, vp: VpIndex, address: u64, data: &mut [u8]) {
+        #[cfg(guest_arch = "aarch64")]
+        if self.gic.read(address, data) {
+            return;
+        }
         tracing::info!(vp = vp.index(), address, "read mmio");
         data.fill(!0);
     }
@@ -491,9 +514,14 @@ impl CpuIo for IoHandler<'_> {
                     "failed to handle command"
                 );
             }
-        } else {
-            tracing::info!(vp = vp.index(), address, data = widen(data), "write mmio");
+            return;
         }
+
+        #[cfg(guest_arch = "aarch64")]
+        if self.gic.write(address, data) {
+            return;
+        }
+        tracing::info!(vp = vp.index(), address, data = widen(data), "write mmio");
     }
 
     async fn read_io(&self, vp: VpIndex, port: u16, data: &mut [u8]) {
@@ -567,6 +595,8 @@ pub struct RunnerBuilder {
     regs: Arc<virt::InitialRegs>,
     guest_memory: GuestMemory,
     event_send: mesh::Sender<VpEvent>,
+    #[cfg(guest_arch = "aarch64")]
+    gic: Arc<GicV3Model>,
 }
 
 impl RunnerBuilder {
@@ -575,13 +605,21 @@ impl RunnerBuilder {
         regs: Arc<virt::InitialRegs>,
         guest_memory: GuestMemory,
         event_send: mesh::Sender<VpEvent>,
+        #[cfg(guest_arch = "aarch64")] gic: Arc<GicV3Model>,
     ) -> Self {
         Self {
             vp_index,
             regs,
             guest_memory,
             event_send,
+            #[cfg(guest_arch = "aarch64")]
+            gic,
         }
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    pub fn set_gic(&mut self, gic: Arc<GicV3Model>) {
+        self.gic = gic;
     }
 
     pub fn build<P: Processor>(&mut self, mut vp: P) -> anyhow::Result<Runner<'_, P>> {
@@ -614,6 +652,8 @@ impl RunnerBuilder {
             vp_index: self.vp_index,
             guest_memory: &self.guest_memory,
             event_send: &self.event_send,
+            #[cfg(guest_arch = "aarch64")]
+            gic: &self.gic,
         })
     }
 }
@@ -623,6 +663,8 @@ pub struct Runner<'a, P> {
     vp_index: VpIndex,
     guest_memory: &'a GuestMemory,
     event_send: &'a mesh::Sender<VpEvent>,
+    #[cfg(guest_arch = "aarch64")]
+    gic: &'a GicV3Model,
 }
 
 impl<P: Processor> Runner<'_, P> {
@@ -636,6 +678,8 @@ impl<P: Processor> Runner<'_, P> {
                     guest_memory: self.guest_memory,
                     event_send: self.event_send,
                     stop: &stop,
+                    #[cfg(guest_arch = "aarch64")]
+                    gic: self.gic,
                 },
             )
             .await;

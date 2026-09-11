@@ -7,7 +7,8 @@
 // UNSAFETY: needed to write low-level TMK code.
 #![expect(unsafe_code)]
 
-mod aarch64;
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
 pub mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
@@ -31,7 +32,6 @@ pub struct TestContext<'scope> {
 /// A virtual processor scope, used to interact with the virtual processor
 /// in a (relatively) memory safe way.
 pub struct Scope<'scope, 'env: 'scope> {
-    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     arch: arch::ArchScopeState,
     _scope: PhantomData<&'scope mut &'scope ()>,
     _env: PhantomData<&'env mut &'env ()>,

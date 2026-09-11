@@ -9,11 +9,13 @@ rust-version.workspace = true
 [dependencies]
 tmk_protocol.workspace = true
 
+aarch64defs.workspace = true
 hvdef.workspace = true
 loader.workspace = true
 guestmem.workspace = true
 page_table.workspace = true
 virt.workspace = true
+virt_support_gic.workspace = true
 vm_topology.workspace = true
 vmcore.workspace = true
 vm_loader.workspace = true
