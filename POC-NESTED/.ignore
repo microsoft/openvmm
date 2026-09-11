@@ -1,0 +1,5 @@
+# hvpost_hook.c is a GPL-2.0 Linux kernel module: it links GPL-only kernel
+# symbols and so must stay GPL. It keeps its SPDX GPL header and is excluded
+# from the repo's MIT copyright-header lint rather than being mislabeled MIT.
+# this is only the POC which needs to go in a polished version upstream to the Linux Kernel
+kvm_hook/hvpost_hook.c
