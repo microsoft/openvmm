@@ -283,6 +283,46 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     assert!(driver.is_err());
 }
 
+#[async_test]
+async fn test_nvme_controller_ready_timeout(driver: DefaultDriver) {
+    const MSIX_COUNT: u16 = 2;
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 64;
+
+    // Memory setup
+    let pages = 1000;
+    let device_test_memory =
+        DeviceTestMemory::new(pages, false, "test_nvme_controller_ready_timeout");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
+    let nvme = nvme::NvmeController::new(
+        &driver_source,
+        &dma_target,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: IO_QUEUE_COUNT,
+            subsystem_id: Guid::new_random(),
+        },
+    );
+
+    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_conn, dma_client.clone());
+
+    // Report a short CAP.TO and pin CSTS so RDY never sets, forcing the
+    // controller-ready wait loop to hit its deadline.
+    let cap: Cap = Cap::new().with_to(1);
+    device.set_mock_response_u64(Some((0, cap.into())));
+    device.set_mock_response_u32(Some((0x1c, 0)));
+
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
+
+    assert!(driver.is_err());
+}
+
 struct NvmeTestConfig {
     allow_dma: bool,
     fail_at_driver_create: bool,
@@ -538,7 +578,11 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> NvmeTestEmula
         }
     }
 
-    // TODO: set_mock_response_u32 is intentionally not implemented to avoid dead code.
+    pub fn set_mock_response_u32(&mut self, mapping: Option<(usize, u32)>) {
+        let mut mock_response = self.mocked_response_u32.lock();
+        *mock_response = mapping;
+    }
+
     pub fn set_mock_response_u64(&mut self, mapping: Option<(usize, u64)>) {
         let mut mock_response = self.mocked_response_u64.lock();
         *mock_response = mapping;

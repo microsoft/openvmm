@@ -6,12 +6,24 @@
 use super::spec;
 use inspect::Inspect;
 use pal_async::driver::Driver;
+use pal_async::timer::Instant;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
 use tracing::instrument;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::backoff::Backoff;
+
+/// Maximum time to wait for CSTS.RDY to change after toggling CC.EN, derived
+/// from CAP.TO (in 500ms units). A CAP.TO of 0 is not useful, so fall back to a
+/// floor of a few seconds.
+pub(crate) fn ready_timeout(cap: spec::Cap) -> Duration {
+    match cap.to() {
+        0 => Duration::from_secs(3),
+        to => Duration::from_millis(500) * to as u32,
+    }
+}
 
 #[derive(Inspect)]
 #[inspect(extra = "Self::inspect_extra")]
@@ -117,6 +129,7 @@ impl<T: DeviceRegisterIo + Inspect> Bar0<T> {
     pub async fn reset(&self, driver: &dyn Driver) -> Result<(), u32> {
         let cc = self.cc().with_en(false);
         self.set_cc(cc);
+        let deadline = Instant::now().saturating_add(ready_timeout(self.cap()));
         let mut backoff = Backoff::new(driver);
         // Loop until either RDY bit is cleared
         // or CSTS read returns -1 which means
@@ -128,6 +141,10 @@ impl<T: DeviceRegisterIo + Inspect> Bar0<T> {
             }
             if u32::from(csts) == !0 {
                 break Err(!0);
+            }
+            // Give up if the controller does not clear RDY within CAP.TO.
+            if Instant::now() >= deadline {
+                break Err(u32::from(csts));
             }
             backoff.back_off().await;
         }
