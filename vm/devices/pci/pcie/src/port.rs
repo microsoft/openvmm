@@ -849,6 +849,24 @@ impl PcieDownstreamPort {
         bail!("port name does not match")
     }
 
+    /// Reset the port's config space, preserving presence for a still-connected
+    /// device.
+    ///
+    /// A VM reset resets the config space, which clears the PCIe slot-status
+    /// Presence Detect bit. But `self.link` (the connected device) survives the
+    /// reset, so the slot is still occupied. Without re-asserting presence here,
+    /// the guest's pciehp driver reads the port after reboot, sees Presence
+    /// Detect clear ("card not present"), and removes the still-attached device
+    /// even though its link is up - so an emulated PCIe disk/NIC disappears on
+    /// every guest reboot until a manual PCI rescan. Re-derive presence from the
+    /// link so a boot-present device stays present across reset.
+    pub fn reset(&mut self) {
+        self.cfg_space.reset();
+        if self.link.is_some() {
+            self.cfg_space.set_presence_detect_state(true);
+        }
+    }
+
     /// Hot-add a device to this port at runtime.
     ///
     /// Unlike `add_pcie_device`, this method verifies the port is hotplug-capable
@@ -1100,6 +1118,72 @@ mod tests {
         assert_eq!(
             present_presence_detect, 1,
             "Presence detect state should be 1 after adding device"
+        );
+    }
+
+    #[test]
+    fn test_reset_preserves_presence_detect_for_connected_device() {
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        let mut port = PcieDownstreamPort::new(
+            "test-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            Some(1), // hotplug slot 1
+            &msi_conn.target(),
+            PciePortSettings::default(),
+            None,
+            None,
+        );
+
+        // presence_detect_state is bit 6 of slot status at cap offset 0x18.
+        fn presence(port: &mut PcieDownstreamPort) -> u32 {
+            let mut v = 0u32;
+            assert!(matches!(
+                port.cfg_space.read_u32(0x58, &mut v),
+                IoResult::Ok
+            ));
+            (v >> 22) & 0x1
+        }
+
+        // An empty port reports no presence after reset.
+        port.reset();
+        assert_eq!(
+            presence(&mut port),
+            0,
+            "empty port: no presence after reset"
+        );
+
+        // Connect a device (presence asserted), then reset as a guest reboot does.
+        port.add_pcie_device("test-port", "mock-device", Box::new(MockDevice))
+            .unwrap();
+        assert_eq!(
+            presence(&mut port),
+            1,
+            "presence asserted after connecting device"
+        );
+
+        // Regression: the connected device (self.link) survives the reset, so
+        // presence must remain set. If it clears, the guest's pciehp evicts the
+        // still-attached device on reboot (the PCIe-devices-vanish-on-reboot bug).
+        port.reset();
+        assert_eq!(
+            presence(&mut port),
+            1,
+            "presence must survive reset while a device is connected"
         );
     }
 

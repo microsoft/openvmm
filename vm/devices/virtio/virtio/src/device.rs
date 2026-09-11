@@ -97,6 +97,24 @@ pub trait VirtioDevice: InspectMut + Send {
     /// iterating all queue indices, not just active ones.
     fn stop_queue(&mut self, idx: u16) -> impl Future<Output = Option<QueueState>> + Send;
 
+    /// Tear down a single queue on the reset/disable path.
+    ///
+    /// The queue is being torn down and the guest no longer owns the ring
+    /// memory, so a device with in-flight host IO must not publish its
+    /// completions to the used ring: publishing there (as `stop_queue` does)
+    /// writes into pages a rebooted guest has already reused. Such a device
+    /// overrides this to discard the completions, and must also ensure no
+    /// in-flight host IO writes guest memory after this returns (it cancels the
+    /// IO, or awaits it so the write lands while the guest is still stopped).
+    ///
+    /// The default forwards to `stop_queue`, which is correct only for a device
+    /// with no in-flight host IO to discard.
+    fn abort_queue(&mut self, idx: u16) -> impl Future<Output = ()> + Send {
+        async move {
+            let _ = self.stop_queue(idx).await;
+        }
+    }
+
     /// Reset device-internal state to initial values.
     ///
     /// Called after all queues have been stopped on guest-initiated reset.
@@ -161,6 +179,10 @@ pub trait DynVirtioDevice: InspectMut + Send {
         idx: u16,
     ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>>;
 
+    /// Tear down a single queue on the reset/disable path (object-safe mirror
+    /// of `VirtioDevice::abort_queue`).
+    fn abort_queue(&mut self, idx: u16) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
     /// Reset device-internal state.
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 
@@ -220,6 +242,10 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
         idx: u16,
     ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>> {
         Box::pin(VirtioDevice::stop_queue(self, idx))
+    }
+
+    fn abort_queue(&mut self, idx: u16) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(VirtioDevice::abort_queue(self, idx))
     }
 
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {

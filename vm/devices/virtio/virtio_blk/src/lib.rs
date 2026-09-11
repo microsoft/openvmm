@@ -160,6 +160,27 @@ impl BlkWorker {
             }
         }
     }
+
+    /// Await all in-flight IOs to completion, then drop their completions
+    /// without posting to the used ring.
+    ///
+    /// Used on the reset/disable teardown path. The IOs must be awaited (not
+    /// just dropped): dropping a pending disk read does not cancel the
+    /// underlying io_uring op, so it would complete asynchronously later and
+    /// write its disk data into a page a rebooted guest has already reused.
+    /// Awaiting lets that write land while the guest is stopped (memory still
+    /// valid). Each awaited IO still writes its data and status byte into the
+    /// guest's descriptor buffers; only its completion is dropped, so no
+    /// used-ring entry is posted into the torn-down queue's memory.
+    fn poll_drain_discard(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        loop {
+            match self.ios.poll_next_unpin(cx) {
+                Poll::Ready(Some(_completion)) => {}
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
 }
 
 impl AsyncRun<BlkQueueState> for BlkWorker {
@@ -415,6 +436,22 @@ impl VirtioDevice for VirtioBlkDevice {
         // Remove the queue state (drops VirtioQueue).
         let state = self.worker.remove().queue.queue_state();
         Some(state)
+    }
+
+    async fn abort_queue(&mut self, idx: u16) {
+        assert_eq!(idx, 0);
+        if !self.worker.has_state() {
+            return;
+        }
+        // Reset/disable teardown: await the in-flight IOs to completion, then
+        // discard them without posting to the used ring (unlike stop_queue). The
+        // reads must be awaited, not dropped: dropping a pending disk read does
+        // not cancel the io_uring op, which would then write into a page the
+        // rebooted guest has reused. See poll_drain_discard.
+        self.worker.stop().await;
+        let (worker, _state) = self.worker.get_mut();
+        poll_fn(|cx| worker.poll_drain_discard(cx)).await;
+        self.worker.remove();
     }
 
     fn supports_save_restore(&self) -> bool {
