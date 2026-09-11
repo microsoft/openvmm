@@ -266,6 +266,7 @@ impl virt::ResetPartition for MshvPartition {
     type Error = Error;
 
     fn reset(&self) -> Result<(), Error> {
+        self.inner.scrub_partition()?;
         self.inner.freeze_time()?;
         Ok(())
     }

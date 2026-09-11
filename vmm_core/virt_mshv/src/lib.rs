@@ -312,6 +312,19 @@ impl MshvPartitionInner {
         &self.vps[vp_index.index() as usize]
     }
 
+    fn scrub_partition(&self) -> Result<(), Error> {
+        const HVCALL_SCRUB_PARTITION: libc::c_ulong = 0x008d;
+
+        // SAFETY: `vmfd` is a valid MSHV partition fd. The private MSHV ABI
+        // exposes HvCallScrubPartition directly as an argument-less ioctl.
+        let ret = unsafe { libc::ioctl(self.vmfd.as_raw_fd(), HVCALL_SCRUB_PARTITION) };
+        if ret < 0 {
+            return Err(ErrorInner::ScrubPartition(io::Error::last_os_error()).into());
+        }
+
+        Ok(())
+    }
+
     /// Freezes partition time. Time will remain frozen until [`thaw_time`] is
     /// called (typically on the first VP run after reset).
     fn freeze_time(&self) -> Result<(), Error> {
@@ -670,6 +683,8 @@ enum ErrorInner {
     GetPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]
     SetPartitionProperty(#[source] KernelError),
+    #[error("failed to scrub partition")]
+    ScrubPartition(#[source] io::Error),
     #[error("register access error")]
     Register(#[source] KernelError),
     #[cfg(guest_arch = "x86_64")]
