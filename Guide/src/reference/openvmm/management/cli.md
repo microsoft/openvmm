@@ -93,11 +93,23 @@ describes the source definitions.
   `snp`.
 
   SNP support is currently limited to Linux direct boot and is intended for
-  bring-up. MSHV SNP can expose Hyper-V enlightenments with `--hv --no-vmbus`;
-  VMBus devices remain unsupported. SNP does not support UEFI, VTL2, or
-  hugetlb-backed memory. In addition to the minimal emulated chipset and serial
-  console, optional devices are limited to virtio devices attached through
-  PCIe.
+  bring-up. It supports either loader-based kernel/initrd boot or an SNP IGVM
+  selected with `--igvm-personality linux-direct`. MSHV SNP can expose Hyper-V
+  enlightenments with `--hv --no-vmbus`; VMBus devices remain unsupported.
+  The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
+
+  SNP does not support UEFI, VTL2, or hugetlb-backed memory. In addition to
+  the minimal emulated chipset and serial console, optional devices are
+  limited to virtio devices attached through PCIe.
+
+  A minimal MSHV IGVM invocation is:
+
+  ```bash
+  openvmm --hypervisor mshv --isolation snp \
+    --igvm path/to/snp-linux-direct.bin \
+    --igvm-personality linux-direct --com1 console \
+    --no-vmbus -m 160MB -p 1
+  ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
   loader-generated SNP VMSA. This bring-up option has no default and requires
   `--hypervisor mshv --isolation snp` with Linux direct boot. KVM SNP does not
@@ -134,6 +146,9 @@ describes the source definitions.
 
   With `--igvm --vtl2`, omit `--igvm-personality`. OpenVMM retains the
   existing HCL-host device shape and VBS-compatible IGVM behavior.
+* `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
+  `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
+  are also accepted.
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
   named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.
@@ -183,6 +198,19 @@ describes the source definitions.
   `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
   `file=<PATH>`.
+* `--smbios <PARAMS>`: Override the SMBIOS (DMI) identity reported to the
+  guest (repeatable), using `type=N,key=value[,key=value...]`.
+  Type 0 supports `vendor`, `version`, `date`, and `release`; Type 1 supports
+  `manufacturer`, `product`, `version`, `serial`, `uuid`, `sku`, and `family`.
+  Use `uuid=random` to generate a per-VM system UUID.
+
+  OpenVMM Linux direct boot supports both types. OpenHCL Linux direct and UEFI
+  support Type 1 only. PCAT supports only Type 1 `serial` and `uuid`.
+  Unsupported fields are rejected.
+
+  ```bash
+  --smbios type=1,manufacturer=Contoso,product="Virtual Machine"
+  ```
 * `--pidfile <PATH>`: Write the process ID to the specified file on startup,
   and remove it on clean exit. If the process is killed with `SIGKILL` or
   crashes, the pidfile is not removed — consumers should verify the PID is

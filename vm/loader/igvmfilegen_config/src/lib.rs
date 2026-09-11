@@ -503,6 +503,25 @@ mod test {
     }
 
     #[test]
+    fn parse_restricted_snp_linux_direct_manifest() {
+        let config: Config = serde_json::from_str(include_str!(
+            "../../manifests/snp-linux-direct-restricted.json"
+        ))
+        .unwrap();
+        let [guest] = config.guest_configs.as_slice() else {
+            panic!("expected one guest config");
+        };
+        assert!(matches!(
+            guest.isolation_type,
+            ConfigIsolationType::Snp {
+                injection_type: SnpInjectionType::Restricted,
+                ..
+            }
+        ));
+        guest.image.validate().unwrap();
+    }
+
+    #[test]
     fn snp_linux_direct_required_resources_with_initrd() {
         let image = snp_linux_direct_image(true, 1, 40960, 51);
 

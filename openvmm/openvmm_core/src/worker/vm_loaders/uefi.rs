@@ -3,7 +3,6 @@
 
 use crate::worker::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
-use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use loader::importer::Register;
 use loader::uefi::IMAGE_SIZE;
@@ -26,6 +25,8 @@ pub enum Error {
     Loader(#[source] loader::uefi::Error),
     #[error("failed to build PCIe ACPI tables")]
     PcieAcpi(#[source] vmm_core::acpi_builder::PcieAcpiBuildError),
+    #[error("SMBIOS field `{0}` cannot be configured on UEFI boot")]
+    UnsupportedSmbiosField(&'static str),
     #[cfg(guest_arch = "aarch64")]
     #[error("UEFI boot with GICv2 is not supported")]
     GicV2NotSupported,
@@ -43,7 +44,12 @@ pub struct UefiLoadSettings {
     pub serial: bool,
     pub uefi_console_mode: Option<UefiConsoleMode>,
     pub default_boot_always_attempt: bool,
-    pub bios_guid: Guid,
+    /// SMBIOS (DMI) configuration. The system UUID is delivered as the VM's
+    /// `BiosGuid`, and any set Type 1 (System Information) overrides are emitted
+    /// as config blobs so the firmware reports the configured identity. Type 0
+    /// (BIOS) overrides are rejected because the firmware self-describes the
+    /// BIOS (see [`add_smbios_blobs`]).
+    pub smbios: openvmm_defs::config::SmbiosConfig,
     /// Whether VMBus is present in this VM. When `false`, the firmware's
     /// `vmbus_disabled` flag is set; the `MmioRanges` blob is still provided
     /// but the high MMIO range will be empty. The firmware must support this
@@ -146,7 +152,6 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         flags: 0,
     })
     .add_raw(config::BlobStructureType::MemoryMap, memory_map.as_bytes())
-    .add(&config::BiosGuid(settings.bios_guid))
     .add(&config::Entropy(entropy))
     .add(&config::MmioRanges([
         config::Mmio {
@@ -169,6 +174,11 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         },
     })
     .add(&flags);
+
+    // Emit the SMBIOS configuration: the system UUID (as the VM's `BiosGuid`)
+    // plus any overridden Type 1 strings. Rejects overrides the firmware can't
+    // honor.
+    add_smbios_blobs(&mut cfg, &settings.smbios)?;
 
     #[cfg(guest_arch = "aarch64")]
     {
@@ -230,4 +240,154 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
     .map_err(Error::Loader)?;
 
     Ok(loader.initial_regs())
+}
+
+/// Adds the SMBIOS configuration to the UEFI config blob, failing closed on any
+/// override the firmware can't honor.
+///
+/// On UEFI boot the firmware builds the SMBIOS tables itself, so only fields
+/// with a corresponding config blob can be overridden. The entire
+/// [`SmbiosConfig`](openvmm_defs::config::SmbiosConfig) is destructured here in
+/// one place so every field must be explicitly handled — emitted as a blob, or
+/// rejected with an error because the firmware self-describes it. Adding a field
+/// to `SmbiosConfig` is therefore a compile error until its UEFI handling is
+/// decided, rather than being silently dropped. As blobs are added for
+/// currently-unsupported fields, the corresponding override simply stops
+/// erroring.
+fn add_smbios_blobs(
+    cfg: &mut config::Blob,
+    smbios: &openvmm_defs::config::SmbiosConfig,
+) -> Result<(), Error> {
+    use config::BlobStructureType;
+
+    let openvmm_defs::config::SmbiosConfig {
+        bios:
+            openvmm_defs::config::SmbiosBiosOverrides {
+                vendor,
+                version: bios_version,
+                release_date,
+                release,
+            },
+        system:
+            openvmm_defs::config::SmbiosSystemOverrides {
+                manufacturer,
+                product_name,
+                version: system_version,
+                serial_number,
+                sku_number,
+                family,
+                uuid,
+            },
+    } = smbios;
+
+    // Type 0 (BIOS Information) has no config blobs: the firmware self-describes
+    // the BIOS, so reject any override rather than silently dropping it.
+    if vendor.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS vendor"));
+    }
+    if bios_version.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS version"));
+    }
+    if release_date.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS release date"));
+    }
+    if release.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS release"));
+    }
+
+    // Type 1 (System Information): the UUID is always delivered as the VM's
+    // `BiosGuid`; the string fields are emitted only when overridden (otherwise
+    // the firmware uses its own default).
+    cfg.add(&config::BiosGuid(*uuid));
+    for (structure_type, value) in [
+        (BlobStructureType::SmbiosSystemManufacturer, manufacturer),
+        (BlobStructureType::SmbiosSystemProductName, product_name),
+        (BlobStructureType::SmbiosSystemVersion, system_version),
+        (BlobStructureType::SmbiosSystemSerialNumber, serial_number),
+        (BlobStructureType::SmbiosSystemSkuNumber, sku_number),
+        (BlobStructureType::SmbiosSystemFamily, family),
+    ] {
+        if let Some(value) = value {
+            cfg.add_cstring(structure_type, value.as_bytes());
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openvmm_defs::config::SmbiosBiosOverrides;
+    use openvmm_defs::config::SmbiosConfig;
+    use openvmm_defs::config::SmbiosSystemOverrides;
+
+    #[test]
+    fn accepts_system_overrides() {
+        let smbios = SmbiosConfig {
+            bios: SmbiosBiosOverrides::default(),
+            system: SmbiosSystemOverrides {
+                manufacturer: Some("Acme".to_string()),
+                family: Some("Widgets".to_string()),
+                ..Default::default()
+            },
+        };
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(&mut cfg, &smbios).unwrap();
+    }
+
+    #[test]
+    fn rejects_bios_overrides() {
+        for bios in [
+            SmbiosBiosOverrides {
+                vendor: Some("Acme".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                version: Some("1.0".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                release_date: Some("01/01/2020".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                release: Some((4, 1)),
+                ..Default::default()
+            },
+        ] {
+            let smbios = SmbiosConfig {
+                bios,
+                system: SmbiosSystemOverrides::default(),
+            };
+            let mut cfg = config::Blob::new();
+            assert!(matches!(
+                add_smbios_blobs(&mut cfg, &smbios),
+                Err(Error::UnsupportedSmbiosField(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn emits_uuid_and_only_set_string_overrides() {
+        // The default config (no string overrides) still emits the `BiosGuid`.
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(&mut cfg, &SmbiosConfig::default()).unwrap();
+        let baseline = cfg.complete().len();
+
+        // Setting a Type 1 string override emits an additional blob.
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(
+            &mut cfg,
+            &SmbiosConfig {
+                system: SmbiosSystemOverrides {
+                    manufacturer: Some("Acme".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(cfg.complete().len() > baseline);
+    }
 }

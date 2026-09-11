@@ -64,6 +64,7 @@ In the future, it is likely that this step will be folded into the
 $ sudo apt install \
   binutils              \
   build-essential       \
+  cmake                 \
   gcc-aarch64-linux-gnu \
   libssl-dev            \
   pkg-config

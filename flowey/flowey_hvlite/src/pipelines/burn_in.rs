@@ -41,6 +41,7 @@ impl IntoPipeline for BurnInCli {
             .gh_set_name("OpenVMM Burn In")
             .gh_add_schedule_trigger(GhScheduleTriggers {
                 cron: "0 19 * * 1-5".into(),
+                timezone: Some("America/Los_Angeles".into()),
             });
 
         pipeline.inject_all_jobs_with(move |job| {
@@ -59,6 +60,8 @@ impl IntoPipeline for BurnInCli {
                     GhPermission::IdToken,
                     GhPermissionValue::Write,
                 )])
+                // 15 hour timeout. Should take approximately 8.5 hours.
+                .with_timeout_in_minutes(900)
         });
 
         struct VmmTestJobParams<'a> {
