@@ -5699,6 +5699,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentmk_decoder"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "num-traits",
+ "zerocopy",
+]
+
+[[package]]
 name = "opentmk_disk"
 version = "0.0.0"
 dependencies = [
@@ -5710,6 +5719,28 @@ dependencies = [
  "guid",
  "opentmk_protocol",
  "tempfile",
+]
+
+[[package]]
+name = "opentmk_exec_packet"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "opentmk_executor"
+version = "0.0.0"
+dependencies = [
+ "hvdef",
+ "log",
+ "opentmk_core",
+ "opentmk_decoder",
+ "opentmk_exec_packet",
+ "postcard",
+ "spin",
+ "uefi",
+ "zerocopy",
 ]
 
 [[package]]

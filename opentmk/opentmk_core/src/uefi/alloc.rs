@@ -7,9 +7,9 @@ use core::cell::RefCell;
 use linked_list_allocator::LockedHeap;
 use spin::Mutex;
 use uefi::allocator::Allocator;
+use uefi::boot;
 use uefi::boot::AllocateType;
 use uefi::boot::MemoryType;
-use uefi::boot::{self};
 
 pub const SIZE_1MB: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 4096;
