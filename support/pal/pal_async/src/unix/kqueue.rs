@@ -45,6 +45,9 @@ pub type KqueuePool = IoPool<KqueueBackend>;
 /// A driver to spawn tasks and IO objects on [`KqueuePool`].
 pub type KqueueDriver = IoDriver<KqueueBackend>;
 
+/// A weak reference to a [`KqueueDriver`].
+pub type WeakKqueueDriver = crate::io_pool::WeakIoDriver<KqueueBackend>;
+
 #[derive(Debug)]
 pub struct KqueueBackend {
     kqfd: KqueueFd,
