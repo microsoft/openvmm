@@ -990,6 +990,7 @@ impl PetriVmConfigSetupCore<'_> {
             ) => {
                 let OpenHclConfig {
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
+                    enable_mana_keepalive: _,
                     custom_command_line: _,
                     log_levels: _,
                     vtl2_base_address_type,

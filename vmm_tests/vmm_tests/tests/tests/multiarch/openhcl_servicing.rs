@@ -1799,18 +1799,19 @@ async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Perform servicing and validate that the
 /// nic is still functional.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn mana_nic_servicing(
+async fn mana_nic_servicing_core(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+    igvm_file: ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,
+    enable_nvme_keepalive: bool,
+    enable_mana_keepalive: bool,
 ) -> Result<(), anyhow::Error> {
     let mut flags = config.default_servicing_flags();
-    flags.override_version_checks = true;
-    flags.enable_nvme_keepalive = false;
-    flags.enable_mana_keepalive = false;
+    flags.enable_nvme_keepalive = enable_nvme_keepalive;
+    flags.enable_mana_keepalive = enable_mana_keepalive;
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
+        .with_mana_keepalive(enable_mana_keepalive)
         .modify_backend(|b| b.with_nic())
         .run()
         .await?;
@@ -1828,36 +1829,36 @@ async fn mana_nic_servicing(
     Ok(())
 }
 
-/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Perform servicing with VF keepalive
-/// and validate that the nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    mana_nic_servicing_core(config, igvm_file, false, false).await
+}
+
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn mana_nic_servicing_keepalive(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    let mut flags = config.default_servicing_flags();
-    flags.override_version_checks = true;
-    flags.enable_nvme_keepalive = true;
-    flags.enable_mana_keepalive = true;
+    mana_nic_servicing_core(config, igvm_file, true, true).await
+}
 
-    let (mut vm, agent) = config
-        .with_vmbus_redirect(true)
-        .modify_backend(|b| b.with_nic())
-        .run()
-        .await?;
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_only_mana_keepalive(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    mana_nic_servicing_core(config, igvm_file, false, true).await
+}
 
-    configure_mana_nic(&agent).await?;
-    validate_mana_nic(&agent).await?;
-
-    vm.restart_openhcl(igvm_file, flags).await?;
-
-    validate_mana_nic(&agent).await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_only_nvme_keepalive(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    mana_nic_servicing_core(config, igvm_file, true, false).await
 }
 
 /// Test servicing an OpenHCL VM when NVME keepalive is enabled but then
