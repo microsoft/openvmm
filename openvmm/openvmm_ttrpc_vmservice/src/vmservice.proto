@@ -604,11 +604,13 @@ message VMConfig {
 
     // SMBIOS (DMI) identity overrides. Applied to whichever boot type is
     // selected; note that PCAT boot honors only the system UUID and serial
-    // number.
+    // number. IGVM boot does not support these overrides.
     SMBIOSConfig smbios_config = 13;
 
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 14;
+
+    bool no_vmbus = 16;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

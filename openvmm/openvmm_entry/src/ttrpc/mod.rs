@@ -793,7 +793,7 @@ impl VmService {
 
         // The boot configuration also determines the base chipset, since the
         // firmware and the device model have to agree on the platform.
-        let (load_mode, base_chipset_type, uefi_config, igvm_path, vmbus) = match req_config
+        let (load_mode, base_chipset_type, uefi_config, igvm_path) = match req_config
             .boot_config
             .take()
             .context("missing boot configuration")?
@@ -821,7 +821,6 @@ impl VmService {
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
                     None,
                     None,
-                    Some(VmbusConfig::default()),
                 )
             }
             vmservice::vm_config::BootConfig::Igvm(boot) => {
@@ -854,7 +853,6 @@ impl VmService {
                     base_chipset_type,
                     None,
                     Some(igvm_path),
-                    None,
                 )
             }
             vmservice::vm_config::BootConfig::Uefi(uefi) => {
@@ -905,7 +903,7 @@ impl VmService {
                         // VM with no graphics adapter.
                         uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
                         smbios,
-                        enable_vmbus: true,
+                        enable_vmbus: !req_config.no_vmbus,
                         // Everything below is fixed for now. The proto has no
                         // way to express these yet; fields will be added as
                         // callers need them.
@@ -927,13 +925,15 @@ impl VmService {
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
                     Some((base_template, uefi.secure_boot_enabled)),
                     None,
-                    Some(VmbusConfig::default()),
                 )
             }
         };
 
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if req_config.no_vmbus {
+            chipset_builder = chipset_builder.without_vmbus();
+        }
         if let Some((base_template, secure_boot_enabled)) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
             // runtime services, so it is required for a UEFI boot. The store is
@@ -1036,7 +1036,7 @@ impl VmService {
             vga_firmware: None,
             vtl2_gfx: false,
             virtio_devices: vec![],
-            vmbus,
+            vmbus: (!req_config.no_vmbus).then(VmbusConfig::default),
             vtl2_vmbus: None,
             vmbus_devices: vec![],
             #[cfg(windows)]
@@ -1167,11 +1167,15 @@ impl VmService {
         }
 
         if let Some(hvsocket_config) = req_config.hvsocket_config {
+            let vmbus = config
+                .vmbus
+                .as_mut()
+                .context("HVSocket requires VMBus to be enabled")?;
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
                 format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
-            config.vmbus.as_mut().unwrap().vsock_listener = Some(listener);
-            config.vmbus.as_mut().unwrap().vsock_path = Some(hvsocket_config.path);
+            vmbus.vsock_listener = Some(listener);
+            vmbus.vsock_path = Some(hvsocket_config.path);
         }
 
         let (send, recv) = mesh::channel();
