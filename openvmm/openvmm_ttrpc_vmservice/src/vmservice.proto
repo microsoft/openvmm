@@ -73,6 +73,25 @@ message DirectBoot {
     string kernel_cmdline = 3;
 }
 
+message IgvmBoot {
+    enum Personality {
+        LINUX_DIRECT = 0;
+        UEFI = 1;
+    }
+
+    string igvm_path = 1;
+    Personality personality = 2;
+}
+
+message IsolationConfig {
+    enum Type {
+        NONE = 0;
+        SNP = 1;
+    }
+
+    Type isolation_type = 1;
+}
+
 message UEFI {
     // Variables used to initialize an empty UEFI variable store. These are
     // ignored when the store already contains any variables.
@@ -566,6 +585,7 @@ message VMConfig {
     oneof BootConfig {
         DirectBoot direct_boot = 5;
         UEFI uefi = 6;
+        IgvmBoot igvm = 15;
     }
     WindowsOptions windows_options = 7;
     // Field 8 was previously map<string, string> extra_data.
@@ -584,8 +604,13 @@ message VMConfig {
 
     // SMBIOS (DMI) identity overrides. Applied to whichever boot type is
     // selected; note that PCAT boot honors only the system UUID and serial
-    // number.
+    // number. IGVM boot does not support these overrides.
     SMBIOSConfig smbios_config = 13;
+
+    // Confidential-computing isolation mode.
+    IsolationConfig isolation_config = 14;
+
+    bool no_vmbus = 16;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

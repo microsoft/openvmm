@@ -58,6 +58,7 @@ use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IsolationType;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::NumaDistance;
@@ -75,6 +76,7 @@ use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
@@ -88,6 +90,7 @@ use pal_async::task::Task;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
@@ -774,18 +777,31 @@ impl VmService {
         #[cfg(guest_arch = "x86_64")]
         let arch = vm_manifest_builder::MachineArch::X86_64;
 
-        // SMBIOS identity is applied regardless of boot type; build it once and
-        // move it into whichever LoadMode is selected below.
+        // Build SMBIOS identity for direct Linux or UEFI boot.
+        let smbios_requested = req_config.smbios_config.is_some();
         let smbios = Box::new(smbios_config_from_proto(req_config.smbios_config.take())?);
+
+        let isolation = match req_config
+            .isolation_config
+            .take()
+            .unwrap_or_default()
+            .isolation_type()
+        {
+            vmservice::isolation_config::Type::None => None,
+            vmservice::isolation_config::Type::Snp => Some(IsolationType::Snp),
+        };
 
         // The boot configuration also determines the base chipset, since the
         // firmware and the device model have to agree on the platform.
-        let (load_mode, base_chipset_type, uefi_config) = match req_config
+        let (load_mode, base_chipset_type, uefi_config, igvm_path) = match req_config
             .boot_config
             .take()
             .context("missing boot configuration")?
         {
             vmservice::vm_config::BootConfig::DirectBoot(boot) => {
+                if isolation.is_some() {
+                    bail!("VM-service SNP isolation currently supports only IGVM boot");
+                }
                 let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
                 let initrd = if boot.initrd_path.is_empty() {
                     None
@@ -804,9 +820,45 @@ impl VmService {
                     },
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
                     None,
+                    None,
+                )
+            }
+            vmservice::vm_config::BootConfig::Igvm(boot) => {
+                if smbios_requested {
+                    bail!("VM-service IGVM boot does not support SMBIOS overrides");
+                }
+                if isolation != Some(IsolationType::Snp) {
+                    bail!("VM-service IGVM boot currently supports only SNP isolation");
+                }
+                let base_chipset_type =
+                    match vmservice::igvm_boot::Personality::from_i32(boot.personality) {
+                        Some(vmservice::igvm_boot::Personality::LinuxDirect) => {
+                            vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect
+                        }
+                        Some(vmservice::igvm_boot::Personality::Uefi) => {
+                            bail!("VM-service IGVM boot with UEFI personality is not yet supported");
+                        }
+                        None => bail!("unsupported IGVM personality {}", boot.personality),
+                    };
+                let igvm_path = PathBuf::from(&boot.igvm_path);
+                let file = File::open(&igvm_path)
+                    .with_context(|| format!("failed to open IGVM {}", igvm_path.display()))?;
+                (
+                    LoadMode::Igvm {
+                        file: file.into(),
+                        cmdline: String::new(),
+                        vtl2_base_address: Vtl2BaseAddressType::File,
+                        com_serial: None,
+                    },
+                    base_chipset_type,
+                    None,
+                    Some(igvm_path),
                 )
             }
             vmservice::vm_config::BootConfig::Uefi(uefi) => {
+                if isolation.is_some() {
+                    bail!("VM-service SNP isolation currently supports only IGVM boot");
+                }
                 let firmware = File::open(&uefi.firmware_path).with_context(|| {
                     format!("failed to open uefi firmware {}", uefi.firmware_path)
                 })?;
@@ -851,7 +903,7 @@ impl VmService {
                         // VM with no graphics adapter.
                         uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
                         smbios,
-                        enable_vmbus: true,
+                        enable_vmbus: !req_config.no_vmbus,
                         // Everything below is fixed for now. The proto has no
                         // way to express these yet; fields will be added as
                         // callers need them.
@@ -872,12 +924,16 @@ impl VmService {
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
                     Some((base_template, uefi.secure_boot_enabled)),
+                    None,
                 )
             }
         };
 
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if req_config.no_vmbus {
+            chipset_builder = chipset_builder.without_vmbus();
+        }
         if let Some((base_template, secure_boot_enabled)) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
             // runtime services, so it is required for a UEFI boot. The store is
@@ -970,6 +1026,7 @@ impl VmService {
             },
             hypervisor: HypervisorConfig {
                 with_hv: true,
+                with_isolation: isolation,
                 ..Default::default()
             },
             #[cfg(windows)]
@@ -979,7 +1036,7 @@ impl VmService {
             vga_firmware: None,
             vtl2_gfx: false,
             virtio_devices: vec![],
-            vmbus: Some(VmbusConfig::default()),
+            vmbus: (!req_config.no_vmbus).then(VmbusConfig::default),
             vtl2_vmbus: None,
             vmbus_devices: vec![],
             #[cfg(windows)]
@@ -1110,11 +1167,15 @@ impl VmService {
         }
 
         if let Some(hvsocket_config) = req_config.hvsocket_config {
+            let vmbus = config
+                .vmbus
+                .as_mut()
+                .context("HVSocket requires VMBus to be enabled")?;
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
                 format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
-            config.vmbus.as_mut().unwrap().vsock_listener = Some(listener);
-            config.vmbus.as_mut().unwrap().vsock_path = Some(hvsocket_config.path);
+            vmbus.vsock_listener = Some(listener);
+            vmbus.vsock_path = Some(hvsocket_config.path);
         }
 
         let (send, recv) = mesh::channel();
@@ -1159,7 +1220,7 @@ impl VmService {
             ged_rpc: None,
             vm_rpc: send.clone(),
             paravisor_diag: None,
-            igvm_path: None,
+            igvm_path,
             memory_backing_file: None,
             memory,
             processors,
