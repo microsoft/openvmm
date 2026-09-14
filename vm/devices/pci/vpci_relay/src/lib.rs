@@ -12,6 +12,8 @@
 #[cfg(target_os = "linux")]
 pub mod linux_mmio;
 
+mod tests;
+
 // Exported to make it easier to define filters without explicitly pulling in
 // `pci_core`.
 pub use pci_core::spec::hwid::ClassCode;
@@ -22,6 +24,7 @@ use anyhow::Context as _;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
@@ -35,6 +38,7 @@ use openhcl_tdisp::TdispVirtualDeviceInterface;
 use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::hwid::HardwareIds;
 use state_unit::StateUnits;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
@@ -404,6 +408,7 @@ impl VpciRelay {
                 Ok(RelayedVpciDevice {
                     device: vpci_device.clone(),
                     pending: None,
+                    queued: VecDeque::new(),
                     waker: Waker::noop().clone(),
                     tdisp_capable,
                 })
@@ -528,21 +533,158 @@ struct RelayedVpciDevice {
     #[inspect(flatten)]
     device: Arc<VpciDevice>,
 
-    /// In-flight deferred config space write. Driven by [`PollDevice`].
+    /// The TDISP operation currently in flight, if any, paired with the config
+    /// space write that started it. While this is set, no config space write
+    /// reaches the device.
     #[inspect(skip)]
     pending: Option<(
         DeferredWrite,
         Pin<Box<dyn Future<Output = ()> + Send + Sync>>,
     )>,
 
-    /// Waker captured from the most recent `PollDevice::poll_device` call.
-    /// We wake it from `pci_cfg_write` when we install a new pending future
-    /// so the chipset device unit re-polls us.
+    /// Config space writes that arrived while a TDISP operation was in flight,
+    /// in arrival order. Only ever non-empty while an operation is in flight,
+    /// so its depth shows how many callers a slow operation is holding up.
+    #[inspect(with = "|x| x.len()")]
+    queued: VecDeque<QueuedWrite>,
+
+    /// Waker captured from the most recent poll, used to ask the device unit to
+    /// poll this device again once a TDISP operation has been started.
     #[inspect(skip)]
     waker: Waker,
 
     /// Is the device TDISP capable?
     tdisp_capable: bool,
+}
+
+/// A config space write held off because a TDISP operation was in flight.
+struct QueuedWrite {
+    /// The DWORD-aligned offset in config space the write targets.
+    offset: u16,
+    /// The value and byte enables to write.
+    value: ByteEnabledDwordWrite,
+    /// The write to complete once this has been applied to the device, or, when
+    /// applying it starts another TDISP operation, once that operation ends.
+    deferred: DeferredWrite,
+}
+
+/// The result of applying a config space write that had no TDISP operation
+/// ahead of it.
+enum CfgWriteOutcome {
+    /// The write reached the device and needs nothing further.
+    Complete,
+    /// The write crossed an MMIO-enable edge. The future carries out the TDISP
+    /// work the edge requires, including writing the command register itself,
+    /// and must run to completion before any further config space write reaches
+    /// the device.
+    Started(Pin<Box<dyn Future<Output = ()> + Send + Sync>>),
+}
+
+impl RelayedVpciDevice {
+    /// Applies a config space write that has no TDISP operation ahead of it,
+    /// either passing it through to the device or producing the TDISP work the
+    /// write requires.
+    ///
+    /// `offset` is the DWORD-aligned offset in config space the write targets,
+    /// and `value` the value and byte enables to write.
+    fn apply_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> CfgWriteOutcome {
+        // Only a command register write that flips the MMIO-enable bit needs
+        // async TDISP work. Everything else is a synchronous pass-through.
+        if !self.tdisp_capable || HeaderType00(offset) != HeaderType00::STATUS_COMMAND {
+            self.device.write_cfg(offset, value);
+            return CfgWriteOutcome::Complete;
+        }
+
+        // Detect the MMIO-enable edge BEFORE issuing the write so we can
+        // dispatch the correct TDISP notification.
+        //
+        // The write contains both the Command and Status registers packed into
+        // a single 32-bit value. Only the Command register is relevant for
+        // detecting the MMIO-enable edge.
+        use pci_core::spec::cfg_space::Command;
+        let mut current = 0;
+        self.device.read_cfg(
+            offset,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut current),
+        );
+
+        let prev = Command::from((current & 0xffff) as u16).mmio_enabled();
+        // `merge` honors the byte enables, so a partial write that leaves the
+        // command register untouched yields `next` equal to `prev`.
+        let next = Command::from((value.merge(current) & 0xffff) as u16).mmio_enabled();
+
+        match (prev, next) {
+            // MMIO turning on. Attest before the guest can reach the BARs.
+            // Activation writes the command register itself once attestation
+            // succeeds, so the BARs are mapped before the MMIO ranges are
+            // unblocked.
+            (false, true) => {
+                let device = self.device.clone();
+                CfgWriteOutcome::Started(Box::pin(async move {
+                    if !device.tdisp_on_device_activate(value).await {
+                        tracing::warn!(
+                            "TDISP attestation failed, leaving the command register off"
+                        );
+                    }
+                }))
+            }
+            // MMIO turning off. Tear the TDI back down. Deactivation leaves the
+            // command register in its off state itself.
+            (true, false) => {
+                let device = self.device.clone();
+                CfgWriteOutcome::Started(Box::pin(async move {
+                    device.tdisp_on_device_deactivate().await;
+                }))
+            }
+            // No MMIO edge, just pass through.
+            (false, false) | (true, true) => {
+                self.device.write_cfg(offset, value);
+                CfgWriteOutcome::Complete
+            }
+        }
+    }
+
+    /// Makes `fut` the in-flight TDISP operation and asks the device unit to
+    /// poll this device so that it starts making progress.
+    ///
+    /// `deferred` is the config space write that waits on the operation, and
+    /// `fut` the operation itself.
+    fn start_operation(
+        &mut self,
+        deferred: DeferredWrite,
+        fut: Pin<Box<dyn Future<Output = ()> + Send + Sync>>,
+    ) {
+        // Every path here has just observed or made `pending` empty, so this
+        // cannot displace an operation that is still running.
+        assert!(
+            self.pending.is_none(),
+            "TDISP operation started while another was in flight"
+        );
+        self.pending = Some((deferred, fut));
+        self.waker.wake_by_ref();
+    }
+
+    /// Applies the writes that queued up behind a TDISP operation, in arrival
+    /// order, stopping at the first one that starts another operation.
+    ///
+    /// Must only be called with no operation in flight.
+    fn drain_queued(&mut self) {
+        while let Some(QueuedWrite {
+            offset,
+            value,
+            deferred,
+        }) = self.queued.pop_front()
+        {
+            match self.apply_cfg_write(offset, value) {
+                CfgWriteOutcome::Complete => deferred.complete(),
+                CfgWriteOutcome::Started(fut) => {
+                    // The rest of the queue stays put, behind this operation.
+                    self.start_operation(deferred, fut);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 impl ChipsetDevice for RelayedVpciDevice {
@@ -562,13 +704,16 @@ impl ChipsetDevice for RelayedVpciDevice {
 impl PollDevice for RelayedVpciDevice {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
         self.waker = cx.waker().clone();
-        if let Some((_, fut)) = self.pending.as_mut() {
-            if fut.as_mut().poll(cx).is_ready() {
-                // Future done; complete the deferred write so the bus can
-                // continue draining any queued config writes.
-                let (deferred, _) = self.pending.take().expect("just checked");
-                deferred.complete();
+        while let Some((_, fut)) = self.pending.as_mut() {
+            if fut.as_mut().poll(cx).is_pending() {
+                break;
             }
+            // The operation is done. Release the write that started it, then
+            // let the writes that queued up behind it through. If one of those
+            // starts another operation, the loop picks it up here.
+            let (deferred, _) = self.pending.take().expect("just checked");
+            deferred.complete();
+            self.drain_queued();
         }
     }
 }
@@ -602,73 +747,48 @@ impl PciConfigSpace for RelayedVpciDevice {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
-        // Only a command register write that flips the MMIO-enable bit needs
-        // async TDISP work. Everything else is a synchronous pass-through.
-        if !self.tdisp_capable || HeaderType00(offset) != HeaderType00::STATUS_COMMAND {
-            self.device.write_cfg(offset, value);
-            return IoResult::Ok;
+        // A TDISP operation has to run to completion with nothing else touching
+        // the device's config space, so every write that arrives while one is in
+        // flight waits, whatever register it targets. Writes arriving behind an
+        // already queued write wait too, so that they are applied in the order
+        // they arrived. The chipset drops the device lock before waiting on a
+        // deferred access, so several VPs, plus the VPCI channel worker, can be
+        // in here at once.
+        if self.pending.is_some() || !self.queued.is_empty() {
+            let (deferred, token) = defer_write();
+            self.queued.push_back(QueuedWrite {
+                offset,
+                value,
+                deferred,
+            });
+            return IoResult::Defer(token);
         }
 
-        // Detect the MMIO-enable edge BEFORE issuing the write so we can
-        // dispatch the correct TDISP notification.
-        //
-        // The write contains both the Command and Status registers packed into
-        // a single 32-bit value. Only the Command register is relevant for
-        // detecting the MMIO-enable edge.
-        use pci_core::spec::cfg_space::Command;
-        let mut current = 0;
-        self.device.read_cfg(
-            offset,
-            ByteEnabledDwordRead::with_all_bytes_enabled(&mut current),
-        );
-
-        let prev = Command::from((current & 0xffff) as u16).mmio_enabled();
-        // `merge` honors the byte enables, so a partial write that leaves the
-        // command register untouched yields `next` equal to `prev`.
-        let next = Command::from((value.merge(current) & 0xffff) as u16).mmio_enabled();
-
-        let device = self.device.clone();
-
-        let fut: Pin<Box<dyn Future<Output = ()> + Send + Sync>> = match (prev, next) {
-            // MMIO turning on. Attest before the guest can reach the BARs.
-            // Activation writes the command register itself once attestation
-            // succeeds, so the BARs are mapped before the MMIO ranges are
-            // unblocked.
-            (false, true) => Box::pin(async move {
-                if !device.tdisp_on_device_activate(value).await {
-                    tracing::warn!("TDISP attestation failed, leaving the command register off");
-                }
-            }),
-            // MMIO turning off. Tear the TDI back down. Deactivation leaves the
-            // command register in its off state itself.
-            (true, false) => Box::pin(async move {
-                device.tdisp_on_device_deactivate().await;
-            }),
-            // No MMIO edge, just pass through.
-            (false, false) | (true, true) => {
-                self.device.write_cfg(offset, value);
-                return IoResult::Ok;
+        match self.apply_cfg_write(offset, value) {
+            CfgWriteOutcome::Complete => IoResult::Ok,
+            CfgWriteOutcome::Started(fut) => {
+                let (deferred, token) = defer_write();
+                self.start_operation(deferred, fut);
+                IoResult::Defer(token)
             }
-        };
-
-        // Every caller waits for its own deferred write to complete, so this
-        // should not happen.
-        assert!(
-            self.pending.is_none(),
-            "config space write deferred while another deferred write is in flight"
-        );
-
-        let (write, token) = chipset_device::io::deferred::defer_write();
-        self.pending = Some((write, fut));
-        self.waker.wake_by_ref();
-        IoResult::Defer(token)
+        }
     }
 }
 
 impl ChangeDeviceState for RelayedVpciDevice {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        // Nothing polls this device while it is stopped, so finish the TDISP
+        // operation and everything queued behind it here. Otherwise the callers
+        // waiting on those writes would be left waiting on a completion that
+        // never comes.
+        while let Some((deferred, fut)) = self.pending.take() {
+            fut.await;
+            deferred.complete();
+            self.drain_queued();
+        }
+    }
 
     async fn reset(&mut self) {}
 }
