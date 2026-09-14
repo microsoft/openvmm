@@ -417,9 +417,11 @@ jobs:
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 7
     displayName: cargo clippy
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 6
+    displayName: cargo clippy
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 6
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 8
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::init_cross_build 0
     displayName: cargo clippy
   - bash: |-

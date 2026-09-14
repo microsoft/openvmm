@@ -1990,8 +1990,11 @@ jobs:
       run: flowey e 15 flowey_lib_common::run_cargo_clippy 7
       shell: bash
     - name: cargo clippy
+      run: flowey e 15 flowey_lib_common::run_cargo_clippy 6
+      shell: bash
+    - name: cargo clippy
       run: |-
-        flowey e 15 flowey_lib_common::run_cargo_clippy 6
+        flowey e 15 flowey_lib_common::run_cargo_clippy 8
         flowey e 15 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build xtask
