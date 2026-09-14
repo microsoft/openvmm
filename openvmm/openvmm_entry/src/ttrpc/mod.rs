@@ -883,14 +883,15 @@ impl VmService {
         let smbios_requested = req_config.smbios_config.is_some();
         let smbios = Box::new(smbios_config_from_proto(req_config.smbios_config.take())?);
 
-        let isolation = match req_config
+        let isolation_type = req_config
             .isolation_config
             .take()
             .unwrap_or_default()
-            .isolation_type()
-        {
-            vmservice::isolation_config::Type::None => None,
-            vmservice::isolation_config::Type::Snp => Some(IsolationType::Snp),
+            .isolation_type;
+        let isolation = match vmservice::isolation_config::Type::from_i32(isolation_type) {
+            Some(vmservice::isolation_config::Type::None) => None,
+            Some(vmservice::isolation_config::Type::Snp) => Some(IsolationType::Snp),
+            None => bail!("unsupported isolation type {isolation_type}"),
         };
 
         // The boot configuration also determines the base chipset, since the
