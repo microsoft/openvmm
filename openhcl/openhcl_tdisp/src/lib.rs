@@ -270,35 +270,36 @@ pub trait TdispResourceValidationInterface: Send + Sync {
 }
 
 /// Chooses the validator that gates access to a TDISP device's resources for
-/// this partition.
-///
-/// A device driven through the TDISP flow always has a validator, so a
-/// partition whose isolation type has no validator of its own is given one that
-/// performs no validation rather than none at all.
+/// this partition. A device driven through the TDISP flow always has a
+/// validator which is determined by the partition's isolation type. Test
+/// environments run with no platform-specific validator.
 ///
 /// * `isolation` - The isolation type of the partition the device is assigned
 ///   to.
 /// * `vtom` - The address mask with the VTOM bit set, marking where VTOM
 ///   addresses start in the CVM. `None` on a partition without one.
-/// * `test_tdisp_flow` - Whether the mocked TDISP flow is in use.
+/// * `is_test_environment` - `true` if running in a test environment.
 pub fn new_resource_validator(
     isolation: IsolationType,
     vtom: Option<u64>,
-    test_tdisp_flow: bool,
+    is_test_environment: bool,
 ) -> anyhow::Result<Arc<dyn TdispResourceValidationInterface>> {
     tracing::info!(
         ?isolation,
         ?vtom,
-        test_tdisp_flow,
+        is_test_environment,
         "selecting a TDISP resource validator"
     );
 
     // The mocked flow drives emulated devices on hosts that are not necessarily
-    // confidential, so it takes the no-op validator whatever the partition
-    // reports.
-    if test_tdisp_flow {
+    // confidential, so it takes the no-op validator regardless of what kind of
+    // isolation is in use.
+    if is_test_environment {
         return Ok(Arc::new(noop::TdispNoopResourceValidator::new()));
     }
+
+    // TODO: Add platform-specific resource validators based on the isolation type.
+    // This will follow in subsequent PRs.
 
     Ok(Arc::new(noop::TdispNoopResourceValidator::new()))
 }
