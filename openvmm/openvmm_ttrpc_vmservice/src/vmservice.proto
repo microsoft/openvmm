@@ -609,10 +609,10 @@ message VMConfig {
 
     optional string crash_dump_path = 14;
 
+    bool no_vmbus = 16;
+
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 17;
-
-    bool no_vmbus = 16;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
