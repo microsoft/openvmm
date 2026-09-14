@@ -104,7 +104,7 @@ impl SimpleFlowNode for Node {
 
                 let branches = flowey::shell_cmd!(
                     rt,
-                    "{gh_cli} api repos/microsoft/openvmm/branches?protected=true&per_page=100"
+                    "{gh_cli} api --paginate --slurp repos/microsoft/openvmm/branches?protected=true&per_page=100"
                 )
                 .read()
                 .context("failed to list the protected branches")?;
@@ -243,25 +243,41 @@ impl SimpleFlowNode for Node {
 }
 
 /// The protected branches a release may be cut from, `main` first.
-fn candidate_branches(branches: &serde_json::Value) -> anyhow::Result<Vec<String>> {
-    let branches = branches
+fn candidate_branches(pages: &serde_json::Value) -> anyhow::Result<Vec<String>> {
+    let pages = pages
         .as_array()
-        .context("expected the protected branch list to be an array")?;
+        .context("expected the protected branch pages to be an array")?;
 
     let mut names = Vec::new();
-    for branch in branches {
-        let name = branch["name"]
-            .as_str()
-            .context("expected every protected branch to be named")?;
-        names.push(name.to_owned());
-    }
+    for page in pages {
+        let branches = page
+            .as_array()
+            .context("expected every protected branch page to be an array")?;
+        for branch in branches {
+            let protected = branch["protected"]
+                .as_bool()
+                .context("expected every branch to report whether it is protected")?;
+            if !protected {
+                continue;
+            }
 
-    // Fail closed if `protected` ever stops excluding unreviewed namespaces.
-    names.retain(|name| name == "main" || name.starts_with("release/"));
+            let name = branch["name"]
+                .as_str()
+                .context("expected every protected branch to be named")?;
+            if name == "main" || name.starts_with("release/") {
+                names.push(name.to_owned());
+            }
+        }
+    }
 
     // Stable sorts, so `main` is tried before the release branches.
     names.sort();
     names.sort_by_key(|name| name != "main");
+
+    if names.is_empty() {
+        anyhow::bail!("no protected `main` or `release/*` branches were returned by GitHub");
+    }
+
     Ok(names)
 }
 
@@ -292,15 +308,19 @@ mod tests {
 
     #[test]
     fn release_candidates_are_protected_branches_with_main_first() {
-        let branches = serde_json::json!([
-            { "name": "release/2505", "protected": true },
-            { "name": "release/1.8.2607", "protected": true },
-            { "name": "main", "protected": true },
-            { "name": "release/1.7.2511", "protected": true },
+        let pages = serde_json::json!([
+            [
+                { "name": "release/2505", "protected": true },
+                { "name": "release/1.8.2607", "protected": true },
+            ],
+            [
+                { "name": "main", "protected": true },
+                { "name": "release/1.7.2511", "protected": true },
+            ],
         ]);
 
         assert_eq!(
-            candidate_branches(&branches).unwrap(),
+            candidate_branches(&pages).unwrap(),
             [
                 "main",
                 "release/1.7.2511",
@@ -311,13 +331,28 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_that_is_not_a_release_branch_is_not_a_candidate() {
-        let branches = serde_json::json!([
-            { "name": "main", "protected": true },
-            { "name": "copilot/some-branch", "protected": true },
+    fn only_protected_main_and_release_branches_are_candidates() {
+        let pages = serde_json::json!([
+            [
+                { "name": "main", "protected": true },
+                { "name": "release/unprotected", "protected": false },
+                { "name": "copilot/some-branch", "protected": true },
+            ],
         ]);
 
-        assert_eq!(candidate_branches(&branches).unwrap(), ["main"]);
+        assert_eq!(candidate_branches(&pages).unwrap(), ["main"]);
+    }
+
+    #[test]
+    fn rejects_a_response_without_reviewed_branches() {
+        let pages = serde_json::json!([
+            [
+                { "name": "release/unprotected", "protected": false },
+                { "name": "copilot/some-branch", "protected": true },
+            ],
+        ]);
+
+        assert!(candidate_branches(&pages).is_err());
     }
 
     #[test]
