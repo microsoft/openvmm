@@ -2182,9 +2182,6 @@ fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
     ) {
         anyhow::bail!("SNP isolation currently only supports Linux direct or IGVM boot");
     }
-    if cfg.hypervisor.with_hv {
-        anyhow::bail!("SNP isolation currently does not support Hyper-V enlightenments");
-    }
     if cfg.hypervisor.with_vtl2.is_some() {
         anyhow::bail!("SNP isolation currently does not support VTL2");
     }
