@@ -376,6 +376,8 @@ impl VpciRelay {
             Self::tdisp_test_mock_flow(vpci_device.clone())
                 .await
                 .expect("failed to exercise TDISP flow test");
+
+            // Do not mark tdisp_capable = true because the test is already done.
         } else {
             // Probe TDISP capability without attesting.
             match vpci_device.tdisp_query_capabilities().await {
@@ -625,26 +627,33 @@ impl PciConfigSpace for RelayedVpciDevice {
         // command register untouched yields `next` equal to `prev`.
         let next = Command::from((value.merge(current) & 0xffff) as u16).mmio_enabled();
 
-        // No change was detected, complete the request anyways.
-        if prev == next {
-            self.device.write_cfg(offset, value);
-            return IoResult::Ok;
-        }
-
         let device = self.device.clone();
-        let fut = Box::pin(async move {
-            // Attest while the command register is still off, then turn it on
-            // after it succeeds.
-            if !device.tdisp_on_device_activate(value).await {
-                // The command register is left off if attestation failed.
-                // Otherwise, command register is enabled.
-                tracing::warn!("TDISP attestation failed. Not enabling STATUS_COMMAND.");
+
+        let fut: Pin<Box<dyn Future<Output = ()> + Send + Sync>> = match (prev, next) {
+            // MMIO turning on. Attest before the guest can reach the BARs.
+            // Activation writes the command register itself once attestation
+            // succeeds, so the BARs are mapped before the MMIO ranges are
+            // unblocked.
+            (false, true) => Box::pin(async move {
+                if !device.tdisp_on_device_activate(value).await {
+                    tracing::warn!("TDISP attestation failed, leaving the command register off");
+                }
+            }),
+            // MMIO turning off. Tear the TDI back down. Deactivation leaves the
+            // command register in its off state itself.
+            (true, false) => Box::pin(async move {
+                device.tdisp_on_device_deactivate().await;
+            }),
+            // No MMIO edge, just pass through.
+            (false, false) | (true, true) => {
+                self.device.write_cfg(offset, value);
+                return IoResult::Ok;
             }
-        });
+        };
 
         // Every caller waits for its own deferred write to complete, so this
         // should not happen.
-        debug_assert!(
+        assert!(
             self.pending.is_none(),
             "config space write deferred while another deferred write is in flight"
         );
