@@ -598,18 +598,26 @@ impl VpciClientTdispState {
     /// Any resource still unblocked is flipped back to shared first. That part
     /// is best-effort: a failure is logged but does not abort the unbind.
     ///
+    /// # Arguments
+    ///
     /// * `reason` - Reported to the host to explain why the TDI is unbinding.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if it fails to re-block any MMIO ranges or DMA
+    /// that were previously unblocked. This ensures that the TDI is left in a
+    /// consistent state after unblock.
+    ///
+    /// This function will also panic if the host lies about its acceptance of
+    /// the unbind request. If the guest asking the trusted firmware disagrees
+    /// with the state the host advertised after unbind, the function will
+    /// panic.
     pub async fn tdisp_unbind(&mut self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
-        // Flip all unblocked MMIO ranges and DMA back to shared before we tell
-        // the host to unbind the TDI. This is best-effort: a failure here is
-        // logged but doesn't abort the unbind. A new attestation won't proceed
-        // if all resources were not successfully torn down.
         let validator = self.resource_validator.clone();
         let device_id = self.mutable_state.guest_device_id;
 
-        // The teardown below addresses a real TDI through the platform. Without
-        // an id there is nothing attested to tear down: no range was ever
-        // unblocked, DMA was never unblocked, and no report was ever recorded.
+        // If we haven't even made it far enough to know what TDI we're talking
+        // to, we can't do any cleanup anyways.
         if let Some(raw_device_id) = device_id.id() {
             let validated_bars_clone = self.mutable_state.validated_mmio_bars.clone();
             for (bar_id, mmio) in validated_bars_clone {
@@ -623,9 +631,10 @@ impl VpciClientTdispState {
                     TdispResourceIsolation::Private => {}
                 }
 
+                // Block the MMIO range again to return it to shared isolation.
                 let block_mmio_res = validator
                     .tdisp_block_mmio(
-                        Vtl::Vtl2,
+                        self.target_vtl,
                         raw_device_id,
                         mmio.base_gpa,
                         0,
@@ -642,35 +651,38 @@ impl VpciClientTdispState {
                         error = &*e as &dyn std::error::Error,
                         "tdisp_unbind: failed to re-block MMIO range"
                     );
-                } else {
-                    // Tell the host only once the platform actually blocked the
-                    // range, so the host's view never runs ahead of the platform's.
-                    // Best-effort, like the block above.
-                    if let Err(e) = self
-                        .tdisp_host_block_mmio_range(bar_id, mmio.base_gpa, mmio.length_in_bytes)
-                        .await
-                    {
-                        tracing::error!(
-                            bar_id,
-                            base_gpa = format_args!("{:#x}", mmio.base_gpa),
-                            length_in_bytes = mmio.length_in_bytes,
-                            error = &*e as &dyn std::error::Error,
-                            "tdisp_unbind: failed to block MMIO range on the host"
-                        );
-                    }
-
-                    // Successful re-block, remove the bar from the validated list.
-                    self.mutable_state.validated_mmio_bars.remove(&bar_id);
+                    std::panic!("tdisp_unbind: failed to re-block MMIO range: {e}");
                 }
+
+                // Tell the host only once the platform actually blocked the
+                // range, so the host can do any cleanup it needs to do for the
+                // range.
+                if let Err(e) = self
+                    .tdisp_host_block_mmio_range(bar_id, mmio.base_gpa, mmio.length_in_bytes)
+                    .await
+                {
+                    tracing::error!(
+                        bar_id,
+                        base_gpa = format_args!("{:#x}", mmio.base_gpa),
+                        length_in_bytes = mmio.length_in_bytes,
+                        error = &*e as &dyn std::error::Error,
+                        "tdisp_unbind: failed to block MMIO range on the host"
+                    );
+                    std::panic!("tdisp_unbind: failed to re-block MMIO range");
+                }
+
+                // Successful re-block, remove the bar from the validated list.
+                self.mutable_state.validated_mmio_bars.remove(&bar_id);
             }
 
             if self.mutable_state.dma_unblocked {
-                if let Err(e) = validator.tdisp_block_dma(Vtl::Vtl2, raw_device_id) {
+                if let Err(e) = validator.tdisp_block_dma(self.target_vtl, raw_device_id) {
                     tracing::error!(
                         raw_device_id,
                         error = &*e as &dyn std::error::Error,
                         "tdisp_unbind: failed to re-block DMA"
                     );
+                    std::panic!("tdisp_unbind: failed to re-block DMA: {e}");
                 } else {
                     // Successful re-block, clear the DMA unblocked flag.
                     self.mutable_state.dma_unblocked = false;
@@ -695,11 +707,12 @@ impl VpciClientTdispState {
             .await?;
 
         if let Err(err) = res.response::<TdispCommandResponseUnbind>() {
-            return Err(anyhow::anyhow!("error response in tdisp_unbind: {err}"));
+            std::panic!("tdisp_unbind: error response from host, cannot continue: {err}");
         }
 
         // The TDI must be back in Unlocked, and the firmware has to agree that
-        // it actually came back rather than the host merely saying so.
+        // it is in Unlocked state as well. Any disagreement is fatal, as the state
+        // the firmware sees must match the host's view.
         self.require_tdi_state(TdispTdiState::Unlocked, device_id)?;
 
         Ok(())
