@@ -1356,6 +1356,7 @@ impl MshvProcessor<'_> {
         dev: &impl CpuIo,
     ) -> Result<(), VpHaltReason> {
         use mshv_bindings::snp::*;
+        use x86defs::snp::GhcbInfo;
 
         let info = message.as_message::<hvdef::HvX64VmgexitInterceptMessage>();
         let ghcb_op = (info.ghcb_msr & GHCB_INFO_MASK as u64) as u32;
@@ -1368,14 +1369,16 @@ impl MshvProcessor<'_> {
         );
 
         // CPUID requests reach userspace only when the corresponding VMGEXIT
-        // offloads are disabled. The negotiation, registration, shutdown, and
-        // normal page-protocol operations are always handled here.
+        // offloads are disabled. The negotiation, registration, unregistration,
+        // shutdown, and normal page-protocol operations are always handled here.
         match ghcb_op {
             GHCB_INFO_SPECIAL_DBGPRINT => {}
             GHCB_INFO_HYP_FEATURE_REQUEST if ghcb_data == 0 => {
-                let features = GHCB_HYP_FEATURE_SEV_SNP | GHCB_HYP_FEATURE_SEV_SNP_AP_CREATION;
-                let response = GHCB_INFO_HYP_FEATURE_RESPONSE as u64
-                    | u64::from(features) << GHCB_INFO_BIT_WIDTH;
+                let features =
+                    u64::from(GHCB_HYP_FEATURE_SEV_SNP | GHCB_HYP_FEATURE_SEV_SNP_AP_CREATION)
+                        | x86defs::snp::GHCB_HYP_FEATURE_GHCB_UNREGISTER;
+                let response =
+                    GHCB_INFO_HYP_FEATURE_RESPONSE as u64 | features << GHCB_INFO_BIT_WIDTH;
                 self.sev_set_reg(HvX64RegisterName::Ghcb, response)?;
             }
             GHCB_INFO_CPUID_REQUEST => {
@@ -1437,6 +1440,34 @@ impl MshvProcessor<'_> {
                 self.sev_set_reg(
                     HvX64RegisterName::Ghcb,
                     GHCB_INFO_REGISTER_RESPONSE as u64 | page_number << GHCB_INFO_BIT_WIDTH,
+                )?;
+            }
+            op if u64::from(op) == GhcbInfo::UNREGISTER_REQUEST.0 => {
+                let failed = u64::MAX >> GHCB_INFO_BIT_WIDTH;
+                let gfn = if ghcb_data != 0 {
+                    tracelimit::warn_ratelimited!(
+                        ghcb_data,
+                        "nonzero reserved data in SNP GHCB unregister request"
+                    );
+                    failed
+                } else {
+                    // Release the hypervisor's GHCB mapping before acknowledging
+                    // the request, so the guest can make the page private.
+                    let result =
+                        self.sev_get_reg(HvX64RegisterName::SevGhcbGpa)
+                            .and_then(|registered| {
+                                if registered & 1 == 0 {
+                                    return Ok(0);
+                                }
+                                self.sev_set_reg(HvX64RegisterName::SevGhcbGpa, registered & !1)?;
+                                Ok(registered >> GHCB_INFO_BIT_WIDTH)
+                            });
+                    // Register access failures are logged by sev_get/set_reg.
+                    result.unwrap_or(failed)
+                };
+                self.sev_set_reg(
+                    HvX64RegisterName::Ghcb,
+                    (gfn << GHCB_INFO_BIT_WIDTH) | GhcbInfo::UNREGISTER_RESPONSE.0,
                 )?;
             }
             GHCB_INFO_SHUTDOWN_REQUEST => {
