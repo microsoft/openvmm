@@ -131,14 +131,9 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
 
 /// Provides platform-specific methods for unblocking device resources after
 /// TDISP attestation.
-///
-/// After a device has been attested and placed in the Run state via
-/// [`TdispVirtualDeviceInterface`], platform-specific operations are required
-/// to make device resources (MMIO, DMA) accessible to the guest. This trait
-/// abstracts those operations.
 pub trait TdispResourceValidationInterface: Send + Sync {
-    /// Called immediately before the device is bound, while the TDI is still
-    /// Unlocked.
+    /// Lifecycle method called immediately before the device is bound, while
+    /// the TDI is still Unlocked.
     ///
     /// Returning an error fails the attestation, leaving the device unbound.
     ///
@@ -146,41 +141,39 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 
-    /// Called after the device has been bound and is Locked, immediately before
-    /// it is started.
+    /// Lifecycle method called immediately after the device has been bound and
+    /// is Locked, immediately before it is started.
     ///
     /// This is where a platform can inspect the bound-but-not-yet-running TDI
-    /// and refuse to let it run. Returning an error fails the attestation; the
-    /// device is left bound and the caller unbinds it as part of clearing the
-    /// failed attestation.
+    /// and refuse to let it run. Returning an error fails the attestation.
     ///
     /// * `target_vtl` - The VTL the device is being attested for.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 
-    /// Called after the host has started the device and reports it running.
+    /// Lifecycle method called after the host has started the device and
+    /// reports it running.
     ///
     /// This is the last point at which a platform can refuse the device, and
     /// the first at which it can confirm the started TDI against its own view
     /// of the interface rather than the host's. Returning an error fails the
-    /// attestation; the device is left running and the caller unbinds it as
-    /// part of clearing the failed attestation.
+    /// attestation.
     ///
     /// * `target_vtl` - The VTL the device is being attested for.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 
     /// Read the TDI's TDISP state directly from the platform's TEE Security
-    /// Manager, without the host's involvement.
+    /// Manager, without the host's involvement. This provides a safe channel to
+    /// verify the TDI state.
     ///
-    /// This is an independent answer to the same question the host answers in
-    /// its command responses, so a caller can hold the two against each other
-    /// rather than having to take the host's word for it.
+    /// Support for this feature is dependent on platform capabilities. Not all
+    /// platforms support verifying the TDI state from the firmware directly.
     ///
-    /// Returns `Ok(None)` on a platform that cannot report the state, which
-    /// leaves the caller with nothing to compare and is not an error. `Err` is
-    /// for a platform that should have been able to answer and could not,
-    /// including a TDI in the TDISP error state, which has no equivalent here.
+    /// Returns `Ok(None)` on a platform that cannot report the state and is not
+    /// an error. `Err` is for a platform that should have been able to answer
+    /// and could not, including a TDI in the TDISP error state (which is never
+    /// a valid state from the guest's perspective).
     ///
     /// * `target_vtl` - The VTL the device is assigned to.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
@@ -192,15 +185,14 @@ pub trait TdispResourceValidationInterface: Send + Sync {
 
     /// Record the TDI interface report for a device.
     ///
-    /// Called during attestation once the report has been fetched, and again on
-    /// each re-attest. Platforms that must resolve report-relative identifiers
-    /// keep what they need from it; the rest ignore it.
+    /// Called during the attestation flow to allow the validator interface to
+    /// cache the TDI interface report.
     ///
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     /// * `report` - The device's TDI interface report.
     fn tdisp_set_tdi_report(&self, device_id: u16, report: &TdiReportStruct);
 
-    /// Drop the TDI interface report recorded for a device.
+    /// Drop the TDI interface report recorded for a device from the cache.
     ///
     /// Called during unbind, so that nothing kept from the old report outlives
     /// the attestation it came from.
@@ -208,7 +200,8 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn tdisp_clear_tdi_report(&self, device_id: u16);
 
-    /// Unblock MMIO access for a specific resource on the device.
+    /// Unblock MMIO access for a specific resource on the device by asking the
+    /// platform specific TSM to perform an unblock operation.
     ///
     /// * `target_vtl` - The VTL to unblock the range for.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
@@ -218,11 +211,13 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     ///   range's position in the report's list. A platform that needs the list
     ///   position looks it up in the interface report it was given for this
     ///   device.
-    /// * `base_gpa` - The base guest physical address of the MMIO range to unblock.
-    /// * `base_offset` - The offset within the range specified by `range_id` to start
-    ///   unblocking from. Necessary for cases where the host splits the MMIO range
-    ///   into multiple subranges for unblocking.
-    /// * `length_in_bytes` - The length in bytes of the MMIO range to unblock starting from `base_offset`.
+    /// * `base_gpa` - The base guest physical address of the MMIO range to
+    ///   unblock.
+    /// * `base_offset` - The offset within the range specified by `range_id` to
+    ///   start unblocking from. Necessary for cases where the host splits the
+    ///   MMIO range into multiple subranges for unblocking.
+    /// * `length_in_bytes` - The length in bytes of the MMIO range to unblock
+    ///   starting from `base_offset`.
     fn tdisp_unblock_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -233,7 +228,8 @@ pub trait TdispResourceValidationInterface: Send + Sync {
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>>;
 
-    /// Unblock DMA access for the device's IOMMU domain.
+    /// Unblock DMA access for the device's IOMMU domain by asking the platform
+    /// specific TSM to perform an unblock operation.
     ///
     /// * `target_vtl` - The VTL to unblock DMA for.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
@@ -327,9 +323,6 @@ pub fn new_unbind_command(device_id: u64, reason: TdispGuestUnbindReason) -> Gue
 
 /// Creates a [`GuestToHostCommand`] for the `ModifyMmioRange` command with the
 /// `UnblockMmioRange` action.
-///
-/// `range_id` is widened to a `u32` because protobuf has no 16-bit type; the
-/// host narrows it back before dispatching.
 pub fn new_unblock_mmio_range_command(
     device_id: u64,
     range_id: u16,
@@ -347,9 +340,6 @@ pub fn new_unblock_mmio_range_command(
 
 /// Creates a [`GuestToHostCommand`] for the `ModifyMmioRange` command with the
 /// `BlockMmioRange` action.
-///
-/// `range_id` is widened to a `u32` because protobuf has no 16-bit type; the
-/// host narrows it back before dispatching.
 pub fn new_block_mmio_range_command(
     device_id: u64,
     range_id: u16,

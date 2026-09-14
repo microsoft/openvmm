@@ -38,7 +38,8 @@ pub struct UnblockedMmioRange {
 /// A [`TdispResourceValidationInterface`] that validates nothing.
 ///
 /// A device driven through the TDISP flow always has a validator, so this
-/// stands in wherever the platform has no resources to validate. Every MMIO and
+/// stands in wherever the platform has no resources to validate or is running
+/// in a mode without a proper TSM (such as a test environment). Every MMIO and
 /// DMA request is recorded, so a test can assert on what the flow asked for.
 #[derive(Default)]
 pub struct TdispNoopResourceValidator {
