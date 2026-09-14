@@ -126,4 +126,21 @@ impl AsyncFile for BlockingFile {
         let file = self.file.clone();
         blocking::unblock(move || file.set_len(size)).await
     }
+
+    async fn zero_range(&self, offset: u64, len: u64) -> io::Result<()> {
+        let file = self.file.clone();
+        blocking::unblock(move || {
+            let zeros = vec![0; 1024 * 1024];
+            let mut offset = offset;
+            let mut remaining = len;
+            while remaining != 0 {
+                let length = remaining.min(zeros.len() as u64) as usize;
+                write_all_at(&file, &zeros[..length], offset)?;
+                offset += length as u64;
+                remaining -= length as u64;
+            }
+            Ok(())
+        })
+        .await
+    }
 }

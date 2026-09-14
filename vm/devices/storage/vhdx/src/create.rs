@@ -4,7 +4,8 @@
 //! VHDX file creation.
 //!
 //! Writes a valid, empty VHDX file (file identifier, dual headers, dual
-//! region tables, metadata table, and empty BAT) to an [`AsyncFile`].
+//! region tables, metadata table, and BAT) to an [`AsyncFile`]. Fixed files
+//! also allocate and zero all payload blocks.
 
 use crate::AsyncFile;
 use crate::error::CreateError;
@@ -187,8 +188,10 @@ pub(crate) fn chunk_block_count(block_size: u32, sector_size: u32) -> u32 {
 /// Create a new, empty VHDX file.
 ///
 /// Writes file identifier, dual headers, dual region tables, metadata
-/// table with standard metadata items, and an empty BAT to the provided
-/// file. The file is truncated/extended to the required size.
+/// table with standard metadata items, and a BAT to the provided file.
+/// Fixed files have fully present payload blocks initialized through
+/// [`AsyncFile::zero_range`]; other types start with an empty BAT.
+/// The file is truncated/extended to the required size.
 ///
 /// `params` is updated in place with defaults filled in (e.g. zero
 /// `block_size` becomes 2 MiB, zero GUIDs become random).
@@ -652,6 +655,40 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
         file_size = round_up(file_size, params.block_alignment as u64);
     }
 
+    if leave_blocks_allocated {
+        let payload_offset = file_size;
+        let payload_length = data_block_count * params.block_size as u64;
+        file_size += payload_length;
+        file.zero_range(payload_offset, payload_length)
+            .await
+            .map_err(CreateError::Write)?;
+
+        for page_start in (0..bat_entry_count).step_by(format::ENTRIES_PER_BAT_PAGE as usize) {
+            let mut page = file.alloc_buffer(format::CACHE_PAGE_SIZE as usize);
+            let page_entries = (bat_entry_count - page_start).min(format::ENTRIES_PER_BAT_PAGE);
+            for entry_index in 0..page_entries {
+                let bat_index = page_start + entry_index;
+                if bat_index % (chunk_ratio as u64 + 1) == chunk_ratio as u64 {
+                    continue;
+                }
+                let block_index = bat_index - bat_index / (chunk_ratio as u64 + 1);
+                let block_offset = payload_offset + block_index * params.block_size as u64;
+                let entry = format::BatEntry::new()
+                    .with_state(format::BatEntryState::FullyPresent as u8)
+                    .with_file_offset_mb(block_offset / format::MB1);
+                let offset = entry_index as usize * size_of::<format::BatEntry>();
+                page.as_mut()[offset..offset + size_of::<format::BatEntry>()]
+                    .copy_from_slice(entry.as_bytes());
+            }
+            file.write_from(
+                bat_offset + page_start * size_of::<format::BatEntry>() as u64,
+                page,
+            )
+            .await
+            .map_err(CreateError::Write)?;
+        }
+    }
+
     file.set_file_size(file_size)
         .await
         .map_err(CreateError::Write)?;
@@ -814,6 +851,52 @@ mod tests {
 
         // File size should cover all regions.
         assert_eq!(file_size, (bat_offset + bat_len) as u64);
+    }
+
+    #[async_test]
+    async fn create_fixed_allocates_and_zeros_payload() {
+        for sector_size in [512, 4096] {
+            let block_size = 8 * format::MB1;
+            let payload_offset = block_size;
+            let file_size = payload_offset + 2 * block_size;
+            let file = InMemoryFile::from_snapshot(vec![0xa5; (file_size + format::MB1) as usize]);
+            let mut params = CreateParams {
+                disk_size: block_size + sector_size as u64,
+                block_size: block_size as u32,
+                block_alignment: block_size as u32,
+                logical_sector_size: sector_size,
+                disk_type: DiskType::Fixed,
+                ..Default::default()
+            };
+            create(&file, &mut params).await.unwrap();
+
+            let snapshot = file.snapshot();
+            assert_eq!(snapshot.len() as u64, file_size);
+            assert!(
+                snapshot[payload_offset as usize..]
+                    .iter()
+                    .all(|byte| *byte == 0)
+            );
+            let bat_offset = 3 * format::MB1 as usize;
+            for block_index in 0..2 {
+                let offset = bat_offset + block_index * size_of::<format::BatEntry>();
+                let entry = format::BatEntry::read_from_bytes(
+                    &snapshot[offset..offset + size_of::<format::BatEntry>()],
+                )
+                .unwrap();
+                assert_eq!(entry.state(), format::BatEntryState::FullyPresent as u8);
+                assert_eq!(
+                    entry.file_offset(),
+                    payload_offset + block_index as u64 * block_size
+                );
+            }
+            assert!(
+                snapshot[bat_offset + 2 * size_of::<format::BatEntry>()
+                    ..bat_offset + format::MB1 as usize]
+                    .iter()
+                    .all(|byte| *byte == 0)
+            );
+        }
     }
 
     #[async_test]

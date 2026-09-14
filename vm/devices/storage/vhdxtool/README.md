@@ -19,10 +19,17 @@ cargo run -p vhdxtool -- create fixed.vhdx --size 64G --type fixed
 cargo run -p vhdxtool -- create child.vhdx --size 64G --type differencing --parent disk.vhdx
 ```
 
+Fixed images allocate all VHDX payload blocks and explicitly write zeros during
+creation. Creation therefore writes the full rounded-up disk capacity rather
+than deferring initialization to guest writes.
+
 A differencing image must have the same virtual size as its parent. The parent
 locator always records the parent's data-write GUID and records a relative path
 when the tool can compute one. On Windows it also records an extended-length
 absolute Win32 path.
+
+Parent locator paths must be valid Unicode. On Unix, relative parent paths
+must not contain literal backslashes, which VHDX treats as path separators.
 
 Inspect and validate an image:
 
@@ -48,6 +55,9 @@ cargo run -p vhdxtool -- convert disk.raw --output disk.vhdx --output-format vhd
 cargo run -p vhdxtool -- convert disk.vhdx --output disk.raw --output-format raw
 cargo run -p vhdxtool -- convert dynamic.vhdx --output fixed.vhdx --output-format vhdx --type fixed
 ```
+
+Differencing VHDX inputs are not supported by `convert`; conversion is rejected
+before creating or replacing the output file.
 
 All-zero copy chunks are skipped so dynamic VHDX and raw outputs remain sparse
 where the host filesystem supports sparse files. Use `-v` for trace-level
