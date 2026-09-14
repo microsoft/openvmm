@@ -18,6 +18,49 @@ type; see the associated documentation for more details.
 By default, OpenVMM does not log span enter/exit events. To enable them, set
 `OPENVMM_LOG_SPANS=1`.
 
+Standalone OpenVMM emits spans for the major VM initialization phases. The
+top-level `init` span has a `mode` field (`boot`, `restore`, or `restart`) and
+contains spans such as:
+
+- `init/resolve_hypervisor`
+- `init/new_vm`
+- `new_proto_partition`
+- `resolve_memory_layout`
+- `build_memory`
+- `new_partition`
+- `attach_memory`
+- `init/load_vm`
+- `base_chipset_build`
+- `new_partition_unit`
+- `bind_vps`
+- `assign_pci_resources` and `load_firmware` for a clean boot
+- `restore` for snapshot or worker restore
+
+The `resume` span covers the transition that starts the state units and releases
+the virtual processors for execution. Existing `state_change` and
+`device_state_change` spans provide the nested state-unit and per-device
+breakdown.
+
+Successful lifecycle boundaries also emit an info event with the message
+`VM startup milestone` and a stable `milestone` field. These events identify
+the following invariants:
+
+- `hypervisor_resolved`
+- `prototype_partition_created`
+- `memory_layout_resolved`
+- `guest_memory_created`
+- `partition_created`
+- `memory_attached`
+- `device_graph_created`
+- `vcpus_bound`
+- `pci_resources_assigned` and `firmware_loaded` for a clean boot
+- `state_restored` for snapshot or worker restore
+- `vm_initialized`
+- `execution_released` on the first successful resume
+
+Consumers should use the milestone field rather than parsing the
+human-readable message.
+
 ### Rate limiting
 
 Trace events that can be triggered repeatedly by guest interactions are

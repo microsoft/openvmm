@@ -109,6 +109,7 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use tracing::Instrument;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -180,6 +181,10 @@ const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+fn startup_milestone(milestone: &'static str) {
+    tracing::info!(milestone, "VM startup milestone");
+}
 
 enum VpciEjectResult {
     Complete(anyhow::Result<()>),
@@ -338,32 +343,50 @@ impl Worker for VmWorker {
     const ID: WorkerId<Self::Parameters> = VM_WORKER;
 
     fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
+        let startup_mode = if parameters.saved_state.is_some() {
+            "restore"
+        } else {
+            "boot"
+        };
+        let _span = tracing::info_span!("init", mode = startup_mode).entered();
         let (device_thread, device_driver) = new_device_thread();
 
         let manifest = Manifest::from_config(parameters.cfg);
 
-        let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
-            .context("failed to resolve hypervisor backend")?;
+        let hypervisor = block_on(
+            ResourceResolver::new()
+                .resolve(parameters.hypervisor, ())
+                .instrument(tracing::info_span!("init/resolve_hypervisor")),
+        )
+        .context("failed to resolve hypervisor backend")?;
+        startup_milestone("hypervisor_resolved");
 
         let shared_memory = parameters
             .shared_memory
             .map(|fd| SharedMemoryBacking::from_mappable(fd.into()));
 
-        let vm = block_on(InitializedVm::new(
-            VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
-            hypervisor.0,
-            manifest,
-            shared_memory,
-        ))?;
+        let vm = block_on(
+            InitializedVm::new(
+                VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
+                hypervisor.0,
+                manifest,
+                shared_memory,
+            )
+            .instrument(tracing::info_span!("init/new_vm")),
+        )?;
         let saved_state = parameters
             .saved_state
             .map(|m| m.parse())
             .transpose()
             .context("failed to decode saved state")?;
 
-        let vm = block_with_io(|_| vm.load(saved_state, parameters.notify))?;
+        let vm = block_with_io(|_| {
+            vm.load(saved_state, parameters.notify)
+                .instrument(tracing::info_span!("init/load_vm"))
+        })?;
 
         LOADED_VM.store(&vm);
+        startup_milestone("vm_initialized");
 
         Ok(Self {
             vm,
@@ -373,6 +396,7 @@ impl Worker for VmWorker {
     }
 
     fn restart(state: Self::State) -> anyhow::Result<Self> {
+        let _span = tracing::info_span!("init", mode = "restart").entered();
         let RestartState {
             hypervisor,
             manifest,
@@ -384,19 +408,31 @@ impl Worker for VmWorker {
         } = state;
         let (device_thread, device_driver) = new_device_thread();
 
-        let hypervisor = block_on(ResourceResolver::new().resolve(hypervisor, ()))
-            .context("failed to resolve hypervisor backend")?;
+        let hypervisor = block_on(
+            ResourceResolver::new()
+                .resolve(hypervisor, ())
+                .instrument(tracing::info_span!("init/resolve_hypervisor")),
+        )
+        .context("failed to resolve hypervisor backend")?;
+        startup_milestone("hypervisor_resolved");
 
-        let vm = block_on(InitializedVm::new(
-            VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
-            hypervisor.0,
-            manifest,
-            shared_memory,
-        ))?;
+        let vm = block_on(
+            InitializedVm::new(
+                VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
+                hypervisor.0,
+                manifest,
+                shared_memory,
+            )
+            .instrument(tracing::info_span!("init/new_vm")),
+        )?;
         pal_async::local::block_on(async {
-            let mut vm = vm.load(Some(saved_state), notify).await?;
+            let mut vm = vm
+                .load(Some(saved_state), notify)
+                .instrument(tracing::info_span!("init/load_vm"))
+                .await?;
 
             LOADED_VM.store(&vm);
+            startup_milestone("vm_initialized");
 
             if running {
                 vm.resume().await;
@@ -778,6 +814,7 @@ pub(crate) struct LoadedVm {
     state_units: StateUnits,
     inner: LoadedVmInner,
     running: bool,
+    has_started: bool,
 }
 
 struct DynamicVpciDeviceEntry {
@@ -1138,17 +1175,21 @@ impl InitializedVm {
         let device_assignment_msi_iova_range =
             resolve_device_assignment_msi_iova_range(platform_info.device_assignment_msi_iova);
 
-        let proto = hypervisor
-            .new_partition(virt::ProtoPartitionConfig {
-                processor_topology: &processor_topology,
-                hv_config,
-                vmtime: &vmtime_source,
-                isolation: proto_partition_isolation,
-                nested_virt: cfg.hypervisor.nested_virt,
-                #[cfg(guest_arch = "aarch64")]
-                device_assignment_msi_iova_range,
-            })
-            .context("failed to create the prototype partition")?;
+        let proto = {
+            let _span = tracing::info_span!("new_proto_partition").entered();
+            hypervisor
+                .new_partition(virt::ProtoPartitionConfig {
+                    processor_topology: &processor_topology,
+                    hv_config,
+                    vmtime: &vmtime_source,
+                    isolation: proto_partition_isolation,
+                    nested_virt: cfg.hypervisor.nested_virt,
+                    #[cfg(guest_arch = "aarch64")]
+                    device_assignment_msi_iova_range,
+                })
+                .context("failed to create the prototype partition")?
+        };
+        startup_milestone("prototype_partition_created");
 
         let physical_address_size = proto.max_physical_address_size();
 
@@ -1216,18 +1257,22 @@ impl InitializedVm {
         } else {
             0
         };
-        let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
-            node_mem_sizes: &node_mem_sizes,
-            layout: cfg.layout.clone(),
-            pcie_root_complexes: &cfg.pcie_root_complexes,
-            virtio_mmio_count,
-            pcie_ecam_below_4gb: cfg.pcie_ecam_below_4gb,
-            vtl2_layout,
-            ram_start_address,
-            vtl2_framebuffer_size,
-            physical_address_size,
-        })
-        .context("invalid memory configuration")?;
+        let resolved_layout = {
+            let _span = tracing::info_span!("resolve_memory_layout").entered();
+            resolve_memory_layout(MemoryLayoutInput {
+                node_mem_sizes: &node_mem_sizes,
+                layout: cfg.layout.clone(),
+                pcie_root_complexes: &cfg.pcie_root_complexes,
+                virtio_mmio_count,
+                pcie_ecam_below_4gb: cfg.pcie_ecam_below_4gb,
+                vtl2_layout,
+                ram_start_address,
+                vtl2_framebuffer_size,
+                physical_address_size,
+            })
+            .context("invalid memory configuration")?
+        };
+        startup_milestone("memory_layout_resolved");
         let mem_layout = resolved_layout.memory_layout;
         let resolved_pcie_root_complex_ranges = resolved_layout.pcie_root_complex_ranges;
         let virtio_mmio_region = resolved_layout.virtio_mmio_region;
@@ -1407,6 +1452,7 @@ impl InitializedVm {
 
         let mut memory_manager = memory_builder
             .build(max_addr)
+            .instrument(tracing::info_span!("build_memory"))
             .await
             .context("failed to build guest memory")?;
 
@@ -1428,16 +1474,22 @@ impl InitializedVm {
             ));
         }
 
-        let (partition, vps) = proto
-            .build(virt::PartitionConfig {
-                mem_layout: &mem_layout,
-                guest_memory: &gm,
-                cpuid: &cpuid,
-                vtl0_alias_map,
-                fault_resolver: supports_memory_fault_resolution
-                    .then(|| memory_manager.memory_fault_resolver()),
-            })
-            .context("failed to create the partition")?;
+        startup_milestone("guest_memory_created");
+
+        let (partition, vps) = {
+            let _span = tracing::info_span!("new_partition").entered();
+            proto
+                .build(virt::PartitionConfig {
+                    mem_layout: &mem_layout,
+                    guest_memory: &gm,
+                    cpuid: &cpuid,
+                    vtl0_alias_map,
+                    fault_resolver: supports_memory_fault_resolution
+                        .then(|| memory_manager.memory_fault_resolver()),
+                })
+                .context("failed to create the partition")?
+        };
+        startup_milestone("partition_created");
 
         let vps = vps.into_iter().map(|vp| Box::new(vp) as _).collect();
 
@@ -1450,6 +1502,7 @@ impl InitializedVm {
                 None,
                 partition.host_access(),
             )
+            .instrument(tracing::info_span!("attach_memory", vtl = 0))
             .await
             .context("failed to attach memory to the partition")?;
 
@@ -1461,9 +1514,11 @@ impl InitializedVm {
                     vtl2_memory_process,
                     None,
                 )
+                .instrument(tracing::info_span!("attach_memory", vtl = 2))
                 .await
                 .context("failed to attach memory to VTL2")?;
         }
+        startup_milestone("memory_attached");
 
         Ok(Self {
             partition,
@@ -3007,7 +3062,11 @@ impl InitializedVm {
             }
         }
 
-        let (chipset, devices) = chipset_builder.build()?;
+        let (chipset, devices) = {
+            let _span = tracing::info_span!("base_chipset_build").entered();
+            chipset_builder.build()?
+        };
+        startup_milestone("device_graph_created");
         let (fatal_error_send, _fatal_error_recv) = mesh::channel();
         let chipset = vmm_core::vmotherboard_adapter::AdaptedChipset::new(
             chipset,
@@ -3018,27 +3077,30 @@ impl InitializedVm {
         // create a new channel to intercept guest resets
         let (halt_send, halt_recv) = mesh::channel();
 
-        let (partition_unit, vp_runners) = PartitionUnit::new(
-            driver_source.simple(),
-            state_units
-                .add("partition")
-                .depends_on(devices.chipset_unit())
-                .depends_on(vmtime.handle()),
-            partition.clone().into_vm_partition(),
-            PartitionUnitParams {
-                processor_topology: &processor_topology,
-                halt_vps,
-                halt_request_recv,
-                client_notify_send: halt_send,
-                vtl_guest_memory: [
-                    Some(&gm),
-                    None,
-                    cfg.hypervisor.with_vtl2.is_some().then_some(&gm),
-                ],
-                debugger_rpc: cfg.debugger_rpc,
-            },
-        )
-        .context("failed to create partition unit")?;
+        let (partition_unit, vp_runners) = {
+            let _span = tracing::info_span!("new_partition_unit").entered();
+            PartitionUnit::new(
+                driver_source.simple(),
+                state_units
+                    .add("partition")
+                    .depends_on(devices.chipset_unit())
+                    .depends_on(vmtime.handle()),
+                partition.clone().into_vm_partition(),
+                PartitionUnitParams {
+                    processor_topology: &processor_topology,
+                    halt_vps,
+                    halt_request_recv,
+                    client_notify_send: halt_send,
+                    vtl_guest_memory: [
+                        Some(&gm),
+                        None,
+                        cfg.hypervisor.with_vtl2.is_some().then_some(&gm),
+                    ],
+                    debugger_rpc: cfg.debugger_rpc,
+                },
+            )
+            .context("failed to create partition unit")?
+        };
 
         // Start the VP backing threads.
         try_join_all(vps.into_iter().zip(vp_runners).enumerate().map(
@@ -3070,11 +3132,14 @@ impl InitializedVm {
                 }
             },
         ))
+        .instrument(tracing::info_span!("bind_vps"))
         .await?;
+        startup_milestone("vcpus_bound");
 
         let mut this = LoadedVm {
             state_units,
             running: false,
+            has_started: false,
             inner: LoadedVmInner {
                 driver_source,
                 resolver,
@@ -3132,15 +3197,24 @@ impl InitializedVm {
 
         if let Some(saved_state) = saved_state {
             this.restore(saved_state)
+                .instrument(tracing::info_span!("restore"))
                 .await
                 .context("loadedvm restore failed")?;
+            startup_milestone("state_restored");
         } else {
             // Assign PCI bus numbers/BARs before building firmware so that the
             // ACPI tables (specifically the SRAT generic-initiator entries) can
             // read the assigned secondary bus numbers from the root ports'
             // bridge registers.
-            this.assign_pci_resources().await?;
-            this.inner.load_firmware(false).await?;
+            this.assign_pci_resources()
+                .instrument(tracing::info_span!("assign_pci_resources"))
+                .await?;
+            startup_milestone("pci_resources_assigned");
+            this.inner
+                .load_firmware(false)
+                .instrument(tracing::info_span!("load_firmware"))
+                .await?;
+            startup_milestone("firmware_loaded");
         }
 
         Ok(this)
@@ -3576,6 +3650,10 @@ impl LoadedVm {
         }
         self.state_units.start().await;
         self.running = true;
+        if !self.has_started {
+            self.has_started = true;
+            startup_milestone("execution_released");
+        }
         true
     }
 
