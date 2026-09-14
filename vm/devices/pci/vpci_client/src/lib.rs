@@ -14,6 +14,7 @@ mod tests;
 
 pub use tdisp::VpciClientTdispState;
 
+use ::tdisp::TdispGuestUnbindReason;
 use anyhow::Context;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
@@ -612,7 +613,6 @@ impl VpciDevice {
                 error = &*err as &dyn std::error::Error,
                 "tdisp_on_device_activate: attestation failed, leaving command register off"
             );
-            self.tdisp_unbind_resources().await;
             return false;
         }
 
@@ -658,7 +658,8 @@ impl VpciDevice {
                     error = %e,
                     "failed to notify TDISP of active MMIO BAR. Failing activation."
                 );
-                self.tdisp_unbind_resources().await;
+                self.tdisp_unbind_resources(TdispGuestUnbindReason::ResourceSetupFailure)
+                    .await;
                 return false;
             }
         }
@@ -672,27 +673,17 @@ impl VpciDevice {
 
     /// Common teardown for all device resources. Ensures the device is unbound
     /// completely in the host and guest and unmaps all resources.
-    async fn tdisp_unbind_resources(&self) {
-        use openhcl_tdisp::TdispGuestUnbindReason;
+    async fn tdisp_unbind_resources(&self, reason: TdispGuestUnbindReason) {
         use openhcl_tdisp::TdispVirtualDeviceInterface;
 
         tracing::error!(
             "tdisp_unbind_resources: unbinding TDI back to Unlocked due to device deactivation or attestation failure"
         );
 
-        let unbind_result = self
-            .tdisp_unbind(TdispGuestUnbindReason::ResourceSetupFailure)
-            .await;
-
-        // Unbind failing means that the device is in a broken state. Leave the
-        // command register off and leave the device as-is. Future attestation
-        // during device enablement might not work.
-        if let Err(unbind_err) = &unbind_result {
-            tracing::warn!(
-                error = unbind_err.as_ref() as &dyn std::error::Error,
-                "tdisp_unbind_resources: unbind failed"
-            );
-        }
+        // Unbind the device from the TDISP interface. This hard ensures that
+        // the device is returned to the Unlocked state. Any other failure to
+        // cleanup is a panic.
+        self.tdisp_unbind(reason).await;
 
         // Always clear the command register so the device is left in the
         // expected off state after a failed activation.
@@ -705,7 +696,8 @@ impl VpciDevice {
     /// id, intercepted BARs, validated MMIO bars, DMA flag) is cleared.
     pub async fn tdisp_on_device_deactivate(&self) {
         // Pass this lifecycle event directly to unbind_resources
-        self.tdisp_unbind_resources().await;
+        self.tdisp_unbind_resources(TdispGuestUnbindReason::Graceful)
+            .await;
     }
 }
 

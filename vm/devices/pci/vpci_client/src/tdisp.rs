@@ -16,7 +16,6 @@ use openhcl_tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
 use openhcl_tdisp::TdispCommandResponseGetTdiReport;
 use openhcl_tdisp::TdispCommandResponseModifyMmioRange;
 use openhcl_tdisp::TdispCommandResponseStartTdi;
-use openhcl_tdisp::TdispCommandResponseUnbind;
 use openhcl_tdisp::TdispDeviceInterfaceInfo;
 use openhcl_tdisp::TdispGuestOperationErrorCode;
 use openhcl_tdisp::TdispGuestProtocolType;
@@ -117,6 +116,11 @@ impl VpciClientTdispMutableState {
     }
 }
 
+struct SetupDeviceFailure {
+    reason: TdispGuestUnbindReason,
+    message: String,
+}
+
 /// TDISP state for a VPCI device.
 #[derive(Inspect)]
 pub struct VpciClientTdispState {
@@ -194,11 +198,7 @@ impl VpciClientTdispState {
     /// * `expected` - The state the TDI must be in.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID). Only valid if
     ///   the platform supports reporting its own TDI state.
-    fn require_tdi_state(
-        &self,
-        expected: TdispTdiState,
-        device_id: TdispDeviceId,
-    ) -> anyhow::Result<()> {
+    fn require_tdi_state(&self, expected: TdispTdiState, device_id: TdispDeviceId) {
         let cached = self.tdi_state();
 
         // Read the firmware first even when the host's answer is already wrong,
@@ -207,7 +207,9 @@ impl VpciClientTdispState {
             Some(device_id) => self
                 .resource_validator
                 .get_tsm_tdi_state(self.target_vtl, device_id)
-                .context("require_tdi_state: failed to read the TDI state from the firmware")?,
+                .unwrap_or_else(|e| {
+                    panic!("require_tdi_state: failed to read the TDI state from the firmware: {e}")
+                }),
             None => None,
         };
 
@@ -239,8 +241,6 @@ impl VpciClientTdispState {
                  checking the host's answer alone"
             ),
         }
-
-        Ok(())
     }
 
     pub(super) async fn send_tdisp_command(
@@ -612,7 +612,7 @@ impl VpciClientTdispState {
     /// the unbind request. If the guest asking the trusted firmware disagrees
     /// with the state the host advertised after unbind, the function will
     /// panic.
-    pub async fn tdisp_unbind(&mut self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
+    pub async fn tdisp_unbind(&mut self, reason: TdispGuestUnbindReason) {
         let validator = self.resource_validator.clone();
         let device_id = self.mutable_state.guest_device_id;
 
@@ -704,18 +704,20 @@ impl VpciClientTdispState {
                 self.vpci_device_id,
                 reason,
             ))
-            .await?;
+            .await;
 
-        if let Err(err) = res.response::<TdispCommandResponseUnbind>() {
-            std::panic!("tdisp_unbind: error response from host, cannot continue: {err}");
+        if let Err(e) = res {
+            tracing::error!(
+                error = &*e as &dyn std::error::Error,
+                "tdisp_unbind: error response from host"
+            );
+            std::panic!("tdisp_unbind: error response from host, cannot continue: {e}");
         }
 
         // The TDI must be back in Unlocked, and the firmware has to agree that
         // it is in Unlocked state as well. Any disagreement is fatal, as the state
         // the firmware sees must match the host's view.
-        self.require_tdi_state(TdispTdiState::Unlocked, device_id)?;
-
-        Ok(())
+        self.require_tdi_state(TdispTdiState::Unlocked, device_id);
     }
 
     /// Detects TDISP capabilities for the device. If the device supports TDISP
@@ -787,6 +789,39 @@ impl VpciClientTdispState {
     ///
     /// * `interface_info` - The negotiated capabilities for this device.
     pub async fn attest(&mut self, interface_info: TdispDeviceInterfaceInfo) -> anyhow::Result<()> {
+        let attestation_result = self.setup_and_attest(interface_info).await;
+
+        match attestation_result {
+            Ok(()) => {}
+            Err(err) => {
+                // Cleanup all partial resources on attestation failure.
+                tracing::error!("attest: failed to attest device: {}", err.message);
+
+                self.tdisp_unbind(err.reason).await;
+
+                return Err(anyhow::anyhow!(
+                    "attest: failed to attest device: {}",
+                    err.message
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Run the full attestation flow, leaving the TDI in Run with its interface
+    /// report cached. Any prior attestation is torn down first, so this is safe
+    /// to call from any TDI state.
+    ///
+    /// Resources are not yet accessible on return. They are unblocked when the
+    /// guest enables MMIO, so that platform validation runs against the
+    /// addresses the guest actually programmed.
+    ///
+    /// * `interface_info` - The negotiated capabilities for this device.
+    async fn setup_and_attest(
+        &mut self,
+        interface_info: TdispDeviceInterfaceInfo,
+    ) -> Result<(), SetupDeviceFailure> {
         tracing::info!(
             ?interface_info,
             "tdisp_attest_device: beginning attestation flow"
@@ -802,9 +837,7 @@ impl VpciClientTdispState {
                 current_state = %self.tdi_state(),
                 "tdisp_attest_device: TDI not in Unlocked, unbinding before rebind"
             );
-            self.tdisp_unbind(TdispGuestUnbindReason::Graceful)
-                .await
-                .context("tdisp_attest_device: failed to unbind device from running state")?;
+            self.tdisp_unbind(TdispGuestUnbindReason::Graceful).await;
         }
 
         // If there are *still* any attestation artifacts after unbind,
@@ -813,9 +846,10 @@ impl VpciClientTdispState {
             || self.mutable_state.dma_unblocked
             || !self.mutable_state.validated_mmio_bars.is_empty()
         {
-            anyhow::bail!(
-                "tdisp_attest_device: failed to clear existing attestation state, cannot proceed with new attestation"
-            );
+            return Err(SetupDeviceFailure {
+                reason: TdispGuestUnbindReason::StartupFailure,
+                message: "tdisp_attest_device: failed to clear existing attestation state, cannot proceed with new attestation".to_string(),
+            });
         }
 
         // Request the guest device ID before binding so the pre-bind and
@@ -823,51 +857,89 @@ impl VpciClientTdispState {
         let guest_device_id = self
             .tdisp_get_tdi_device_id()
             .await
-            .context("tdisp_attest_device: failed to get TDI device ID before binding device")?;
+            .context("tdisp_attest_device: failed to get TDI device ID before binding device")
+            .map_err(|e| SetupDeviceFailure {
+                reason: TdispGuestUnbindReason::StartupFailure,
+                message: format!(
+                    "tdisp_attest_device: failed to get TDI device ID before binding device: {}",
+                    e
+                ),
+            })?;
 
         // Platforms require a u16 device ID even though the report returns a
         // u64. Ensure the returned device ID fits within that constraint before
         // proceeding.
         let guest_device_id_u16 = u16::try_from(guest_device_id)
-            .context("tdisp_attest_device: guest device ID must fit within u16")?;
+            .context("tdisp_attest_device: guest device ID must fit within u16")
+            .map_err(|e| SetupDeviceFailure {
+                reason: TdispGuestUnbindReason::StartupFailure,
+                message: format!(
+                    "tdisp_attest_device: guest device ID must fit within u16: {}",
+                    e
+                ),
+            })?;
 
         self.resource_validator
             .on_pre_bind(self.target_vtl, guest_device_id_u16)
-            .context("tdisp_attest_device: pre-bind validation failed")?;
+            .context("tdisp_attest_device: pre-bind validation failed")
+            .map_err(|e| SetupDeviceFailure {
+                reason: TdispGuestUnbindReason::StartupFailure,
+                message: format!("tdisp_attest_device: pre-bind validation failed: {}", e),
+            })?;
 
         self.tdisp_bind_interface()
             .await
-            .context("tdisp_attest_device: failed to bind device interface")?;
+            .context("tdisp_attest_device: failed to bind device interface")
+            .map_err(|e| SetupDeviceFailure {
+                reason: TdispGuestUnbindReason::StartupFailure,
+                message: format!(
+                    "tdisp_attest_device: failed to bind device interface: {}",
+                    e
+                ),
+            })?;
 
         self.require_tdi_state(
             TdispTdiState::Locked,
             TdispDeviceId::Valid(guest_device_id_u16),
-        )
-        .context("tdisp_attest_device: failed to confirm the TDI is Locked after the bind")?;
+        );
 
         self.resource_validator
             .on_pre_start(self.target_vtl, guest_device_id_u16)
-            .context("tdisp_attest_device: pre-start validation failed")?;
+            .context("tdisp_attest_device: pre-start validation failed")
+            .map_err(|e| SetupDeviceFailure {
+                reason: TdispGuestUnbindReason::StartupFailure,
+                message: format!("tdisp_attest_device: pre-start validation failed: {}", e),
+            })?;
 
         self.tdisp_start_device()
             .await
-            .context("tdisp_attest_device: failed to start device")?;
+            .context("tdisp_attest_device: failed to start device")
+            .map_err(|e| SetupDeviceFailure {
+                reason: TdispGuestUnbindReason::StartupFailure,
+                message: format!("tdisp_attest_device: failed to start device: {}", e),
+            })?;
 
         self.require_tdi_state(
             TdispTdiState::Run,
             TdispDeviceId::Valid(guest_device_id_u16),
-        )
-        .context("tdisp_attest_device: failed to confirm the TDI is in Run after the start")?;
+        );
 
         self.resource_validator
             .on_post_start(self.target_vtl, guest_device_id_u16)
-            .context("tdisp_attest_device: post-start validation failed")?;
+            .context("tdisp_attest_device: post-start validation failed")
+            .map_err(|e| SetupDeviceFailure {
+                reason: TdispGuestUnbindReason::StartupFailure,
+                message: format!("tdisp_attest_device: post-start validation failed: {}", e),
+            })?;
 
         // Fetch and save the TDI interface report so callers can inspect the
         // attested device's reported capabilities and MMIO ranges.
         let tdi_report = self.tdisp_get_tdi_report().await.context(
             "tdisp_attest_device: failed to get TDI interface report after starting device",
-        )?;
+        ).map_err(|e| SetupDeviceFailure {
+            reason: TdispGuestUnbindReason::StartupFailure,
+            message: format!("tdisp_attest_device: failed to get TDI interface report after starting device: {}", e),
+        })?;
 
         tracing::info!(
             ?tdi_report,
@@ -1205,7 +1277,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         guard.tdisp_get_tdi_device_id().await
     }
 
-    async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
+    async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) {
         let mut guard = self.tdisp.0.lock().await;
         guard.tdisp_unbind(reason).await
     }
@@ -1329,6 +1401,9 @@ impl VpciDevice {
     /// Return a classification of BAR and DMA isolation for this device,
     /// suitable for answering `VPCI_QUERY_ISOLATED_RESOURCES` on the
     /// guest-facing VPCI channel.
+    ///
+    /// If the device is not yet attested, this forces an attestation in order
+    /// to retrieve the validated report.
     pub async fn tdisp_isolation_snapshot(&self) -> TdispIsolationReport {
         let mut guard = self.tdisp.0.lock().await;
 
