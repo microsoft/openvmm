@@ -13,7 +13,7 @@ use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use opentmk_decoder::SafeMemoryMap;
 use spin::Mutex;
 
-const HVCALL_SANE_LIMIT: usize = 0x100000;
+const HVCALL_SANE_LIMIT: usize = hvdef::HV_PAGE_SIZE as usize;
 
 /// Future-proof for future multi-VP usage to ensure writing to input_page and
 /// then dispatching the hypercall is done in one shot. Today we are running

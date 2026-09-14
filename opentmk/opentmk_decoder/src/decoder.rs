@@ -176,7 +176,7 @@ fn read_arg(buf: &mut &[u8]) -> Result<Arg, DecoderError> {
             Arg::Data((arg, words))
         }
         // arg_csum
-        0x3 => todo!(),
+        0x3 => return Err(DecoderError::Other("unhandled: arg_csum is not supported".into())),
         // Catchall
         _ => return Err(DecoderError::BadArgType(typ)),
     })

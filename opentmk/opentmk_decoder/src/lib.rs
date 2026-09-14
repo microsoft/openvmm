@@ -84,6 +84,7 @@
 //! [`ADDR_SYZ_BEGIN`].
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 #[macro_use]
 extern crate alloc;

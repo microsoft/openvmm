@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
 #![no_std]
 //! This contains the packet API library used for communication between a UM agent
 //! and opentmk components.

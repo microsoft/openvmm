@@ -77,7 +77,7 @@ impl<T: SerialIo> Executor<T> {
             ("port_read8", io_port::read_ioport_u8),
             ("port_read16", io_port::read_ioport_u16),
             ("port_read32", io_port::read_ioport_u32),
-            ("hycall", hyperv::hvcall),
+            ("hvcall", hyperv::hvcall),
         ];
 
         for (name, func) in REGISTRY {
