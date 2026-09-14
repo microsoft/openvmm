@@ -939,7 +939,9 @@ impl VmService {
                             vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect
                         }
                         Some(vmservice::igvm_boot::Personality::Uefi) => {
-                            bail!("VM-service IGVM boot with UEFI personality is not yet supported");
+                            bail!(
+                                "VM-service IGVM boot with UEFI personality is not yet supported"
+                            );
                         }
                         None => bail!("unsupported IGVM personality {}", boot.personality),
                     };
@@ -948,7 +950,7 @@ impl VmService {
                     .with_context(|| format!("failed to open IGVM {}", igvm_path.display()))?;
                 (
                     LoadMode::Igvm {
-                        file: file.into(),
+                        file,
                         cmdline: String::new(),
                         vtl2_base_address: Vtl2BaseAddressType::File,
                         com_serial: None,
