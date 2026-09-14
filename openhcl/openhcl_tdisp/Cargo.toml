@@ -11,6 +11,7 @@ hvdef.workspace = true
 parking_lot.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true
+virt.workspace = true
 
 anyhow.workspace = true
 tracing.workspace = true
