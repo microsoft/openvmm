@@ -13,22 +13,22 @@
 #[cfg(not(target_os = "uefi"))]
 extern crate std;
 
-#[cfg(any(test, target_os = "uefi"))]
+#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod comms;
-#[cfg(any(test, target_os = "uefi"))]
+#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod deserializer;
-#[cfg(any(test, target_os = "uefi"))]
+#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod executor;
-#[cfg(any(test, target_os = "uefi"))]
+#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod functions;
-#[cfg(any(test, target_os = "uefi"))]
+#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod prelude;
 #[cfg(target_os = "uefi")]
 mod rt;
-#[cfg(any(test, target_os = "uefi"))]
+#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod serial;
 
-#[cfg(any(test, target_os = "uefi"))]
+#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 #[macro_use]
 extern crate alloc;
 
@@ -60,7 +60,7 @@ fn main() {
         }
     }
 
-    #[cfg(any(test, target_os = "uefi"))]
+    #[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
     {
         use opentmk_core::arch::serial::SerialPort;
 
