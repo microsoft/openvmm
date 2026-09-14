@@ -148,11 +148,31 @@ impl GuestToHostResponseExt for GuestToHostResponse {
     }
 
     fn tdi_state_before_enum(&self) -> Option<TdispTdiState> {
-        TdispTdiState::from_i32(self.tdi_state_before)
+        let old_state = TdispTdiState::from_i32(self.tdi_state_before);
+
+        // These are the only valid states the host can advertise.
+        if old_state != Some(TdispTdiState::Unlocked)
+            && old_state != Some(TdispTdiState::Locked)
+            && old_state != Some(TdispTdiState::Run)
+        {
+            return None;
+        }
+
+        old_state
     }
 
     fn tdi_state_after_enum(&self) -> Option<TdispTdiState> {
-        TdispTdiState::from_i32(self.tdi_state_after)
+        let new_state = TdispTdiState::from_i32(self.tdi_state_after);
+
+        // These are the only valid states the host can advertise.
+        if new_state != Some(TdispTdiState::Unlocked)
+            && new_state != Some(TdispTdiState::Locked)
+            && new_state != Some(TdispTdiState::Run)
+        {
+            return None;
+        }
+
+        new_state
     }
 
     fn response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError> {

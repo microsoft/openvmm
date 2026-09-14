@@ -1471,7 +1471,7 @@ pub(crate) fn implemented_bars(bar_masks: &[u32; 6]) -> [bool; 6] {
 /// mapped, in BAR order.
 ///
 /// A 64-bit BAR occupies two consecutive slots and is reported once, under the
-/// index of its lower half; the upper half is consumed and never reported on
+/// index of its lower half. The upper half is consumed and never reported on
 /// its own. Unimplemented BARs (mask zero) are skipped, as are ranges the guest
 /// has not actually mapped, meaning a zero base address or a zero length.
 ///
