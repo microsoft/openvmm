@@ -1058,7 +1058,12 @@ impl InitializedVm {
             virt::IsolationType::Snp => virt::ProtoPartitionIsolation::Snp(
                 igvm_file
                     .as_ref()
-                    .map(super::vm_loaders::igvm::snp_isolation_config)
+                    .map(|file| {
+                        super::vm_loaders::igvm::snp_isolation_config(
+                            file,
+                            cfg.hypervisor.snp_host_data,
+                        )
+                    })
                     .transpose()
                     .context("reading IGVM SNP configuration failed")?
                     .map(Box::new),
@@ -1275,9 +1280,6 @@ impl InitializedVm {
                 anyhow::bail!(
                     "KVM SNP guest_memfd currently only supports direct Linux or IGVM load mode"
                 );
-            }
-            if cfg.hypervisor.with_hv {
-                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V enlightenments");
             }
             if cfg.hypervisor.with_vtl2.is_some() {
                 anyhow::bail!("KVM SNP guest_memfd does not support VTL2");
