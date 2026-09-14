@@ -64,7 +64,7 @@ use vpci_client::tdisp::TdispVpciAttestationInterface;
 #[expect(unused_imports)]
 use tdisp::TdispHostDeviceInterface;
 use tdisp::TdispIsolationReport;
-use tdisp::TdispIsolationReporter;
+use tdisp::TdispRelayedDeviceTarget;
 use tdisp::TdispTdiState;
 use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
 use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
@@ -137,11 +137,8 @@ impl RelayedDevice {
         self.bus_unit.remove().await;
         self.device_unit.remove().await;
 
-        // Only devices that actually completed at least a Bind have a
-        // TDI on the host side to unbind. Non-TDISP devices stay in
-        // `Uninitialized` and must be left alone. `tdisp_unbind` on
-        // them would return a host error.
-        if self.vpci_device.tdisp_tdi_state().await != TdispTdiState::Uninitialized {
+        // Unbind any TDI state if the device is a TDISP device.
+        if self.vpci_device.tdisp_tdi_state().await != TdispTdiState::Unlocked {
             if let Err(err) = self
                 .vpci_device
                 .tdisp_unbind(tdisp::TdispGuestUnbindReason::DeviceTeardown)
@@ -559,7 +556,7 @@ impl ChipsetDevice for RelayedVpciDevice {
         Some(self)
     }
 
-    fn supports_tdisp_isolation(&mut self) -> Option<&mut dyn TdispIsolationReporter> {
+    fn supports_tdisp_relay(&mut self) -> Option<&mut dyn TdispRelayedDeviceTarget> {
         Some(self)
     }
 
@@ -582,7 +579,7 @@ impl PollDevice for RelayedVpciDevice {
     }
 }
 
-impl TdispIsolationReporter for RelayedVpciDevice {
+impl TdispRelayedDeviceTarget for RelayedVpciDevice {
     // Builds a report of what device resources for vpci device in a CVM are isolated or shared.
     fn tdisp_isolation_report(
         &mut self,
@@ -613,10 +610,6 @@ impl PciConfigSpace for RelayedVpciDevice {
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         // Only a command register write that flips the MMIO-enable bit needs
         // async TDISP work. Everything else is a synchronous pass-through.
-        //
-        // This matters beyond efficiency: `probe_bar_masks` sizes the BARs from
-        // a synchronous context with no executor available, so it cannot honor
-        // a deferred write.
         if !self.tdisp_capable || HeaderType00(offset) != HeaderType00::STATUS_COMMAND {
             self.device.write_cfg(offset, value);
             return IoResult::Ok;
@@ -625,57 +618,40 @@ impl PciConfigSpace for RelayedVpciDevice {
         // Detect the MMIO-enable edge BEFORE issuing the write so we can
         // dispatch the correct TDISP notification.
         //
-        // The STATUS_COMMAND dword packs the 16-bit Command register in the low
-        // two bytes and the 16-bit Status register in the high two bytes. Only
-        // the Command register is relevant here, so mask off the Status half
-        // before truncating to `u16`.
+        // The write contains both the Command and Status registers packed into
+        // a single 32-bit value. Only the Command register is relevant for
+        // detecting the MMIO-enable edge.
         use pci_core::spec::cfg_space::Command;
         let mut current = 0;
         self.device.read_cfg(
             offset,
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut current),
         );
+
         let prev = Command::from((current & 0xffff) as u16).mmio_enabled();
         // `merge` honors the byte enables, so a partial write that leaves the
         // command register untouched yields `next` equal to `prev`.
         let next = Command::from((value.merge(current) & 0xffff) as u16).mmio_enabled();
-        match (prev, next) {
-            (false, true) => {}
-            (true, false) => {
-                // Once MMIO is on the TDI is bound and its ranges have been
-                // unblocked and accepted into the guest. Drop the write rather
-                // than letting the guest walk that back: the disable edge would
-                // unbind the device and re-block every range.
-                tracing::warn!(
-                    ?offset,
-                    ?value,
-                    "dropping a config space write that would disable MMIO; the command \
-                     register does not transition back to off once it is on"
-                );
-                return IoResult::Ok;
-            }
-            // No MMIO edge, so there is no TDISP notification to dispatch.
-            _ => {
-                self.device.write_cfg(offset, value);
-                return IoResult::Ok;
-            }
+
+        // No change was detected, complete the request anyways.
+        if prev == next {
+            self.device.write_cfg(offset, value);
+            return IoResult::Ok;
         }
 
         let device = self.device.clone();
         let fut = Box::pin(async move {
-            // Attest while the command register is still off.
-            // `tdisp_on_device_activate` enables the command register itself
-            // once attestation succeeds, so the BARs are mapped before it
-            // notifies TDISP of the MMIO ranges.
+            // Attest while the command register is still off, then turn it on
+            // after it succeeds.
             if !device.tdisp_on_device_activate(value).await {
                 // The command register is left off if attestation failed.
+                // Otherwise, command register is enabled.
                 tracing::warn!("TDISP attestation failed. Not enabling STATUS_COMMAND.");
             }
         });
 
-        // Overwriting an in-flight deferral would drop its `DeferredWrite`,
-        // which the caller sees as `IoError::NoResponse`. Every caller waits for
-        // its own deferred write to complete, so this should not happen.
+        // Every caller waits for its own deferred write to complete, so this
+        // should not happen.
         debug_assert!(
             self.pending.is_none(),
             "config space write deferred while another deferred write is in flight"

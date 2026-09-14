@@ -47,7 +47,7 @@ impl ChipsetDevice for NoopDevice {
         Some(self)
     }
 
-    fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+    fn supports_tdisp_host(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         Some(&mut self.tdisp_interface)
     }
 }
