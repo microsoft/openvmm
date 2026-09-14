@@ -5595,6 +5595,7 @@ dependencies = [
  "tdisp",
  "tdisp_proto",
  "tracing",
+ "virt",
 ]
 
 [[package]]
