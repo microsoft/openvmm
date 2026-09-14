@@ -90,10 +90,7 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     fn tdisp_get_tdi_device_id(&self) -> impl Future<Output = anyhow::Result<u64>> + Send;
 
     /// Request to unbind the device and return to the Unlocked state.
-    fn tdisp_unbind(
-        &self,
-        reason: TdispGuestUnbindReason,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> impl Future<Output = ()> + Send;
 
     /// Tell the host to block an MMIO range, reversing a previous unblock. The
     /// TDI must be Locked or Run.
