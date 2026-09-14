@@ -598,7 +598,6 @@ impl VpciDevice {
         tracing::info!(
             "tdisp_on_device_activate: guest enabled MMIO, attesting device and notifying TDISP of MMIO bars"
         );
-
         // Attest the device before enabling the command register.
         let attest_result = match self.tdisp_query_capabilities().await {
             Ok(interface_info) => self
