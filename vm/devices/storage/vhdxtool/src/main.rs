@@ -30,9 +30,9 @@
 //! output remain sparse where the host filesystem supports sparse files.
 //!
 //! Differencing disks store the parent's data-write GUID and, when available,
-//! paths to the parent. Reads and conversion currently treat unmapped child
-//! ranges as zero; `check` resolves and validates parent chains but the tool
-//! does not merge parent payload data into child reads.
+//! paths to the parent. `check` resolves and validates parent chains, but
+//! conversion rejects differencing inputs because the tool does not merge
+//! parent payload data into child reads.
 //!
 //! # Exit status
 //!
@@ -129,7 +129,7 @@ enum Command {
         #[arg(long)]
         page83: Option<String>,
         /// Replace the output file if it already exists.
-        #[arg(long)]
+        #[arg(short, long)]
         force: bool,
     },
     /// Display VHDX geometry, identifiers, type, and parent information.
@@ -153,7 +153,7 @@ enum Command {
         /// Source image to convert.
         input: PathBuf,
         /// Path of the converted image.
-        #[arg(long)]
+        #[arg(short, long)]
         output: PathBuf,
         /// Source format. Inferred from a .vhdx extension when omitted.
         #[arg(long, value_enum)]
@@ -170,7 +170,7 @@ enum Command {
         #[arg(long, value_parser = util::parse_size)]
         block_size: Option<u64>,
         /// Replace the output file if it already exists.
-        #[arg(long)]
+        #[arg(short, long)]
         force: bool,
     },
     /// Validate VHDX metadata and the complete differencing parent chain.
@@ -189,7 +189,13 @@ enum Command {
 }
 
 fn main() {
-    let args = CliArgs::parse();
+    let args = CliArgs::try_parse().unwrap_or_else(|error| {
+        let exit_code = i32::from(error.use_stderr());
+        if error.print().is_err() {
+            std::process::exit(1);
+        }
+        std::process::exit(exit_code);
+    });
     init_tracing(args.verbose);
     let result = DefaultPool::run_with(async |driver| run(args.command, &driver).await);
     if let Err(error) = result {
@@ -341,10 +347,15 @@ async fn create_image(options: CreateOptions) -> Result<()> {
             .with_context(|| format!("failed to resolve parent {}", parent_path.display()))?;
         let relative_path =
             util::relative_path(child_directory, &absolute_parent).and_then(|path| {
-                Ok(path
+                let path = path
                     .to_str()
-                    .context("relative parent path is not valid Unicode")?
-                    .replace(std::path::MAIN_SEPARATOR, "\\"))
+                    .context("relative parent path is not valid Unicode")?;
+                #[cfg(unix)]
+                anyhow::ensure!(
+                    !path.contains('\\'),
+                    "relative parent path contains a backslash"
+                );
+                Ok(path.replace(std::path::MAIN_SEPARATOR, "\\"))
             });
         // On Windows the parent may be on another drive, leaving no relative
         // path; the absolute path below is then the only locator. Elsewhere
@@ -781,6 +792,10 @@ async fn convert(
                 .read_only()
                 .await
                 .context("failed to open input VHDX")?;
+            anyhow::ensure!(
+                !input.has_parent(),
+                "converting differencing VHDX inputs is not supported"
+            );
             match output_format {
                 ImageFormat::Raw => {
                     let output = BlockingFile::create(output_path, force)
@@ -980,6 +995,39 @@ async fn write_vhdx_chunk(
 mod tests {
     use super::*;
 
+    #[test]
+    fn parses_short_and_long_output_and_force_options() {
+        for (output_option, force_option) in [("-o", "-f"), ("--output", "--force")] {
+            let args = CliArgs::try_parse_from([
+                "vhdxtool",
+                "create",
+                "disk.vhdx",
+                "--size",
+                "4M",
+                force_option,
+            ])
+            .unwrap();
+            assert!(matches!(args.command, Command::Create { force: true, .. }));
+
+            let args = CliArgs::try_parse_from([
+                "vhdxtool",
+                "convert",
+                "disk.raw",
+                output_option,
+                "disk.vhdx",
+                "--output-format",
+                "vhdx",
+                force_option,
+            ])
+            .unwrap();
+            assert!(matches!(
+                args.command,
+                Command::Convert { output, force: true, .. }
+                    if output == PathBuf::from("disk.vhdx")
+            ));
+        }
+    }
+
     fn options(file: PathBuf, size: u64) -> CreateOptions {
         CreateOptions {
             file,
@@ -1072,6 +1120,84 @@ mod tests {
         assert!(
             format!("{error:#}").contains("relative parent path is not valid Unicode"),
             "unexpected error: {error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[pal_async::async_test]
+    async fn rejects_backslashes_in_parent_locator_path() {
+        for relative_path in [r"parent\name.vhdx", r"parent\dir/parent.vhdx"] {
+            let directory = tempfile::tempdir().unwrap();
+            let parent_path = directory.path().join(relative_path);
+            let child_path = directory.path().join("child.vhdx");
+            let size = 4 * 1024 * 1024;
+            std::fs::create_dir_all(parent_path.parent().unwrap()).unwrap();
+            create_image(options(parent_path.clone(), size))
+                .await
+                .unwrap();
+
+            let error = create_image(CreateOptions {
+                disk_type: DiskType::Differencing,
+                parent: Some(parent_path),
+                ..options(child_path.clone(), size)
+            })
+            .await
+            .unwrap_err();
+
+            assert!(
+                format!("{error:#}").contains("relative parent path contains a backslash"),
+                "unexpected error: {error:#}"
+            );
+            assert!(!child_path.exists());
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn fixed_image_is_zeroed_and_last_sector_write_does_not_grow(
+        driver: pal_async::DefaultDriver,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fixed.vhdx");
+        let size = 2 * 1024 * 1024 + 512;
+        create_image(CreateOptions {
+            disk_type: DiskType::Fixed,
+            ..options(path.clone(), size)
+        })
+        .await
+        .unwrap();
+
+        let file = BlockingFile::open(&path, false).unwrap();
+        let payload = file.clone();
+        let file_size = file.file_size().await.unwrap();
+        let image = VhdxFile::open(file).writable(&driver).await.unwrap();
+        assert!(image.is_fully_allocated());
+        let runs = collect_map(&image).await.unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].guest_offset, 0);
+        assert_eq!(runs[0].length, size);
+        let payload_offset = runs[0].file_offset.unwrap();
+        assert_eq!(file_size, payload_offset + 4 * 1024 * 1024);
+        assert!(
+            read_vhdx_chunk(&image, &payload, 0, size as u32)
+                .await
+                .unwrap()
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        let last_sector = vec![0x5a; 512];
+        write_vhdx_chunk(&image, &payload, size - 512, &last_sector)
+            .await
+            .unwrap();
+        image.close().await.unwrap();
+        assert_eq!(payload.file_size().await.unwrap(), file_size);
+
+        let image = VhdxFile::open(payload.clone()).read_only().await.unwrap();
+        assert_eq!(collect_map(&image).await.unwrap(), runs);
+        assert_eq!(
+            read_vhdx_chunk(&image, &payload, size - 512, 512)
+                .await
+                .unwrap(),
+            last_sector
         );
     }
 
@@ -1181,6 +1307,64 @@ mod tests {
         replay(&path, true, &driver).await.unwrap();
         replay(&path, false, &driver).await.unwrap();
         check(&path).await.unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn convert_rejects_differencing_input(driver: pal_async::DefaultDriver) {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let output_path = directory.path().join("output");
+        let size = 4 * 1024 * 1024;
+        create_image(options(parent_path.clone(), size))
+            .await
+            .unwrap();
+        let file = BlockingFile::open(&parent_path, false).unwrap();
+        let payload = file.clone();
+        let parent = VhdxFile::open(file).writable(&driver).await.unwrap();
+        write_vhdx_chunk(&parent, &payload, 0, &[0x5a; 4096])
+            .await
+            .unwrap();
+        parent.close().await.unwrap();
+        create_image(CreateOptions {
+            disk_type: DiskType::Differencing,
+            parent: Some(parent_path),
+            ..options(child_path.clone(), size)
+        })
+        .await
+        .unwrap();
+
+        for output_format in [ImageFormat::Raw, ImageFormat::Vhdx] {
+            for force in [false, true] {
+                let original = b"existing output must remain intact";
+                if force {
+                    std::fs::write(&output_path, original).unwrap();
+                }
+                let error = convert(
+                    &child_path,
+                    &output_path,
+                    ImageFormat::Vhdx,
+                    output_format,
+                    DiskType::Dynamic,
+                    None,
+                    force,
+                    &driver,
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    format!("{error:#}")
+                        .contains("converting differencing VHDX inputs is not supported"),
+                    "unexpected error: {error:#}"
+                );
+                if force {
+                    assert_eq!(std::fs::read(&output_path).unwrap(), original);
+                    std::fs::remove_file(&output_path).unwrap();
+                } else {
+                    assert!(!output_path.exists());
+                }
+            }
+        }
     }
 
     #[pal_async::async_test]
