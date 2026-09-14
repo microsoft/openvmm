@@ -6,6 +6,7 @@ use crate::deserializer::Deserializer;
 use crate::deserializer::syzlang::SyzlangDeserializer;
 use crate::functions::FunctionRegistry;
 use crate::functions::hyperv;
+use crate::functions::io_port;
 use crate::prelude::*;
 use crate::serial::OpenTmkSerialIo;
 use crate::serial::SerialIo;
@@ -69,24 +70,19 @@ impl<T: SerialIo> Executor<T> {
     pub fn register_fuzz_functions(&mut self) {
         let mut fn_registry = self.fn_registry.lock();
 
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            use crate::functions::io_port;
-            static X86_REGISTRY: &[(&str, crate::functions::FuzzFunction)] = &[
-                ("port_write8", io_port::write_ioport_u8),
-                ("port_write16", io_port::write_ioport_u16),
-                ("port_write32", io_port::write_ioport_u32),
-                ("port_read8", io_port::read_ioport_u8),
-                ("port_read16", io_port::read_ioport_u16),
-                ("port_read32", io_port::read_ioport_u32),
-            ];
+        static REGISTRY: &[(&str, crate::functions::FuzzFunction)] = &[
+            ("port_write8", io_port::write_ioport_u8),
+            ("port_write16", io_port::write_ioport_u16),
+            ("port_write32", io_port::write_ioport_u32),
+            ("port_read8", io_port::read_ioport_u8),
+            ("port_read16", io_port::read_ioport_u16),
+            ("port_read32", io_port::read_ioport_u32),
+            ("hycall", hyperv::hvcall),
+        ];
 
-            for (name, func) in X86_REGISTRY {
-                fn_registry.register(name, *func);
-            }
-        };
-
-        fn_registry.register("hvcall", hyperv::hvcall);
+        for (name, func) in REGISTRY {
+            fn_registry.register(name, *func);
+        }
     }
 
     pub fn run(&mut self) -> Result<(), ExecutorError> {

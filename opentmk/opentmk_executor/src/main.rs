@@ -8,36 +8,46 @@
 //! series of functions that would invoke specific functions into this OS
 
 #![cfg_attr(target_os = "uefi", no_main)]
-#![cfg_attr(target_os = "uefi", no_std)]
+#![no_std]
 
+#[cfg(not(target_os = "uefi"))]
+extern crate std;
+
+#[cfg(any(test, target_os = "uefi"))]
 mod comms;
+#[cfg(any(test, target_os = "uefi"))]
 mod deserializer;
+#[cfg(any(test, target_os = "uefi"))]
 mod executor;
+#[cfg(any(test, target_os = "uefi"))]
 mod functions;
+#[cfg(any(test, target_os = "uefi"))]
 mod prelude;
+#[cfg(target_os = "uefi")]
 mod rt;
+#[cfg(any(test, target_os = "uefi"))]
 mod serial;
 
-use crate::executor::Executor;
-
-use serial::SerialPort;
-
-#[cfg(target_os = "uefi")]
-use uefi::println;
+#[cfg(any(test, target_os = "uefi"))]
+#[macro_use]
+extern crate alloc;
 
 #[cfg(target_os = "uefi")]
 #[uefi::entry]
 fn uefi_entry() -> uefi::Status {
-    _ = uefi::helpers::init();
     main();
     uefi::Status::ABORTED
 }
 
 fn main() {
-    println!("OpenTMK executor kernel");
-
     #[cfg(target_os = "uefi")]
     {
+        use uefi::println;
+
+        _ = uefi::helpers::init();
+
+        println!("OpenTMK executor kernel");
+
         // Note: println() will no longer work after this step
         // since init() will exit boot services where enabled.
         // use log from henceforth for SERIAL port 2 logging
@@ -47,21 +57,26 @@ fn main() {
                 log::info!("OpenTMK initialization failed! - {:?}", e);
                 return;
             }
-        };
+        }
     }
 
-    let mut exec = Executor::new(SerialPort::COM1);
+    #[cfg(any(test, target_os = "uefi"))]
+    {
+        use opentmk_core::arch::serial::SerialPort;
 
-    if let Err(e) = exec.initialize() {
-        //TODO: we want to be able to catch these errors on the host side
-        log::error!("Executor initialization failed with error {:?}", e);
-        return;
-    }
+        let mut exec = executor::Executor::new(SerialPort::COM1);
 
-    exec.register_fuzz_functions();
+        if let Err(e) = exec.initialize() {
+            //TODO: we want to be able to catch these errors on the host side
+            log::error!("Executor initialization failed with error {:?}", e);
+            return;
+        }
 
-    if let Err(e) = exec.run() {
-        //TODO: we want to be able to catch these errors on the host side
-        log::error!("Executor exited with an error - {:?}", e);
+        exec.register_fuzz_functions();
+
+        if let Err(e) = exec.run() {
+            //TODO: we want to be able to catch these errors on the host side
+            log::error!("Executor exited with an error - {:?}", e);
+        }
     }
 }

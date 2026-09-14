@@ -4,8 +4,8 @@
 use crate::functions::FuzzFunctionVariable;
 use crate::functions::VerifyFuzzVariables;
 use crate::functions::hvcall_meta::unpack_hvcall_meta;
-#[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
 use crate::prelude::*;
+
 use hvdef::Vtl;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HvTestCtx;

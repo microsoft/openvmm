@@ -5,18 +5,17 @@
 pub(crate) mod test;
 
 use crate::executor::ExecutorError;
+use crate::prelude::*;
 use crate::serial::OpenTmkSerialIo;
 use crate::serial::SerialIo;
 use crate::serial::SerialPort;
+
 use opentmk_exec_packet::COMMS_ACK_MAGIC;
 use opentmk_exec_packet::COMMS_PACKET_FOOTER_MAGIC;
 use opentmk_exec_packet::COMMS_PACKET_HEADER_MAGIC;
 use opentmk_exec_packet::COMMS_SYN_ACK_MAGIC;
 use opentmk_exec_packet::COMMS_SYN_MAGIC;
 use opentmk_exec_packet::OpenTMKPacket;
-
-#[cfg_attr(not(target_os = "uefi"), expect(unused_imports))]
-use crate::prelude::*;
 
 pub(crate) struct SerialCommsServer<T> {
     pub(crate) handle: T,

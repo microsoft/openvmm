@@ -495,9 +495,7 @@ fn copyin<M: SafeMemoryMap + ?Sized>(
 
         // Case: binary_format_bigendian
         1 => {
-            return Err(DecoderError::Other(format!(
-                "unhandled: bigendian binary format"
-            )));
+            return Err(DecoderError::Other("unhandled: bigendian binary format".into()));
         }
 
         // Case: binary_format_strdec
