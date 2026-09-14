@@ -3382,17 +3382,13 @@ async fn new_underhill_vm(
                     Some(TestScenarioConfig::VpciTdispFlow)
                 );
 
-                use openhcl_tdisp::TdispResourceValidationInterface;
-                use openhcl_tdisp::noop::TdispNoopResourceValidator;
-
                 use vpci_relay::*;
 
-                // A device driven through the TDISP flow always has a
-                // validator, so no platform can silently skip resource
-                // validation. Isolation types with no platform validator of
-                // their own get the no-op one.
-                let resource_validator: Arc<dyn TdispResourceValidationInterface> =
-                    Arc::new(TdispNoopResourceValidator::new());
+                // Choose the appropriate TDISP resource validator based on the
+                // isolation type, VTOM, and whether we're in a test
+                // environment.
+                let resource_validator =
+                    openhcl_tdisp::new_resource_validator(isolation, vtom, test_tdisp_flow)?;
 
                 let mut relay = VpciRelay::new(
                     driver_source.clone(),
