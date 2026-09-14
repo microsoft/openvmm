@@ -40,12 +40,14 @@ pub use tdisp_proto::TdispTdiState;
 use hvdef::Vtl;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
 use tdisp_proto::TdispCommandRequestModifyMmioRange;
 use tdisp_proto::TdispCommandRequestStartTdi;
 use tdisp_proto::TdispCommandRequestUnbind;
 use tdisp_proto::guest_to_host_command::Command;
+use virt::IsolationType;
 
 /// Represents a TDISP device assigned to a guest partition. This trait allows
 /// implementations to send TDISP commands to the host through a backing interface
@@ -265,6 +267,40 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     /// * `target_vtl` - The VTL to block DMA for.
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
+}
+
+/// Chooses the validator that gates access to a TDISP device's resources for
+/// this partition.
+///
+/// A device driven through the TDISP flow always has a validator, so a
+/// partition whose isolation type has no validator of its own is given one that
+/// performs no validation rather than none at all.
+///
+/// * `isolation` - The isolation type of the partition the device is assigned
+///   to.
+/// * `vtom` - The address mask with the VTOM bit set, marking where VTOM
+///   addresses start in the CVM. `None` on a partition without one.
+/// * `test_tdisp_flow` - Whether the mocked TDISP flow is in use.
+pub fn new_resource_validator(
+    isolation: IsolationType,
+    vtom: Option<u64>,
+    test_tdisp_flow: bool,
+) -> anyhow::Result<Arc<dyn TdispResourceValidationInterface>> {
+    tracing::info!(
+        ?isolation,
+        ?vtom,
+        test_tdisp_flow,
+        "selecting a TDISP resource validator"
+    );
+
+    // The mocked flow drives emulated devices on hosts that are not necessarily
+    // confidential, so it takes the no-op validator whatever the partition
+    // reports.
+    if test_tdisp_flow {
+        return Ok(Arc::new(noop::TdispNoopResourceValidator::new()));
+    }
+
+    Ok(Arc::new(noop::TdispNoopResourceValidator::new()))
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.
