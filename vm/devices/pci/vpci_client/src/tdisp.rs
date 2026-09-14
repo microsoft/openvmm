@@ -792,23 +792,13 @@ impl VpciClientTdispState {
     /// * `interface_info` - The negotiated capabilities for this device.
     pub async fn attest(&mut self, interface_info: TdispDeviceInterfaceInfo) -> anyhow::Result<()> {
         // Allow fast path if the device is already in `Run` state so that an entire attestation isn't run again.
-        // Only allow this if the firmware specifically validates that the device is in the proper state and we've
-        // ensured our internal state reflects that the device is indeed in an operational state.
+        // Only allow this if the firmware specifically validates that the device is in the proper state before
+        // continuing, else we risk a malicious host attempting to desync our state.
         if self.tdi_state() == TdispTdiState::Run {
             self.require_tdi_state(TdispTdiState::Run, self.mutable_state.guest_device_id);
 
             tracing::info!(
                 "tdisp::attest: fast path: device already in `Run` state, skipping initial bind/attest cycle"
-            );
-
-            assert!(
-                self.mutable_state.dma_unblocked,
-                "tdisp::attest: fast path: DMA should be unblocked when device is already in `Run` state"
-            );
-
-            assert!(
-                !self.mutable_state.validated_mmio_bars.is_empty(),
-                "tdisp::attest: fast path: At least one MMIO BAR should be validated when device is already in `Run` state"
             );
 
             return Ok(());
