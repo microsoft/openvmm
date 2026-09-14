@@ -60,7 +60,6 @@ fn frame_packet(packet: &OpenTMKPacket) -> Vec<u8> {
 
 fn fuzz_packet() -> OpenTMKFuzzTest {
     OpenTMKFuzzTest {
-        timeout_usec: 123,
         testcase_vcpu0: vec![1, 2, 3, 4],
     }
 }

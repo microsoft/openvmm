@@ -114,7 +114,6 @@ fn build_testcase(insns: &[Insn<'_>]) -> OpenTMKFuzzTest {
     }
 
     OpenTMKFuzzTest {
-        timeout_usec: 0,
         testcase_vcpu0: bytes,
     }
 }

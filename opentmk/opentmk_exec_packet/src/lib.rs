@@ -57,8 +57,6 @@ pub struct OpenTMKConfigurationPacket {
 /// Packet used to run a test case
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OpenTMKFuzzTest {
-    /// Specify a timeout (in microseconds) of the entire test case
-    pub timeout_usec: u64,
     /// The encoded test case to run on the main thread
     pub testcase_vcpu0: Vec<u8>,
 }
