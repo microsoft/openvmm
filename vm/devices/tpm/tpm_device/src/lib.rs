@@ -2336,6 +2336,9 @@ mod tests {
     /// Boot from a pre-provisioned 1.85 NVRAM blob and check that its
     /// owner-defined state survives. See the test_data README for how the blob
     /// is generated.
+    ///
+    /// The blob is OpenSSL-made, so building this test against another crypto
+    /// backend also exercises loading it across backends.
     #[async_test]
     async fn test_pre_provisioned_nvram_blob_for_v185() {
         let blob = include_bytes!("../../test_data/vTpmState-1.85.blob").to_vec();

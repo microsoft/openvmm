@@ -7,11 +7,18 @@ Refer to the following tests for usage examples:
 - tpm_lib::tests::test_with_pre_provisioned_state
 - tpm_lib::tests::test_initialize_guest_secret_key
 
-| Blob | TPM version | Origin |
-| --- | --- | --- |
-| `vTpmState.blob` | 1.38 | The TpmEngFWInit (internal) tool |
-| `vTpmState-corrupt.blob` | 1.38 | `vTpmState.blob`, corrupted by hand |
-| `vTpmState-1.85.blob` | 1.85 | `tpm_utils prepare` |
+| Blob | TPM version | Crypto backend | Origin |
+| --- | --- | --- | --- |
+| `vTpmState.blob` | 1.38 | OpenSSL | The TpmEngFWInit (internal) tool |
+| `vTpmState-corrupt.blob` | 1.38 | OpenSSL | `vTpmState.blob`, hand-corrupted |
+| `vTpmState-1.85.blob` | 1.85 | OpenSSL | `tpm_utils prepare` |
+
+The backend matters because the tests that consume these blobs are built
+against whichever backend the build selected, so they double as a check that a
+blob produced by one backend loads under another. Every blob is OpenSSL-made
+today: the pinned `ms-tcg-tpm-sys` revision vendors a TPM whose
+`cryptoLibOptions_Symmetric` is `Ossl` only, so no SymCrypt-backed TPM can be
+built to produce one.
 
 ## Regenerating `vTpmState-1.85.blob`
 
