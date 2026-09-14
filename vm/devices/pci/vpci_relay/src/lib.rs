@@ -139,17 +139,9 @@ impl RelayedDevice {
 
         // Unbind any TDI state if the device is a TDISP device.
         if self.vpci_device.tdisp_tdi_state().await != TdispTdiState::Unlocked {
-            if let Err(err) = self
-                .vpci_device
+            self.vpci_device
                 .tdisp_unbind(tdisp::TdispGuestUnbindReason::DeviceTeardown)
-                .await
-            {
-                tracing::warn!(
-                    bus_instance_id = %self.bus_instance_id,
-                    error = &*err as &dyn std::error::Error,
-                    "tdisp_unbind during relay teardown failed"
-                );
-            }
+                .await;
         }
 
         self.bus_client.shutdown().await;
@@ -469,7 +461,7 @@ impl VpciRelay {
             "tdisp_test_mock_flow: exercising TDISP flow because OPENHCL_TEST_CONFIG=TDISP_VPCI_FLOW_TEST was set"
         );
 
-        assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Uninitialized);
+        assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
 
         let device_interface_info = device
             .tdisp_get_device_interface_info(TDISP_MOCK_GUEST_PROTOCOL)

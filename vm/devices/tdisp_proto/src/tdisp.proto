@@ -87,6 +87,13 @@ enum TdispGuestUnbindReason {
   // The paravisor is unbinding the TDI because post-attestation resource
   // setup failed during activation (for example, unblocking MMIO or DMA).
   TDISP_GUEST_UNBIND_REASON_RESOURCE_SETUP_FAILURE = 3;
+
+  // The paravisor is unbinding the TDI because of a failure during the
+  // attestation of the device.
+  TDISP_GUEST_UNBIND_REASON_ATTESTATION_FAILURE = 4;
+
+  // The paravisor failed during initial setup/bind of the TDI.
+  TDISP_GUEST_UNBIND_REASON_STARTUP_FAILURE = 5;
 }
 
 // Represents a type of report that can be requested from the TDI (VF).
