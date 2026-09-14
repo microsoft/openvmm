@@ -62,22 +62,20 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
         None
     }
 
-    /// Optionally returns a trait object which implements TDISP host
-    /// communication.
+    /// Optionally returns a trait object which advertises that the
+    /// ChipsetDevice can respond to tdisp requests as a physical device (not
+    /// relayed) in the host (openvmm).
     #[inline(always)]
-    fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+    fn supports_tdisp_host(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         None
     }
 
-    /// Optionally returns a trait object which can report the device's VPCI
-    /// resource-isolation state for `VpciMsgQueryIsolatedResources`.
-    ///
-    /// This is implemented only by the OpenHCL VPCI relay's
-    /// `RelayedVpciDevice`. Emulated devices return `None` by default (and
-    /// therefore trigger the "no reporter" reply path on the guest-facing VPCI
-    /// server).
+    /// Optionally returns a trait object which advertises that the
+    /// ChipsetDevice is paravirtualizing a device's TDISP interface in the
+    /// guest. This should only be implemented within a guest as part of a
+    /// virtual bus (VPCI, EPCI).
     #[inline(always)]
-    fn supports_tdisp_isolation(&mut self) -> Option<&mut dyn tdisp::TdispIsolationReporter> {
+    fn supports_tdisp_relay(&mut self) -> Option<&mut dyn tdisp::TdispRelayedDeviceTarget> {
         None
     }
 }

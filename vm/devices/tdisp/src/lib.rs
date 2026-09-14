@@ -121,7 +121,7 @@ pub trait TdispHostDeviceInterface: Send + Sync {
 
 /// Trait added to host virtual devices to dispatch TDISP commands from guests.
 pub trait TdispHostDeviceTarget: Send + Sync {
-    /// Dispatch a TDISP command from a guest.
+    /// Dispatch a TDISP command received from a guest.
     fn tdisp_handle_guest_command(
         &mut self,
         _command: GuestToHostCommand,
@@ -136,15 +136,12 @@ pub trait TdispHostDeviceTarget: Send + Sync {
 /// without taking a dependency on `vpci_protocol`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TdispResourceIsolation {
-    /// Host-visible, bounce-buffered.
+    /// Host-visible and modifiable by the host.
     Shared,
-    /// Host-inaccessible after TDI validation; backed by guest-private memory.
+    /// Host-inaccessible after TDI validation and private to the guest.
     Private,
-    /// There is no resource here to classify: the device does not implement
-    /// this BAR, which includes the upper half of a 64-bit BAR since that is
-    /// not addressable in its own right, or the paravisor holds no interface
-    /// report for the device at all. A BAR the device does have but the report
-    /// omits is `Shared`, not this.
+    /// There is no resource here to classify. Either the BAR is invalid or part
+    /// of a 64-bit BAR.
     Invalid,
 }
 
@@ -153,13 +150,10 @@ pub enum TdispResourceIsolation {
 /// server.
 #[derive(Debug, Clone, Copy)]
 pub enum TdispIsolationReport {
-    /// The chipset device wraps a non-TDISP device. The paravisor should
-    /// answer the guest query with all `Shared` + `SUCCESS`, matching the
-    /// host VSP's behavior for non-confidential VMs.
+    /// The chipset device wraps a non-TDISP device.
     NotTdispCapable,
-    /// The TDI is not in the Run state, or is in Run but no resource has
-    /// been unblocked yet. The paravisor should answer with an error
-    /// status; the guest may retry later.
+    /// The TDI is not in a state that it can respond to the isolation report
+    /// request.
     NotReady,
     /// The TDI is in Run and resources have been unblocked. The inner
     /// arrays give the six per-BAR classifications and the DMA
@@ -175,16 +169,12 @@ pub enum TdispIsolationReport {
     Error,
 }
 
-/// Trait added to chipset devices that want to report their VPCI
-/// resource-isolation state on behalf of the guest-facing VPCI server.
-pub trait TdispIsolationReporter: Send + Sync {
-    /// Return a snapshot of the current isolation state, suitable for
-    /// populating a `VpciIsolatedResourcesReply`.
-    ///
-    /// To retrieve the report, this may need to drive a fresh attestation cycle
-    /// (Unlocked -> Locked -> Run -> cached report -> Unlocked) before
-    /// answering. To avoid forcing callers to hold a sync device guard across
-    /// the await, this returns a `'static` boxed future.
+/// Trait added to chipset devices that want to relay TDISP on behalf of the
+/// guest-facing virtual bus.
+pub trait TdispRelayedDeviceTarget: Send + Sync {
+    /// Return a snapshot of the current isolation state containing what
+    /// resources were isolated or shared by the TDISP relay and attestation
+    /// flow.
     fn tdisp_isolation_report(
         &mut self,
     ) -> Pin<Box<dyn Future<Output = TdispIsolationReport> + Send + 'static>>;
@@ -866,11 +856,10 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         self.ensure_negotiated_protocol()
             .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
 
-        // The guest device ID identifies the TDI rather than describing any
-        // attestation state, and the guest needs it before it can address the
-        // device in platform calls (for example to build a TDX Connect
-        // FUNCTION_ID ahead of the bind). Allow it in any state; every other
-        // report describes state that only exists once the TDI is Locked.
+        // The guest device ID identifies the TDI to the host and is retrieved
+        // as a "report", though it does not need to be Locked or Run to retrieve the device id.
+        //
+        // All other report types require the TDI to be in the Locked or Run state.
         if report_type != TdispReportType::GuestDeviceId
             && self.current_state != TdispTdiState::Locked
             && self.current_state != TdispTdiState::Run

@@ -510,7 +510,7 @@ impl ChipsetDevice for NvmeFaultController {
     }
 
     /// The NVMe fault controller is repurposed for use in TDISP tests.
-    fn supports_tdisp(&mut self) -> Option<&mut dyn TdispHostDeviceTarget> {
+    fn supports_tdisp_host(&mut self) -> Option<&mut dyn TdispHostDeviceTarget> {
         tracing::debug!(
             supported = self.tdisp_interface.is_some(),
             "fault controller TDISP support in ChipsetDevice"

@@ -1038,7 +1038,7 @@ impl ReadyState {
                             let fut = {
                                 let mut locked_dev = dev.device.lock();
                                 locked_dev
-                                    .supports_tdisp_isolation()
+                                    .supports_tdisp_relay()
                                     .map(|r| r.tdisp_isolation_report())
                             };
                             let report = match fut {
@@ -1082,7 +1082,7 @@ impl ReadyState {
                         tracing::debug!(?command, "received TDISP command over vpci channel");
 
                         let mut locked_dev = dev.device.lock();
-                        if let Some(tdisp) = locked_dev.supports_tdisp() {
+                        if let Some(tdisp) = locked_dev.supports_tdisp_host() {
                             tracelimit::info_ratelimited!(
                                 "chipset device supports TDISP, handing off command for processing"
                             );
@@ -2536,9 +2536,9 @@ mod tests {
         config_space: ConfigSpaceType0Emulator,
         tdisp_interface: TdispHostDeviceTargetEmulator,
         /// If `Some`, the device also advertises
-        /// `TdispIsolationReporter` and returns the stored report from
-        /// `tdisp_isolation_report()`. If `None`, the device behaves as
-        /// non-TDISP-isolation-aware (the chipset-device default).
+        /// `TdispRelayedDeviceTarget` and returns the stored report. If `None`,
+        /// the device does not relay a TDISP interface, which is the
+        /// chipset-device default.
         isolation_report: Option<tdisp::TdispIsolationReport>,
     }
     impl TestDevice {
@@ -2627,11 +2627,11 @@ mod tests {
             Some(self)
         }
 
-        fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+        fn supports_tdisp_host(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
             Some(&mut self.tdisp_interface)
         }
 
-        fn supports_tdisp_isolation(&mut self) -> Option<&mut dyn tdisp::TdispIsolationReporter> {
+        fn supports_tdisp_relay(&mut self) -> Option<&mut dyn tdisp::TdispRelayedDeviceTarget> {
             if self.isolation_report.is_some() {
                 Some(self)
             } else {
@@ -2640,14 +2640,14 @@ mod tests {
         }
     }
 
-    impl tdisp::TdispIsolationReporter for TestDevice {
+    impl tdisp::TdispRelayedDeviceTarget for TestDevice {
         fn tdisp_isolation_report(
             &mut self,
         ) -> std::pin::Pin<Box<dyn Future<Output = tdisp::TdispIsolationReport> + Send + 'static>>
         {
             let report = self
                 .isolation_report
-                .expect("isolation_report must be set when supports_tdisp_isolation returns Some");
+                .expect("isolation_report must be set when supports_tdisp_relay returns Some");
             Box::pin(async move { report })
         }
     }
