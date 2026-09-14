@@ -174,10 +174,10 @@ impl Deserializer for SyzlangDeserializer {
         self.st.lock().dump_errors()?;
         match results {
             Ok(_) => {
-                // For now lets ignore the response data
+                // For now let's ignore the response data
                 //
                 // TODO: we should recover this and use it for minimization steps etc when we start
-                // doing more complicated fuzzing.  it also needs reactoring since the string is
+                // doing more complicated fuzzing. It also needs refactoring since the string is
                 // never used!
                 Ok(0)
             }

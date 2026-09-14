@@ -494,7 +494,7 @@ fn copyin<M: SafeMemoryMap + ?Sized>(
         }
 
         // Case: binary_format_bigendian
-        1 => panic!("unhandled: bigendian binary format"),
+        1 => return Err(DecoderError::Other(format!("unhandled: bigendian binary format"))),
 
         // Case: binary_format_strdec
         // Converts 0xffffffffffffffff into 34343736`34343831
