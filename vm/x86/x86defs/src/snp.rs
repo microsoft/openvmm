@@ -1086,6 +1086,60 @@ pub struct SnpPspIdBlock {
     pub policy: u64,
 }
 
+/// ECDSA signature in an SNP PSP ID authentication page.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpPspIdAuthSignature {
+    /// ECDSA R component.
+    pub r: [u8; 72],
+    /// ECDSA S component.
+    pub s: [u8; 72],
+    /// Reserved bytes.
+    pub reserved: [u8; 368],
+}
+
+/// ECDSA public key in an SNP PSP ID authentication page.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpPspIdAuthPublicKey {
+    /// Elliptic curve identifier.
+    pub curve: u32,
+    /// Public key X coordinate.
+    pub qx: [u8; 72],
+    /// Public key Y coordinate.
+    pub qy: [u8; 72],
+    /// Reserved bytes.
+    pub reserved: [u8; 880],
+}
+
+/// SNP PSP ID block authentication page.
+///
+/// This is the `ID_AUTH` structure supplied with `SNP_LAUNCH_FINISH`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpPspIdAuth {
+    /// Algorithm used by the ID key.
+    pub id_key_algorithm: u32,
+    /// Algorithm used by the author key.
+    pub author_key_algorithm: u32,
+    /// Reserved bytes.
+    pub reserved0: [u8; 56],
+    /// Signature of the ID block by the ID key.
+    pub id_block_signature: SnpPspIdAuthSignature,
+    /// ID public key.
+    pub id_key: SnpPspIdAuthPublicKey,
+    /// Reserved bytes.
+    pub reserved1: [u8; 60],
+    /// Signature of the ID key by the author key.
+    pub id_key_signature: SnpPspIdAuthSignature,
+    /// Author public key.
+    pub author_key: SnpPspIdAuthPublicKey,
+    /// Reserved bytes.
+    pub reserved2: [u8; 892],
+}
+
+const_assert_eq!(size_of::<SnpPspIdAuth>(), 4096);
+
 /// ECDSA signature components used by an SNP ID block.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct SnpIdBlockSignature {

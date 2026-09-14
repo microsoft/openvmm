@@ -52,7 +52,7 @@ const LOOKUP_TABLE_RELEASE: &[(u16, u16, u16); 39] = &[
     (8, 148, 10),
     (8, 170, 20),
     (8, 176, 20),
-    (16, 70, 2), // Default manifest is 70MiB. Allocate minimal space for a few NVMe queues.
+    (16, 78, 2), // Default manifest is 78MiB. Allocate minimal space for a few NVMe queues.
     (16, 234, 12),
     (16, 256, 20), // There is another 16vp/256MB configuration that only requires 18 MB of DMA memory, pick the larger.
     (16, 268, 38),
