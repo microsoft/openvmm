@@ -873,7 +873,17 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
                     Ok(_) => {
                         tracing::info!("Successfully allocated AK cert nv index");
 
-                        if params.preserve_ak_cert {
+                        // `take_existing_ak_cert` sizes `cert` from the previous
+                        // index, which can be larger than the index re-created
+                        // above (up to 16k on TPM v1.85 vs `TPM_DEFAULT_AKCERT_SIZE`).
+                        if params.preserve_ak_cert && cert.len() > size as usize {
+                            tracing::error!(
+                                CVM_ALLOWED,
+                                cert_size = cert.len(),
+                                nv_index_size = size,
+                                "previous AK cert does not fit in the new nv index; not preserving it"
+                            );
+                        } else if params.preserve_ak_cert {
                             // For resiliency, write the previous AK cert to the
                             // newly created nv index in case the following
                             // boot-time AK cert request fails.

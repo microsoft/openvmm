@@ -1882,3 +1882,64 @@ fn test_restore_owner_defined() {
     let nv_bits = TpmaNvBits::from(result.nv_public.nv_public.attributes.0.get());
     assert!(!nv_bits.nv_platformcreate());
 }
+
+#[test]
+fn test_oversized_platform_ak_cert_index() {
+    // The index is re-created at `TPM_DEFAULT_AKCERT_SIZE`, so an existing
+    // larger index is only reachable on backends whose maximum exceeds it.
+    if (test_tpm::MAX_NV_INDEX_SIZE as usize) <= TPM_DEFAULT_AKCERT_SIZE {
+        return;
+    }
+
+    let oversized_size = test_tpm::MAX_NV_INDEX_SIZE;
+
+    let mut tpm_engine_helper = create_tpm_engine_helper();
+    restart_tpm_engine(&mut tpm_engine_helper, false, true);
+
+    let result = tpm_engine_helper.nv_define_space(
+        TPM20_RH_PLATFORM,
+        AUTH_VALUE,
+        TPM_NV_INDEX_AIK_CERT,
+        oversized_size,
+    );
+    assert!(result.is_ok(), "{result:?}");
+
+    let ak_cert_input = vec![7u8; oversized_size as usize];
+    let result =
+        tpm_engine_helper.write_to_nv_index(AUTH_VALUE, TPM_NV_INDEX_AIK_CERT, &ak_cert_input);
+    assert!(result.is_ok(), "{result:?}");
+
+    let result = tpm_engine_helper.allocate_guest_attestation_nv_indices(
+        AUTH_VALUE,
+        AllocateNvIndicesParams {
+            preserve_ak_cert: true,
+            support_attestation_report: true,
+            mitigate_legacy_akcert: false,
+            create_if_missing: true,
+        },
+    );
+    assert!(result.is_ok(), "{result:?}");
+
+    // The AK cert index is re-created at the default size and the previous cert
+    // is dropped because it no longer fits.
+    let result = tpm_engine_helper
+        .find_nv_index(TPM_NV_INDEX_AIK_CERT)
+        .expect("find_nv_index should succeed")
+        .expect("AKCert NV index present");
+    assert_eq!(
+        result.nv_public.nv_public.data_size.get() as usize,
+        TPM_DEFAULT_AKCERT_SIZE
+    );
+
+    let mut ak_cert_output = [0u8; TPM_DEFAULT_AKCERT_SIZE];
+    let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
+    assert!(matches!(result.unwrap(), NvIndexState::Uninitialized));
+
+    // The attestation report index is still allocated.
+    let mut attestation_report_output = [0u8; MAX_ATTESTATION_INDEX_SIZE as usize];
+    let result = tpm_engine_helper.read_from_nv_index(
+        TPM_NV_INDEX_ATTESTATION_REPORT,
+        &mut attestation_report_output,
+    );
+    assert!(matches!(result.unwrap(), NvIndexState::Uninitialized));
+}
