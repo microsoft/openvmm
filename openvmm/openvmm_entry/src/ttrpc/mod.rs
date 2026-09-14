@@ -1157,7 +1157,7 @@ impl VmService {
             memory,
             processors,
             log_file: None,
-            crash_dump_path: None,
+            crash_dump_path: req_config.crash_dump_path.map(Into::into),
             guest_power_actions,
         };
 

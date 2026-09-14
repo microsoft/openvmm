@@ -586,6 +586,8 @@ message VMConfig {
     // selected; note that PCAT boot honors only the system UUID and serial
     // number.
     SMBIOSConfig smbios_config = 13;
+
+    optional string crash_dump_path = 14;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
