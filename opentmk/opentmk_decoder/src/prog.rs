@@ -208,14 +208,11 @@ where
                 )
             };
 
-        if copyout_index >= K_MAX_COMMANDS {
-            return Err(DecoderError::OverflowOutIndex(copyout_index));
-        }
-
         // Get the result value from the results array.
-        let r = &results[copyout_index];
-
-        Ok(r.was_successful())
+        results
+            .get(copyout_index)
+            .ok_or_else(|| DecoderError::OverflowOutIndex(copyout_index))
+            .map(|r| r.was_successful())
     }
 
     /// Executes all the instructions in the current instruction queue. If an
@@ -230,7 +227,10 @@ where
                 let mut ready = true;
                 for arg in &call.args {
                     if let Arg::Result(arg) = arg {
-                        if !self.results[arg.idx as usize]
+                        if !self
+                            .results
+                            .get(arg.idx as usize)
+                            .ok_or_else(|| DecoderError::OverflowOutIndex(arg.idx as usize))?
                             .executed
                             .load(Ordering::SeqCst)
                         {
@@ -294,7 +294,10 @@ where
                     let size = a.meta & 0xff;
                     let bf = (a.meta >> 8) & 0xff;
 
-                    let r = &self.results[a.idx as usize];
+                    let r = self
+                        .results
+                        .get(a.idx as usize)
+                        .ok_or_else(|| DecoderError::OverflowOutIndex(a.idx as usize))?;
                     let val = if r.was_successful() {
                         let mut v = r.val.load(Ordering::SeqCst);
                         v = v.checked_div(a.op_div).unwrap_or(v);
@@ -314,10 +317,14 @@ where
                     )?;
                 }
                 Arg::Data((a, d)) => {
-                    self.mem.write_mem(
-                        (i.wire.addr + COPYIN_OFFSET) as usize,
-                        &d.as_bytes()[..a.size as usize],
-                    );
+                    self.mem
+                        .try_write_mem(
+                            (i.wire.addr + COPYIN_OFFSET) as usize,
+                            &d.as_bytes()
+                                .get(..a.size as usize)
+                                .ok_or_else(|| DecoderError::OverflowDataSize(a.size as usize))?,
+                        )
+                        .map_err(DecoderError::Other)?;
                 }
             },
 
@@ -325,7 +332,10 @@ where
                 let mut val = 0u64;
                 copyout(&mut self.mem, i.wire.addr, i.wire.size, &mut val)?;
 
-                let r = &self.results[i.wire.index as usize];
+                let r = self
+                    .results
+                    .get(i.wire.index as usize)
+                    .ok_or_else(|| DecoderError::OverflowOutIndex(i.wire.index as usize))?;
                 // Its assumed if we're executing a CopyOut, that the associated call was
                 // successful. We should not have been passed a CopyOut instruction to execute if
                 // the associated call was not successful.
@@ -335,6 +345,9 @@ where
             Instr::Call(i) => {
                 // Evaluate all input arguments.
                 let mut args = [0u64; MAX_ARGS];
+                if i.args.len() > MAX_ARGS {
+                    return Err(DecoderError::TooManyArgs(i.args.len()));
+                }
 
                 let mut skip = false;
                 for (n, arg) in i.args.iter().enumerate() {
@@ -346,7 +359,10 @@ where
                             args[n] = val;
                         }
                         Arg::Result(a) => {
-                            let r = &self.results[a.idx as usize];
+                            let r = self
+                                .results
+                                .get(a.idx as usize)
+                                .ok_or_else(|| DecoderError::OverflowOutIndex(a.idx as usize))?;
                             let val = if !r.was_successful() {
                                 // The dependent call that's expected to fill this result argument value has either
                                 // not been executed or did not execute successfully, meaning the result value
@@ -397,12 +413,10 @@ where
                         )
                     };
 
-                if copyout_index >= K_MAX_COMMANDS {
-                    return Err(DecoderError::OverflowOutIndex(copyout_index));
-                }
-                let r = &results[copyout_index];
-
-                r.mark_executed(exec_result.is_success, exec_result.code);
+                results
+                    .get(copyout_index)
+                    .ok_or_else(|| DecoderError::OverflowOutIndex(copyout_index))?
+                    .mark_executed(exec_result.is_success, exec_result.code);
             }
         }
 
@@ -434,7 +448,14 @@ pub struct InputResult {
     pub is_success: bool,
 }
 
-fn store_by_bitmask<M, N>(mem: &mut M, addr: u64, val: N, bf_off: u64, bf_len: u64, one: N)
+fn store_by_bitmask<M, N>(
+    mem: &mut M,
+    addr: u64,
+    val: N,
+    bf_off: u64,
+    bf_len: u64,
+    one: N,
+) -> Result<(), DecoderError>
 where
     M: SafeMemoryMap + ?Sized,
     N: FromBytes
@@ -450,10 +471,12 @@ where
         + ops::BitAnd<Output = N>,
 {
     if bf_off == 0 && bf_len == 0 {
-        mem.write_mem(addr as usize, val.as_bytes())
+        mem.try_write_mem(addr as usize, val.as_bytes())
+            .map_err(DecoderError::Other)?;
     } else {
         let mut new_val = N::default();
-        mem.read_mem(addr as usize, new_val.as_mut_bytes());
+        mem.try_read_mem(addr as usize, new_val.as_mut_bytes())
+            .map_err(DecoderError::Other)?;
 
         // unset bitmask
         let mask = (one << bf_len) - one;
@@ -462,8 +485,11 @@ where
         // set val into bitmask
         new_val |= (val & mask) << bf_off;
 
-        mem.write_mem(addr as usize, new_val.as_bytes())
+        mem.try_write_mem(addr as usize, new_val.as_bytes())
+            .map_err(DecoderError::Other)?;
     }
+
+    Ok(())
 }
 
 /// Copy a value into a buffer with the specified binary format (in `bf`).
@@ -484,10 +510,10 @@ fn copyin<M: SafeMemoryMap + ?Sized>(
         // Case: binary_format_native
         0 => {
             match size {
-                1 => store_by_bitmask(mem, addr, val as u8, bf_off, bf_len, 1),
-                2 => store_by_bitmask(mem, addr, val as u16, bf_off, bf_len, 1),
-                4 => store_by_bitmask(mem, addr, val as u32, bf_off, bf_len, 1),
-                8 => store_by_bitmask(mem, addr, val, bf_off, bf_len, 1),
+                1 => store_by_bitmask(mem, addr, val as u8, bf_off, bf_len, 1)?,
+                2 => store_by_bitmask(mem, addr, val as u16, bf_off, bf_len, 1)?,
+                4 => store_by_bitmask(mem, addr, val as u32, bf_off, bf_len, 1)?,
+                8 => store_by_bitmask(mem, addr, val, bf_off, bf_len, 1)?,
                 _ => return Err(DecoderError::CopyInBadSize { bf, size }),
             }
             return Ok(());

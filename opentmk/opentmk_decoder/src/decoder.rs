@@ -54,6 +54,10 @@ pub enum DecoderError {
     UnsupportedArgData,
     /// The copyout_index overflows/underflows K_MAX_COMMANDS
     OverflowOutIndex(usize),
+    /// Overflowing the data size
+    OverflowDataSize(usize),
+    /// Too many arguments are passed to a call
+    TooManyArgs(usize),
     /// Some other error not captured here
     Other(String),
 }
