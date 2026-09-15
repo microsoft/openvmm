@@ -210,9 +210,17 @@ impl VpciClientTdispState {
                 .unwrap_or_else(|e| {
                     panic!("require_tdi_state: failed to read the TDI state from the firmware: {e}")
                 }),
-            None => std::panic!(
-                "require_tdi_state: device ID wasn't assigned when calling require_tdi_state"
-            ),
+            None => {
+                // Require that any state beyond Unlocked is not allowed when the device ID is not assigned.
+                if cached != TdispTdiState::Unlocked || expected != TdispTdiState::Unlocked {
+                    panic!(
+                        "require_tdi_state: device ID wasn't assigned when calling require_tdi_state, \
+                         but the host reports {cached}"
+                    );
+                }
+
+                None
+            }
         };
 
         if cached != expected {
@@ -894,6 +902,9 @@ impl VpciClientTdispState {
                 ),
             })?;
 
+        self.mutable_state
+            .update_guest_device_id(TdispDeviceId::Valid(guest_device_id_u16));
+
         self.resource_validator
             .on_pre_bind(self.target_vtl, guest_device_id_u16)
             .context("tdisp_attest_device: pre-bind validation failed")
@@ -961,9 +972,6 @@ impl VpciClientTdispState {
             %guest_device_id,
             "tdisp_attest_device: device attestation flow completed successfully, waiting on resources to be assigned"
         );
-
-        self.mutable_state
-            .update_guest_device_id(TdispDeviceId::Valid(guest_device_id_u16));
 
         // Hand the report to the validator before any resource is unblocked.
         self.resource_validator
