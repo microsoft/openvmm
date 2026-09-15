@@ -5271,6 +5271,7 @@ dependencies = [
  "disk_backend",
  "nvme_spec",
  "thiserror 2.0.16",
+ "tracelimit",
 ]
 
 [[package]]
