@@ -17,6 +17,10 @@
 use anyhow::Context as _;
 use std::fs;
 use std::os::unix::prelude::*;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// iommufd ioctl type character (';' = 0x3B).
 const IOMMUFD_TYPE: u8 = b';';
@@ -283,6 +287,16 @@ pub struct HwptInvalidateError {
 /// vIOMMU type: ARM SMMUv3.
 pub const IOMMU_VIOMMU_TYPE_ARM_SMMUV3: u32 = 1;
 
+/// Outcome of [`IommufdCtx::viommu_alloc`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ViommuAlloc {
+    /// The kernel-assigned vIOMMU object ID.
+    Allocated(u32),
+    /// The nesting parent belongs to a different physical IOMMU than the
+    /// device. Callers may probe another candidate parent.
+    Incompatible,
+}
+
 #[repr(C)]
 struct IommuViommuAlloc {
     size: u32,
@@ -312,6 +326,10 @@ struct IommuVdeviceAlloc {
 /// vEVENTQ type: ARM SMMUv3.
 pub const IOMMU_VEVENTQ_TYPE_ARM_SMMUV3: u32 = 1;
 
+/// `IommufdVeventHeader::flags`: the queue lost one or more events before this
+/// one. No event data follows a header carrying this flag.
+pub const IOMMU_VEVENTQ_FLAG_LOST_EVENTS: u32 = 1 << 0;
+
 #[repr(C)]
 struct IommuVeventqAlloc {
     size: u32,
@@ -325,7 +343,11 @@ struct IommuVeventqAlloc {
 }
 
 /// Header for each event in a vEVENTQ fd read.
+///
+/// `sequence` is monotonic over `[0, i32::MAX]`, wrapping back to 0. A gap of
+/// more than 1 between adjacent headers means the intervening events were lost.
 #[repr(C)]
+#[derive(Copy, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub struct IommufdVeventHeader {
     pub flags: u32,
     pub sequence: u32,
@@ -333,8 +355,12 @@ pub struct IommufdVeventHeader {
 
 /// ARM SMMUv3 virtual event record (256-bit, little-endian).
 ///
-/// Follows an `IommufdVeventHeader` in the vEVENTQ fd read stream.
+/// Follows an `IommufdVeventHeader` in the vEVENTQ fd read stream. The four
+/// quadwords are a verbatim SMMUv3 Event queue record, except that the kernel
+/// has rewritten the StreamID field to the virtual StreamID the vDevice was
+/// allocated with.
 #[repr(C)]
+#[derive(Copy, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub struct IommuVeventArmSmmuv3 {
     pub evt: [u64; 4],
 }
@@ -631,8 +657,18 @@ impl IommufdCtx {
     /// `dev_id` is a device bound to the physical IOMMU backing this vIOMMU.
     /// `hwpt_id` is the nesting parent HWPT to associate with.
     ///
-    /// Returns the kernel-assigned vIOMMU object ID.
-    pub fn viommu_alloc(&self, viommu_type: u32, dev_id: u32, hwpt_id: u32) -> anyhow::Result<u32> {
+    /// Returns [`ViommuAlloc::Incompatible`] when the nesting parent and device
+    /// belong to different physical SMMUs. For this wrapper all generic fields
+    /// are fixed to valid Arm SMMUv3 values and `hwpt_id` is supplied by
+    /// [`IommufdCtx::hwpt_alloc`] with `IOMMU_HWPT_ALLOC_NEST_PARENT`; after
+    /// those core checks, the Arm driver returns `EINVAL` only when the parent
+    /// domain's SMMU differs from the device's SMMU.
+    pub fn viommu_alloc(
+        &self,
+        viommu_type: u32,
+        dev_id: u32,
+        hwpt_id: u32,
+    ) -> anyhow::Result<ViommuAlloc> {
         let mut cmd = IommuViommuAlloc {
             size: size_of::<IommuViommuAlloc>() as u32,
             flags: 0,
@@ -645,11 +681,12 @@ impl IommufdCtx {
             data_uptr: 0,
         };
         // SAFETY: fd is valid, struct correctly constructed.
-        unsafe {
-            ioctl::iommu_viommu_alloc(self.file.as_raw_fd(), &mut cmd)
-                .context("IOMMU_VIOMMU_ALLOC failed")?;
+        let r = unsafe { ioctl::iommu_viommu_alloc(self.file.as_raw_fd(), &mut cmd) };
+        match r {
+            Ok(_) => Ok(ViommuAlloc::Allocated(cmd.out_viommu_id)),
+            Err(nix::errno::Errno::EINVAL) => Ok(ViommuAlloc::Incompatible),
+            Err(err) => Err(err).context("IOMMU_VIOMMU_ALLOC failed"),
         }
-        Ok(cmd.out_viommu_id)
     }
 
     /// Allocate a virtual device (vDevice) on a vIOMMU.

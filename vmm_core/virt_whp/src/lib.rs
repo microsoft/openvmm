@@ -315,7 +315,12 @@ impl IndexMut<Vtl> for RunStateVtls {
 }
 
 impl RunState {
-    fn reset(&mut self, vtl2_scrub: bool, is_bsp: bool) {
+    fn reset(
+        &mut self,
+        vtl2_scrub: bool,
+        is_bsp: bool,
+        prot_access: &mut dyn hv1_emulator::VtlProtectAccess,
+    ) {
         let &mut Self {
             ref mut active_vtl,
             ref mut runnable_vtls,
@@ -336,17 +341,17 @@ impl RunState {
         *crash_msg_address = None;
         *crash_msg_len = None;
         if !vtl2_scrub {
-            vtls.vtl0.reset(is_bsp);
+            vtls.vtl0.reset(is_bsp, prot_access);
         }
         if let Some(vtl) = &mut vtls.vtl2 {
-            vtl.reset(is_bsp);
+            vtl.reset(is_bsp, prot_access);
         }
         *halted = false;
     }
 }
 
 impl PerVtlRunState {
-    fn reset(&mut self, is_bsp: bool) {
+    fn reset(&mut self, is_bsp: bool, prot_access: &mut dyn hv1_emulator::VtlProtectAccess) {
         let Self {
             #[cfg(guest_arch = "x86_64")]
             lapic,
@@ -361,7 +366,7 @@ impl PerVtlRunState {
         }
 
         if let Some(hv) = hv {
-            hv.reset();
+            hv.reset(prot_access);
         }
 
         #[cfg(guest_arch = "aarch64")]
@@ -598,6 +603,10 @@ impl virt::AcceptInitialPages for WhpPartition {
 }
 
 impl virt::Partition for WhpPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
         if whp::capabilities::reset_partition() {
             Some(self)
@@ -826,6 +835,8 @@ pub enum Error {
     NestedVirtIncompatibleWithVtl2,
     #[error("nested_virt is incompatible with isolation")]
     NestedVirtIncompatibleWithIsolation,
+    #[error("WHP does not support {0:?} isolation")]
+    IsolationNotSupported(IsolationType),
 }
 
 trait WhpResultExt<T> {
@@ -857,6 +868,7 @@ impl virt::Hypervisor for Whp {
                 platform_gsiv: Some(WHP_PMU_GSIV),
                 supports_gic_v3: true,
                 supports_its: false,
+                device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
             }
         }
     }
@@ -869,6 +881,11 @@ impl virt::Hypervisor for Whp {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<WhpProtoPartition<'a>, Error> {
+        let isolation = config.isolation.isolation_type();
+        if !matches!(isolation, IsolationType::None | IsolationType::Vbs) {
+            return Err(Error::IsolationNotSupported(isolation));
+        }
+
         let user_mode_apic = self.user_mode_apic;
         let offload_enlightenments = self.offload_enlightenments;
         let nested_virt = config.nested_virt;
@@ -1303,7 +1320,7 @@ impl WhpPartitionInner {
             vtl0_alias_map_offset,
             monitor_page: MonitorPage::new(),
             hvstate,
-            isolation: proto_config.isolation,
+            isolation: proto_config.isolation.isolation_type(),
             #[cfg(guest_arch = "aarch64")]
             gic_msi: proto_config.processor_topology.gic_msi(),
             synic_ports: Default::default(),
@@ -1612,6 +1629,16 @@ impl VtlPartition {
                     #[cfg(guest_arch = "aarch64")]
                     {
                         features.bank0 |= F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
+
+                        // Opt into delivery of the system-reset intercept family
+                        // (PSCI SYSTEM_OFF2/hibernate, SYSTEM_RESET2) when the
+                        // hypervisor advertises it.
+                        if supported_synth_features
+                            .bank0
+                            .is_set(F::InterceptSystemReset)
+                        {
+                            features.bank0 |= F::InterceptSystemReset;
+                        }
                     }
 
                     if vtl == Vtl::Vtl0 {
@@ -1694,9 +1721,9 @@ impl VtlPartition {
 
             assert!(!with_overlays);
 
-            match config.isolation {
+            match config.isolation.isolation_type() {
                 IsolationType::Vbs => {}
-                ty => unimplemented!("isolation type unsupported: {ty:?}"),
+                ty => return Err(Error::IsolationNotSupported(ty)),
             }
 
             Box::new(memory::vtl2_mapper::VtlMemoryMapper::new(
@@ -1836,7 +1863,9 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         let is_bsp = self.inner.vp_info.base.is_bsp();
-        self.state.reset(false, is_bsp);
+        let partition = self.vp.partition;
+        self.state
+            .reset(false, is_bsp, &mut WhpNoVtlProtections(&partition.gm));
 
         // For each enabled VTL: apply arch fixups that WHP doesn't handle (via
         // `finish_reset`), then clear stale pending per-VTL VP signal flags,
@@ -1867,7 +1896,9 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         // VTL2 stays enabled across a scrub. `enabled_vtls` and `vtl2_enable`
         // are both left set, so `state.reset` keeps `active_vtl` at VTL2 and
         // each AP idles in VTL2 (in startup suspend) during the servicing window.
-        self.state.reset(true, is_bsp);
+        let partition = self.vp.partition;
+        self.state
+            .reset(true, is_bsp, &mut WhpNoVtlProtections(&partition.gm));
 
         // Re-apply arch register fixups that WHP doesn't handle (`finish_reset`
         // must run after the partition-level WHP reset), then clear stale

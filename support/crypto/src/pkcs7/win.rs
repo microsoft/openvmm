@@ -18,18 +18,15 @@ use windows::Win32::Security::Cryptography::PKCS_7_ASN_ENCODING;
 use windows::Win32::Security::Cryptography::X509_ASN_ENCODING;
 
 fn err(e: windows_result::Error, op: &'static str) -> Pkcs7Error {
-    Pkcs7Error(crate::BackendError(e, op))
+    Pkcs7Error(crate::BackendError::Windows(e, op))
 }
 
 fn last_err(op: &'static str) -> Pkcs7Error {
     err(windows_result::Error::from_thread(), op)
 }
 
-fn bogus_err(op: &'static str) -> Pkcs7Error {
-    err(
-        windows_result::Error::from_hresult(windows::core::HRESULT(-1)),
-        op,
-    )
+fn invalid_err(reason: &'static str) -> Pkcs7Error {
+    Pkcs7Error(crate::BackendError::Invalid(reason))
 }
 
 /// RAII wrapper around `HCRYPTMSG`.
@@ -62,19 +59,19 @@ impl Pkcs7SignedDataInner {
                 encoding, 0, 0, None, None, None,
             )
         };
-        let h = NonNull::new(h).ok_or_else(|| last_err("CryptMsgOpenToDecode"))?;
+        let h = NonNull::new(h).ok_or_else(|| last_err("opening the PKCS#7 message"))?;
         let msg = Msg(h);
 
         // SAFETY: `data` is a valid byte slice; msg is a fresh decode handle.
         unsafe {
             windows::Win32::Security::Cryptography::CryptMsgUpdate(h.as_ptr(), Some(data), true)
         }
-        .map_err(|e| err(e, "CryptMsgUpdate"))?;
+        .map_err(|e| err(e, "decoding the PKCS#7 message"))?;
 
         // Confirm the message is SignedData (type 2)
         let mtype: u32 = get_param_value::<u32>(&msg, CMSG_TYPE_PARAM, 0)?;
         if mtype != CMSG_SIGNED.0 {
-            return Err(bogus_err("PKCS#7 message is not SignedData"));
+            return Err(invalid_err("PKCS#7 message is not SignedData"));
         }
 
         Ok(Self { msg })
@@ -112,7 +109,7 @@ impl Pkcs7SignedDataInner {
         use windows::core::PSTR;
 
         fn rsa_err(e: windows_result::Error, op: &'static str) -> crate::rsa::RsaError {
-            crate::rsa::RsaError(crate::BackendError(e, op))
+            crate::rsa::RsaError(crate::BackendError::Windows(e, op))
         }
 
         // Hand the BCrypt private key to NCrypt as an ephemeral (no-name,
@@ -123,7 +120,7 @@ impl Pkcs7SignedDataInner {
         // SAFETY: standard NCrypt provider open; MS_KEY_STORAGE_PROVIDER is
         // a static, NUL-terminated wide string.
         unsafe { NCryptOpenStorageProvider(&mut prov_raw, MS_KEY_STORAGE_PROVIDER, 0) }
-            .map_err(|e| rsa_err(e, "NCryptOpenStorageProvider"))?;
+            .map_err(|e| rsa_err(e, "opening the software key storage provider"))?;
         let prov = NCryptProv(prov_raw);
 
         let mut nkey_raw = NCRYPT_KEY_HANDLE::default();
@@ -142,7 +139,7 @@ impl Pkcs7SignedDataInner {
                 NCRYPT_FLAGS(0),
             )
         }
-        .map_err(|e| rsa_err(e, "NCryptImportKey"))?;
+        .map_err(|e| rsa_err(e, "importing the signing key"))?;
         let nkey = NCryptKey(nkey_raw);
 
         // Build a fresh CERT_CONTEXT from the DER so we can attach the
@@ -175,7 +172,7 @@ impl Pkcs7SignedDataInner {
                 Some(std::ptr::from_ref(&key_ctx).cast::<c_void>()),
             )
         }
-        .map_err(|e| rsa_err(e, "CertSetCertificateContextProperty"))?;
+        .map_err(|e| rsa_err(e, "associating the signing key with the certificate"))?;
 
         let hash_alg = CRYPT_ALGORITHM_IDENTIFIER {
             pszObjId: PSTR(szOID_NIST_sha256.0.cast_mut()),
@@ -214,7 +211,7 @@ impl Pkcs7SignedDataInner {
                 &mut needed,
             )
         }
-        .map_err(|e| rsa_err(e, "CryptSignMessage (size query)"))?;
+        .map_err(|e| rsa_err(e, "querying the signed message size"))?;
 
         let mut out = vec![0u8; needed as usize];
         // SAFETY: out is sized per the previous query; data buffer pointer
@@ -230,7 +227,7 @@ impl Pkcs7SignedDataInner {
                 &mut needed,
             )
         }
-        .map_err(|e| rsa_err(e, "CryptSignMessage"))?;
+        .map_err(|e| rsa_err(e, "signing the PKCS#7 message"))?;
         out.truncate(needed as usize);
 
         Self::from_der(&out).map_err(|Pkcs7Error(e)| crate::rsa::RsaError(e))
@@ -253,8 +250,8 @@ impl Pkcs7SignedDataInner {
         // Require exactly one signer.
         let signer_count: u32 = get_param_value::<u32>(&self.msg, CMSG_SIGNER_COUNT_PARAM, 0)?;
         if signer_count != 1 {
-            return Err(bogus_err(
-                "expected exactly one signer in PKCS#7 SignedData",
+            return Err(invalid_err(
+                "PKCS#7 SignedData does not have exactly one signer",
             ));
         }
 
@@ -262,7 +259,9 @@ impl Pkcs7SignedDataInner {
         // CMSG_SIGNER_INFO.
         let signer_buf = get_param_bytes(&self.msg, CMSG_SIGNER_INFO_PARAM, 0)?;
         if signer_buf.len() < size_of::<CMSG_SIGNER_INFO>() {
-            return Err(bogus_err("CMSG_SIGNER_INFO buffer smaller than struct"));
+            return Err(invalid_err(
+                "PKCS#7 signer info is smaller than a CMSG_SIGNER_INFO",
+            ));
         }
         // SAFETY: CryptMsgGetParam(CMSG_SIGNER_INFO_PARAM) populates a
         // CMSG_SIGNER_INFO at the start of the buffer. Read unaligned to
@@ -275,16 +274,16 @@ impl Pkcs7SignedDataInner {
         // both blobs empty here; reject them explicitly rather than
         // silently matching an empty issuer.
         if si.Issuer.cbData == 0 || si.SerialNumber.cbData == 0 {
-            return Err(bogus_err(
-                "signer identifier is not IssuerAndSerialNumber (SubjectKeyIdentifier not supported)",
+            return Err(invalid_err(
+                "PKCS#7 signer identifier is not an IssuerAndSerialNumber; SubjectKeyIdentifier signers are not supported",
             ));
         }
         let want_issuer =
-            blob_to_vec(&si.Issuer).ok_or_else(|| bogus_err("malformed signer issuer blob"))?;
+            blob_to_vec(&si.Issuer).ok_or_else(|| invalid_err("malformed signer issuer blob"))?;
         let want_serial = blob_to_vec(&si.SerialNumber)
-            .ok_or_else(|| bogus_err("malformed signer serial blob"))?;
+            .ok_or_else(|| invalid_err("malformed signer serial number blob"))?;
         let signature = blob_to_vec(&si.EncryptedHash)
-            .ok_or_else(|| bogus_err("malformed signer signature blob"))?;
+            .ok_or_else(|| invalid_err("malformed signer signature blob"))?;
 
         let count: u32 = get_param_value::<u32>(&self.msg, CMSG_CERT_COUNT_PARAM, 0)?;
         for i in 0..count {
@@ -297,7 +296,9 @@ impl Pkcs7SignedDataInner {
                 return Ok((cert, signature));
             }
         }
-        Err(bogus_err("no embedded certificate matches the signer"))
+        Err(invalid_err(
+            "no embedded certificate matches the PKCS#7 signer",
+        ))
     }
 }
 
@@ -327,7 +328,7 @@ fn get_param_bytes(msg: &Msg, param: u32, index: u32) -> Result<Vec<u8>, Pkcs7Er
             &mut size,
         )
     }
-    .map_err(|e| err(e, "CryptMsgGetParam (size query)"))?;
+    .map_err(|e| err(e, "querying a PKCS#7 message parameter size"))?;
     let mut buf = vec![0u8; size as usize];
     // SAFETY: buf is sized per the size query.
     unsafe {
@@ -339,7 +340,7 @@ fn get_param_bytes(msg: &Msg, param: u32, index: u32) -> Result<Vec<u8>, Pkcs7Er
             &mut size,
         )
     }
-    .map_err(|e| err(e, "CryptMsgGetParam"))?;
+    .map_err(|e| err(e, "reading a PKCS#7 message parameter"))?;
     buf.truncate(size as usize);
     Ok(buf)
 }
@@ -348,7 +349,9 @@ fn get_param_bytes(msg: &Msg, param: u32, index: u32) -> Result<Vec<u8>, Pkcs7Er
 fn get_param_value<T: Copy>(msg: &Msg, param: u32, index: u32) -> Result<T, Pkcs7Error> {
     let buf = get_param_bytes(msg, param, index)?;
     if buf.len() < size_of::<T>() {
-        return Err(bogus_err("CryptMsgGetParam returned short buffer"));
+        return Err(invalid_err(
+            "CryptMsgGetParam returned fewer bytes than it reported",
+        ));
     }
     // SAFETY: buffer is at least size_of::<T>() bytes; T is Copy.
     Ok(unsafe { std::ptr::read_unaligned(buf.as_ptr().cast::<T>()) })

@@ -54,6 +54,7 @@ use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
 use net_backend_resources::mac_address::MacAddress;
 use netvsp_resources::NetvspHandle;
+use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -104,6 +105,53 @@ use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
+
+#[cfg(guest_arch = "aarch64")]
+fn parse_aarch64_topology_overrides(
+    cfg: &vmservice::ProcessorAarch64Config,
+) -> Result<ArchTopologyConfig, anyhow::Error> {
+    use openvmm_defs::config as dc;
+    use vmservice::processor_aarch64_config as pc;
+
+    let mut topology_config = dc::Aarch64TopologyConfig::default();
+    if let Some(gic_msi) = &cfg.gic_msi_config {
+        match gic_msi {
+            pc::GicMsiConfig::MsiIts(_) => topology_config.gic_msi = dc::GicMsiConfig::Its,
+            pc::GicMsiConfig::MsiV2m(v2m) => {
+                topology_config.gic_msi = dc::GicMsiConfig::V2m {
+                    spi_count: v2m.spi_count,
+                }
+            }
+        }
+    }
+    Ok(ArchTopologyConfig::Aarch64(topology_config))
+}
+
+fn parse_arch_topology_overrides(
+    processor_cfg: Option<&vmservice::ProcessorConfig>,
+) -> Result<Option<ArchTopologyConfig>, anyhow::Error> {
+    use vmservice::processor_config::ArchConfig as ProtoArchConfig;
+
+    match processor_cfg.and_then(|cfg| cfg.arch_config.as_ref()) {
+        #[cfg(not(guest_arch = "x86_64"))]
+        Some(ProtoArchConfig::X86(_)) => {
+            bail!("x86 topology overrides not supported on current arch")
+        }
+        #[cfg(guest_arch = "x86_64")]
+        Some(ProtoArchConfig::X86(_x86cfg)) => {
+            Ok(None) // No overrides on type currently.
+        }
+        #[cfg(not(guest_arch = "aarch64"))]
+        Some(ProtoArchConfig::Aarch64(_)) => {
+            bail!("aarch64 topology overrides not supported on current arch")
+        }
+        #[cfg(guest_arch = "aarch64")]
+        Some(ProtoArchConfig::Aarch64(aarch64)) => {
+            Ok(Some(parse_aarch64_topology_overrides(aarch64)?))
+        }
+        None => Ok(None),
+    }
+}
 
 #[derive(mesh::MeshPayload)]
 pub struct Parameters {
@@ -624,6 +672,14 @@ impl VmService {
                 let r = self.remove_pcie_device(request);
                 self.start_rpc(response, r);
             }
+            vmservice::Vm::AddVpciDevice(request, response) => {
+                let r = self.add_vpci_device(request);
+                self.start_rpc(response, r);
+            }
+            vmservice::Vm::RemoveVpciDevice(request, response) => {
+                let r = self.remove_vpci_device(request);
+                self.start_rpc(response, r);
+            }
         }
         HandleAction::None
     }
@@ -718,6 +774,10 @@ impl VmService {
         #[cfg(guest_arch = "x86_64")]
         let arch = vm_manifest_builder::MachineArch::X86_64;
 
+        // SMBIOS identity is applied regardless of boot type; build it once and
+        // move it into whichever LoadMode is selected below.
+        let smbios = Box::new(smbios_config_from_proto(req_config.smbios_config.take())?);
+
         // The boot configuration also determines the base chipset, since the
         // firmware and the device model have to agree on the platform.
         let (load_mode, base_chipset_type, uefi_config) = match req_config
@@ -738,7 +798,9 @@ impl VmService {
                         initrd,
                         cmdline: boot.kernel_cmdline,
                         enable_serial: true,
+                        isolation: openvmm_defs::config::LinuxIsolationConfig::None,
                         boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                        smbios,
                     },
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
                     None,
@@ -749,7 +811,7 @@ impl VmService {
                     format!("failed to open uefi firmware {}", uefi.firmware_path)
                 })?;
                 let initial_variables = uefi.initial_variables.unwrap_or_default();
-                let base_template_json = match (arch, initial_variables.secure_boot_template()) {
+                let base_template = match (arch, initial_variables.secure_boot_template()) {
                     (_, vmservice::uefi::initial_variables::SecureBootTemplate::None) => {
                         None
                     }
@@ -788,7 +850,7 @@ impl VmService {
                         // anything it launches would have nowhere to write on a
                         // VM with no graphics adapter.
                         uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
-                        bios_guid: Guid::new_random(),
+                        smbios,
                         enable_vmbus: true,
                         // Everything below is fixed for now. The proto has no
                         // way to express these yet; fields will be added as
@@ -805,23 +867,25 @@ impl VmService {
                         enable_vpci_boot: false,
                         default_boot_always_attempt: false,
                         force_dma_bounce: false,
+                        enable_hv: true,
+                        hibernation_enabled: true,
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
-                    Some((base_template_json, uefi.secure_boot_enabled)),
+                    Some((base_template, uefi.secure_boot_enabled)),
                 )
             }
         };
 
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
-        if let Some((base_template_json, secure_boot_enabled)) = uefi_config {
+        if let Some((base_template, secure_boot_enabled)) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
             // runtime services, so it is required for a UEFI boot. The store is
             // ephemeral: with no VMGS file configured there is nowhere to
             // persist boot entries or secure boot state across reboots.
             chipset_builder = chipset_builder.with_uefi(vm_manifest_builder::UefiManifest::new(
                 arch,
-                base_template_json,
+                base_template,
                 None,
                 secure_boot_enabled,
                 firmware_uefi_resources::LogLevel::make_default(),
@@ -875,6 +939,7 @@ impl VmService {
             .as_ref()
             .map(|c| c.processor_count)
             .unwrap_or(1);
+        let arch = parse_arch_topology_overrides(req_config.processor_config.as_ref())?;
 
         // Build the PCIe topology (root complexes, switches, and the devices
         // attached behind their ports).
@@ -890,6 +955,7 @@ impl VmService {
             ide_disks: vec![],
             floppy_disks: vec![],
             pcie_root_complexes: pcie.root_complexes,
+            pcie_ecam_below_4gb: false,
             pcie_devices: pcie.devices,
             pcie_switches: pcie.switches,
             pcie_generic_initiators: pcie.generic_initiators,
@@ -900,7 +966,7 @@ impl VmService {
                 proc_count: config_proc_count,
                 vps_per_socket: None,
                 enable_smt: None,
-                arch: Default::default(),
+                arch,
             },
             hypervisor: HypervisorConfig {
                 with_hv: true,
@@ -995,14 +1061,7 @@ impl VmService {
             }
 
             for virtiofs in devices_config.virtiofs_config {
-                let resource = virtio_resources::fs::VirtioFsHandle {
-                    tag: virtiofs.tag,
-                    fs: virtio_resources::fs::VirtioFsBackend::HostFs {
-                        root_path: virtiofs.root_path,
-                        mount_options: String::new(),
-                    },
-                }
-                .into_resource();
+                let resource = build_virtio_fs(virtiofs)?.into_resource();
                 // Use VPCI when possible (currently only on Windows and macOS due
                 // to KVM backend limitations).
                 if cfg!(windows) || cfg!(target_os = "macos") {
@@ -1098,7 +1157,7 @@ impl VmService {
             memory,
             processors,
             log_file: None,
-            crash_dump_path: None,
+            crash_dump_path: req_config.crash_dump_path.map(Into::into),
             guest_power_actions,
         };
 
@@ -1266,7 +1325,7 @@ impl VmService {
         let registry = self.registry.clone();
         Ok(async move {
             let vmservice::AddPcieDeviceRequest { port_name, device } = request;
-            let resource = build_pcie_device(device.context("missing device")?, &registry).await?;
+            let resource = build_pci_device(device.context("missing device")?, &registry).await?;
             worker_rpc
                 .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
                 .await
@@ -1284,6 +1343,48 @@ impl VmService {
             .context("VM not created yet")?
             .worker_rpc
             .call_failable(VmRpc::RemovePcieDevice, request.port_name);
+        Ok(async move { recv.await.map_err(anyhow::Error::from) })
+    }
+
+    fn add_vpci_device(
+        &self,
+        request: vmservice::AddVpciDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let worker_rpc = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .clone();
+        let registry = self.registry.clone();
+        Ok(async move {
+            let instance_id = request
+                .instance_id
+                .parse()
+                .context("invalid VPCI instance ID")?;
+            let resource =
+                build_pci_device(request.device.context("missing device")?, &registry).await?;
+            worker_rpc
+                .call_failable(VmRpc::AddVpciDevice, (instance_id, resource))
+                .await
+                .map_err(anyhow::Error::from)
+        })
+    }
+
+    fn remove_vpci_device(
+        &self,
+        request: vmservice::RemoveVpciDeviceRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let instance_id = request
+            .instance_id
+            .parse()
+            .context("invalid VPCI instance ID")?;
+        let recv = self
+            .vm
+            .as_ref()
+            .context("VM not created yet")?
+            .worker_rpc
+            .call_failable(VmRpc::RemoveVpciDevice, instance_id);
         Ok(async move { recv.await.map_err(anyhow::Error::from) })
     }
 
@@ -1410,6 +1511,73 @@ fn open_socket_backend(
     }
 }
 
+/// Convert the proto `SMBIOSConfig` (untrusted input) into the loader's
+/// [`SmbiosConfig`](openvmm_defs::config::SmbiosConfig).
+///
+/// An absent message or absent field falls through to the loader's built-in
+/// default identity. The system UUID defaults to the all-zero GUID when unset.
+fn smbios_config_from_proto(
+    proto: Option<vmservice::SmbiosConfig>,
+) -> anyhow::Result<openvmm_defs::config::SmbiosConfig> {
+    let vmservice::SmbiosConfig { bios, system } = proto.unwrap_or_default();
+
+    let vmservice::smbios_config::Bios {
+        vendor,
+        version: bios_version,
+        release_date,
+        release,
+    } = bios.unwrap_or_default();
+    let release = release
+        .map(|r| {
+            let major = u8::try_from(r.major).context("smbios bios release major out of range")?;
+            let minor = u8::try_from(r.minor).context("smbios bios release minor out of range")?;
+            anyhow::Ok((major, minor))
+        })
+        .transpose()?;
+
+    let vmservice::smbios_config::System {
+        manufacturer,
+        product_name,
+        version: system_version,
+        serial_number,
+        sku_number,
+        family,
+        uuid,
+    } = system.unwrap_or_default();
+    let uuid = match uuid {
+        Some(uuid) => uuid.parse::<Guid>().context("invalid smbios system uuid")?,
+        None => Guid::ZERO,
+    };
+
+    // Match the CLI parser, which rejects empty values. An explicitly provided
+    // empty string is ambiguous — UEFI omits the blob while the direct loader
+    // clears the field — so reject it rather than silently pick one behavior.
+    fn reject_empty(field: &str, value: Option<String>) -> anyhow::Result<Option<String>> {
+        if value.as_deref() == Some("") {
+            anyhow::bail!("smbios {field} must not be empty if specified");
+        }
+        Ok(value)
+    }
+
+    Ok(openvmm_defs::config::SmbiosConfig {
+        bios: openvmm_defs::config::SmbiosBiosOverrides {
+            vendor: reject_empty("bios vendor", vendor)?,
+            version: reject_empty("bios version", bios_version)?,
+            release_date: reject_empty("bios release date", release_date)?,
+            release,
+        },
+        system: openvmm_defs::config::SmbiosSystemOverrides {
+            manufacturer: reject_empty("system manufacturer", manufacturer)?,
+            product_name: reject_empty("system product", product_name)?,
+            version: reject_empty("system version", system_version)?,
+            serial_number: reject_empty("system serial", serial_number)?,
+            sku_number: reject_empty("system sku", sku_number)?,
+            family: reject_empty("system family", family)?,
+            uuid,
+        },
+    })
+}
+
 /// Convert a ttrpc `PortConfig` (untrusted input) into a `HostPortConfig`,
 /// validating the protocol and port ranges. The host port is always treated as
 /// a fixed port; the unbind path ignores it.
@@ -1418,6 +1586,7 @@ fn parse_port_config(port: vmservice::PortConfig) -> anyhow::Result<HostPortConf
         host_port,
         guest_port,
         protocol,
+        host_address,
     } = port;
     let protocol = if protocol == vmservice::IpProtocol::Tcp as i32 {
         HostPortProtocol::Tcp
@@ -1428,7 +1597,16 @@ fn parse_port_config(port: vmservice::PortConfig) -> anyhow::Result<HostPortConf
     };
     Ok(HostPortConfig {
         protocol,
-        host_address: None,
+        host_address: if host_address.is_empty() {
+            None
+        } else {
+            Some(
+                host_address
+                    .parse::<std::net::IpAddr>()
+                    .context("invalid host address")?
+                    .into(),
+            )
+        },
         host_port: HostPort::Fixed(host_port.try_into().context("host port out of range")?),
         guest_port: guest_port.try_into().context("guest port out of range")?,
     })
@@ -1676,7 +1854,7 @@ async fn build_pcie_topology(
 
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
-        let resource = build_pcie_device(device, registry).await?;
+        let resource = build_pci_device(device, registry).await?;
         devices.push(PcieDeviceConfig {
             port_name,
             resource,
@@ -1758,7 +1936,7 @@ fn walk_pcie_attachment(
 
 /// Builds the resource for a single endpoint PCIe device function (a virtio
 /// function, an NVMe controller, or a VFIO-assigned host device).
-async fn build_pcie_device(
+async fn build_pci_device(
     device: vmservice::PcieDeviceKind,
     registry: &FdRegistry,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
@@ -1937,6 +2115,46 @@ async fn build_virtio_device(
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
+        Kind::Fs(config) => build_virtio_fs(config)?.into_resource(),
+    })
+}
+
+fn build_virtio_fs(
+    config: vmservice::VirtioFs,
+) -> anyhow::Result<virtio_resources::fs::VirtioFsHandle> {
+    let vmservice::VirtioFs {
+        tag,
+        root_path,
+        read_only,
+    } = config;
+    const VIRTIO_FS_TAG_LEN: usize = 36;
+    anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
+    anyhow::ensure!(
+        !tag.contains('\0'),
+        "virtio-fs tag must not contain NUL bytes"
+    );
+    anyhow::ensure!(
+        tag.len() <= VIRTIO_FS_TAG_LEN,
+        "virtio-fs tag exceeds the {VIRTIO_FS_TAG_LEN}-byte protocol limit"
+    );
+    anyhow::ensure!(
+        !root_path.is_empty(),
+        "virtio-fs root path must not be empty"
+    );
+    anyhow::ensure!(
+        !root_path.contains('\0'),
+        "virtio-fs root path must not contain NUL bytes"
+    );
+    Ok(virtio_resources::fs::VirtioFsHandle {
+        tag,
+        fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+            root_path,
+            mount_options: if read_only {
+                "ro".to_string()
+            } else {
+                String::new()
+            },
+        },
     })
 }
 

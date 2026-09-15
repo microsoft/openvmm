@@ -19,6 +19,10 @@ pub struct WrappedPartition(pub Arc<UhPartition>);
 
 #[async_trait]
 impl VmPartition for WrappedPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn reset(&mut self) -> anyhow::Result<()> {
         anyhow::bail!("reset not supported")
     }

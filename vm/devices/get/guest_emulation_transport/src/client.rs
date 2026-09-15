@@ -213,23 +213,18 @@ impl GuestEmulationTransportClient {
 
         Ok(platform_settings::DevicePlatformSettings {
             smbios: platform_settings::Smbios {
-                serial_number: json.v1.serial_number.into(),
-                base_board_serial_number: json.v1.base_board_serial_number.into(),
-                chassis_serial_number: json.v1.chassis_serial_number.into(),
-                chassis_asset_tag: json.v1.chassis_asset_tag.into(),
+                serial_number: json.v1.serial_number,
+                base_board_serial_number: json.v1.base_board_serial_number,
+                chassis_serial_number: json.v1.chassis_serial_number,
+                chassis_asset_tag: json.v1.chassis_asset_tag,
 
-                system_manufacturer: json.v2.r#static.smbios.system_manufacturer.into(),
-                system_product_name: json.v2.r#static.smbios.system_product_name.into(),
-                system_version: json.v2.r#static.smbios.system_version.into(),
-                system_sku_number: json.v2.r#static.smbios.system_sku_number.into(),
-                system_family: json.v2.r#static.smbios.system_family.into(),
-                bios_lock_string: json.v2.r#static.smbios.bios_lock_string.into(),
-                memory_device_serial_number: json
-                    .v2
-                    .r#static
-                    .smbios
-                    .memory_device_serial_number
-                    .into(),
+                system_manufacturer: json.v2.r#static.smbios.system_manufacturer,
+                system_product_name: json.v2.r#static.smbios.system_product_name,
+                system_version: json.v2.r#static.smbios.system_version,
+                system_sku_number: json.v2.r#static.smbios.system_sku_number,
+                system_family: json.v2.r#static.smbios.system_family,
+                bios_lock_string: json.v2.r#static.smbios.bios_lock_string,
+                memory_device_serial_number: json.v2.r#static.smbios.memory_device_serial_number,
                 processor_manufacturer: json.v2.dynamic.smbios.processor_manufacturer,
                 processor_version: json.v2.dynamic.smbios.processor_version,
                 processor_id: json.v2.dynamic.smbios.processor_id,
@@ -278,6 +273,7 @@ impl GuestEmulationTransportClient {
                 battery_enabled: json.v1.enable_battery,
                 processor_idle_enabled: json.v1.enable_processor_idle,
                 tpm_enabled: json.v1.enable_tpm,
+                tpm_version: json.v2.r#static.tpm_version,
                 com1_enabled: json.v1.com1.enable_port,
                 com1_debugger_mode: json.v1.com1.debugger_mode,
                 com1_vmbus_redirector: json.v1.com1.enable_vmbus_redirector,
@@ -751,6 +747,32 @@ impl GuestEmulationTransportClient {
         self.control
             .call(msg::Msg::ResetRamGpaRange, handle.as_raw())
             .await;
+    }
+
+    /// Asks the host to (re)load a firmware image into VTL0 guest RAM, keyed by
+    /// an opaque `firmware_token`. The host writes the image into guest memory
+    /// only; the guest/paravisor remains responsible for VP state.
+    ///
+    /// On success, returns the offset from the firmware image base to the
+    /// firmware entry point, which the caller programs into VTL0's RIP (RIP =
+    /// `image_base + offset`).
+    ///
+    /// Only call this when the host has advertised support via the
+    /// `load_firmware_supported` bit in `ManagementVtlFeatures`, otherwise the GET may hang indefinitely.
+    pub async fn load_firmware(
+        &self,
+        firmware_token: u64,
+    ) -> Result<u64, crate::error::LoadFirmwareError> {
+        let response = self
+            .control
+            .call(msg::Msg::LoadFirmware, firmware_token)
+            .await
+            .0;
+        if response.status != get_protocol::LoadFirmwareStatus::SUCCESS {
+            Err(crate::error::LoadFirmwareError(response.status))
+        } else {
+            Ok(response.entry_point_image_offset)
+        }
     }
 
     /// Gets the saved state from the host. Returns immediately with whatever

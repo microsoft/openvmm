@@ -15,7 +15,7 @@ bitfield-struct.workspace = true
 minimal_rt.workspace = true
 underhill_confidentiality.workspace = true
 host_fdt_parser.workspace = true
-loader_defs.workspace = true
+loader_defs = { workspace = true, features = ["save_restore"] }
 igvm_defs.workspace = true
 hvdef.workspace = true
 fdt.workspace = true

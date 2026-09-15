@@ -8,13 +8,14 @@ rust-version.workspace = true
 
 [features]
 inspect = ["dep:inspect"]
+save_restore = ["dep:memory_range", "dep:mesh_protobuf", "memory_range/mesh"]
 
 [dependencies]
 hvdef.workspace = true
 open_enum.workspace = true
 
-mesh_protobuf.workspace = true
-memory_range = { workspace = true, features = ["mesh"] }
+mesh_protobuf = { workspace = true, optional = true }
+memory_range = { workspace = true, optional = true }
 
 bitfield-struct.workspace = true
 igvm_defs.workspace = true

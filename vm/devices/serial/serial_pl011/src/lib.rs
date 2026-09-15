@@ -190,7 +190,7 @@ impl SerialPl011 {
             debug_name,
             mmio_region: ("registers", base..=base + (REGISTERS_SIZE - 1)),
             wait_for_rts: false,
-            state: State::new(),
+            state: State::new(io.is_connected()),
             interrupt,
             io,
             rx_waker: None,
@@ -203,9 +203,6 @@ impl SerialPl011 {
             }),
             stats: Default::default(),
         };
-        if this.io.is_connected() {
-            this.state.connect();
-        }
         this.sync();
         Ok(this)
     }
@@ -553,8 +550,7 @@ impl ChangeDeviceState for SerialPl011 {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        self.state = State::new();
-        self.state.connect();
+        self.state = State::new(self.io.is_connected());
         self.sync();
     }
 }
@@ -580,7 +576,7 @@ impl PollDevice for SerialPl011 {
 }
 
 impl State {
-    fn new() -> Self {
+    fn new(is_connected: bool) -> Self {
         // The initial state for this UART does not completely match the PL011
         // specification. This is because Linux loads its SBSA-compatible UART
         // driver instead of its PL011 driver, and the SBSA-compatible driver
@@ -604,7 +600,7 @@ impl State {
 
         let lcr = LineControlRegister::new().with_enable_fifos(true);
 
-        Self {
+        let mut this = Self {
             tx_buffer: VecDeque::new(),
             rx_buffer: VecDeque::new(),
             rx_overrun: false,
@@ -622,7 +618,11 @@ impl State {
             dmacr: DmaControlRegister::new(),
             new_ibrd: 0,
             new_fbrd: FractionalBaudRateRegister::new(),
+        };
+        if is_connected {
+            this.connect();
         }
+        this
     }
 
     /// Updates CR when the modem connects.
@@ -1687,6 +1687,32 @@ mod tests {
             Poll::Ready(())
         })
         .await
+    }
+
+    /// Resetting the device must leave the modem lines matching the backend, so
+    /// a port with no backend attached does not come back reporting carrier.
+    #[async_test]
+    async fn reset_does_not_connect_disconnected_backend() {
+        let mut serial = SerialPl011::new(
+            "com1".to_string(),
+            PL011_SERIAL0_BASE,
+            LineInterrupt::detached(),
+            Box::new(serial_core::disconnected::Disconnected),
+            None,
+        )
+        .unwrap();
+
+        serial.reset().await;
+
+        let fr = spec::FlagRegister::from(read(&mut serial, Register::UARTFR));
+        assert!(!fr.cts() && !fr.dsr() && !fr.dcd(), "no carrier");
+
+        // And no modem-status change bits to raise an interrupt with.
+        let ris = InterruptRegister::from(read(&mut serial, Register::UARTRIS));
+        assert!(
+            !ris.cts() && !ris.dsr() && !ris.dcd(),
+            "no modem status change"
+        );
     }
 
     #[async_test]

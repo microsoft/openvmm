@@ -3,7 +3,6 @@
 
 use alloc::alloc::alloc;
 use core::alloc::Layout;
-use core::arch::asm;
 use core::cell::RefCell;
 use core::ops::Range;
 
@@ -11,13 +10,13 @@ use hvdef::Vtl;
 use nostd_spin_channel::Channel;
 use spin::Mutex;
 
-use crate::context::InterruptPlatformTrait;
-use crate::context::SecureInterceptPlatformTrait;
-use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecToken;
-use crate::context::VtlPlatformTrait;
 use crate::create_function_with_restore;
 use crate::tmk_assert;
+use opentmk_core::context::InterruptPlatformTrait;
+use opentmk_core::context::SecureInterceptPlatformTrait;
+use opentmk_core::context::VirtualProcessorPlatformTrait;
+use opentmk_core::context::VpExecToken;
+use opentmk_core::context::VtlPlatformTrait;
 
 static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(core::ptr::null_mut());
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);

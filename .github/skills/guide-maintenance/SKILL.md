@@ -141,3 +141,17 @@ Each row in the mapping table follows:
 - Guide paths are relative to `Guide/src/`
 - Multiple Guide pages for one code path: comma-separated
 - Use glob-style `*` in code paths for crate families (e.g., `nvme*/`)
+
+## Code-to-Guide Mapping
+
+| Code path | Guide page |
+| --- | --- |
+| `openvmm/openvmm_build_info/` | `reference/openvmm/management/cli.md` |
+
+## What to Flag
+
+- Changes to the reported build identity -- the `-V` / `--version` strings, the
+  version format, dirty detection, or what a Git-free tree reports -- must
+  update `reference/openvmm/management/cli.md`, and
+  `dev_guide/contrib/openvmm_packaging.md` when the packager-facing contract
+  changes.

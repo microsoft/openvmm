@@ -144,6 +144,7 @@ pub(crate) struct LoadedVm {
     /// The various guest memory objects.
     pub memory: underhill_mem::MemoryMappings,
     pub firmware_type: FirmwareType,
+    pub hibernate_token: Option<crate::hibernate::Token>,
     pub isolation: IsolationType,
     // contain task handles which must be kept live
     pub chipset_devices: ChipsetDevices,
@@ -468,6 +469,8 @@ impl LoadedVm {
                         correlation_id = %correlation_id,
                         timeout_hint_ms = timeout_hint.as_millis() as u64,
                         servicing_deadline = ?servicing_deadline,
+                        enable_nvme_keepalive = capabilities_flags.enable_nvme_keepalive(),
+                        enable_mana_keepalive = capabilities_flags.enable_mana_keepalive(),
                         "received servicing request from host"
                     );
 
@@ -941,7 +944,20 @@ impl LoadedVm {
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
         {
-            network_settings.save().await
+            let saved = network_settings
+                .save()
+                .instrument(tracing::info_span!(
+                    "mana_network_settings_save",
+                    CVM_ALLOWED,
+                    mana_keepalive_mode_enabled = mana_keepalive_mode.is_enabled()
+                ))
+                .await;
+            tracing::info!(
+                CVM_ALLOWED,
+                mana_devices_saved = saved.as_ref().map(|v| v.len()).unwrap_or(0),
+                "mana device state saved for keepalive"
+            );
+            saved
         } else {
             None
         };
@@ -971,6 +987,11 @@ impl LoadedVm {
                 flush_logs_result: None,
                 vmgs,
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
+                hibernate: self
+                    .hibernate_token
+                    .map(|token| servicing::HibernateSavedState {
+                        token: token.into(),
+                    }),
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,

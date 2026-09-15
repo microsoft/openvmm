@@ -190,6 +190,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     vhost_vsock_guest_cid: Option<u32>,
     // Disable VMBus entirely (no vmbus server, no vmbus storage controllers).
     no_vmbus: bool,
+    // Disable the hypervisor (HV#1) enlightenments. Implies `no_vmbus`.
+    no_hv: bool,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -213,6 +215,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
             .field("no_vmbus", &self.no_vmbus)
+            .field("no_hv", &self.no_hv)
             .finish()
     }
 }
@@ -228,6 +231,8 @@ pub struct PetriVmConfig {
     pub host_log_levels: Option<OpenvmmLogConfig>,
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
+    /// Whether to enable guest hibernation support.
+    pub hibernation_enabled: bool,
     /// The amount of memory, in bytes, to assign to the VM
     pub memory: MemoryConfig,
     /// The processor topology for the VM
@@ -312,6 +317,8 @@ pub struct PetriVmProperties {
     pub vhost_vsock_guest_cid: Option<u32>,
     /// VMBus is entirely disabled
     pub no_vmbus: bool,
+    /// The hypervisor (HV#1) enlightenments are entirely disabled
+    pub no_hv: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -453,6 +460,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
+                hibernation_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -488,6 +496,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            no_hv: false,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -533,6 +542,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
+                hibernation_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -568,6 +578,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
+            no_hv: false,
         })
     }
 
@@ -713,6 +724,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }
         self.config.vmbus_storage_controllers.clear();
         self
+    }
+
+    /// Disable the hypervisor (HV#1) enlightenments.
+    ///
+    /// This also disables VMBus, since VMBus depends on the hypervisor. On
+    /// aarch64 UEFI this causes the loader to pass the generic SEC platform
+    /// type to the firmware. This mode is not supported on x86_64 UEFI.
+    pub fn with_no_hv(mut self) -> Self {
+        self.no_hv = true;
+        self.with_no_vmbus()
     }
 
     fn add_petri_scsi_controllers(self) -> Self {
@@ -1027,6 +1048,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: self.vhost_vsock_guest_cid,
             no_vmbus: self.no_vmbus,
+            no_hv: self.no_hv,
         }
     }
 
@@ -1075,14 +1097,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         // Auto-prepare the initrd with pipette injected if needed.
         // This centralizes the injection logic so backends only ever
         // receive a prebuilt_initrd path.
-        let _prepared_initrd_guard;
-        if self.uses_pipette_as_init() && self.prebuilt_initrd.is_none() {
-            let tmp = self.prepare_initrd()?;
-            self.prebuilt_initrd = Some(tmp.to_path_buf());
-            _prepared_initrd_guard = Some(tmp);
-        } else {
-            _prepared_initrd_guard = None;
-        }
+        let _prepared_initrd_guard =
+            if self.uses_pipette_as_init() && self.prebuilt_initrd.is_none() {
+                let tmp = self.prepare_initrd()?;
+                self.prebuilt_initrd = Some(tmp.to_path_buf());
+                Some(tmp)
+            } else {
+                None
+            };
 
         tracing::debug!(builder = ?self);
 
@@ -1387,6 +1409,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Configure whether OpenHCL enables MANA keepalive at boot.
+    pub fn with_mana_keepalive(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("MANA keepalive is only supported for OpenHCL firmware.")
+            .enable_mana_keepalive = enable;
+        self
+    }
+
     /// Enable confidential filtering, even if the VM is not confidential.
     pub fn with_confidential_filtering(self) -> Self {
         if !self.config.firmware.is_openhcl() {
@@ -1511,6 +1543,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Enable guest hibernation support.
+    ///
+    /// Applies to any firmware type: for OpenHCL this sets the DPS
+    /// `enable_hibernation` flag; for OpenVMM UEFI/PCAT firmware it enables the
+    /// firmware's hibernation support.
+    pub fn with_hibernation_enabled(mut self, enable: bool) -> Self {
+        self.config.hibernation_enabled = enable;
+        self
+    }
+
     /// Specify the guest state lifetime for the VM
     pub fn with_guest_state_lifetime(
         mut self,
@@ -1625,6 +1667,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .as_mut()
             .expect("hardware sealing policy requires a TPM")
             .hardware_sealing_policy = policy;
+        self
+    }
+
+    /// Select which TPM reference implementation version the VM's TPM runs.
+    pub fn with_tpm_version(mut self, version: PetriTpmVersion) -> Self {
+        self.config
+            .tpm
+            .as_mut()
+            .expect("TPM version requires a TPM")
+            .version = version;
         self
     }
 
@@ -1969,27 +2021,25 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
         tracing::info!("Waiting for boot event...");
         let boot_event = loop {
-            match CancelContext::new()
-                .with_timeout(self.vmm_quirks.flaky_boot.unwrap_or(Duration::MAX))
-                .until_cancelled(self.runtime.wait_for_boot_event())
-                .await
+            if let Some(event) = self
+                .runtime
+                .wait_for_boot_event(self.vmm_quirks.flaky_boot)
+                .await?
             {
-                Ok(res) => break res?,
-                Err(_) => {
-                    tracing::error!("Did not get boot event in required time, resetting...");
-                    if let Some(inspector) = self.runtime.inspector() {
-                        save_inspect(
-                            "vmm",
-                            Box::pin(async move { inspector.inspect("").await }),
-                            &self.resources.log_source,
-                        )
-                        .await;
-                    }
-
-                    self.runtime.reset().await?;
-                    continue;
-                }
+                break event;
             }
+
+            tracing::error!("Did not get boot event in required time, resetting...");
+            if let Some(inspector) = self.runtime.inspector() {
+                save_inspect(
+                    "vmm",
+                    Box::pin(async move { inspector.inspect("").await }),
+                    &self.resources.log_source,
+                )
+                .await;
+            }
+
+            self.runtime.reset().await?;
         };
         tracing::info!("Got boot event: {boot_event:?}");
         Ok(boot_event)
@@ -2185,8 +2235,11 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     /// Get an OpenHCL diagnostics handler for the VM
     fn openhcl_diag(&self) -> Option<OpenHclDiagHandler>;
     /// Waits for an event emitted by the firmware about its boot status, and
-    /// returns that status.
-    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>;
+    /// returns that status. Returns `None` if `timeout` elapsed first.
+    async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>>;
     /// Waits for the Hyper-V shutdown IC to be ready
     // TODO: return a receiver that will be closed when it is no longer ready.
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()>;
@@ -2287,18 +2340,6 @@ pub trait PetriVmFramebufferAccess: Send + 'static {
     /// returning the dimensions and color type.
     async fn screenshot(&mut self, image: &mut Vec<u8>)
     -> anyhow::Result<Option<VmScreenshotMeta>>;
-}
-
-/// Use this for the associated type if not supported
-pub struct NoPetriVmFramebufferAccess;
-#[async_trait]
-impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
-    async fn screenshot(
-        &mut self,
-        _image: &mut Vec<u8>,
-    ) -> anyhow::Result<Option<VmScreenshotMeta>> {
-        unreachable!()
-    }
 }
 
 /// Common processor topology information for the VM.
@@ -2496,6 +2537,8 @@ pub enum OpenvmmLogConfig {
 pub struct OpenHclConfig {
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
+    /// Whether to enable MANA keepalive at boot.
+    pub enable_mana_keepalive: bool,
     /// Test-specified command-line parameters to append to the petri generated
     /// command line and pass to OpenHCL. VM backends should use
     /// [`OpenHclConfig::command_line()`] rather than reading this directly.
@@ -2517,8 +2560,9 @@ impl OpenHclConfig {
     pub fn command_line(&self) -> String {
         let mut cmdline = self.custom_command_line.clone();
 
-        // Enable MANA keep-alive by default for all tests
-        append_cmdline(&mut cmdline, "OPENHCL_MANA_KEEP_ALIVE=host,privatepool");
+        if self.enable_mana_keepalive {
+            append_cmdline(&mut cmdline, "OPENHCL_MANA_KEEP_ALIVE=host,privatepool");
+        }
 
         match &self.log_levels {
             OpenvmmLogConfig::TestDefault => {
@@ -2558,6 +2602,7 @@ impl Default for OpenHclConfig {
     fn default() -> Self {
         Self {
             vmbus_redirect: false,
+            enable_mana_keepalive: true,
             custom_command_line: None,
             log_levels: OpenvmmLogConfig::TestDefault,
             vtl2_base_address_type: None,
@@ -2573,6 +2618,8 @@ pub struct TpmConfig {
     pub no_persistent_secrets: bool,
     /// Hardware sealing policy for sealed secrets
     pub hardware_sealing_policy: PetriHardwareSealingPolicy,
+    /// TPM reference implementation version
+    pub version: PetriTpmVersion,
 }
 
 impl Default for TpmConfig {
@@ -2580,8 +2627,19 @@ impl Default for TpmConfig {
         Self {
             no_persistent_secrets: true,
             hardware_sealing_policy: PetriHardwareSealingPolicy::Default,
+            version: PetriTpmVersion::default(),
         }
     }
+}
+
+/// TPM reference implementation version used by the test infrastructure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PetriTpmVersion {
+    /// TPM reference implementation version 1.85
+    #[default]
+    V185,
+    /// TPM reference implementation version 1.38
+    V138,
 }
 
 /// Hardware sealing policy used by the test infrastructure.

@@ -203,6 +203,19 @@ pub(crate) struct QueueCoreGetWork {
     inner: QueueGetWorkInner,
     /// Whether kick notification is currently armed.
     armed: bool,
+    /// Whether a fatal error has retired the fetch side of the queue.
+    ///
+    /// Every [`QueueError`] raised while fetching work means the guest violated
+    /// the queue protocol, and the offending chain is rejected *without* being
+    /// consumed — the available index does not move. Re-reading the ring would
+    /// therefore hit the same descriptors and raise the same error forever, so a
+    /// caller that logs the error and keeps polling would spin without making
+    /// progress. Latch the failure instead: report it once, then report the
+    /// queue as permanently empty.
+    ///
+    /// This only retires fetching. Descriptors already consumed can still be
+    /// completed.
+    failed: bool,
     /// Consumed-but-not-completed ring capacity, in the format's native unit:
     /// buffers (heads) for split, descriptors (slots) for packed — the two forms
     /// of the virtio "Queue Size" limit (spec §2.7.1 vs §2.8.1).
@@ -277,8 +290,15 @@ impl QueueCoreGetWork {
             mem,
             inner,
             armed: false,
+            failed: false,
             in_flight,
         })
+    }
+
+    /// Whether a fatal error has retired the fetch side of this queue. Once
+    /// set, no further work will ever be returned. See [`Self::failed`].
+    pub fn failed(&self) -> bool {
+        self.failed
     }
 
     pub fn try_next_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
@@ -296,7 +316,21 @@ impl QueueCoreGetWork {
     /// consume the peeked descriptor and move to the next one. Calling this
     /// again without advancing will return the same descriptor, but note that
     /// the guest may have modified the descriptor memory in the meantime.
+    ///
+    /// Returns `Ok(None)` forever once the queue has failed, so that the error
+    /// is reported exactly once.
     pub fn try_peek_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+        if self.failed {
+            return Ok(None);
+        }
+        let r = self.try_peek_work_inner();
+        if r.is_err() {
+            self.failed = true;
+        }
+        r
+    }
+
+    fn try_peek_work_inner(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         let index = match &mut self.inner {
             QueueGetWorkInner::Split(split) => split.is_available()?,
             QueueGetWorkInner::Packed(packed) => packed.is_available()?,

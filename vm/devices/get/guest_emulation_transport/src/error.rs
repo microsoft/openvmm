@@ -54,6 +54,12 @@ pub struct VpciControlError(pub(crate) get_protocol::VpciDeviceControlStatus);
 #[error("create ram GPA range error: {0:?}")]
 pub struct CreateRamGpaRangeError(pub(crate) get_protocol::CreateRamGpaRangeStatus);
 
+/// Error while invoking a LoadFirmwareRequest: the host rejected it with a
+/// non-success status.
+#[derive(Debug, Error)]
+#[error("load firmware error: {0:?}")]
+pub struct LoadFirmwareError(pub(crate) get_protocol::LoadFirmwareStatus);
+
 /// Error while invoking a GuestStateProtectionByIdRequest
 #[derive(Debug, Error)]
 #[error("malformed response - reported len > actual len: {0} > {1}")]

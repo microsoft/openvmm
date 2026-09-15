@@ -221,7 +221,7 @@ async fn run_no_vmbus(
         .iter()
         .map(|name| {
             let path = driver_dir.join(name);
-            let data = std::fs::read(&path).with_context(|| {
+            let data = fs_err::read(&path).with_context(|| {
                 format!("failed to read NetKVM driver file: {}", path.display())
             })?;
             Ok((*name, data))
@@ -457,13 +457,18 @@ fn prepare_result_disk(
             tracing::info!("Result disk already exists, skipping...");
             return Ok(None);
         } else {
-            tracing::warn!("Result disk already exists, recreating it.");
+            // Delete rather than letting the copy overwrite in place, so the
+            // new disk cannot inherit anything from the old file.
+            // This also guarantees that the result disk is not still alive in
+            // a stuck VM.
+            tracing::warn!("Result disk already exists, deleting it.");
+            fs_err::remove_file(&result_disk)?;
         }
     } else {
         tracing::info!("Copying source disk to result disk.");
     }
     let drop_guard = DeleteFileOnDrop(result_disk.clone());
-    std::fs::copy(source_disk, &result_disk)?;
+    fs_err::copy(source_disk, &result_disk)?;
     tracing::info!("Copied source disk successfully.");
     Ok(Some((result_disk, drop_guard)))
 }
@@ -472,7 +477,7 @@ struct DeleteFileOnDrop(std::path::PathBuf);
 
 impl Drop for DeleteFileOnDrop {
     fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(&self.0) {
+        if let Err(e) = fs_err::remove_file(&self.0) {
             tracing::error!("Failed to delete file {}: {}", self.0.display(), e);
         } else {
             tracing::info!("Deleted file {}", self.0.display());
@@ -487,7 +492,7 @@ fn change_gpt_disk_guid(path: &std::path::Path) -> anyhow::Result<()> {
     use std::io::Seek;
 
     let sector_size = 512u64;
-    let mut file = std::fs::OpenOptions::new()
+    let mut file = fs_err::OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)?;

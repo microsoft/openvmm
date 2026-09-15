@@ -18,7 +18,7 @@ import {
 import { fetchProcessedLog } from "./fetch_logs_data";
 
 const GET_RUNS_URL =
-  "https://openvmmghtestresults.blob.core.windows.net/results?restype=container&comp=list&showonly=files&include=metadata&prefix=runs/";
+  "https://openvmmghtestresults.blob.core.windows.net/results?restype=container&comp=list&showonly=files&include=metadata&prefix=attempts/";
 
 /**
  * Start background data prefetching and refetching for the runs list.
@@ -188,7 +188,8 @@ function opportunisticPrefetching(
     );
 
     const extractRunNumber = (name: string) => {
-      const runNumberFull = name.replace(/^runs\//, "");
+      // name is "attempts/<runId>_<attempt>"; return the "<runId>_<attempt>" key.
+      const runNumberFull = name.replace(/^attempts\//, "");
       return runNumberFull.split("/")[0];
     };
 
@@ -500,7 +501,7 @@ export async function fetchTestAnalysis(
   onProgress?.(fetchedCount, totalToFetch);
 
   const prefetchRun = async (run: RunData) => {
-    const runId = run.name.split("/")[1]; // run.name is "runs/123456789", we want "123456789"
+    const runId = run.name.split("/")[1]; // run.name is "attempts/<runId>_<attempt>", we want the "<runId>_<attempt>" key
     const key = ["runDetails", runId];
 
     // Check if already aborted

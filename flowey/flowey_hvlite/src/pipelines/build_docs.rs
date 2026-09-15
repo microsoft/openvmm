@@ -179,7 +179,7 @@ impl IntoPipeline for BuildDocsCli {
                 .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
                 .gh_set_concurrency_group(GhConcurrencyGroup {
                     name: "publish-openvmm.dev".into(),
-                    cancel_in_progress: true,
+                    cancel_in_progress: false,
                 })
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Params {

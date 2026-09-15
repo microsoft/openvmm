@@ -1,16 +1,13 @@
 # Configuration and Management
 
-```admonish warning title="DISCLAIMER"
-OpenVMM's configuration and management interfaces are currently unstable,
-incomplete, lightly documented, and broadly speaking - not particularly
-"polished".
+OpenVMM exposes three configuration and management interfaces. The CLI and
+interactive console support direct VM configuration and lifecycle operations,
+while gRPC and ttrpc provide programmatic control.
 
-These interfaces are **strictly for dev use only**.
-
-Refer to the [OpenVMM disclaimer] for more context.
+```admonish note title="Interface compatibility"
+These interfaces continue to evolve and may change between releases. Consult
+the documentation for your OpenVMM version, especially when upgrading.
 ```
-
-At the moment, OpenVMM exposes 3 distinct configuration and management interfaces.
 
 - **CLI**: Used to configure and launch a single VM
   - This allows configuring static VM resource assignments, such as the
@@ -21,13 +18,12 @@ At the moment, OpenVMM exposes 3 distinct configuration and management interface
   - This interface allows users to perform core VM operations such as stop,
     restart, save, restore, pause, resume, etc.. as well as things like storage
     hot-add, VTL2 servicing, running Inspect queries, etc..
-- **gRPC / ttrpc**: A _very_ WIP set of APIs for configuring and interacting
-  with VMs
+- **gRPC / ttrpc**: Programmatic APIs for configuring and interacting with VMs.
+  API compatibility and implementation coverage continue to evolve.
 
-## Missing Functionality (non-exhaustive)
+## Management Capabilities
 
-The following is a non-exhaustive list of notable management features that
-OpenVMM is currently missing.
+The following table summarizes the status of selected management features.
 
 <!-- NOTE: this is an HTML table, rather than a markdown table, as certain cells
 contain long blocks of text, which aren't easy to write using standard markdown
@@ -72,8 +68,5 @@ tables. -->
 </table>
 </div>
 
-If a feature is missing from this list, please check if the feature is being
-tracked via a Issue on the OpenVMM GitHub, and/or submit a PR adding it to this
-list.
-
-[OpenVMM disclaimer]: ../../user_guide/openvmm.md#admonition-disclaimer
+For additional feature requests and status information, search the
+[OpenVMM GitHub issues](https://github.com/microsoft/openvmm/issues).

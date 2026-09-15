@@ -21,13 +21,13 @@ use thiserror::Error;
 // DEVNOTE: The openssl variant would use BackendError if the kdf functions were implemented in the openssl crate itself
 #[cfg(openssl)]
 #[derive(Debug, Error)]
-#[error("KBKDF derivation error")]
+#[error("KBKDF derivation failed")]
 pub struct KbkdfError(#[source] openssl_kdf::kdf::KdfError);
 
 /// An error for KBKDF operations.
 #[cfg(not(openssl))]
 #[derive(Debug, Error)]
-#[error("KBKDF derivation error")]
+#[error("KBKDF derivation failed")]
 pub struct KbkdfError(#[source] super::BackendError);
 
 /// Derive key material using SP800-108 KBKDF with HMAC-SHA-256 in counter

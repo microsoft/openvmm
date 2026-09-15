@@ -32,6 +32,7 @@ vmm_core.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
 crypto.workspace = true
+cvm_tracing.workspace = true
 der = { workspace = true, features = ["derive", "alloc", "oid"] }
 getrandom.workspace = true
 guid.workspace = true

@@ -374,12 +374,17 @@ pub async fn log_task(
     reader: impl AsyncRead + Unpin + Send + 'static,
     name: &str,
 ) -> anyhow::Result<()> {
+    const MAX_LINE_LENGTH: usize = 4096;
     tracing::info!("connected to {name}");
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(MAX_LINE_LENGTH);
     let mut reader = BufReader::new(reader);
     loop {
         buf.clear();
-        match (&mut reader).take(256).read_until(b'\n', &mut buf).await {
+        match (&mut reader)
+            .take(MAX_LINE_LENGTH as u64)
+            .read_until(b'\n', &mut buf)
+            .await
+        {
             Ok(0) => {
                 tracing::info!("disconnected from {name}: EOF");
                 return Ok(());

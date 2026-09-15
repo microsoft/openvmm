@@ -15,6 +15,8 @@ pub enum HashAlgorithm {
     Sha256,
     /// SHA-384
     Sha384,
+    /// SHA-512
+    Sha512,
 }
 
 impl HashAlgorithm {
@@ -29,6 +31,7 @@ impl HashAlgorithm {
             HashAlgorithm::Sha1 => symcrypt::hash::sha1(data).to_vec(),
             HashAlgorithm::Sha256 => symcrypt::hash::sha256(data).to_vec(),
             HashAlgorithm::Sha384 => symcrypt::hash::sha384(data).to_vec(),
+            HashAlgorithm::Sha512 => symcrypt::hash::sha512(data).to_vec(),
         }
     }
 
@@ -39,6 +42,7 @@ impl HashAlgorithm {
             HashAlgorithm::Sha1 => sha1::Sha1::digest(data).to_vec(),
             HashAlgorithm::Sha256 => sha2::Sha256::digest(data).to_vec(),
             HashAlgorithm::Sha384 => sha2::Sha384::digest(data).to_vec(),
+            HashAlgorithm::Sha512 => sha2::Sha512::digest(data).to_vec(),
         }
     }
 
@@ -68,6 +72,7 @@ impl HashAlgorithm {
             HashAlgorithm::Sha1 => BCRYPT_SHA1_ALG_HANDLE,
             HashAlgorithm::Sha256 => BCRYPT_SHA256_ALG_HANDLE,
             HashAlgorithm::Sha384 => BCRYPT_SHA384_ALG_HANDLE,
+            HashAlgorithm::Sha512 => BCRYPT_SHA512_ALG_HANDLE,
         }
     }
 
@@ -78,6 +83,7 @@ impl HashAlgorithm {
             HashAlgorithm::Sha1 => BCRYPT_SHA1_ALGORITHM,
             HashAlgorithm::Sha256 => BCRYPT_SHA256_ALGORITHM,
             HashAlgorithm::Sha384 => BCRYPT_SHA384_ALGORITHM,
+            HashAlgorithm::Sha512 => BCRYPT_SHA512_ALGORITHM,
         }
     }
 
@@ -87,6 +93,38 @@ impl HashAlgorithm {
             HashAlgorithm::Sha1 => 20,
             HashAlgorithm::Sha256 => 32,
             HashAlgorithm::Sha384 => 48,
+            HashAlgorithm::Sha512 => 64,
+        }
+    }
+
+    /// Returns the hash algorithm named by a CryptoAPI RSA signature
+    /// algorithm OID string (`szOID_RSA_*RSA`), or `None` if `oid` is null or
+    /// names an unsupported algorithm.
+    #[cfg(all(native, windows))]
+    pub(crate) fn from_rsa_signature_oid(oid: windows::core::PSTR) -> Option<Self> {
+        use windows::Win32::Security::Cryptography::szOID_RSA_SHA1RSA;
+        use windows::Win32::Security::Cryptography::szOID_RSA_SHA256RSA;
+        use windows::Win32::Security::Cryptography::szOID_RSA_SHA384RSA;
+        use windows::Win32::Security::Cryptography::szOID_RSA_SHA512RSA;
+
+        if oid.is_null() {
+            return None;
+        }
+        // SAFETY: ASN.1-decoded OID strings from crypt32 are null-terminated,
+        // as are the szOID_* constants.
+        unsafe {
+            let oid = oid.as_bytes();
+            if oid == szOID_RSA_SHA256RSA.as_bytes() {
+                Some(HashAlgorithm::Sha256)
+            } else if oid == szOID_RSA_SHA384RSA.as_bytes() {
+                Some(HashAlgorithm::Sha384)
+            } else if oid == szOID_RSA_SHA512RSA.as_bytes() {
+                Some(HashAlgorithm::Sha512)
+            } else if oid == szOID_RSA_SHA1RSA.as_bytes() {
+                Some(HashAlgorithm::Sha1)
+            } else {
+                None
+            }
         }
     }
 
@@ -102,6 +140,8 @@ impl HashAlgorithm {
             static SHA256: crate::mac::CFStringRef;
             #[link_name = "kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA384"]
             static SHA384: crate::mac::CFStringRef;
+            #[link_name = "kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA512"]
+            static SHA512: crate::mac::CFStringRef;
         }
         // SAFETY: extern statics are always valid.
         unsafe {
@@ -109,6 +149,7 @@ impl HashAlgorithm {
                 HashAlgorithm::Sha1 => SHA1,
                 HashAlgorithm::Sha256 => SHA256,
                 HashAlgorithm::Sha384 => SHA384,
+                HashAlgorithm::Sha512 => SHA512,
             }
         }
     }
@@ -125,6 +166,8 @@ impl HashAlgorithm {
             static SHA256: crate::mac::CFStringRef;
             #[link_name = "kSecKeyAlgorithmRSASignatureMessagePSSSHA384"]
             static SHA384: crate::mac::CFStringRef;
+            #[link_name = "kSecKeyAlgorithmRSASignatureMessagePSSSHA512"]
+            static SHA512: crate::mac::CFStringRef;
         }
         // SAFETY: extern statics are always valid.
         unsafe {
@@ -132,6 +175,7 @@ impl HashAlgorithm {
                 HashAlgorithm::Sha1 => SHA1,
                 HashAlgorithm::Sha256 => SHA256,
                 HashAlgorithm::Sha384 => SHA384,
+                HashAlgorithm::Sha512 => SHA512,
             }
         }
     }
@@ -148,6 +192,8 @@ impl HashAlgorithm {
             static SHA256: crate::mac::CFStringRef;
             #[link_name = "kSecKeyAlgorithmRSAEncryptionOAEPSHA384"]
             static SHA384: crate::mac::CFStringRef;
+            #[link_name = "kSecKeyAlgorithmRSAEncryptionOAEPSHA512"]
+            static SHA512: crate::mac::CFStringRef;
         }
         // SAFETY: extern statics are always valid.
         unsafe {
@@ -155,6 +201,7 @@ impl HashAlgorithm {
                 HashAlgorithm::Sha1 => SHA1,
                 HashAlgorithm::Sha256 => SHA256,
                 HashAlgorithm::Sha384 => SHA384,
+                HashAlgorithm::Sha512 => SHA512,
             }
         }
     }
@@ -168,6 +215,7 @@ impl TryFrom<der::asn1::ObjectIdentifier> for HashAlgorithm {
         match oid {
             der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => Ok(Self::Sha256),
             der::oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION => Ok(Self::Sha384),
+            der::oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION => Ok(Self::Sha512),
             der::oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => Ok(Self::Sha1),
             _ => Err(der::ErrorKind::OidUnknown { oid }.to_error()),
         }
@@ -181,6 +229,7 @@ impl From<HashAlgorithm> for openssl::hash::MessageDigest {
             HashAlgorithm::Sha1 => openssl::hash::MessageDigest::sha1(),
             HashAlgorithm::Sha256 => openssl::hash::MessageDigest::sha256(),
             HashAlgorithm::Sha384 => openssl::hash::MessageDigest::sha384(),
+            HashAlgorithm::Sha512 => openssl::hash::MessageDigest::sha512(),
         }
     }
 }
@@ -192,6 +241,7 @@ impl From<HashAlgorithm> for &'static openssl::md::MdRef {
             HashAlgorithm::Sha1 => openssl::md::Md::sha1(),
             HashAlgorithm::Sha256 => openssl::md::Md::sha256(),
             HashAlgorithm::Sha384 => openssl::md::Md::sha384(),
+            HashAlgorithm::Sha512 => openssl::md::Md::sha512(),
         }
     }
 }
@@ -203,6 +253,7 @@ impl From<HashAlgorithm> for symcrypt::hash::HashAlgorithm {
             HashAlgorithm::Sha1 => symcrypt::hash::HashAlgorithm::Sha1,
             HashAlgorithm::Sha256 => symcrypt::hash::HashAlgorithm::Sha256,
             HashAlgorithm::Sha384 => symcrypt::hash::HashAlgorithm::Sha384,
+            HashAlgorithm::Sha512 => symcrypt::hash::HashAlgorithm::Sha512,
         }
     }
 }

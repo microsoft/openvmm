@@ -702,6 +702,7 @@ impl TestNicDevice {
             interrupt: host_to_guest_interrupt,
             use_confidential_ring: false,
             use_confidential_external_memory: false,
+            is_external_memory_pinned: false,
         };
 
         let open_response = self
@@ -753,6 +754,7 @@ impl TestNicDevice {
             interrupt: host_to_guest_interrupt,
             use_confidential_ring: false,
             use_confidential_external_memory: false,
+            is_external_memory_pinned: false,
         };
 
         let open_response = self
@@ -879,6 +881,7 @@ impl TestNicDevice {
                                                 interrupt: host_to_guest_interrupt.clone(),
                                                 use_confidential_external_memory: false,
                                                 use_confidential_ring: false,
+                                                is_external_memory_pinned: false,
                                             }),
                                             gpadls,
                                         })

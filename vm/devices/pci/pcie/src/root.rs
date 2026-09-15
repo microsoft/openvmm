@@ -128,39 +128,6 @@ pub struct DownstreamPortInfo {
     pub bus_range: AssignedBusRange,
 }
 
-/// A flat description of a PCIe switch without hierarchy.
-pub struct GenericSwitchDefinition {
-    /// The name of the switch.
-    pub name: Arc<str>,
-    /// Number of downstream ports.
-    pub num_downstream_ports: u8,
-    /// The parent port this switch is connected to.
-    pub parent_port: Arc<str>,
-    /// Whether hotplug is enabled for this switch.
-    pub hotplug: bool,
-    /// Express-level settings for downstream switch ports.
-    pub dsp_settings: PciePortSettings,
-}
-
-impl GenericSwitchDefinition {
-    /// Create a new switch definition.
-    pub fn new(
-        name: impl Into<Arc<str>>,
-        num_downstream_ports: u8,
-        parent_port: impl Into<Arc<str>>,
-        hotplug: bool,
-        dsp_settings: PciePortSettings,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            num_downstream_ports,
-            parent_port: parent_port.into(),
-            hotplug,
-            dsp_settings,
-        }
-    }
-}
-
 /// Builder for [`GenericPcieRootComplex`].
 ///
 /// Obtain via [`GenericPcieRootComplex::builder`], configure optional

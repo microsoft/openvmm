@@ -46,6 +46,8 @@ impl ResourceId<HypervisorKind> for KvmHandle {
 pub struct MshvHandle {
     /// An open `/dev/mshv` file descriptor.
     pub mshv: std::fs::File,
+    /// Disable MSHV handling of SNP GHCB CPUID requests.
+    pub snp_disable_cpuid_offload: bool,
 }
 
 impl ResourceId<HypervisorKind> for MshvHandle {

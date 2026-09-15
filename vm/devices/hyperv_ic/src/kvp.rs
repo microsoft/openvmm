@@ -101,7 +101,11 @@ impl SimpleVmbusDevice for KvpIc {
             interface_name: "kvp_ic".to_owned(),
             instance_id: proto::INSTANCE_ID,
             interface_id: proto::INTERFACE_ID,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }

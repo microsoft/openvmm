@@ -171,13 +171,25 @@ pub enum HardwareSealingPolicy {
     Signer,
 }
 
+/// Version of the Microsoft TPM reference implementation to expose to the
+/// guest.
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+pub enum GetTpmVersion {
+    /// TPM reference implementation version 1.38
+    V138,
+    /// TPM reference implementation version 1.85
+    V185,
+}
+
 /// Management VTL Feature Flags
 #[bitfield(u64)]
 #[derive(Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct ManagementVtlFeatures {
     pub strict_encryption_policy: bool,
-    pub _reserved1: bool,
+    /// The host supports the `LOAD_FIRMWARE` host request (VTL0 firmware
+    /// overload). Bit 1 (`0x00000002`).
+    pub load_firmware_supported: bool,
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
@@ -245,6 +257,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub force_dma_bounce_enabled: bool,
     #[serde(default)]
     pub hardware_sealing_policy_id: HardwareSealingPolicy,
+    #[serde(default)]
+    pub tpm_version: Option<GetTpmVersion>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

@@ -236,9 +236,12 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             Ok(())
         };
 
+        let vtl = vtl.try_into();
+        let mut pending_ordered_reg = false;
         for reg in regs {
-            if let Ok(vtl) = vtl.try_into()
-                && !T::must_flush_regs_on(self, reg.name)
+            let in_order_update_required = T::must_flush_regs_on(self, reg.name);
+            if let Ok(vtl) = vtl
+                && !in_order_update_required
                 && T::try_set_reg(self, vtl, reg.name, reg.value)
             {
             } else if self.is_kernel_managed(reg.name.into()) {
@@ -258,10 +261,23 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                 }
             } else {
                 hv_regs.push(reg);
-
                 if hv_regs.is_full() {
                     do_hvcall(&mut hv_regs)?;
+                    pending_ordered_reg = false;
+                } else if in_order_update_required {
+                    pending_ordered_reg = true;
                 }
+            }
+        }
+
+        // If the only outstanding update is for a register marked with must_flush_regs_on, then there are no ordering
+        // concerns; try using the fast path.
+        if let Ok(vtl) = vtl
+            && pending_ordered_reg
+            && hv_regs.len() == 1
+        {
+            if T::try_set_reg(self, vtl, hv_regs[0].name, hv_regs[0].value) {
+                hv_regs.clear();
             }
         }
 

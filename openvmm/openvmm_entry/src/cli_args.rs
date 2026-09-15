@@ -143,6 +143,11 @@ pub struct NumaDistanceCli {
 /// This is not yet a stable interface and may change radically between
 /// versions.
 #[derive(Parser)]
+#[command(
+    name = "openvmm",
+    version = openvmm_build_info::get().version(),
+    long_version = openvmm_build_info::get().long_version(),
+)]
 pub struct Options {
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
@@ -279,11 +284,61 @@ Examples:
     #[clap(long)]
     pub hv: bool,
 
+    /// Boot UEFI without exposing hypervisor (HV#1) enlightenments. Requires
+    /// `--no-vmbus` since VMBus depends on the hypervisor.
+    #[clap(
+        long,
+        requires_all = ["uefi", "no_vmbus"],
+        conflicts_with_all = ["hv", "vtl2", "get", "pcat", "igvm"]
+    )]
+    pub no_hv: bool,
+
     /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
     /// boot. By default, ARM64 uses ACPI mode (stub DT + EFI + ACPI tables).
     /// This flag selects the legacy DT-only path. Rejected on x86.
-    #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm"])]
+    #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm", "smbios"])]
     pub device_tree: bool,
+
+    /// SMBIOS (DMI) identity overrides (repeatable).
+    #[clap(
+        long,
+        value_name = "PARAMS",
+        value_parser = parse_smbios,
+        long_help = r#"Override the guest's SMBIOS (DMI) identity.
+
+Syntax: type=N,key=value[,key=value...]
+
+`type` selects the SMBIOS structure and is required; there is no default.
+Unset keys use the loader's built-in default identity. Repeat --smbios to set
+fields across multiple structure types.
+
+OpenVMM Linux direct boot supports all listed fields. OpenHCL Linux direct
+boot and UEFI boot support Type 1 fields only. PCAT boot supports only Type 1
+`serial` and `uuid`. Unsupported fields are rejected with an error.
+
+Type 0 (BIOS Information):
+    vendor=<STRING>          BIOS vendor
+    version=<STRING>         BIOS version
+    date=<STRING>            BIOS release date
+    release=<MAJOR.MINOR>    System BIOS Major/Minor Release (e.g. 4.1)
+
+Type 1 (System Information):
+    manufacturer=<STRING>    system manufacturer (sys_vendor)
+    product=<STRING>         product name (product_name)
+    version=<STRING>         product version (product_version)
+    serial=<STRING>          serial number (product_serial)
+    uuid=<GUID|random>       system UUID (product_uuid); `random` generates a
+                             fresh per-VM GUID. Unset => all-zero GUID.
+    sku=<STRING>             SKU number (product_sku)
+    family=<STRING>          product family (product_family)
+
+Examples:
+    --smbios type=1,manufacturer=Contoso,product="Virtual Machine"
+    --smbios type=1,uuid=12345678-9abc-def0-1234-56789abcdef0
+    --smbios type=1,uuid=random
+    --smbios type=0,vendor=Contoso,version=1.0"#
+    )]
+    pub smbios: Vec<SmbiosCli>,
 
     /// enable vtl2 - only supported in WHP and simulated without hypervisor support currently
     ///
@@ -322,9 +377,13 @@ Examples:
     #[clap(long, requires("vtl2"))]
     pub no_alias_map: bool,
 
-    /// enable isolation emulation
-    #[clap(long, requires("vtl2"))]
+    /// enable isolation
+    #[clap(long)]
     pub isolation: Option<IsolationCli>,
+
+    /// enable restricted interrupt injection for SNP Linux direct boot
+    #[clap(long)]
+    pub snp_restricted_injection: bool,
 
     /// the hybrid vsock listener path
     #[clap(long, value_name = "PATH", alias = "vsock-path")]
@@ -696,6 +755,15 @@ options:
     #[clap(long, conflicts_with("kernel"), value_name = "FILE")]
     pub igvm: Option<PathBuf>,
 
+    /// select the chipset and device personality for a non-VTL2 IGVM
+    #[clap(
+        long,
+        requires("igvm"),
+        conflicts_with_all = ["vtl2", "uefi", "pcat"],
+        value_enum
+    )]
+    pub igvm_personality: Option<IgvmPersonalityCli>,
+
     /// specify igvm vtl2 relocation type
     /// (absolute=\<addr\>, disable, auto=\<filesize,or memory size\>, vtl2=\<filesize,or memory size\>,)
     #[clap(long, requires("igvm"), default_value = "auto=filesize", value_parser = parse_vtl2_relocation)]
@@ -760,6 +828,10 @@ options:
     /// attach the virtio-console device to the specified PCIe port
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
+
+    /// select the bus for virtio vsock devices (pci | mmio)
+    #[clap(long, value_name = "BUS", value_parser = parse_virtio_vsock_bus)]
+    pub virtio_vsock_bus: Option<VirtioBusCli>,
 
     /// add a virtio vsock device with the given Unix socket base path
     #[clap(long, value_name = "PATH")]
@@ -847,9 +919,14 @@ Examples:
     #[clap(long, requires("uefi"))]
     pub disable_frontpage: bool,
 
-    /// add a vtpm device
-    #[clap(long)]
-    pub tpm: bool,
+    /// add a vtpm device, optionally selecting version 138 or 185 (default: 185)
+    #[clap(
+        long,
+        value_name = "VERSION",
+        num_args = 0..=1,
+        default_missing_value = "185"
+    )]
+    pub tpm: Option<TpmVersionCli>,
 
     /// the mesh worker host name.
     ///
@@ -1079,6 +1156,10 @@ flags:
     #[clap(long)]
     pub battery: bool,
 
+    /// enable guest hibernation
+    #[clap(long)]
+    pub hibernation: bool,
+
     /// set the uefi console mode
     #[clap(long)]
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
@@ -1146,6 +1227,10 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
+
+    /// Place PCIe ECAM below 4 GiB for guest kernels that cannot discover high ECAM
+    #[clap(long, requires("pcie_root_complex"), conflicts_with("pcat"))]
+    pub pcie_ecam_below_4gb: bool,
 
     /// Attach a PCI Express root port to the VM
     #[clap(long_help = r#"
@@ -1359,6 +1444,49 @@ impl Options {
         }
         Ok(())
     }
+
+    /// Validates isolation-specific command-line option combinations.
+    pub fn validate_isolation_options(&self) -> anyhow::Result<()> {
+        if self.snp_restricted_injection && !matches!(self.isolation, Some(IsolationCli::Snp)) {
+            anyhow::bail!("--snp-restricted-injection requires --isolation snp");
+        }
+        if self.snp_restricted_injection
+            && self
+                .hypervisor
+                .as_deref()
+                .and_then(|value| value.split(':').next())
+                != Some("mshv")
+        {
+            anyhow::bail!("--snp-restricted-injection requires --hypervisor mshv");
+        }
+        if self.snp_restricted_injection
+            && (self.uefi || self.pcat || self.igvm.is_some() || self.restore_snapshot.is_some())
+        {
+            anyhow::bail!("--snp-restricted-injection requires Linux direct boot");
+        }
+        if matches!(self.isolation, Some(IsolationCli::Snp)) {
+            if self.uefi {
+                anyhow::bail!("SNP isolation currently only supports Linux direct boot");
+            }
+            if self.memory.hugepages
+                || self
+                    .numa
+                    .as_ref()
+                    .is_some_and(|nodes| nodes.iter().any(|node| node.memory.hugepages))
+            {
+                anyhow::bail!("SNP isolation currently does not support hugetlb memory");
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates IGVM personality selection.
+    pub fn validate_igvm_options(&self) -> anyhow::Result<()> {
+        if self.igvm.is_some() && !self.vtl2 && self.igvm_personality.is_none() {
+            anyhow::bail!("--igvm-personality is required for non-VTL2 IGVM boots");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1457,6 +1585,13 @@ pub enum VirtioBusCli {
     Vpci,
 }
 
+fn parse_virtio_vsock_bus(value: &str) -> Result<VirtioBusCli, String> {
+    match VirtioBusCli::from_str(value, true) {
+        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci)) => Ok(bus),
+        _ => Err("expected mmio or pci".to_string()),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn parse_vhost_vsock_cid(value: &str) -> Result<u32, String> {
     let cid = value
@@ -1510,6 +1645,17 @@ pub enum SecureBootTemplateCli {
     UefiCa,
 }
 
+/// TPM reference implementation version selected by `--tpm`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum TpmVersionCli {
+    /// TPM reference implementation version 1.38.
+    #[value(name = "138", alias = "1.38")]
+    V138,
+    /// TPM reference implementation version 1.85.
+    #[value(name = "185", alias = "1.85")]
+    V185,
+}
+
 fn parse_memory(s: &str) -> anyhow::Result<u64> {
     if s == "VMGS_DEFAULT" {
         Ok(vmgs_format::VMGS_DEFAULT_CAPACITY)
@@ -1557,6 +1703,212 @@ fn parse_acs_capability_mask(value: &str) -> anyhow::Result<u16> {
     } else {
         value.parse::<u16>().context("invalid ACS capability mask")
     }
+}
+
+/// A parsed SMBIOS `release=MAJOR.MINOR` value: exactly two `u8` components
+/// separated by a dot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmbiosRelease(pub u8, pub u8);
+
+impl FromStr for SmbiosRelease {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        let (major, minor) = value
+            .split_once('.')
+            .with_context(|| format!("invalid smbios release '{value}', expected MAJOR.MINOR"))?;
+        let major = major
+            .parse::<u8>()
+            .with_context(|| format!("invalid smbios release major '{major}'"))?;
+        let minor = minor
+            .parse::<u8>()
+            .with_context(|| format!("invalid smbios release minor '{minor}'"))?;
+        Ok(SmbiosRelease(major, minor))
+    }
+}
+
+/// A parsed SMBIOS `uuid=` value: either an explicit GUID or the literal
+/// `random`, which requests a freshly generated per-VM GUID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmbiosUuid {
+    /// Generate a fresh random GUID when the VM is created.
+    Random,
+    /// Use this fixed GUID.
+    Fixed(Guid),
+}
+
+impl FromStr for SmbiosUuid {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        if value == "random" {
+            Ok(SmbiosUuid::Random)
+        } else {
+            let guid = value
+                .parse::<Guid>()
+                .with_context(|| format!("invalid smbios uuid '{value}'"))?;
+            Ok(SmbiosUuid::Fixed(guid))
+        }
+    }
+}
+
+/// SMBIOS Type 0 (BIOS Information) overrides parsed from a `--smbios type=0,…`
+/// argument. Field names mirror `SmbiosBiosOverrides`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, vmm_cli::KeyValueArgs)]
+pub struct SmbiosBiosCli {
+    /// BIOS vendor (`vendor`).
+    pub vendor: Option<String>,
+    /// BIOS version (`version`).
+    pub version: Option<String>,
+    /// BIOS release date (`date`).
+    #[kv(key = "date")]
+    pub release_date: Option<String>,
+    /// System BIOS Major/Minor Release (`release=MAJOR.MINOR`).
+    pub release: Option<SmbiosRelease>,
+}
+
+/// SMBIOS Type 1 (System Information) overrides parsed from a `--smbios type=1,…`
+/// argument. Field names mirror `SmbiosSystemOverrides`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, vmm_cli::KeyValueArgs)]
+pub struct SmbiosSystemCli {
+    /// System manufacturer (`manufacturer`).
+    pub manufacturer: Option<String>,
+    /// System product name (`product`).
+    #[kv(key = "product")]
+    pub product_name: Option<String>,
+    /// System version (`version`).
+    pub version: Option<String>,
+    /// System serial number (`serial`).
+    #[kv(key = "serial")]
+    pub serial_number: Option<String>,
+    /// System SKU number (`sku`).
+    #[kv(key = "sku")]
+    pub sku_number: Option<String>,
+    /// System family (`family`).
+    pub family: Option<String>,
+    /// System UUID (`uuid=GUID` or `uuid=random`).
+    pub uuid: Option<SmbiosUuid>,
+}
+
+/// SMBIOS (DMI) identity overrides parsed from `--smbios` arguments, grouped by
+/// SMBIOS structure type to mirror the required `type=N` CLI prefix and the
+/// loader's `SmbiosConfig` layout.
+///
+/// Each `--smbios` argument targets exactly one type; multiple arguments are
+/// merged with [`SmbiosCli::merge`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SmbiosCli {
+    /// Type 0 (BIOS Information) overrides.
+    pub bios: SmbiosBiosCli,
+    /// Type 1 (System Information) overrides.
+    pub system: SmbiosSystemCli,
+}
+
+/// Set an override slot, erroring if it is already set.
+fn smbios_set_once<T>(slot: &mut Option<T>, key: &str, value: T) -> anyhow::Result<()> {
+    anyhow::ensure!(slot.is_none(), "duplicate smbios option '{key}'");
+    *slot = Some(value);
+    Ok(())
+}
+
+impl SmbiosCli {
+    /// Merge another parsed `--smbios` argument into this one, erroring if any
+    /// field is set by both.
+    pub fn merge(&mut self, other: SmbiosCli) -> anyhow::Result<()> {
+        let SmbiosCli {
+            bios:
+                SmbiosBiosCli {
+                    vendor,
+                    version: bios_version,
+                    release_date,
+                    release,
+                },
+            system:
+                SmbiosSystemCli {
+                    manufacturer,
+                    product_name,
+                    version: system_version,
+                    serial_number,
+                    sku_number,
+                    family,
+                    uuid,
+                },
+        } = other;
+        merge_smbios_field(&mut self.bios.vendor, vendor, 0, "vendor")?;
+        merge_smbios_field(&mut self.bios.version, bios_version, 0, "version")?;
+        merge_smbios_field(&mut self.bios.release_date, release_date, 0, "date")?;
+        merge_smbios_field(&mut self.bios.release, release, 0, "release")?;
+        merge_smbios_field(
+            &mut self.system.manufacturer,
+            manufacturer,
+            1,
+            "manufacturer",
+        )?;
+        merge_smbios_field(&mut self.system.product_name, product_name, 1, "product")?;
+        merge_smbios_field(&mut self.system.version, system_version, 1, "version")?;
+        merge_smbios_field(&mut self.system.serial_number, serial_number, 1, "serial")?;
+        merge_smbios_field(&mut self.system.sku_number, sku_number, 1, "sku")?;
+        merge_smbios_field(&mut self.system.family, family, 1, "family")?;
+        merge_smbios_field(&mut self.system.uuid, uuid, 1, "uuid")?;
+        Ok(())
+    }
+}
+
+/// Merge a single override field, erroring if both sides are set. `typ` is the
+/// SMBIOS structure type the field belongs to, included in the error message.
+fn merge_smbios_field<T>(
+    dst: &mut Option<T>,
+    src: Option<T>,
+    typ: u8,
+    key: &str,
+) -> anyhow::Result<()> {
+    if let Some(value) = src {
+        smbios_set_once(dst, &format!("type={typ} {key}"), value)?;
+    }
+    Ok(())
+}
+
+/// Parse a single `--smbios` argument: `type=N,key=value[,key=value...]`.
+///
+/// `type=N` is required (there is no default) and selects the key namespace;
+/// the remaining `key=value` pairs are parsed by the matching per-type
+/// `KeyValueArgs` struct. Unknown types and unknown keys are hard errors (no
+/// silent drop).
+fn parse_smbios(s: &str) -> anyhow::Result<SmbiosCli> {
+    let mut typ: Option<u8> = None;
+    let mut rest = Vec::new();
+    for part in s.split(',') {
+        let (key, value) = part
+            .split_once('=')
+            .with_context(|| format!("invalid smbios option '{part}', expected key=value"))?;
+        if key.is_empty() || value.is_empty() {
+            anyhow::bail!("invalid smbios option '{part}', expected key=value");
+        }
+        if key == "type" {
+            anyhow::ensure!(typ.is_none(), "duplicate smbios option 'type'");
+            typ = Some(
+                value
+                    .parse::<u8>()
+                    .with_context(|| format!("invalid smbios type '{value}'"))?,
+            );
+        } else {
+            rest.push(part);
+        }
+    }
+
+    let typ = typ.context("smbios option requires 'type=N' (e.g. 'type=1')")?;
+    let rest = rest.join(",");
+    Ok(match typ {
+        0 => SmbiosCli {
+            bios: rest.parse()?,
+            ..Default::default()
+        },
+        1 => SmbiosCli {
+            system: rest.parse()?,
+            ..Default::default()
+        },
+        other => anyhow::bail!("unsupported smbios type '{other}' (expected 0 or 1)"),
+    })
 }
 
 fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
@@ -2749,6 +3101,13 @@ pub enum GicMsiCli {
 #[derive(Debug, Copy, Clone, ValueEnum)]
 pub enum IsolationCli {
     Vbs,
+    Snp,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, ValueEnum)]
+pub enum IgvmPersonalityCli {
+    Uefi,
+    LinuxDirect,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -3391,6 +3750,31 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    /// `--version` reports the resolved build identity rather than clap's
+    /// default, which would be the parser crate's own name and version.
+    #[test]
+    fn version_reports_build_info() {
+        let short = version_output(["openvmm", "-V"]);
+        assert_eq!(
+            short,
+            format!("openvmm {}\n", openvmm_build_info::get().version())
+        );
+
+        let long = version_output(["openvmm", "--version"]);
+        assert_eq!(
+            long,
+            format!("openvmm {}\n", openvmm_build_info::get().long_version())
+        );
+    }
+
+    fn version_output(args: [&str; 2]) -> String {
+        let Err(error) = Options::try_parse_from(args) else {
+            panic!("{args:?} unexpectedly parsed as runtime options");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        error.to_string()
+    }
 
     #[test]
     fn test_parse_rpc() {
@@ -4769,6 +5153,190 @@ mod tests {
     }
 
     #[test]
+    fn test_smbios_requires_type() {
+        // `type=` is mandatory; there is no default.
+        assert!(parse_smbios("manufacturer=Contoso,family=Foo").is_err());
+    }
+
+    #[test]
+    fn test_smbios_all_system_keys() {
+        let parsed = parse_smbios(
+            "type=1,manufacturer=M,product=P,version=V,serial=S,sku=K,family=F,\
+             uuid=12345678-9abc-def0-1234-56789abcdef0",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            SmbiosCli {
+                system: SmbiosSystemCli {
+                    manufacturer: Some("M".to_string()),
+                    product_name: Some("P".to_string()),
+                    version: Some("V".to_string()),
+                    serial_number: Some("S".to_string()),
+                    sku_number: Some("K".to_string()),
+                    family: Some("F".to_string()),
+                    uuid: Some(SmbiosUuid::Fixed(
+                        "12345678-9abc-def0-1234-56789abcdef0"
+                            .parse::<Guid>()
+                            .unwrap()
+                    )),
+                },
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn test_smbios_bios_keys() {
+        let parsed =
+            parse_smbios("type=0,vendor=Contoso,version=1.0,date=01/01/2026,release=4.1").unwrap();
+        assert_eq!(
+            parsed,
+            SmbiosCli {
+                bios: SmbiosBiosCli {
+                    vendor: Some("Contoso".to_string()),
+                    version: Some("1.0".to_string()),
+                    release_date: Some("01/01/2026".to_string()),
+                    release: Some(SmbiosRelease(4, 1)),
+                },
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn test_smbios_release_parsing() {
+        // Valid MAJOR.MINOR.
+        assert_eq!(
+            parse_smbios("type=0,release=4.1").unwrap().bios.release,
+            Some(SmbiosRelease(4, 1))
+        );
+        assert_eq!(
+            parse_smbios("type=0,release=255.0").unwrap().bios.release,
+            Some(SmbiosRelease(255, 0))
+        );
+        // Missing the dot, extra components, out-of-range, and non-numeric all
+        // error.
+        assert!(parse_smbios("type=0,release=4").is_err());
+        assert!(parse_smbios("type=0,release=4.1.0").is_err());
+        assert!(parse_smbios("type=0,release=256.0").is_err());
+        assert!(parse_smbios("type=0,release=x.y").is_err());
+        // `release` is a type=0 key only.
+        assert!(parse_smbios("type=1,release=4.1").is_err());
+    }
+
+    #[test]
+    fn test_smbios_uuid() {
+        // An explicit GUID parses to `Fixed`.
+        assert_eq!(
+            parse_smbios("type=1,uuid=12345678-9abc-def0-1234-56789abcdef0")
+                .unwrap()
+                .system
+                .uuid,
+            Some(SmbiosUuid::Fixed(
+                "12345678-9abc-def0-1234-56789abcdef0"
+                    .parse::<Guid>()
+                    .unwrap()
+            ))
+        );
+        // The literal `random` parses to `Random`.
+        assert_eq!(
+            parse_smbios("type=1,uuid=random").unwrap().system.uuid,
+            Some(SmbiosUuid::Random)
+        );
+    }
+
+    #[test]
+    fn test_smbios_version_disambiguated_by_type() {
+        // `version` belongs to BIOS under type=0 and System under type=1.
+        let bios = parse_smbios("type=0,version=1.0").unwrap();
+        assert_eq!(bios.bios.version.as_deref(), Some("1.0"));
+        assert_eq!(bios.system.version, None);
+
+        let system = parse_smbios("type=1,version=2.0").unwrap();
+        assert_eq!(system.system.version.as_deref(), Some("2.0"));
+        assert_eq!(system.bios.version, None);
+    }
+
+    #[test]
+    fn test_smbios_rejects_invalid() {
+        // Missing type.
+        assert!(parse_smbios("manufacturer=M").is_err());
+        // Unknown key for the type.
+        assert!(parse_smbios("type=0,manufacturer=M").is_err());
+        assert!(parse_smbios("type=1,nonsense=x").is_err());
+        // Unknown / unsupported type.
+        assert!(parse_smbios("type=2,vendor=M").is_err());
+        assert!(parse_smbios("type=bad,vendor=M").is_err());
+        // Malformed key=value.
+        assert!(parse_smbios("type=1,manufacturer").is_err());
+        assert!(parse_smbios("=value").is_err());
+        assert!(parse_smbios("type=1,manufacturer=").is_err());
+        // Duplicate key within one argument.
+        assert!(parse_smbios("type=1,manufacturer=A,manufacturer=B").is_err());
+        assert!(parse_smbios("type=0,type=1,vendor=M").is_err());
+        // Invalid UUID.
+        assert!(parse_smbios("type=1,uuid=not-a-guid").is_err());
+    }
+
+    #[test]
+    fn test_smbios_merge_across_arguments() {
+        let mut merged = SmbiosCli::default();
+        merged
+            .merge(parse_smbios("type=0,vendor=Contoso").unwrap())
+            .unwrap();
+        merged
+            .merge(parse_smbios("type=1,manufacturer=M,family=F").unwrap())
+            .unwrap();
+        assert_eq!(
+            merged,
+            SmbiosCli {
+                bios: SmbiosBiosCli {
+                    vendor: Some("Contoso".to_string()),
+                    ..Default::default()
+                },
+                system: SmbiosSystemCli {
+                    manufacturer: Some("M".to_string()),
+                    family: Some("F".to_string()),
+                    ..Default::default()
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn test_smbios_merge_rejects_conflicts() {
+        let mut merged = SmbiosCli::default();
+        merged
+            .merge(parse_smbios("type=1,manufacturer=A").unwrap())
+            .unwrap();
+        // The same field set by a second argument is a hard error.
+        assert!(
+            merged
+                .merge(parse_smbios("type=1,manufacturer=B").unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_smbios_arg_repeatable() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--smbios",
+            "type=1,manufacturer=Contoso",
+            "--smbios",
+            "type=0,vendor=Acme",
+        ])
+        .unwrap();
+        assert_eq!(opt.smbios.len(), 2);
+        assert_eq!(
+            opt.smbios[0].system.manufacturer.as_deref(),
+            Some("Contoso")
+        );
+        assert_eq!(opt.smbios[1].bios.vendor.as_deref(), Some("Acme"));
+    }
+
+    #[test]
     fn test_memory_options_merge_legacy_aliases() {
         let opt = Options::try_parse_from([
             "openvmm",
@@ -4830,6 +5398,20 @@ mod tests {
     }
 
     #[test]
+    fn test_no_hv_requires_no_vmbus() {
+        assert!(Options::try_parse_from(["openvmm", "--no-hv"]).is_err());
+
+        let opt = Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus"]).unwrap();
+        assert!(opt.no_hv);
+        assert!(opt.no_vmbus);
+
+        assert!(
+            Options::try_parse_from(["openvmm", "--uefi", "--no-hv", "--no-vmbus", "--hv"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn test_memory_options_allow_legacy_thp_with_new_private_memory() {
         let opt = Options::try_parse_from(["openvmm", "--memory", "shared=off", "--thp"]).unwrap();
         opt.validate_memory_options().unwrap();
@@ -4845,9 +5427,234 @@ mod tests {
     }
 
     #[test]
+    fn test_isolation_options_reject_snp_uefi() {
+        let opt = Options::try_parse_from(["openvmm", "--isolation", "snp", "--uefi"]).unwrap();
+
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "SNP isolation currently only supports Linux direct boot"
+        );
+    }
+
+    #[test]
+    fn test_isolation_options_reject_snp_hugepages() {
+        for args in [
+            vec![
+                "openvmm",
+                "--isolation",
+                "snp",
+                "--memory",
+                "size=1G,hugepages=on",
+            ],
+            vec![
+                "openvmm",
+                "--isolation",
+                "snp",
+                "--numa",
+                "size=1G,hugepages=on",
+            ],
+        ] {
+            let opt = Options::try_parse_from(args).unwrap();
+            assert_eq!(
+                opt.validate_isolation_options().unwrap_err().to_string(),
+                "SNP isolation currently does not support hugetlb memory"
+            );
+        }
+    }
+
+    #[test]
+    fn test_restricted_injection_requires_snp() {
+        let opt = Options::try_parse_from(["openvmm", "--snp-restricted-injection"]).unwrap();
+
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "--snp-restricted-injection requires --isolation snp"
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--isolation",
+            "snp",
+            "--snp-restricted-injection",
+        ])
+        .unwrap();
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "--snp-restricted-injection requires --hypervisor mshv"
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--hypervisor",
+            "mshv",
+            "--isolation",
+            "snp",
+            "--snp-restricted-injection",
+        ])
+        .unwrap();
+        opt.validate_isolation_options().unwrap();
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--hypervisor",
+            "mshv",
+            "--isolation",
+            "snp",
+            "--snp-restricted-injection",
+            "--pcat",
+        ])
+        .unwrap();
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "--snp-restricted-injection requires Linux direct boot"
+        );
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--hypervisor",
+            "mshv",
+            "--isolation",
+            "snp",
+            "--snp-restricted-injection",
+            "--restore-snapshot",
+            "snapshot",
+        ])
+        .unwrap();
+        assert_eq!(
+            opt.validate_isolation_options().unwrap_err().to_string(),
+            "--snp-restricted-injection requires Linux direct boot"
+        );
+    }
+
+    #[test]
+    fn test_isolation_options_allow_vbs_uefi() {
+        let opt = Options::try_parse_from(["openvmm", "--isolation", "vbs", "--uefi"]).unwrap();
+
+        opt.validate_isolation_options().unwrap();
+    }
+
+    #[test]
+    fn test_isolation_options_allow_vbs_hugepages() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--isolation",
+            "vbs",
+            "--memory",
+            "size=1G,hugepages=on",
+        ])
+        .unwrap();
+
+        opt.validate_isolation_options().unwrap();
+    }
+
+    #[test]
+    fn test_igvm_personality_required_without_vtl2() {
+        let opt = Options::try_parse_from(["openvmm", "--igvm", "guest.igvm"]).unwrap();
+        assert_eq!(
+            opt.validate_igvm_options().unwrap_err().to_string(),
+            "--igvm-personality is required for non-VTL2 IGVM boots"
+        );
+    }
+
+    #[test]
+    fn test_igvm_personality_values() {
+        for (value, expected) in [
+            ("uefi", IgvmPersonalityCli::Uefi),
+            ("linux-direct", IgvmPersonalityCli::LinuxDirect),
+        ] {
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--igvm",
+                "guest.igvm",
+                "--igvm-personality",
+                value,
+            ])
+            .unwrap();
+            opt.validate_igvm_options().unwrap();
+            assert_eq!(opt.igvm_personality, Some(expected));
+        }
+
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--igvm",
+                "guest.igvm",
+                "--igvm-personality",
+                "pcat",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_vtl2_igvm_keeps_implicit_hcl_personality() {
+        let opt =
+            Options::try_parse_from(["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"]).unwrap();
+        opt.validate_igvm_options().unwrap();
+        assert_eq!(opt.igvm_personality, None);
+    }
+
+    #[test]
+    fn test_igvm_personality_conflicts_with_vtl2() {
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--igvm",
+                "guest.igvm",
+                "--hv",
+                "--vtl2",
+                "--igvm-personality",
+                "linux-direct",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_igvm_personality_conflicts_with_external_firmware() {
+        for firmware in ["--uefi", "--pcat"] {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "linux-direct",
+                    firmware,
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn test_pidfile_option_parsed() {
         let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
         assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
+
+    #[test]
+    fn test_tpm_version_option() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert_eq!(opt.tpm, None);
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm", "--uefi"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
+        assert!(opt.uefi);
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm", "138"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm=185"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
+
+        let opt = Options::try_parse_from(["openvmm", "--tpm", "1.38"]).unwrap();
+        assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
+
+        assert!(Options::try_parse_from(["openvmm", "--tpm", "137"]).is_err());
     }
 
     #[test]
@@ -5039,6 +5846,18 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn test_virtio_vsock_bus_cli() {
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "mmio"]).unwrap();
+        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio)));
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pci"]).unwrap();
+        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci)));
+
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "auto"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "vpci"]).is_err());
     }
 
     #[test]

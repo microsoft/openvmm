@@ -81,6 +81,14 @@ pub const HCL_SECURE_VTL: Vtl = Vtl::Vtl2;
 /// Size of the persisted region (2MB).
 const PERSISTED_REGION_SIZE: u64 = 2 * 1024 * 1024;
 
+fn avoid_page_table_large_page_boundary(offset: u64, large_page_size: u64) -> u64 {
+    if offset.is_multiple_of(large_page_size) {
+        offset + HV_PAGE_SIZE
+    } else {
+        offset
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("memory is unaligned: {0}")]
@@ -482,6 +490,10 @@ where
         &[],
     )?;
     offset += heap_size;
+
+    // Some loaders only fix up identity map entries that overlap the relocation
+    // region, so keep the page table region in the same large page as it.
+    offset = avoid_page_table_large_page_boundary(offset, X64_LARGE_PAGE_SIZE);
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
@@ -983,6 +995,14 @@ where
         config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX;
 
     importer.set_imported_regions_config_page(imported_region_base);
+
+    // Also announce the per-page expected-hashes region. The IGVM file
+    // loader populates it in finalize alongside the imported-regions page
+    // (both regions are derived from the same set of shared pages). See
+    // `openhcl_boot::verify_imported_regions_hash` diagnostic changes.
+    let expected_page_hashes_base =
+        config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX;
+    importer.set_expected_page_hashes_config_page(expected_page_hashes_base);
     Ok(())
 }
 
@@ -1233,6 +1253,10 @@ where
         &[],
     )?;
     next_addr += heap_size;
+
+    // Some loaders only fix up identity map entries that overlap the relocation
+    // region, so keep the page table region in the same large page as it.
+    next_addr = avoid_page_table_large_page_boundary(next_addr, u64::from(Arm64PageSize::Large));
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
@@ -1553,7 +1577,35 @@ where
 
     importer.set_imported_regions_config_page(imported_region_base);
 
+    // Also announce the per-page expected-hashes region (see comments in
+    // the x86 sibling above).
+    let expected_page_hashes_base =
+        config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX;
+    importer.set_expected_page_hashes_config_page(expected_page_hashes_base);
+
     Ok(())
+}
+
+#[cfg(test)]
+mod page_table_layout_tests {
+    use super::*;
+
+    #[test]
+    fn page_table_region_avoids_large_page_boundary() {
+        for large_page_size in [X64_LARGE_PAGE_SIZE, u64::from(Arm64PageSize::Large)] {
+            assert_eq!(
+                avoid_page_table_large_page_boundary(large_page_size, large_page_size),
+                large_page_size + HV_PAGE_SIZE
+            );
+            assert_eq!(
+                avoid_page_table_large_page_boundary(
+                    large_page_size - HV_PAGE_SIZE,
+                    large_page_size
+                ),
+                large_page_size - HV_PAGE_SIZE
+            );
+        }
+    }
 }
 
 #[cfg(test)]

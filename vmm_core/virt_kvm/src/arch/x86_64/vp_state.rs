@@ -95,7 +95,7 @@ impl KvmVpStateAccess<'_, '_> {
     }
 }
 
-fn seg_reg(reg: SegmentRegister) -> kvm::kvm_segment {
+pub(crate) fn seg_reg(reg: SegmentRegister) -> kvm::kvm_segment {
     let attributes = SegmentAttributes::from(reg.attributes);
     kvm::kvm_segment {
         base: reg.base,
@@ -116,7 +116,7 @@ fn seg_reg(reg: SegmentRegister) -> kvm::kvm_segment {
     }
 }
 
-fn seg_reg_from_kvm(reg: kvm::kvm_segment) -> SegmentRegister {
+pub(crate) fn seg_reg_from_kvm(reg: kvm::kvm_segment) -> SegmentRegister {
     // KVM forces the "accessed" bit (bit 0 of the segment type) on every
     // non-LDTR segment when unrestricted guest mode is active. For unusable
     // segments (`present == 0`) this bit is architecturally meaningless, but it
@@ -143,7 +143,7 @@ fn seg_reg_from_kvm(reg: kvm::kvm_segment) -> SegmentRegister {
     }
 }
 
-fn table_reg(reg: TableRegister) -> kvm::kvm_dtable {
+pub(crate) fn table_reg(reg: TableRegister) -> kvm::kvm_dtable {
     kvm::kvm_dtable {
         base: reg.base,
         limit: reg.limit,
@@ -151,7 +151,7 @@ fn table_reg(reg: TableRegister) -> kvm::kvm_dtable {
     }
 }
 
-fn table_reg_from_kvm(reg: kvm::kvm_dtable) -> TableRegister {
+pub(crate) fn table_reg_from_kvm(reg: kvm::kvm_dtable) -> TableRegister {
     TableRegister {
         base: reg.base,
         limit: reg.limit,

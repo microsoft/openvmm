@@ -40,6 +40,8 @@ const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
     max: 4 * 1024 * 1024,
 };
 
+pub use dns_resolver::StaticDnsRecord;
+pub use dns_resolver::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -116,7 +118,7 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
-    dns: Option<dns_resolver::DnsResolver>,
+    dns: dns_resolver::DnsResolver,
     host_has_ipv6: bool,
 }
 
@@ -177,6 +179,11 @@ pub struct ConsommeParams {
     pub client_ip_ipv6_routable: Option<Ipv6Address>,
     /// Idle timeout for UDP connections.
     pub udp_timeout: Duration,
+    /// Inactivity timeout for TCP connections waiting for a close handshake
+    /// to make progress, including closes initiated before the initial
+    /// handshake completes. ACKs and newly accepted data restart the timeout.
+    /// The same duration is used as the `TimeWait` interval.
+    pub tcp_close_timeout: Duration,
     /// If true, skip checks for host IPv6 support and assume the host has a
     /// routable IPv6 address.
     pub skip_ipv6_checks: bool,
@@ -246,6 +253,8 @@ impl ConsommeParams {
             client_ip_ipv6_routable: None,
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
+            // Defaults to 2*MSL per RFC 9293 for the `TimeWait` case.
+            tcp_close_timeout: Duration::from_secs(60),
             skip_ipv6_checks: false,
             allow_host_local_access: false,
             tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
@@ -813,18 +822,20 @@ impl Consomme {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
                     params.nameservers = params.internal_nameservers(host_has_ipv6);
-                    Some(dns)
+                    dns
                 }
                 Err(_) => {
                     tracelimit::warn_ratelimited!(
                         "failed to initialize DNS resolver, falling back to using host DNS settings"
                     );
-                    None
+                    dns_resolver::DnsResolver::without_backend(
+                        dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
+                    )
                 }
             };
-        let timeout = params.udp_timeout;
         let tcp_rx_buffer = params.tcp_rx_buffer;
         let tcp_tx_buffer = params.tcp_tx_buffer;
+        let udp_timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
                 params,
@@ -832,7 +843,7 @@ impl Consomme {
                 local_addr_map: local_addr_map::LocalAddrMap::new(),
             },
             tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
-            udp: udp::Udp::new(timeout),
+            udp: udp::Udp::new(udp_timeout),
             icmp: icmp::Icmp::new(),
             dns,
             host_has_ipv6,
@@ -855,6 +866,16 @@ impl Consomme {
     /// acceptable.
     pub fn clear_local_addr_map(&mut self) {
         self.state.local_addr_map.clear();
+    }
+
+    /// Adds a static DNS record that will be returned directly
+    /// if the guest sends a matching query.
+    pub fn add_dns_record(
+        &mut self,
+        record: StaticDnsRecord,
+        name: &str,
+    ) -> Result<(), StaticDnsRecordError> {
+        self.dns.add_static_record(record, name)
     }
 
     /// Allocates a virtual address within this endpoint's subnet and routes
@@ -1129,7 +1150,7 @@ impl<T: Client> Access<'_, T> {
 
     /// Updates the DNS nameservers based on the current consomme parameters.
     pub fn update_dns_nameservers(&mut self) {
-        if self.inner.dns.is_some() {
+        if self.inner.dns.is_available() {
             self.inner.state.params.nameservers = self
                 .inner
                 .state
