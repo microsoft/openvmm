@@ -689,7 +689,6 @@ pub fn write_uefi_config(
 
         flags.set_pause_after_boot_failure(platform_config.general.pause_after_boot_failure);
         flags.set_pxe_ip_v6(platform_config.general.pxe_ip_v6);
-        flags.set_disable_sha1_pcr(platform_config.general.disable_sha1_pcr);
         flags.set_media_present_enabled_by_default(
             platform_config.general.media_present_enabled_by_default,
         );
