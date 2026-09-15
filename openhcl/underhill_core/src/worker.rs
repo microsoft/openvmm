@@ -2588,12 +2588,28 @@ async fn new_underhill_vm(
         use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
-            SecureBootTemplateType::MicrosoftWindows => {
-                Some(secure_boot_templates::microsoft_windows())
-            }
-            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                Some(secure_boot_templates::microsoft_uefi_ca())
-            }
+            SecureBootTemplateType::MicrosoftWindows => Some({
+                #[cfg(guest_arch = "aarch64")]
+                let template = secure_boot_templates::microsoft_windows();
+                #[cfg(guest_arch = "x86_64")]
+                let template = if isolation.is_isolated() {
+                    secure_boot_templates::microsoft_windows_confidential()
+                } else {
+                    secure_boot_templates::microsoft_windows()
+                };
+                template
+            }),
+            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => Some({
+                #[cfg(guest_arch = "aarch64")]
+                let template = secure_boot_templates::microsoft_uefi_ca();
+                #[cfg(guest_arch = "x86_64")]
+                let template = if isolation.is_isolated() {
+                    secure_boot_templates::microsoft_uefi_ca_confidential()
+                } else {
+                    secure_boot_templates::microsoft_uefi_ca()
+                };
+                template
+            }),
         };
 
         // check if vmgs includes custom UEFI JSON
