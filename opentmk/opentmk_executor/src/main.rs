@@ -8,27 +8,17 @@
 //! series of functions that would invoke specific functions into this OS
 
 #![cfg_attr(target_os = "uefi", no_main)]
-#![no_std]
+#![cfg_attr(target_os = "uefi", no_std)]
 
-#[cfg(not(target_os = "uefi"))]
-extern crate std;
-
-#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod comms;
-#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod deserializer;
-#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod executor;
-#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod functions;
-#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod prelude;
 #[cfg(target_os = "uefi")]
 mod rt;
-#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 mod serial;
 
-#[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
 #[macro_use]
 extern crate alloc;
 
@@ -60,23 +50,20 @@ fn main() {
         }
     }
 
-    #[cfg(any(all(target_arch = "x86_64", test), target_os = "uefi"))]
-    {
-        use opentmk_core::arch::serial::SerialPort;
+    use opentmk_core::arch::serial::SerialPort;
 
-        let mut exec = executor::Executor::new(SerialPort::COM1);
+    let mut exec = executor::Executor::new(SerialPort::COM1);
 
-        if let Err(e) = exec.initialize() {
-            //TODO: we want to be able to catch these errors on the host side
-            log::error!("Executor initialization failed with error {:?}", e);
-            return;
-        }
+    if let Err(e) = exec.initialize() {
+        //TODO: we want to be able to catch these errors on the host side
+        log::error!("Executor initialization failed with error {:?}", e);
+        return;
+    }
 
-        exec.register_fuzz_functions();
+    exec.register_fuzz_functions();
 
-        if let Err(e) = exec.run() {
-            //TODO: we want to be able to catch these errors on the host side
-            log::error!("Executor exited with an error - {:?}", e);
-        }
+    if let Err(e) = exec.run() {
+        //TODO: we want to be able to catch these errors on the host side
+        log::error!("Executor exited with an error - {:?}", e);
     }
 }

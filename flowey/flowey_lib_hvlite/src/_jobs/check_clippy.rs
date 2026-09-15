@@ -317,22 +317,19 @@ impl SimpleFlowNode for Node {
                 done: v,
             }));
 
-            if sysroot_arch == CommonArch::X86_64 {
-                // opentmk_executor does not support AArch64 yet.
-                reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
-                    in_folder: openvmm_repo_path.clone(),
-                    package: CargoPackage::Crate("opentmk_executor".into()),
-                    profile: profile.clone(),
-                    features: CargoFeatureSet::All,
-                    target: target_lexicon::triple!("x86_64-unknown-uefi"),
-                    extra_env: None,
-                    exclude: ReadVar::from_static(None),
-                    keep_going: true,
-                    all_targets: false,
-                    pre_build_deps: pre_build_deps.clone(),
-                    done: v,
-                }));
-            }
+            reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+                in_folder: openvmm_repo_path.clone(),
+                package: CargoPackage::Crate("opentmk_executor".into()),
+                profile: profile.clone(),
+                features: CargoFeatureSet::All,
+                target: target_lexicon::triple!(uefi_target),
+                extra_env: None,
+                exclude: ReadVar::from_static(None),
+                keep_going: true,
+                all_targets: false,
+                pre_build_deps: pre_build_deps.clone(),
+                done: v,
+            }));
         }
 
         ctx.emit_side_effect_step(reqs, [done]);
