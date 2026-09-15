@@ -353,11 +353,14 @@ async fn create_image(options: CreateOptions) -> Result<()> {
             .read_only()
             .await
             .context("failed to read parent VHDX")?;
-        anyhow::ensure!(
-            parent.disk_size() == options.size,
-            "child size must match parent size ({})",
-            parent.disk_size()
-        );
+        let parent_logical_sector_size = parent.logical_sector_size();
+        if let Some(logical_sector_size) = options.logical_sector_size {
+            anyhow::ensure!(
+                logical_sector_size == parent_logical_sector_size,
+                "child logical sector size must match parent logical sector size ({parent_logical_sector_size})"
+            );
+        }
+        params.logical_sector_size = parent_logical_sector_size;
         let child_directory = options
             .file
             .parent()
@@ -665,6 +668,14 @@ async fn check(path: &std::path::Path) -> Result<()> {
                 current_path.display(),
                 linkage,
                 parent.data_write_guid()
+            )));
+        }
+        if parent.logical_sector_size() != image.logical_sector_size() {
+            return Err(inconsistent(format!(
+                "parent logical sector size mismatch for {}: child uses {}, parent uses {}",
+                current_path.display(),
+                image.logical_sector_size(),
+                parent.logical_sector_size()
             )));
         }
         current_path = fs_err::canonicalize(&parent_path)
@@ -1152,6 +1163,62 @@ mod tests {
         );
     }
 
+    #[pal_async::async_test]
+    async fn differencing_image_inherits_parent_logical_sector_size() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let parent_size = 4 * 1024 * 1024;
+        let child_size = 2 * 1024 * 1024;
+
+        create_image(CreateOptions {
+            logical_sector_size: Some(4096),
+            ..options(parent_path.clone(), parent_size)
+        })
+        .await
+        .unwrap();
+        create_image(CreateOptions {
+            disk_type: DiskType::Differencing,
+            parent: Some(parent_path),
+            ..options(child_path.clone(), child_size)
+        })
+        .await
+        .unwrap();
+
+        let child = VhdxFile::open(BlockingFile::open(&child_path, true).unwrap())
+            .read_only()
+            .await
+            .unwrap();
+        assert_eq!(child.disk_size(), child_size);
+        assert_eq!(child.logical_sector_size(), 4096);
+    }
+
+    #[pal_async::async_test]
+    async fn differencing_image_rejects_logical_sector_size_mismatch() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let size = 4 * 1024 * 1024;
+
+        create_image(CreateOptions {
+            logical_sector_size: Some(4096),
+            ..options(parent_path.clone(), size)
+        })
+        .await
+        .unwrap();
+        let error = create_image(CreateOptions {
+            disk_type: DiskType::Differencing,
+            parent: Some(parent_path),
+            logical_sector_size: Some(512),
+            ..options(child_path.clone(), size)
+        })
+        .await
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("logical sector size must match parent"));
+        assert!(!child_path.exists());
+    }
+
     #[cfg(unix)]
     #[pal_async::async_test]
     async fn rejects_non_unicode_parent_locator_path() {
@@ -1337,6 +1404,45 @@ mod tests {
 
         let error = check(&child_path).await.unwrap_err();
         assert!(error.downcast_ref::<InconsistentImage>().is_some());
+    }
+
+    #[pal_async::async_test]
+    async fn check_classifies_mismatched_logical_sector_size_as_inconsistent() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let size = 4 * 1024 * 1024;
+
+        create_image(CreateOptions {
+            logical_sector_size: Some(4096),
+            ..options(parent_path.clone(), size)
+        })
+        .await
+        .unwrap();
+        let parent = VhdxFile::open(BlockingFile::open(&parent_path, true).unwrap())
+            .read_only()
+            .await
+            .unwrap();
+        let vhdx_parent = VhdxParent::new(parent.data_write_guid())
+            .unwrap()
+            .with_relative_path("parent.vhdx")
+            .unwrap();
+        let child_file = BlockingFile::create(&child_path, false).unwrap();
+        vhdx::create(
+            &child_file,
+            &mut CreateParams {
+                disk_size: size,
+                logical_sector_size: 512,
+                disk_type: VhdxDiskType::Differencing(vhdx_parent),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let error = check(&child_path).await.unwrap_err();
+        assert!(error.downcast_ref::<InconsistentImage>().is_some());
+        assert!(format!("{error:#}").contains("logical sector size mismatch"));
     }
 
     #[pal_async::async_test]
