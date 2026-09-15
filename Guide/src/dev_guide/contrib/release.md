@@ -1,21 +1,34 @@
 # Release Management
 
-Occasionally, the OpenVMM project will declare upcoming release milestones. We
-stabilize the code base in a `release/<MAJOR>.<MINOR>.<YYMM>` branch, typically
-named for the YYMM when the branch was forked. Future references to the release
-number will be shortened to `<RELEASE>` in this doc. We expect a high quality
-bar for all code that goes into the OpenVMM main branch, and we ask developers
-to hold these release branches to the highest quality standards. The OpenVMM
-maintainers will gradually slow the rate of churn into these branches as we get
-closer to a close date.
+The OpenVMM repository periodically creates releases from `main`, typically
+about once a month. Releases are named for the year and month in which they
+were forked, using `YYMM`. For example, a release forked in September 2026 is
+release `2609`.
+
+Each monthly release is represented by a branch named `release/<YYMM>`, such
+as `release/2609`. The branch remains available as the release baseline and
+receives backported fixes if that release needs stabilization or servicing.
+
+The repository produces both the OpenVMM VMM and the OpenHCL paravisor.
+OpenVMM and OpenHCL retain their own product versions; the `YYMM` release
+identifies their repository baseline. OpenHCL currently ships about twice a
+year and selects one of the repository releases as the baseline for each
+product release.
+
+We expect a high quality bar for all code that goes into the OpenVMM main
+branch, and we ask developers to hold release branches to the highest quality
+standards. The OpenVMM maintainers will gradually slow the rate of churn into
+these branches as we get closer to a close date.
 
 ```admonish note title="See also"
 [Security Releases](security_releases.md) describes private reporting and
 coordinated disclosure for fixes that cannot be developed publicly.
 ```
 
-> **Note:** Some older release branches use the format `release/<YYMM>` without
-> the major and minor version numbers (e.g., `release/2411`, `release/2505`).
+```admonish note
+Some existing release branches use the older
+`release/<MAJOR>.<MINOR>.<YYMM>` format, such as `release/1.8.2607`.
+```
 
 This process should not impact your typical workflow; all new work should go
 into the `main` branch. But, to ease the cherry-picks, we may ask that you hold
@@ -39,7 +52,21 @@ Releases naturally fall into several phases:
 | Servicing          | Only essential fixes are made to support the release (a.k.a. maintenance mode).                                                |
 | Out of service     | A previous release which is no longer receiving updates.                                                                       |
 
+For OpenHCL, the plan of record is to service the current product release and
+the two preceding product releases. When a new OpenHCL release ships, the
+release that is now three product releases behind moves out of service.
+
 ### Release branch process
+
+In the label and tooling examples below, `<RELEASE>` is the suffix of the
+release branch. For `release/2609`, `<RELEASE>` is `2609`.
+
+When creating a monthly release branch:
+
+1. Create the `release_<RELEASE>`, `backport_<RELEASE>`, and
+   `backported_<RELEASE>` labels in GitHub.
+2. Add the `release_<RELEASE>` base-branch rule to `.github/labeler.yml` so pull
+   requests targeting the branch are labeled consistently.
 
 We track the state of candidates for a given release by tagging the PRs with the following labels:
 
