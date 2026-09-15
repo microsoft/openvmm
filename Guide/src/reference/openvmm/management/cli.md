@@ -139,6 +139,12 @@ describes the source definitions.
   * `diagnostics=<default|info|full>`: Select the EFI diagnostics log level.
   * `default_boot_always_attempt`: Attempt the default boot path even if configured boot entries exist and fail.
 
+  With `--igvm --vtl2`, `--uefi` configures the UEFI firmware that OpenHCL
+  loads into VTL0. All options except `firmware` and
+  `force_firmware_version` are supported in this mode. Those options apply
+  only when OpenVMM loads an external firmware image and are rejected with
+  `--igvm`. Explicit non-VTL2 IGVM personalities do not accept `--uefi`.
+
   The previous standalone UEFI options remain accepted but are deprecated.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
 * `--igvm <FILE>`: Boot from an IGVM file.

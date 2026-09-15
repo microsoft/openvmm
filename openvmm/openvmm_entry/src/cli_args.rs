@@ -1441,12 +1441,6 @@ impl Options {
         uefi.force_firmware_version |= self.deprecated_uefi_force_firmware_version;
         uefi.disable_frontpage |= self.deprecated_disable_frontpage;
         uefi.default_boot_always_attempt |= self.deprecated_default_boot_always_attempt;
-        if uefi.firmware.is_none() {
-            uefi.firmware = OptionalPathBuf::from(
-                default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE").as_os_str(),
-            )
-            .0;
-        }
         Ok(Some(uefi))
     }
 
@@ -3722,6 +3716,10 @@ fn default_value_from_arch_env(name: &str) -> OsString {
         .unwrap_or_default()
 }
 
+pub fn default_uefi_firmware() -> Option<PathBuf> {
+    OptionalPathBuf::from(default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE").as_os_str()).0
+}
+
 /// Workaround to use `Option<PathBuf>` alongside [`default_value_from_arch_env`]
 #[derive(Clone)]
 pub struct OptionalPathBuf(pub Option<PathBuf>);
@@ -5706,18 +5704,20 @@ mod tests {
 
     #[test]
     fn test_igvm_personality_conflicts_with_external_firmware() {
-        for firmware in ["--uefi", "--pcat"] {
-            assert!(
-                Options::try_parse_from([
-                    "openvmm",
-                    "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
-                    firmware,
-                ])
-                .is_err()
-            );
+        for personality in ["uefi", "linux-direct"] {
+            for firmware in ["--uefi", "--pcat"] {
+                assert!(
+                    Options::try_parse_from([
+                        "openvmm",
+                        "--igvm",
+                        "guest.igvm",
+                        "--igvm-personality",
+                        personality,
+                        firmware,
+                    ])
+                    .is_err()
+                );
+            }
         }
     }
 

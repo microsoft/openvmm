@@ -1172,6 +1172,7 @@ impl PetriVmConfigSetupCore<'_> {
         let ged = get_resources::ged::GuestEmulationDeviceHandle {
             firmware: get_resources::ged::GuestFirmwareConfig::Uefi {
                 firmware_debug: false,
+                enable_memory_protections: false,
                 disable_frontpage: *disable_frontpage,
                 enable_vpci_boot: *enable_vpci_boot,
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,

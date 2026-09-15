@@ -1340,6 +1340,26 @@ async fn vm_config_from_command_line(
         load_mode = LoadMode::None;
         with_hv = true;
     } else if let Some(path) = &opt.igvm {
+        let cli_args::UefiCli {
+            firmware,
+            debug: _,
+            enable_memory_protections: _,
+            force_dma_bounce: _,
+            force_firmware_version,
+            disable_frontpage: _,
+            console: _,
+            diagnostics: _,
+            default_boot_always_attempt: _,
+        } = uefi_options;
+
+        anyhow::ensure!(
+            firmware.is_none(),
+            "--uefi firmware is not supported with --igvm"
+        );
+        anyhow::ensure!(
+            !force_firmware_version,
+            "--uefi force_firmware_version is not supported with --igvm"
+        );
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
@@ -1390,8 +1410,20 @@ async fn vm_config_from_command_line(
             hibernation_enabled: opt.hibernation,
             smbios,
         };
-    } else if let Some(uefi) = &uefi {
+    } else if let Some(uefi_options) = &uefi {
         use openvmm_defs::config::UefiConsoleMode;
+
+        let cli_args::UefiCli {
+            firmware,
+            debug,
+            enable_memory_protections,
+            force_dma_bounce,
+            force_firmware_version,
+            disable_frontpage,
+            console,
+            diagnostics: _,
+            default_boot_always_attempt,
+        } = uefi_options;
 
         if opt.no_hv && cfg!(guest_arch = "x86_64") {
             anyhow::bail!("--no-hv is not supported on x86_64");
@@ -1399,9 +1431,11 @@ async fn vm_config_from_command_line(
 
         with_hv = !opt.no_hv;
 
+        let default_firmware = cli_args::default_uefi_firmware();
         let firmware = fs_err::File::open(
-            uefi.firmware
+            firmware
                 .as_ref()
+                .or(default_firmware.as_ref())
                 .context("must provide uefi firmware when booting with uefi")?,
         )
         .context("failed to open uefi firmware")?;
@@ -1410,26 +1444,26 @@ async fn vm_config_from_command_line(
         //       appears to be a GRUB memory protection fault. Memory protections are therefore only enabled if configured.
         load_mode = LoadMode::Uefi {
             firmware: firmware.into(),
-            enable_debugging: uefi.debug,
-            enable_memory_protections: uefi.enable_memory_protections,
-            disable_frontpage: uefi.disable_frontpage,
+            enable_debugging: *debug,
+            enable_memory_protections: *enable_memory_protections,
+            disable_frontpage: *disable_frontpage,
             tpm_version,
             enable_battery: opt.battery,
             enable_serial: any_serial_configured,
             enable_vpci_boot: false,
-            uefi_console_mode: uefi.console.map(|m| match m {
+            uefi_console_mode: console.map(|m| match m {
                 UefiConsoleModeCli::Default => UefiConsoleMode::Default,
                 UefiConsoleModeCli::Com1 => UefiConsoleMode::Com1,
                 UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
-            default_boot_always_attempt: uefi.default_boot_always_attempt,
+            default_boot_always_attempt: *default_boot_always_attempt,
             smbios,
             enable_vmbus: !opt.no_vmbus,
-            force_dma_bounce: uefi.force_dma_bounce,
+            force_dma_bounce: *force_dma_bounce,
             enable_hv: !opt.no_hv,
             hibernation_enabled: opt.hibernation,
-            force_firmware_version: uefi.force_firmware_version,
+            force_firmware_version: *force_firmware_version,
         };
     } else {
         // Linux Direct
@@ -1558,6 +1592,7 @@ async fn vm_config_from_command_line(
                         get_resources::ged::GuestFirmwareConfig::Uefi {
                             enable_vpci_boot: has_vtl0_nvme,
                             firmware_debug: uefi_options.debug,
+                            enable_memory_protections: uefi_options.enable_memory_protections,
                             disable_frontpage: uefi_options.disable_frontpage,
                             console_mode: match uefi_options.console.unwrap_or(UefiConsoleModeCli::Default) {
                                 UefiConsoleModeCli::Default => UefiConsoleMode::Default,
