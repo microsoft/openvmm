@@ -144,13 +144,6 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
 
-        vmfd.set_partition_property(
-            HvPartitionPropertyCode::UnimplementedMsrAction.0,
-            mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
-                as u64,
-        )
-        .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
-
         if snp {
             let snp_policy = igvm_snp_config.as_ref().map_or_else(
                 || {
@@ -170,10 +163,32 @@ impl virt::Hypervisor for LinuxMshv {
                     HvPartitionPropertyCode::SevVmgexitOffloads,
                     vmgexit_offloads,
                 ),
+                (
+                    HvPartitionPropertyCode::UnimplementedMsrAction,
+                    mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
+                        as u64,
+                ),
                 (HvPartitionPropertyCode::TimeFreeze, 1),
             ] {
                 vmfd.set_partition_property(code.0, value)
                     .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+            }
+        } else {
+            let vendor = HvProcessorVendor(
+                vmfd.get_partition_property(HvPartitionPropertyCode::ProcessorVendor.0)
+                    .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?
+                    as u32,
+            );
+            if matches!(vendor, HvProcessorVendor::AMD | HvProcessorVendor::HYGON) {
+                vmfd.install_intercept(mshv_bindings::mshv_install_intercept {
+                    access_type_mask: hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_WRITE,
+                    intercept_type:
+                        mshv_bindings::hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR_INDEX,
+                    intercept_parameter: mshv_bindings::hv_intercept_parameters {
+                        msr_index: x86defs::X86X_AMD_MSR_NB_CFG,
+                    },
+                })
+                .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
             }
         }
 
@@ -886,6 +901,16 @@ impl MshvProcessor<'_> {
             HvMessageType::HvMessageTypeHypercallIntercept => {
                 tracing::trace!("HYPERCALL_INTERCEPT");
                 self.handle_hypercall_intercept(exit)?;
+            }
+            HvMessageType::HvMessageTypeMsrIntercept => {
+                let info = exit.as_message::<hvdef::HvX64MsrInterceptMessage>();
+                tracing::trace!(msr = info.msr_number, "ignored msr write");
+                let rp = self.runner.reg_page();
+                rp.rip = info
+                    .header
+                    .rip
+                    .wrapping_add(info.header.instruction_len() as u64);
+                rp.dirty.set_instruction_pointer(true);
             }
             HvMessageType::HvMessageTypeX64ApicEoi => {
                 let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
