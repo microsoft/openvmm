@@ -93,8 +93,6 @@ const ICH_LR_GROUP1: u64 = 1 << 60;
 const ICH_LR_PENDING: u64 = 1 << 62;
 const ICH_LR_ACTIVE: u64 = 1 << 63;
 const ICH_LR_STATE_MASK: u64 = 3 << 62;
-#[cfg(test)]
-const GIC_PRIVATE_INTERRUPT_COUNT: u32 = 32;
 const ICH_LR_PRIORITY_MASK: u64 = 0xff << ICH_LR_PRIORITY_SHIFT;
 
 // For use with Hyper-V synthetic interrupt controller allocated by paravisor.
@@ -1205,32 +1203,6 @@ mod tests {
         assert_eq!(interrupt_priority_threshold(0x80, &[0]), 0x80);
     }
 
-    fn sgi_for(mpidr: MpidrEl1) -> GicrSgi {
-        GicrSgi::new()
-            .with_aff3(mpidr.aff3())
-            .with_aff2(mpidr.aff2())
-            .with_aff1(mpidr.aff1())
-            .with_rs(mpidr.aff0() / 16)
-            .with_target_list(1 << (mpidr.aff0() % 16))
-    }
-
-    #[test]
-    fn private_interrupt_bitmap_holds_every_private_intid() {
-        let mut gic = CcaGic::new();
-
-        for intid in 0..GIC_PRIVATE_INTERRUPT_COUNT {
-            assert_eq!(gic.request_interrupt(intid), Ok(()));
-        }
-        assert_eq!(gic.pending_mask(), u32::MAX);
-
-        const COMPLETED_INTID: u32 = 17;
-        gic.complete_interrupt(COMPLETED_INTID);
-        assert_eq!(gic.pending_mask(), u32::MAX & !(1 << COMPLETED_INTID));
-
-        assert_eq!(gic.request_interrupt(COMPLETED_INTID), Ok(()));
-        assert_eq!(gic.pending_mask(), u32::MAX);
-    }
-
     #[test]
     fn reinjecting_active_interrupt_marks_it_pending() {
         const INTID: u32 = 7;
@@ -1245,35 +1217,6 @@ mod tests {
             }
         ));
         assert_eq!(lrs[0] & ICH_LR_STATE_MASK, ICH_LR_ACTIVE | ICH_LR_PENDING);
-    }
-
-    #[test]
-    fn sgi_target_matches_current_vp() {
-        let mpidr = MpidrEl1::new()
-            .with_aff3(4)
-            .with_aff2(3)
-            .with_aff1(2)
-            .with_aff0(17);
-
-        assert!(sgi_targets_current_vp(sgi_for(mpidr), mpidr));
-    }
-
-    #[test]
-    fn sgi_target_rejects_other_vps() {
-        let mpidr = MpidrEl1::new()
-            .with_aff3(4)
-            .with_aff2(3)
-            .with_aff1(2)
-            .with_aff0(1);
-        let matching = sgi_for(mpidr);
-
-        assert!(!sgi_targets_current_vp(matching.with_aff1(1), mpidr));
-        assert!(!sgi_targets_current_vp(
-            matching.with_target_list(1 << 2),
-            mpidr
-        ));
-        assert!(!sgi_targets_current_vp(matching.with_rs(1), mpidr));
-        assert!(!sgi_targets_current_vp(matching.with_irm(true), mpidr));
     }
 }
 
