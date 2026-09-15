@@ -3415,12 +3415,6 @@ async fn new_underhill_vm(
 
                 use vpci_relay::*;
 
-                // Choose the appropriate TDISP resource validator based on the
-                // isolation type, VTOM, and whether we're in a test
-                // environment.
-                let resource_validator =
-                    openhcl_tdisp::new_resource_validator(isolation, vtom, test_tdisp_flow)?;
-
                 let mut relay = VpciRelay::new(
                     driver_source.clone(),
                     vpci_filter.take(),
@@ -3447,7 +3441,6 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
-                    resource_validator,
                     isolation,
                     vtom,
                     VpciRelayOptions {
