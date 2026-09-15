@@ -33,8 +33,8 @@ use futures::StreamExt as _;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
-use openhcl_tdisp::TdispResourceValidationInterface;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
+use openhcl_tdisp::new_resource_validator;
 use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::hwid::HardwareIds;
 use state_unit::StateUnits;
@@ -114,8 +114,6 @@ pub struct VpciRelay {
     vtom: Option<u64>,
     isolation_type: IsolationType,
     options: VpciRelayOptions,
-    #[inspect(skip)]
-    resource_validator: Arc<dyn TdispResourceValidationInterface>,
 }
 
 #[derive(Inspect)]
@@ -212,7 +210,6 @@ impl VpciRelay {
         dma_client: Arc<dyn DmaClient>,
         mmio_range: MemoryRange,
         mmio_access: Box<dyn CreateMemoryAccess>,
-        resource_validator: Arc<dyn TdispResourceValidationInterface>,
         isolation_type: IsolationType,
         vtom: Option<u64>,
         options: VpciRelayOptions,
@@ -242,7 +239,6 @@ impl VpciRelay {
             allowed_devices: Vec::new(),
             vtom: target_vtom,
             isolation_type: target_isolation_type,
-            resource_validator,
             options,
         }
     }
@@ -361,9 +357,19 @@ impl VpciRelay {
 
         tracing::info!(%instance_id, vendor_id = hw_ids.vendor_id, device_id = hw_ids.device_id, "vpci relay device arrived");
 
+        // Each device gets a validator of its own. The validators keep
+        // per-device state that is not keyed by device ID, and on some
+        // platforms they hold a firmware handle, so sharing one across devices
+        // would let them overwrite each other's resource state. Built after the
+        // allowed-device filter so a device the relay is about to reject never
+        // takes a handle.
+        let resource_validator =
+            new_resource_validator(self.isolation_type, self.vtom, self.options.test_tdisp_flow)
+                .context("failed to create a TDISP resource validator")?;
+
         let (vpci_device, removed) = vpci_device
             .init(
-                self.resource_validator.clone(),
+                resource_validator,
                 self.isolation_type,
                 self.vtom.unwrap_or(0),
                 hvdef::Vtl::Vtl0,
@@ -628,6 +634,7 @@ impl RelayedVpciDevice {
                     }
                 }))
             }
+
             // MMIO turning off. Tear the TDI back down. Deactivation leaves the
             // command register in its off state itself.
             (true, false) => {
@@ -636,6 +643,7 @@ impl RelayedVpciDevice {
                     device.tdisp_on_device_deactivate().await;
                 }))
             }
+
             // No MMIO edge, just pass through.
             (false, false) | (true, true) => {
                 self.device.write_cfg(offset, value);
