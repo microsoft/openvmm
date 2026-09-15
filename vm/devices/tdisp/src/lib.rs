@@ -155,9 +155,9 @@ pub enum TdispIsolationReport {
     /// The TDI is not in a state that it can respond to the isolation report
     /// request.
     NotReady,
-    /// The TDI is in Run and resources have been unblocked. The inner
-    /// arrays give the six per-BAR classifications and the DMA
-    /// classification. Guaranteed to contain only `Shared` / `Private`.
+    /// The TDI has attested and parsed its report successfully. The inner
+    /// arrays give the six per-BAR classifications and the DMA classification.
+    /// Guaranteed to contain only `Shared` / `Private`.
     Ready {
         /// Per-BAR isolation. Index `i` corresponds to BAR `i`.
         bars: [TdispResourceIsolation; 6],
