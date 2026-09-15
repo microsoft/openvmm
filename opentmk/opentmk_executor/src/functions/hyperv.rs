@@ -62,7 +62,10 @@ pub fn hvcall(
     let mut in_args = vec![0; input_len];
     match mem.try_read_mem(input, &mut in_args) {
         Ok(_) => (),
-        Err(e) => log::info!("hvcall: Failed to read input: {e}"),
+        Err(e) => {
+            log::info!("hvcall: Failed to read input: {e}");
+            return Ok(FuzzFunctionVariable::Void);
+        }
     }
 
     // Compute rep from the static header/element sizes plus the

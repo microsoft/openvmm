@@ -37,7 +37,6 @@ pub(crate) enum ExecutorError {
     NoDeserializerEnabled,
     SyzlangDeserializerFailed(String),
     DecoderMappingsDeserializeFailed,
-    DeserializerUnset,
 }
 
 pub(crate) struct Executor<T = OpenTmkSerialIo> {
@@ -101,14 +100,23 @@ impl<T: SerialIo> Executor<T> {
         let pkt = self.comms.read_packet_blocking()?;
 
         let response_pkt = match pkt {
-            OpenTMKPacket::Configuration(cfg) => self.on_receive_configuration_packet(&cfg)?,
-            OpenTMKPacket::FuzzTest(mut fuzz) => self.on_receive_fuzz_test_packet(&mut fuzz)?,
-            OpenTMKPacket::Ack(a) => self.on_receive_ack_packet(&a)?,
-            OpenTMKPacket::Error(a) => self.on_receive_error_packet(&a)?,
+            OpenTMKPacket::Configuration(cfg) => self.on_receive_configuration_packet(&cfg),
+            OpenTMKPacket::FuzzTest(mut fuzz) => self.on_receive_fuzz_test_packet(&mut fuzz),
+            OpenTMKPacket::Ack(a) => self.on_receive_ack_packet(&a),
+            OpenTMKPacket::Error(a) => self.on_receive_error_packet(&a),
         };
 
-        if let Some(resp) = response_pkt {
-            self.comms.write_packet_blocking(&resp)?;
+        match response_pkt {
+            Ok(None) => (),
+            Ok(Some(pkt)) => self.comms.write_packet_blocking(&pkt)?,
+            Err(e) => {
+                // Attempt to send an error packet. Once we do so bail and exit
+                self.comms
+                    .write_packet_blocking(&OpenTMKPacket::Error(OpenTMKErrorPacket {
+                        message: format!("{e:?}"),
+                    }))?;
+                return Err(e);
+            }
         }
 
         Ok(())
@@ -118,25 +126,16 @@ impl<T: SerialIo> Executor<T> {
         &mut self,
         pkt: &OpenTMKConfigurationPacket,
     ) -> Result<Option<OpenTMKPacket>, ExecutorError> {
-        self.deserializer_type = pkt.deserializer;
-
-        match self.deserializer_type {
+        let mut deserializer = match self.deserializer_type {
             OpenTMKGrammarDeserializer::None => Err(ExecutorError::NoDeserializerEnabled)?,
-            OpenTMKGrammarDeserializer::SyzDecoder => {
-                self.deserializer = Some(Box::new(SyzlangDeserializer::new()));
-            }
+            OpenTMKGrammarDeserializer::SyzDecoder => Box::new(SyzlangDeserializer::new()),
         };
 
-        self.deserializer
-            .as_mut()
-            .ok_or(ExecutorError::DeserializerUnset)?
-            .set_function_registry(self.fn_registry.clone());
+        deserializer.set_function_registry(self.fn_registry.clone());
+        deserializer.set_mappings(pkt.mapping.clone())?;
 
-        self.deserializer
-            .as_mut()
-            .ok_or(ExecutorError::DeserializerUnset)?
-            .set_mappings(pkt.mapping.clone())
-            .map(|_| ())?;
+        self.deserializer_type = pkt.deserializer;
+        self.deserializer = Some(deserializer);
 
         log::info!(
             "Setting active deserializer to {:?}",
@@ -151,12 +150,9 @@ impl<T: SerialIo> Executor<T> {
     ) -> Result<Option<OpenTMKPacket>, ExecutorError> {
         match self.deserializer.as_mut() {
             None => Err(ExecutorError::NoDeserializerEnabled),
-            Some(t) => Ok(Some(match t.as_mut().deserialize_and_execute(pkt) {
-                Ok(code) => OpenTMKPacket::Ack(OpenTMKAckPacket { code }),
-                Err(e) => OpenTMKPacket::Error(OpenTMKErrorPacket {
-                    message: format!("{:?}", e),
-                }),
-            })),
+            Some(t) => Ok(Some(OpenTMKPacket::Ack(OpenTMKAckPacket {
+                code: t.as_mut().deserialize_and_execute(pkt)?,
+            }))),
         }
     }
 
