@@ -71,7 +71,11 @@ impl FlowNodeWithConfig for Node {
             |_| Ok(std::env::current_dir()?.absolute()?)
         });
 
-        let cache_key = ReadVar::from_static(format!("gh-cli-{version}"));
+        let cache_key = ReadVar::from_static(format!(
+            "gh-cli-{version}-{}-{}",
+            ctx.arch(),
+            ctx.platform()
+        ));
         let hitvar = ctx.reqv(|hitvar| crate::cache::Request {
             label: "gh-cli".into(),
             dir: cache_dir.clone(),

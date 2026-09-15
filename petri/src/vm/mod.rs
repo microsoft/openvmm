@@ -1409,6 +1409,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Configure whether OpenHCL enables MANA keepalive at boot.
+    pub fn with_mana_keepalive(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("MANA keepalive is only supported for OpenHCL firmware.")
+            .enable_mana_keepalive = enable;
+        self
+    }
+
     /// Enable confidential filtering, even if the VM is not confidential.
     pub fn with_confidential_filtering(self) -> Self {
         if !self.config.firmware.is_openhcl() {
@@ -2527,6 +2537,8 @@ pub enum OpenvmmLogConfig {
 pub struct OpenHclConfig {
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
+    /// Whether to enable MANA keepalive at boot.
+    pub enable_mana_keepalive: bool,
     /// Test-specified command-line parameters to append to the petri generated
     /// command line and pass to OpenHCL. VM backends should use
     /// [`OpenHclConfig::command_line()`] rather than reading this directly.
@@ -2548,8 +2560,9 @@ impl OpenHclConfig {
     pub fn command_line(&self) -> String {
         let mut cmdline = self.custom_command_line.clone();
 
-        // Enable MANA keep-alive by default for all tests
-        append_cmdline(&mut cmdline, "OPENHCL_MANA_KEEP_ALIVE=host,privatepool");
+        if self.enable_mana_keepalive {
+            append_cmdline(&mut cmdline, "OPENHCL_MANA_KEEP_ALIVE=host,privatepool");
+        }
 
         match &self.log_levels {
             OpenvmmLogConfig::TestDefault => {
@@ -2589,6 +2602,7 @@ impl Default for OpenHclConfig {
     fn default() -> Self {
         Self {
             vmbus_redirect: false,
+            enable_mana_keepalive: true,
             custom_command_line: None,
             log_levels: OpenvmmLogConfig::TestDefault,
             vtl2_base_address_type: None,

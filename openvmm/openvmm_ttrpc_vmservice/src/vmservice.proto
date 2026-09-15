@@ -586,6 +586,8 @@ message VMConfig {
     // selected; note that PCAT boot honors only the system UUID and serial
     // number.
     SMBIOSConfig smbios_config = 13;
+
+    optional string crash_dump_path = 14;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
@@ -794,6 +796,7 @@ message PortConfig {
     uint32 guest_port = 2;
     // The protocol to forward.
     IpProtocol protocol = 3;
+    string host_address = 4;
 }
 
 message ConsommeBackend {
@@ -813,6 +816,7 @@ message WindowsPCIDevice {
 message VirtioFs {
     string tag = 1;
     string root_path = 2;
+    bool read_only = 3;
 }
 
 message VirtioConsoleConfig {
