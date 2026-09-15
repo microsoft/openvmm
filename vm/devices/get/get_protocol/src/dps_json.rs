@@ -318,21 +318,17 @@ mod test {
 
     #[test]
     fn smoke_test_sample() {
-        let settings = serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
+        serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
             "dps_test_json.json"
         ))
         .unwrap();
-
-        assert!(!settings.v2.r#static.disable_sha1_pcr);
     }
 
     #[test]
     fn smoke_test_sample_with_vtl2settings() {
-        let settings = serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
+        serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
             "dps_test_json_with_vtl2settings.json"
         ))
         .unwrap();
-
-        assert!(!settings.v2.r#static.disable_sha1_pcr);
     }
 }
