@@ -126,7 +126,7 @@ impl<T: SerialIo> Executor<T> {
         &mut self,
         pkt: &OpenTMKConfigurationPacket,
     ) -> Result<Option<OpenTMKPacket>, ExecutorError> {
-        let mut deserializer = match self.deserializer_type {
+        let mut deserializer = match pkt.deserializer {
             OpenTMKGrammarDeserializer::None => Err(ExecutorError::NoDeserializerEnabled)?,
             OpenTMKGrammarDeserializer::SyzDecoder => Box::new(SyzlangDeserializer::new()),
         };
