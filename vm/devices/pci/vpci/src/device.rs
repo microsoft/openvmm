@@ -1063,6 +1063,23 @@ impl ReadyState {
                         conn.send_completion(transaction_id, &reply, &[])?;
                     }
                     DeviceRequest::TdispCommand { data } => {
+                        // TDISP commands only exist from RB onward, so a guest
+                        // that negotiated an older version gets no further than
+                        // this, whatever it put in the payload.
+                        if self.vpci_version < protocol::ProtocolVersion::RB {
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                negotiated_version = ?self.vpci_version,
+                                "VPCI_TDISP_COMMAND on downlevel protocol. Replying NOT_SUPPORTED."
+                            );
+                            conn.send_completion(
+                                transaction_id,
+                                &protocol::Status::NOT_SUPPORTED,
+                                &[],
+                            )?;
+                            return Ok(());
+                        }
+
                         let command = match tdisp::serialize_proto::deserialize_command(&data) {
                             Ok(cmd) => cmd,
                             Err(err) => {
@@ -2013,14 +2030,12 @@ mod tests {
             (reply.interrupt.address, reply.interrupt.data_payload)
         }
 
-        /// Serializes `command` to a `VPCI_TDISP_COMMAND` vmbus packet, sends it
-        /// to the server requesting a completion, then reads the completion and
-        /// deserializes the payload back to a [`tdisp::GuestToHostResponse`].
-        async fn send_tdisp_command(
-            &mut self,
-            command: tdisp::GuestToHostCommand,
-        ) -> tdisp::GuestToHostResponse {
-            let serialized = tdisp::serialize_proto::serialize_command(&command);
+        /// Serializes `command` into a `VPCI_TDISP_COMMAND` vmbus packet for
+        /// slot 0 and sends it to the server, requesting a completion.
+        ///
+        /// Returns the transaction id the completion will carry.
+        async fn write_tdisp_command(&mut self, command: &tdisp::GuestToHostCommand) -> u64 {
+            let serialized = tdisp::serialize_proto::serialize_command(command);
 
             let header = protocol::VpciTdispCommandHeader {
                 message_type: protocol::MessageType::VPCI_TDISP_COMMAND,
@@ -2031,6 +2046,34 @@ mod tests {
             self.write_packet_with_header(Some(transaction_id), &header, serialized.as_bytes())
                 .await
                 .unwrap();
+            transaction_id
+        }
+
+        /// Sends `command` and reads the completion as a bare status, for the
+        /// cases where the server answers with a status alone and no TDISP
+        /// payload.
+        async fn send_tdisp_command_for_status(
+            &mut self,
+            command: tdisp::GuestToHostCommand,
+        ) -> protocol::Status {
+            let transaction_id = self.write_tdisp_command(&command).await;
+
+            let mut pkt_info = ReadPacketInfo::None;
+            let status: protocol::Status = self.read_packet(&mut pkt_info).await.unwrap();
+            let ReadPacketInfo::Completion(id) = pkt_info else {
+                panic!("unexpected TDISP command reply");
+            };
+            assert_eq!(id, transaction_id);
+            status
+        }
+
+        /// Sends `command`, then reads the completion and deserializes the
+        /// payload back to a [`tdisp::GuestToHostResponse`].
+        async fn send_tdisp_command(
+            &mut self,
+            command: tdisp::GuestToHostCommand,
+        ) -> tdisp::GuestToHostResponse {
+            let transaction_id = self.write_tdisp_command(&command).await;
 
             let mut queue = self.host_queue.split().0;
             let packet = queue.read().await.map_err(GuestError::Queue).unwrap();
@@ -2778,6 +2821,7 @@ mod tests {
             .add(|services| TestDevice::new(&mut services.register_mmio()))
             .unwrap();
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+        guest_driver.protocol_version = protocol::ProtocolVersion::RB;
         guest_driver.start_device(0x1000000).await;
 
         let guest_protocol_type: tdisp::TdispGuestProtocolType = TDISP_MOCK_GUEST_PROTOCOL;
@@ -2813,6 +2857,32 @@ mod tests {
                 response_unpacked
             ),
         }
+    }
+
+    /// TDISP commands only exist from `RB` onward, so a guest that negotiated
+    /// an older version is answered `NOT_SUPPORTED` even though the device
+    /// behind the bus implements TDISP.
+    #[async_test]
+    async fn verify_tdisp_command_downlevel_protocol(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let vm_chipset = TestChipset::default();
+        let pci = vm_chipset
+            .device_builder("test")
+            .with_external_pci()
+            .add(|services| TestDevice::new(&mut services.register_mmio()))
+            .unwrap();
+        let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+        guest_driver.protocol_version = protocol::ProtocolVersion::VB;
+        guest_driver.start_device(0x1000000).await;
+
+        let command = new_get_device_interface_info_command(
+            SlotNumber::new().into_bits() as u64,
+            TDISP_MOCK_GUEST_PROTOCOL,
+        );
+        assert_eq!(
+            guest_driver.send_tdisp_command_for_status(command).await,
+            protocol::Status::NOT_SUPPORTED
+        );
     }
 
     /// Verify that `VPCI_QUERY_ISOLATED_RESOURCES` is answered locally on a
