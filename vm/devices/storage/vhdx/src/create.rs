@@ -63,6 +63,9 @@ impl VhdxParent {
     }
 
     /// Adds a path relative to the child VHDX file.
+    ///
+    /// The string uses VHDX locator syntax, not host filesystem syntax.
+    /// It is stored unchanged; native path conversion happens during lookup.
     pub fn with_relative_path(
         mut self,
         path: impl Into<String>,

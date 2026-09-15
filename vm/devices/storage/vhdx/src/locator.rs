@@ -14,6 +14,8 @@ use crate::format;
 use crate::format::ParentLocatorEntry;
 use crate::format::ParentLocatorHeader;
 use guid::Guid;
+use std::path::Path;
+use std::path::PathBuf;
 use thiserror::Error;
 use zerocopy::FromBytes;
 
@@ -209,11 +211,39 @@ impl ParentLocator {
     }
 }
 
+impl VhdxParent {
+    /// Returns native parent path candidates relative to the child's directory.
+    ///
+    /// On Windows, candidates follow the MS-VHDX section 2.6.2.6.3 order:
+    /// relative path, volume path, then absolute Win32 path. On other platforms,
+    /// only the relative locator is used, with backslashes converted to native
+    /// separators. This does not validate path syntax, open files, or verify
+    /// parent linkage.
+    pub fn candidate_paths(&self, child_directory: &Path) -> impl Iterator<Item = PathBuf> {
+        let relative = self.relative_path().map(|path| {
+            #[cfg(not(windows))]
+            let path = path.replace('\\', "/");
+            child_directory.join(path)
+        });
+        let volume = self
+            .volume_path()
+            .filter(|_| cfg!(windows))
+            .map(PathBuf::from);
+        let absolute = self
+            .absolute_win32_path()
+            .filter(|_| cfg!(windows))
+            .map(PathBuf::from);
+        [relative, volume, absolute].into_iter().flatten()
+    }
+}
+
 /// Paths extracted from a VHDX parent locator.
 ///
 /// Contains the well-known path entries from the standard VHDX parent
 /// locator type. The caller should try paths in order of preference:
-/// relative, then absolute, then volume path.
+/// relative, then volume, then absolute Win32 path. Only the relative path
+/// is used on non-Windows platforms. Prefer [`ParentLocator::vhdx_parent`]
+/// and [`VhdxParent::candidate_paths`] for validated, platform-aware lookup.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ParentPaths {
@@ -303,6 +333,84 @@ mod tests {
     use crate::error::OpenErrorInner;
 
     use super::*;
+
+    #[test]
+    fn parent_candidate_paths() {
+        let directory = Path::new("child");
+        let parent = VhdxParent::new(Guid::new_random())
+            .unwrap()
+            .with_relative_path(r".\parents\parent.vhdx")
+            .unwrap()
+            .with_volume_path(r"\\?\Volume{26A21BDA-A627-11D7-9931-806E6F6E6963}\parent.vhdx")
+            .unwrap()
+            .with_absolute_win32_path(r"\\?\C:\parent.vhdx")
+            .unwrap();
+        let mut expected = vec![directory.join("parents").join("parent.vhdx")];
+        if cfg!(windows) {
+            expected.push(PathBuf::from(parent.volume_path().unwrap()));
+            expected.push(PathBuf::from(parent.absolute_win32_path().unwrap()));
+        }
+        assert_eq!(
+            parent.candidate_paths(directory).collect::<Vec<_>>(),
+            expected
+        );
+
+        let parent = VhdxParent::new(Guid::new_random())
+            .unwrap()
+            .with_volume_path(r"\\?\Volume{26A21BDA-A627-11D7-9931-806E6F6E6963}\parent.vhdx")
+            .unwrap()
+            .with_absolute_win32_path(r"\\?\C:\parent.vhdx")
+            .unwrap();
+        assert_eq!(
+            parent.candidate_paths(directory).collect::<Vec<_>>(),
+            expected[1..]
+        );
+    }
+
+    #[test]
+    fn relative_parent_candidate_paths() {
+        let directory = Path::new("child");
+        for (relative, expected) in [
+            (r"parent.vhdx", directory.join("parent.vhdx")),
+            (r".\parent.vhdx", directory.join("parent.vhdx")),
+            (r"..\parent.vhdx", directory.join("..").join("parent.vhdx")),
+            (
+                r"parents\sub/parent.vhdx",
+                directory.join("parents/sub/parent.vhdx"),
+            ),
+            (r".\/parent.vhdx", directory.join("parent.vhdx")),
+        ] {
+            let parent = VhdxParent::new(Guid::new_random())
+                .unwrap()
+                .with_relative_path(relative)
+                .unwrap();
+            assert_eq!(
+                parent.candidate_paths(directory).collect::<Vec<_>>(),
+                vec![expected],
+                "relative locator: {relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_parent_locator_preserves_strings() {
+        for relative in [r".\parent.vhdx", r"..\parents\parent.vhdx", "parent:stream"] {
+            let parent = VhdxParent::new(Guid::new_random())
+                .unwrap()
+                .with_relative_path(relative)
+                .unwrap();
+            assert_eq!(parent.relative_path(), Some(relative));
+
+            let linkage = Guid::new_random().to_string();
+            let data = build_locator(
+                format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+                &[("parent_linkage", &linkage), ("relative_path", relative)],
+            )
+            .unwrap();
+            let parent = ParentLocator::parse(&data).unwrap().vhdx_parent().unwrap();
+            assert_eq!(parent.relative_path(), Some(relative));
+        }
+    }
 
     #[test]
     fn parse_valid_locator() {
