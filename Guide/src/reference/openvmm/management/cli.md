@@ -99,6 +99,14 @@ describes the source definitions.
   KVM SNP does not support Hyper-V enlightenments.
   The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
 
+  The `snp-linux-direct*.json` generator profiles put all CPUs and RAM in
+  NUMA node 0. For these fixed-profile images, use `--memory` matching the
+  image's RAM size, not a multi-node `--numa` configuration. Set
+  `--processors N --vps-per-socket N` to match the image's VP count and
+  contiguous APIC IDs; leave the APIC ID offset at 0. SMT can remain `auto`.
+  These launch arguments do not rewrite the measured ACPI tables. Regenerate
+  the IGVM after changing its topology or updating the generator.
+
   SNP does not support UEFI, VTL2, or hugetlb-backed memory. In addition to
   the minimal emulated chipset and serial console, optional devices are
   limited to virtio devices attached through PCIe.
