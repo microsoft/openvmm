@@ -104,7 +104,7 @@ particular strategy.
 
 ## Parent lookup
 
-The Rust chain opener and `vhdxtool check` interpret parent metadata through
+The Rust chain opener and `openvmm-img check` interpret parent metadata through
 `ParentLocator::vhdx_parent()`. This validates the locator type and requires a
 nonzero parent linkage GUID. Both verify that the selected parent's data-write
 GUID matches the child's recorded linkage.
