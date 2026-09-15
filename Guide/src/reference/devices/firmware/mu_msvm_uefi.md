@@ -14,7 +14,7 @@ with!
 Two OpenVMM components work in tandem in order to load and run the `mu_msvm`
 UEFI firmware:
 
-- Pre-boot: the VMM's UEFI firmware loader does  3 things:
+- Pre-boot: the VMM's UEFI firmware loader:
   1. Reads and validates the firmware's build and interface version information
   2. Writes the `mu_msvm` UEFI firmware package into guest RAM
   3. Writes VM topology information, and `mu_msvm`-specific config data into guest RAM

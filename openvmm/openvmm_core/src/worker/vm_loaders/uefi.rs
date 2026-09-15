@@ -419,6 +419,60 @@ mod tests {
     use openvmm_defs::config::SmbiosBiosOverrides;
     use openvmm_defs::config::SmbiosConfig;
     use openvmm_defs::config::SmbiosSystemOverrides;
+    use test_with_tracing::test;
+    use uefi_specs::hyperv::firmware_version;
+    use uefi_specs::uefi::firmware_volume;
+
+    fn size24(value: usize) -> [u8; 3] {
+        let value = (value as u32).to_le_bytes();
+        [value[0], value[1], value[2]]
+    }
+
+    fn firmware_image(interface: Option<(u16, u16)>) -> Vec<u8> {
+        let mut image = vec![
+            0;
+            if cfg!(guest_arch = "aarch64") {
+                0x20_0000
+            } else {
+                0
+            }
+        ];
+        let mut fv = vec![0xff; 0x1000];
+        let fv_length = fv.len() as u64;
+        fv[32..40].copy_from_slice(&fv_length.to_le_bytes());
+        fv[40..44].copy_from_slice(b"_FVH");
+        fv[48..50].copy_from_slice(
+            &(size_of::<firmware_volume::FirmwareVolumeHeader>() as u16).to_le_bytes(),
+        );
+
+        if let Some((major, minor)) = interface {
+            let mut record = [0; firmware_version::HEADER_SIZE];
+            record[0..4].copy_from_slice(firmware_version::SIGNATURE);
+            record[4..6].copy_from_slice(&firmware_version::STRUCT_VERSION.to_le_bytes());
+            record[6..8].copy_from_slice(&(firmware_version::HEADER_SIZE as u16).to_le_bytes());
+            record[12..14].copy_from_slice(&major.to_le_bytes());
+            record[14..16].copy_from_slice(&minor.to_le_bytes());
+            record[16] = 0;
+            record[32] = 0;
+
+            let section_size = size_of::<firmware_volume::CommonSectionHeader>() + record.len();
+            let file_size = size_of::<firmware_volume::FfsFileHeader>() + section_size;
+            let file_offset =
+                size_of::<firmware_volume::FirmwareVolumeHeader>().next_multiple_of(8);
+            fv[file_offset..file_offset + 16]
+                .copy_from_slice(firmware_version::FILE_GUID.as_bytes());
+            fv[file_offset + 20..file_offset + 23].copy_from_slice(&size24(file_size));
+            let section_offset = file_offset + size_of::<firmware_volume::FfsFileHeader>();
+            fv[section_offset..section_offset + 3].copy_from_slice(&size24(section_size));
+            fv[section_offset + 3] = firmware_volume::SECTION_RAW;
+            fv[section_offset + size_of::<firmware_volume::CommonSectionHeader>()
+                ..file_offset + file_size]
+                .copy_from_slice(&record);
+        }
+
+        image.extend_from_slice(&fv);
+        image
+    }
 
     #[test]
     fn accepts_system_overrides() {
@@ -495,5 +549,44 @@ mod tests {
         assert!(firmware_interface_is_compatible(1, 1));
         assert!(!firmware_interface_is_compatible(0, 0));
         assert!(!firmware_interface_is_compatible(2, 0));
+    }
+
+    #[test]
+    fn firmware_version_validation_policy() {
+        assert!(check_firmware_version(&firmware_image(Some((1, 0))), false).is_ok());
+
+        let incompatible = firmware_image(Some((2, 0)));
+        assert!(matches!(
+            check_firmware_version(&incompatible, false),
+            Err(Error::IncompatibleFirmwareVersion {
+                actual_major: 2,
+                actual_minor: 0,
+                expected_major: 1,
+                minimum_minor: 0,
+            })
+        ));
+        assert!(check_firmware_version(&incompatible, true).is_ok());
+
+        let mut malformed = firmware_image(Some((1, 0)));
+        let signature_offset = if cfg!(guest_arch = "aarch64") {
+            0x20_0000
+        } else {
+            0
+        } + size_of::<firmware_volume::FirmwareVolumeHeader>()
+            .next_multiple_of(8)
+            + size_of::<firmware_volume::FfsFileHeader>()
+            + size_of::<firmware_volume::CommonSectionHeader>();
+        malformed[signature_offset] = 0;
+        assert!(matches!(
+            check_firmware_version(&malformed, false),
+            Err(Error::FirmwareVersion(
+                loader::uefi::firmware_version::Error::InvalidSignature
+            ))
+        ));
+        assert!(check_firmware_version(&malformed, true).is_ok());
+
+        let missing = firmware_image(None);
+        assert!(check_firmware_version(&missing, false).is_ok());
+        assert!(check_firmware_version(&missing, true).is_ok());
     }
 }
