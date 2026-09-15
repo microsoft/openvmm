@@ -1,22 +1,23 @@
-# vhdxtool
+# openvmm-img
 
-`vhdxtool` is a cross-platform command-line utility for creating, inspecting,
-validating, replaying, mapping, and converting VHDX images.
+`openvmm-img` is a cross-platform command-line utility for creating,
+inspecting, validating, replaying, mapping, and converting disk images. It
+currently supports raw and VHDX images.
 
 ## Usage
 
 Run the tool through Cargo while developing:
 
 ```sh
-cargo run -p vhdxtool -- --help
+cargo run -p openvmm-img -- --help
 ```
 
 Create dynamic, fixed, and differencing images:
 
 ```sh
-cargo run -p vhdxtool -- create disk.vhdx --size 64G
-cargo run -p vhdxtool -- create fixed.vhdx --size 64G --type fixed
-cargo run -p vhdxtool -- create child.vhdx --size 64G --type differencing --parent disk.vhdx
+cargo run -p openvmm-img -- create disk.vhdx --format vhdx --size 64G
+cargo run -p openvmm-img -- create fixed.vhdx --size 64G --type fixed
+cargo run -p openvmm-img -- create child.vhdx --size 64G --type differencing --parent disk.vhdx
 ```
 
 Fixed images allocate all VHDX payload blocks and explicitly write zeros during
@@ -34,12 +35,12 @@ must not contain literal backslashes, which VHDX treats as path separators.
 Inspect and validate an image:
 
 ```sh
-cargo run -p vhdxtool -- info disk.vhdx
-cargo run -p vhdxtool -- info disk.vhdx --json
-cargo run -p vhdxtool -- map disk.vhdx --json
-cargo run -p vhdxtool -- check disk.vhdx
-cargo run -p vhdxtool -- replay disk.vhdx --dry-run
-cargo run -p vhdxtool -- replay disk.vhdx
+cargo run -p openvmm-img -- info disk.vhdx
+cargo run -p openvmm-img -- info disk.vhdx --json
+cargo run -p openvmm-img -- map disk.vhdx --json
+cargo run -p openvmm-img -- check disk.vhdx
+cargo run -p openvmm-img -- replay disk.vhdx --dry-run
+cargo run -p openvmm-img -- replay disk.vhdx
 ```
 
 `check` validates VHDX metadata and follows differencing parent chains. It exits
@@ -51,9 +52,9 @@ Convert raw files to VHDX, VHDX files to sparse raw files, or between dynamic
 and fixed VHDX layouts:
 
 ```sh
-cargo run -p vhdxtool -- convert disk.raw --output disk.vhdx --output-format vhdx
-cargo run -p vhdxtool -- convert disk.vhdx --output disk.raw --output-format raw
-cargo run -p vhdxtool -- convert dynamic.vhdx --output fixed.vhdx --output-format vhdx --type fixed
+cargo run -p openvmm-img -- convert disk.raw --output disk.vhdx --output-format vhdx
+cargo run -p openvmm-img -- convert disk.vhdx --output disk.raw --output-format raw
+cargo run -p openvmm-img -- convert dynamic.vhdx --output fixed.vhdx --output-format vhdx --type fixed
 ```
 
 Differencing VHDX inputs are not supported by `convert`; conversion is rejected

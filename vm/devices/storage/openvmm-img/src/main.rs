@@ -4,7 +4,7 @@
 //! Command-line tools for creating, inspecting, validating, and converting
 //! VHDX virtual disk images.
 //!
-//! `vhdxtool` is a cross-platform frontend for the [`vhdx`] crate. It supports
+//! `openvmm-img` is a cross-platform frontend for the [`vhdx`] crate. It supports
 //! dynamic, fixed, and differencing VHDX images through six commands:
 //!
 //! - `create` creates a new image and records parent locator metadata for
@@ -18,7 +18,7 @@
 //!   parent chain.
 //! - `replay` replays a dirty VHDX write-ahead log and leaves the image clean.
 //!
-//! Run `vhdxtool --help` or `vhdxtool <command> --help` for command syntax and
+//! Run `openvmm-img --help` or `openvmm-img <command> --help` for command syntax and
 //! option details.
 //!
 //! # I/O model
@@ -85,11 +85,17 @@ enum ImageFormat {
     Vhdx,
 }
 
-/// Create, inspect, validate, and convert VHDX images.
+#[derive(Clone, Copy, ValueEnum)]
+enum CreateFormat {
+    /// A VHDX virtual disk image.
+    Vhdx,
+}
+
+/// Create, inspect, validate, and convert disk images.
 #[derive(Parser)]
-#[command(name = "vhdxtool")]
+#[command(name = "openvmm-img")]
 struct CliArgs {
-    /// Show detailed progress and VHDX diagnostics.
+    /// Show detailed progress and diagnostics.
     #[arg(short, long, global = true)]
     verbose: bool,
 
@@ -99,10 +105,13 @@ struct CliArgs {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a dynamic, fixed, or differencing VHDX image.
+    /// Create a disk image.
     Create {
-        /// Path of the VHDX image to create.
+        /// Path of the disk image to create.
         file: PathBuf,
+        /// Format of the image to create. Inferred from the file extension when omitted.
+        #[arg(long, value_enum)]
+        format: Option<CreateFormat>,
         /// Virtual disk size. Accepts binary suffixes such as K, M, G, and T.
         #[arg(long, value_parser = util::parse_size)]
         size: u64,
@@ -222,6 +231,7 @@ async fn run(command: Command, driver: &impl pal_async::task::Spawn) -> Result<(
     match command {
         Command::Create {
             file,
+            format,
             size,
             disk_type,
             parent,
@@ -232,6 +242,9 @@ async fn run(command: Command, driver: &impl pal_async::task::Spawn) -> Result<(
             page83,
             force,
         } => {
+            let CreateFormat::Vhdx = format
+                .map(Ok)
+                .unwrap_or_else(|| infer_create_format(&file))?;
             create_image(CreateOptions {
                 file,
                 size,
@@ -260,7 +273,14 @@ async fn run(command: Command, driver: &impl pal_async::task::Spawn) -> Result<(
             convert(
                 &input,
                 &output,
-                input_format.unwrap_or_else(|| infer_format(&input)),
+                input_format
+                    .or_else(|| infer_format(&input))
+                    .with_context(|| {
+                        format!(
+                            "cannot infer image format from {}; specify --input-format",
+                            input.display()
+                        )
+                    })?,
                 output_format,
                 disk_type,
                 block_size,
@@ -433,6 +453,7 @@ async fn info(path: &std::path::Path, json: bool) -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
+                "format": "vhdx",
                 "disk_size": image.disk_size(),
                 "block_size": image.block_size(),
                 "logical_sector_size": image.logical_sector_size(),
@@ -450,6 +471,7 @@ async fn info(path: &std::path::Path, json: bool) -> Result<()> {
         );
     } else {
         println!("File:                 {}", path.display());
+        println!("Format:               VHDX");
         println!("Type:                 {image_type}");
         println!(
             "Disk size:            {} ({})",
@@ -605,7 +627,7 @@ async fn check(path: &std::path::Path) -> Result<()> {
             Ok(image) => image,
             Err(error) if error.kind() == OpenErrorKind::LogReplayRequired => {
                 println!(
-                    "WARNING: {} requires log replay; run `vhdxtool replay {}`",
+                    "WARNING: {} requires log replay; run `openvmm-img replay {}`",
                     current_path.display(),
                     current_path.display()
                 );
@@ -700,14 +722,25 @@ async fn replay(
     Ok(())
 }
 
-fn infer_format(path: &std::path::Path) -> ImageFormat {
-    if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("vhdx"))
-    {
-        ImageFormat::Vhdx
+fn infer_format(path: &std::path::Path) -> Option<ImageFormat> {
+    let extension = path.extension()?;
+    if extension.eq_ignore_ascii_case("vhdx") {
+        Some(ImageFormat::Vhdx)
+    } else if extension.eq_ignore_ascii_case("raw") || extension.eq_ignore_ascii_case("img") {
+        Some(ImageFormat::Raw)
     } else {
-        ImageFormat::Raw
+        None
+    }
+}
+
+fn infer_create_format(path: &std::path::Path) -> Result<CreateFormat> {
+    match infer_format(path) {
+        Some(ImageFormat::Vhdx) => Ok(CreateFormat::Vhdx),
+        Some(ImageFormat::Raw) => anyhow::bail!("creating raw images is not supported"),
+        None => anyhow::bail!(
+            "cannot infer image format from {}; specify --format",
+            path.display()
+        ),
     }
 }
 
@@ -999,7 +1032,7 @@ mod tests {
     fn parses_short_and_long_output_and_force_options() {
         for (output_option, force_option) in [("-o", "-f"), ("--output", "--force")] {
             let args = CliArgs::try_parse_from([
-                "vhdxtool",
+                "openvmm-img",
                 "create",
                 "disk.vhdx",
                 "--size",
@@ -1007,10 +1040,17 @@ mod tests {
                 force_option,
             ])
             .unwrap();
-            assert!(matches!(args.command, Command::Create { force: true, .. }));
+            assert!(matches!(
+                args.command,
+                Command::Create {
+                    format: None,
+                    force: true,
+                    ..
+                }
+            ));
 
             let args = CliArgs::try_parse_from([
-                "vhdxtool",
+                "openvmm-img",
                 "convert",
                 "disk.raw",
                 output_option,
@@ -1023,9 +1063,30 @@ mod tests {
             assert!(matches!(
                 args.command,
                 Command::Convert { output, force: true, .. }
-                    if output == PathBuf::from("disk.vhdx")
+                    if output.as_os_str() == "disk.vhdx"
             ));
         }
+    }
+
+    #[test]
+    fn infers_create_format_from_extension() {
+        assert!(matches!(
+            infer_create_format(std::path::Path::new("disk.VHDX")),
+            Ok(CreateFormat::Vhdx)
+        ));
+        assert!(matches!(
+            infer_format(std::path::Path::new("disk.raw")),
+            Some(ImageFormat::Raw)
+        ));
+        assert!(matches!(
+            infer_format(std::path::Path::new("disk.img")),
+            Some(ImageFormat::Raw)
+        ));
+        let error = infer_create_format(std::path::Path::new("disk.unknown"))
+            .err()
+            .expect("unknown extension should fail");
+        assert!(error.to_string().contains("specify --format"));
+        assert!(infer_format(std::path::Path::new("disk.unknown")).is_none());
     }
 
     fn options(file: PathBuf, size: u64) -> CreateOptions {
