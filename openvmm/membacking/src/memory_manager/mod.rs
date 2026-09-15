@@ -570,10 +570,14 @@ impl GuestMemoryBuilder {
 
         // The primary mapper is created as part of `MappingManager::new`: it is
         // the loader's target and the partition's fault resolver.
-        let (mapping_manager, va_mapper) =
-            MappingManager::new(&spawner, max_addr, max_hugepage_size)
-                .await
-                .map_err(MemoryBuildError::VaMapper)?;
+        let (mapping_manager, va_mapper) = MappingManager::new(
+            &spawner,
+            max_addr,
+            max_hugepage_size,
+            self.supports_memory_fault_resolution,
+        )
+        .await
+        .map_err(MemoryBuildError::VaMapper)?;
 
         let region_manager = RegionManager::new(&spawner, mapping_manager.client().clone());
 
@@ -792,6 +796,9 @@ impl GuestMemoryManager {
     /// process. This is necessary to work around WHP's lack of support for
     /// mapping multiple partitions from a single process.
     ///
+    /// `host_access` configures fault-driven host access on the primary VTL0
+    /// mapper. It must be `None` when attaching any other VTL.
+    ///
     /// TODO: currently, all VTLs will get the same mappings--no support for
     /// per-VTL memory protections is supported.
     pub async fn attach_partition(
@@ -799,7 +806,17 @@ impl GuestMemoryManager {
         vtl: Vtl,
         partition: &Arc<dyn virt::PartitionMemoryMap>,
         process: Option<RemoteProcess>,
+        host_access: Option<Arc<dyn virt::PartitionHostAccess>>,
     ) -> Result<(), PartitionAttachError> {
+        if let Some(host_access) = host_access {
+            assert_eq!(
+                vtl,
+                Vtl::Vtl0,
+                "host access must be installed while attaching VTL0"
+            );
+            self.va_mapper.install_host_access(host_access);
+        }
+
         let va_mapper = if let Some(process) = process {
             self.mapping_manager
                 .client()

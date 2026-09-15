@@ -27,7 +27,7 @@ fn err(e: symcrypt::errors::SymCryptError, op: &'static str) -> Aes256GcmError {
 impl Aes256GcmInner {
     pub fn new(key: &[u8; KEY_LEN]) -> Result<Self, Aes256GcmError> {
         let key = GcmExpandedKey::new(key, symcrypt::cipher::BlockCipherType::AesBlock)
-            .map_err(|e| err(e, "expanding gcm key"))?;
+            .map_err(|e| err(e, "expanding the AES-GCM key"))?;
         Ok(Self { key })
     }
 

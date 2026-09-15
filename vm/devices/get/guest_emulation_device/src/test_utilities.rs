@@ -253,11 +253,12 @@ pub fn create_host_channel(
         serial_tx_only: false,
         vmbus_redirection: false,
         nvidia_vpci_relay_allowed: false,
-        enable_tpm: false,
+        tpm_version: None,
         vtl2_settings: None,
         secure_boot_enabled: false,
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,
         enable_battery: false,
+        enable_hibernation: false,
         no_persistent_secrets: true,
         guest_state_lifetime: Default::default(),
         guest_state_encryption_policy: Default::default(),
@@ -265,6 +266,7 @@ pub fn create_host_channel(
         hardware_sealing_policy: Default::default(),
         efi_diagnostics_log_level: Default::default(),
         force_dma_bounce_enabled: false,
+        smbios: Default::default(),
     };
 
     let halt_reason = Arc::new(Mutex::new(None));

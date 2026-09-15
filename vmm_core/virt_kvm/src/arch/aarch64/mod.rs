@@ -193,6 +193,7 @@ open_enum::open_enum! {
         SYS_SPSR_EL1 = sys_reg64(SystemReg::SPSR_EL1),
         SYS_VBAR_EL1 = sys_reg64(SystemReg::VBAR),
         SYS_ID_AA64PFR0_EL1 = sys_reg64(SystemReg::ID_AA64PFR0_EL1),
+        SYS_MPIDR_EL1 = sys_reg64(SystemReg::MPIDR_EL1),
     }
 }
 
@@ -787,6 +788,19 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
             self.vm.add_vp(vp_idx as u32)?;
         }
 
+        // KVM_ARM_VCPU_INIT resets MPIDR_EL1 to KVM's own vcpu-id mapping, so
+        // this has to run after add_vp, and before the GIC starts resolving
+        // redistributor affinities.
+        for (vp_idx, vp_info) in self.config.processor_topology.vps_arch().enumerate() {
+            self.vm
+                .vp(vp_idx as u32)
+                .set_reg64(KvmRegisterId::SYS_MPIDR_EL1.into(), vp_info.mpidr.into())
+                .map_err(|err| KvmError::SetMpidr {
+                    vp_index: vp_idx as u32,
+                    err,
+                })?;
+        }
+
         // Set up the GIC device matching the topology's GIC version.
         let gic_device = match self.config.processor_topology.gic_version() {
             GicVersion::V3 {
@@ -885,6 +899,10 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
 }
 
 impl virt::Partition for KvmPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(
         &self,
     ) -> Option<&dyn virt::ResetPartition<Error = <Self as virt::Hv1>::Error>> {
@@ -1128,6 +1146,9 @@ impl virt::Hypervisor for Kvm {
             platform_gsiv: None,
             supports_gic_v3: self.supports_gic_v3,
             supports_its: self.supports_its,
+            device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Fixed(
+                memory_range::MemoryRange::new(0x0800_0000..0x0810_0000),
+            ),
         }
     }
 

@@ -23,12 +23,20 @@ use guestmem::GuestMemory;
 /// Result of an STE config dispatch.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SteAction {
-    /// Abort all transactions for this stream.
+    /// Abort the transaction with **no event recorded**. Produced for the
+    /// `STE.Config` encodings with `Config[2] == 0`: the `0b000` (abort)
+    /// encoding and the reserved `0b001`/`0b010`/`0b011` encodings, which the
+    /// SMMUv3 `STE.Config` table defines to "behave as `0b000`".
     Abort,
     /// Bypass translation (identity IOVA=GPA).
     Bypass,
     /// Stage 1 translation — proceed to CD lookup.
     S1Translate,
+    /// The `STE.Config` selects a translation stage this SMMU does not
+    /// implement (`0b110`/`0b111` while `IDR0.S2P == 0`). Per SMMUv3 such an
+    /// STE is ILLEGAL and "behaves as described for `STE.V == 0`": the
+    /// transaction is terminated and a `C_BAD_STE` event is recorded.
+    Illegal,
 }
 
 /// Parameters for walking an AArch64 stage 1 page table, extracted from
@@ -69,7 +77,7 @@ impl SmmuFault {
         SmmuFault {
             event: EvtEntry {
                 header: crate::spec::events::EvtHeader::new()
-                    .with_event_id(EventId::C_BAD_STREAMID.0),
+                    .with_event_id(EventId::C_BAD_STREAMID),
                 sid,
                 ..EvtEntry::new()
             },
@@ -118,12 +126,19 @@ pub fn lookup_ste(
 }
 
 /// Determine the translation action from an STE's Config field.
-pub fn ste_config_action(ste: &Ste) -> Result<SteAction, SteConfig> {
+///
+/// This SMMU is stage-1 only (`IDR0.S2P == 0`), so any `Config` that selects
+/// stage 2 (`0b110`/`0b111`) is ILLEGAL and must fault with `C_BAD_STE`. Per
+/// the SMMUv3 `STE.Config` table, `Config[2] == 0` (the `0b000` encoding and
+/// the reserved `0b0xx` encodings) aborts the transaction with **no** event.
+pub fn ste_config_action(ste: &Ste) -> SteAction {
     match ste.config() {
-        SteConfig::ABORT => Ok(SteAction::Abort),
-        SteConfig::BYPASS => Ok(SteAction::Bypass),
-        SteConfig::S1_TRANS => Ok(SteAction::S1Translate),
-        other => Err(other),
+        SteConfig::BYPASS => SteAction::Bypass,
+        SteConfig::S1_TRANS => SteAction::S1Translate,
+        SteConfig::S2_TRANS | SteConfig::S1S2_TRANS => SteAction::Illegal,
+        // 0b000 and the reserved 0b001/0b010/0b011 encodings ("behave as
+        // 0b000"): abort with no event recorded.
+        _ => SteAction::Abort,
     }
 }
 
@@ -162,12 +177,26 @@ pub fn lookup_cd(
         s1_context_ptr.wrapping_add((ssid as u64) * (crate::spec::cd::CD_SIZE as u64)) & oas_mask;
     let cd: Cd = gm.read_plain(cd_addr).map_err(|_| SmmuFault::bad_cd(sid))?;
 
+    tracelimit::info_ratelimited!(
+        sid,
+        cd_addr = format_args!("{:#x}", cd_addr),
+        cd_dw0 = format_args!("{:#018x}", u64::from(cd.qw0)),
+        cd_dw1 = format_args!("{:#018x}", u64::from(cd.qw1)),
+        "lookup_cd: read CD from guest memory"
+    );
+
     if !cd.valid() {
+        tracelimit::warn_ratelimited!(
+            sid,
+            cd_addr = format_args!("{:#x}", cd_addr),
+            "lookup_cd: CD not valid"
+        );
         return Err(SmmuFault::bad_cd(sid));
     }
 
     // Only AArch64 page tables are supported.
     if !cd.aa64() {
+        tracelimit::warn_ratelimited!(sid, "lookup_cd: CD not AA64");
         return Err(SmmuFault::bad_cd(sid));
     }
 
@@ -175,6 +204,7 @@ pub fn lookup_cd(
     // (no stall) and TERM_MODEL=1 (terminate on fault), an access flag
     // fault would be unrecoverable, so the guest must pre-set A=1.
     if !cd.qw0.a() {
+        tracelimit::warn_ratelimited!(sid, "lookup_cd: CD.A not set (TERM_MODEL=1 requires A=1)");
         return Err(SmmuFault::bad_cd(sid));
     }
 
@@ -202,7 +232,7 @@ pub fn translation_context(
     }
 
     // Validate IPS and cap to device OAS per SMMUv3 §3.4.
-    let cd_oas_bits = ips.bits().ok_or_else(|| SmmuFault::bad_cd(sid))?;
+    let cd_oas_bits = ips.addr_bits().ok_or_else(|| SmmuFault::bad_cd(sid))?;
     let cd_oas_mask = (1u64 << cd_oas_bits) - 1;
     // The effective OAS is the minimum of CD.IPS and the device OAS.
     let oas_mask = cd_oas_mask.min(device_oas_mask);
@@ -415,10 +445,10 @@ fn check_permissions(desc: &PtDesc, iova: u64, write: bool, sid: u32) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::AddrSize;
     use crate::spec::cd::CD_SIZE;
     use crate::spec::cd::CdDw0;
     use crate::spec::cd::CdDw1;
-    use crate::spec::cd::Ips;
     use crate::spec::ste::SteDw0;
     use crate::spec::ste::SteDw1;
 
@@ -459,13 +489,13 @@ mod tests {
     }
 
     /// Build a valid CD.
-    fn make_cd(ttb0: u64, t0sz: u8, tg0: Tg0, ips: Ips) -> Cd {
+    fn make_cd(ttb0: u64, t0sz: u8, tg0: Tg0, ips: AddrSize) -> Cd {
         Cd {
             qw0: CdDw0::new()
                 .with_v(true)
                 .with_t0sz(t0sz)
                 .with_tg0(tg0.0)
-                .with_ips(ips.0)
+                .with_ips(ips)
                 .with_aa64(true)
                 .with_a(true)
                 .with_asid(1),
@@ -519,7 +549,7 @@ mod tests {
 
         let result = lookup_ste(&gm, STRTAB_BASE, STRTAB_LOG2SIZE, 3, OAS_MASK);
         let fault = result.expect_err("Should fault on V=0");
-        assert_eq!(fault.event.event_id(), EventId::C_BAD_STE);
+        assert_eq!(fault.event.header.event_id(), EventId::C_BAD_STE);
         assert_eq!(fault.event.sid, 3);
     }
 
@@ -529,7 +559,7 @@ mod tests {
         // Stream ID 2048 is out of range for log2size=10 (max 1024).
         let result = lookup_ste(&gm, STRTAB_BASE, STRTAB_LOG2SIZE, 2048, OAS_MASK);
         let fault = result.expect_err("Should fault on out-of-range SID");
-        assert_eq!(fault.event.event_id(), EventId::C_BAD_STREAMID);
+        assert_eq!(fault.event.header.event_id(), EventId::C_BAD_STREAMID);
     }
 
     // =========================================================================
@@ -539,30 +569,45 @@ mod tests {
     #[test]
     fn test_ste_config_abort() {
         let ste = make_abort_ste();
-        assert_eq!(ste_config_action(&ste), Ok(SteAction::Abort));
+        assert_eq!(ste_config_action(&ste), SteAction::Abort);
     }
 
     #[test]
     fn test_ste_config_bypass() {
         let ste = make_bypass_ste();
-        assert_eq!(ste_config_action(&ste), Ok(SteAction::Bypass));
+        assert_eq!(ste_config_action(&ste), SteAction::Bypass);
     }
 
     #[test]
     fn test_ste_config_s1_trans() {
         let ste = make_s1_ste(CD_BASE);
-        assert_eq!(ste_config_action(&ste), Ok(SteAction::S1Translate));
+        assert_eq!(ste_config_action(&ste), SteAction::S1Translate);
     }
 
     #[test]
-    fn test_ste_config_unknown() {
-        // Config = 0b010 is not a valid configuration.
+    fn test_ste_config_reserved_aborts() {
+        // Config = 0b010 is a reserved encoding. Per the SMMUv3 STE.Config
+        // table it "behaves as 0b000": abort with no event recorded.
         let ste = Ste {
             qw0: SteDw0::new().with_v(true).with_config(0b010),
             qw1: SteDw1::new(),
             _qw2_7: [0; 6],
         };
-        assert!(ste_config_action(&ste).is_err());
+        assert_eq!(ste_config_action(&ste), SteAction::Abort);
+    }
+
+    #[test]
+    fn test_ste_config_stage2_is_illegal() {
+        // This SMMU advertises IDR0.S2P=0, so Config values that select stage 2
+        // (0b110 S2-only and 0b111 nested) are ILLEGAL and must fault.
+        for config in [SteConfig::S2_TRANS.0, SteConfig::S1S2_TRANS.0] {
+            let ste = Ste {
+                qw0: SteDw0::new().with_v(true).with_config(config),
+                qw1: SteDw1::new(),
+                _qw2_7: [0; 6],
+            };
+            assert_eq!(ste_config_action(&ste), SteAction::Illegal);
+        }
     }
 
     // =========================================================================
@@ -573,7 +618,7 @@ mod tests {
     fn test_cd_lookup_valid() {
         let gm = GuestMemory::allocate(0x40_0000);
         let ste = make_s1_ste(CD_BASE);
-        let cd = make_cd(0x3000_0000, 32, Tg0::GRAN_4K, Ips::IPS_40);
+        let cd = make_cd(0x3000_0000, 32, Tg0::GRAN_4K, AddrSize::BITS_40);
         write_cd(&gm, CD_BASE, 0, &cd);
 
         let result = lookup_cd(&gm, &ste, 5, 0, OAS_MASK);
@@ -601,7 +646,7 @@ mod tests {
 
         let result = lookup_cd(&gm, &ste, 5, 0, OAS_MASK);
         let fault = result.expect_err("Should fault on V=0 CD");
-        assert_eq!(fault.event.event_id(), EventId::C_BAD_CD);
+        assert_eq!(fault.event.header.event_id(), EventId::C_BAD_CD);
     }
 
     #[test]
@@ -621,7 +666,7 @@ mod tests {
 
         let result = lookup_cd(&gm, &ste, 5, 0, OAS_MASK);
         let fault = result.expect_err("Should fault on non-AA64 CD");
-        assert_eq!(fault.event.event_id(), EventId::C_BAD_CD);
+        assert_eq!(fault.event.header.event_id(), EventId::C_BAD_CD);
     }
 
     // =========================================================================
@@ -630,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_translation_context_4k() {
-        let cd = make_cd(0x4000_0000, 32, Tg0::GRAN_4K, Ips::IPS_40);
+        let cd = make_cd(0x4000_0000, 32, Tg0::GRAN_4K, AddrSize::BITS_40);
         let ctx = translation_context(&cd, 0, OAS_MASK).expect("should succeed");
         assert_eq!(ctx.ttb0, 0x4000_0000);
         assert_eq!(ctx.t0sz, 32);
@@ -641,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_translation_context_16k() {
-        let cd = make_cd(0x8000_0000, 28, Tg0::GRAN_16K, Ips::IPS_48);
+        let cd = make_cd(0x8000_0000, 28, Tg0::GRAN_16K, AddrSize::BITS_48);
         let ctx = translation_context(&cd, 0, (1u64 << 48) - 1).expect("should succeed");
         assert_eq!(ctx.tg0, Tg0::GRAN_16K);
         assert_eq!(ctx.oas_mask, (1 << 48) - 1);
@@ -656,7 +701,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(0b11) // invalid
-                .with_ips(Ips::IPS_40.0)
+                .with_ips(AddrSize::BITS_40)
                 .with_aa64(true),
             qw1: CdDw1::new(),
             _qw2: 0,
@@ -676,7 +721,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(Tg0::GRAN_4K.0)
-                .with_ips(0b111) // invalid
+                .with_ips(AddrSize(0b111)) // invalid
                 .with_aa64(true),
             qw1: CdDw1::new(),
             _qw2: 0,
@@ -696,7 +741,7 @@ mod tests {
                 .with_v(true)
                 .with_t0sz(32)
                 .with_tg0(Tg0::GRAN_4K.0)
-                .with_ips(Ips::IPS_40.0)
+                .with_ips(AddrSize::BITS_40)
                 .with_aa64(true)
                 .with_epd0(true),
             qw1: CdDw1::new(),
@@ -903,7 +948,7 @@ mod tests {
         // L1[0] is all zeros (invalid).
         let result = walk_s1(&gm, &ctx, 0, false, 42);
         let fault = result.expect_err("should fault");
-        assert_eq!(fault.event.event_id(), EventId::F_TRANSLATION);
+        assert_eq!(fault.event.header.event_id(), EventId::F_TRANSLATION);
         assert_eq!(fault.event.sid, 42);
     }
 
@@ -927,7 +972,7 @@ mod tests {
         // Write should fault.
         let result = walk_s1(&gm, &ctx, 0, true, 0);
         let fault = result.expect_err("should fault on write to RO");
-        assert_eq!(fault.event.event_id(), EventId::F_PERMISSION);
+        assert_eq!(fault.event.header.event_id(), EventId::F_PERMISSION);
     }
 
     #[test]
@@ -945,7 +990,7 @@ mod tests {
 
         let result = walk_s1(&gm, &ctx, 0, false, 0);
         let fault = result.expect_err("should fault on AF=0");
-        assert_eq!(fault.event.event_id(), EventId::F_ACCESS);
+        assert_eq!(fault.event.header.event_id(), EventId::F_ACCESS);
     }
 
     #[test]
@@ -972,7 +1017,7 @@ mod tests {
 
         let result = walk_s1(&gm, &ctx, 0, false, 0);
         let fault = result.expect_err("should fault on addr size");
-        assert_eq!(fault.event.event_id(), EventId::F_ADDR_SIZE);
+        assert_eq!(fault.event.header.event_id(), EventId::F_ADDR_SIZE);
     }
 
     #[test]
@@ -984,7 +1029,7 @@ mod tests {
         // IOVA = 0x1_0000_0000 (exceeds 32-bit range).
         let result = walk_s1(&gm, &ctx, 0x1_0000_0000, false, 0);
         let fault = result.expect_err("should fault on out-of-range IOVA");
-        assert_eq!(fault.event.event_id(), EventId::F_TRANSLATION);
+        assert_eq!(fault.event.header.event_id(), EventId::F_TRANSLATION);
     }
 
     #[test]
@@ -1069,7 +1114,7 @@ mod tests {
 
         let result = walk_s1(&gm, &ctx, 0, false, 99);
         let fault = result.expect_err("degenerate T0SZ must fault, not panic");
-        assert_eq!(fault.event.event_id(), EventId::F_TRANSLATION);
+        assert_eq!(fault.event.header.event_id(), EventId::F_TRANSLATION);
         assert_eq!(fault.event.sid, 99);
     }
 }

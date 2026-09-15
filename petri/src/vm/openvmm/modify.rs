@@ -84,6 +84,32 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Override the SMBIOS identity delivered to the guest, regardless of how
+    /// the VM is loaded.
+    ///
+    /// For OpenHCL the identity is forwarded to the paravisor over the Guest
+    /// Emulation Transport (GET), which synthesizes the guest's DMI tables from
+    /// it. For direct OpenVMM boot (Linux direct, UEFI, or PCAT) it is applied
+    /// to the loader's SMBIOS config. Each load path honors only the subset of
+    /// fields it can express and fails closed on the rest.
+    pub fn with_smbios(mut self, f: impl FnOnce(&mut smbios_defs::SmbiosConfig)) -> Self {
+        if self.resources.properties.is_openhcl {
+            let ged = self.ged.as_mut().expect("OpenHCL config must have a GED.");
+            f(&mut ged.smbios);
+        } else {
+            let smbios = match &mut self.config.load_mode {
+                LoadMode::Linux { smbios, .. }
+                | LoadMode::Uefi { smbios, .. }
+                | LoadMode::Pcat { smbios, .. } => &mut **smbios,
+                LoadMode::Igvm { .. } | LoadMode::None => {
+                    panic!("SMBIOS configuration is not supported for this load mode.")
+                }
+            };
+            f(smbios);
+        }
+        self
+    }
+
     /// Enable a synthnic for the VM.
     ///
     /// Uses a mana emulator and the paravisor if a paravisor is present.
@@ -358,7 +384,6 @@ impl PetriVmConfigOpenVmm {
         for node in &mut self.config.numa.nodes {
             if let Some(mem) = &mut node.mem {
                 mem.private_memory = false;
-                mem.transparent_hugepages = false;
             }
         }
         self
@@ -383,7 +408,6 @@ impl PetriVmConfigOpenVmm {
                 mem.hugepages = true;
                 mem.hugepage_size = hugepage_size;
                 mem.private_memory = false;
-                mem.transparent_hugepages = false;
             }
         }
         self
@@ -506,6 +530,27 @@ impl PetriVmConfigOpenVmm {
                 name.to_string(),
                 PcieIommuConfig::Smmu {
                     accel: false,
+                    oas: openvmm_defs::config::SmmuOas::Auto,
+                },
+            ));
+        }
+        self
+    }
+
+    /// Enable an accelerated (iommufd-nested) SMMUv3 on the specified root
+    /// complexes (aarch64 only).
+    ///
+    /// Like [`with_smmu`](Self::with_smmu), but the SMMU programs the host
+    /// IOMMU for hardware nested stage-1 translation, so VFIO devices behind
+    /// these root complexes are permitted (and their guest-programmed stage-1
+    /// tables are honored via a host nested HWPT). Requires a host SMMU that
+    /// supports iommufd nesting.
+    pub fn with_smmu_accel(mut self, rc_names: &[&str]) -> Self {
+        for name in rc_names {
+            self.pending_iommu.push((
+                name.to_string(),
+                PcieIommuConfig::Smmu {
+                    accel: true,
                     oas: openvmm_defs::config::SmmuOas::Auto,
                 },
             ));

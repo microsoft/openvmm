@@ -199,6 +199,24 @@ mod tests {
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
 
+    const CONFORMANCE_DISK_SIZE: u64 = 1024 * 1024;
+
+    #[async_test]
+    async fn sector_range_conformance() {
+        // XTS requires the two halves of the key to differ; a uniform key is
+        // rejected by the crypto backend at cipher init, which would make every
+        // write fail for a reason unrelated to the sector range.
+        let mut key = [0; 64];
+        key[..32].fill(0xab);
+        key[32..].fill(0xcd);
+        let inner = disklayer_ram::ram_disk(CONFORMANCE_DISK_SIZE, false).unwrap();
+        let disk = Disk::new(
+            CryptDisk::new(disk_crypt_resources::Cipher::XtsAes256, &key, inner).unwrap(),
+        )
+        .unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
     #[async_test]
     async fn test_basic_read_write() {
         let key = [[0u8; 32], [1; 32]];

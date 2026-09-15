@@ -12,6 +12,11 @@
 //! from newcomers (does the version field mean anything? do we use it for
 //! semver internally?).
 //!
+//! The exceptions in [`VERSION_EXCEPTIONS`] are the crates where the version is
+//! *not* meaningless, because something outside the crate reads it. Those
+//! crates lose the publishing protection described above, so each one sets
+//! `publish = false` explicitly instead.
+//!
 //! The [authors][] field is optional, is not really used anywhere anymore, and
 //! just creates confusion.
 //!
@@ -27,8 +32,24 @@ use toml_edit::DocumentMut;
 use toml_edit::Item;
 use toml_edit::Table;
 
-/// List of packages that are allowed to have a version
-static VERSION_EXCEPTIONS: &[&str] = &["vmgstool"];
+/// List of packages that are allowed to have a version.
+///
+/// Each of these must also set `publish = false`, since carrying a version
+/// forfeits the implicit publishing protection described at the module level.
+///
+/// `vmgstool` publishes a versioned binary, and its release tag is built from
+/// the version in its manifest.
+///
+/// `openvmm` and `openvmm_build_info` carry the workspace version because
+/// OpenVMM must retain its identity in a Git-free source tree. The version has
+/// to travel inside the source, since a downstream builder cannot recover it
+/// from Git metadata. Cargo identifies the product package with this version,
+/// and `openvmm_build_info` exposes the corresponding CLI identity.
+///
+/// If this list grows much past a handful, replace it with a
+/// `package.metadata.xtask.house-rules` opt-in, the way `excluded-from-workspace`
+/// below already works -- keeping the policy next to the crate it applies to.
+static VERSION_EXCEPTIONS: &[&str] = &["openvmm", "openvmm_build_info", "vmgstool"];
 
 pub struct PackageInfo;
 
@@ -52,7 +73,8 @@ impl Lint for PackageInfo {
             .unwrap_or(false);
 
         let package_name = package["name"].as_str().unwrap();
-        let check_version = !VERSION_EXCEPTIONS.contains(&package_name);
+        let is_version_exception = VERSION_EXCEPTIONS.contains(&package_name);
+        let check_version = !is_version_exception;
 
         let mut lints_table = Table::new();
         lints_table.insert("workspace", Item::Value(true.into()));
@@ -67,6 +89,8 @@ impl Lint for PackageInfo {
 
         let has_authors = package.contains_key("authors");
         let has_version = check_version && package.contains_key("version");
+        let needs_publish_false =
+            is_version_exception && package.get("publish").and_then(Item::as_bool) != Some(false);
         let needs_lints_fix = !excluded_from_workspace
             && content.get("lints").map(|o| o.to_string()).as_deref()
                 != Some(&lints_table.to_string());
@@ -89,6 +113,15 @@ impl Lint for PackageInfo {
         if has_version {
             content.fix("package should not have version field", |doc| {
                 doc["package"].as_table_mut().unwrap().remove("version");
+            });
+        }
+
+        if needs_publish_false {
+            content.fix("versioned package should set publish = false", |doc| {
+                doc["package"]
+                    .as_table_mut()
+                    .unwrap()
+                    .insert("publish", Item::Value(false.into()));
             });
         }
 

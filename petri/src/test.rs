@@ -29,23 +29,28 @@ use crate::requirements::TestCaseRequirements;
 use crate::requirements::can_run_test_with_context;
 use crate::tracing::try_init_tracing;
 use anyhow::Context as _;
+use futures::FutureExt as _;
+use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::RemoteAccess;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use test_macro_support::TESTS;
 
-/// Defines a single test from a value that implements [`RunTest`].
+/// Defines a single test named after the async run function `$f`, using `$req`
+/// to resolve its artifacts. See [`SimpleTest::new_async`].
 #[macro_export]
 macro_rules! test {
     ($f:ident, $req:expr) => {
         $crate::multitest!(vec![
-            $crate::SimpleTest::new(stringify!($f), $req, $f).into()
+            $crate::SimpleTest::new_async(stringify!($f), $req, $f).into()
         ]);
     };
 }
 
-/// Defines a single unstable test from a value that implements [`RunTest`].
+/// Defines a single unstable test named after the async run function `$f`,
+/// using `$req` to resolve its artifacts.
 ///
 /// `$reason` documents why the test is unstable and is logged when an unstable
 /// failure is ignored.
@@ -53,14 +58,42 @@ macro_rules! test {
 macro_rules! unstable_test {
     ($f:ident, $req:expr, $reason:expr) => {
         $crate::multitest!(vec![
-            $crate::SimpleTest::new(stringify!($f), $req, $f)
+            $crate::SimpleTest::new_async(stringify!($f), $req, $f)
                 .unstable($reason)
                 .into()
         ]);
     };
 }
 
-/// Defines a set of tests from a [`TestCase`].
+/// Defines a single test named after the synchronous run function `$f`, using
+/// `$req` to resolve its artifacts. See [`SimpleTest::new_sync`].
+#[macro_export]
+macro_rules! test_sync {
+    ($f:ident, $req:expr) => {
+        $crate::multitest!(vec![
+            $crate::SimpleTest::new_sync(stringify!($f), $req, $f).into()
+        ]);
+    };
+}
+
+/// Defines a single unstable test named after the synchronous run function
+/// `$f`, using `$req` to resolve its artifacts.
+///
+/// `$reason` documents why the test is unstable and is logged when an unstable
+/// failure is ignored.
+#[macro_export]
+macro_rules! unstable_test_sync {
+    ($f:ident, $req:expr, $reason:expr) => {
+        $crate::multitest!(vec![
+            $crate::SimpleTest::new_sync(stringify!($f), $req, $f)
+                .unstable($reason)
+                .into()
+        ]);
+    };
+}
+
+/// Defines a set of tests from an expression evaluating to a
+/// [`Vec<TestCase>`](TestCase).
 #[macro_export]
 macro_rules! multitest {
     ($tests:expr) => {
@@ -138,7 +171,17 @@ impl Test {
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         let logger = try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)
             .context("failed to initialize tracing")?;
+        // Record the test's identity up front, so that a test which is killed
+        // or crashes before reporting a result is still identifiable.
+        logger.log_test_start(&name);
         let mut post_test_hooks = Vec::new();
+
+        // A process that is faulted or killed writes nothing to its own logs,
+        // so the host's error reporting events are the only record that it
+        // crashed and the only source of the Watson report ID needed to find
+        // the dump.
+        #[cfg(windows)]
+        post_test_hooks.push(collect_watson_events_hook(logger.clone()));
 
         // Catch test panics in order to cleanly log the panic result. Without
         // this, `libtest_mimic` will report the panic to stdout and fail the
@@ -168,7 +211,7 @@ impl Test {
             };
             Err(err)
         });
-        logger.log_test_result(&name, &r, self.test.0.unstable().is_some());
+        logger.log_test_result(&r, self.test.0.unstable().is_some());
 
         for hook in post_test_hooks {
             tracing::info!(name = hook.name(), "Running post-test hook");
@@ -318,6 +361,29 @@ impl PetriPostTestHook {
     }
 }
 
+/// Returns a hook that, if the test failed, writes the Windows Error Reporting
+/// and Azure Watson events from the test's execution window to
+/// `watson_events.log`.
+#[cfg(windows)]
+fn collect_watson_events_hook(logger: PetriLogSource) -> PetriPostTestHook {
+    let start_time = jiff::Timestamp::now();
+    PetriPostTestHook::new("collect watson events".into(), move |test_passed| {
+        if test_passed {
+            return Ok(());
+        }
+        let events =
+            futures::executor::block_on(crate::vm::hyperv::powershell::watson_events(&start_time));
+        if events.is_empty() {
+            return Ok(());
+        }
+        let log_file = logger.log_file("watson_events")?;
+        for event in events {
+            event.write_to(&log_file);
+        }
+        Ok(())
+    })
+}
+
 /// A test defined by an artifact resolver function and a run function.
 pub struct SimpleTest<A, F> {
     leaf_name: &'static str,
@@ -333,18 +399,65 @@ pub struct SimpleTest<A, F> {
 impl<A, AR, F, E> SimpleTest<A, F>
 where
     A: 'static + Send + Fn(&ArtifactResolver<'_>) -> Option<AR>,
-    F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
+    F: 'static + Send + AsyncFn(PetriTestParams<'_>, DefaultDriver, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
     /// Returns a new test with the given `leaf_name`, `resolve`, and `run`
-    /// functions.
+    /// functions, whose `run` function is async, running it on a task
+    /// pool owned by petri.
     ///
     /// The test defaults to stable, not ignored, with no host requirements and
     /// a [`RemoteAccess::LocalOnly`] policy. Use the builder methods
     /// ([`requirements`](Self::requirements), [`unstable`](Self::unstable),
     /// [`ignore`](Self::ignore), [`remote_access`](Self::remote_access)) to
     /// override these.
-    pub fn new(leaf_name: &'static str, resolve: A, run: F) -> Self {
+    pub fn new_async(
+        leaf_name: &'static str,
+        resolve: A,
+        run: F,
+    ) -> SimpleTest<A, impl 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>> {
+        SimpleTest::new_sync(leaf_name, resolve, move |params, artifacts| {
+            let mut pool = DefaultPool::named(std::thread::current().name().unwrap_or(leaf_name));
+            let driver = pool.driver();
+            // The inner catch keeps a panicking test body from unwinding through
+            // the pool; the outer one catches panics raised by spawned tasks,
+            // such as the VM's timeout watchdog.
+            let r = catch_unwind(AssertUnwindSafe(|| {
+                pool.run_until(
+                    AssertUnwindSafe(run(params, driver.clone(), artifacts)).catch_unwind(),
+                )
+            }));
+            // Let the diagnostic tasks the VM spawns as it is dropped finish
+            // before the failure is reported.
+            drop(driver);
+            pool.run();
+            match r.and_then(|r| r) {
+                Ok(r) => r,
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        })
+    }
+}
+
+impl<A, AR, F, E> SimpleTest<A, F>
+where
+    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> Option<AR>,
+    F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
+    E: Into<anyhow::Error>,
+{
+    /// Returns a new test with the given `leaf_name`, `resolve`, and `run`
+    /// functions.
+    ///
+    /// Use [`new_async`](Self::new_async) instead if the test constructs a
+    /// [`PetriVm`](crate::PetriVm); its diagnostics on failure rely on petri
+    /// owning the task pool.
+    ///
+    /// The test defaults to stable, not ignored, with no host requirements and
+    /// a [`RemoteAccess::LocalOnly`] policy. Use the builder methods
+    /// ([`requirements`](Self::requirements), [`unstable`](Self::unstable),
+    /// [`ignore`](Self::ignore), [`remote_access`](Self::remote_access)) to
+    /// override these.
+    pub fn new_sync(leaf_name: &'static str, resolve: A, run: F) -> Self {
         SimpleTest {
             leaf_name,
             resolve,
@@ -355,7 +468,9 @@ where
             remote_policy: RemoteAccess::LocalOnly,
         }
     }
+}
 
+impl<A, F> SimpleTest<A, F> {
     /// Sets the host requirements that must be satisfied for this test to run.
     pub fn requirements(mut self, requirements: TestCaseRequirements) -> Self {
         self.host_requirements = Some(requirements);

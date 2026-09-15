@@ -881,6 +881,22 @@ mod saved_state {
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let saved_queue_count = state.queues.len();
+
+            // Restore the PCI config space (BARs, command register, etc.) so
+            // that host pre-assigned BARs are preserved across the cycle.
+            //
+            // This has to come before `restore_common`, which reinstalls the
+            // queue doorbells: `doorbell_region` reads `bar_address(0)`, and a
+            // BAR address only becomes active once the config space brings it
+            // back. If restored the other way round, `doorbell_region` answers
+            // `None` at that moment and no doorbell is installed. The only other
+            // place they go in is the guest writing DRIVER_OK, which a guest
+            // resumed mid-flight never does again, so the omission lasts for the
+            // life of the VM and every queue kick takes an MMIO exit instead of
+            // the registered doorbell. Nothing in `restore_common` reads the
+            // interrupt state restored below.
+            self.pci.config_space.restore(state.cfg_space)?;
+
             self.core.restore_common(
                 &mut self.pci,
                 &state.common,
@@ -897,10 +913,6 @@ mod saved_state {
                 line.set_level(state.interrupt_status != 0);
             }
             self.pci.msix_config_vector = state.msix_config_vector;
-
-            // Restore the PCI config space (BARs, command register, etc.) so
-            // that host pre-assigned BARs are preserved across the cycle.
-            self.pci.config_space.restore(state.cfg_space)?;
 
             Ok(())
         }

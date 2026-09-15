@@ -8,7 +8,6 @@ use loader::importer::X86Register;
 use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
 use memory_range::MemoryRange;
-use openvmm_defs::config::IsolationType;
 use std::ffi::CString;
 use std::io::Seek;
 use thiserror::Error;
@@ -34,6 +33,8 @@ pub enum Error {
     Dt(#[source] DtError),
     #[error("failed to write EFI/ACPI tables to guest memory")]
     Efi(#[source] guestmem::GuestMemoryError),
+    #[error("failed to finalize SNP VMSA")]
+    SnpVmsa(#[source] anyhow::Error),
 }
 
 struct Aarch64EfiInfo {
@@ -50,32 +51,117 @@ pub struct KernelConfig<'a> {
     pub initrd: &'a Option<std::fs::File>,
     pub cmdline: &'a str,
     pub mem_layout: &'a MemoryLayout,
-    pub isolation: Option<IsolationType>,
+    pub isolation: KernelIsolationConfig,
+    pub smbios: &'a openvmm_defs::config::SmbiosConfig,
 }
 
-/// The default SMBIOS identity for firmware-less Linux direct boot.
-///
-/// There is no configuration surface yet, so every direct-boot VM gets this
-/// fixed OpenVMM identity. The UUID is left nil.
-fn default_smbios_tables() -> loader::smbios::SmbiosTables<'static> {
+#[derive(Debug, Clone, Copy)]
+pub enum KernelIsolationConfig {
+    None,
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    Snp(SnpKernelConfig),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SnpKernelConfig {
+    pub c_bit: u8,
+    pub restricted_injection: bool,
+}
+
+// Bring-up hack for SNP Linux direct boot. Without a bootshim or firmware to
+// accept memory after launch, every RAM page must be added to the initial SNP
+// launch context. This makes launch extremely slow and should be removed once
+// SNP boots exclusively through IGVM, or direct boot can accept the remaining
+// RAM after launch instead of pre-accepting it here.
+fn complete_snp_direct_ram_imports(
+    page_imports: &mut Vec<virt::InitialPageImport>,
+    ram_ranges: impl IntoIterator<Item = MemoryRange>,
+) {
+    let mut imported_ranges: Vec<_> = page_imports.iter().map(|page| page.range).collect();
+    imported_ranges.sort_by_key(|range| (range.start(), range.end()));
+
+    for ram_range in ram_ranges {
+        let mut cursor = ram_range.start();
+        for imported_range in &imported_ranges {
+            let start = imported_range.start().max(ram_range.start());
+            let end = imported_range.end().min(ram_range.end());
+            if start >= end {
+                continue;
+            }
+            if cursor < start {
+                page_imports.push(virt::InitialPageImport {
+                    range: MemoryRange::new(cursor..start),
+                    import_type: virt::InitialPageImportType::Normal,
+                    tag: "linux-snp-direct-ram",
+                });
+            }
+            cursor = cursor.max(end);
+        }
+        if cursor < ram_range.end() {
+            page_imports.push(virt::InitialPageImport {
+                range: MemoryRange::new(cursor..ram_range.end()),
+                import_type: virt::InitialPageImportType::Normal,
+                tag: "linux-snp-direct-ram",
+            });
+        }
+    }
+}
+
+/// Merges the owned SMBIOS override config into the borrowed table view the
+/// builder consumes, substituting the `loader` crate's default strings for any
+/// unset (`None`) override.
+fn smbios_tables_from_config(
+    config: &openvmm_defs::config::SmbiosConfig,
+) -> loader::smbios::SmbiosTables<'_> {
     use loader::smbios;
+
+    // Destructure fully so new fields must be wired into the table view.
+    let openvmm_defs::config::SmbiosConfig { bios, system } = config;
+    let openvmm_defs::config::SmbiosBiosOverrides {
+        vendor,
+        version: bios_version,
+        release_date,
+        release,
+    } = bios;
+    let openvmm_defs::config::SmbiosSystemOverrides {
+        manufacturer,
+        product_name,
+        version: system_version,
+        serial_number,
+        sku_number,
+        family,
+        uuid,
+    } = system;
+
+    const DEFAULT_BIOS_VENDOR: &str = "OpenVMM";
+    const DEFAULT_BIOS_VERSION: &str = "OpenVMM Direct";
+    const DEFAULT_BIOS_RELEASE_DATE: &str = "06/19/2026";
+    const DEFAULT_BIOS_MAJOR: u8 = 0;
+    const DEFAULT_BIOS_MINOR: u8 = 0;
+    const DEFAULT_MANUFACTURER: &str = "OpenVMM";
+    const DEFAULT_PRODUCT_NAME: &str = "OpenVMM Virtual Machine";
 
     smbios::SmbiosTables {
         bios: smbios::SmbiosBiosInfo {
-            vendor: "OpenVMM",
-            version: "OpenVMM Direct",
-            release_date: "06/19/2026",
-            major: 0,
-            minor: 0,
+            vendor: vendor.as_deref().unwrap_or(DEFAULT_BIOS_VENDOR),
+            version: bios_version.as_deref().unwrap_or(DEFAULT_BIOS_VERSION),
+            release_date: release_date.as_deref().unwrap_or(DEFAULT_BIOS_RELEASE_DATE),
+            major: release.map_or(DEFAULT_BIOS_MAJOR, |(major, _)| major),
+            minor: release.map_or(DEFAULT_BIOS_MINOR, |(_, minor)| minor),
         },
         system: smbios::SmbiosSystemInfo {
-            manufacturer: "OpenVMM",
-            product_name: "OpenVMM Virtual Machine",
-            version: "",
-            serial_number: "",
-            sku_number: "",
-            family: "",
-            uuid: [0; 16],
+            manufacturer: manufacturer.as_deref().unwrap_or(DEFAULT_MANUFACTURER),
+            product_name: product_name.as_deref().unwrap_or(DEFAULT_PRODUCT_NAME),
+            version: system_version.as_deref().unwrap_or(""),
+            serial_number: serial_number.as_deref().unwrap_or(""),
+            sku_number: sku_number.as_deref().unwrap_or(""),
+            family: family.as_deref().unwrap_or(""),
+            // SMBIOS (>= 2.6) stores the Type 1 UUID's first three fields
+            // little-endian, which is exactly the in-memory byte layout of our
+            // `Guid` type, so its raw bytes go in directly with no swap. The
+            // UEFI boot path uses the same VM BIOS GUID, so a guest reports the
+            // same `product_uuid` whether booted via UEFI or direct boot.
+            uuid: (*uuid).into(),
         },
     }
 }
@@ -84,6 +170,8 @@ fn default_smbios_tables() -> loader::smbios::SmbiosTables<'static> {
 pub fn load_linux_x86(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
+    caps: &virt::x86::X86PartitionCapabilities,
+    bsp: &vm_topology::processor::x86::X86VpInfo,
     acpi_at_gpa: impl FnOnce(u64) -> loader::linux::AcpiTables,
 ) -> Result<InitialLoad<X86Register>, Error> {
     let mut kernel_file = cfg.kernel;
@@ -104,13 +192,16 @@ pub fn load_linux_x86(
     });
 
     let cmdline = CString::new(cfg.cmdline).unwrap();
-    let snp_boot =
-        (cfg.isolation == Some(IsolationType::Snp)).then_some(loader::linux::SnpBootConfig);
+    let snp = match cfg.isolation {
+        KernelIsolationConfig::None => None,
+        KernelIsolationConfig::Snp(snp) => Some(snp),
+    };
+    let snp_boot = snp.map(|snp| loader::linux::SnpBootConfig { c_bit: snp.c_bit });
 
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
 
     // The loader owns the sub-1 MB layout; we supply only the kernel, command
-    // line, an ACPI builder, and the default SMBIOS identity.
+    // line, an ACPI builder, and the configured SMBIOS identity.
     loader::linux::load_x86(
         &mut loader,
         &mut kernel_file,
@@ -118,12 +209,35 @@ pub fn load_linux_x86(
         &cmdline,
         cfg.mem_layout,
         acpi_at_gpa,
-        Some(default_smbios_tables()),
+        Some(smbios_tables_from_config(cfg.smbios)),
         snp_boot,
     )
     .map_err(Error::Loader)?;
 
-    Ok(loader.initial_regs_and_page_imports())
+    if let Some(snp) = snp {
+        loader
+            .finalize_snp_vmsa(
+                caps,
+                bsp,
+                virt::x86::snp::SnpVmsaConfig {
+                    restricted_injection: snp.restricted_injection,
+                },
+            )
+            .map_err(Error::SnpVmsa)?;
+    }
+
+    let InitialLoad {
+        regs,
+        mut page_imports,
+    } = loader.initial_regs_and_page_imports();
+    if snp.is_some() {
+        complete_snp_direct_ram_imports(
+            &mut page_imports,
+            cfg.mem_layout.ram().iter().map(|range| range.range),
+        );
+    }
+
+    Ok(InitialLoad { regs, page_imports })
 }
 
 /// Returns the device tree blob.
@@ -611,6 +725,7 @@ fn write_efi_and_acpi_tables(
     rsdp_addr: u64,
     mem_layout: &MemoryLayout,
     acpi_tables: &vmm_core::acpi_builder::BuiltAcpiTables,
+    smbios: &openvmm_defs::config::SmbiosConfig,
 ) -> Result<Aarch64EfiInfo, Error> {
     use memory_range::MemoryRange;
     use uefi_specs::uefi::boot::ACPI_20_TABLE_GUID;
@@ -675,7 +790,7 @@ fn write_efi_and_acpi_tables(
     cursor += loader::smbios::ENTRY_POINT_SIZE as u64;
     cursor = align_up(cursor, 16);
     let smbios_table_addr = cursor;
-    let smbios = loader::smbios::build(&default_smbios_tables(), smbios_table_addr);
+    let smbios = loader::smbios::build(&smbios_tables_from_config(smbios), smbios_table_addr);
     cursor += smbios.structure_table.len() as u64;
 
     // Compute how many pages the metadata region spans.
@@ -818,6 +933,7 @@ fn build_stub_dt(
     let p_uefi_mmap_size = builder.add_string("linux,uefi-mmap-size")?;
     let p_uefi_mmap_desc_size = builder.add_string("linux,uefi-mmap-desc-size")?;
     let p_uefi_mmap_desc_ver = builder.add_string("linux,uefi-mmap-desc-ver")?;
+    let p_uefi_secure_boot = builder.add_string("linux,uefi-secure-boot")?;
 
     let root_builder = builder
         .start_node("")?
@@ -833,7 +949,16 @@ fn build_stub_dt(
         .add_u64(p_uefi_mmap_start, efi_info.mmap_addr)?
         .add_u32(p_uefi_mmap_size, efi_info.mmap_size)?
         .add_u32(p_uefi_mmap_desc_size, efi_info.mmap_desc_size)?
-        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?;
+        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?
+        // The Ubuntu kernel's EFI stub sets `linux,uefi-secure-boot` in the
+        // handoff FDT, and `efi_get_fdt_params()` then treats it as a required
+        // property. If it is absent, the kernel aborts the entire EFI handoff
+        // and never installs the memory map; because this stub DT has no
+        // `/memory` node, memblock ends up empty and the kernel panics with
+        // "Failed to allocate page table page" during paging_init. Emit it
+        // (0 = secure boot disabled) so those kernels boot. Mainline kernels
+        // ignore this property.
+        .add_u32(p_uefi_secure_boot, 0)?;
 
     let root_builder = chosen.end_node()?;
 
@@ -903,6 +1028,7 @@ pub fn load_linux_arm64(
             rsdp_addr,
             cfg.mem_layout,
             &acpi_tables,
+            cfg.smbios,
         )?;
         build_stub_dt(cfg.cmdline, initrd_start, initrd_end, &efi_info)
             .map_err(|e| Error::Dt(DtError(e)))?
@@ -943,4 +1069,45 @@ pub fn load_linux_arm64(
         .map_err(Error::Loader)?;
 
     Ok(loader.initial_regs_and_page_imports())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn completes_snp_direct_ram_imports() {
+        let mut page_imports = vec![virt::InitialPageImport {
+            range: MemoryRange::new(0x2000..0x4000),
+            import_type: virt::InitialPageImportType::Secrets,
+            tag: "loader",
+        }];
+
+        complete_snp_direct_ram_imports(
+            &mut page_imports,
+            [
+                MemoryRange::new(0x1000..0x5000),
+                MemoryRange::new(0x8000..0xa000),
+            ],
+        );
+
+        let completed_ranges: Vec<_> = page_imports
+            .iter()
+            .filter(|page| page.tag == "linux-snp-direct-ram")
+            .map(|page| page.range)
+            .collect();
+        assert_eq!(
+            completed_ranges,
+            [
+                MemoryRange::new(0x1000..0x2000),
+                MemoryRange::new(0x4000..0x5000),
+                MemoryRange::new(0x8000..0xa000),
+            ]
+        );
+        assert_eq!(
+            page_imports[0].import_type,
+            virt::InitialPageImportType::Secrets
+        );
+    }
 }

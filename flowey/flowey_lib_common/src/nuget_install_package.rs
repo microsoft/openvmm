@@ -133,6 +133,13 @@ impl Node {
                     // transitive dependencies — this is intentional, as these
                     // packages are standalone native binaries / firmware blobs
                     // that do not have NuGet transitive dependencies.
+                    //
+                    // The project is never compiled, so all implicit framework
+                    // references / targeting + runtime pack downloads are
+                    // disabled. Without this, an SDK newer than the
+                    // `TargetFramework` below would try to restore the matching
+                    // targeting packs (e.g. `Microsoft.NETCore.App.Ref`) from
+                    // the configured feeds, which typically don't mirror them.
                     let csproj_content = {
                         let items: String = packages
                             .keys()
@@ -148,6 +155,10 @@ impl Node {
 r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <EnableTargetingPackDownload>false</EnableTargetingPackDownload>
+    <EnableRuntimePackDownload>false</EnableRuntimePackDownload>
+    <EnableAppHostPackDownload>false</EnableAppHostPackDownload>
   </PropertyGroup>
   <ItemGroup>
 {items}

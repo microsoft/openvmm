@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
+//! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to the PR's base branch.
 
 use crate::build_openhcl_igvm_from_recipe;
 use crate::build_openvmm_hcl;
@@ -73,23 +73,28 @@ impl SimpleFlowNode for Node {
 
         let file_name = artifact_name_openhcl_baseline(target.common_arch().unwrap());
 
+        // Compare against the PR's target branch, which is not always `main`
+        // (e.g. backports target a `release/*` branch).
+        let base_branch = if ctx.backend() == FlowBackend::Github {
+            ctx.get_gh_context_var().global().base_ref()
+        } else {
+            ReadVar::from_static("main".into())
+        };
+
         let merge_commit = ctx.reqv(|v| git_merge_commit::Request {
             repo_path: openvmm_repo_path.clone(),
             merge_commit: v,
-            base_branch: "main".into(),
+            base_branch,
         });
 
-        let merge_run = ctx.reqv(|v| {
-            gh_workflow_id::Request::WithStatusAndJob(gh_workflow_id::QueryWithStatusAndJob {
-                params: gh_workflow_id::WorkflowQueryParams {
-                    github_commit_hash: merge_commit,
-                    repo_path: openvmm_repo_path.clone(),
-                    pipeline_name,
-                    gh_workflow: v,
-                },
-                gh_run_status: gh_workflow_id::GhRunStatus::Completed,
-                gh_run_job_name: job_name,
-            })
+        let merge_run = ctx.reqv(|v| gh_workflow_id::Request {
+            repo_owner: "microsoft".into(),
+            repo_name: "openvmm".into(),
+            commit_or_branch: gh_workflow_id::GitCommitOrBranch::Commit(merge_commit),
+            pipeline_name,
+            require_run_status: Some(gh_workflow_id::GhRunStatus::Completed),
+            require_successful_job_with_name: Some(job_name),
+            gh_workflow: v,
         });
 
         let run_id = merge_run.map(ctx, |r| r.id);
@@ -125,9 +130,10 @@ impl SimpleFlowNode for Node {
                 }
             });
             Some(
+                // actions/upload-artifact v7.0.1
                 ctx.emit_gh_step(
                     "publish openvmm_hcl for analysis",
-                    "actions/upload-artifact@v7",
+                    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
                 )
                 .with("name", file_name)
                 .with("path", dir)
@@ -157,7 +163,7 @@ impl SimpleFlowNode for Node {
                 let merge_run = rt.read(merge_run);
 
                 // The contents of the artifact should match `OpenvmmHclBaselineOutput`
-                let old_path = old_openhcl.join(file_name).join("openhcl");
+                let old_path = old_openhcl.join("openhcl");
                 let new_path = new_openhcl.bin;
 
                 println!(

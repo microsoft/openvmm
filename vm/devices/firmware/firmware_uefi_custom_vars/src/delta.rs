@@ -2,21 +2,21 @@
 // Licensed under the MIT License.
 
 //! Data types which define a "delta" operation on a
-//! [`CustomVars`](super::CustomVars) struct.
+//! [`UefiVars`](super::UefiVars) struct.
 
-use super::CustomVar;
 use super::Signature;
+use super::UefiVar;
 
-/// Collection of custom UEFI nvram variables.
-#[derive(Debug)]
-pub struct CustomVarsDelta {
+/// Changes to apply to a collection of UEFI nvram variables.
+#[derive(Debug, Clone)]
+pub struct UefiVarsDelta {
     /// Secure Boot signature vars
     pub signatures: SignaturesDelta,
-    /// Any additional custom vars
-    pub custom_vars: Vec<(String, CustomVar)>,
+    /// UEFI vars that are not Secure Boot signature vars
+    pub non_signature_vars: Vec<(String, UefiVar)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SignaturesDelta {
     /// Vars should append onto underlying template
     Append(SignaturesAppend),
@@ -34,8 +34,9 @@ pub struct SignaturesAppend {
     pub moklistx: Option<Vec<Signature>>,
 }
 
-/// Replace MUST include the base secure boot vars, and may optionally include
-/// the moklist vars.
+/// Replace the underlying template signatures, optionally using `Default` values
+/// from a base template. If no base template is provided, all required signature
+/// values must be specified explicitly.
 #[derive(Debug, Clone)]
 pub struct SignaturesReplace {
     pub pk: SignatureDelta,

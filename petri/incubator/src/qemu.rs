@@ -14,11 +14,16 @@ use pal_async::process::PolledChild;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 /// Filename of the injected init script, run by the kernel as `rdinit`.
 const INIT_SCRIPT_NAME: &str = "tcg-init.sh";
+/// Filename of the host CA bundle injected into the initrd.
+const CA_CERTIFICATES_NAME: &str = "incubator-ca-certificates.crt";
 
 /// Build the QEMU command line for a TCG launch.
 pub fn build_qemu_command(
@@ -163,6 +168,10 @@ fn parse_size(s: &str) -> anyhow::Result<u64> {
 fn build_init_script(guest_pipette_path: &str) -> String {
     let guest_pipette_path = shell_single_quote(guest_pipette_path);
     let guest_share_root = shell_single_quote(GUEST_SHARE_ROOT);
+    let host_epoch_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("host clock is before the Unix epoch")
+        .as_secs();
 
     // QEMU user-mode networking defaults: guest is 10.0.2.15/24,
     // gateway 10.0.2.2, DNS forwarder at 10.0.2.3.
@@ -175,12 +184,14 @@ fn build_init_script(guest_pipette_path: &str) -> String {
         mount -t sysfs none /sys\n\
         mkdir -p /dev/pts {guest_share_root} /root /tmp /etc\n\
         mount -t devpts devpts /dev/pts\n\
+        date -u -s @{host_epoch_seconds}\n\
         mount -t 9p -o trans=virtio,version=9p2000.L hostshare {guest_share_root}\n\
         ip link set eth0 up\n\
         ip addr add 10.0.2.15/24 dev eth0\n\
         ip route add default via 10.0.2.2\n\
         echo 'nameserver 10.0.2.3' > /etc/resolv.conf\n\
         export HOME=/root\n\
+        export SSL_CERT_FILE=/{CA_CERTIFICATES_NAME}\n\
         cd {guest_share_root}\n\
         exec {guest_pipette_path} --transport tcp\n"
     )
@@ -215,6 +226,20 @@ pub fn prepare_initrd(
         0o100755, // regular file, rwxr-xr-x
     )
     .context("failed to inject init script into initrd")?;
+    let ca_certificates_path = host_ca_certificates_path()?;
+    let ca_certificates = std::fs::read(&ca_certificates_path).with_context(|| {
+        format!(
+            "failed to read host CA certificates from {}",
+            ca_certificates_path.display()
+        )
+    })?;
+    let patched_initrd = initrd_cpio::inject_into_initrd(
+        &patched_initrd,
+        CA_CERTIFICATES_NAME,
+        &ca_certificates,
+        0o100644, // regular file, rw-r--r--
+    )
+    .context("failed to inject CA certificates into initrd")?;
 
     std::fs::create_dir_all(scratch_dir).context("failed to create incubator output dir")?;
     let mut patched_initrd_file = tempfile::Builder::new()
@@ -227,6 +252,26 @@ pub fn prepare_initrd(
         .context("failed to write patched initrd")?;
 
     Ok(patched_initrd_file.into_temp_path())
+}
+
+fn host_ca_certificates_path() -> anyhow::Result<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("SSL_CERT_FILE").filter(|path| !path.is_empty()) {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.extend(
+        [
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+            "/etc/ssl/ca-bundle.pem",
+        ]
+        .map(PathBuf::from),
+    );
+
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .context("could not find a host CA certificate bundle for the incubator")
 }
 
 /// Wait for pipette to signal readiness via the serial console relay

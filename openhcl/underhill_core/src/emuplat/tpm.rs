@@ -227,7 +227,10 @@ pub mod resources {
 
             let tee_call: Option<Arc<dyn tee_call::TeeCall>> = match handle.attestation_type {
                 AttestationType::Snp => Some(Arc::new(tee_call::SnpCall)),
-                AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall)),
+                // The AK cert request path only issues `get_attestation_report`
+                // and never derives hardware keys, so hardware-bound seal key
+                // enablement is irrelevant here.
+                AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall::new(false))),
                 AttestationType::Vbs => Some(Arc::new(tee_call::VbsCall)),
                 AttestationType::Cca => {
                     tracing::warn!("CCA: resolve: tee_call is not implemented yet");

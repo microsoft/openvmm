@@ -8,6 +8,7 @@ use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::dps_json::GuestStateLifetime;
 use get_resources::ged::EfiDiagnosticsLogLevelType;
+use get_resources::ged::GedTpmVersion;
 use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
 use get_resources::ged::GuestSecureBootTemplateType;
@@ -100,6 +101,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
 
         let management_vtl_features = get_protocol::dps_json::ManagementVtlFeatures::new()
             .with_strict_encryption_policy(guest_state_encryption_policy.is_strict())
+            .with_load_firmware_supported(true)
             .with_tx_only_serial_port(resource.serial_tx_only);
 
         let guest_state_encryption_policy = match guest_state_encryption_policy {
@@ -178,7 +180,10 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 serial_tx_only: resource.serial_tx_only,
                 vmbus_redirection: resource.vmbus_redirection,
                 nvidia_vpci_relay_allowed: resource.nvidia_vpci_relay_allowed,
-                enable_tpm: resource.enable_tpm,
+                tpm_version: resource.tpm_version.map(|v| match v {
+                    GedTpmVersion::V185 => get_protocol::dps_json::GetTpmVersion::V185,
+                    GedTpmVersion::V138 => get_protocol::dps_json::GetTpmVersion::V138,
+                }),
                 vtl2_settings: resource.vtl2_settings,
                 secure_boot_enabled: resource.secure_boot_enabled,
                 secure_boot_template: match resource.secure_boot_template {
@@ -193,6 +198,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     }
                 },
                 enable_battery: resource.enable_battery,
+                enable_hibernation: resource.enable_hibernation,
                 no_persistent_secrets: resource.no_persistent_secrets,
                 guest_state_lifetime,
                 guest_state_encryption_policy,
@@ -216,6 +222,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     }
                 },
                 force_dma_bounce_enabled: resource.force_dma_bounce_enabled,
+                smbios: resource.smbios,
             },
             halt,
             resource.firmware_event_send,

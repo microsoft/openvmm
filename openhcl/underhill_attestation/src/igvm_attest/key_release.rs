@@ -14,6 +14,11 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub(crate) enum KeyReleaseError {
+    #[error("the response data size {response_size} is smaller than its header size {header_size}")]
+    ResponseSizeTooSmall {
+        response_size: usize,
+        header_size: usize,
+    },
     #[error("the response payload size is too small to parse")]
     PayloadSizeTooSmall,
     #[error("failed to parse AKV JWT (API version > 7.2)")]
@@ -72,10 +77,18 @@ pub fn parse_response(
                     })
                 })?
                 .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
-            full_header
-                .error_info
-                .igvm_signal
-                .rsa_aes_key_wrap_384_used()
+            let igvm_signal = full_header.error_info.igvm_signal;
+            let rsa_aes_key_wrap_384_used = igvm_signal.rsa_aes_key_wrap_384_used();
+
+            // Record the IGVM Agent response signals that indicate whether the IGVM Agent
+            // requested the corresponding actions.
+            tracing::info!(
+                corim_endorsement_requested = igvm_signal.corim_endorsement_requested(),
+                rsa_aes_key_wrap_384_used,
+                "IGVM Agent attestation response signals"
+            );
+
+            rsa_aes_key_wrap_384_used
         }
         _ => false,
     };
@@ -86,6 +99,12 @@ pub fn parse_response(
         IgvmAttestResponseVersion::VERSION_2 => size_of::<IgvmAttestKeyReleaseResponseHeader>(),
         invalid_version => return Err(KeyReleaseError::InvalidResponseVersion(invalid_version.0)),
     };
+    if (header.data_size as usize) < header_size {
+        return Err(KeyReleaseError::ResponseSizeTooSmall {
+            response_size: header.data_size as usize,
+            header_size,
+        });
+    }
     let payload = &response[header_size..header.data_size as usize];
     let wrapped_key_size = rsa_modulus_size + rsa_modulus_size + AES_IC_SIZE;
     let wrapped_key_base64_url_size = wrapped_key_size / 3 * 4;

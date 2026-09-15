@@ -72,8 +72,8 @@ pub mod ged {
         /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the
         /// VPCI relay's device filter.
         pub nvidia_vpci_relay_allowed: bool,
-        /// Enable the TPM.
-        pub enable_tpm: bool,
+        /// The TPM reference implementation version to expose to the guest.
+        pub tpm_version: Option<GedTpmVersion>,
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
         /// The disk to back the GET's VMGS interface.
@@ -100,6 +100,10 @@ pub mod ged {
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
         /// Force UEFI to bounce-buffer all DMA traffic.
         pub force_dma_bounce_enabled: bool,
+        /// Enable hibernation.
+        pub enable_hibernation: bool,
+        /// SMBIOS identity overrides delivered to the guest firmware.
+        pub smbios: smbios_defs::SmbiosConfig,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -159,6 +163,15 @@ pub mod ged {
         Info,
         /// All logs
         Full,
+    }
+
+    /// The TPM reference implementation version to expose to the guest.
+    #[derive(MeshPayload, Clone, Debug, Copy)]
+    pub enum GedTpmVersion {
+        /// TPM reference implementation version 1.38
+        V138,
+        /// TPM reference implementation version 1.85
+        V185,
     }
 
     /// The boot devices for a PC/AT BIOS.

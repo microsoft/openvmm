@@ -8,10 +8,13 @@ use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
+use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use std::time::Duration;
+use vfio_assigned_device_resources::BarAddressConfig;
 use vm_resource::IntoResource;
+use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
 
@@ -25,7 +28,6 @@ use vmm_test_macros::vmm_test_with;
     //
     // openvmm_linux_direct_aarch64,
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn pmu_gsiv<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
@@ -148,7 +150,7 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
                         cdev,
                         iommufd,
                         iommu_id: "iommu0".into(),
-                        bar_pt: [false; 6],
+                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                     }
                     .into_resource(),
                 });
@@ -184,6 +186,191 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
     anyhow::ensure!(
         dd_output.contains("16+0 records"),
         "expected 16 records read, got: {dd_output}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Assign a VFIO device into an aarch64 guest behind an **accelerated**
+/// (iommufd-nested) SMMU, and exercise the nested stage-1 translation path.
+///
+/// The same incubator `test-disk` device as [`boot_no_vmbus_pcie_aarch64_tcg`],
+/// but placed behind an accel-capable SMMU and forced into translating (not
+/// passthrough) stage-1 domains with `iommu.passthrough=0`, so the host nested
+/// HWPT is what the device's DMA actually goes through.
+///
+/// Beyond booting and reading, this covers two things the non-accel test
+/// cannot: that stage-1 translation is genuinely in effect rather than bypass,
+/// and that a StreamID survives being retired and re-derived — the VMM
+/// destroys the host vDevice and nested HWPT on a function-level reset and
+/// rebuilds both from the routed configuration write that follows.
+///
+/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
+/// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
+#[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_aarch64))]
+async fn boot_no_vmbus_pcie_smmu_accel_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let vfio_bdf = incubator_vfio_bdf("test-disk")?;
+
+    tracing::info!(vfio_bdf = %vfio_bdf, "assigning VFIO device behind an accelerated SMMU");
+
+    let cdev = open_vfio_cdev(&vfio_bdf)?;
+    let iommufd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/iommu")
+        .context("failed to open /dev/iommu")?;
+
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            // Single root complex s0rc0 with an accelerated (iommufd-nested)
+            // SMMU, so the assigned device's stage-1 translation is honored
+            // via a host nested HWPT.
+            b.with_pcie_root_topology(1, 1, 3)
+                .with_smmu_accel(&["s0rc0"])
+                .with_custom_config(move |c| {
+                    c.hypervisor.with_hv = false;
+                    // Force the guest to use translating (not passthrough)
+                    // SMMU stage-1 domains, so the accelerated nested-HWPT
+                    // path is actually exercised rather than bypass.
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        cmdline.push_str(" iommu.passthrough=0");
+                    }
+                    // Real ACS bits on the SMMU root complex's ports so Linux
+                    // places the assigned device in its own IOMMU group.
+                    for rc in &mut c.pcie_root_complexes {
+                        if rc.name == "s0rc0" {
+                            for port in &mut rc.ports {
+                                port.acs_capabilities_supported = Some(0x5D);
+                            }
+                        }
+                    }
+                    c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                        port_name: "s0rc0rp1".into(),
+                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: vfio_bdf,
+                            cdev,
+                            iommufd,
+                            iommu_id: "iommu0".into(),
+                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                        }
+                        .into_resource(),
+                    });
+                })
+        })
+        .run()
+        .await?;
+
+    // The incubator provisions a 64 MiB VFIO-backed virtio-blk disk, so the
+    // sysfs size proves the assigned device is the one that showed up rather
+    // than merely that *some* vda exists.
+    const TEST_DISK_SIZE: u64 = 64 * 1024 * 1024;
+    let sh = agent.unix_shell();
+    let vda_size = sh
+        .read_file("/sys/block/vda/size")
+        .await
+        .context("VFIO-assigned virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    tracing::info!(vda_sectors, "guest /dev/vda size");
+    anyhow::ensure!(
+        vda_sectors == TEST_DISK_SIZE / 512,
+        "unexpected /dev/vda size: expected {} sectors, got {vda_sectors}",
+        TEST_DISK_SIZE / 512
+    );
+
+    // Read from the disk to exercise DMA and interrupts through the nested
+    // HWPT.
+    let dd_output = cmd!(sh, "dd if=/dev/vda of=/dev/null bs=4096 count=16")
+        .read_stderr()
+        .await?;
+    tracing::info!(dd_output = %dd_output, "dd completed");
+    anyhow::ensure!(
+        dd_output.contains("16+0 records"),
+        "expected 16 records read, got: {dd_output}"
+    );
+
+    // Validate that stage-1 SMMU translation is actually in effect (not
+    // bypass/identity). Resolve /dev/vda to its PCI device and read the
+    // default-domain type of its IOMMU group.
+    //
+    // For a passthrough (VFIO-assigned) device the emulator is not in the DMA
+    // data path, so the device's DMA can only reach the correct guest pages if
+    // the host honors the guest's stage-1 tables via the accelerated nested
+    // HWPT. Two facts together prove translation is in effect:
+    //   1. The group's default domain type is `DMA`/`DMA-FQ` (translating),
+    //      not `identity` — so the guest programmed non-identity IOVAs, and
+    //   2. the `dd` read above succeeded — so those translated IOVAs resolved
+    //      to the right physical pages through the nested HWPT.
+    // If the SMMU were bypassed the type would be `identity`; if the nested
+    // HWPT were mis-programmed the read would have faulted or returned garbage.
+    let dev_path = cmd!(sh, "readlink -f /sys/block/vda/device").read().await?;
+    let dev_path = dev_path.trim();
+    let group_type = sh
+        .read_file(format!("{dev_path}/../iommu_group/type"))
+        .await?;
+    let group_type = group_type.trim();
+    tracing::info!(
+        dev_path,
+        group_type,
+        "assigned device IOMMU group default-domain type"
+    );
+    anyhow::ensure!(
+        group_type == "DMA" || group_type == "DMA-FQ",
+        "expected the assigned device to be in a translating SMMU domain \
+         (DMA/DMA-FQ), got {group_type:?}: stage-1 translation is not in effect"
+    );
+
+    // Exercise the StreamID rebind path. A function-level reset clears the
+    // device's captured BDF, so the VMM retires its StreamID — destroying the
+    // host vDevice naming it and driving the stream to abort — and re-derives
+    // both from the routed config write that follows. Everything DMA depends
+    // on is rebuilt, so a read afterwards only succeeds if the new vDevice and
+    // nested HWPT were programmed correctly.
+    //
+    // Unbind the driver around the reset so it re-probes cleanly rather than
+    // being reset underneath.
+    let pci_sysfs = dev_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .context("assigned device has no parent PCI node")?;
+    let guest_bdf = pci_sysfs
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .context("could not derive the assigned device's guest BDF")?;
+
+    // Only FLR is routed through the VMM's function-reset path; the `pm` and
+    // `bus` fallbacks would make this test pass without exercising it.
+    let reset_methods = sh.read_file(format!("{pci_sysfs}/reset_method")).await?;
+    anyhow::ensure!(
+        reset_methods.split_whitespace().next() == Some("flr"),
+        "assigned device must prefer FLR to exercise the StreamID rebind path, \
+         got {reset_methods:?}"
+    );
+
+    let flr = format!(
+        "echo {guest_bdf} > /sys/bus/pci/drivers/virtio-pci/unbind && \
+         echo 1 > {pci_sysfs}/reset && \
+         echo {guest_bdf} > /sys/bus/pci/drivers/virtio-pci/bind"
+    );
+    cmd!(sh, "sh -c {flr}").run().await?;
+
+    let dd_output = cmd!(sh, "dd if=/dev/vda of=/dev/null bs=4096 count=16")
+        .read_stderr()
+        .await
+        .context("read after FLR failed: the rebound StreamID does not translate")?;
+    tracing::info!(dd_output = %dd_output, "dd after FLR completed");
+    anyhow::ensure!(
+        dd_output.contains("16+0 records"),
+        "expected 16 records read after FLR, got: {dd_output}"
     );
 
     agent.power_off().await?;
@@ -309,7 +496,7 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
                         cdev: edu_cdev,
                         iommufd,
                         iommu_id: "iommu0".into(),
-                        bar_pt: [false; 6],
+                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                     }
                     .into_resource(),
                 });
@@ -320,7 +507,7 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
                         cdev: ivshmem_cdev,
                         iommufd: iommufd2,
                         iommu_id: "iommu0".into(),
-                        bar_pt: [false; 6],
+                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                     }
                     .into_resource(),
                 });
@@ -461,6 +648,426 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
         "peer-BAR P2P DMA did not round-trip the pattern: sink read {result:#010x}, \
          expected {PATTERN:#010x}"
     );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Verify that a fault taken by the *physical* SMMU on an accelerated stream is
+/// forwarded to the guest's Event queue.
+///
+/// An accelerated stream translates in hardware, so the VMM is not in its DMA
+/// data path and cannot observe — let alone synthesize — its faults. They are
+/// reported by the physical SMMU and reach the VMM only through the iommufd
+/// vEVENTQ, which is the path under test.
+///
+/// `edu` is a deterministic fault generator here: it has no in-tree Linux
+/// driver, so with `iommu.passthrough=0` its IOMMU group gets a translating
+/// default domain that nothing ever populates, and any DMA it initiates hits an
+/// unmapped IOVA. The guest programs the DMA itself with `devmem`, so the fault
+/// is produced on demand rather than raced for.
+///
+/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator pass.
+#[vmm_test_with(openvmm, requires(edu_initiator), configs(linux_direct_aarch64))]
+async fn assigned_device_smmu_accel_fault_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    let edu_bdf = incubator_vfio_bdf("edu-initiator")?;
+
+    tracing::info!(%edu_bdf, "assigning the edu fault generator behind an accelerated SMMU");
+
+    let edu_cdev = open_vfio_cdev(&edu_bdf)?;
+    let iommufd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/iommu")
+        .context("failed to open /dev/iommu")?;
+
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology(1, 1, 3)
+                .with_smmu_accel(&["s0rc0"])
+                .with_custom_config(move |c| {
+                    c.hypervisor.with_hv = false;
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        cmdline.push_str(" iommu.passthrough=0");
+                    }
+                    for rc in &mut c.pcie_root_complexes {
+                        if rc.name == "s0rc0" {
+                            for port in &mut rc.ports {
+                                port.acs_capabilities_supported = Some(0x5D);
+                            }
+                        }
+                    }
+                    c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                        port_name: "s0rc0rp1".into(),
+                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: edu_bdf,
+                            cdev: edu_cdev,
+                            iommufd,
+                            iommu_id: "iommu0".into(),
+                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                        }
+                        .into_resource(),
+                    });
+                })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Find edu inside the guest by its PCI ID, since its guest BDF is assigned
+    // by the guest's own enumeration rather than inherited from the host.
+    const EDU_VENDOR_DEVICE: &str = "0x11e8";
+    let mut guest_bdf = None;
+    for entry in cmd!(sh, "ls /sys/bus/pci/devices")
+        .read()
+        .await?
+        .split_whitespace()
+    {
+        let device = sh
+            .read_file(format!("/sys/bus/pci/devices/{entry}/device"))
+            .await?;
+        if device.trim() == EDU_VENDOR_DEVICE {
+            guest_bdf = Some(entry.to_string());
+            break;
+        }
+    }
+    let guest_bdf = guest_bdf.context("the assigned edu device did not enumerate in the guest")?;
+
+    // The SMMU's StreamID for a device on segment 0 is its RID, so the fault
+    // the guest logs must name exactly this value.
+    let (bus, dev, func) = {
+        let (_segment, rest) = guest_bdf
+            .split_once(':')
+            .context("unexpected guest BDF format")?;
+        let (bus, rest) = rest
+            .split_once(':')
+            .context("unexpected guest BDF format")?;
+        let (dev, func) = rest
+            .split_once('.')
+            .context("unexpected guest BDF format")?;
+        (
+            u32::from_str_radix(bus, 16)?,
+            u32::from_str_radix(dev, 16)?,
+            u32::from_str_radix(func, 16)?,
+        )
+    };
+    let expected_sid = (bus << 8) | (dev << 3) | func;
+    tracing::info!(guest_bdf, expected_sid, "located the assigned edu device");
+
+    // Nothing binds edu, so its default domain stays empty and any IOVA it
+    // touches faults. Confirm the domain is translating rather than identity —
+    // an identity domain would make the DMA below succeed silently.
+    let group_type = sh
+        .read_file(format!("/sys/bus/pci/devices/{guest_bdf}/iommu_group/type"))
+        .await?;
+    anyhow::ensure!(
+        matches!(group_type.trim(), "DMA" | "DMA-FQ"),
+        "expected edu in a translating SMMU domain, got {:?}",
+        group_type.trim()
+    );
+
+    // Enable memory-space decode and bus mastering so edu decodes its BARs and
+    // can initiate DMA. 0x0006 = MEM (bit 1) | BUSMASTER (bit 2) at COMMAND.
+    let cfg = format!("/sys/bus/pci/devices/{guest_bdf}/config");
+    cmd!(sh, "dd of={cfg} bs=1 seek=4 count=2 conv=notrunc")
+        .stdin([0x06u8, 0x00u8])
+        .ignore_stdout()
+        .run()
+        .await
+        .context("failed to enable MEM|BUSMASTER on the assigned edu device")?;
+
+    let resource = sh
+        .read_file(format!("/sys/bus/pci/devices/{guest_bdf}/resource"))
+        .await?;
+    let bar0 = resource
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().next())
+        .context("edu BAR0 missing from its sysfs resource list")?;
+    let bar0 = u64::from_str_radix(bar0.trim().trim_start_matches("0x"), 16)
+        .context("failed to parse the edu BAR0 base")?;
+
+    let devmem_write = async |addr: u64, val: u64| -> anyhow::Result<()> {
+        let addr = format!("{addr:#x}");
+        let val = format!("{val:#x}");
+        cmd!(sh, "devmem {addr} 64 {val}").run().await
+    };
+
+    // edu BAR0 register map: 0x80 DMA source, 0x88 destination, 0x90 byte
+    // count, 0x98 command (bit 0 RUN, bit 1 direction, 1 = edu buffer -> bus).
+    // edu's internal buffer is addressed at 0x40000; the destination is an
+    // arbitrary bus address that the empty default domain cannot translate.
+    const EDU_BUF: u64 = 0x40000;
+    const UNMAPPED_IOVA: u64 = 0x1_0000_0000;
+    devmem_write(bar0 + 0x80, EDU_BUF).await?;
+    devmem_write(bar0 + 0x88, UNMAPPED_IOVA).await?;
+    devmem_write(bar0 + 0x90, 4).await?;
+    devmem_write(bar0 + 0x98, 3).await?; // RUN | TO_PCI
+
+    // edu runs the transfer on a ~100ms timer, and the fault then crosses the
+    // physical SMMU, the host kernel, the vEVENTQ and the guest's Event queue
+    // interrupt before it is logged.
+    let expected = format!("sid: {expected_sid:#x}");
+    let mut timer = PolledTimer::new(&driver);
+    let mut dmesg = String::new();
+    for _ in 0..30 {
+        dmesg = cmd!(sh, "dmesg").read().await?;
+        if dmesg
+            .lines()
+            .any(|l| l.contains("arm-smmu-v3") && l.contains(&expected))
+        {
+            tracing::info!("guest logged the forwarded SMMU fault");
+            agent.power_off().await?;
+            vm.wait_for_clean_teardown().await?;
+            return Ok(());
+        }
+        timer.sleep(Duration::from_millis(200)).await;
+    }
+
+    let smmu_lines: Vec<&str> = dmesg
+        .lines()
+        .filter(|l| l.contains("arm-smmu-v3"))
+        .collect();
+    anyhow::bail!(
+        "the guest never logged an SMMU event naming {expected:?}; the physical SMMU's \
+         fault did not reach the guest Event queue. SMMU lines:\n{}",
+        smmu_lines.join("\n")
+    )
+}
+
+/// Boot past the 16-VP `Aff0` boundary and verify the MPIDRs the guest sees.
+///
+/// This is the case the whole non-SMT encoding exists for. GICv3 can only
+/// target 16 `Aff0` values within one affinity group without Range Selector
+/// support, so `Aff0` rolls into `Aff1` every 16 VPs, which is also what KVM's
+/// `reset_mpidr()` does. Firmware and the hypervisor have to agree on every
+/// VP's identity: if they diverge above VP 15, PSCI `CPU_ON` cannot resolve
+/// the MPIDRs the MADT advertises and those CPUs never come online.
+///
+/// 17 VPs is the smallest count that crosses the boundary. SMT cannot reach it
+/// at all — under the SMT encoding `Aff0` is only ever 0 or 1 — so this needs
+/// to be a separate non-SMT configuration from [`smt_topology_aarch64_tcg`].
+///
+/// The `_aarch64_tcg` name suffix opts this test into the QEMU incubator pass.
+/// TODO: enable this for non-TCG passes (WHP, MSHV) as well, once this is convenient.
+#[openvmm_test(linux_direct_aarch64)]
+async fn mpidr_affinity_rollover_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const VP_COUNT: u32 = 17;
+
+    let (vm, agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: VP_COUNT,
+            enable_smt: Some(false),
+            vps_per_socket: Some(VP_COUNT),
+            ..Default::default()
+        })
+        // KVM/aarch64 has no synic, so VMBus cannot come up and pipette has to
+        // reach the guest over virtio-vsock, which needs a PCIe root.
+        .with_no_hv()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // VP 16 only comes online if the MADT and KVM agree on its MPIDR.
+    let online = sh.read_file("/sys/devices/system/cpu/online").await?;
+    assert_eq!(
+        online.trim(),
+        format!("0-{}", VP_COUNT - 1),
+        "not every VP came online; VP 16 dropping out means firmware and KVM \
+         disagree about its MPIDR"
+    );
+
+    // Linux logs each secondary's MPIDR as it boots. Non-SMT packs 16 VPs per
+    // affinity group, so VP 15 is the last of group 0 and VP 16 opens group 1.
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let booted: Vec<u64> = dmesg
+        .lines()
+        .filter(|l| l.contains("Booted secondary processor"))
+        .filter_map(|l| {
+            let token = l.split_whitespace().find(|t| t.starts_with("0x"))?;
+            u64::from_str_radix(token.trim_start_matches("0x"), 16).ok()
+        })
+        .collect();
+    let expected: Vec<u64> = (1..VP_COUNT as u64)
+        .map(|vp| (vp % 16) | ((vp / 16) << 8))
+        .collect();
+    assert_eq!(
+        booted,
+        expected,
+        "unexpected secondary MPIDRs; guest logged:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| l.contains("Booted secondary processor"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // Without SMT every VP is its own core, so PPTT must describe one socket
+    // holding VP_COUNT distinct cores.
+    //
+    // These ids are opaque: Linux returns the PPTT node's offset within the
+    // table unless the node sets ACPI_PROCESSOR_ID_VALID, which OpenVMM's
+    // socket nodes do not. Only their grouping is meaningful.
+    let mut sockets = std::collections::BTreeSet::new();
+    let mut cores = std::collections::BTreeSet::new();
+    for cpu in 0..VP_COUNT {
+        let base = format!("/sys/devices/system/cpu/cpu{cpu}/topology");
+        sockets.insert(
+            sh.read_file(format!("{base}/physical_package_id"))
+                .await?
+                .trim()
+                .to_string(),
+        );
+        cores.insert(
+            sh.read_file(format!("{base}/core_id"))
+                .await?
+                .trim()
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        sockets.len(),
+        1,
+        "expected a single socket, got {sockets:?}"
+    );
+    assert_eq!(
+        cores.len(),
+        VP_COUNT as usize,
+        "expected {VP_COUNT} distinct cores, got {}",
+        cores.len()
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot an SMT guest and verify the MPIDRs and CPU topology the guest observes.
+///
+/// This covers the whole MPIDR chain end to end. Under SMT the generated MPIDRs
+/// use `Aff0` as a thread id and `Aff1` as a core id, which deliberately
+/// diverges from KVM's default vcpu-id mapping: VP 2 is `0x100` here but `0x2`
+/// after `KVM_ARM_VCPU_INIT`. So if OpenVMM stopped programming `MPIDR_EL1`
+/// into KVM, PSCI `CPU_ON` could not resolve the MPIDRs firmware advertises in
+/// the MADT and the secondary CPUs would never come online. Four VPs is the
+/// smallest count that distinguishes the two mappings.
+///
+/// The topology assertions cover the PPTT builder. MPIDR is an identity rather
+/// than a topology description, so socket/core/thread have to come from the
+/// configured topology instead of the affinity fields.
+///
+/// The `_aarch64_tcg` name suffix opts this test into the QEMU incubator pass.
+#[openvmm_test(linux_direct_aarch64)]
+async fn smt_topology_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const VP_COUNT: u32 = 4;
+
+    let (vm, agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: VP_COUNT,
+            enable_smt: Some(true),
+            vps_per_socket: Some(VP_COUNT),
+            ..Default::default()
+        })
+        // KVM/aarch64 has no synic, so VMBus cannot come up and pipette has to
+        // reach the guest over virtio-vsock, which needs a PCIe root.
+        .with_no_hv()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Every VP must come online. This is the assertion that fails if the
+    // firmware-visible MPIDRs and KVM's runtime MPIDRs disagree.
+    let online = sh.read_file("/sys/devices/system/cpu/online").await?;
+    assert_eq!(
+        online.trim(),
+        format!("0-{}", VP_COUNT - 1),
+        "not every VP came online"
+    );
+
+    // Linux logs each secondary's MPIDR as it boots, which is the guest's own
+    // view of the register rather than anything OpenVMM reports about itself.
+    // Expected values for 4 VPs, one socket, two-way SMT:
+    //   VP 0 -> Aff1=0 Aff0=0 (boot CPU, not logged here)
+    //   VP 1 -> Aff1=0 Aff0=1 = 0x001
+    //   VP 2 -> Aff1=1 Aff0=0 = 0x100
+    //   VP 3 -> Aff1=1 Aff0=1 = 0x101
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let booted: Vec<u64> = dmesg
+        .lines()
+        .filter(|l| l.contains("Booted secondary processor"))
+        .filter_map(|l| {
+            let token = l.split_whitespace().find(|t| t.starts_with("0x"))?;
+            u64::from_str_radix(token.trim_start_matches("0x"), 16).ok()
+        })
+        .collect();
+    assert_eq!(
+        booted,
+        vec![0x001, 0x100, 0x101],
+        "unexpected secondary MPIDRs; guest logged:\n{}",
+        dmesg
+            .lines()
+            .filter(|l| l.contains("Booted secondary processor"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // Two-way SMT over four VPs is two cores of two threads, all in one socket.
+    //
+    // The socket and core ids are opaque PPTT node offsets, so compare them
+    // against each other rather than against expected values.
+    let mut sockets = std::collections::BTreeSet::new();
+    let mut cores = Vec::new();
+    for cpu in 0..VP_COUNT {
+        let base = format!("/sys/devices/system/cpu/cpu{cpu}/topology");
+        sockets.insert(
+            sh.read_file(format!("{base}/physical_package_id"))
+                .await?
+                .trim()
+                .to_string(),
+        );
+        cores.push(
+            sh.read_file(format!("{base}/core_id"))
+                .await?
+                .trim()
+                .to_string(),
+        );
+
+        let siblings = sh.read_file(format!("{base}/thread_siblings_list")).await?;
+        let expected = if cpu < 2 { "0-1" } else { "2-3" };
+        assert_eq!(
+            siblings.trim(),
+            expected,
+            "cpu{cpu} reported unexpected thread siblings"
+        );
+    }
+    assert_eq!(
+        sockets.len(),
+        1,
+        "expected a single socket, got {sockets:?}"
+    );
+    assert_eq!(cores[0], cores[1], "cpu0 and cpu1 should share a core");
+    assert_eq!(cores[2], cores[3], "cpu2 and cpu3 should share a core");
+    assert_ne!(cores[0], cores[2], "cpu0 and cpu2 should be distinct cores");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

@@ -466,6 +466,29 @@ mod tests {
     const SECTOR_U64: u64 = SECTOR_SIZE as u64;
     const SECTOR_USIZE: usize = SECTOR_SIZE as usize;
 
+    const CONFORMANCE_DISK_SIZE: u64 = 1024 * 1024;
+
+    #[async_test]
+    async fn sector_range_conformance() {
+        let disk = crate::ram_disk(CONFORMANCE_DISK_SIZE, false).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    /// The representability guarantee is not specific to 512-byte sectors.
+    #[async_test]
+    async fn sector_range_conformance_4k() {
+        let disk = crate::ram_disk_with_sector_size(CONFORMANCE_DISK_SIZE, false, 4096).unwrap();
+        storage_tests::sector_range::test_disk_representability(&disk).await;
+    }
+
+    /// `LayeredDisk` does not reach `write_no_overwrite` or both values of
+    /// `unmap`'s `next_is_zero`, so the layer is also tested directly.
+    #[async_test]
+    async fn layer_sector_range_conformance() {
+        let layer = RamDiskLayer::new(CONFORMANCE_DISK_SIZE).unwrap();
+        storage_tests::sector_range::test_layer_sector_range(&layer).await;
+    }
+
     fn check(mem: &GuestMemory, sector: u64, start: usize, count: usize, high: u8) {
         let mut buf = vec![0u32; count * SECTOR_USIZE / 4];
         mem.read_at(start as u64 * SECTOR_U64, buf.as_mut_bytes())

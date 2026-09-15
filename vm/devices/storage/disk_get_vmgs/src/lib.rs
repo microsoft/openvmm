@@ -300,6 +300,14 @@ mod tests {
         (vmgs, get, task)
     }
 
+    /// `_get` owns the transport, so it has to outlive the disk.
+    #[async_test]
+    async fn sector_range_conformance(driver: DefaultDriver) {
+        let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
+        let disk = Disk::new(GetVmgsDisk::new(get.client.clone()).await.unwrap()).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
     #[async_test]
     async fn basic_read_write(driver: DefaultDriver) {
         let (vmgs, _get, _task) = spawn_vmgs(&driver).await;

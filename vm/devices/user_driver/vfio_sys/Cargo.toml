@@ -19,6 +19,7 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 vfio-bindings.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true

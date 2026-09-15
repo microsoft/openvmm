@@ -521,7 +521,7 @@ impl AdminHandler {
                 let command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
-                tracing::debug!(?opcode, ?command, "command");
+                tracing::trace!(?opcode, ?command, "command");
 
                 let result = match opcode {
                     spec::AdminOpcode::IDENTIFY => self
@@ -654,7 +654,7 @@ impl AdminHandler {
                 } else {
                     // Valid but inactive namespace: return a zero-filled
                     // structure (the buffer is already zeroed).
-                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
+                    tracing::trace!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::DESCRIPTOR_NAMESPACE => {
@@ -666,7 +666,7 @@ impl AdminHandler {
                 } else {
                     // Valid but inactive namespace: return a zero-filled
                     // structure (the buffer is already zeroed).
-                    tracing::debug!(nsid = command.nsid, "inactive namespace id");
+                    tracing::trace!(nsid = command.nsid, "inactive namespace id");
                 }
             }
             spec::Cns::SPECIFIC_CONTROLLER_IO_COMMAND_SET => {

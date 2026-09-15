@@ -237,6 +237,8 @@ pub mod vhost_user {
 
 pub mod vsock {
     use mesh::MeshPayload;
+    #[cfg(target_os = "linux")]
+    use std::os::fd::OwnedFd;
     use unix_socket::UnixListener;
     use vm_resource::ResourceId;
     use vm_resource::kind::VirtioDeviceHandle;
@@ -250,5 +252,25 @@ pub mod vsock {
 
     impl ResourceId<VirtioDeviceHandle> for VirtioVsockHandle {
         const ID: &'static str = "virtio-vsock";
+    }
+
+    /// A virtio-vsock device backed by the Linux kernel's `vhost_vsock`
+    /// implementation.
+    #[cfg(target_os = "linux")]
+    #[derive(MeshPayload)]
+    pub struct VirtioVsockVhostHandle {
+        /// A pre-opened `/dev/vhost-vsock` file descriptor.
+        ///
+        /// The device resolver takes ownership and configures the vhost owner
+        /// and guest CID.
+        pub vhost: OwnedFd,
+        /// The CID used to address the guest from the host's `AF_VSOCK`
+        /// namespace.
+        pub guest_cid: u32,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl ResourceId<VirtioDeviceHandle> for VirtioVsockVhostHandle {
+        const ID: &'static str = "virtio-vsock-vhost";
     }
 }

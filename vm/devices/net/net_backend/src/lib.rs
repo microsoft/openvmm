@@ -378,14 +378,6 @@ impl Default for RxMetadata {
     }
 }
 
-/// The "L3" protocol: the IP layer.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum L3Protocol {
-    Unknown,
-    Ipv4,
-    Ipv6,
-}
-
 /// The "L4" protocol: the TCP/UDP layer.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum L4Protocol {

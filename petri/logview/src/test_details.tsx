@@ -16,7 +16,7 @@ import {
 } from "./data_defs";
 import { Menu } from "./menu.tsx";
 import { VirtualizedTable } from "./virtualized_table.tsx";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router";
 import { SearchInput } from "./search";
 import {
   createColumns,

@@ -72,6 +72,7 @@ pub mod user_facing {
     pub use crate::node::FlowPlatformLinuxDistro;
     pub use crate::pipeline::Artifact;
     pub use crate::pipeline::ArtifactType;
+    pub use crate::pipeline::resolve as resolve_artifact;
 
     /// Helper method to streamline request validation in cases where a value is
     /// expected to be identical across all incoming requests.
@@ -933,11 +934,6 @@ impl ImportCtx<'_> {
 
 pub fn new_import_ctx(backend: &mut dyn ImportCtxBackend) -> ImportCtx<'_> {
     ImportCtx { backend }
-}
-
-#[derive(Debug)]
-pub enum CtxAnchor {
-    PostJob,
 }
 
 pub trait NodeCtxBackend {
@@ -2234,6 +2230,7 @@ pub mod steps {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
         pub enum GhPermission {
             Actions,
+            ArtifactMetadata,
             Attestations,
             Checks,
             Contents,
