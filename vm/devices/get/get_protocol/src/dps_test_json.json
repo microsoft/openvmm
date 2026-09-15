@@ -17,6 +17,7 @@
             "MeasureAdditionalPcrs": true,
             "DisableFrontpage": false,
             "DisableSha384Pcr": false,
+            "DisableSha1Pcr": false,
             "MediaPresentEnabledByDefault": false,
             "MemoryProtectionMode": 0,
             "VpciBootEnabled": false,

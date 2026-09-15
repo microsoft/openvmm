@@ -1425,6 +1425,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     pxe_ip_v6: false,
                     measure_additional_pcrs: true,
                     disable_sha384_pcr: false,
+                    disable_sha1_pcr: false,
                     media_present_enabled_by_default: false,
                     memory_protection_mode: 0,
                     default_boot_always_attempt,

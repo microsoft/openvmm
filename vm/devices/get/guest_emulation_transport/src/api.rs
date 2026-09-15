@@ -110,6 +110,7 @@ pub mod platform_settings {
         pub measure_additional_pcrs: bool,
         pub disable_frontpage: bool,
         pub disable_sha384_pcr: bool,
+        pub disable_sha1_pcr: bool,
         pub media_present_enabled_by_default: bool,
         pub vpci_boot_enabled: bool,
         pub memory_protection_mode: MemoryProtectionMode,

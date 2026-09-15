@@ -297,6 +297,7 @@ impl GuestEmulationTransportClient {
                 measure_additional_pcrs: json.v2.r#static.measure_additional_pcrs,
                 disable_frontpage: json.v2.r#static.disable_frontpage,
                 disable_sha384_pcr: json.v2.r#static.disable_sha384_pcr,
+                disable_sha1_pcr: json.v2.r#static.disable_sha1_pcr,
                 media_present_enabled_by_default: json.v2.r#static.media_present_enabled_by_default,
                 vpci_boot_enabled: json.v2.r#static.vpci_boot_enabled,
                 vpci_instance_filter: json.v2.r#static.vpci_instance_filter,

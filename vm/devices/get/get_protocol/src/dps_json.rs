@@ -207,6 +207,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub measure_additional_pcrs: bool,
     pub disable_frontpage: bool,
     pub disable_sha384_pcr: bool,
+    #[serde(default)]
+    pub disable_sha1_pcr: bool,
     pub media_present_enabled_by_default: bool,
     pub memory_protection_mode: u8,
     #[serde(default)]
@@ -316,17 +318,21 @@ mod test {
 
     #[test]
     fn smoke_test_sample() {
-        serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
+        let settings = serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
             "dps_test_json.json"
         ))
         .unwrap();
+
+        assert!(!settings.v2.r#static.disable_sha1_pcr);
     }
 
     #[test]
     fn smoke_test_sample_with_vtl2settings() {
-        serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
+        let settings = serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
             "dps_test_json_with_vtl2settings.json"
         ))
         .unwrap();
+
+        assert!(!settings.v2.r#static.disable_sha1_pcr);
     }
 }
