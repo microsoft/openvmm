@@ -26,6 +26,9 @@ use alloc::vec::Vec;
 use thiserror::Error;
 
 /// An opaque protobuf message.
+///
+/// Cloning duplicates the owned encoded bytes without decoding or re-encoding
+/// the message. The clone remains valid if the original is consumed or dropped.
 //
 // TODO: delay encoding like in mesh::Message. This requires splitting some of
 // the encoding traits up to remove the resource type.
@@ -81,6 +84,8 @@ impl<R> MessageDecode<'_, ProtobufMessage, R> for ProtobufMessageEncoding {
 /// A protobuf message and the associated protobuf type URL.
 ///
 /// This has the encoding of `google.protobuf.Any`.
+/// Cloning duplicates both the owned type URL and encoded message bytes, so the
+/// clone can be consumed independently without changing the wire encoding.
 #[derive(Clone, Protobuf)]
 pub struct ProtobufAny {
     #[mesh(1)]
@@ -158,6 +163,7 @@ mod tests {
     use crate::message::ProtobufAny;
     use crate::message::ProtobufMessage;
     use crate::tests::as_expect_str;
+    use alloc::string::String;
     use expect_test::expect;
     use std::println;
 
@@ -206,5 +212,38 @@ mod tests {
         assert_eq!(any.parse::<Message>().unwrap(), msg);
         assert_eq!(any.clone().parse::<Message>().unwrap(), msg);
         println!("{:?}", any.parse::<Other>().unwrap_err());
+    }
+
+    #[test]
+    fn test_any_clone_has_independent_owned_payload() {
+        #[derive(Protobuf, PartialEq, Eq, Debug)]
+        #[mesh(package = "test")]
+        struct Nested {
+            #[mesh(1)]
+            text: String,
+        }
+
+        #[derive(Protobuf, PartialEq, Eq, Debug)]
+        #[mesh(package = "test")]
+        struct Message {
+            #[mesh(1)]
+            nested: Nested,
+        }
+
+        let message = || Message {
+            nested: Nested {
+                text: String::from("owned variable-length data"),
+            },
+        };
+        let mut any = ProtobufAny::new(message());
+        let cloned = any.clone();
+
+        assert_eq!(encode(any.clone()), encode(cloned.clone()));
+
+        any.type_url.clear();
+        any.value.0.clear();
+        drop(any);
+
+        assert_eq!(cloned.parse::<Message>().unwrap(), message());
     }
 }
