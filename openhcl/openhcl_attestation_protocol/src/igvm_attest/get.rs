@@ -504,18 +504,15 @@ pub mod runtime_claims {
         /// through the device filter for this guest.
         ///
         /// This reports that the filter was widened to admit those device
-        /// classes, not that such a device is present or attached. Per-device
-        /// trust comes from the guest's own device attestation.
+        /// classes, not that such a device is present. Per-device trust comes
+        /// from the guest's own device attestation.
         ///
-        /// `None` when the relay was not enabled for these devices, which is
-        /// the default. This field is skipped during serialization when `None`
-        /// so that the runtime claims — and therefore the hardware-derived key
-        /// KDF input (see `underhill_attestation::hardware_key_sealing`) — are
-        /// byte-for-byte unchanged for guests that do not use this feature.
+        /// Skipped during serialization when `None` (the default) so the
+        /// runtime claims -- and the hardware-derived key KDF input -- are
+        /// unchanged for guests that do not use this feature.
         ///
-        /// Declared last on purpose: `MeshPayload` numbers fields by
-        /// declaration order, so inserting a field mid-struct would renumber
-        /// the following ones and break wire compatibility.
+        /// Declared last: `MeshPayload` numbers fields by declaration order, so
+        /// inserting one mid-struct would break wire compatibility.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub nvidia_vpci_relay_allowed: Option<bool>,
     }
