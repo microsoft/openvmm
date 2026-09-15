@@ -211,7 +211,7 @@ where
         // Get the result value from the results array.
         results
             .get(copyout_index)
-            .ok_or_else(|| DecoderError::OverflowOutIndex(copyout_index))
+            .ok_or(DecoderError::OverflowOutIndex(copyout_index))
             .map(|r| r.was_successful())
     }
 
@@ -230,7 +230,7 @@ where
                         if !self
                             .results
                             .get(arg.idx as usize)
-                            .ok_or_else(|| DecoderError::OverflowOutIndex(arg.idx as usize))?
+                            .ok_or(DecoderError::OverflowOutIndex(arg.idx as usize))?
                             .executed
                             .load(Ordering::SeqCst)
                         {
@@ -297,7 +297,7 @@ where
                     let r = self
                         .results
                         .get(a.idx as usize)
-                        .ok_or_else(|| DecoderError::OverflowOutIndex(a.idx as usize))?;
+                        .ok_or(DecoderError::OverflowOutIndex(a.idx as usize))?;
                     let val = if r.was_successful() {
                         let mut v = r.val.load(Ordering::SeqCst);
                         v = v.checked_div(a.op_div).unwrap_or(v);
@@ -320,9 +320,9 @@ where
                     self.mem
                         .try_write_mem(
                             (i.wire.addr + COPYIN_OFFSET) as usize,
-                            &d.as_bytes()
+                            d.as_bytes()
                                 .get(..a.size as usize)
-                                .ok_or_else(|| DecoderError::OverflowDataSize(a.size as usize))?,
+                                .ok_or(DecoderError::OverflowDataSize(a.size as usize))?,
                         )
                         .map_err(DecoderError::Other)?;
                 }
@@ -335,7 +335,7 @@ where
                 let r = self
                     .results
                     .get(i.wire.index as usize)
-                    .ok_or_else(|| DecoderError::OverflowOutIndex(i.wire.index as usize))?;
+                    .ok_or(DecoderError::OverflowOutIndex(i.wire.index as usize))?;
                 // Its assumed if we're executing a CopyOut, that the associated call was
                 // successful. We should not have been passed a CopyOut instruction to execute if
                 // the associated call was not successful.
@@ -362,7 +362,7 @@ where
                             let r = self
                                 .results
                                 .get(a.idx as usize)
-                                .ok_or_else(|| DecoderError::OverflowOutIndex(a.idx as usize))?;
+                                .ok_or(DecoderError::OverflowOutIndex(a.idx as usize))?;
                             let val = if !r.was_successful() {
                                 // The dependent call that's expected to fill this result argument value has either
                                 // not been executed or did not execute successfully, meaning the result value
@@ -415,7 +415,7 @@ where
 
                 results
                     .get(copyout_index)
-                    .ok_or_else(|| DecoderError::OverflowOutIndex(copyout_index))?
+                    .ok_or(DecoderError::OverflowOutIndex(copyout_index))?
                     .mark_executed(exec_result.is_success, exec_result.code);
             }
         }
