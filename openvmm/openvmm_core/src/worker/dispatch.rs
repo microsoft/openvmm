@@ -3881,6 +3881,7 @@ impl LoadedVm {
                                 },
                             );
 
+                            let mapper = self.inner.memory_manager.device_memory_mapper();
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
                                 &self.state_units,
@@ -3894,7 +3895,7 @@ impl LoadedVm {
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                                                shared_mem_mapper: None,
+                                                shared_mem_mapper: Some(&mapper),
                                             },
                                         )
                                         .await
