@@ -7987,10 +7987,17 @@ dependencies = [
 name = "snp_bootshim"
 version = "0.0.0"
 dependencies = [
+ "acpi",
+ "acpi_spec",
+ "fdt",
  "loader_defs",
+ "memory_range",
  "minimal_rt",
  "minimal_rt_build",
+ "test_with_tracing",
+ "thiserror 2.0.16",
  "x86defs",
+ "zerocopy",
 ]
 
 [[package]]

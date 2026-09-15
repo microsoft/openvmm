@@ -17,14 +17,22 @@ use igvmfilegen_config::ResourceType;
 use igvmfilegen_config::Resources;
 use igvmfilegen_config::SnpInjectionType;
 use loader::importer::BootPageAcceptance;
+use loader::importer::IgvmParameterType;
 use loader::importer::ImageLoad;
 use loader::importer::X86Register;
 use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
+use loader_defs::linux::SNP_BOOT_SHIM_ACPI_SIZE;
+use loader_defs::linux::SNP_BOOT_SHIM_DT_SIZE;
+use loader_defs::linux::SNP_BOOT_SHIM_HEAP_SIZE;
 use loader_defs::linux::SNP_BOOT_SHIM_MAX_RANGES;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
+use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM;
+use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_MAGIC;
+use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
+use loader_defs::linux::SnpBootShimPlatformParams;
 use loader_defs::linux::SnpBootShimRange;
 use memory_range::MemoryRange;
 use serial_16550_resources::ComPort;
@@ -54,10 +62,12 @@ pub struct BuildParams<'a> {
     pub linux: &'a LinuxImage,
     /// The processor count described by the embedded topology and ACPI tables.
     pub processor_count: u32,
-    /// The number of measured 4-KiB RAM pages.
+    /// The number of configured 4-KiB RAM pages.
     pub memory_page_count: u64,
     /// The page-table address bit used as the SNP encryption bit.
     pub c_bit_position: u8,
+    /// Request host device-tree input and bootshim-generated PCIe ACPI.
+    pub pcie: bool,
     /// The SNP guest policy.
     pub policy: SnpPolicy,
     /// The SNP interrupt-injection mode.
@@ -186,6 +196,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         processor_count,
         memory_page_count,
         c_bit_position,
+        pcie,
         policy,
         injection_type,
         resources,
@@ -197,6 +208,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
     let initrd_config = initrd_config(&mut initrd)?;
     let mut loader = new_loader(policy, c_bit_position, memory_page_count, injection_type);
     let com1 = ComPort::Com1;
+    let mut platform = None;
 
     let load_info = loader::linux::load_x86(
         &mut loader.loader(),
@@ -205,11 +217,18 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         &linux.command_line,
         &layout.memory,
         |gpa| {
-            let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+            let mut tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
                 dsdt.add_apic();
                 dsdt.add_uart(b"\\_SB.UAR1", b"COM1", 1, com1.io_port(), com1.irq().into());
                 dsdt.add_rtc();
             });
+            if pcie {
+                platform = Some(reserve_acpi_output(
+                    gpa,
+                    &mut tables.tables,
+                    1u64 << c_bit_position,
+                ));
+            }
             loader::linux::AcpiTables {
                 rsdp: tables.rsdp,
                 tables: tables.tables,
@@ -221,6 +240,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         }),
     )
     .context("loading direct-Linux image")?;
+    let platform = platform.transpose()?;
 
     let kernel_runtime_end = kernel_runtime_end(
         load_info.kernel.gpa,
@@ -237,6 +257,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         loader::linux::ZERO_PAGE_BASE,
         memory_page_count,
         kernel_runtime_end,
+        platform,
     )?;
 
     let mut output = loader.finalize().context("finalizing SNP IGVM")?;
@@ -257,9 +278,11 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
 /// bootshim. The BSP starts at the bootshim entry point with RSI pointing to
 /// that parameter page.
 ///
-/// The parameter page lists every gap in configured RAM that has no measured
-/// page-data directive. The bootshim makes those pages private, validates
-/// them, and then enters Linux with RSI restored to the Linux zero page.
+/// The parameter page lists every gap in configured RAM not imported through
+/// page data or parameter areas. The bootshim makes those pages private,
+/// validates them, and then enters Linux with RSI restored to the zero page.
+/// The opt-in platform extension, device tree, and temporary heap follow the
+/// parameter page. Only the heap remains in the acceptance gaps.
 fn load_bootshim_and_handoff(
     loader: &mut IgvmLoader<X86Register>,
     resources: &Resources,
@@ -267,8 +290,9 @@ fn load_bootshim_and_handoff(
     linux_zero_page: u64,
     memory_page_count: u64,
     kernel_runtime_end: u64,
+    platform: Option<SnpBootShimPlatformParams>,
 ) -> anyhow::Result<Vec<SnpBootShimRange>> {
-    let shim_base = align_up_to_page(loader.next_available_gpa()?.max(kernel_runtime_end));
+    let shim_base = align_up_to_page(loader.next_available_gpa()?.max(kernel_runtime_end))?;
 
     let bootshim_path = resources
         .get(ResourceType::SnpBootshim)
@@ -286,12 +310,86 @@ fn load_bootshim_and_handoff(
     )
     .context("loading SNP bootshim")?;
 
-    let params_gpa = align_up_to_page(shim_load_info.next_available_address);
-    let params_page = params_gpa / PAGE_SIZE;
     ensure!(
-        params_page < memory_page_count,
-        "SNP bootshim parameter page lies outside configured RAM"
+        shim_load_info.minimum_address_used >= shim_base,
+        "SNP bootshim overlaps the Linux runtime image"
     );
+    import_bootshim_handoff(
+        loader,
+        &shim_load_info,
+        linux_entry,
+        linux_zero_page,
+        memory_page_count,
+        platform,
+    )
+}
+
+fn import_bootshim_handoff(
+    loader: &mut IgvmLoader<X86Register>,
+    shim: &loader::elf::LoadInfo,
+    linux_entry: u64,
+    linux_zero_page: u64,
+    memory_page_count: u64,
+    platform: Option<SnpBootShimPlatformParams>,
+) -> anyhow::Result<Vec<SnpBootShimRange>> {
+    let ram_end = memory_page_count
+        .checked_mul(PAGE_SIZE)
+        .context("RAM size overflow")?;
+    let mut cursor = align_up_to_page(shim.next_available_address)?;
+    let params_gpa = reserve_region(&mut cursor, PAGE_SIZE, ram_end)?;
+    let params_page = params_gpa / PAGE_SIZE;
+    let platform_gpa = if let Some(mut platform) = platform {
+        ensure!(
+            shim.minimum_address_used.is_multiple_of(PAGE_SIZE)
+                && shim.minimum_address_used < params_gpa
+                && (shim.minimum_address_used..params_gpa).contains(&shim.entrypoint),
+            "invalid SNP bootshim range or entry point"
+        );
+        let platform_gpa = reserve_region(&mut cursor, PAGE_SIZE, ram_end)?;
+        platform.dt_gpa = reserve_region(&mut cursor, SNP_BOOT_SHIM_DT_SIZE, ram_end)?;
+        platform.dt_size = SNP_BOOT_SHIM_DT_SIZE;
+        platform.heap_gpa = reserve_region(&mut cursor, SNP_BOOT_SHIM_HEAP_SIZE, ram_end)?;
+        platform.heap_size = SNP_BOOT_SHIM_HEAP_SIZE;
+        platform.shim_gpa = shim.minimum_address_used;
+        platform.shim_size = params_gpa
+            .checked_sub(platform.shim_gpa)
+            .context("invalid SNP bootshim range")?;
+        ensure!(
+            platform.base_acpi_gpa.checked_add(platform.base_acpi_size)
+                == Some(platform.acpi_output_gpa)
+                && platform
+                    .acpi_output_gpa
+                    .checked_add(platform.acpi_output_size)
+                    .is_some_and(|end| end <= platform.shim_gpa && end <= ram_end),
+            "SNP ACPI workspace overlaps the bootshim or lies outside RAM"
+        );
+        let mut importer = loader.loader();
+        importer
+            .import_pages(
+                platform_gpa / PAGE_SIZE,
+                1,
+                "snp-bootshim-platform",
+                BootPageAcceptance::Exclusive,
+                platform.as_bytes(),
+            )
+            .context("importing SNP platform extension")?;
+        // Host topology is unmeasured input. Full attestation policy is deferred.
+        let area = importer
+            .create_parameter_area(
+                platform.dt_gpa / PAGE_SIZE,
+                (platform.dt_size / PAGE_SIZE).try_into()?,
+                "snp-bootshim-device-tree",
+            )
+            .context("reserving SNP device tree")?;
+        importer
+            .import_parameter(area, 0, IgvmParameterType::DeviceTree)
+            .context("requesting SNP device tree")?;
+        // The heap has no PageData: accept it with the RAM gaps before use.
+        // No final ACPI pointer may refer to this temporary storage.
+        Some(platform_gpa)
+    } else {
+        None
+    };
 
     let bootshim_ranges = loader
         .unimported_ram_ranges([params_page])?
@@ -302,12 +400,12 @@ fn load_bootshim_and_handoff(
         })
         .collect::<Vec<_>>();
 
-    let bootshim_params = build_bootshim_params(
-        linux_entry,
-        linux_zero_page,
-        memory_page_count * PAGE_SIZE,
-        &bootshim_ranges,
-    )?;
+    let mut bootshim_params =
+        build_bootshim_params(linux_entry, linux_zero_page, ram_end, &bootshim_ranges)?;
+    if let Some(platform_gpa) = platform_gpa {
+        bootshim_params.version = SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM;
+        bootshim_params.reserved = platform_gpa;
+    }
     {
         let mut importer = loader.loader();
         importer
@@ -319,18 +417,68 @@ fn load_bootshim_and_handoff(
                 bootshim_params.as_bytes(),
             )
             .context("importing SNP bootshim parameters")?;
-        importer.import_vp_register(X86Register::Rip(shim_load_info.entrypoint))?;
+        importer.import_vp_register(X86Register::Rip(shim.entrypoint))?;
         importer.import_vp_register(X86Register::Rsi(params_gpa))?;
     }
 
     Ok(bootshim_ranges)
 }
 
-fn align_up_to_page(value: u64) -> u64 {
+fn align_up_to_page(value: u64) -> anyhow::Result<u64> {
     value
         .checked_add(PAGE_SIZE - 1)
-        .expect("page alignment overflow")
-        & !(PAGE_SIZE - 1)
+        .map(|value| value & !(PAGE_SIZE - 1))
+        .context("page alignment overflow")
+}
+
+fn reserve_region(cursor: &mut u64, size: u64, ram_end: u64) -> anyhow::Result<u64> {
+    ensure!(
+        cursor.is_multiple_of(PAGE_SIZE) && size.is_multiple_of(PAGE_SIZE),
+        "unaligned SNP bootshim region"
+    );
+    let start = *cursor;
+    let end = start
+        .checked_add(size)
+        .context("SNP bootshim region end overflow")?;
+    ensure!(
+        end <= ram_end,
+        "SNP bootshim workspace lies outside configured RAM"
+    );
+    *cursor = end;
+    Ok(start)
+}
+
+fn reserve_acpi_output(
+    nominal_rsdp_gpa: u64,
+    tables: &mut Vec<u8>,
+    c_bit_mask: u64,
+) -> anyhow::Result<SnpBootShimPlatformParams> {
+    // The ACPI builder starts the table blob one page after its nominal RSDP.
+    // The Linux loader imports only the blob here and pins the RSDP elsewhere.
+    let gpa = nominal_rsdp_gpa
+        .checked_add(PAGE_SIZE)
+        .context("ACPI base GPA overflow")?;
+    let base_size = align_up_to_page(tables.len().try_into()?)?;
+    let output_gpa = gpa
+        .checked_add(base_size)
+        .context("ACPI output GPA overflow")?;
+    let size = base_size
+        .checked_add(SNP_BOOT_SHIM_ACPI_SIZE)
+        .context("ACPI workspace size overflow")?;
+    gpa.checked_add(size)
+        .context("ACPI workspace end overflow")?;
+    tables.resize(size.try_into()?, 0);
+    Ok(SnpBootShimPlatformParams {
+        magic: SNP_BOOT_SHIM_PLATFORM_MAGIC,
+        version: SNP_BOOT_SHIM_PLATFORM_VERSION,
+        base_acpi_gpa: gpa,
+        base_acpi_size: base_size,
+        acpi_output_gpa: output_gpa,
+        acpi_output_size: SNP_BOOT_SHIM_ACPI_SIZE,
+        rsdp_gpa: loader::linux::RSDP_BASE,
+        c_bit_mask,
+        ..FromZeros::new_zeroed()
+    })
 }
 
 fn kernel_runtime_end(
@@ -841,9 +989,332 @@ mod tests {
         );
     }
 
+    const LAYOUT_RAM_PAGES: u64 = 40960;
+    const LAYOUT_SHIM_GPA: u64 = 0x200000;
+    const LAYOUT_PARAMS_GPA: u64 = LAYOUT_SHIM_GPA + 2 * PAGE_SIZE;
+
+    fn generated_layout(pcie: bool) -> (IgvmOutput, Vec<SnpBootShimRange>) {
+        let layout = FixedGuestLayout::new(LAYOUT_RAM_PAGES, 2).unwrap();
+        let mut loader = test_loader(LAYOUT_RAM_PAGES);
+        let mut platform = None;
+        loader::linux::load_config_x86(
+            &mut loader.loader(),
+            &loader::linux::LoadInfo {
+                kernel: loader::linux::KernelInfo {
+                    gpa: 0x100000,
+                    size: PAGE_SIZE,
+                    entrypoint: 0x100000,
+                },
+                ..Default::default()
+            },
+            &c"console=ttyS0".to_owned(),
+            &layout.memory,
+            |gpa| {
+                let mut tables = layout.acpi_builder().build_acpi_tables(gpa, |_| {});
+                if pcie {
+                    let original = tables.tables.clone();
+                    platform = Some(
+                        reserve_acpi_output(gpa, &mut tables.tables, TEST_C_BIT_MASK).unwrap(),
+                    );
+                    assert_eq!(&tables.tables[..original.len()], original);
+                    assert!(tables.tables[original.len()..].iter().all(|&b| b == 0));
+                }
+                loader::linux::AcpiTables {
+                    rsdp: tables.rsdp,
+                    tables: tables.tables,
+                }
+            },
+            None,
+            Some(loader::linux::SnpBootConfig { c_bit: 51 }),
+        )
+        .unwrap();
+        loader
+            .loader()
+            .import_pages(
+                LAYOUT_SHIM_GPA / PAGE_SIZE,
+                2,
+                "test-shim",
+                BootPageAcceptance::Exclusive,
+                &[],
+            )
+            .unwrap();
+        let ranges = import_bootshim_handoff(
+            &mut loader,
+            &loader::elf::LoadInfo {
+                minimum_address_used: LAYOUT_SHIM_GPA,
+                next_available_address: LAYOUT_PARAMS_GPA,
+                entrypoint: LAYOUT_SHIM_GPA,
+            },
+            0x100000,
+            loader::linux::ZERO_PAGE_BASE,
+            LAYOUT_RAM_PAGES,
+            platform,
+        )
+        .unwrap();
+        (loader.finalize().unwrap(), ranges)
+    }
+
+    fn imported_page(output: &IgvmOutput, address: u64) -> [u8; PAGE_SIZE as usize] {
+        let data = output
+            .guest
+            .directives()
+            .iter()
+            .find_map(|directive| match directive {
+                IgvmDirectiveHeader::PageData { gpa, data, .. } if *gpa == address => Some(data),
+                _ => None,
+            })
+            .unwrap();
+        let mut page = [0; PAGE_SIZE as usize];
+        page[..data.len()].copy_from_slice(data);
+        page
+    }
+
     #[test]
-    #[should_panic(expected = "page alignment overflow")]
-    fn bootshim_placement_overflow_panics() {
-        align_up_to_page(u64::MAX);
+    fn platform_handoff_reserves_dt_and_accepts_heap_once() {
+        let (output, ranges) = generated_layout(true);
+        let params =
+            SnpBootShimParams::read_from_bytes(&imported_page(&output, LAYOUT_PARAMS_GPA)).unwrap();
+        assert_eq!(params.version, SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM);
+        assert_eq!(params.reserved, LAYOUT_PARAMS_GPA + PAGE_SIZE);
+        let (platform, _) =
+            SnpBootShimPlatformParams::read_from_prefix(&imported_page(&output, params.reserved))
+                .unwrap();
+        assert_eq!(platform.magic, SNP_BOOT_SHIM_PLATFORM_MAGIC);
+        assert_eq!(platform.c_bit_mask, TEST_C_BIT_MASK);
+        assert_eq!(platform.version, SNP_BOOT_SHIM_PLATFORM_VERSION);
+        assert_eq!(platform.reserved, 0);
+        assert_eq!(platform.reserved2, 0);
+        assert_eq!(platform.shim_gpa, LAYOUT_SHIM_GPA);
+        assert_eq!(platform.shim_size, 2 * PAGE_SIZE);
+        assert_eq!(platform.dt_gpa, LAYOUT_PARAMS_GPA + 2 * PAGE_SIZE);
+        assert_eq!(platform.dt_size, SNP_BOOT_SHIM_DT_SIZE);
+        assert_eq!(platform.heap_gpa, platform.dt_gpa + platform.dt_size);
+        assert_eq!(platform.heap_size, SNP_BOOT_SHIM_HEAP_SIZE);
+        assert!(platform.heap_gpa + platform.heap_size <= params.ram_end);
+        assert_eq!(&params.ranges[..params.range_count as usize], ranges);
+
+        let serializer = IgvmSerializer::new(&output.guest).unwrap();
+        serializer
+            .measurement_for(IgvmPlatformType::SEV_SNP)
+            .unwrap();
+        let mut binary = Vec::new();
+        serializer.serialize(&mut binary).unwrap();
+        let reparsed = IgvmFile::new_from_binary(&binary, Some(igvm::IsolationType::Snp)).unwrap();
+        let mut imported = BTreeSet::new();
+        let mut area_count = 0;
+        let mut tree_count = 0;
+        let mut insert_count = 0;
+        for directive in reparsed.directives() {
+            match directive {
+                IgvmDirectiveHeader::PageData { gpa, .. } => {
+                    assert!(imported.insert(gpa / PAGE_SIZE));
+                }
+                IgvmDirectiveHeader::ParameterArea {
+                    number_of_bytes,
+                    parameter_area_index,
+                    initial_data,
+                } => {
+                    assert_eq!(*number_of_bytes, SNP_BOOT_SHIM_DT_SIZE);
+                    assert_eq!(*parameter_area_index, 0);
+                    assert!(initial_data.iter().all(|&b| b == 0));
+                    area_count += 1;
+                }
+                IgvmDirectiveHeader::DeviceTree(info) => {
+                    assert_eq!(info.parameter_area_index, 0);
+                    assert_eq!(info.byte_offset, 0);
+                    tree_count += 1;
+                }
+                IgvmDirectiveHeader::ParameterInsert(info) => {
+                    assert_eq!(info.parameter_area_index, 0);
+                    assert_eq!(info.gpa, platform.dt_gpa);
+                    insert_count += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!((area_count, tree_count, insert_count), (1, 1, 1));
+        let dt_pages =
+            platform.dt_gpa / PAGE_SIZE..(platform.dt_gpa + platform.dt_size) / PAGE_SIZE;
+        let heap_pages =
+            platform.heap_gpa / PAGE_SIZE..(platform.heap_gpa + platform.heap_size) / PAGE_SIZE;
+        for page in 0..LAYOUT_RAM_PAGES {
+            let acceptance_count = ranges
+                .iter()
+                .filter(|range| {
+                    (range.start_gpn..range.start_gpn + range.page_count).contains(&page)
+                })
+                .count();
+            assert_eq!(
+                acceptance_count
+                    + usize::from(imported.contains(&page))
+                    + usize::from(dt_pages.contains(&page)),
+                1,
+                "page {page:#x} must be covered exactly once"
+            );
+            if heap_pages.contains(&page) {
+                assert_eq!(acceptance_count, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn acpi_output_is_inside_linux_e820_acpi_reservation() {
+        let (output, _) = generated_layout(true);
+        let (platform, _) = SnpBootShimPlatformParams::read_from_prefix(&imported_page(
+            &output,
+            LAYOUT_PARAMS_GPA + PAGE_SIZE,
+        ))
+        .unwrap();
+        let zero_page = loader_defs::linux::boot_params::read_from_bytes(&imported_page(
+            &output,
+            loader::linux::ZERO_PAGE_BASE,
+        ))
+        .unwrap();
+        let acpi = zero_page.e820_map[..zero_page.e820_entries as usize]
+            .iter()
+            .find(|entry| entry.typ.get() == loader_defs::linux::E820_ACPI)
+            .unwrap();
+        assert_eq!(acpi.addr.get(), platform.base_acpi_gpa);
+        assert_eq!(
+            acpi.size.get(),
+            platform.base_acpi_size + platform.acpi_output_size
+        );
+        assert_eq!(
+            platform.acpi_output_gpa,
+            platform.base_acpi_gpa + platform.base_acpi_size
+        );
+        assert_eq!(platform.rsdp_gpa, loader::linux::RSDP_BASE);
+        for gpa in (platform.acpi_output_gpa..platform.acpi_output_gpa + platform.acpi_output_size)
+            .step_by(PAGE_SIZE as usize)
+        {
+            assert_eq!(imported_page(&output, gpa), [0; PAGE_SIZE as usize]);
+        }
+
+        let (legacy, _) = generated_layout(false);
+        assert_eq!(
+            imported_page(&output, loader::linux::RSDP_BASE),
+            imported_page(&legacy, loader::linux::RSDP_BASE),
+        );
+        for gpa in (platform.base_acpi_gpa..platform.acpi_output_gpa).step_by(PAGE_SIZE as usize) {
+            assert_eq!(imported_page(&output, gpa), imported_page(&legacy, gpa));
+        }
+        let legacy_zero = loader_defs::linux::boot_params::read_from_bytes(&imported_page(
+            &legacy,
+            loader::linux::ZERO_PAGE_BASE,
+        ))
+        .unwrap();
+        let legacy_acpi = legacy_zero.e820_map[..legacy_zero.e820_entries as usize]
+            .iter()
+            .find(|entry| entry.typ.get() == loader_defs::linux::E820_ACPI)
+            .unwrap();
+        assert_eq!(
+            legacy_acpi.size.get() + SNP_BOOT_SHIM_ACPI_SIZE,
+            acpi.size.get()
+        );
+        let secrets_gpa = |output: &IgvmOutput| {
+            output
+                .guest
+                .directives()
+                .iter()
+                .find_map(|directive| match directive {
+                    IgvmDirectiveHeader::PageData { gpa, data_type, .. }
+                        if *data_type == IgvmPageDataType::SECRETS =>
+                    {
+                        Some(*gpa)
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            secrets_gpa(&output),
+            platform.acpi_output_gpa + platform.acpi_output_size
+        );
+        assert_eq!(
+            secrets_gpa(&output),
+            secrets_gpa(&legacy) + SNP_BOOT_SHIM_ACPI_SIZE
+        );
+    }
+
+    #[test]
+    fn legacy_handoff_bytes_are_unchanged() {
+        let (output, ranges) = generated_layout(false);
+        let expected = build_bootshim_params(
+            0x100000,
+            loader::linux::ZERO_PAGE_BASE,
+            LAYOUT_RAM_PAGES * PAGE_SIZE,
+            &ranges,
+        )
+        .unwrap();
+        assert_eq!(
+            imported_page(&output, LAYOUT_PARAMS_GPA),
+            expected.as_bytes()
+        );
+        assert!(!output.guest.directives().iter().any(|directive| matches!(
+            directive,
+            IgvmDirectiveHeader::ParameterArea { .. }
+                | IgvmDirectiveHeader::DeviceTree(_)
+                | IgvmDirectiveHeader::ParameterInsert(_)
+        )));
+    }
+
+    #[test]
+    fn rejects_workspace_overflow_and_insufficient_ram() {
+        for ram_pages in [0x202, 0x203, 0x204, 0x213, 0x214, 0x313] {
+            let mut loader = test_loader(ram_pages);
+            let platform =
+                reserve_acpi_output(0x10000, &mut vec![0; 100], TEST_C_BIT_MASK).unwrap();
+            assert!(
+                import_bootshim_handoff(
+                    &mut loader,
+                    &loader::elf::LoadInfo {
+                        minimum_address_used: LAYOUT_SHIM_GPA,
+                        next_available_address: LAYOUT_PARAMS_GPA,
+                        entrypoint: LAYOUT_SHIM_GPA,
+                    },
+                    0x100000,
+                    loader::linux::ZERO_PAGE_BASE,
+                    ram_pages,
+                    Some(platform),
+                )
+                .is_err()
+            );
+        }
+        let mut cursor = !(PAGE_SIZE - 1);
+        assert!(reserve_region(&mut cursor, PAGE_SIZE, u64::MAX).is_err());
+        assert!(reserve_acpi_output(u64::MAX, &mut Vec::new(), TEST_C_BIT_MASK).is_err());
+    }
+
+    #[test]
+    fn rejects_acpi_workspace_overlapping_shim() {
+        let mut loader = test_loader(LAYOUT_RAM_PAGES);
+        let platform = reserve_acpi_output(
+            LAYOUT_SHIM_GPA - PAGE_SIZE,
+            &mut vec![0; 100],
+            TEST_C_BIT_MASK,
+        )
+        .unwrap();
+        assert!(
+            import_bootshim_handoff(
+                &mut loader,
+                &loader::elf::LoadInfo {
+                    minimum_address_used: LAYOUT_SHIM_GPA,
+                    next_available_address: LAYOUT_PARAMS_GPA,
+                    entrypoint: LAYOUT_SHIM_GPA,
+                },
+                0x100000,
+                loader::linux::ZERO_PAGE_BASE,
+                LAYOUT_RAM_PAGES,
+                Some(platform),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("ACPI workspace overlaps")
+        );
+    }
+
+    #[test]
+    fn rejects_bootshim_placement_overflow() {
+        assert!(align_up_to_page(u64::MAX).is_err());
     }
 }

@@ -7,9 +7,18 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+acpi_core.workspace = true
+acpi_spec.workspace = true
+fdt.workspace = true
 loader_defs.workspace = true
+memory_range.workspace = true
 minimal_rt.workspace = true
+thiserror.workspace = true
 x86defs.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [build-dependencies]
 minimal_rt_build.workspace = true

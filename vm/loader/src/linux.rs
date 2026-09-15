@@ -260,7 +260,7 @@ const ACPI_TABLES_BASE: u64 = LOW_METADATA_END + 0x1000;
 /// The RSDP is pinned at the fixed 0xe0000 so the kernel's legacy RSDP scan of
 /// `[0xe0000, 0x100000)` finds it, with no dependency on
 /// `boot_params.acpi_rsdp_addr` (Linux 5.0+).
-const RSDP_BASE: u64 = 0xe0000;
+pub const RSDP_BASE: u64 = 0xe0000;
 /// The x86 kernel brute-force scans the F-segment `[0xf0000, 0x100000)` for the
 /// SMBIOS `_SM3_` DMI anchor, so the 24-byte entry point is pinned there. Its
 /// 64-bit structure-table pointer lets the (potentially large) structure table

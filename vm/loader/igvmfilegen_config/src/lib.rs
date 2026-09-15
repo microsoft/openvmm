@@ -134,6 +134,9 @@ pub enum Image {
         memory_page_count: u64,
         /// The page-table address bit used as the SNP encryption bit.
         c_bit_position: u8,
+        /// Generate PCIe ACPI in the bootshim from the host device tree.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pcie: bool,
     },
 }
 
@@ -431,6 +434,7 @@ mod test {
             processor_count,
             memory_page_count,
             c_bit_position,
+            pcie: false,
         }
     }
 
@@ -468,7 +472,9 @@ mod test {
                 processor_count,
                 memory_page_count,
                 c_bit_position,
+                pcie,
             } => {
+                assert!(!pcie);
                 assert!(linux.use_initrd);
                 assert_eq!(
                     linux.command_line.as_bytes(),
@@ -481,6 +487,33 @@ mod test {
             }
             image => panic!("unexpected image: {image:?}"),
         }
+    }
+
+    #[test]
+    fn parse_pcie_snp_linux_direct_manifest() {
+        let config: Config =
+            serde_json::from_str(include_str!("../../manifests/snp-linux-direct-pcie.json"))
+                .unwrap();
+        let [guest] = config.guest_configs.as_slice() else {
+            panic!("expected one guest config");
+        };
+        assert!(matches!(
+            guest.image,
+            Image::SnpLinuxDirect {
+                pcie: true,
+                processor_count: 2,
+                memory_page_count: 40960,
+                ..
+            }
+        ));
+        assert!(matches!(
+            guest.isolation_type,
+            ConfigIsolationType::Snp {
+                injection_type: SnpInjectionType::Normal,
+                ..
+            }
+        ));
+        guest.image.validate().unwrap();
     }
 
     #[test]

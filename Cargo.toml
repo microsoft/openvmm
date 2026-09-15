@@ -243,6 +243,7 @@ tmk_tests = { path = "tmk/tmk_tests" }
 aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
+acpi_core = { package = "acpi", path = "vm/acpi", default-features = false }
 acpi_spec = { path = "vm/acpi_spec" }
 amd_iommu = { path = "vm/devices/iommu/amd_iommu" }
 intel_vtd = { path = "vm/devices/iommu/intel_vtd" }

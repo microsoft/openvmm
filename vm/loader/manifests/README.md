@@ -28,6 +28,14 @@ encoded in the file, but only MSHV submits its SNP ID block.
 The `snp-linux-direct-restricted.json` profile encodes restricted interrupt
 injection in its IGVM VMSA. It is intended only for MSHV bring-up.
 
+The opt-in `snp-linux-direct-pcie.json` profile sets `pcie: true`. It requests
+the host's device tree through an unmeasured IGVM parameter area. After launch,
+the measured bootshim validates the PCIe description and generates MCFG,
+PCIe SSDT, and updated ACPI root tables. The image contains no fixed ECAM
+address or BAR apertures; the same image can use different runtime layouts.
+Omitting `pcie`, or setting it to false, keeps the original v1 handoff and
+fixed no-PCIe behavior.
+
 The image contains a small measured bootshim. Only pages containing the kernel,
 initrd, boot metadata, SNP special pages, bootshim, or bootshim parameters are
 included as IGVM `PageData`. After SNP launch, the bootshim accepts the
@@ -118,3 +126,48 @@ image, and use that count for both `--processors` and `--vps-per-socket`.
 Keep COM1 for the profile's `console=ttyS0` kernel command line. This profile
 does not embed PCIe host bridges, so adding PCIe devices at launch does not
 supply the missing ACPI description.
+
+### Host-described PCIe on MSHV
+
+Build `snp_bootshim` and `igvmfilegen` as above, then use the
+`snp-linux-direct-pcie.json` manifest. The updated runtime supplies the actual
+resolved PCIe layout; no ECAM-base or MMIO-base overrides are needed.
+
+For its two-VP, 160-MiB configuration:
+
+```bash
+openvmm --hypervisor mshv --isolation snp --hv --no-vmbus \
+  --igvm path/to/snp-linux-direct-pcie.bin \
+  --igvm-personality linux-direct \
+  --memory 160MB --processors 2 --vps-per-socket 2 \
+  --com1 file=path/to/serial.log \
+  --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=31,low_mmio=64M,high_mmio=1G,node=0 \
+  --pcie-ecam-below-4gb \
+  --pcie-root-port rc0:disk0 --pcie-root-port rc0:net0 \
+  --virtio-blk file:path/to/disk.raw,pcie_port=disk0 \
+  --virtio-net pcie_port=net0:consomme
+```
+
+The below-4-GiB option selects a placement class, not a fixed address.
+Some direct-boot Linux kernels reject MCFG entries above 4 GiB unless SMBIOS
+reports a sufficiently recent BIOS date. Keep this option for those kernels;
+the converter supports 64-bit addresses but cannot bypass that guest policy.
+
+This first implementation supports at most eight generic ECAM bridges in
+distinct segments, node 0, native x86 MSI/MSI-X, and identity low/high MMIO
+windows. A nonempty low window is required; the high window may be omitted.
+CXL, IOMMU/remapping, legacy INTx maps, non-identity translations, and preserved
+PCI boot configuration are unsupported and rejected. CPU count, APIC IDs and
+contiguous RAM size remain image-defined and must still match the launch.
+
+The image reserves 64 KiB for the device tree, 64 KiB for generated ACPI, and
+a temporary 1-MiB heap. The bootshim rejects invalid or overlapping windows,
+over-capacity input, and incomplete handoffs before entering Linux. The ACPI
+arena is reserved in E820. The legacy RSDP and Linux zero-page pointer are
+updated only after successful construction.
+
+Host-selected topology is unmeasured. Attestation policy for those values is
+deferred for bring-up; validation does not bind them into the launch identity.
+Detailed bootshim failure reporting is also pending: runtime failures use the
+standard GHCB general-termination notification rather than continuing with
+stale tables.

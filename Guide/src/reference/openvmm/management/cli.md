@@ -99,6 +99,40 @@ describes the source definitions.
   KVM SNP does not support Hyper-V enlightenments.
   The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
 
+   For MSHV SNP IGVM boots, OpenVMM selects restricted or normal (standard)
+   interrupt injection from the BSP VMSA before creating the partition.
+   The host MSHV API uses bits 6-7 of the partition-creation flags as a two-bit
+   policy: restricted (0), normal (1), or secure AVIC (3). Value 2 is reserved
+   and rejected by the driver. Normal injection keeps the same encoding as the
+   earlier single-bit flag. Drivers without normal-injection support reject
+   the request; OpenVMM does not fall back to restricted injection. Restricted
+   injection remains the default, including when no IGVM metadata is supplied.
+   OpenVMM does not yet support secure AVIC or alternate injection.
+ 
+   For multi-VP SNP IGVM boots, `--processors` must match the processor count
+   encoded in the image. Hyper-V-enlightened MSHV guests can start APs using
+   Hyper-V APIC-to-VP lookup and processor-start hypercalls. The guest kernel
+   must allocate shared hypercall input and output buffers for this path.
+ 
+   The `snp-linux-direct*.json` generator profiles put all CPUs and RAM in
+   NUMA node 0. For these fixed-profile images, use `--memory` matching the
+   image's RAM size, not a multi-node `--numa` configuration. Set
+   `--processors N --vps-per-socket N` to match the image's VP count and
+   contiguous APIC IDs; leave the APIC ID offset at 0. SMT can remain `auto`.
+   These launch arguments do not rewrite the measured ACPI tables. Regenerate
+   the IGVM after changing its topology or updating the generator.
+ 
+  The opt-in `snp-linux-direct-pcie.json` profile (`pcie: true`) lets the
+  bootshim generate PCIe ACPI from the runtime's device-tree parameter. Its
+  ECAM and BAR-window addresses need not be fixed in the image. Use the usual
+  `--pcie-root-complex`, `--pcie-root-port`, and PCIe virtio device options.
+  For direct Linux kernels that reject high ECAM without a recent SMBIOS BIOS
+  date, also use `--pcie-ecam-below-4gb`. The initial profile supports up to
+  eight generic ECAM bridges in distinct segments, node 0, identity MMIO
+  windows, and native x86 MSI/MSI-X; IOMMU, CXL, INTx mapping, and preserved
+  PCI boot configuration are not supported. See
+  `vm/loader/manifests/README.md` for the build and launch recipe.
+
   SNP does not support UEFI, VTL2, or hugetlb-backed memory. In addition to
   the minimal emulated chipset and serial console, optional devices are
   limited to virtio devices attached through PCIe.
