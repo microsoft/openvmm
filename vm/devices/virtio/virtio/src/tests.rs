@@ -2544,9 +2544,8 @@ async fn verify_packed_queue_simple(driver: DefaultDriver) {
 }
 
 async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest, with_index: bool) {
-    // Bound completion waits so a stalled queue fails instead of hanging the test.
-    // This liveness guard may cause false failures on heavily loaded CI hosts.
-    const COMPLETION_TIMEOUT: Duration = Duration::from_millis(100);
+    // Match the shared virtio test helper's CI-safe bound for asynchronous queue progress.
+    const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
     let (tx, mut rx) = mesh::mpsc_channel();
     let (completed, mut completions) = mesh::mpsc_channel();
