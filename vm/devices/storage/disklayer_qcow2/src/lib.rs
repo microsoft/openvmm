@@ -57,7 +57,8 @@ struct LayerState {
 /// A qcow2 disk layer implementing [`LayerIo`].
 ///
 /// Currently supports basic qcow2 v2/v3 images without encryption, backing files,
-/// snapshots, or compressed clusters, and implements sparse reads and in-place writes.
+/// snapshots, or compressed clusters, and implements sparse reads, copy-on-write
+/// for shared clusters, and in-place writes.
 #[derive(Inspect)]
 pub struct Qcow2Layer {
     #[inspect(skip)]
@@ -400,8 +401,15 @@ impl LayerIo for Qcow2Layer {
                 cluster_size - addr.in_cluster_offset as usize,
             );
 
-            // TODO: once refcounts exist, this should COW if the refcount is
-            // shared with a backing file / snapshot.
+            // A cluster with the COPIED bit clear may be shared with a backing
+            // file, snapshot, or other layer whose refcount is > 1. Per the
+            // qcow2 spec it must not be written in place; instead the cluster
+            // is copied to a fresh host cluster and the write goes there.
+            //
+            // A `reads_as_zeros` entry stores no usable data (its host
+            // `cluster_offset` is ignored for reads), so it is likewise
+            // treated as unallocated for writes: allocate a fresh cluster
+            // rather than writing into the unreliable offset.
             let l2_offset = state.l1_table[addr.l1_index as usize].l2_offset;
             let l2_offset = if l2_offset == 0 {
                 let cluster_size = cluster_size as u64;
@@ -448,11 +456,8 @@ impl LayerIo for Qcow2Layer {
                 return Err(DiskError::InvalidInput);
             }
 
-            // A `reads_as_zeros` entry stores no usable data (its host
-            // `cluster_offset` is ignored for reads), so it must be treated as
-            // unallocated for the purpose of writes: allocate a fresh cluster
-            // rather than writing into the unreliable offset.
             let needs_allocation = l2_entry.cluster_offset == 0 || l2_entry.reads_as_zeros;
+            let needs_cow = !needs_allocation && !l2_entry.copied;
             let data_cluster_offset = if needs_allocation {
                 let cluster_size = cluster_size as u64;
                 let new_cluster = allocate_cluster(file.clone(), cluster_size).await?;
@@ -460,6 +465,55 @@ impl LayerIo for Qcow2Layer {
                 state
                     .refcounts
                     .increment_cluster(&file, new_cluster / cluster_size)
+                    .await?;
+                new_cluster
+            } else if needs_cow {
+                let cluster_size = cluster_size as u64;
+                let old_cluster = l2_entry.cluster_offset;
+                let new_cluster = allocate_cluster(file.clone(), cluster_size).await?;
+                zero_cluster(file.clone(), new_cluster, cluster_size as usize).await?;
+
+                // Preserve the old contents so the write below can overwrite
+                // only its own byte range (and so partial writes do not leak
+                // whatever the freshly extended file happened to contain).
+                let f = file.clone();
+                let mut buf = vec![0u8; cluster_size as usize];
+                let buf = unblock(move || -> Result<Vec<u8>, std::io::Error> {
+                    let n = f.read_at(&mut buf, old_cluster)?;
+                    if n != buf.len() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "short read",
+                        ));
+                    }
+                    Ok(buf)
+                })
+                .await
+                .map_err(DiskError::Io)?;
+                let f = file.clone();
+                unblock(move || -> std::io::Result<()> {
+                    let n = f.write_at(&buf, new_cluster)?;
+                    if n != buf.len() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "short write",
+                        ));
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(DiskError::Io)?;
+
+                state
+                    .refcounts
+                    .increment_cluster(&file, new_cluster / cluster_size)
+                    .await?;
+                // The L2 entry now references the copy, so the original cluster
+                // is referenced one fewer time. If this drops it to zero the
+                // cluster becomes free (no other owner references it).
+                state
+                    .refcounts
+                    .decrement_cluster(&file, old_cluster / cluster_size)
                     .await?;
                 new_cluster
             } else {
@@ -522,7 +576,7 @@ impl LayerIo for Qcow2Layer {
                 .map_err(DiskError::Io)?;
             }
 
-            if needs_allocation {
+            if needs_allocation || needs_cow {
                 // A freshly allocated cluster has refcount 1, so its COPIED
                 // bit is set.
                 l2_table[addr.l2_index as usize].copied = true;

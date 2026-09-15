@@ -182,17 +182,39 @@ impl RefcountTable {
 
         to_increment.push(cluster);
         for c in to_increment {
-            self.bump_refcount(file, c).await?;
+            self.update_refcount(file, c, 1).await?;
         }
         Ok(())
     }
 
-    /// Bump the refcount of `cluster` by one. Requires that the refcount block
-    /// covering `cluster` already exists.
-    async fn bump_refcount(&mut self, file: &Arc<File>, cluster: u64) -> Result<(), DiskError> {
+    pub async fn decrement_cluster(
+        &mut self,
+        file: &Arc<File>,
+        cluster: u64,
+    ) -> Result<(), DiskError> {
+        if !self.is_available() {
+            return Err(DiskError::InvalidInput);
+        }
+        self.update_refcount(file, cluster, -1).await
+    }
+
+    /// Adjust the refcount of `cluster` by `delta` (either +1 or -1). Requires
+    /// that the refcount block covering `cluster` already exists.
+    async fn update_refcount(
+        &mut self,
+        file: &Arc<File>,
+        cluster: u64,
+        delta: i64,
+    ) -> Result<(), DiskError> {
         let table_index = (cluster / self.entries_per_block) as usize;
         let in_block = (cluster % self.entries_per_block) as usize;
+        if table_index >= self.entries.len() {
+            return Err(DiskError::InvalidInput);
+        }
         let block_offset = self.entries[table_index];
+        if block_offset == 0 {
+            return Err(DiskError::InvalidInput);
+        }
 
         let counts = match self.blocks.get_mut(&(table_index as u64)) {
             Some(counts) => counts,
@@ -202,9 +224,12 @@ impl RefcountTable {
                 self.blocks.get_mut(&(table_index as u64)).unwrap()
             }
         };
-        counts[in_block] = counts[in_block]
-            .checked_add(1)
-            .ok_or_else(|| DiskError::Io(std::io::Error::other("refcount overflow")))?;
+        counts[in_block] = if delta > 0 {
+            counts[in_block].checked_add(delta as u16)
+        } else {
+            counts[in_block].checked_sub(delta.unsigned_abs() as u16)
+        }
+        .ok_or_else(|| DiskError::Io(std::io::Error::other("refcount overflow")))?;
 
         let entry_offset = block_offset + (in_block as u64 * 2);
         let new_bytes = counts[in_block].to_be_bytes();

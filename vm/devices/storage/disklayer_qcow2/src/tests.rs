@@ -338,6 +338,24 @@ fn build_zero_flag_fixture() -> Vec<u8> {
     img
 }
 
+/// Build a fixture identical to [`build_fixture`] except that L2 entry 0
+/// (the allocated data cluster) has the COPIED bit clear, marking the cluster
+/// as shared (refcount 2, e.g. referenced by another snapshot/overlay). Per
+/// the qcow2 spec, a write to such a cluster must copy-on-write into a fresh
+/// host cluster rather than modifying it in place.
+fn build_shared_fixture() -> Vec<u8> {
+    let mut img = build_fixture();
+    let l2_table: usize = 2 * CLUSTER_SIZE;
+    // Clamp off bit 63; the host offset is unchanged.
+    let l2_entry: u64 = 3 * CLUSTER_SIZE as u64;
+    img[l2_table..l2_table + 8].copy_from_slice(&l2_entry.to_be_bytes());
+    // Refcount of the data cluster (host cluster 3) is 2: shared with a
+    // fictional other owner.
+    let rc = 5 * CLUSTER_SIZE + 3 * 2;
+    img[rc..rc + 2].copy_from_slice(&2u16.to_be_bytes());
+    img
+}
+
 #[async_test]
 async fn read_zero_flag_cluster_returns_zeros() {
     let dir = tempfile::tempdir().unwrap();
@@ -368,4 +386,194 @@ async fn read_zero_flag_cluster_returns_zeros() {
     let mut buf = vec![0xFFu8; 512];
     mem.read_at(0, &mut buf).unwrap();
     assert_eq!(buf, vec![0u8; 512]);
+}
+
+#[async_test]
+async fn cross_cluster_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_fixture()).unwrap();
+
+    let layer = open_layer(&path, false);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Write 1024 bytes at sector 7
+    let mem = GuestMemory::allocate(1024);
+    mem.write_at(0, &[0x67; 1024]).unwrap();
+    let owned = OwnedRequestBuffers::linear(0, 1024, true);
+    disk.write_vectored(&owned.buffer(&mem), 7, false)
+        .await
+        .unwrap();
+
+    let read_test = GuestMemory::allocate(512);
+    let owned7 = OwnedRequestBuffers::linear(0, 512, true);
+    disk.read_vectored(&owned7.buffer(&read_test), 7)
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 512];
+    read_test.read_at(0, &mut buf).unwrap();
+    assert_eq!(buf, vec![0x67; 512]); // tail of cluster 0
+
+    disk.read_vectored(&owned7.buffer(&read_test), 8)
+        .await
+        .unwrap();
+    read_test.read_at(0, &mut buf).unwrap();
+    assert_eq!(buf, vec![0x67; 512]); // start of cluster 1
+
+    disk.read_vectored(&owned7.buffer(&read_test), 6)
+        .await
+        .unwrap();
+    read_test.read_at(0, &mut buf).unwrap();
+    let expected: Vec<u8> = (0..512u16).map(|i| ((3072 + i) % 251) as u8).collect();
+    assert_eq!(buf, expected);
+
+    drop(disk);
+
+    let layer2 = open_layer(&path, false);
+    let disk2 = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer2),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    disk2
+        .read_vectored(&owned7.buffer(&read_test), 7)
+        .await
+        .unwrap();
+    read_test.read_at(0, &mut buf).unwrap();
+    assert_eq!(buf, vec![0x67; 512]); // tail of cluster 0
+
+    disk2
+        .read_vectored(&owned7.buffer(&read_test), 8)
+        .await
+        .unwrap();
+    read_test.read_at(0, &mut buf).unwrap();
+    assert_eq!(buf, vec![0x67; 512]); // start of cluster 1
+}
+
+#[async_test]
+async fn write_to_shared_cluster_copies_on_write() {
+    // Cluster 0 is pre-allocated with the (i % 251) pattern but marked shared
+    // (COPIED bit clear, refcount 2). Writing sector 0 must copy the cluster
+    // to a fresh host cluster and apply the write there, leaving the original
+    // cluster and its remaining refcount intact for the other owner.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_shared_fixture()).unwrap();
+
+    let pattern: Vec<u8> = (0..512u16).map(|i| (i as u8).wrapping_add(100)).collect();
+    let mem = GuestMemory::allocate(512);
+    mem.write_at(0, &pattern).unwrap();
+
+    let layer = open_layer(&path, false);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let owned = OwnedRequestBuffers::linear(0, 512, true);
+    disk.write_vectored(&owned.buffer(&mem), 0, false)
+        .await
+        .unwrap();
+    drop(disk);
+
+    // A COW allocated one fresh data cluster at the end of the file.
+    let img = std::fs::read(&path).unwrap();
+    assert_eq!(img.len(), 7 * CLUSTER_SIZE, "one data cluster appended");
+
+    let refcount = |cluster: usize| -> u16 {
+        let off = 5 * CLUSTER_SIZE + cluster * 2;
+        u16::from_be_bytes([img[off], img[off + 1]])
+    };
+    // The original data cluster still holds the old pattern, untouched, and
+    // its refcount dropped 2 -> 1 (the fictional other owner keeps it).
+    for i in 0..CLUSTER_SIZE {
+        assert_eq!(img[3 * CLUSTER_SIZE + i], (i % 251) as u8);
+    }
+    assert_eq!(refcount(3), 1);
+    assert_eq!(refcount(6), 1);
+
+    // L2 entry 0 now points at the fresh cluster with COPIED set.
+    let l2_entry_raw = u64::from_be_bytes(
+        img[2 * CLUSTER_SIZE..2 * CLUSTER_SIZE + 8]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!(
+        l2_entry_raw,
+        (1u64 << 63) | (6 * CLUSTER_SIZE as u64),
+        "L2 entry 0 should reference the copy-on-write cluster"
+    );
+
+    // The fresh cluster holds the written pattern where overwritten and the
+    // original data elsewhere (the partial-cluster write was preserved by the
+    // copy).
+    assert_eq!(&img[6 * CLUSTER_SIZE..6 * CLUSTER_SIZE + 512], &pattern[..]);
+    for i in 512..CLUSTER_SIZE {
+        assert_eq!(img[6 * CLUSTER_SIZE + i], (i % 251) as u8);
+    }
+
+    // Re-open fresh and read back: sector 0 holds the new data, sector 1 the
+    // preserved original data.
+    let layer2 = open_layer(&path, true);
+    let disk2 = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer2),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let read_mem = GuestMemory::allocate(512);
+    let owned_read = OwnedRequestBuffers::linear(0, 512, true);
+    let mut buf = vec![0u8; 512];
+    disk2
+        .read_vectored(&owned_read.buffer(&read_mem), 0)
+        .await
+        .unwrap();
+    read_mem.read_at(0, &mut buf).unwrap();
+    assert_eq!(buf, pattern);
+
+    disk2
+        .read_vectored(&owned_read.buffer(&read_mem), 1)
+        .await
+        .unwrap();
+    read_mem.read_at(0, &mut buf).unwrap();
+    let expected: Vec<u8> = (0..512u16).map(|i| ((512 + i) % 251) as u8).collect();
+    assert_eq!(buf, expected);
 }
