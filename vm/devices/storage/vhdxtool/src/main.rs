@@ -657,27 +657,9 @@ fn resolve_parent_path(child_path: &std::path::Path, parent: &VhdxParent) -> Opt
     let child_directory = child_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let mut candidates = Vec::new();
-    if let Some(relative) = parent.relative_path() {
-        candidates.push(child_directory.join(native_locator_path(relative)));
-    }
-    if let Some(volume) = parent.volume_path() {
-        candidates.push(native_locator_path(volume));
-    }
-    if let Some(absolute) = parent.absolute_win32_path() {
-        candidates.push(native_locator_path(absolute));
-    }
-    candidates.into_iter().find(|candidate| candidate.is_file())
-}
-
-#[cfg(unix)]
-fn native_locator_path(path: &str) -> PathBuf {
-    PathBuf::from(path.replace('\\', "/"))
-}
-
-#[cfg(windows)]
-fn native_locator_path(path: &str) -> PathBuf {
-    PathBuf::from(path)
+    parent
+        .candidate_paths(child_directory)
+        .find(|candidate| candidate.is_file())
 }
 
 fn classify_open_error(path: &std::path::Path, error: OpenError) -> anyhow::Error {
@@ -994,6 +976,24 @@ async fn write_vhdx_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_lookup_ignores_windows_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        std::fs::write(&parent_path, []).unwrap();
+        let parent = VhdxParent::new(Guid::new_random())
+            .unwrap()
+            .with_volume_path(parent_path.to_str().unwrap())
+            .unwrap()
+            .with_absolute_win32_path(parent_path.to_str().unwrap())
+            .unwrap();
+        assert_eq!(resolve_parent_path(&child_path, &parent), None);
+        let parent = parent.with_relative_path(r".\parent.vhdx").unwrap();
+        assert_eq!(resolve_parent_path(&child_path, &parent), Some(parent_path));
+    }
 
     #[test]
     fn parses_short_and_long_output_and_force_options() {
