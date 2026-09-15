@@ -485,22 +485,6 @@ impl VpciClientTdispState {
         Ok(report)
     }
 
-    /// Fetch the device's TDI device id, which identifies the TDI in platform
-    /// calls. Available in any TDI state, unlike the other reports.
-    pub async fn tdisp_get_tdi_device_id(&mut self) -> anyhow::Result<u64> {
-        let buffer = self
-            .tdisp_get_device_report(&TdispReportType::GuestDeviceId)
-            .await
-            .context("failed to get TDI device ID")?;
-
-        // Ensure it's a u64
-        if buffer.len() != size_of::<u64>() {
-            return Err(anyhow::anyhow!("unexpected buffer size for TDI device ID"));
-        }
-
-        Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
-    }
-
     /// Tell the host to block an MMIO range, reversing a previous unblock.
     /// This only notifies the host; the platform-side block is separate.
     ///
@@ -875,23 +859,15 @@ impl VpciClientTdispState {
             });
         }
 
-        // Request the guest device ID before binding so the pre-bind and
-        // pre-start validator hooks can identify the TDI they are gating.
-        let guest_device_id = self
-            .tdisp_get_tdi_device_id()
-            .await
-            .context("tdisp_attest_device: failed to get TDI device ID before binding device")
-            .map_err(|e| SetupDeviceFailure {
-                reason: TdispGuestUnbindReason::StartupFailure,
-                message: format!(
-                    "tdisp_attest_device: failed to get TDI device ID before binding device: {}",
-                    e
-                ),
-            })?;
+        // The capability negotiation already identified the TDI, so take the id
+        // from there rather than asking the host a second time. It is needed
+        // before binding, so that the pre-bind and pre-start validator hooks
+        // can identify the TDI they are gating.
+        let guest_device_id = interface_info.tdisp_device_id;
 
-        // Platforms require a u16 device ID even though the report returns a
-        // u64. Ensure the returned device ID fits within that constraint before
-        // proceeding.
+        // Platforms require a u16 device ID even though the negotiated
+        // interface info carries a u64. Ensure it fits within that constraint
+        // before proceeding.
         let guest_device_id_u16 = u16::try_from(guest_device_id)
             .context("tdisp_attest_device: guest device ID must fit within u16")
             .map_err(|e| SetupDeviceFailure {
@@ -1293,11 +1269,6 @@ impl TdispVirtualDeviceInterface for VpciDevice {
     async fn tdisp_get_tdi_report(&self) -> anyhow::Result<TdiReportStruct> {
         let mut guard = self.tdisp.0.lock().await;
         guard.tdisp_get_tdi_report().await
-    }
-
-    async fn tdisp_get_tdi_device_id(&self) -> anyhow::Result<u64> {
-        let mut guard = self.tdisp.0.lock().await;
-        guard.tdisp_get_tdi_device_id().await
     }
 
     async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) {
