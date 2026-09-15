@@ -41,6 +41,7 @@ use virt::aarch64::vp;
 use virt::aarch64::vp::AccessVpState;
 use virt::io::CpuIo;
 use virt_support_aarch64emu::translate::TranslationRegisters;
+use virt_support_gic::ListRegisterInterrupt;
 use virt_support_gic::PendingInterrupt;
 use zerocopy::FromZeros;
 
@@ -743,6 +744,18 @@ impl UhProcessor<'_, CcaBacked> {
     /// and injects newly deliverable SPIs. If no list register is available,
     /// the interrupt remains pending for a later poll.
     fn poll_gic(&mut self, vtl: GuestVtl) {
+        let vp = self.vp_index();
+        let lrs = self
+            .runner
+            .cca_rsi_plane_entry()
+            .gicv3_lrs
+            .map(|lr| ListRegisterInterrupt {
+                intid: (lr & ICH_LR_VINTID_MASK) as u32,
+                pending: lr & ICH_LR_PENDING != 0,
+                active: lr & ICH_LR_ACTIVE != 0,
+            });
+        self.shared.cvm.gic.fold_list_registers(vp, &lrs);
+
         loop {
             let priority_threshold = interrupt_priority_threshold(
                 self.backing.vtls[vtl].priority_mask,
@@ -774,7 +787,7 @@ impl UhProcessor<'_, CcaBacked> {
             self.shared
                 .cvm
                 .gic
-                .complete_interrupt(self.vp_index(), interrupt.intid);
+                .mark_private_injected(self.vp_index(), interrupt.intid);
             tracing::debug!(
                 intid = interrupt.intid,
                 priority = interrupt.priority,
@@ -784,20 +797,12 @@ impl UhProcessor<'_, CcaBacked> {
             );
         }
 
-        // Device SPIs belong to VTL0. Reconcile the model with the RMM list
-        // registers before selecting another interrupt. If a level-triggered
-        // line remains asserted after its LR is retired, it becomes eligible
-        // for injection again.
+        // Device SPIs belong to VTL0. The returned list registers were reconciled
+        // before selecting any new interrupts, so retired level-sensitive SPIs
+        // are now eligible for injection again.
         if vtl != GuestVtl::Vtl0 {
             return;
         }
-
-        let vp = self.vp_index();
-        let lrs = &self.runner.cca_rsi_plane_entry().gicv3_lrs;
-        self.shared
-            .cvm
-            .gic
-            .retain_in_flight_spis(vp, |intid| virtual_interrupt_is_listed(lrs, intid));
 
         let priority_threshold = interrupt_priority_threshold(
             self.backing.vtls[vtl].priority_mask,
@@ -827,10 +832,7 @@ impl UhProcessor<'_, CcaBacked> {
                 return;
             }
 
-            self.shared
-                .cvm
-                .gic
-                .mark_spi_injected(self.vp_index(), interrupt.intid);
+            // The SPI reservation is already durable before its LR is filled.
             tracing::debug!(
                 intid = interrupt.intid,
                 priority = interrupt.priority,
