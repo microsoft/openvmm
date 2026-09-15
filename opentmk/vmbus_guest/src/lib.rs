@@ -267,6 +267,7 @@ pub mod channel;
 pub mod connection;
 pub mod devices;
 mod error;
+pub mod fuzz;
 pub mod gpadl;
 pub mod hvsock;
 pub mod hypercalls;

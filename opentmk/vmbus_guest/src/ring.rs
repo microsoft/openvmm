@@ -652,7 +652,6 @@ impl<M: RingMem> SendRing<M> {
         flags: PacketFlags,
         transaction_id: u64,
     ) -> Result<bool> {
-        let ring_len = self.mem.data_len() as u32;
         // `msg_len` = descriptor + ext_header + payload (all padded to
         // 8). This is what goes into `length8`. `total_ring_len` also
         // includes the 8-byte footer and is what we advance
@@ -675,33 +674,7 @@ impl<M: RingMem> SendRing<M> {
             });
         }
 
-        // Snapshot ring pointers. `Acquire` on `out` synchronises with
-        // the reader's `Release` publish of `read_index`.
-        let write_idx = ctrl_in(&self.mem).load(Ordering::Relaxed);
-        let read_idx = ctrl_out(&self.mem).load(Ordering::Acquire);
-        let free = available_free(write_idx, read_idx, ring_len) as usize;
-        if free < total_ring_len {
-            // Not enough room. Publish the pending_send_sz hint on
-            // our SendRing so the reader knows how much space we
-            // need before signalling us. Then reload read_idx
-            // (SeqCst) and recheck; a concurrent reader may have
-            // drained between the initial load above and our store
-            // below. Without the recheck we could lose the wakeup
-            // and deadlock (writer waits for signal that reader
-            // won't send because pending_send_sz wasn't visible
-            // yet when it drained).
-            ctrl_pending_send(&self.mem).store(total_ring_len as u32, Ordering::SeqCst);
-            let read_idx_reload = ctrl_out(&self.mem).load(Ordering::SeqCst);
-            let free_reload = available_free(write_idx, read_idx_reload, ring_len) as usize;
-            if free_reload < total_ring_len {
-                // Still full. Leave pending_send_sz set — the reader
-                // will kick us when it frees the room.
-                return Err(Error::RingFull);
-            }
-            // Space appeared after our store. Clear the hint (we
-            // don't need a signal) and fall through to the write.
-            ctrl_pending_send(&self.mem).store(0, Ordering::SeqCst);
-        }
+        let write_idx = self.reserve(total_ring_len)?;
 
         // Descriptor.
         let desc = PacketDescriptor {
@@ -742,6 +715,104 @@ impl<M: RingMem> SendRing<M> {
         };
         write_wrapping(&self.mem, cursor, footer.as_bytes());
 
+        Ok(self.commit(write_idx, total_ring_len))
+    }
+
+    /// Post a packet whose 16-byte [`PacketDescriptor`] is supplied
+    /// **verbatim** by the caller, followed by `payload`.
+    ///
+    /// This is the raw-fuzzing counterpart to [`Self::write_packet`]:
+    /// the caller owns every descriptor field, including `length8`,
+    /// `data_offset8`, `flags` and `packet_type`, so it can emit
+    /// packets whose self-described geometry disagrees with what is
+    /// actually in the ring. That inconsistency is exactly the host
+    /// parser surface the vmbus fuzzer exists to exercise, and mirrors
+    /// the legacy puppet `send_raw_packet_outbound` path.
+    ///
+    /// The guest's own ring bookkeeping deliberately ignores the
+    /// descriptor's `length8` and advances `write_index` by the real
+    /// number of bytes written (`descriptor + padded payload +
+    /// footer`). Trusting a fuzzed `length8` here would corrupt our
+    /// own ring state and desynchronise every later packet rather than
+    /// testing the host.
+    ///
+    /// Returns the same empty→non-empty signal decision as
+    /// [`Self::write_packet`].
+    pub fn write_raw_packet(
+        &self,
+        descriptor: &[u8; DESCRIPTOR_SIZE],
+        payload: &[u8],
+    ) -> Result<bool> {
+        let payload_aligned = align8(payload.len());
+        let total_ring_len = DESCRIPTOR_SIZE + payload_aligned + FOOTER_SIZE;
+        let write_idx = self.reserve(total_ring_len)?;
+
+        let mut cursor = write_idx as usize;
+        write_wrapping(&self.mem, cursor, descriptor);
+        cursor += DESCRIPTOR_SIZE;
+
+        if !payload.is_empty() {
+            write_wrapping(&self.mem, cursor, payload);
+            let pad = payload_aligned - payload.len();
+            if pad != 0 {
+                write_wrapping(&self.mem, cursor + payload.len(), &[0u8; 8][..pad]);
+            }
+            cursor += payload_aligned;
+        }
+
+        let footer = Footer {
+            reserved: 0,
+            offset: write_idx,
+        };
+        write_wrapping(&self.mem, cursor, footer.as_bytes());
+
+        Ok(self.commit(write_idx, total_ring_len))
+    }
+
+    /// Reserve `total_ring_len` bytes at the ring's write index,
+    /// observing the `pending_send_sz` back-pressure protocol.
+    ///
+    /// Returns the write index the caller should start writing at, or
+    /// [`Error::RingFull`] when the ring cannot fit the packet (in
+    /// which case `pending_send_sz` is left set so the reader kicks us
+    /// once it frees the room).
+    fn reserve(&self, total_ring_len: usize) -> Result<u32> {
+        let ring_len = self.mem.data_len() as u32;
+        // Snapshot ring pointers. `Acquire` on `out` synchronises with
+        // the reader's `Release` publish of `read_index`.
+        let write_idx = ctrl_in(&self.mem).load(Ordering::Relaxed);
+        let read_idx = ctrl_out(&self.mem).load(Ordering::Acquire);
+        let free = available_free(write_idx, read_idx, ring_len) as usize;
+        if free < total_ring_len {
+            // Not enough room. Publish the pending_send_sz hint on
+            // our SendRing so the reader knows how much space we
+            // need before signalling us. Then reload read_idx
+            // (SeqCst) and recheck; a concurrent reader may have
+            // drained between the initial load above and our store
+            // below. Without the recheck we could lose the wakeup
+            // and deadlock (writer waits for signal that reader
+            // won't send because pending_send_sz wasn't visible
+            // yet when it drained).
+            ctrl_pending_send(&self.mem).store(total_ring_len as u32, Ordering::SeqCst);
+            let read_idx_reload = ctrl_out(&self.mem).load(Ordering::SeqCst);
+            let free_reload = available_free(write_idx, read_idx_reload, ring_len) as usize;
+            if free_reload < total_ring_len {
+                // Still full. Leave pending_send_sz set — the reader
+                // will kick us when it frees the room.
+                return Err(Error::RingFull);
+            }
+            // Space appeared after our store. Clear the hint (we
+            // don't need a signal) and fall through to the write.
+            ctrl_pending_send(&self.mem).store(0, Ordering::SeqCst);
+        }
+        Ok(write_idx)
+    }
+
+    /// Publish a packet written at `write_idx` spanning
+    /// `total_ring_len` bytes, and decide whether the peer needs a
+    /// signal.
+    fn commit(&self, write_idx: u32, total_ring_len: usize) -> bool {
+        let ring_len = self.mem.data_len() as u32;
         // Publish the new write_index with SeqCst. This is required
         // to correctly race with the reader's SeqCst read_index
         // store in `RecvRing::read`: the SeqCst pair guarantees that
@@ -767,7 +838,7 @@ impl<M: RingMem> SendRing<M> {
         let read_idx_after = ctrl_out(&self.mem).load(Ordering::SeqCst);
         let was_empty = read_idx_after == old_write_idx;
         let peer_wants_signal = ctrl_interrupt_mask(&self.mem).load(Ordering::SeqCst) == 0;
-        Ok(was_empty && peer_wants_signal)
+        was_empty && peer_wants_signal
     }
 }
 

@@ -10,10 +10,8 @@ use crate::functions::hyperv;
 #[cfg(target_arch = "x86_64")]
 use crate::functions::io_port;
 use crate::functions::netvsp;
+use crate::functions::vmbus;
 use crate::prelude::*;
-use crate::serial::OpenTmkSerialIo;
-use crate::serial::SerialIo;
-use crate::serial::SerialPort;
 
 use cfg_if::cfg_if;
 use opentmk_exec_packet::OpenTMKAckPacket;
@@ -93,6 +91,11 @@ impl<T: SerialIo> Executor<T> {
             ("send_rndis", netvsp::send_rndis),
             ("open_channel", netvsp::open_channel),
             ("renew_buffer", netvsp::renew_buffer),
+            ("vmbus_msg", vmbus::vmbus_msg),
+            ("vmbus_msg_comp", vmbus::vmbus_msg_comp),
+            ("vmbus_packet", vmbus::vmbus_packet),
+            ("vmbus_reopen_channel", vmbus::vmbus_reopen_channel),
+            ("vmbus_fill_relids", vmbus::vmbus_fill_relids),
         ];
 
         for (name, func) in REGISTRY_ARCH.iter().chain(REGISTRY) {
@@ -165,6 +168,7 @@ impl<T: SerialIo> Executor<T> {
         // from leaking across testcases and recovers a datapath a prior
         // testcase wedged. Lazy: no-op when no session exists yet.
         netvsp::reset_session();
+        vmbus::reset_session();
         match self.deserializer.as_mut() {
             None => Err(ExecutorError::NoDeserializerEnabled),
             Some(t) => Ok(Some(OpenTMKPacket::Ack(OpenTMKAckPacket {

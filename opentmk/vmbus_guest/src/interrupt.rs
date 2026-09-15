@@ -74,6 +74,7 @@ use crate::message::route_message;
     expect(unused_imports, reason = "used only in the UEFI SIMP-pump impl")
 )]
 use crate::synic::VMBUS_SINT;
+use alloc::vec::Vec;
 #[cfg(target_os = "uefi")]
 use core::hint::spin_loop;
 #[cfg(target_os = "uefi")]
@@ -96,11 +97,7 @@ use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 pub const HV_REGISTER_EOM: u32 = 0x000A0014;
 
 /// Byte offset of slot `n` inside a 4 KiB SIMP page.
-#[cfg_attr(
-    not(target_os = "uefi"),
-    expect(dead_code, reason = "used only in the UEFI SIMP-pump impl")
-)]
-const fn slot_offset(sint: u8) -> usize {
+pub const fn slot_offset(sint: u8) -> usize {
     HV_MESSAGE_SIZE * sint as usize
 }
 
@@ -207,8 +204,55 @@ pub fn drain_once<
     table: &CompletionTable,
     sink: &mut S,
 ) -> Result<bool> {
+    Ok(drain_once_inner(ctx, slot, table, sink, false)?.is_some())
+}
+
+/// Like [`drain_once`], but returns the raw vmbus message bytes that
+/// were drained and never fails on a message the router can't parse.
+///
+/// Both differences exist for the fuzzing surface in [`crate::fuzz`]:
+///
+/// * A fuzzer handler that posts an arbitrary channel message has no
+///   [`crate::message::CompletionKey`] to wait on, because the response
+///   type is whatever the host decides to send (often nothing, often
+///   not a completion type at all). Returning the bytes lets the caller
+///   hand the host's reply straight back to the fuzzer's `pktout`
+///   buffer, matching the legacy puppet `VmbusChannelMessageComp`
+///   semantics.
+/// * A fuzzed request can provoke a reply that
+///   [`crate::message::route_message`] rejects (e.g. a `GPADL_CREATED`
+///   truncated below its struct size). Propagating that as an error
+///   would abort the drain with the slot already consumed, wedging the
+///   SINT2 pipe for the rest of the campaign. Here the routing error is
+///   logged and the bytes are still returned.
+pub fn drain_once_capture<
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
+    S: MessageSink + ?Sized,
+>(
+    ctx: &mut C,
+    slot: &mut [u8],
+    table: &CompletionTable,
+    sink: &mut S,
+) -> Result<Option<Vec<u8>>> {
+    drain_once_inner(ctx, slot, table, sink, true)
+}
+
+/// Shared body of [`drain_once`] and [`drain_once_capture`].
+///
+/// `tolerant` selects whether a [`route_message`] failure is returned
+/// to the caller or merely logged.
+fn drain_once_inner<
+    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
+    S: MessageSink + ?Sized,
+>(
+    ctx: &mut C,
+    slot: &mut [u8],
+    table: &CompletionTable,
+    sink: &mut S,
+    tolerant: bool,
+) -> Result<Option<Vec<u8>>> {
     let Some(view) = read_slot(slot)? else {
-        return Ok(false);
+        return Ok(None);
     };
     // Copy the payload out before we touch the slot — `slot` is
     // borrowed mutably below.
@@ -231,7 +275,15 @@ pub fn drain_once<
         vmbus_ty,
     );
 
-    route_message(&payload_buf[..payload_len], table, sink)?;
+    if let Err(e) = route_message(&payload_buf[..payload_len], table, sink) {
+        if !tolerant {
+            return Err(e);
+        }
+        // Tolerant (fuzz) drain: the host's reply to a fuzzed request
+        // may be unparseable. Log and keep going — bailing here would
+        // leave the slot consumed but uncleared and stall SINT2.
+        log::debug!("drain_once: route_message failed (ignored): {e:?}");
+    }
 
     // Clear-then-recheck EOM sequence: the hypervisor may set
     // `message_flags.message_pending = 1` on this slot AFTER we
@@ -247,7 +299,7 @@ pub fn drain_once<
     if post_clear_pending {
         write_eom(ctx)?;
     }
-    Ok(true)
+    Ok(Some(payload_buf[..payload_len].to_vec()))
 }
 
 // ---------------------------------------------------------------------------

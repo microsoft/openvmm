@@ -240,11 +240,17 @@ pub fn reset_session() {
     // host releases those guest pages before we free and reuse them.
     for handle in backing.buffer_gpadls() {
         if let Err(e) = vmbus_guest::gpadl::teardown_gpadl(&mut *ctx, handle) {
-            log::warn!("netvsp: reset teardown buffer gpadl {:?} failed: {e:?}", handle.id());
+            log::warn!(
+                "netvsp: reset teardown buffer gpadl {:?} failed: {e:?}",
+                handle.id()
+            );
         }
     }
     if let Err(e) = vmbus_guest::gpadl::teardown_gpadl(&mut *ctx, ring_gpadl) {
-        log::warn!("netvsp: reset teardown ring gpadl {:?} failed: {e:?}", ring_gpadl.id());
+        log::warn!(
+            "netvsp: reset teardown ring gpadl {:?} failed: {e:?}",
+            ring_gpadl.id()
+        );
     }
 
     backing.free();
