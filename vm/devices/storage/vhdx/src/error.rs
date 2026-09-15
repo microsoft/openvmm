@@ -87,9 +87,9 @@ impl OpenError {
             }
             OpenErrorInner::Corrupt(_) => OpenErrorKind::Corruption,
             OpenErrorInner::InvalidParameter(_) => OpenErrorKind::InvalidParameter,
-            OpenErrorInner::PipelineFailed(_) | OpenErrorInner::MetadataCache(_) => {
-                OpenErrorKind::Other
-            }
+            OpenErrorInner::MetadataCache(CacheError::Read { .. }) => OpenErrorKind::Io,
+            OpenErrorInner::PipelineFailed(_)
+            | OpenErrorInner::MetadataCache(CacheError::PipelineFailed(_)) => OpenErrorKind::Other,
         }
     }
 }
@@ -205,6 +205,25 @@ pub(crate) enum CacheError {
     /// The write pipeline has been poisoned by a previous fatal error.
     #[error("pipeline failed")]
     PipelineFailed(#[source] PipelineFailed),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_metadata_cache_failures() {
+        let read_error = OpenError(OpenErrorInner::MetadataCache(CacheError::Read {
+            err: std::io::Error::other("read failed"),
+            file_offset: 0,
+        }));
+        assert_eq!(read_error.kind(), OpenErrorKind::Io);
+
+        let pipeline_error = OpenError(OpenErrorInner::MetadataCache(CacheError::PipelineFailed(
+            PipelineFailed("failed".into()),
+        )));
+        assert_eq!(pipeline_error.kind(), OpenErrorKind::Other);
+    }
 }
 
 /// Specific reasons a VHDX creation or parameter validation may fail.
