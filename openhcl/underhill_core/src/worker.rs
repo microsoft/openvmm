@@ -294,7 +294,9 @@ fn nvidia_relay_authorized_by_launch(
 
     let tee_call: Option<Box<dyn tee_call::TeeCall>> = match isolation {
         virt::IsolationType::Snp => Some(Box::new(tee_call::SnpCall)),
-        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall)),
+        // `hw_seal_keys_enabled` only gates key derivation, not the launch
+        // report read here, so its value is irrelevant.
+        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall::new(false))),
         virt::IsolationType::Vbs => Some(Box::new(tee_call::VbsCall)),
         _ => None,
     };
