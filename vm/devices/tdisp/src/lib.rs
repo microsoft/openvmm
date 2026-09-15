@@ -911,9 +911,9 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         let reason = match reason {
             TdispGuestUnbindReason::Graceful
             | TdispGuestUnbindReason::DeviceTeardown
-            | TdispGuestUnbindReason::ResourceSetupFailure => {
-                TdispUnbindReason::GuestInitiated(reason)
-            }
+            | TdispGuestUnbindReason::ResourceSetupFailure
+            | TdispGuestUnbindReason::AttestationFailure
+            | TdispGuestUnbindReason::StartupFailure => TdispUnbindReason::GuestInitiated(reason),
             _ => {
                 tracing::error!(
                     "Invalid guest unbind reason {} requested",
