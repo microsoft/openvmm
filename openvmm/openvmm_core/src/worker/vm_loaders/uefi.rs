@@ -87,14 +87,7 @@ fn firmware_interface_is_compatible(major: u16, minor: u16) -> bool {
 }
 
 fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
-    #[cfg(guest_arch = "x86_64")]
-    let dxe_fv = image;
-    #[cfg(guest_arch = "aarch64")]
-    let dxe_fv = image.get(0x20_0000..).ok_or_else(|| {
-        Error::FirmwareVersion(loader::uefi::firmware_version::Error::VolumeHeader)
-    })?;
-
-    let version = match loader::uefi::firmware_version::find_in_firmware_volume(dxe_fv) {
+    let version = match loader::uefi::firmware_version::find_in_firmware_image(image) {
         Ok(Some(version)) => version,
         Ok(None) => {
             tracing::warn!("UEFI firmware does not contain version information");

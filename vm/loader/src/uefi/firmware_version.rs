@@ -12,6 +12,10 @@ use zerocopy::FromBytes;
 const FILE_ALIGNMENT: usize = 8;
 const SECTION_ALIGNMENT: usize = 4;
 const ERASED_BYTE: u8 = 0xff;
+#[cfg(guest_arch = "x86_64")]
+const DXE_FIRMWARE_VOLUME_OFFSET: usize = 0;
+#[cfg(guest_arch = "aarch64")]
+const DXE_FIRMWARE_VOLUME_OFFSET: usize = 0x20_0000;
 
 /// A parsed view of an MSVM firmware version record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,16 +173,23 @@ fn parse_record(record: &[u8]) -> Result<MsvmFirmwareVersion<'_>, Error> {
     })
 }
 
-/// Finds and parses the version record in a DXE firmware volume.
-///
-/// `Ok(None)` means the dedicated version FFS file is not present.
-pub fn find_in_firmware_volume(fv: &[u8]) -> Result<Option<MsvmFirmwareVersion<'_>>, Error> {
+fn find_in_firmware_volume(fv: &[u8]) -> Result<Option<MsvmFirmwareVersion<'_>>, Error> {
     let Some(file) = find_file(fv, firmware_version::FILE_GUID)? else {
         return Ok(None);
     };
     let record =
         find_unique_section(file, firmware_volume::SECTION_RAW)?.ok_or(Error::MissingRawSection)?;
     parse_record(record).map(Some)
+}
+
+/// Finds and parses the version record in a firmware image.
+///
+/// `Ok(None)` means the dedicated version FFS file is not present.
+pub fn find_in_firmware_image(image: &[u8]) -> Result<Option<MsvmFirmwareVersion<'_>>, Error> {
+    let fv = image
+        .get(DXE_FIRMWARE_VOLUME_OFFSET..)
+        .ok_or(Error::VolumeHeader)?;
+    find_in_firmware_volume(fv)
 }
 
 #[cfg(test)]
@@ -258,6 +269,12 @@ mod tests {
             .copy_from_slice(&record);
 
         let version = find_in_firmware_volume(&fv).unwrap().unwrap();
+        assert_eq!(version.interface_version_major, 1);
+        assert_eq!(version.interface_version_minor, 0);
+
+        let mut image = vec![0; DXE_FIRMWARE_VOLUME_OFFSET];
+        image.extend_from_slice(&fv);
+        let version = find_in_firmware_image(&image).unwrap().unwrap();
         assert_eq!(version.interface_version_major, 1);
         assert_eq!(version.interface_version_minor, 0);
     }

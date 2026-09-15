@@ -1417,7 +1417,7 @@ impl Options {
         };
 
         if let Some(firmware) = &self.deprecated_uefi_firmware {
-            if uefi.firmware_explicit {
+            if uefi.firmware.is_some() {
                 anyhow::bail!("--uefi firmware=... conflicts with --uefi-firmware");
             }
             uefi.firmware = Some(firmware.clone());
@@ -1441,6 +1441,12 @@ impl Options {
         uefi.force_firmware_version |= self.deprecated_uefi_force_firmware_version;
         uefi.disable_frontpage |= self.deprecated_disable_frontpage;
         uefi.default_boot_always_attempt |= self.deprecated_default_boot_always_attempt;
+        if uefi.firmware.is_none() {
+            uefi.firmware = OptionalPathBuf::from(
+                default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE").as_os_str(),
+            )
+            .0;
+        }
         Ok(Some(uefi))
     }
 
@@ -1542,129 +1548,23 @@ impl Options {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, vmm_cli::KeyValueArgs)]
 pub struct UefiCli {
     pub firmware: Option<PathBuf>,
-    firmware_explicit: bool,
+    #[kv(flag)]
     pub debug: bool,
+    #[kv(flag)]
     pub enable_memory_protections: bool,
+    #[kv(flag)]
     pub force_dma_bounce: bool,
+    #[kv(flag)]
     pub force_firmware_version: bool,
+    #[kv(flag)]
     pub disable_frontpage: bool,
     pub console: Option<UefiConsoleModeCli>,
     pub diagnostics: Option<EfiDiagnosticsLogLevelCli>,
+    #[kv(flag)]
     pub default_boot_always_attempt: bool,
-}
-
-impl Default for UefiCli {
-    fn default() -> Self {
-        Self {
-            firmware: OptionalPathBuf::from(
-                default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE").as_os_str(),
-            )
-            .0,
-            firmware_explicit: false,
-            debug: false,
-            enable_memory_protections: false,
-            force_dma_bounce: false,
-            force_firmware_version: false,
-            disable_frontpage: false,
-            console: None,
-            diagnostics: None,
-            default_boot_always_attempt: false,
-        }
-    }
-}
-
-impl FromStr for UefiCli {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut uefi = Self::default();
-        if value.is_empty() {
-            return Ok(uefi);
-        }
-
-        for option in value.split(',') {
-            let (key, value) = option
-                .split_once('=')
-                .map_or((option, None), |(key, value)| (key, Some(value)));
-            match key {
-                "firmware" => {
-                    if uefi.firmware_explicit {
-                        anyhow::bail!("duplicate firmware option");
-                    }
-                    let value = value.context("firmware option requires a value")?;
-                    if value.is_empty() {
-                        anyhow::bail!("firmware option requires a value");
-                    }
-                    uefi.firmware = Some(value.into());
-                    uefi.firmware_explicit = true;
-                }
-                "debug" => parse_flag(value, "debug", &mut uefi.debug)?,
-                "enable_memory_protections" => parse_flag(
-                    value,
-                    "enable_memory_protections",
-                    &mut uefi.enable_memory_protections,
-                )?,
-                "force_dma_bounce" => {
-                    parse_flag(value, "force_dma_bounce", &mut uefi.force_dma_bounce)?
-                }
-                "force_firmware_version" => parse_flag(
-                    value,
-                    "force_firmware_version",
-                    &mut uefi.force_firmware_version,
-                )?,
-                "disable_frontpage" => {
-                    parse_flag(value, "disable_frontpage", &mut uefi.disable_frontpage)?
-                }
-                "console" => {
-                    if uefi.console.is_some() {
-                        anyhow::bail!("duplicate console option");
-                    }
-                    uefi.console =
-                        Some(match value.context("console option requires a value")? {
-                            "default" => UefiConsoleModeCli::Default,
-                            "com1" => UefiConsoleModeCli::Com1,
-                            "com2" => UefiConsoleModeCli::Com2,
-                            "none" => UefiConsoleModeCli::None,
-                            value => anyhow::bail!("invalid console option '{value}'"),
-                        });
-                }
-                "diagnostics" => {
-                    if uefi.diagnostics.is_some() {
-                        anyhow::bail!("duplicate diagnostics option");
-                    }
-                    uefi.diagnostics = Some(
-                        match value.context("diagnostics option requires a value")? {
-                            "default" => EfiDiagnosticsLogLevelCli::Default,
-                            "info" => EfiDiagnosticsLogLevelCli::Info,
-                            "full" => EfiDiagnosticsLogLevelCli::Full,
-                            value => anyhow::bail!("invalid diagnostics option '{value}'"),
-                        },
-                    );
-                }
-                "default_boot_always_attempt" => parse_flag(
-                    value,
-                    "default_boot_always_attempt",
-                    &mut uefi.default_boot_always_attempt,
-                )?,
-                _ => anyhow::bail!("unknown UEFI option '{key}'"),
-            }
-        }
-        Ok(uefi)
-    }
-}
-
-fn parse_flag(value: Option<&str>, name: &str, flag: &mut bool) -> anyhow::Result<()> {
-    if value.is_some() {
-        anyhow::bail!("{name} option does not take a value");
-    }
-    if *flag {
-        anyhow::bail!("duplicate {name} option");
-    }
-    *flag = true;
-    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3330,12 +3230,28 @@ pub enum UefiConsoleModeCli {
     None,
 }
 
+impl FromStr for UefiConsoleModeCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(value, false)
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default, ValueEnum)]
 pub enum EfiDiagnosticsLogLevelCli {
     #[default]
     Default,
     Info,
     Full,
+}
+
+impl FromStr for EfiDiagnosticsLogLevelCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(value, false)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -5869,7 +5785,11 @@ mod tests {
         assert!(uefi.debug);
 
         assert!(Options::try_parse_from(["openvmm", "--uefi", "unknown"]).is_err());
-        assert!(Options::try_parse_from(["openvmm", "--uefi", "debug=on"]).is_err());
+        let options = Options::try_parse_from(["openvmm", "--uefi", "debug=on"]).unwrap();
+        assert!(options.effective_uefi().unwrap().unwrap().debug);
+        let options = Options::try_parse_from(["openvmm", "--uefi", "debug=off"]).unwrap();
+        assert!(!options.effective_uefi().unwrap().unwrap().debug);
+        assert!(Options::try_parse_from(["openvmm", "--uefi", "debug,debug"]).is_err());
 
         let options = Options::try_parse_from([
             "openvmm",
