@@ -434,7 +434,7 @@ pub struct InputResult {
     pub is_success: bool,
 }
 
-fn store_by_bitmask<M, N>(mem: &mut M, addr: u64, val: N, bf_off: u64, bf_len: u64)
+fn store_by_bitmask<M, N>(mem: &mut M, addr: u64, val: N, bf_off: u64, bf_len: u64, one: N)
 where
     M: SafeMemoryMap + ?Sized,
     N: FromBytes
@@ -442,7 +442,7 @@ where
         + Immutable
         + Default
         + Copy
-        + num_traits::Num
+        + ops::Sub<Output = N>
         + ops::Shl<u64, Output = N>
         + ops::Not<Output = N>
         + ops::BitOrAssign
@@ -456,7 +456,7 @@ where
         mem.read_mem(addr as usize, new_val.as_mut_bytes());
 
         // unset bitmask
-        let mask = (N::one() << bf_len) - N::one();
+        let mask = (one << bf_len) - one;
         new_val &= !(mask << bf_off);
 
         // set val into bitmask
@@ -484,10 +484,10 @@ fn copyin<M: SafeMemoryMap + ?Sized>(
         // Case: binary_format_native
         0 => {
             match size {
-                1 => store_by_bitmask(mem, addr, val as u8, bf_off, bf_len),
-                2 => store_by_bitmask(mem, addr, val as u16, bf_off, bf_len),
-                4 => store_by_bitmask(mem, addr, val as u32, bf_off, bf_len),
-                8 => store_by_bitmask(mem, addr, val, bf_off, bf_len),
+                1 => store_by_bitmask(mem, addr, val as u8, bf_off, bf_len, 1),
+                2 => store_by_bitmask(mem, addr, val as u16, bf_off, bf_len, 1),
+                4 => store_by_bitmask(mem, addr, val as u32, bf_off, bf_len, 1),
+                8 => store_by_bitmask(mem, addr, val, bf_off, bf_len, 1),
                 _ => return Err(DecoderError::CopyInBadSize { bf, size }),
             }
             return Ok(());

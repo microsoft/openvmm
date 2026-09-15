@@ -568,7 +568,6 @@ arrayvec = { version = "0.7", default-features = false }
 bitfield-struct = "0.11.0"
 bitvec = { version = "1.1", default-features = false }
 heapless = { version = "0.8", default-features = false }
-num-traits = { version = "0.2.19", default-features = false }
 petgraph = "0.8.0"
 range_map_vec = "0.2.0"
 rustc-hash = "2.1.1"
