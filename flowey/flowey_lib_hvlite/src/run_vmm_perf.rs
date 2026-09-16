@@ -4,7 +4,6 @@
 //! Run the standalone VMM.Perf runner.
 
 use flowey::node::prelude::*;
-use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum VmmPerfProfile {
@@ -45,8 +44,8 @@ flowey_request! {
         pub profiles: Vec<VmmPerfProfile>,
         pub vm_sizes_json: Option<String>,
         pub parameters_json: Option<String>,
-        /// Configure this 2 MiB hugetlb surplus-page overcommit limit before running.
-        pub hugetlb_2mb_overcommit_pages: Option<u64>,
+        /// Wait for host dependencies to be installed before running VMM.Perf.
+        pub pre_run_deps: Vec<ReadVar<SideEffect>>,
         pub output: WriteVar<VmmPerfRunOutput>,
     }
 }
@@ -69,11 +68,12 @@ impl SimpleFlowNode for Node {
             profiles,
             vm_sizes_json,
             parameters_json,
-            hugetlb_2mb_overcommit_pages,
+            pre_run_deps,
             output,
         } = request;
 
         ctx.emit_rust_step("run VMM.Perf", |ctx| {
+            pre_run_deps.claim(ctx);
             let runner = runner.claim(ctx);
             let openvmm = openvmm.claim(ctx);
             let firmware = firmware.claim(ctx);
@@ -103,35 +103,6 @@ impl SimpleFlowNode for Node {
                 fs_err::create_dir_all(&output_dir)?;
                 if let Some(temp_dir) = &temp_dir {
                     fs_err::create_dir_all(temp_dir)?;
-                }
-
-                if !matches!(rt.backend(), FlowBackend::Local)
-                    && matches!(rt.platform(), FlowPlatform::Linux(_))
-                {
-                    for device in ["/dev/kvm", "/dev/mshv"] {
-                        if Path::new(device).exists() {
-                            flowey::shell_cmd!(rt, "sudo chmod a+rw {device}").run()?;
-                        }
-                    }
-
-                    if let Some(overcommit_pages) = hugetlb_2mb_overcommit_pages {
-                        let hugepages_dir =
-                            Path::new("/sys/kernel/mm/hugepages/hugepages-2048kB");
-                        let write_overcommit_script = format!(
-                            "echo {overcommit_pages} | sudo tee {}/nr_overcommit_hugepages >/dev/null",
-                            hugepages_dir.display()
-                        );
-                        flowey::shell_cmd!(rt, "sh -c {write_overcommit_script}").run()?;
-                        let configured = fs_err::read_to_string(
-                            hugepages_dir.join("nr_overcommit_hugepages"),
-                        )?
-                        .trim()
-                        .parse::<u64>()?;
-                        anyhow::ensure!(
-                            configured >= overcommit_pages,
-                            "2 MiB hugetlb overcommit remains {configured}, below requested {overcommit_pages}"
-                        );
-                    }
                 }
 
                 let mut args = vec![

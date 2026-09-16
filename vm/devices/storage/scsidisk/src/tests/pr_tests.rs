@@ -268,7 +268,7 @@ fn make_read_full_status_response(
     let header = scsi::PriFullStatusListHeader {
         generation: generation.into(),
         additional_length: if key != 0 {
-            ((size_of::<scsi::PriFullStatusDescriptorHeader>() + 8) as u32).into()
+            ((size_of::<scsi::PriFullStatusDescriptorHeader>() + 24) as u32).into()
         } else {
             0_u32.into()
         },
@@ -287,13 +287,15 @@ fn make_read_full_status_response(
                 scsi::PersistentReserveTypeScope::new()
             },
             relative_target_port_identifier: 0_u16.into(),
-            additional_descriptor_length: 8_u32.into(),
+            additional_descriptor_length: 24_u32.into(),
             ..FromZeros::new_zeroed()
         };
         temp_data.extend(header.as_bytes());
-        temp_data.extend(0_u64.as_bytes());
+        temp_data.extend([6u8, 0u8, 0u8, 0u8]); // SAS SCSI Transport ID (24 bytes total)
+        temp_data.extend(&[0u8; 20]);
     }
-    data[..temp_data.len()].copy_from_slice(temp_data.as_bytes());
+    let len = data.len().min(temp_data.len());
+    data[..len].copy_from_slice(&temp_data[..len]);
 }
 
 fn make_report_capabilities_response(data: &mut [u8], aptpl: bool) {
@@ -354,7 +356,7 @@ async fn validate_pr_result(
         0u8;
         size_of::<scsi::PriFullStatusListHeader>()
             + size_of::<scsi::PriFullStatusDescriptorHeader>()
-            + 8
+            + 24
     ];
     let mut report_capabilities_response = vec![0u8; size_of::<scsi::PriReportCapabilities>()];
     let allocation_length = 4096;
