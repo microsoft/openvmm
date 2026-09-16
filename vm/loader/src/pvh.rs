@@ -245,9 +245,10 @@ where
     F: Read + Seek,
     R: Read + Seek,
 {
-    let boot_info_register = X86Register::Rbx(START_INFO_ADDR);
-    if !importer.supports_vp_register(&boot_info_register) {
-        return Err(Error::UnsupportedRegister(boot_info_register));
+    for register in initial_registers(0) {
+        if !importer.supports_vp_register(&register) {
+            return Err(Error::UnsupportedRegister(register));
+        }
     }
     if cmdline.contains('\0') {
         return Err(Error::CommandLineNul);
@@ -852,10 +853,7 @@ fn checksum(bytes: &[u8]) -> u8 {
     )
 }
 
-fn import_registers(
-    importer: &mut dyn ImageLoad<X86Register>,
-    entrypoint: u64,
-) -> Result<(), Error> {
+fn initial_registers(entrypoint: u64) -> [X86Register; 17] {
     let boot_gdt_addr = BOOT_GDT_ADDR;
     let data_segment = SegmentRegister {
         base: 0,
@@ -869,7 +867,7 @@ fn import_registers(
         selector: 0x08,
         attributes: SEG_ATTR_CODE,
     };
-    let registers = [
+    [
         X86Register::Gdtr(TableRegister {
             base: boot_gdt_addr,
             limit: 31,
@@ -898,8 +896,14 @@ fn import_registers(
         X86Register::Rip(entrypoint),
         X86Register::Rsp(0),
         X86Register::Rflags(2),
-    ];
-    for register in registers {
+    ]
+}
+
+fn import_registers(
+    importer: &mut dyn ImageLoad<X86Register>,
+    entrypoint: u64,
+) -> Result<(), Error> {
+    for register in initial_registers(entrypoint) {
         importer
             .import_vp_register(register)
             .map_err(|source| Error::ImportPages {
@@ -1009,6 +1013,7 @@ mod tests {
     struct RecordingImporter {
         pages: Vec<(&'static str, u64, u64, Vec<u8>)>,
         registers: Vec<X86Register>,
+        unsupported_register: Option<X86Register>,
     }
 
     impl ImageLoad<X86Register> for RecordingImporter {
@@ -1058,6 +1063,12 @@ mod tests {
         ) -> anyhow::Result<()> {
             self.pages.push((tag, page_base, page_count, data.to_vec()));
             Ok(())
+        }
+
+        fn supports_vp_register(&self, register: &X86Register) -> bool {
+            self.unsupported_register.is_none_or(|unsupported| {
+                std::mem::discriminant(&unsupported) != std::mem::discriminant(register)
+            })
         }
 
         fn import_vp_register(&mut self, register: X86Register) -> anyhow::Result<()> {
@@ -1169,6 +1180,31 @@ mod tests {
         assert_eq!(size_of::<HvmStartInfo>(), 56);
         assert_eq!(size_of::<HvmModlistEntry>(), 32);
         assert_eq!(size_of::<HvmMemmapTableEntry>(), 24);
+    }
+
+    #[test]
+    fn rejects_each_unsupported_register_before_import() {
+        for register in initial_registers(0) {
+            let mut importer = RecordingImporter {
+                unsupported_register: Some(register),
+                ..Default::default()
+            };
+            let error = load::<_, Cursor<Vec<u8>>>(
+                &mut importer,
+                &mut Cursor::new(Vec::<u8>::new()),
+                None,
+                "",
+                &make_layout(),
+                None,
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                Error::UnsupportedRegister(unsupported) if unsupported == register
+            ));
+            assert!(importer.pages.is_empty());
+            assert!(importer.registers.is_empty());
+        }
     }
 
     #[test]

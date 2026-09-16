@@ -1328,11 +1328,18 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
         page_count: u64,
         memory_type: loader::importer::StartupMemoryType,
     ) -> anyhow::Result<()> {
-        let gpa = page_base * PAGE_SIZE_4K;
+        let gpa = page_base
+            .checked_mul(PAGE_SIZE_4K)
+            .context("startup memory page base overflowed u64")?;
         let compatibility_mask = DEFAULT_COMPATIBILITY_MASK;
-        let number_of_bytes = (page_count * PAGE_SIZE_4K)
+        let number_of_bytes: u32 = page_count
+            .checked_mul(PAGE_SIZE_4K)
+            .context("startup memory request overflowed u64")?
             .try_into()
-            .expect("startup memory request overflowed u32");
+            .context("startup memory request exceeds the IGVM 32-bit size limit")?;
+        let end = gpa
+            .checked_add(u64::from(number_of_bytes))
+            .context("startup memory range end overflowed u64")?;
 
         tracing::trace!(
             page_base,
@@ -1358,7 +1365,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
             });
 
         self.loader.required_memory.push(RequiredMemory {
-            range: MemoryRange::new(gpa..gpa + number_of_bytes as u64),
+            range: MemoryRange::new(gpa..end),
             vtl2_protectable,
         });
 
@@ -1545,6 +1552,8 @@ mod tests {
     use igvm::IgvmSerializer;
     use loader::importer::BootPageAcceptance;
     use loader::importer::ImageLoad;
+    use loader::importer::StartupMemoryType;
+    use loader::importer::TableRegister;
     use loader_defs::paravisor::ImportedRegionDescriptor;
     use std::io::Cursor;
     use test_with_tracing::test;
@@ -1564,6 +1573,12 @@ mod tests {
             LoaderIsolationType::None,
             LoaderIsolationType::Vbs {
                 enable_debug: false,
+            },
+            LoaderIsolationType::Snp {
+                shared_gpa_boundary_bits: Some(39),
+                policy: SnpPolicy::from((1 << 17) | (1 << 16) | 0x1f),
+                injection_type: InjectionType::Restricted,
+                secure_avic: SecureAvic::Disabled,
             },
             LoaderIsolationType::Tdx {
                 policy: TdxPolicy::new(),
@@ -1586,15 +1601,16 @@ mod tests {
                     },
                 )
                 .unwrap_err();
-                assert!(matches!(
-                    error,
-                    loader::pvh::Error::UnsupportedRegister(X86Register::Rbx(_))
-                ));
-                assert!(
-                    importer
-                        .import_vp_register(X86Register::Rbx(0x6000))
-                        .is_err()
-                );
+                let loader::pvh::Error::UnsupportedRegister(register) = error else {
+                    panic!("unexpected PVH error: {error}");
+                };
+                if matches!(isolation, LoaderIsolationType::Snp { .. }) {
+                    assert!(matches!(register, X86Register::Idtr(_)));
+                } else {
+                    assert!(matches!(register, X86Register::Rbx(_)));
+                }
+                assert!(!importer.supports_vp_register(&register));
+                assert!(importer.import_vp_register(register).is_err());
             }
             assert!(loader.imported_regions().is_empty());
             assert!(loader.required_memory.is_empty());
@@ -1621,6 +1637,83 @@ mod tests {
         let mut nested = importer.nested_loader();
         assert!(!nested.supports_vp_register(&register));
         assert!(nested.import_vp_register(register).is_err());
+    }
+
+    #[test]
+    fn snp_register_capabilities_follow_context_kind() {
+        let mut standard = IgvmLoader::<X86Register>::new(
+            true,
+            LoaderIsolationType::Snp {
+                shared_gpa_boundary_bits: Some(39),
+                policy: SnpPolicy::from((1 << 17) | (1 << 16) | 0x1f),
+                injection_type: InjectionType::Restricted,
+                secure_avic: SecureAvic::Disabled,
+            },
+        );
+        let mut standard = standard.loader();
+        let mut linux_direct = SnpHardwareContext::new_linux_direct(1 << 47, InjectionType::Normal);
+        for register in [
+            X86Register::Idtr(TableRegister {
+                base: 0x820,
+                limit: 0,
+            }),
+            X86Register::Rsp(0),
+            X86Register::Rflags(2),
+        ] {
+            assert!(!standard.supports_vp_register(&register));
+            assert!(standard.import_vp_register(register).is_err());
+            assert!(linux_direct.supports_vp_register(&register));
+            linux_direct.import_vp_register(register);
+        }
+    }
+
+    #[test]
+    fn startup_memory_requests_are_checked_before_recording() {
+        let mut loader = IgvmLoader::<X86Register>::new(false, LoaderIsolationType::None);
+        let max_page_count = u64::from(u32::MAX) / PAGE_SIZE_4K;
+        for (page_base, page_count) in [
+            (0, max_page_count + 1),
+            (0, max_page_count + 2),
+            (0, u64::MAX / PAGE_SIZE_4K + 1),
+            (0, u64::MAX),
+            (u64::MAX / PAGE_SIZE_4K + 1, 1),
+            (u64::MAX / PAGE_SIZE_4K, 1),
+        ] {
+            assert!(
+                loader
+                    .loader()
+                    .verify_startup_memory_available(page_base, page_count, StartupMemoryType::Ram)
+                    .is_err()
+            );
+            assert!(loader.required_memory.is_empty());
+            assert!(loader.directives.is_empty());
+        }
+
+        let high_gpa = 0x1_0000_0000;
+        let max_bytes = max_page_count * PAGE_SIZE_4K;
+        loader
+            .loader()
+            .verify_startup_memory_available(
+                high_gpa / PAGE_SIZE_4K,
+                max_page_count,
+                StartupMemoryType::Vtl2ProtectableRam,
+            )
+            .unwrap();
+        assert!(matches!(
+            loader.directives.as_slice(),
+            [IgvmDirectiveHeader::RequiredMemory {
+                gpa,
+                number_of_bytes,
+                vtl2_protectable: true,
+                ..
+            }] if *gpa == high_gpa && u64::from(*number_of_bytes) == max_bytes
+        ));
+        assert_eq!(loader.required_memory.len(), 1);
+        assert_eq!(
+            loader.required_memory[0].range,
+            MemoryRange::new(high_gpa..high_gpa + max_bytes)
+        );
+        assert!(loader.required_memory[0].vtl2_protectable);
     }
 
     #[test]

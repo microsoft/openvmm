@@ -199,6 +199,16 @@ impl SnpHardwareContext {
 impl VpContextBuilder for SnpHardwareContext {
     type Register = X86Register;
 
+    fn supports_vp_register(&self, register: &X86Register) -> bool {
+        match self.kind {
+            SnpContextKind::Standard => !matches!(
+                register,
+                X86Register::Idtr(_) | X86Register::Rsp(_) | X86Register::Rflags(_)
+            ),
+            SnpContextKind::LinuxDirect { .. } => true,
+        }
+    }
+
     fn import_vp_register(&mut self, register: X86Register) {
         match register {
             X86Register::Gdtr(reg) => self.vmsa.gdtr = table_register(reg),
