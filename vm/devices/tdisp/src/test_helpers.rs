@@ -3,6 +3,7 @@
 
 use crate::TdispHostDeviceInterface;
 use crate::TdispHostDeviceTargetEmulator;
+use crate::devicereport::TDI_REPORT_HEADER_SIZE;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tdisp_proto::TdispDeviceInterfaceInfo;
@@ -45,11 +46,15 @@ impl TdispHostDeviceInterface for NullTdispHostInterface {
         Ok(())
     }
 
-    fn tdisp_get_device_report(
-        &mut self,
-        _report_type: TdispReportType,
-    ) -> anyhow::Result<Vec<u8>> {
-        Ok(vec![])
+    fn tdisp_get_device_report(&mut self, report_type: TdispReportType) -> anyhow::Result<Vec<u8>> {
+        match report_type {
+            // The wire format is a little-endian u64.
+            TdispReportType::GuestDeviceId => Ok(TDISP_MOCK_DEVICE_ID.to_le_bytes().to_vec()),
+            // A TDI that claims no MMIO ranges, so the report is the fixed
+            // header with a range count of zero and nothing following it.
+            TdispReportType::InterfaceReport => Ok(vec![0; TDI_REPORT_HEADER_SIZE]),
+            other => anyhow::bail!("the mock device has no {other:?} report to give"),
+        }
     }
 
     fn tdisp_modify_mmio_range(

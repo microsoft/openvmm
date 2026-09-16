@@ -85,6 +85,10 @@ struct TdiReportStructSerialized {
 
 static_assertions::const_assert_eq!(size_of::<TdiReportStructSerialized>(), 0x10);
 
+/// Serialized size of the fixed portion of a TDI interface report, which is the
+/// whole report for a TDI that claims no MMIO ranges.
+pub const TDI_REPORT_HEADER_SIZE: usize = size_of::<TdiReportStructSerialized>();
+
 /// The deserialized form of a TDI interface report.
 #[derive(Debug)]
 pub struct TdiReportStruct {
