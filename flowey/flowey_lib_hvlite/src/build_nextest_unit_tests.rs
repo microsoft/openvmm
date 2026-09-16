@@ -73,6 +73,7 @@ impl FlowNode for Node {
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
         ctx.import::<crate::run_cargo_nextest_run::Node>();
         ctx.import::<crate::init_cross_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -91,7 +92,21 @@ impl FlowNode for Node {
 
         // building these packages in the OpenVMM repo requires installing some
         // additional deps
-        let ambient_deps = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
+        let mut ambient_deps = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
+
+        // The qcow2 disk-layer interop tests drive the real `qemu-img` and
+        // `qemu-io` tools. On Linux these come from the `qemu-utils` package.
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            ambient_deps.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["qemu-utils".into()],
+                    done: v,
+                }
+            }));
+        }
 
         let test_packages = ctx.emit_rust_stepv("determine unit test exclusions", |ctx| {
             let xtask = xtask.claim(ctx);

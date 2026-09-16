@@ -11,6 +11,8 @@
 
 pub mod chain;
 mod header;
+#[cfg(test)]
+mod interop_tests;
 mod readwriteat;
 mod refcount;
 pub mod resolver;
