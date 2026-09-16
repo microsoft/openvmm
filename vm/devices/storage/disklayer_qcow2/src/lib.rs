@@ -452,7 +452,11 @@ impl LayerIo for Qcow2Layer {
                 .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
 
             let l2_entry = &l2_table[addr.l2_index as usize];
-            if l2_entry.compressed {
+            if (l2_entry.cluster_offset != 0
+                && !l2_entry.reads_as_zeros
+                && !l2_entry.cluster_offset.is_multiple_of(cluster_size as u64))
+                || l2_entry.compressed
+            {
                 return Err(DiskError::InvalidInput);
             }
 

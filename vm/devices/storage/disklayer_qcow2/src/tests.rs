@@ -5,7 +5,12 @@
 
 use crate::Qcow2Layer;
 use crate::header::Qcow2Header;
+use crate::readwriteat::ReadWriteAt;
+use crate::table::L2Entry;
+use crate::table::read_l2_table;
+use crate::table::write_l2_table;
 use disk_backend::Disk;
+use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_layered::DiskLayer;
 use disk_layered::LayerConfiguration;
@@ -576,4 +581,269 @@ async fn write_to_shared_cluster_copies_on_write() {
     read_mem.read_at(0, &mut buf).unwrap();
     let expected: Vec<u8> = (0..512u16).map(|i| ((512 + i) % 251) as u8).collect();
     assert_eq!(buf, expected);
+}
+
+#[test]
+fn l2_entry_decode_extracts_flags_and_offset() {
+    // Guards the flag/offset bit layout: flags live at bit 0 and bit 63,
+    // the host offset in bits 9..=55, and they must not bleed into each other.
+    let entry = L2Entry::decode(0x8000_0000_0000_7001).unwrap();
+    assert_eq!(entry.cluster_offset, 0x7000);
+    assert!(entry.copied);
+    assert!(entry.reads_as_zeros);
+    assert!(!entry.compressed);
+
+    // An offset with no flags: plain host cluster reference.
+    let entry = L2Entry::decode(0x0000_0000_0000_3000).unwrap();
+    assert_eq!(entry.cluster_offset, 0x3000);
+    assert!(!entry.copied);
+    assert!(!entry.reads_as_zeros);
+    assert!(!entry.compressed);
+
+    // The zero flag with a non-zero (but ignored-for-reads) offset.
+    let entry = L2Entry::decode(0x0000_0000_0000_9001).unwrap();
+    assert_eq!(entry.cluster_offset, 0x9000);
+    assert!(!entry.copied);
+    assert!(entry.reads_as_zeros);
+
+    // Reserved bits (1..=8 for standard clusters, 56..=61 above the offset
+    // field) are rejected rather than silently ignored.
+    assert!(L2Entry::decode(1 << 1).is_err());
+    assert!(L2Entry::decode(1 << 8).is_err());
+    assert!(L2Entry::decode(1 << 56).is_err());
+}
+
+#[test]
+fn l2_table_serialization_round_trip() {
+    // Cover the encoding on disk and the decode back to an identical entry:
+    // unallocated, copied, reads-as-zeros, and copied-with-zero-flag.
+    let entries = vec![
+        L2Entry {
+            cluster_offset: 0, // unallocated
+            compressed: false,
+            reads_as_zeros: false,
+            copied: false,
+            sector_offset_in_cluster: 0,
+        },
+        L2Entry {
+            cluster_offset: 0x3000,
+            compressed: false,
+            reads_as_zeros: false,
+            copied: true,
+            sector_offset_in_cluster: 0,
+        },
+        L2Entry {
+            cluster_offset: 0x7000,
+            compressed: false,
+            reads_as_zeros: true,
+            copied: false,
+            sector_offset_in_cluster: 0,
+        },
+        L2Entry {
+            cluster_offset: 0x9000,
+            compressed: false,
+            reads_as_zeros: true,
+            copied: true,
+            sector_offset_in_cluster: 0,
+        },
+    ];
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("l2.bin");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    file.set_len((entries.len() * 8) as u64).unwrap();
+    write_l2_table(&file, 0, &entries).unwrap();
+
+    // Pin the exact big-endian byte encoding.
+    let mut raw = vec![0u8; entries.len() * 8];
+    file.read_at(&mut raw, 0).unwrap();
+    let expected_raw = [
+        0x0000_0000_0000_0000u64,
+        0x8000_0000_0000_3000,
+        0x0000_0000_0000_7001,
+        0x8000_0000_0000_9001,
+    ];
+    for (i, &e) in expected_raw.iter().enumerate() {
+        assert_eq!(
+            u64::from_be_bytes(raw[i * 8..i * 8 + 8].try_into().unwrap()),
+            e,
+            "entry {i}"
+        );
+    }
+
+    // Serialize -> deserialize -> equality.
+    let mut slice = raw.as_slice();
+    let decoded = read_l2_table(&mut slice, entries.len() as u32).unwrap();
+    assert_eq!(decoded, entries);
+}
+
+fn build_misaligned_fixture() -> Vec<u8> {
+    // L2 entry 0 points at a host offset that is not cluster-aligned. Both
+    // reads and writes must reject the image rather than trust the offset.
+    let mut img = build_fixture();
+    let l2_table: usize = 2 * CLUSTER_SIZE;
+    let l2_entry: u64 = (1u64 << 63) | (3 * CLUSTER_SIZE as u64 + 512);
+    img[l2_table..l2_table + 8].copy_from_slice(&l2_entry.to_be_bytes());
+    img
+}
+
+#[async_test]
+async fn read_invalid_cluster_offset_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_misaligned_fixture()).unwrap();
+
+    let layer = open_layer(&path, true);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mem = GuestMemory::allocate(512);
+    let owned = OwnedRequestBuffers::linear(0, 512, true);
+    let err = disk
+        .read_vectored(&owned.buffer(&mem), 0)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DiskError::InvalidInput));
+}
+
+#[async_test]
+async fn write_invalid_cluster_offset_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_misaligned_fixture()).unwrap();
+
+    let layer = open_layer(&path, false);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mem = GuestMemory::allocate(512);
+    mem.write_at(0, &[0xAA; 512]).unwrap();
+    let owned = OwnedRequestBuffers::linear(0, 512, true);
+    let err = disk
+        .write_vectored(&owned.buffer(&mem), 0, false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DiskError::InvalidInput));
+}
+
+/// Open the fixture as a read-only `Disk` with 1 MiB (2048 sectors).
+async fn open_fixture_disk(path: &std::path::Path) -> Disk {
+    let layer = open_layer(path, true);
+    Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[async_test]
+async fn read_huge_sector_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_fixture()).unwrap();
+    let disk = open_fixture_disk(&path).await;
+
+    let mem = GuestMemory::allocate(512);
+    let owned = OwnedRequestBuffers::linear(0, 512, true);
+    // `sector * 512` would overflow u64 for these values; validate_range must
+    // reject them first (via saturating end-sector arithmetic) instead.
+    for sector in [u64::MAX, 1 << 62, 1 << 50] {
+        let err = disk
+            .read_vectored(&owned.buffer(&mem), sector)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DiskError::IllegalBlock), "sector {sector}");
+    }
+}
+
+#[async_test]
+async fn read_beyond_disk_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_fixture()).unwrap();
+    let disk = open_fixture_disk(&path).await;
+
+    let mem = GuestMemory::allocate(1024);
+    let owned = OwnedRequestBuffers::linear(0, 1024, true);
+
+    // First sector past the end of the 1 MiB disk (2048 sectors).
+    let err = disk
+        .read_vectored(&owned.buffer(&mem), 2048)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DiskError::IllegalBlock));
+
+    // Starts in range but runs past the end of the disk.
+    let err = disk
+        .read_vectored(&owned.buffer(&mem), 2047)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DiskError::IllegalBlock));
+}
+
+#[async_test]
+async fn write_beyond_disk_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.qcow2");
+    std::fs::write(&path, build_fixture()).unwrap();
+
+    let layer = open_layer(&path, false);
+    let disk = Disk::new(
+        LayeredDisk::new(
+            true,
+            vec![LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                write_through: false,
+                read_cache: false,
+            }],
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mem = GuestMemory::allocate(1024);
+    mem.write_at(0, &[0x55; 1024]).unwrap();
+    let owned = OwnedRequestBuffers::linear(0, 1024, true);
+    let err = disk
+        .write_vectored(&owned.buffer(&mem), 2047, false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DiskError::IllegalBlock));
 }
