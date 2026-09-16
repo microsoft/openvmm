@@ -199,6 +199,206 @@ pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new(
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
+/// Device admission settings delivered over the `DevicePolicy` VTL2 settings
+/// namespace. Untrusted host input: an unrecognized version, unknown field, or
+/// malformed JSON is an error, which callers treat as "enable nothing".
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DevicePolicySettings {
+    version: u32,
+    /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the filter.
+    #[serde(default)]
+    nvidia_vpci_relay_allowed: bool,
+}
+
+impl DevicePolicySettings {
+    /// Highest schema version this build understands.
+    const SUPPORTED_VERSION: u32 = 1;
+
+    fn parse(bytes: &[u8]) -> Result<Self, anyhow::Error> {
+        // Bound the input so a hostile host cannot force a large allocation.
+        const MAX_LEN: usize = 64 * 1024;
+        if bytes.len() > MAX_LEN {
+            anyhow::bail!("device policy too large: {} bytes", bytes.len());
+        }
+        // Tolerate a UTF-8 BOM: Windows host tooling writes one and it is not
+        // valid JSON.
+        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+        let settings: Self =
+            serde_json::from_slice(bytes).context("failed to parse device policy")?;
+        if settings.version != Self::SUPPORTED_VERSION {
+            anyhow::bail!("unsupported device policy version {}", settings.version);
+        }
+        Ok(settings)
+    }
+}
+
+/// Inputs to [`nvidia_relay_enable_is_attestable`].
+struct NvidiaRelayPosture {
+    /// The host opted in through one of the config channels.
+    host_requested: bool,
+    /// The guest is a CVM.
+    isolated: bool,
+    /// Stateless mode: OpenHCL emits no runtime attestation report.
+    attestation_suppressed: bool,
+    /// Authorized by a value measured into the launch report.
+    launch_authorized: bool,
+}
+
+/// Whether enabling the NVIDIA VPCI relay yields an attestable posture.
+///
+/// The `nvidia-vpci-relay-allowed` claim is only delivered inside a runtime
+/// attestation report, which stateless (attestation-suppressed) CVMs never
+/// generate. Such a guest sees only the launch report, so on a stateless CVM
+/// the relay is permitted only when a value measured into the launch report
+/// authorizes it.
+fn nvidia_relay_enable_is_attestable(posture: NvidiaRelayPosture) -> bool {
+    let NvidiaRelayPosture {
+        host_requested,
+        isolated,
+        attestation_suppressed,
+        launch_authorized,
+    } = posture;
+
+    if !host_requested {
+        return false;
+    }
+    if !isolated || !attestation_suppressed {
+        return true;
+    }
+    launch_authorized
+}
+
+/// Whether the launch report authorizes the NVIDIA VPCI relay.
+///
+/// `env_override` is the development path (`OPENHCL_NVIDIA_VPCI_RELAY_ALLOWED`),
+/// only honored when confidential debug was measured into the launch command
+/// line. Otherwise, for a stateless CVM the host opted in on, read and validate
+/// the authorization from the launch report host data (SNP `HOST_DATA`, TDX
+/// `MR_CONFIG_ID`, or the VBS report host data).
+fn nvidia_relay_authorized_by_launch(
+    env_override: bool,
+    isolation: virt::IsolationType,
+    host_requested: bool,
+    attestation_suppressed: bool,
+) -> bool {
+    if env_override {
+        return true;
+    }
+
+    // Only a stateless CVM the host opted in on needs the launch-report read;
+    // skip the fetch for every other posture.
+    if !(isolation.is_isolated() && attestation_suppressed && host_requested) {
+        return false;
+    }
+
+    let tee_call: Option<Box<dyn tee_call::TeeCall>> = match isolation {
+        virt::IsolationType::Snp => Some(Box::new(tee_call::SnpCall)),
+        // `hw_seal_keys_enabled` only gates key derivation, not the launch
+        // report read here, so its value is irrelevant.
+        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall::new(false))),
+        virt::IsolationType::Vbs => Some(Box::new(tee_call::VbsCall)),
+        _ => None,
+    };
+
+    tee_call
+        .and_then(|tee| read_launch_host_data(tee.as_ref()))
+        .is_some_and(|data| launch_data_authorizes_nvidia_relay(&data))
+}
+
+/// Magic tag prefixing the relay authorization in the launch host data; an
+/// all-zero (unprovisioned) field never matches.
+const NVIDIA_RELAY_LAUNCH_MAGIC: [u8; 4] = *b"NVDA";
+
+/// Version of the launch host-data authorization layout understood here.
+const NVIDIA_RELAY_LAUNCH_VERSION: u8 = 1;
+
+/// Offset of the flags byte within the launch host-data authorization.
+const NVIDIA_RELAY_LAUNCH_FLAGS_OFFSET: usize = 5;
+
+/// `flags` bit that grants the relay.
+const NVIDIA_RELAY_LAUNCH_FLAG_ALLOWED: u8 = 1 << 0;
+
+/// Number of meaningful leading bytes in the authorization layout
+/// (magic + version + flags). Everything past this is reserved.
+const NVIDIA_RELAY_LAUNCH_HEADER_LEN: usize = 6;
+
+/// Whether the launch-measured host-data field authorizes the NVIDIA VPCI
+/// relay. The host-provisioned layout is:
+///
+/// | offset | size | field                            |
+/// |--------|------|----------------------------------|
+/// | 0      | 4    | magic = `b"NVDA"`                |
+/// | 4      | 1    | version = 1                      |
+/// | 5      | 1    | flags (bit 0 = relay allowed)    |
+/// | 6..    | rest | reserved, must be zero           |
+///
+/// Untrusted host input: any deviation fails closed (returns `false`). An
+/// all-zero (unprovisioned) field never matches the magic.
+fn launch_data_authorizes_nvidia_relay(data: &[u8]) -> bool {
+    if data.len() < NVIDIA_RELAY_LAUNCH_HEADER_LEN {
+        return false;
+    }
+    if data[..NVIDIA_RELAY_LAUNCH_MAGIC.len()] != NVIDIA_RELAY_LAUNCH_MAGIC {
+        return false;
+    }
+    if data[NVIDIA_RELAY_LAUNCH_MAGIC.len()] != NVIDIA_RELAY_LAUNCH_VERSION {
+        return false;
+    }
+    // Reserved bytes must be zero so that unknown future encodings fail closed.
+    if data[NVIDIA_RELAY_LAUNCH_HEADER_LEN..]
+        .iter()
+        .any(|&b| b != 0)
+    {
+        return false;
+    }
+    // Reject unknown flag bits so an unrecognized encoding fails closed.
+    let flags = data[NVIDIA_RELAY_LAUNCH_FLAGS_OFFSET];
+    if flags & !NVIDIA_RELAY_LAUNCH_FLAG_ALLOWED != 0 {
+        return false;
+    }
+    flags & NVIDIA_RELAY_LAUNCH_FLAG_ALLOWED != 0
+}
+
+/// Extract the launch-measured host-data field from a raw isolation attestation
+/// report for the given TEE type. Returns `None` when the report is too short
+/// to parse or the TEE type carries no such field.
+fn launch_host_data_from_report(tee_type: tee_call::TeeType, report: &[u8]) -> Option<Vec<u8>> {
+    use zerocopy::FromBytes;
+
+    match tee_type {
+        tee_call::TeeType::Snp => x86defs::snp::SnpReport::read_from_prefix(report)
+            .ok()
+            .map(|(r, _)| r.host_data.to_vec()),
+        tee_call::TeeType::Tdx => x86defs::tdx::TdReport::read_from_prefix(report)
+            .ok()
+            .map(|(r, _)| r.td_info.td_info_base.mr_config_id.to_vec()),
+        tee_call::TeeType::Vbs => hvdef::vbs::VbsReport::read_from_prefix(report)
+            .ok()
+            .map(|(r, _)| r.identity.host_data.to_vec()),
+        tee_call::TeeType::Cca => None,
+    }
+}
+
+/// Fetch the isolation launch report and return its launch-measured host-data
+/// field. Fails closed (returns `None`) on any error.
+fn read_launch_host_data(tee_call: &dyn tee_call::TeeCall) -> Option<Vec<u8>> {
+    let report = match tee_call.get_attestation_report(&[0; tee_call::REPORT_DATA_SIZE]) {
+        Ok(result) => result.report,
+        Err(err) => {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "failed to read launch report for NVIDIA VPCI relay authorization"
+            );
+            return None;
+        }
+    };
+    launch_host_data_from_report(tee_call.tee_type(), &report)
+}
+
+// NVIDIA PCI vendor ID.
+const NVIDIA_VPCI_VENDOR_ID: u16 = 0x10DE;
+
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
@@ -327,6 +527,11 @@ pub struct UnderhillEnvCfg {
     pub servicing_timeout_dump_collection_in_ms: u64,
     /// Hardware sealing policy (overrides DPS value when set)
     pub hardware_sealing_policy: Option<HardwareSealingPolicyCli>,
+    /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the VPCI
+    /// relay's device filter, overriding the host's DPS value.
+    ///
+    /// Declared last to keep `MeshPayload` field numbers stable.
+    pub nvidia_vpci_relay_allowed: Option<bool>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1743,6 +1948,52 @@ async fn new_underhill_vm(
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
     }
 
+    // NVIDIA admission requested via the `DevicePolicy` VTL2 settings namespace,
+    // which is honored on hardware-isolated guests. A missing or malformed
+    // payload enables nothing.
+    let device_policy_allows_nvidia = dps
+        .general
+        .vtl2_settings
+        .as_ref()
+        .and_then(|s| s.device_policy.as_deref())
+        .is_some_and(|bytes| match DevicePolicySettings::parse(bytes) {
+            Ok(policy) => policy.nvidia_vpci_relay_allowed,
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "ignoring malformed DevicePolicy settings"
+                );
+                false
+            }
+        });
+
+    // Whether the host opted in to the NVIDIA GPU and NVLink/NVSwitch allow-list
+    // entries through one of the supported channels. An enablement gate; it does
+    // not imply such a device is present.
+    //
+    // This single value gates both the relay allow-list entries and the
+    // attestation claim that reports them; deriving either from different
+    // conditions would let the filter and the claim disagree.
+    let host_requested_nvidia_relay = env_cfg
+        .nvidia_vpci_relay_allowed
+        .unwrap_or(dps.general.nvidia_vpci_relay_allowed || device_policy_allows_nvidia);
+
+    // The claim only reaches a relying party inside a runtime attestation
+    // report, which stateless CVMs never generate, so enable the relay only
+    // where the resulting posture is attestable.
+    let enable_nvidia_vpci_relay = enable_vpci_relay
+        && nvidia_relay_enable_is_attestable(NvidiaRelayPosture {
+            host_requested: host_requested_nvidia_relay,
+            isolated: isolation.is_isolated(),
+            attestation_suppressed: dps.general.suppress_attestation.unwrap_or(false),
+            launch_authorized: nvidia_relay_authorized_by_launch(
+                env_cfg.nvidia_vpci_relay_allowed.is_some() && confidential_debug_enabled(),
+                isolation,
+                host_requested_nvidia_relay,
+                dps.general.suppress_attestation.unwrap_or(false),
+            ),
+        });
+
     // Construct chipset MMIO ranges from the positional convention in the
     // device tree: [0] = low (below 4 GiB), [1] = high (above RAM).
     let mut chipset_mmio = ChipsetMmioRanges {
@@ -2141,6 +2392,14 @@ async fn new_underhill_vm(
         || dps.general.com2_vmbus_redirector;
     let interactive_console =
         console_enabled && !dps.general.management_vtl_features.tx_only_serial_port();
+    // Value of the legacy `filtered-vpci-devices-allowed` attestation claim.
+    // Despite the name this does not track whether the VPCI relay is running:
+    // it omits `enable_vpci_relay`. Do not reuse it to describe relay state.
+    // It is left as-is because it feeds the hardware-derived key KDF, so
+    // redefining it would rotate sealing keys for existing guests.
+    let filtered_vpci_devices_allowed =
+        with_vmbus_relay && dps.general.vpci_boot_enabled && isolation.is_isolated();
+
     let attestation_vm_config = AttestationVmConfig {
         current_time: None,
         // TODO CVM: Support vmgs provisioning config
@@ -2157,9 +2416,12 @@ async fn new_underhill_vm(
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
         hardware_sealing_policy,
-        filtered_vpci_devices_allowed: with_vmbus_relay
-            && dps.general.vpci_boot_enabled
-            && isolation.is_isolated(),
+        filtered_vpci_devices_allowed,
+        // Reported only when the relay is permitted to admit these devices, and
+        // omitted entirely otherwise so that the runtime claims (and hence the
+        // sealing key derivation) are unchanged for guests not using this
+        // feature.
+        nvidia_vpci_relay_allowed: enable_nvidia_vpci_relay.then_some(true),
         vm_unique_id: dps.general.bios_guid.to_string(),
         vmgs_provisioner: prov_claims.clone(),
     };
@@ -3468,6 +3730,37 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
+                // Gated on the same value that drives the attestation claim, so
+                // the filter cannot be widened without saying so.
+                if enable_nvidia_vpci_relay {
+                    // Datacenter GPUs (e.g. H100/H200/B200/B300) are headless and
+                    // enumerate as a 3D controller (class 0x0302), not VGA.
+                    relay.add_allowed_device(AllowedDevice {
+                        vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
+                        device_id: None,
+                        revision_id: None,
+                        prog_if: None,
+                        sub_class: Some(Subclass::DISPLAY_CONTROLLER_3D),
+                        base_class: Some(ClassCode::DISPLAY_CONTROLLER),
+                        sub_vendor_id: None,
+                        sub_system_id: None,
+                    });
+
+                    // HGX clusters additionally expose NVSwitch NVLink-fabric
+                    // devices, which enumerate as an "other" PCI bridge (class
+                    // 0x0680) rather than a display controller.
+                    relay.add_allowed_device(AllowedDevice {
+                        vendor_id: Some(NVIDIA_VPCI_VENDOR_ID),
+                        device_id: None,
+                        revision_id: None,
+                        prog_if: None,
+                        sub_class: Some(Subclass::BRIDGE_OTHER),
+                        base_class: Some(ClassCode::BRIDGE),
+                        sub_vendor_id: None,
+                        sub_system_id: None,
+                    });
+                }
+
                 vpci_relay = Some(relay);
             }
 
@@ -4036,6 +4329,13 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         always_relay_host_mmio: _,
         imc_enabled: _,
 
+        // Only widens the set of devices the VPCI relay will re-expose to the
+        // guest. Relayed devices DMA solely into shared memory and cannot reach
+        // guest-private memory or lower a VTL, so this does not weaken
+        // isolation; the guest is responsible for attesting any device it
+        // chooses to trust.
+        nvidia_vpci_relay_allowed: _,
+
         // PXE not supported today
         pxe_ip_v6: _,
         media_present_enabled_by_default: _,
@@ -4488,4 +4788,199 @@ impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResol
 
 mesh_worker::register_workers! {
     chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenHclRemoteDynamicResolvers>
+}
+
+#[cfg(test)]
+mod device_policy_tests {
+    use super::DevicePolicySettings;
+    use super::NvidiaRelayPosture;
+    use super::launch_data_authorizes_nvidia_relay;
+    use super::launch_host_data_from_report;
+    use super::nvidia_relay_enable_is_attestable;
+
+    /// Names for the `nvidia_relay_enable_is_attestable` inputs, so the cases
+    /// below read as intent rather than positional booleans.
+    #[expect(clippy::fn_params_excessive_bools)]
+    fn attestable(
+        host_requested: bool,
+        isolated: bool,
+        attestation_suppressed: bool,
+        launch_authorized: bool,
+    ) -> bool {
+        nvidia_relay_enable_is_attestable(NvidiaRelayPosture {
+            host_requested,
+            isolated,
+            attestation_suppressed,
+            launch_authorized,
+        })
+    }
+
+    #[test]
+    fn nvidia_relay_requires_attestable_posture() {
+        // The host must opt in.
+        assert!(!attestable(false, false, false, false));
+        assert!(!attestable(false, true, true, true));
+
+        // Non-isolated: nothing to attest, permit.
+        assert!(attestable(true, false, false, false));
+
+        // Stateful CVM: the claim rides a runtime report, so it is attestable
+        // with or without launch authorization.
+        assert!(attestable(true, true, false, false));
+        assert!(attestable(true, true, false, true));
+
+        // Stateless CVM: permit only with a launch-measured authorization.
+        assert!(!attestable(true, true, true, false));
+        assert!(attestable(true, true, true, true));
+    }
+
+    /// Build a well-formed launch host-data authorization of `len` bytes with
+    /// the relay flag set.
+    fn authorized_launch_data(len: usize) -> Vec<u8> {
+        let mut v = vec![0u8; len];
+        v[..4].copy_from_slice(b"NVDA");
+        v[4] = 1; // version
+        v[5] = 1; // flags: bit 0 set
+        v
+    }
+
+    #[test]
+    fn launch_data_decoder_fails_closed() {
+        // Well-formed and authorized, at both the SNP/VBS (32) and TDX (48)
+        // field widths.
+        assert!(launch_data_authorizes_nvidia_relay(
+            &authorized_launch_data(32)
+        ));
+        assert!(launch_data_authorizes_nvidia_relay(
+            &authorized_launch_data(48)
+        ));
+
+        // Unprovisioned (all-zero) field: no magic, so not authorized.
+        assert!(!launch_data_authorizes_nvidia_relay(&[0u8; 32]));
+
+        // Empty / too short.
+        assert!(!launch_data_authorizes_nvidia_relay(&[]));
+        assert!(!launch_data_authorizes_nvidia_relay(b"NVDA"));
+
+        // Wrong magic.
+        let mut bad = authorized_launch_data(32);
+        bad[0] = b'X';
+        assert!(!launch_data_authorizes_nvidia_relay(&bad));
+
+        // Wrong version.
+        let mut bad = authorized_launch_data(32);
+        bad[4] = 2;
+        assert!(!launch_data_authorizes_nvidia_relay(&bad));
+
+        // Flag cleared.
+        let mut bad = authorized_launch_data(32);
+        bad[5] = 0;
+        assert!(!launch_data_authorizes_nvidia_relay(&bad));
+
+        // Any non-zero reserved byte fails closed.
+        let mut bad = authorized_launch_data(32);
+        bad[31] = 0xFF;
+        assert!(!launch_data_authorizes_nvidia_relay(&bad));
+
+        // A different flag bit alone does not grant the relay.
+        let mut bad = authorized_launch_data(32);
+        bad[5] = 0b10;
+        assert!(!launch_data_authorizes_nvidia_relay(&bad));
+
+        // Unknown flag bits alongside the allowed bit still fail closed.
+        let mut bad = authorized_launch_data(32);
+        bad[5] = 0b11;
+        assert!(!launch_data_authorizes_nvidia_relay(&bad));
+    }
+
+    #[test]
+    fn launch_host_data_extraction_per_tee() {
+        use tee_call::TeeType;
+        use zerocopy::FromZeros;
+        use zerocopy::IntoBytes;
+
+        // SNP: host_data (32 bytes).
+        let mut report: x86defs::snp::SnpReport = FromZeros::new_zeroed();
+        let auth = authorized_launch_data(32);
+        report.host_data.copy_from_slice(&auth);
+        let extracted =
+            launch_host_data_from_report(TeeType::Snp, report.as_bytes()).expect("parses");
+        assert_eq!(extracted, auth);
+        assert!(launch_data_authorizes_nvidia_relay(&extracted));
+
+        // TDX: mr_config_id (48 bytes).
+        let mut report: x86defs::tdx::TdReport = FromZeros::new_zeroed();
+        let auth = authorized_launch_data(48);
+        report
+            .td_info
+            .td_info_base
+            .mr_config_id
+            .copy_from_slice(&auth);
+        let extracted =
+            launch_host_data_from_report(TeeType::Tdx, report.as_bytes()).expect("parses");
+        assert_eq!(extracted, auth);
+        assert!(launch_data_authorizes_nvidia_relay(&extracted));
+
+        // VBS: identity.host_data (32 bytes).
+        let mut report: hvdef::vbs::VbsReport = FromZeros::new_zeroed();
+        let auth = authorized_launch_data(32);
+        report.identity.host_data.copy_from_slice(&auth);
+        let extracted =
+            launch_host_data_from_report(TeeType::Vbs, report.as_bytes()).expect("parses");
+        assert_eq!(extracted, auth);
+        assert!(launch_data_authorizes_nvidia_relay(&extracted));
+
+        // A truncated report cannot be parsed and fails closed.
+        assert!(launch_host_data_from_report(TeeType::Snp, &[0u8; 8]).is_none());
+        // CCA has no launch host-data field here.
+        assert!(launch_host_data_from_report(TeeType::Cca, &[0u8; 4096]).is_none());
+    }
+
+    #[test]
+    fn device_policy_settings_parse() {
+        // Enabled.
+        let p = DevicePolicySettings::parse(br#"{"version":1,"nvidia_vpci_relay_allowed":true}"#)
+            .unwrap();
+        assert!(p.nvidia_vpci_relay_allowed);
+
+        // Field omitted defaults to disabled.
+        let p = DevicePolicySettings::parse(br#"{"version":1}"#).unwrap();
+        assert!(!p.nvidia_vpci_relay_allowed);
+
+        // Explicitly disabled.
+        let p = DevicePolicySettings::parse(br#"{"version":1,"nvidia_vpci_relay_allowed":false}"#)
+            .unwrap();
+        assert!(!p.nvidia_vpci_relay_allowed);
+
+        // A UTF-8 BOM is tolerated: Windows tooling writes one.
+        let p = DevicePolicySettings::parse(
+            b"\xEF\xBB\xBF{\"version\":1,\"nvidia_vpci_relay_allowed\":true}",
+        )
+        .unwrap();
+        assert!(p.nvidia_vpci_relay_allowed);
+    }
+
+    /// Untrusted host input: every malformed form must error rather than panic,
+    /// and callers treat an error as "enable nothing".
+    #[test]
+    fn device_policy_settings_reject_bad_input() {
+        for bad in [
+            &b""[..],
+            b"not json",
+            b"{}",                                                 // missing version
+            br#"{"version":2,"nvidia_vpci_relay_allowed":true}"#,  // wrong version
+            br#"{"version":1,"unknown":1}"#,                       // unknown field
+            br#"{"version":1,"nvidia_vpci_relay_allowed":"yes"}"#, // wrong type
+        ] {
+            assert!(
+                DevicePolicySettings::parse(bad).is_err(),
+                "should have rejected {:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+
+        // Oversized input is rejected without allocating a parse.
+        let big = vec![b'a'; 64 * 1024 + 1];
+        assert!(DevicePolicySettings::parse(&big).is_err());
+    }
 }

@@ -6,6 +6,7 @@
 //! Generic schema structs and functions
 
 use self::v1::NAMESPACE_BASE;
+use self::v1::NAMESPACE_DEVICE_POLICY;
 use self::v1::NAMESPACE_NETWORK_ACCELERATION;
 use self::v1::NAMESPACE_NETWORK_DEVICE;
 use crate::Vtl2SettingsErrorInfoVec;
@@ -87,6 +88,7 @@ impl crate::Vtl2Settings {
 
         let mut nic_devices: Option<Vec<crate::NicDevice>> = None;
         let mut nic_acceleration: Option<Vec<crate::NicDevice>> = None;
+        let mut device_policy: Option<Vec<u8>> = None;
 
         for chunk in &decoded.namespace_settings {
             if chunk.settings.is_empty() {
@@ -119,6 +121,11 @@ impl crate::Vtl2Settings {
                             .flat_map(|v| v.parse(errors).collect_error(errors))
                             .collect(),
                     );
+                }
+                NAMESPACE_DEVICE_POLICY => {
+                    // Opaque to this crate; the relay's consumer parses and
+                    // validates the bytes.
+                    device_policy = Some(chunk.settings.clone());
                 }
                 _ => {
                     errors.push(v1::Error::UnsupportedSchemaNamespace(
@@ -158,6 +165,11 @@ impl crate::Vtl2Settings {
                     }
                 }
             }
+        }
+
+        // NAMESPACE_DEVICE_POLICY
+        if let Some(device_policy) = device_policy {
+            old_settings.device_policy = Some(device_policy);
         }
 
         Ok(old_settings)
@@ -266,6 +278,35 @@ mod test {
     fn smoke_test_namespace() {
         let json = include_bytes!("vtl2s_test_namespace.json");
         crate::Vtl2Settings::read_from(json, Default::default()).unwrap();
+    }
+
+    #[test]
+    fn device_policy_namespace() {
+        // The blob is opaque to this crate: it must round-trip byte for byte,
+        // and its absence must leave the field unset.
+        let policy = br#"{"version":1,"nvidia_vpci_relay_allowed":true}"#.to_vec();
+        let settings = Vtl2Settings {
+            namespace_settings: vec![Vtl2SettingsChunk {
+                namespace: NAMESPACE_DEVICE_POLICY.to_string(),
+                settings: policy.clone(),
+            }],
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        Message::encode(&settings, &mut buf).unwrap();
+        let parsed = crate::Vtl2Settings::read_from(&buf, Default::default()).unwrap();
+        assert_eq!(parsed.device_policy.as_deref(), Some(policy.as_slice()));
+
+        let empty = crate::Vtl2Settings::read_from(
+            &{
+                let mut b = Vec::new();
+                Message::encode(&Vtl2Settings::default(), &mut b).unwrap();
+                b
+            },
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(empty.device_policy, None);
     }
 
     #[test]

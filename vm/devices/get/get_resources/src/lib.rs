@@ -101,6 +101,11 @@ pub mod ged {
         pub enable_hibernation: bool,
         /// SMBIOS identity overrides delivered to the guest firmware.
         pub smbios: smbios_defs::SmbiosConfig,
+        /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the
+        /// VPCI relay's device filter.
+        ///
+        /// Declared last to keep `MeshPayload` field numbers stable.
+        pub nvidia_vpci_relay_allowed: bool,
     }
 
     /// The firmware and chipset configuration for the guest.

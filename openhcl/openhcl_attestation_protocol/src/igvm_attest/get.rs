@@ -519,6 +519,21 @@ pub mod runtime_claims {
         pub vmgs_provisioner: Option<VmgsProvisioner>,
         /// Hardware sealing policy
         pub hardware_sealing_policy: HardwareSealingPolicy,
+        /// Whether NVIDIA GPUs and NVLink/NVSwitch fabric devices are permitted
+        /// through the device filter for this guest.
+        ///
+        /// This reports that the filter was widened to admit those device
+        /// classes, not that such a device is present. Per-device trust comes
+        /// from the guest's own device attestation.
+        ///
+        /// Skipped during serialization when `None` (the default) so the
+        /// runtime claims -- and the hardware-derived key KDF input -- are
+        /// unchanged for guests that do not use this feature.
+        ///
+        /// Declared last: `MeshPayload` numbers fields by declaration order, so
+        /// inserting one mid-struct would break wire compatibility.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub nvidia_vpci_relay_allowed: Option<bool>,
     }
 
     impl Default for AttestationVmConfig {
@@ -536,6 +551,7 @@ pub mod runtime_claims {
                 vm_unique_id: String::new(),
                 vmgs_provisioner: None,
                 hardware_sealing_policy: HardwareSealingPolicy::None,
+                nvidia_vpci_relay_allowed: None,
             }
         }
     }

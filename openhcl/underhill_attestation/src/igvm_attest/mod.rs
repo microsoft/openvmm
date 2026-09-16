@@ -546,6 +546,7 @@ mod tests {
             tpm_persisted: false,
             hardware_sealing_policy: HardwareSealingPolicy::Signer,
             filtered_vpci_devices_allowed: true,
+            nvidia_vpci_relay_allowed: None,
             vm_unique_id: String::new(),
             vmgs_provisioner: None,
         };
@@ -571,6 +572,7 @@ mod tests {
             tpm_persisted: false,
             hardware_sealing_policy: HardwareSealingPolicy::Hash,
             filtered_vpci_devices_allowed: true,
+            nvidia_vpci_relay_allowed: None,
             vm_unique_id: String::new(),
             vmgs_provisioner: None,
         };

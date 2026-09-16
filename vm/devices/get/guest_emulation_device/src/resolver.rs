@@ -179,6 +179,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 com2: resource.com2,
                 serial_tx_only: resource.serial_tx_only,
                 vmbus_redirection: resource.vmbus_redirection,
+                nvidia_vpci_relay_allowed: resource.nvidia_vpci_relay_allowed,
                 tpm_version: resource.tpm_version.map(|v| match v {
                     GedTpmVersion::V185 => get_protocol::dps_json::GetTpmVersion::V185,
                     GedTpmVersion::V138 => get_protocol::dps_json::GetTpmVersion::V138,

@@ -26,6 +26,9 @@ use vtl2_settings_proto::*;
 pub(crate) const NAMESPACE_BASE: &str = "Base";
 pub(crate) const NAMESPACE_NETWORK_DEVICE: &str = "NetworkDevice";
 pub(crate) const NAMESPACE_NETWORK_ACCELERATION: &str = "NetworkAcceleration";
+/// Device admission settings for the VPCI relay. The payload is opaque here;
+/// the relay's consumer parses and validates it.
+pub(crate) const NAMESPACE_DEVICE_POLICY: &str = "DevicePolicy";
 
 #[derive(Error, Debug)]
 pub(crate) enum Error<'a> {

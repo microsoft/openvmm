@@ -150,6 +150,9 @@ describes the source definitions.
 * `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
   `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
   are also accepted.
+* `--nvidia-vpci-relay-allowed`: Allow NVIDIA GPUs and NVLink/NVSwitch fabric
+  devices through the VTL2 VPCI relay's device filter. Requires `--vtl2`.
+  Defaults to off.
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
   named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.

@@ -287,6 +287,7 @@ impl Vtl2SettingsWorker {
         let old_settings = Vtl2Settings {
             fixed: Default::default(),
             dynamic: self.old_settings.clone(),
+            device_policy: None,
         };
         let vtl2_settings = Vtl2Settings::read_from(buf, old_settings).map_err(|err| match err {
             underhill_config::schema::ParseError::Json(err) => {
@@ -313,6 +314,19 @@ impl Vtl2SettingsWorker {
         );
 
         let vtl2_settings = vtl2_settings?;
+
+        // The device policy is consumed once, during VM startup, to build the
+        // VPCI relay's allow-list. Applying it later would let the reported
+        // device posture drift from the attestation claim, which is computed at
+        // the same time, so a runtime update is ignored. Say so rather than
+        // silently dropping it.
+        if vtl2_settings.device_policy.is_some() {
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                "ignoring DevicePolicy in a runtime VTL2 settings update; \
+                 it is only honored at VM startup"
+            );
+        }
 
         let new_settings = vtl2_settings.dynamic;
 
