@@ -1031,7 +1031,7 @@ flags:
     /// own hypervisor.
     ///
     /// Only supported on x86_64, and only by backends that support nested
-    /// virtualization (currently WHP and KVM). Requires host support.
+    /// virtualization (currently WHP, KVM, and MSHV). Requires host support.
     #[clap(long)]
     pub nested_virt: bool,
 

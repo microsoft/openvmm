@@ -876,8 +876,24 @@ impl VmService {
             }
         };
 
+        // Build the PCIe topology before the chipset manifest so full-domain
+        // legacy PCI configuration ownership can be coordinated.
+        let pcie = if let Some(pcie) = req_config.pcie.take() {
+            build_pcie_topology(pcie, &registry).await?
+        } else {
+            BuiltPcieTopology::default()
+        };
+
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if arch == vm_manifest_builder::MachineArch::X86_64
+            && pcie
+                .root_complexes
+                .iter()
+                .any(|rc| rc.segment == 0 && rc.start_bus == 0 && rc.end_bus == u8::MAX)
+        {
+            chipset_builder = chipset_builder.with_legacy_pci_config_io();
+        }
         if let Some((base_template, secure_boot_enabled)) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
             // runtime services, so it is required for a UEFI boot. The store is
@@ -940,14 +956,6 @@ impl VmService {
             .map(|c| c.processor_count)
             .unwrap_or(1);
         let arch = parse_arch_topology_overrides(req_config.processor_config.as_ref())?;
-
-        // Build the PCIe topology (root complexes, switches, and the devices
-        // attached behind their ports).
-        let pcie = if let Some(pcie) = req_config.pcie.take() {
-            build_pcie_topology(pcie, &registry).await?
-        } else {
-            BuiltPcieTopology::default()
-        };
 
         let mut config = Config {
             // TODO: devices, other stuff

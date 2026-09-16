@@ -80,6 +80,7 @@ pub struct VmManifestBuilder {
     guest_watchdog: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
+    legacy_pci_config_io: bool,
     uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
     vmbus: bool,
@@ -292,6 +293,7 @@ impl VmManifestBuilder {
             guest_watchdog: false,
             psp: false,
             platform_pm_timer_assist: false,
+            legacy_pci_config_io: false,
             uefi: None,
             debugcon: None,
             vmbus,
@@ -402,6 +404,12 @@ impl VmManifestBuilder {
     /// platform-specific resolver registered with the resource resolver.
     pub fn with_platform_pm_timer_assist(mut self) -> Self {
         self.platform_pm_timer_assist = true;
+        self
+    }
+
+    /// Mark legacy PCI configuration I/O as provided by a PCIe root complex.
+    pub fn with_legacy_pci_config_io(mut self) -> Self {
+        self.legacy_pci_config_io = true;
         self
     }
 
@@ -531,6 +539,9 @@ impl VmManifestBuilder {
                         self.serial,
                     )?
                     .attach_missing_arch_ports(self.arch, false);
+                if !self.legacy_pci_config_io {
+                    result.attach_missing_pci_config_ports(self.arch);
+                }
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
@@ -575,11 +586,13 @@ impl VmManifestBuilder {
                         false,
                         self.serial,
                     )?
-                    .attach_missing_arch_ports(self.arch, false)
+                    .attach_missing_arch_ports(self.arch, false);
+                if !self.legacy_pci_config_io {
                     // Linux probes legacy PCI configuration ports even when
                     // PCIe ECAM is available. Absorb those probes as missing
                     // devices instead of tracing them as unknown PIO.
-                    .attach_missing_pci_config_ports(self.arch);
+                    result.attach_missing_pci_config_ports(self.arch);
+                }
                 if self.guest_watchdog {
                     result.attach_guest_watchdog();
                 }
@@ -615,6 +628,9 @@ impl VmManifestBuilder {
                         self.serial,
                     )?
                     .attach_missing_arch_ports(self.arch, true);
+                if !self.legacy_pci_config_io {
+                    result.attach_missing_pci_config_ports(self.arch);
+                }
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
@@ -989,13 +1005,6 @@ impl VmChipsetResult {
                         .claim_pio("port61", 0x61..=0x61)
                         .into_resource(),
                 },
-                ChipsetDeviceHandle {
-                    name: "missing-pci".to_owned(),
-                    resource: MissingDevHandle::new()
-                        .claim_pio("address", 0xcf8..=0xcfb)
-                        .claim_pio("data", 0xcfc..=0xcff)
-                        .into_resource(),
-                },
                 // Linux will probe 0x87 during boot to determine if there the DMA
                 // device is present
                 ChipsetDeviceHandle {
@@ -1067,6 +1076,46 @@ mod tests {
         assert_eq!(
             serial_pl011.map(|handle| handle.debugger_mode),
             [true, false]
+        );
+    }
+
+    #[test]
+    fn legacy_pci_config_io_omits_missing_pci_ports() {
+        let manifest =
+            VmManifestBuilder::new(BaseChipsetType::EnlightenedLinuxDirect, MachineArch::X86_64)
+                .build()
+                .unwrap();
+        assert!(
+            manifest
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "missing-pci")
+        );
+
+        let manifest =
+            VmManifestBuilder::new(BaseChipsetType::EnlightenedLinuxDirect, MachineArch::X86_64)
+                .with_legacy_pci_config_io()
+                .build()
+                .unwrap();
+        assert!(
+            !manifest
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "missing-pci")
+        );
+    }
+
+    #[test]
+    fn missing_pci_ports_are_kept_without_root_complex_owner() {
+        let manifest =
+            VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, MachineArch::X86_64)
+                .build()
+                .unwrap();
+        assert!(
+            manifest
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "missing-pci")
         );
     }
 }
