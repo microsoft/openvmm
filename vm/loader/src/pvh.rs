@@ -409,36 +409,40 @@ fn place_initrd(
     segments: &[Segment],
     reserved_ranges: &[MemoryRange],
 ) -> Result<u64, Error> {
-    let low_range = memory_layout
+    'candidate: for low_range in memory_layout
         .ram()
         .iter()
+        .rev()
         .filter(|range| range.range.start() < FOUR_GB)
-        .max_by_key(|range| range.range.end().min(FOUR_GB))
-        .ok_or(Error::InitrdDoesNotFit)?;
-    let low_end = low_range.range.end().min(FOUR_GB);
-    let unaligned_base = low_end.checked_sub(size).ok_or(Error::InitrdDoesNotFit)?;
-    let base = unaligned_base & !(HV_PAGE_SIZE - 1);
-    if base < HIMEM_START || base < low_range.range.start() {
-        return Err(Error::InitrdDoesNotFit);
-    }
-
-    let (initrd_page_base, initrd_page_count) = page_span(base, size)?;
-    if overlaps_reserved_memory(initrd_page_base, initrd_page_count, reserved_ranges)? {
-        return Err(Error::InitrdDoesNotFit);
-    }
-    let initrd_page_end = initrd_page_base
-        .checked_add(initrd_page_count)
-        .ok_or(Error::AddressOverflow)?;
-    for segment in segments {
-        let (segment_page_base, segment_page_count) = segment.page_span()?;
-        let segment_page_end = segment_page_base
-            .checked_add(segment_page_count)
-            .ok_or(Error::AddressOverflow)?;
-        if initrd_page_base < segment_page_end && segment_page_base < initrd_page_end {
-            return Err(Error::InitrdDoesNotFit);
+    {
+        let low_end = low_range.range.end().min(FOUR_GB);
+        let Some(unaligned_base) = low_end.checked_sub(size) else {
+            continue;
+        };
+        let base = unaligned_base & !(HV_PAGE_SIZE - 1);
+        if base < HIMEM_START || base < low_range.range.start() {
+            continue;
         }
+
+        let (initrd_page_base, initrd_page_count) = page_span(base, size)?;
+        if overlaps_reserved_memory(initrd_page_base, initrd_page_count, reserved_ranges)? {
+            continue;
+        }
+        let initrd_page_end = initrd_page_base
+            .checked_add(initrd_page_count)
+            .ok_or(Error::AddressOverflow)?;
+        for segment in segments {
+            let (segment_page_base, segment_page_count) = segment.page_span()?;
+            let segment_page_end = segment_page_base
+                .checked_add(segment_page_count)
+                .ok_or(Error::AddressOverflow)?;
+            if initrd_page_base < segment_page_end && segment_page_base < initrd_page_end {
+                continue 'candidate;
+            }
+        }
+        return Ok(base);
     }
-    Ok(base)
+    Err(Error::InitrdDoesNotFit)
 }
 
 fn overlaps_reserved_memory(
@@ -781,10 +785,9 @@ fn pvh_memory_map(
             && range.start().is_multiple_of(HV_PAGE_SIZE)
             && range.end().is_multiple_of(HV_PAGE_SIZE)
             && range.start() >= previous_end
-            && memory_layout
-                .ram()
-                .iter()
-                .any(|ram| range.start() >= ram.range.start() && range.end() <= ram.range.end());
+            && subtract_ranges([*range], memory_layout.ram().iter().map(|ram| ram.range))
+                .next()
+                .is_none();
         if !valid {
             return Err(Error::InvalidReservedMemoryRange {
                 start: range.start(),
@@ -798,24 +801,26 @@ fn pvh_memory_map(
     for ram in memory_layout.ram() {
         let mut next = ram.range.start();
         for reserved in reserved_ranges {
-            if reserved.start() < ram.range.start() || reserved.end() > ram.range.end() {
+            let start = reserved.start().max(ram.range.start());
+            let end = reserved.end().min(ram.range.end());
+            if start >= end {
                 continue;
             }
-            if next < reserved.start() {
+            if next < start {
                 entries.push(HvmMemmapTableEntry {
                     addr: next,
-                    size: reserved.start() - next,
+                    size: start - next,
                     entry_type: XEN_HVM_MEMMAP_TYPE_RAM,
                     reserved: 0,
                 });
             }
             entries.push(HvmMemmapTableEntry {
-                addr: reserved.start(),
-                size: reserved.len(),
+                addr: start,
+                size: end - start,
                 entry_type: XEN_HVM_MEMMAP_TYPE_RESERVED,
                 reserved: 0,
             });
-            next = reserved.end();
+            next = end;
         }
         if next < ram.range.end() {
             entries.push(HvmMemmapTableEntry {
@@ -1304,6 +1309,66 @@ mod tests {
                 )]
             ),
             Err(Error::InvalidReservedMemoryRange { .. })
+        ));
+    }
+
+    #[test]
+    fn reservations_span_contiguous_numa_extents_but_not_ram_holes() {
+        let boundary = 2 * 1024 * 1024;
+        let layout =
+            MemoryLayout::new_with_numa(&[boundary, HV_PAGE_SIZE, boundary], &[], &[], &[], None)
+                .unwrap();
+        let reserved = MemoryRange::new(boundary - HV_PAGE_SIZE..boundary + 2 * HV_PAGE_SIZE);
+        let entries = pvh_memory_map(&layout, &[reserved]).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.addr, entry.size, entry.entry_type))
+                .collect::<Vec<_>>(),
+            [
+                (0, boundary - HV_PAGE_SIZE, XEN_HVM_MEMMAP_TYPE_RAM),
+                (
+                    boundary - HV_PAGE_SIZE,
+                    HV_PAGE_SIZE,
+                    XEN_HVM_MEMMAP_TYPE_RESERVED
+                ),
+                (boundary, HV_PAGE_SIZE, XEN_HVM_MEMMAP_TYPE_RESERVED),
+                (
+                    boundary + HV_PAGE_SIZE,
+                    HV_PAGE_SIZE,
+                    XEN_HVM_MEMMAP_TYPE_RESERVED
+                ),
+                (
+                    boundary + 2 * HV_PAGE_SIZE,
+                    boundary - HV_PAGE_SIZE,
+                    XEN_HVM_MEMMAP_TYPE_RAM
+                ),
+            ]
+        );
+        let split_reservations = [
+            MemoryRange::new(reserved.start()..boundary),
+            MemoryRange::new(boundary..boundary + HV_PAGE_SIZE),
+            MemoryRange::new(boundary + HV_PAGE_SIZE..reserved.end()),
+        ];
+        assert_eq!(
+            entries.as_bytes(),
+            pvh_memory_map(&layout, &split_reservations)
+                .unwrap()
+                .as_bytes()
+        );
+
+        let layout_with_hole = MemoryLayout::new_with_numa(
+            &[boundary, HV_PAGE_SIZE, boundary],
+            &[MemoryRange::new(boundary..boundary + HV_PAGE_SIZE)],
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            pvh_memory_map(&layout_with_hole, &[reserved]),
+            Err(Error::InvalidReservedMemoryRange { start, end })
+                if start == reserved.start() && end == reserved.end()
         ));
     }
 
@@ -1864,6 +1929,70 @@ mod tests {
             let span = page_span(kernel_start, kernel_end - kernel_start).unwrap();
             let result = verify_ram(layout, span.0, span.1, "pvh-kernel");
             assert_eq!(result.is_ok(), index == 2);
+        }
+    }
+
+    #[test]
+    fn initrd_placement_tries_lower_ram_extents() {
+        let low_end = 4 * 1024 * 1024;
+        let layouts = [
+            MemoryLayout::new_with_numa(&[low_end, HV_PAGE_SIZE], &[], &[], &[], None).unwrap(),
+            MemoryLayout::new(
+                low_end + HV_PAGE_SIZE,
+                &[MemoryRange::new(low_end..2 * low_end)],
+                &[],
+                &[],
+                None,
+            )
+            .unwrap(),
+        ];
+        for layout in &layouts {
+            let upper_end = layout.ram().last().unwrap().range.end();
+            let upper_base = upper_end - HV_PAGE_SIZE;
+            let lower_base = low_end - HV_PAGE_SIZE;
+            assert_eq!(
+                place_initrd(layout, HV_PAGE_SIZE + 1, &[], &[]).unwrap(),
+                low_end - 2 * HV_PAGE_SIZE
+            );
+            assert_eq!(place_initrd(layout, 17, &[], &[]).unwrap(), upper_base);
+
+            let upper_segment = Segment {
+                file_offset: 0,
+                file_size: 1,
+                gpa: upper_base,
+                memory_size: 1,
+            };
+            assert_eq!(
+                place_initrd(layout, 17, &[upper_segment], &[]).unwrap(),
+                lower_base
+            );
+            let reserved = [
+                MemoryRange::new(lower_base..low_end),
+                MemoryRange::new(upper_base..upper_end),
+            ];
+            assert_eq!(
+                place_initrd(layout, 17, &[], &reserved[1..]).unwrap(),
+                lower_base
+            );
+            assert!(matches!(
+                place_initrd(layout, 17, &[], &reserved),
+                Err(Error::InitrdDoesNotFit)
+            ));
+            assert!(matches!(
+                place_initrd(
+                    layout,
+                    17,
+                    &[
+                        Segment {
+                            gpa: lower_base,
+                            ..upper_segment
+                        },
+                        upper_segment,
+                    ],
+                    &[],
+                ),
+                Err(Error::InitrdDoesNotFit)
+            ));
         }
     }
 
