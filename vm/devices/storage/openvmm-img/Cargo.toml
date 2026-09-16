@@ -23,3 +23,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.house-rules]
+# emits a binary, where kebab-case is more natural
+allow-dash-in-name = true
