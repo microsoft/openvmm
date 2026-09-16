@@ -112,8 +112,8 @@ fn successful_fuzz_packet_returns_ack() {
 }
 
 #[test]
-fn deserializer_failure_returns_error_packet() {
-    // Case: deserializer execution failures are surfaced as Error response packets.
+fn deserializer_failure_produces_err() {
+    // Case: deserializer execution failures are surfaced as Err(..)
     let state = test_state(
         Err(ExecutorError::SyzlangDeserializerFailed(String::from(
             "decode failed",
@@ -127,14 +127,12 @@ fn deserializer_failure_returns_error_packet() {
 
     let response = executor
         .on_receive_fuzz_test_packet(&mut fuzz_packet())
-        .expect("fuzz packet should still produce a response");
+        .expect_err("fuzz packet should produce an error");
 
     assert_eq!(
         response,
-        Some(OpenTMKPacket::Error(OpenTMKErrorPacket {
-            message: String::from("SyzlangDeserializerFailed(\"decode failed\")"),
-        }))
-    );
+        ExecutorError::SyzlangDeserializerFailed("decode failed".into())
+    )
 }
 
 #[test]
@@ -213,9 +211,9 @@ fn framed_fuzz_packet_writes_framed_error() {
     ));
     executor.deserializer = Some(Box::new(TestDeserializer::new(state)));
 
-    executor
+    let _error = executor
         .process_next_packet()
-        .expect("packet processing should succeed");
+        .expect_err("packet processing should fail with err");
 
     assert_eq!(
         executor.comms.handle.written_bytes(),
