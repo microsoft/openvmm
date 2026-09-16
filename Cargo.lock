@@ -3445,6 +3445,7 @@ dependencies = [
  "igvm_defs",
  "inspect",
  "memory_range",
+ "test_with_tracing",
  "tracing",
 ]
 
