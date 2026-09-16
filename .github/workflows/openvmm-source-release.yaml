@@ -4,13 +4,9 @@
 ##############################
 name: OpenVMM Source Release
 on:
-  workflow_dispatch:
-    inputs:
-      verbose:
-        description: Run with verbose output
-        default: false
-        required: false
-        type: boolean
+  repository_dispatch:
+    types:
+    - openvmm-source-release
 jobs:
   job0:
     name: assemble openvmm vendor artifact
@@ -83,10 +79,17 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 0 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 0 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        false
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/openvmm-vendor-release"
         echo "$AgentTempDirNormal/publish_artifacts/openvmm-vendor-release" | flowey v 0 'artifact_publish_from_openvmm-vendor-release' --is-raw-string update
+      shell: bash
+    - name: validate repository dispatch revision
+      run: |-
+        flowey v 0 'flowey_lib_common::git_checkout:3:flowey_core/src/node/github_context.rs' update --env-source github.event.client_payload.revision <<'EOF'
+        ${{ toJSON(github.event.client_payload.revision) }}
+        EOF
+        flowey e 0 flowey_lib_common::git_checkout 2
       shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
@@ -94,20 +97,21 @@ jobs:
         flowey v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env github floweyvar1
         flowey v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
-    - id: flowey_lib_common__git_checkout__1
+    - id: flowey_lib_common__git_checkout__3
       uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event.client_payload.revision }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 0 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source github.workspace <<EOF
+        flowey v 0 'flowey_lib_common::git_checkout:6:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source github.workspace <<EOF
         ${{ github.workspace }}
         EOF
-        flowey e 0 flowey_lib_common::git_checkout 3
+        flowey e 0 flowey_lib_common::git_checkout 5
       shell: bash
     - name: print system info
       run: |-
@@ -171,31 +175,39 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 1 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 1 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        false
         EOF
         echo "$AgentTempDirNormal/used_artifacts/openvmm-vendor-release" | flowey v 1 'artifact_use_from_openvmm-vendor-release' --is-raw-string update
       shell: bash
-    - name: check if openvmm needs to be cloned
+    - name: validate repository dispatch revision
       run: |-
         flowey e 1 flowey_core::pipeline::artifact::resolve 0
+        flowey v 1 'flowey_lib_common::git_checkout:3:flowey_core/src/node/github_context.rs' update --env-source github.event.client_payload.revision <<'EOF'
+        ${{ toJSON(github.event.client_payload.revision) }}
+        EOF
+        flowey e 1 flowey_lib_common::git_checkout 2
+      shell: bash
+    - name: check if openvmm needs to be cloned
+      run: |-
         flowey e 1 flowey_lib_common::git_checkout 0
         flowey v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env github floweyvar1
         flowey v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
       shell: bash
-    - id: flowey_lib_common__git_checkout__1
+    - id: flowey_lib_common__git_checkout__3
       uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event.client_payload.revision }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source github.workspace <<EOF
+        flowey v 1 'flowey_lib_common::git_checkout:6:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source github.workspace <<EOF
         ${{ github.workspace }}
         EOF
-        flowey e 1 flowey_lib_common::git_checkout 3
+        flowey e 1 flowey_lib_common::git_checkout 5
       shell: bash
     - name: print system info
       run: |-
@@ -250,12 +262,15 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 2 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 2 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        false
         EOF
         echo "$AgentTempDirNormal/used_artifacts/openvmm-vendor-release" | flowey v 2 'artifact_use_from_openvmm-vendor-release' --is-raw-string update
       shell: bash
     - name: resolve source release identity
       run: |-
+        flowey v 2 'flowey_lib_hvlite::_jobs::publish_openvmm_gh_release:10:flowey_core/src/node/github_context.rs' update --env-source github.event.client_payload.revision <<'EOF'
+        ${{ toJSON(github.event.client_payload.revision) }}
+        EOF
         flowey e 2 flowey_core::pipeline::artifact::resolve 0
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 1
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 2
@@ -291,7 +306,7 @@ jobs:
       shell: bash
     - name: verify release commit is reviewed
       run: |-
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 6
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 7
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 3
       shell: bash
     - name: ensure no existing source release
@@ -302,7 +317,7 @@ jobs:
       shell: bash
     - name: pin source release tag
       run: |-
-        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 7
+        flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 8
         flowey e 2 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 4
       shell: bash
     - name: publish github releases

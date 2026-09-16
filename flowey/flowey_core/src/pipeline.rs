@@ -452,6 +452,8 @@ pub struct Pipeline {
     ado_variables: BTreeMap<String, String>,
     ado_post_process_yaml_cb: Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
     gh_name: Option<String>,
+    gh_workflow_dispatch_disabled: bool,
+    gh_repository_dispatch_triggers: Vec<String>,
     gh_schedule_triggers: Vec<GhScheduleTriggers>,
     gh_ci_triggers: Option<GhCiTriggers>,
     gh_pr_triggers: Option<GhPrTriggers>,
@@ -586,6 +588,19 @@ impl Pipeline {
     /// <https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#name>
     pub fn gh_set_name(&mut self, name: impl AsRef<str>) -> &mut Self {
         self.gh_name = Some(name.as_ref().into());
+        self
+    }
+
+    /// (GitHub Actions only) Disable the default `workflow_dispatch` trigger.
+    pub fn gh_disable_workflow_dispatch(&mut self) -> &mut Self {
+        self.gh_workflow_dispatch_disabled = true;
+        self
+    }
+
+    /// (GitHub Actions only) Add a repository dispatch event type.
+    pub fn gh_add_repository_dispatch_trigger(&mut self, event_type: impl AsRef<str>) -> &mut Self {
+        self.gh_repository_dispatch_triggers
+            .push(event_type.as_ref().into());
         self
     }
 
@@ -1606,6 +1621,8 @@ pub mod internal {
         pub ado_variables: BTreeMap<String, String>,
         pub ado_job_id_overrides: BTreeMap<usize, String>,
         pub gh_name: Option<String>,
+        pub gh_workflow_dispatch_disabled: bool,
+        pub gh_repository_dispatch_triggers: Vec<String>,
         pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
         pub gh_ci_triggers: Option<GhCiTriggers>,
         pub gh_pr_triggers: Option<GhPrTriggers>,
@@ -1638,6 +1655,8 @@ pub mod internal {
                 ado_variables,
                 ado_job_id_overrides,
                 gh_name,
+                gh_workflow_dispatch_disabled,
+                gh_repository_dispatch_triggers,
                 gh_schedule_triggers,
                 gh_ci_triggers,
                 gh_pr_triggers,
@@ -1671,6 +1690,8 @@ pub mod internal {
                 ado_variables,
                 ado_job_id_overrides,
                 gh_name,
+                gh_workflow_dispatch_disabled,
+                gh_repository_dispatch_triggers,
                 gh_schedule_triggers,
                 gh_ci_triggers,
                 gh_pr_triggers,
