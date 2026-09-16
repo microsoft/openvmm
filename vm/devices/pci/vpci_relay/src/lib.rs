@@ -45,6 +45,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
+use tdisp::TdispIsolationReport;
+use tdisp::TdispRelayedDeviceTarget;
+use tdisp::TdispTdiState;
+use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
+use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
+use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
 use user_driver::DmaClient;
 use virt::IsolationType;
 use vmbus_client::driver::OpenParams;
@@ -63,16 +69,6 @@ use vpci_client::VpciClient;
 use vpci_client::VpciDevice;
 use vpci_client::VpciDeviceEject;
 use vpci_client::tdisp::TdispVpciAttestationInterface;
-
-/// TODO TDISP: Required for the tdisp crate to be built in the meantime.
-#[expect(unused_imports)]
-use tdisp::TdispHostDeviceInterface;
-use tdisp::TdispIsolationReport;
-use tdisp::TdispRelayedDeviceTarget;
-use tdisp::TdispTdiState;
-use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
-use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
-use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
 
 /// Trait for creating memory access instances.
 pub trait CreateMemoryAccess: 'static + Send + Sync {
@@ -548,14 +544,14 @@ struct RelayedVpciDevice {
         Pin<Box<dyn Future<Output = ()> + Send + Sync>>,
     )>,
 
-    /// Config space writes that arrived while a TDISP operation was in flight,
+    /// Config space writes that arrived while an async operation was in flight,
     /// in arrival order. Only ever non-empty while an operation is in flight,
     /// so its depth shows how many callers a slow operation is holding up.
     #[inspect(with = "|x| x.len()")]
     queued: VecDeque<QueuedWrite>,
 
     /// Waker captured from the most recent poll, used to ask the device unit to
-    /// poll this device again once a TDISP operation has been started.
+    /// poll this device again once an async operation has been started.
     #[inspect(skip)]
     waker: Waker,
 
@@ -579,17 +575,16 @@ struct QueuedWrite {
 enum CfgWriteOutcome {
     /// The write reached the device and needs nothing further.
     Complete,
-    /// The write crossed an MMIO-enable edge. The future carries out the TDISP
-    /// work the edge requires, including writing the command register itself,
-    /// and must run to completion before any further config space write reaches
-    /// the device.
+    /// The write was deferred by cfg handling .The future carries out async
+    /// work required. Other guest VPs are blocked from writing to cfg space
+    /// while async work is dispatched and writes are instead queued for later
+    /// processing.
     Started(Pin<Box<dyn Future<Output = ()> + Send + Sync>>),
 }
 
 impl RelayedVpciDevice {
-    /// Applies a config space write that has no TDISP operation ahead of it,
-    /// either passing it through to the device or producing the TDISP work the
-    /// write requires.
+    /// Applies a config space write to a relayed VPCI device. Special handling
+    /// for TDISP devices might cause asynchronous operations to be initiated.
     ///
     /// `offset` is the DWORD-aligned offset in config space the write targets,
     /// and `value` the value and byte enables to write.
@@ -601,12 +596,8 @@ impl RelayedVpciDevice {
             return CfgWriteOutcome::Complete;
         }
 
-        // Detect the MMIO-enable edge BEFORE issuing the write so we can
-        // dispatch the correct TDISP notification.
-        //
-        // The write contains both the Command and Status registers packed into
-        // a single 32-bit value. Only the Command register is relevant for
-        // detecting the MMIO-enable edge.
+        // Detect the MMIO-enable edge on the command register BEFORE issuing
+        // the write so we can dispatch the correct TDISP notification.
         use pci_core::spec::cfg_space::Command;
         let mut current = 0;
         self.device.read_cfg(
@@ -624,6 +615,11 @@ impl RelayedVpciDevice {
             // Activation writes the command register itself once attestation
             // succeeds, so the BARs are mapped before the MMIO ranges are
             // unblocked.
+            //
+            // If BARs are written to during or after this process, they will
+            // only affect the shadow BARs and not the real device BARs. This
+            // ensures misbehaving guests cannot remap their private sections
+            // once attestation is complete.
             (false, true) => {
                 let device = self.device.clone();
                 CfgWriteOutcome::Started(Box::pin(async move {
@@ -635,7 +631,7 @@ impl RelayedVpciDevice {
                 }))
             }
             // MMIO turning off. Tear the TDI back down. Deactivation leaves the
-            // command register in its off state itself.
+            // command register in its off state and unmaps all private BARs.
             (true, false) => {
                 let device = self.device.clone();
                 CfgWriteOutcome::Started(Box::pin(async move {
@@ -733,14 +729,12 @@ impl TdispRelayedDeviceTarget for RelayedVpciDevice {
         let tdisp_capable = self.tdisp_capable;
 
         Box::pin(async move {
-            // Whether the device is TDISP capable at all is decided once, when
-            // the host offers the device, so answer that here rather than
-            // asking the client. Everything else, including attesting when the
-            // TDI is `Unlocked`, is the client's job.
+            // If the device is not TDISP capable, return early with an invalid report.
             if !tdisp_capable {
                 return TdispIsolationReport::NotTdispCapable;
             }
 
+            // This might fire an attestation flow if it hasn't already happened yet.
             device.tdisp_isolation_snapshot().await
         })
     }
@@ -753,13 +747,11 @@ impl PciConfigSpace for RelayedVpciDevice {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
-        // A TDISP operation has to run to completion with nothing else touching
-        // the device's config space, so every write that arrives while one is in
-        // flight waits, whatever register it targets. Writes arriving behind an
-        // already queued write wait too, so that they are applied in the order
-        // they arrived. The chipset drops the device lock before waiting on a
-        // deferred access, so several VPs, plus the VPCI channel worker, can be
-        // in here at once.
+        // An asynchronous operation has to run to completion with nothing else
+        // touching the device's config space. Writes arriving behind an already
+        // queued write must wait and be applied in the order they arrived. The
+        // chipset drops the device lock before waiting on a deferred access, so
+        // several VPs, plus the VPCI channel worker, can be in here at once.
         if self.pending.is_some() || !self.queued.is_empty() {
             let (deferred, token) = defer_write();
             self.queued.push_back(QueuedWrite {
@@ -785,8 +777,8 @@ impl ChangeDeviceState for RelayedVpciDevice {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {
-        // Nothing polls this device while it is stopped, so finish the TDISP
-        // operation and everything queued behind it here. Otherwise the callers
+        // Nothing polls this device while it is stopped, so finish asynchronous
+        // operations and everything queued behind them here. Otherwise the callers
         // waiting on those writes would be left waiting on a completion that
         // never comes.
         while let Some((deferred, fut)) = self.pending.take() {
