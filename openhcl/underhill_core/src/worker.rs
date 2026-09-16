@@ -376,6 +376,46 @@ pub struct NicConfig {
     pub max_sub_channels: Option<u16>,
 }
 
+fn netvsp_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
+    // Some guest behaviors requires the nic interfaces to be enumerated in a
+    // particular order. vmbus channel offers are by default sorted using the
+    // instance id. Leverage that to sort the network offers based on the
+    // vport index.
+    Guid {
+        data1: 0xf8615163,
+        data2: vport_index as u16,
+        data3: 1 << 12,
+        data4: [
+            0x20,
+            0,
+            mac_address[0],
+            mac_address[1],
+            mac_address[2],
+            mac_address[3],
+            mac_address[4],
+            mac_address[5],
+        ],
+    }
+}
+
+#[cfg(test)]
+mod netvsp_instance_id_tests {
+    use super::netvsp_instance_id;
+    use test_with_tracing::test;
+
+    #[test]
+    #[ignore = "reproduces bug 64115645"]
+    fn two_vfs_preserve_primary_netvsp_offer_order() {
+        let primary = netvsp_instance_id(0, [0x00, 0x15, 0x5d, 0x12, 0x12, 0x13]);
+        let secondary = netvsp_instance_id(0, [0x00, 0x15, 0x5d, 0x12, 0x12, 0x12]);
+
+        assert!(
+            primary < secondary,
+            "secondary VF NetVSP sorts before the primary VF because both use vport index 0"
+        );
+    }
+}
+
 impl Worker for UnderhillVmWorker {
     type Parameters = UnderhillWorkerParameters;
     type State = RestartState;
@@ -904,19 +944,7 @@ impl UhVmNetworkSettings {
             },
         ) in endpoints.into_iter().enumerate()
         {
-            let vmbus_instance_id = {
-                let m = mac_address.to_bytes();
-                // Some guest behaviors requires the nic interfaces to be enumerated in a
-                // particular order. vmbus channel offers are by default sorted using the
-                // instance id. Leverage that to sort the network offers based on the
-                // vport index.
-                Guid {
-                    data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1` for ease of search.
-                    data2: i as u16,
-                    data3: 1 << 12, // type 1 GUID
-                    data4: [0x20, 0, m[0], m[1], m[2], m[3], m[4], m[5]], // variant 2
-                }
-            };
+            let vmbus_instance_id = netvsp_instance_id(i, mac_address.to_bytes());
             let p = partition.clone();
             let get_guest_os_id = move || -> HvGuestOsId {
                 p.vtl0_guest_os_id()
