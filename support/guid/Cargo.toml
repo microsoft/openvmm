@@ -7,9 +7,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
-mesh = ["mesh_protobuf"]
+default = ["std", "getrandom"]
+std = ["dep:windows-sys", "dep:windows", "dep:win_etw_provider"]
 getrandom = ["dep:getrandom"]
+inspect = ["dep:inspect", "std"]
+mesh = ["mesh_protobuf", "std"]
 
 [dependencies]
 inspect = { workspace = true, optional = true }
@@ -19,9 +21,9 @@ getrandom = { workspace = true, optional = true }
 thiserror.workspace = true
 zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
-windows.workspace = true
-win_etw_provider.workspace = true
+windows-sys = { workspace = true, optional = true }
+windows = { workspace = true, optional = true }
+win_etw_provider = { workspace = true, optional = true }
 
 [lints]
 workspace = true

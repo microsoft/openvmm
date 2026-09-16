@@ -141,6 +141,7 @@ fast_memcpy = { path = "support/fast_memcpy" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
+guid_core = { package = "guid", path = "support/guid", default-features = false }
 headervec = { path = "support/headervec" }
 hybrid_vsock = { path = "support/hybrid_vsock" }
 hvs_file = { path = "support/hvs_file" }

@@ -3,6 +3,7 @@
 
 //! CXL Early Discovery Table (CEDT) builder.
 
+use alloc::vec::Vec;
 use core::mem::size_of;
 use cxl_spec::spec::CEDT_STRUCTURE_TYPE_CFMWS;
 use cxl_spec::spec::CEDT_STRUCTURE_TYPE_CHBS;

@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 pub use crate::aml::*;
+use alloc::vec;
+use alloc::vec::Vec;
 use memory_range::MemoryRange;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -52,9 +54,9 @@ pub struct PcieHostBridgeEntry {
     pub end_bus: u8,
     /// Memory range for ECAM configuration space access.
     pub ecam_range: MemoryRange,
-    /// Memory range for low MMIO.
+    /// Memory range for low MMIO. Empty ranges are omitted from `_CRS`.
     pub low_mmio: MemoryRange,
-    /// Memory range for high MMIO.
+    /// Memory range for high MMIO. Empty ranges are omitted from `_CRS`.
     pub high_mmio: MemoryRange,
     /// Whether this host bridge supports CXL.
     pub cxl: bool,
@@ -213,7 +215,7 @@ impl Ssdt {
         });
 
         // If (LEqual(Arg0, ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766")))
-        let pcie_osc_uuid = guid::guid!("33DB4D5B-1FF7-401C-9657-7441C03DD766");
+        let pcie_osc_uuid = guid_core::guid!("33DB4D5B-1FF7-401C-9657-7441C03DD766");
         let uuid_buffer = Buffer(pcie_osc_uuid.as_bytes()).to_bytes();
         let lequal = LEqualOp {
             left: encode_arg(0),
@@ -223,7 +225,7 @@ impl Ssdt {
         let else_body = if cxl {
             // CXL _OSC UUID: 68f2d50b-c469-4d8a-bd3d-941a103fd3fc
             // Rev 1 is currently supported; unsupported revisions set STS0 bit 1.
-            let cxl_osc_uuid = guid::guid!("68f2d50b-c469-4d8a-bd3d-941a103fd3fc");
+            let cxl_osc_uuid = guid_core::guid!("68f2d50b-c469-4d8a-bd3d-941a103fd3fc");
             let cxl_uuid_buffer = Buffer(cxl_osc_uuid.as_bytes()).to_bytes();
             let cxl_uuid_match = LEqualOp {
                 left: encode_arg(0),
@@ -329,7 +331,7 @@ impl Ssdt {
             let mut dsm_method = Method::new(b"_DSM");
             dsm_method.set_arg_count(4);
 
-            let dsm_uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+            let dsm_uuid = guid_core::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
             let dsm_uuid_buffer = Buffer(dsm_uuid.as_bytes()).to_bytes();
 
             // If (LEqual(Arg0, UUID))
@@ -390,14 +392,11 @@ impl Ssdt {
             start_bus.into(),
             (end_bus as u16) - (start_bus as u16) + 1,
         ));
-        crs.add_resource(&QwordMemory::new(
-            low_mmio.start(),
-            low_mmio.end() - low_mmio.start(),
-        ));
-        crs.add_resource(&QwordMemory::new(
-            high_mmio.start(),
-            high_mmio.end() - high_mmio.start(),
-        ));
+        for mmio in [low_mmio, high_mmio] {
+            if !mmio.is_empty() {
+                crs.add_resource(&QwordMemory::new(mmio.start(), mmio.len()));
+            }
+        }
         pcie.add_object(&crs);
 
         self.add_object(&pcie);
@@ -409,6 +408,7 @@ impl Ssdt {
 mod tests {
     use super::*;
     use crate::aml::test_helpers::verify_expected_bytes;
+    use test_with_tracing::test;
 
     fn verify_header(bytes: &[u8]) {
         assert!(bytes.len() >= 36);
@@ -509,6 +509,42 @@ mod tests {
     }
 
     #[test]
+    fn pcie_omits_empty_mmio_windows() {
+        for (include_low, include_high) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let mut entry = test_pcie_entry(None);
+            let low_resource =
+                QwordMemory::new(entry.low_mmio.start(), entry.low_mmio.len()).to_bytes();
+            let high_resource =
+                QwordMemory::new(entry.high_mmio.start(), entry.high_mmio.len()).to_bytes();
+            let ecam_resource =
+                QwordMemory::new(entry.ecam_range.start(), entry.ecam_range.len()).to_bytes();
+            if !include_low {
+                entry.low_mmio = MemoryRange::EMPTY;
+            }
+            if !include_high {
+                entry.high_mmio = MemoryRange::EMPTY;
+            }
+
+            let mut ssdt = Ssdt::new();
+            ssdt.add_pcie(entry);
+            let bytes = ssdt.to_bytes();
+            verify_header(&bytes);
+            assert_eq!(contains_bytes(&bytes, &low_resource), include_low);
+            assert_eq!(contains_bytes(&bytes, &high_resource), include_high);
+            assert!(contains_bytes(&bytes, &ecam_resource));
+            assert_eq!(
+                bytes
+                    .windows(5)
+                    .filter(|w| *w == [0x8a, 0x2b, 0, 0, 0xc])
+                    .count(),
+                1 + usize::from(include_low) + usize::from(include_high)
+            );
+        }
+    }
+
+    #[test]
     fn pcie_includes_cca() {
         let mut ssdt = Ssdt::new();
         ssdt.add_pcie(test_pcie_entry(None));
@@ -582,7 +618,7 @@ mod tests {
 
         // The PCI firmware _DSM UUID must appear in mixed-endian form
         // (GUID wire format).
-        let uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+        let uuid = guid_core::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
         assert!(contains_bytes(&bytes, uuid.as_bytes()));
 
         // The supported-functions bitmask byte (0x21 = bits 0+5) must
@@ -605,7 +641,7 @@ mod tests {
         assert!(!contains_name(&bytes, b"_DSM"));
 
         // The PCI firmware _DSM UUID must NOT appear.
-        let uuid = guid::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
+        let uuid = guid_core::guid!("E5C937D0-3553-4D7A-9117-EA4D19C3434D");
         assert!(!contains_bytes(&bytes, uuid.as_bytes()));
     }
 }

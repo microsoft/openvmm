@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::num::Wrapping;
+use alloc::vec::Vec;
+use core::num::Wrapping;
 use zerocopy::IntoBytes;
 
 #[derive(Copy, Clone)]
@@ -108,6 +109,15 @@ impl Builder {
         }
     }
 
+    /// Adds an existing table's guest physical address to the final XSDT.
+    ///
+    /// This does not read, copy, or relocate the table. The caller must validate
+    /// the address and ensure the table remains available there. Only register
+    /// tables that belong in the XSDT, not the DSDT or another XSDT.
+    pub fn add_existing_table(&mut self, address: u64) {
+        self.tables.push(address);
+    }
+
     pub fn append(&mut self, table: &Table<'_>) -> u64 {
         let addr = self.base_addr + self.v.len() as u64;
         let len = table.append_to_vec(&self.oem, &mut self.v);
@@ -155,7 +165,7 @@ impl Builder {
     }
 
     pub fn build(mut self) -> (Vec<u8>, Vec<u8>) {
-        let tables = std::mem::take(&mut self.tables);
+        let tables = core::mem::take(&mut self.tables);
         let xsdt = self.append(&Table {
             signature: *b"XSDT",
             revision: 1,
@@ -165,5 +175,56 @@ impl Builder {
         });
         let rsdp = self.rsdp(xsdt);
         (rsdp.as_bytes().to_vec(), self.v)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+    use zerocopy::FromBytes;
+
+    #[test]
+    fn xsdt_retains_existing_and_appended_tables() {
+        let base = 0x2000_0000;
+        let existing_address = 0x1000_0000;
+        let oem = OemInfo {
+            oem_id: *b"MSFTVM",
+            oem_tableid: *b"TESTACPI",
+            oem_revision: 1,
+            creator_id: *b"MSFT",
+            creator_revision: 1,
+        };
+        let mut builder = Builder::new(base, oem);
+        builder.add_existing_table(existing_address);
+        let mcfg = acpi_spec::mcfg::McfgHeader::new();
+        let table = Table::new(acpi_spec::mcfg::MCFG_REVISION, None, &mcfg);
+        let appended_address = builder.append(&table);
+        assert_eq!(appended_address, base);
+
+        let (rsdp_bytes, tables) = builder.build();
+        let rsdp = acpi_spec::Rsdp::read_from_bytes(&rsdp_bytes).unwrap();
+        assert_eq!(checksum(&rsdp_bytes[..20]), Wrapping(0));
+        assert_eq!(checksum(&rsdp_bytes), Wrapping(0));
+
+        let appended_bytes = table.to_vec(&oem);
+        let xsdt_offset = (rsdp.xsdt - base) as usize;
+        assert_eq!(xsdt_offset, appended_bytes.len().next_multiple_of(8));
+        assert_eq!(&tables[..appended_bytes.len()], appended_bytes);
+
+        let (header, entries) =
+            acpi_spec::Header::read_from_prefix(&tables[xsdt_offset..]).unwrap();
+        assert_eq!(header.signature, *b"XSDT");
+        let xsdt_length = header.length.get() as usize;
+        assert_eq!(xsdt_length, size_of::<acpi_spec::Header>() + 16);
+        assert_eq!(
+            checksum(&tables[xsdt_offset..xsdt_offset + xsdt_length]),
+            Wrapping(0)
+        );
+        assert_eq!(
+            &entries[..16],
+            [existing_address, appended_address].as_bytes()
+        );
+        assert_eq!(tables.len(), xsdt_offset + xsdt_length.next_multiple_of(8));
     }
 }
