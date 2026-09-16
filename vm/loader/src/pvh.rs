@@ -14,6 +14,7 @@ use crate::importer::TableRegister;
 use crate::importer::X86Register;
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
+use memory_range::subtract_ranges;
 use object::LittleEndian;
 use object::ReadCache;
 use object::ReadRef;
@@ -150,6 +151,14 @@ pub enum Error {
     OverlappingLoadSegments,
     #[error("ELF load segment overlaps PVH reserved memory")]
     SegmentOverlapsReservedMemory,
+    #[error("{tag} overlaps PVH reserved memory")]
+    BootStructureOverlapsReservedMemory { tag: &'static str },
+    #[error("required guest range {start:#x}..{end:#x} for {tag} is outside declared RAM")]
+    OutsideRam {
+        tag: &'static str,
+        start: u64,
+        end: u64,
+    },
     #[error("ELF note segment exceeds the 1-MiB parser bound")]
     NoteTooLarge,
     #[error("malformed ELF note")]
@@ -231,6 +240,18 @@ struct ParsedKernel {
     entrypoint: u64,
 }
 
+struct BootPages {
+    page_base: u64,
+    tag: &'static str,
+    data: Vec<u8>,
+}
+
+impl BootPages {
+    fn page_count(&self) -> u64 {
+        (self.data.len() as u64).div_ceil(HV_PAGE_SIZE)
+    }
+}
+
 /// Loads an x86-64 Xen PVH ELF image with explicit boot-table configuration.
 pub fn load_with_boot_config<F, R>(
     importer: &mut dyn ImageLoad<X86Register>,
@@ -269,7 +290,7 @@ where
         if overlaps_reserved_memory(page_base, page_count, boot_config.reserved_memory_ranges)? {
             return Err(Error::SegmentOverlapsReservedMemory);
         }
-        verify_memory(importer, page_base, page_count, "pvh-kernel")?;
+        verify_ram(memory_layout, page_base, page_count, "pvh-kernel")?;
     }
     let initrd = match initrd {
         Some(initrd) => {
@@ -283,11 +304,46 @@ where
                 boot_config.reserved_memory_ranges,
             )?;
             let (page_base, page_count) = page_span(base, initrd.size)?;
-            verify_memory(importer, page_base, page_count, "pvh-initrd")?;
+            verify_ram(memory_layout, page_base, page_count, "pvh-initrd")?;
             Some((initrd, base))
         }
         None => None,
     };
+
+    let boot_pages = build_boot_structures(
+        cmdline,
+        &memory_ranges,
+        initrd.as_ref().map(|(initrd, base)| (*base, initrd.size)),
+        acpi_tables,
+        boot_config,
+    )?;
+    for pages in &boot_pages {
+        if overlaps_reserved_memory(
+            pages.page_base,
+            pages.page_count(),
+            boot_config.reserved_memory_ranges,
+        )? {
+            return Err(Error::BootStructureOverlapsReservedMemory { tag: pages.tag });
+        }
+        verify_ram(
+            memory_layout,
+            pages.page_base,
+            pages.page_count(),
+            pages.tag,
+        )?;
+    }
+
+    for segment in &segments {
+        let (page_base, page_count) = segment.page_span()?;
+        verify_memory(importer, page_base, page_count, "pvh-kernel")?;
+    }
+    if let Some((initrd, base)) = &initrd {
+        let (page_base, page_count) = page_span(*base, initrd.size)?;
+        verify_memory(importer, page_base, page_count, "pvh-initrd")?;
+    }
+    for pages in &boot_pages {
+        verify_memory(importer, pages.page_base, pages.page_count(), pages.tag)?;
+    }
 
     let mut chunk = ChunkBuf::new();
     for segment in &segments {
@@ -328,14 +384,20 @@ where
         None => None,
     };
 
-    import_boot_structures(
-        importer,
-        cmdline,
-        &memory_ranges,
-        initrd,
-        acpi_tables,
-        boot_config,
-    )?;
+    for pages in boot_pages {
+        importer
+            .import_pages(
+                pages.page_base,
+                pages.page_count(),
+                pages.tag,
+                BootPageAcceptance::Exclusive,
+                &pages.data,
+            )
+            .map_err(|source| Error::ImportPages {
+                tag: pages.tag,
+                source,
+            })?;
+    }
     import_registers(importer, entrypoint)?;
 
     Ok(LoadInfo { entrypoint, initrd })
@@ -390,6 +452,31 @@ fn overlaps_reserved_memory(
     Ok(reserved_ranges.iter().any(|range| {
         page_base < range.end() / HV_PAGE_SIZE && range.start() / HV_PAGE_SIZE < page_end
     }))
+}
+
+fn verify_ram(
+    memory_layout: &MemoryLayout,
+    page_base: u64,
+    page_count: u64,
+    tag: &'static str,
+) -> Result<(), Error> {
+    let start = page_base
+        .checked_mul(HV_PAGE_SIZE)
+        .ok_or(Error::AddressOverflow)?;
+    let end = page_base
+        .checked_add(page_count)
+        .and_then(|end| end.checked_mul(HV_PAGE_SIZE))
+        .ok_or(Error::AddressOverflow)?;
+    if subtract_ranges(
+        [MemoryRange::new(start..end)],
+        memory_layout.ram().iter().map(|ram| ram.range),
+    )
+    .next()
+    .is_some()
+    {
+        return Err(Error::OutsideRam { tag, start, end });
+    }
+    Ok(())
 }
 
 fn parse_kernel<F: Read + Seek>(kernel: &mut F) -> Result<ParsedKernel, Error> {
@@ -535,10 +622,12 @@ fn find_pvh_entry(notes: &[u8]) -> Result<Option<u64>, Error> {
             .get(descriptor_start..descriptor_end)
             .ok_or(Error::MalformedNote)?;
 
-        if note_type == XEN_ELFNOTE_PHYS32_ENTRY && name.starts_with(b"Xen") {
-            let entry = match descriptor {
-                [a, b, c, d] => u32::from_le_bytes([*a, *b, *c, *d]) as u64,
-                [a, b, c, d, e, f, g, h] => u64::from_le_bytes([*a, *b, *c, *d, *e, *f, *g, *h]),
+        if note_type == XEN_ELFNOTE_PHYS32_ENTRY && name == b"Xen\0" {
+            let entry = match descriptor.len() {
+                4 => u64::from(u32::from_le_bytes(
+                    descriptor.try_into().map_err(|_| Error::MalformedNote)?,
+                )),
+                8 => u64::from_le_bytes(descriptor.try_into().map_err(|_| Error::MalformedNote)?),
                 _ => return Err(Error::MalformedNote),
             };
             if entrypoint.replace(entry).is_some() {
@@ -557,14 +646,14 @@ fn read_note_u32(bytes: &[u8], offset: usize) -> Result<u32, Error> {
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-fn import_boot_structures(
-    importer: &mut dyn ImageLoad<X86Register>,
+fn build_boot_structures(
     cmdline: &str,
     memory_ranges: &[HvmMemmapTableEntry],
     initrd: Option<(u64, u64)>,
     acpi_tables: Option<&AcpiTables>,
     boot_config: &BootConfig<'_>,
-) -> Result<(), Error> {
+) -> Result<Vec<BootPages>, Error> {
+    let mut pages = Vec::new();
     let mut boot_page = [0u8; HV_PAGE_SIZE as usize];
     write_mp_tables(&mut boot_page, boot_config)?;
     let boot_gdt_addr = BOOT_GDT_ADDR;
@@ -578,7 +667,11 @@ fn import_boot_structures(
         let offset = boot_gdt_addr as usize + index * size_of::<u64>();
         boot_page[offset..offset + size_of::<u64>()].copy_from_slice(&entry.to_le_bytes());
     }
-    import_pages(importer, 0, 1, "pvh-boot-tables", &boot_page)?;
+    pages.push(BootPages {
+        page_base: 0,
+        tag: "pvh-boot-tables",
+        data: boot_page.to_vec(),
+    });
 
     let memmap_size = memory_ranges
         .len()
@@ -595,13 +688,11 @@ fn import_boot_structures(
         memmap_page[offset..offset + size_of::<HvmMemmapTableEntry>()]
             .copy_from_slice(entry.as_bytes());
     }
-    import_pages(
-        importer,
-        MEMMAP_ADDR / HV_PAGE_SIZE,
-        1,
-        "pvh-memory-map",
-        &memmap_page,
-    )?;
+    pages.push(BootPages {
+        page_base: MEMMAP_ADDR / HV_PAGE_SIZE,
+        tag: "pvh-memory-map",
+        data: memmap_page.to_vec(),
+    });
 
     let mut start_page = [0u8; HV_PAGE_SIZE as usize];
     if let Some((base, size)) = initrd {
@@ -632,13 +723,11 @@ fn import_boot_structures(
         reserved: 0,
     };
     start_page[..size_of::<HvmStartInfo>()].copy_from_slice(start_info.as_bytes());
-    import_pages(
-        importer,
-        START_INFO_ADDR / HV_PAGE_SIZE,
-        1,
-        "pvh-start-info",
-        &start_page,
-    )?;
+    pages.push(BootPages {
+        page_base: START_INFO_ADDR / HV_PAGE_SIZE,
+        tag: "pvh-start-info",
+        data: start_page.to_vec(),
+    });
 
     if let Some(acpi_tables) = acpi_tables {
         if acpi_tables.rsdp.len() > HV_PAGE_SIZE as usize
@@ -651,39 +740,35 @@ fn import_boot_structures(
 
         let mut rsdp_page = [0; HV_PAGE_SIZE as usize];
         rsdp_page[..acpi_tables.rsdp.len()].copy_from_slice(&acpi_tables.rsdp);
-        import_pages(
-            importer,
-            ACPI_RSDP_ADDR / HV_PAGE_SIZE,
-            1,
-            "pvh-acpi-rsdp",
-            &rsdp_page,
-        )?;
+        pages.push(BootPages {
+            page_base: ACPI_RSDP_ADDR / HV_PAGE_SIZE,
+            tag: "pvh-acpi-rsdp",
+            data: rsdp_page.to_vec(),
+        });
 
         let table_pages = (acpi_tables.tables.len() as u64).div_ceil(HV_PAGE_SIZE);
         let mut table_data = vec![0; (table_pages * HV_PAGE_SIZE) as usize];
         table_data[..acpi_tables.tables.len()].copy_from_slice(&acpi_tables.tables);
-        import_pages(
-            importer,
-            ACPI_TABLES_ADDR / HV_PAGE_SIZE,
-            table_pages,
-            "pvh-acpi-tables",
-            &table_data,
-        )?;
+        if table_pages != 0 {
+            pages.push(BootPages {
+                page_base: ACPI_TABLES_ADDR / HV_PAGE_SIZE,
+                tag: "pvh-acpi-tables",
+                data: table_data,
+            });
+        }
     }
 
     let cmdline_size = cmdline.len().checked_add(1).ok_or(Error::AddressOverflow)?;
     let cmdline_pages = (cmdline_size as u64).div_ceil(HV_PAGE_SIZE);
     let mut cmdline_data = vec![0; (cmdline_pages * HV_PAGE_SIZE) as usize];
     cmdline_data[..cmdline.len()].copy_from_slice(cmdline.as_bytes());
-    import_pages(
-        importer,
-        CMDLINE_ADDR / HV_PAGE_SIZE,
-        cmdline_pages,
-        "pvh-command-line",
-        &cmdline_data,
-    )?;
+    pages.push(BootPages {
+        page_base: CMDLINE_ADDR / HV_PAGE_SIZE,
+        tag: "pvh-command-line",
+        data: cmdline_data,
+    });
 
-    Ok(())
+    Ok(pages)
 }
 
 fn pvh_memory_map(
@@ -914,25 +999,6 @@ fn import_registers(
     Ok(())
 }
 
-fn import_pages(
-    importer: &mut dyn ImageLoad<X86Register>,
-    page_base: u64,
-    page_count: u64,
-    tag: &'static str,
-    data: &[u8],
-) -> Result<(), Error> {
-    verify_memory(importer, page_base, page_count, tag)?;
-    importer
-        .import_pages(
-            page_base,
-            page_count,
-            tag,
-            BootPageAcceptance::Exclusive,
-            data,
-        )
-        .map_err(|source| Error::ImportPages { tag, source })
-}
-
 fn verify_memory(
     importer: &mut dyn ImageLoad<X86Register>,
     page_base: u64,
@@ -1014,6 +1080,7 @@ mod tests {
         pages: Vec<(&'static str, u64, u64, Vec<u8>)>,
         registers: Vec<X86Register>,
         unsupported_register: Option<X86Register>,
+        memory_checks: usize,
     }
 
     impl ImageLoad<X86Register> for RecordingImporter {
@@ -1082,6 +1149,7 @@ mod tests {
             _: u64,
             _: StartupMemoryType,
         ) -> anyhow::Result<()> {
+            self.memory_checks += 1;
             Ok(())
         }
 
@@ -1466,6 +1534,55 @@ mod tests {
     }
 
     #[test]
+    fn pvh_entry_note_requires_exact_owner_and_numeric_descriptor() {
+        for name in [
+            b"Xen\0".as_slice(),
+            b"Xen",
+            b"XenFoo\0",
+            b"Xen\0\0",
+            b"GNU\0",
+        ] {
+            for descriptor_size in [0usize, 3, 4, 5, 8] {
+                let descriptor_start = align_up_usize(12 + name.len(), 4).unwrap();
+                let mut note =
+                    vec![0; align_up_usize(descriptor_start + descriptor_size, 4).unwrap()];
+                write_u32(&mut note, 0, name.len() as u32);
+                write_u32(&mut note, 4, descriptor_size as u32);
+                write_u32(&mut note, 8, XEN_ELFNOTE_PHYS32_ENTRY);
+                note[12..12 + name.len()].copy_from_slice(name);
+                note[descriptor_start..descriptor_start + descriptor_size]
+                    .copy_from_slice(&HIMEM_START.to_le_bytes()[..descriptor_size]);
+
+                let result = find_pvh_entry(&note);
+                if name != b"Xen\0" {
+                    assert!(result.unwrap().is_none());
+                } else if matches!(descriptor_size, 4 | 8) {
+                    assert_eq!(result.unwrap(), Some(HIMEM_START));
+                } else {
+                    assert!(matches!(result, Err(Error::MalformedNote)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn eight_byte_entry_note_still_requires_a_32_bit_address() {
+        for entrypoint in [HIMEM_START, FOUR_GB] {
+            let mut image = test_elf();
+            write_u32(&mut image, 0x200 + 4, 8);
+            write_u64(&mut image, 0x200 + 16, entrypoint);
+            write_u64(&mut image, 120 + 32, 24);
+            write_u64(&mut image, 120 + 40, 24);
+            let result = parse_kernel(&mut Cursor::new(image));
+            if entrypoint < FOUR_GB {
+                assert_eq!(result.unwrap().entrypoint, entrypoint);
+            } else {
+                assert!(matches!(result, Err(Error::EntryAboveFourGb)));
+            }
+        }
+    }
+
+    #[test]
     fn rejects_malformed_note_and_command_line() {
         assert!(matches!(
             find_pvh_entry(&[0; 11]),
@@ -1631,6 +1748,122 @@ mod tests {
             } else {
                 assert_eq!(result.unwrap().initrd, Some((ram_end - HV_PAGE_SIZE, 17)));
             }
+        }
+    }
+
+    #[test]
+    fn rejects_metadata_reservations_and_ram_holes_before_import() {
+        let cmdline = "x".repeat(HV_PAGE_SIZE as usize);
+        let acpi_tables = AcpiTables {
+            rsdp: vec![0; 36],
+            tables: vec![0; HV_PAGE_SIZE as usize + 1],
+        };
+        for (base, tag) in [
+            (0, "pvh-boot-tables"),
+            (START_INFO_ADDR, "pvh-start-info"),
+            (MEMMAP_ADDR, "pvh-memory-map"),
+            (ACPI_RSDP_ADDR, "pvh-acpi-rsdp"),
+            (ACPI_TABLES_ADDR, "pvh-acpi-tables"),
+            (ACPI_TABLES_ADDR + HV_PAGE_SIZE, "pvh-acpi-tables"),
+            (CMDLINE_ADDR, "pvh-command-line"),
+            (CMDLINE_ADDR + HV_PAGE_SIZE, "pvh-command-line"),
+        ] {
+            let range = MemoryRange::new(base..base + HV_PAGE_SIZE);
+            let reserved_ranges = [range];
+            for is_reserved in [true, false] {
+                let layout = if is_reserved {
+                    make_layout()
+                } else {
+                    MemoryLayout::new(64 * 1024 * 1024, &[range], &[], &[], None).unwrap()
+                };
+                let mut importer = RecordingImporter::default();
+                let error = load_with_boot_config::<_, Cursor<Vec<u8>>>(
+                    &mut importer,
+                    &mut Cursor::new(test_elf()),
+                    None,
+                    &cmdline,
+                    &layout,
+                    Some(&acpi_tables),
+                    &BootConfig {
+                        apic_ids: &[0],
+                        level_triggered_irqs: &[],
+                        reserved_memory_ranges: if is_reserved { &reserved_ranges } else { &[] },
+                    },
+                )
+                .unwrap_err();
+                if is_reserved {
+                    assert!(matches!(
+                        error,
+                        Error::BootStructureOverlapsReservedMemory { tag: actual } if actual == tag
+                    ));
+                } else {
+                    assert!(matches!(
+                        error,
+                        Error::OutsideRam { tag: actual, .. } if actual == tag
+                    ));
+                }
+                assert!(importer.pages.is_empty());
+                assert!(importer.registers.is_empty());
+                assert_eq!(importer.memory_checks, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn checks_kernel_page_spans_against_declared_ram() {
+        let kernel_start = HIMEM_START - HV_PAGE_SIZE;
+        let kernel_end = HIMEM_START + 2 * HV_PAGE_SIZE;
+        let hole = MemoryRange::new(HIMEM_START..HIMEM_START + HV_PAGE_SIZE);
+        let layouts = [
+            MemoryLayout::new(64 * 1024 * 1024, &[hole], &[], &[], None).unwrap(),
+            MemoryLayout::new(HIMEM_START + HV_PAGE_SIZE, &[], &[], &[], None).unwrap(),
+            MemoryLayout::new_with_numa(
+                &[HIMEM_START + HV_PAGE_SIZE, 64 * 1024 * 1024],
+                &[],
+                &[],
+                &[],
+                None,
+            )
+            .unwrap(),
+        ];
+        for (index, layout) in layouts.iter().enumerate() {
+            let mut image = test_elf();
+            write_u16(&mut image, 56, 3);
+            write_u32(&mut image, 176, elf::PT_LOAD);
+            write_u64(&mut image, 176 + 8, 0x1000);
+            write_u64(&mut image, 176 + 24, HIMEM_START + HV_PAGE_SIZE);
+            write_u64(&mut image, 176 + 32, 1);
+            write_u64(&mut image, 176 + 40, 1);
+            let mut importer = RecordingImporter::default();
+            let result = load::<_, Cursor<Vec<u8>>>(
+                &mut importer,
+                &mut Cursor::new(image),
+                None,
+                "",
+                layout,
+                None,
+            );
+            if index < 2 {
+                assert!(
+                    matches!(
+                        &result,
+                        Err(Error::OutsideRam {
+                            tag: "pvh-kernel",
+                            ..
+                        })
+                    ),
+                    "layout {index}: {result:?}"
+                );
+                assert!(importer.pages.is_empty());
+                assert!(importer.registers.is_empty());
+                assert_eq!(importer.memory_checks, 0);
+            } else {
+                result.unwrap();
+            }
+
+            let span = page_span(kernel_start, kernel_end - kernel_start).unwrap();
+            let result = verify_ram(layout, span.0, span.1, "pvh-kernel");
+            assert_eq!(result.is_ok(), index == 2);
         }
     }
 
