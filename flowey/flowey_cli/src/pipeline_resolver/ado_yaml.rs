@@ -64,6 +64,8 @@ pub fn ado_yaml(
         ado_variables,
         ref ado_job_id_overrides,
         gh_name: _,
+        gh_workflow_dispatch_disabled: _,
+        gh_repository_dispatch_triggers: _,
         gh_schedule_triggers: _,
         gh_ci_triggers: _,
         gh_pr_triggers: _,

@@ -95,12 +95,27 @@ impl SimpleFlowNode for Node {
             }
         });
 
+        let requested_revision = ctx
+            .get_gh_context_var()
+            .event()
+            .repository_dispatch_revision();
         let commit_is_reviewed = ctx.emit_rust_step("verify release commit is reviewed", |ctx| {
             let gh_cli = gh_cli.clone().claim(ctx);
             let target = target.clone().claim(ctx);
+            let requested_revision = requested_revision.claim(ctx);
             move |rt| {
                 let gh_cli = rt.read(gh_cli);
                 let revision = rt.read(target);
+                let requested_revision = rt.read(requested_revision);
+
+                validate_commit_sha(&requested_revision)
+                    .context("invalid source release request")?;
+                if revision != requested_revision {
+                    anyhow::bail!(
+                        "release artifact revision {revision} does not match requested revision \
+                         {requested_revision}"
+                    );
+                }
 
                 let branches = flowey::shell_cmd!(
                     rt,
@@ -291,6 +306,18 @@ fn branch_contains(revision: &str, compare: &serde_json::Value) -> anyhow::Resul
     Ok(merge_base == revision)
 }
 
+fn validate_commit_sha(revision: &str) -> anyhow::Result<()> {
+    if revision.len() != 40
+        || !revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        anyhow::bail!("revision must be a full 40-character lowercase commit SHA");
+    }
+
+    Ok(())
+}
+
 fn vendor_release_files(assets: &Path) -> anyhow::Result<Vec<(PathBuf, Option<String>)>> {
     let identity = read_vendor_identity(assets)?;
     let archive = assets.join(identity.archive_name());
@@ -374,6 +401,15 @@ mod tests {
         });
 
         assert!(!branch_contains("c8c65e554b64bb2042d94fc612719d6c1e767235", &compare).unwrap());
+    }
+
+    #[test]
+    fn release_revision_must_be_a_full_lowercase_commit_sha() {
+        assert!(validate_commit_sha("0123456789abcdef0123456789abcdef01234567").is_ok());
+        assert!(validate_commit_sha("").is_err());
+        assert!(validate_commit_sha("main").is_err());
+        assert!(validate_commit_sha("0123456789ABCDEF0123456789ABCDEF01234567").is_err());
+        assert!(validate_commit_sha("0123456789abcdef0123456789abcdef0123456g").is_err());
     }
 
     #[test]

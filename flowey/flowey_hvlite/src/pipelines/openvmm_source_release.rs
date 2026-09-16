@@ -11,8 +11,8 @@ use flowey_lib_common::git_checkout::RepoSource;
 
 /// A pipeline that assembles, validates, and drafts an OpenVMM source release.
 ///
-/// This pipeline has no CI or PR triggers. It is dispatched by hand, against a
-/// commit whose `[workspace.package] version` a reviewed pull request has
+/// This pipeline has no CI or PR triggers. A `repository_dispatch` event names
+/// the commit whose `[workspace.package] version` a reviewed pull request has
 /// already set to the version being released.
 ///
 /// It ends at an `openvmm-v<VERSION>` tag, a vendor archive upload, and a
@@ -36,11 +36,16 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
 
         let mut pipeline = Pipeline::new();
         pipeline.gh_set_name("OpenVMM Source Release");
+        pipeline.gh_disable_workflow_dispatch();
+        pipeline.gh_add_repository_dispatch_trigger("openvmm-source-release");
         let (publish_release, use_release) = pipeline.new_typed_artifact::<
             flowey_lib_hvlite::assemble_openvmm_vendor_release::VendorReleaseOutput,
         >("openvmm-vendor-release");
 
-        let openvmm_repo_source = RepoSource::GithubSelf;
+        // repository_dispatch always loads this workflow and bootstraps Flowey
+        // from the default branch. Only the release payload uses the requested
+        // revision.
+        let openvmm_repo_source = RepoSource::GithubSelfAtRepositoryDispatchRevision;
 
         pipeline.gh_set_flowey_bootstrap_template(
             crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
