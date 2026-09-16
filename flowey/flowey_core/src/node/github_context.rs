@@ -140,4 +140,9 @@ impl GhContextVarReader<'_, state::Event> {
     pub fn pull_request(self) -> ReadVar<Option<GhContextVarReaderEventPullRequest>> {
         self.read_var("github.event.pull_request", false, true)
     }
+
+    /// `github.event.client_payload.revision`
+    pub fn repository_dispatch_revision(self) -> ReadVar<String> {
+        self.read_var("github.event.client_payload.revision", false, true)
+    }
 }

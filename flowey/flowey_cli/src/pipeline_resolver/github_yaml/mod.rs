@@ -54,6 +54,8 @@ pub fn github_yaml(
         graph,
         order,
         gh_name,
+        gh_workflow_dispatch_disabled,
+        gh_repository_dispatch_triggers,
         gh_schedule_triggers,
         gh_ci_triggers,
         gh_pr_triggers,
@@ -419,12 +421,17 @@ echo "{RUNNER_TEMP}/work" | {var_db_insert_working_dir}
 
             let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, is_string);
 
-            let name = parameters[*pipeline_param_idx].name();
+            let value = if gh_workflow_dispatch_disabled {
+                default
+            } else {
+                let name = parameters[*pipeline_param_idx].name();
+                format!("${{{{ inputs.{name} != '' && inputs.{name} || '{default}' }}}}")
+            };
 
             let cmd = format!(
                 r#"
 cat <<'EOF' | {var_db_inject_cmd}
-${{{{ inputs.{name} != '' && inputs.{name} || '{default}' }}}}
+{value}
 EOF
 "#
             )
@@ -654,57 +661,64 @@ EOF
     let mut concurrency = None;
     let pipeline_trigger = github_yaml_defs::Triggers {
         workflow_call: None,
-        workflow_dispatch: Some(github_yaml_defs::WorkflowDispatch {
-            inputs: github_yaml_defs::Inputs {
-                inputs: parameters
-                    .into_iter()
-                    .map(|param| {
-                        (
-                            param.name().to_string(),
-                            match param {
-                                flowey_core::pipeline::internal::Parameter::Bool {
-                                    name: _,
-                                    description,
-                                    kind: _,
-                                    default,
-                                } => github_yaml_defs::Input {
-                                    description: Some(description.clone()),
-                                    default: default.map(github_yaml_defs::Default::Boolean),
-                                    required: default.is_none(),
-                                    ty: github_yaml_defs::InputType::Boolean,
+        workflow_dispatch: (!gh_workflow_dispatch_disabled).then(|| {
+            github_yaml_defs::WorkflowDispatch {
+                inputs: github_yaml_defs::Inputs {
+                    inputs: parameters
+                        .into_iter()
+                        .map(|param| {
+                            (
+                                param.name().to_string(),
+                                match param {
+                                    flowey_core::pipeline::internal::Parameter::Bool {
+                                        name: _,
+                                        description,
+                                        kind: _,
+                                        default,
+                                    } => github_yaml_defs::Input {
+                                        description: Some(description.clone()),
+                                        default: default.map(github_yaml_defs::Default::Boolean),
+                                        required: default.is_none(),
+                                        ty: github_yaml_defs::InputType::Boolean,
+                                    },
+                                    flowey_core::pipeline::internal::Parameter::String {
+                                        name: _,
+                                        description,
+                                        kind: _,
+                                        default,
+                                        possible_values: _,
+                                    } => github_yaml_defs::Input {
+                                        description: Some(description.clone()),
+                                        default: default
+                                            .as_ref()
+                                            .map(|s| github_yaml_defs::Default::String(s.clone())),
+                                        required: default.is_none(),
+                                        ty: github_yaml_defs::InputType::String,
+                                    },
+                                    flowey_core::pipeline::internal::Parameter::Num {
+                                        name: _,
+                                        description,
+                                        kind: _,
+                                        default,
+                                        possible_values: _,
+                                    } => github_yaml_defs::Input {
+                                        description: Some(description.clone()),
+                                        default: default.map(github_yaml_defs::Default::Number),
+                                        required: default.is_none(),
+                                        ty: github_yaml_defs::InputType::Number,
+                                    },
                                 },
-                                flowey_core::pipeline::internal::Parameter::String {
-                                    name: _,
-                                    description,
-                                    kind: _,
-                                    default,
-                                    possible_values: _,
-                                } => github_yaml_defs::Input {
-                                    description: Some(description.clone()),
-                                    default: default
-                                        .as_ref()
-                                        .map(|s| github_yaml_defs::Default::String(s.clone())),
-                                    required: default.is_none(),
-                                    ty: github_yaml_defs::InputType::String,
-                                },
-                                flowey_core::pipeline::internal::Parameter::Num {
-                                    name: _,
-                                    description,
-                                    kind: _,
-                                    default,
-                                    possible_values: _,
-                                } => github_yaml_defs::Input {
-                                    description: Some(description.clone()),
-                                    default: default.map(github_yaml_defs::Default::Number),
-                                    required: default.is_none(),
-                                    ty: github_yaml_defs::InputType::Number,
-                                },
-                            },
-                        )
-                    })
-                    .collect::<BTreeMap<String, github_yaml_defs::Input>>(),
-            },
+                            )
+                        })
+                        .collect::<BTreeMap<String, github_yaml_defs::Input>>(),
+                },
+            }
         }),
+        repository_dispatch: (!gh_repository_dispatch_triggers.is_empty()).then_some(
+            github_yaml_defs::RepositoryDispatch {
+                types: gh_repository_dispatch_triggers,
+            },
+        ),
         pull_request: match gh_pr_triggers {
             Some(gh_pr_triggers) => {
                 if gh_pr_triggers.auto_cancel {
@@ -933,7 +947,12 @@ fn resolve_flow_as_github_yaml_steps(
                         .condvar(condvar.as_deref())
                         .env_source(Some(&gh_var_state.raw_name));
 
-                    let cmd = format!("{write_var} <<EOF\n{value}\nEOF",);
+                    let delimiter = if gh_var_state.is_object {
+                        "'EOF'"
+                    } else {
+                        "EOF"
+                    };
+                    let cmd = format!("{write_var} <<{delimiter}\n{value}\nEOF",);
                     bash_commands.push_minor(cmd);
                 }
             }

@@ -19,6 +19,8 @@ pub enum RepoSource<C = VarNotClaimed> {
     GithubRepo { owner: String, name: String },
     /// (GitHub Only) Checkout the repo containing the pipeline.
     GithubSelf,
+    /// (GitHub Only) Checkout the commit named by a repository dispatch payload.
+    GithubSelfAtRepositoryDispatchRevision,
     /// Use a pre-existing clone of the repo.
     ExistingClone(ReadVar<PathBuf, C>),
     /// (Local Only): Clone the repo from the given URL in the given path.
@@ -38,6 +40,9 @@ impl<C> Clone for RepoSource<C> {
                 name: name.clone(),
             },
             Self::GithubSelf => Self::GithubSelf,
+            Self::GithubSelfAtRepositoryDispatchRevision => {
+                Self::GithubSelfAtRepositoryDispatchRevision
+            }
             Self::ExistingClone(arg0) => Self::ExistingClone(arg0.clone()),
             Self::LocalOnlyNewClone {
                 url,
@@ -61,6 +66,9 @@ impl ClaimVar for RepoSource {
             RepoSource::AdoResource(x) => RepoSource::AdoResource(x),
             RepoSource::GithubRepo { owner, name } => RepoSource::GithubRepo { owner, name },
             RepoSource::GithubSelf => RepoSource::GithubSelf,
+            RepoSource::GithubSelfAtRepositoryDispatchRevision => {
+                RepoSource::GithubSelfAtRepositoryDispatchRevision
+            }
             RepoSource::ExistingClone(v) => RepoSource::ExistingClone(v.claim(ctx)),
             RepoSource::LocalOnlyNewClone {
                 url,
@@ -242,6 +250,20 @@ pub mod process_reqs {
             })
         })
     }
+}
+
+fn validate_commit_sha(revision: &str) -> anyhow::Result<()> {
+    if revision.len() != 40
+        || !revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        anyhow::bail!(
+            "repository dispatch revision must be a full 40-character lowercase commit SHA"
+        );
+    }
+
+    Ok(())
 }
 
 impl FlowNodeWithConfig for Node {
@@ -432,7 +454,7 @@ impl Node {
                         RepoSource::AdoResource(_) => {
                             workspace.join(format!("repo{idx}"))
                         },
-                        RepoSource::GithubRepo{ .. } | RepoSource::GithubSelf => anyhow::bail!("repo source for ADO backend must be an `AdoResource` or `ExistingClone`"),
+                        RepoSource::GithubRepo{ .. } | RepoSource::GithubSelf | RepoSource::GithubSelfAtRepositoryDispatchRevision => anyhow::bail!("repo source for ADO backend must be an `AdoResource` or `ExistingClone`"),
                         RepoSource::ExistingClone(path) => {
                             let path = rt.read(path);
                             path.absolute().context(format!("Failed to make {} absolute", path.display()))?
@@ -519,7 +541,9 @@ impl Node {
 
             if matches!(
                 repo_src,
-                RepoSource::GithubSelf | RepoSource::GithubRepo { .. }
+                RepoSource::GithubSelf
+                    | RepoSource::GithubSelfAtRepositoryDispatchRevision
+                    | RepoSource::GithubRepo { .. }
             ) {
                 // actions/checkout v6.1.0
                 let mut step = ctx
@@ -534,11 +558,27 @@ impl Node {
                     .requires_permission(GhPermission::Contents, GhPermissionValue::Read);
                 if let RepoSource::GithubRepo { owner, name } = repo_src {
                     step = step.with("repository", format!("{owner}/{name}"))
+                } else if let RepoSource::GithubSelfAtRepositoryDispatchRevision = repo_src {
+                    let revision = ctx
+                        .get_gh_context_var()
+                        .event()
+                        .repository_dispatch_revision();
+                    let valid_revision =
+                        ctx.emit_rust_step("validate repository dispatch revision", |ctx| {
+                            let revision = revision.clone().claim(ctx);
+                            move |rt| {
+                                validate_commit_sha(&rt.read(revision))?;
+                                Ok(())
+                            }
+                        });
+                    step = step
+                        .with("ref", "${{ github.event.client_payload.revision }}")
+                        .run_after(valid_revision)
                 }
                 did_checkouts.push(step.finish(ctx));
             } else if !matches!(repo_src, RepoSource::ExistingClone(_)) {
                 anyhow::bail!(
-                    "repo source must be a `GithubRepo`, `GithubSelf`, or `ExistingClone` for GitHub backend"
+                    "repo source must be a `GithubRepo`, `GithubSelf`, `GithubSelfAtRepositoryDispatchRevision`, or `ExistingClone` for GitHub backend"
                 );
             }
         }
@@ -576,6 +616,9 @@ impl Node {
                             PathBuf::from(parent_path.clone()).join(format!("repo{idx}"))
                         },
                         RepoSource::GithubSelf => {
+                            PathBuf::from(parent_path.clone()).join(format!("repo{idx}"))
+                        },
+                        RepoSource::GithubSelfAtRepositoryDispatchRevision => {
                             PathBuf::from(parent_path.clone()).join(format!("repo{idx}"))
                         },
                         RepoSource::ExistingClone(path) => {
@@ -674,7 +717,7 @@ impl Node {
                             RepoSource::AdoResource( .. ) => {
                                 anyhow::bail!("ADO resources are not supported on local backend");
                             }
-                            RepoSource::GithubRepo{ .. } | RepoSource::GithubSelf => {
+                            RepoSource::GithubRepo{ .. } | RepoSource::GithubSelf | RepoSource::GithubSelfAtRepositoryDispatchRevision => {
                                 anyhow::bail!("Github repos for GH Actions are not supported on local backend");
                             }
                         }
