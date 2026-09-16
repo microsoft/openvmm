@@ -28,7 +28,8 @@ rate-limited by default. To disable rate limiting (useful for debugging), set
 
 Build OpenVMM with the `otel` feature, then set `OPENVMM_OTEL=1` to export
 enabled spans using OTLP over HTTP with protobuf encoding. The exporter uses
-the standard OpenTelemetry environment variables. For example:
+the standard OpenTelemetry environment variables. Only plaintext HTTP
+endpoints are currently supported. For example:
 
 ```shell
 cargo build -p openvmm --features otel

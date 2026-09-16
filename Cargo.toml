@@ -479,7 +479,7 @@ thiserror = { version = "2", default-features = false }
 env_logger = "0.11.7"
 log = "0.4"
 opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
 tracing = "0.1"
 tracing-opentelemetry = { version = "0.33", default-features = false }
