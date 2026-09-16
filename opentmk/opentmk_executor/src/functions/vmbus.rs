@@ -150,6 +150,12 @@ fn with_channel<R>(
         if s.chan.is_none() {
             let offer = preferred_offer(&s.offers)
                 .ok_or_else(|| String::from("vmbus: no offers to open a channel on"))?;
+            log::debug!(
+                "vmbus: opening raw channel on offer iface={:x?} chan_id={:?} conn_id={:#x}",
+                offer.interface_id,
+                offer.channel_id,
+                offer.connection_id
+            );
             let chan = RawChannel::open(&mut *s.ctx, &offer)
                 .map_err(|e| format!("vmbus: channel open failed: {e:?}"))?;
             log::info!(
@@ -258,6 +264,7 @@ pub fn vmbus_msg(
     let conn_id = conn_id.expect_int("conn_id")?;
 
     run_logged(|| {
+        log::debug!("vmbus_msg: enter pkt={pkt:#x} len={pkt_len} conn_id={conn_id:#x}");
         let msg = read_input(mem, "vmbus_msg", pkt, pkt_len, MAX_FUZZ_MSG_LEN)?;
         let connection_id = fuzz::resolve_connection_id(conn_id);
         with_session(|s| {
@@ -289,6 +296,9 @@ pub fn vmbus_msg_comp(
     let conn_id = conn_id.expect_int("conn_id")?;
 
     run_logged(|| {
+        log::debug!(
+            "vmbus_msg_comp: enter pkt={pkt:#x} len={pkt_len} out={pkt_out:#x} out_len={pkt_out_len} conn_id={conn_id:#x}"
+        );
         let msg = read_input(mem, "vmbus_msg_comp", pkt, pkt_len, MAX_FUZZ_MSG_LEN)?;
         let connection_id = fuzz::resolve_connection_id(conn_id);
         let resp = with_session(|s| {
@@ -335,6 +345,9 @@ pub fn vmbus_packet(
     let pkt_type = pkt_type.expect_int("pkt_type")? as u16;
 
     run_logged(|| {
+        log::debug!(
+            "vmbus_packet: enter pkt={pkt:#x} len={pkt_len} desc={pkt_desc:#x} type={pkt_type}"
+        );
         let payload = read_input(mem, "vmbus_packet", pkt, pkt_len, MAX_FUZZ_PKT_LEN)?;
 
         let descriptor = if pkt_desc != 0 {
@@ -351,9 +364,13 @@ pub fn vmbus_packet(
         };
 
         with_channel(|chan, ctx| match &descriptor {
-            Some(desc) => chan
-                .send_raw_packet(ctx, desc, &payload)
-                .map_err(|e| format!("vmbus_packet(raw): {e:?}")),
+            Some(desc) => {
+                let r = chan
+                    .send_raw_packet(ctx, desc, &payload)
+                    .map_err(|e| format!("vmbus_packet(raw): {e:?}"));
+                log::debug!("vmbus_packet: raw send returned ok={}", r.is_ok());
+                r
+            }
             None => chan
                 .send_packet(ctx, PacketType(pkt_type), &payload, PacketFlags::new())
                 .map_err(|e| format!("vmbus_packet: {e:?}")),
@@ -373,6 +390,7 @@ pub fn vmbus_reopen_channel(
     let [] = vars.verify_num_params()?;
 
     run_logged(|| {
+        log::debug!("vmbus_reopen_channel: enter");
         with_session(|s| {
             if let Some(chan) = s.chan.take() {
                 if let Err(e) = chan.close(&mut *s.ctx) {
@@ -404,6 +422,7 @@ pub fn vmbus_fill_relids(
     let relids_ptr = relids.expect_int("relids")? as usize;
 
     run_logged(|| {
+        log::debug!("vmbus_fill_relids: enter relids={relids_ptr:#x}");
         if relids_ptr == 0 {
             return Err(String::from("vmbus_fill_relids: null relids pointer"));
         }

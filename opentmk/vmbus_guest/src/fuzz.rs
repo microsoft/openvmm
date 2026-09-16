@@ -242,13 +242,17 @@ impl RawChannel {
         }
 
         let base_gpa = crate::virt_to_phys(base);
+        log::debug!("raw open: alloc base_gpa={base_gpa:#x} pages={TOTAL_PAGES}");
         let mut pfns: Vec<u64> = Vec::with_capacity(TOTAL_PAGES);
         for i in 0..TOTAL_PAGES {
             pfns.push((base_gpa + (i * 4096) as u64) >> 12);
         }
 
         let gpadl = match establish_gpadl(ctx, offer.channel_id, REGION_BYTES as u32, &pfns) {
-            Ok(g) => g,
+            Ok(g) => {
+                log::debug!("raw open: gpadl established handle={g:?}");
+                g
+            }
             Err(e) => {
                 // SAFETY: `base` came from `alloc_zeroed(layout)` and
                 // no GPADL references it (the call above failed).
@@ -292,7 +296,10 @@ impl RawChannel {
             offer.connection_id,
             offer.channel_id.0 as u16,
         ) {
-            Ok(c) => c,
+            Ok(c) => {
+                log::debug!("raw open: open_channel done");
+                c
+            }
             Err(e) => {
                 // Release the GPADL before freeing the pages it names,
                 // otherwise the host keeps a mapping to memory the
