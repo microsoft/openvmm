@@ -23,6 +23,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
+anyhow.workspace = true
 guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
@@ -39,6 +40,7 @@ unicycle.workspace = true
 zerocopy = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]
+tdisp_proto.workspace = true
 user_driver.workspace = true
 
 [lints]
