@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::device_tree::DeviceTreeBuilder;
+use super::device_tree::DeviceTreeError;
 use crate::worker::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
 use loader::importer::Aarch64Register;
@@ -17,11 +19,8 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::aarch64::Aarch64Topology;
+use vmm_core_defs::uart::UartId;
 use zerocopy::IntoBytes;
-
-#[derive(Debug, Error)]
-#[error("device tree error: {0:?}")]
-pub struct DtError(pub fdt::builder::Error);
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -30,7 +29,7 @@ pub enum Error {
     #[error("linux loader error")]
     Loader(#[source] loader::linux::Error),
     #[error("device tree error")]
-    Dt(#[source] DtError),
+    Dt(#[source] DeviceTreeError),
     #[error("failed to write EFI/ACPI tables to guest memory")]
     Efi(#[source] guestmem::GuestMemoryError),
     #[error("failed to finalize SNP VMSA")]
@@ -240,432 +239,6 @@ pub fn load_linux_x86(
     Ok(InitialLoad { regs, page_imports })
 }
 
-/// Returns the device tree blob.
-/// NOTE: if need to use GICv2, then the interrupt level must include flags
-/// derived from the number of CPUs for the PPI interrupts.
-/// TODO: openvmm's command line should provide a device tree blob, optionally, too.
-/// TODO: this is a large function, break it up.
-/// TODO: disjoint from the VM configuration, must work key off of the VM configuration.
-fn build_dt(
-    cfg: &KernelConfig<'_>,
-    _gm: &GuestMemory,
-    enable_serial: bool,
-    processor_topology: &ProcessorTopology<Aarch64Topology>,
-    pcie_host_bridges: &[PcieHostBridge],
-    smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
-    chipset_low_mmio: MemoryRange,
-    chipset_high_mmio: MemoryRange,
-    initrd_start: u64,
-    initrd_end: u64,
-) -> Result<Vec<u8>, fdt::builder::Error> {
-    // This ID forces the subset of PL011 known as the SBSA UART be used.
-    const PL011_PERIPH_ID: u32 = 0x00041011;
-    const PL011_BAUD: u32 = 115200;
-    const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
-    const PL011_SERIAL0_IRQ: u32 = 1;
-    const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
-    const PL011_SERIAL1_IRQ: u32 = 2;
-    /// SMMUv3 MMIO region size: two 64 KiB pages (page 0 + page 1).
-    const SMMU_SIZE: u64 = 0x2_0000;
-
-    let num_cpus = processor_topology.vps().len();
-
-    use vm_topology::processor::aarch64::GicMsiController;
-    use vm_topology::processor::aarch64::GicVersion;
-
-    let gic_dist_base: u64 = processor_topology.gic_distributor_base();
-    let gic_dist_size: u64 = match processor_topology.gic_version() {
-        GicVersion::V3 { .. } => aarch64defs::GIC_DISTRIBUTOR_SIZE,
-        GicVersion::V2 { .. } => aarch64defs::GIC_V2_DISTRIBUTOR_SIZE,
-    };
-    let (gic_second_base, gic_second_size) = match processor_topology.gic_version() {
-        GicVersion::V3 {
-            redistributors_base,
-        } => (
-            redistributors_base,
-            aarch64defs::GIC_REDISTRIBUTOR_SIZE * num_cpus as u64,
-        ),
-        GicVersion::V2 { cpu_interface_base } => {
-            (cpu_interface_base, aarch64defs::GIC_V2_CPU_INTERFACE_SIZE)
-        }
-    };
-
-    // With the default values, that will overlap with the GIC distributor range
-    // if the number of VPs goes above `2048`. That is more than enough for the time being,
-    // both for the Linux and the Windows guests. The debug assert below is for the time
-    // when custom values are used.
-    debug_assert!(
-        !(gic_dist_base..gic_dist_base + gic_dist_size).contains(&gic_second_base)
-            && !(gic_second_base..gic_second_base + gic_second_size).contains(&gic_dist_base)
-    );
-
-    let mut buffer = vec![0u8; 0x200000];
-
-    let builder_config = fdt::builder::BuilderConfig {
-        blob_buffer: &mut buffer,
-        string_table_cap: 1024,
-        memory_reservations: &[],
-    };
-    let mut builder = fdt::builder::Builder::new(builder_config)?;
-    let p_address_cells = builder.add_string("#address-cells")?;
-    let p_size_cells = builder.add_string("#size-cells")?;
-    let p_model = builder.add_string("model")?;
-    let p_reg = builder.add_string("reg")?;
-    let p_device_type = builder.add_string("device_type")?;
-    let p_status = builder.add_string("status")?;
-    let p_compatible = builder.add_string("compatible")?;
-    let p_ranges = builder.add_string("ranges")?;
-    let p_enable_method = builder.add_string("enable-method")?;
-    let p_method = builder.add_string("method")?;
-    let p_bootargs = builder.add_string("bootargs")?;
-    let p_stdout_path = builder.add_string("stdout-path")?;
-    let p_initrd_start = builder.add_string("linux,initrd-start")?;
-    let p_initrd_end = builder.add_string("linux,initrd-end")?;
-    let p_interrupt_cells = builder.add_string("#interrupt-cells")?;
-    let p_interrupt_controller = builder.add_string("interrupt-controller")?;
-    let p_interrupt_names = builder.add_string("interrupt-names")?;
-    let p_interrupts = builder.add_string("interrupts")?;
-    let p_interrupt_parent = builder.add_string("interrupt-parent")?;
-    let p_always_on = builder.add_string("always-on")?;
-    let p_phandle = builder.add_string("phandle")?;
-    let p_clock_frequency = builder.add_string("clock-frequency")?;
-    let p_clock_output_names = builder.add_string("clock-output-names")?;
-    let p_clock_cells = builder.add_string("#clock-cells")?;
-    let p_clocks = builder.add_string("clocks")?;
-    let p_clock_names = builder.add_string("clock-names")?;
-    let p_current_speed = builder.add_string("current-speed")?;
-    let p_arm_periph_id = builder.add_string("arm,primecell-periphid")?;
-    let p_dma_coherent = builder.add_string("dma-coherent")?;
-    let p_bus_range = builder.add_string("bus-range")?;
-    let p_linux_pci_domain = builder.add_string("linux,pci-domain")?;
-    let p_msi_parent = builder.add_string("msi-parent")?;
-    let p_msi_controller = builder.add_string("msi-controller")?;
-    let p_arm_msi_base_spi = builder.add_string("arm,msi-base-spi")?;
-    let p_arm_msi_num_spis = builder.add_string("arm,msi-num-spis")?;
-    let p_iommu_cells = builder.add_string("#iommu-cells")?;
-    let p_iommu_map = builder.add_string("iommu-map")?;
-    let p_linux_pci_probe_only = builder.add_string("linux,pci-probe-only")?;
-
-    // Property handle values.
-    const PHANDLE_GIC: u32 = 1;
-    const PHANDLE_APB_PCLK: u32 = 2;
-    const PHANDLE_V2M: u32 = 3;
-    const PHANDLE_ITS: u32 = 4;
-    // SMMU phandles start at 5: SMMU instance N gets phandle 5 + N.
-    const PHANDLE_SMMU_BASE: u32 = 5;
-
-    const GIC_SPI: u32 = 0;
-    const GIC_PPI: u32 = 1;
-    const IRQ_TYPE_LEVEL_LOW: u32 = 8;
-    const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
-    const IRQ_TYPE_EDGE_RISING: u32 = 1;
-    /// VMBus PPI offset for the DT `interrupts` property.
-    const VMBUS_PPI_OFFSET: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI - 16;
-
-    let mut root_builder = builder
-        .start_node("")?
-        .add_u32(p_address_cells, 2)?
-        .add_u32(p_size_cells, 2)?
-        .add_u32(p_interrupt_parent, PHANDLE_GIC)?
-        .add_str(p_model, "microsoft,openvmm")?
-        .add_str(p_compatible, "microsoft,openvmm")?;
-
-    let mut cpu_builder = root_builder
-        .start_node("cpus")?
-        .add_str(p_compatible, "arm,armv8")?
-        .add_u32(p_address_cells, 1)?
-        .add_u32(p_size_cells, 0)?;
-
-    // Add a CPU node for each cpu.
-    for vp_index in 0..num_cpus {
-        let name = format!("cpu@{}", vp_index);
-        let mut cpu = cpu_builder
-            .start_node(name.as_ref())?
-            .add_u32(p_reg, vp_index as u32)?
-            .add_str(p_device_type, "cpu")?;
-
-        if num_cpus > 1 {
-            cpu = cpu.add_str(p_enable_method, "psci")?;
-        }
-
-        if vp_index == 0 {
-            cpu = cpu.add_str(p_status, "okay")?;
-        } else {
-            cpu = cpu.add_str(p_status, "disabled")?;
-        }
-
-        cpu_builder = cpu.end_node()?;
-    }
-    root_builder = cpu_builder.end_node()?;
-
-    let psci = root_builder
-        .start_node("psci")?
-        .add_str(p_compatible, "arm,psci-0.2")?
-        .add_str(p_method, "hvc")?;
-    root_builder = psci.end_node()?;
-
-    // Add a memory node for each RAM range.
-    for mem_entry in cfg.mem_layout.ram() {
-        let start = mem_entry.range.start();
-        let len = mem_entry.range.len();
-        let name = format!("memory@{:x}", start);
-        let mut mem = root_builder.start_node(&name)?;
-        mem = mem.add_str(p_device_type, "memory")?;
-        mem = mem.add_u64_array(p_reg, &[start, len])?;
-        root_builder = mem.end_node()?;
-    }
-
-    // Advanced Bus Peripheral Clock.
-    root_builder = root_builder
-        .start_node("apb-pclk")?
-        .add_str(p_compatible, "fixed-clock")?
-        .add_u32(p_clock_frequency, 24000000)?
-        .add_str_array(p_clock_output_names, &["clk24mhz"])?
-        .add_u32(p_clock_cells, 0)?
-        .add_u32(p_phandle, PHANDLE_APB_PCLK)?
-        .end_node()?;
-
-    // ARM64 Generic Interrupt Controller.
-    // GICv3 uses "arm,gic-v3"; GICv2 uses "arm,cortex-a15-gic".
-    // GICv3 can have an ITS child for LPI-based MSIs; v2m is the
-    // fallback for SPI-based MSIs (GICv2 or GICv3 without ITS).
-    let gic_msi = processor_topology.gic_msi();
-    let gic_compatible = match processor_topology.gic_version() {
-        GicVersion::V3 { .. } => "arm,gic-v3",
-        GicVersion::V2 { .. } => "arm,cortex-a15-gic",
-    };
-    let gic_node = root_builder
-        .start_node(format!("intc@{gic_dist_base:x}").as_str())?
-        .add_str(p_compatible, gic_compatible)?
-        .add_u64_array(
-            p_reg,
-            &[
-                gic_dist_base,
-                gic_dist_size,
-                gic_second_base,
-                gic_second_size,
-            ],
-        )?
-        .add_u32(p_address_cells, 2)?
-        .add_u32(p_size_cells, 2)?
-        .add_u32(p_interrupt_cells, 3)?
-        .add_null(p_interrupt_controller)?
-        .add_u32(p_phandle, PHANDLE_GIC)?
-        .add_null(p_ranges)?;
-    root_builder = match gic_msi {
-        GicMsiController::Its(its) => gic_node
-            .start_node(format!("its@{:x}", its.its_base).as_str())?
-            .add_str(p_compatible, "arm,gic-v3-its")?
-            .add_null(p_msi_controller)?
-            .add_u64_array(p_reg, &[its.its_base, openvmm_defs::config::GIC_ITS_SIZE])?
-            .add_u32(p_phandle, PHANDLE_ITS)?
-            .end_node()?
-            .end_node()?,
-        GicMsiController::V2m(v2m) => gic_node
-            .start_node(format!("v2m@{:x}", v2m.frame_base).as_str())?
-            .add_str(p_compatible, "arm,gic-v2m-frame")?
-            .add_null(p_msi_controller)?
-            .add_u64_array(
-                p_reg,
-                &[v2m.frame_base, openvmm_defs::config::GIC_V2M_MSI_FRAME_SIZE],
-            )?
-            .add_u32(p_arm_msi_base_spi, v2m.spi_base)?
-            .add_u32(p_arm_msi_num_spis, v2m.spi_count)?
-            .add_u32(p_phandle, PHANDLE_V2M)?
-            .end_node()?
-            .end_node()?,
-        GicMsiController::None => gic_node.end_node()?,
-    };
-
-    // SMMUv3 nodes (one per configured instance).
-    // Build a lookup from RC index → phandle for the iommu-map entries below.
-    let mut smmu_phandles: Vec<(u32, u32)> = Vec::new();
-    for (idx, smmu) in smmu_configs.iter().enumerate() {
-        let phandle = PHANDLE_SMMU_BASE + idx as u32;
-        smmu_phandles.push((smmu.rc_index, phandle));
-        // SPI interrupts use GIC_SPI encoding. The GSIV is the full INTID
-        // (e.g., 35), and the DT `interrupts` property wants the SPI number
-        // (INTID - 32) for GIC_SPI type.
-        let evtq_spi = smmu.event_gsiv - 32;
-        let gerr_spi = smmu.gerr_gsiv - 32;
-        root_builder = root_builder
-            .start_node(format!("smmu@{:x}", smmu.base).as_str())?
-            .add_str(p_compatible, "arm,smmu-v3")?
-            .add_u64_array(p_reg, &[smmu.base, SMMU_SIZE])?
-            .add_u32_array(
-                p_interrupts,
-                &[
-                    GIC_SPI,
-                    evtq_spi,
-                    IRQ_TYPE_LEVEL_HIGH,
-                    GIC_SPI,
-                    gerr_spi,
-                    IRQ_TYPE_LEVEL_HIGH,
-                ],
-            )?
-            .add_str_array(p_interrupt_names, &["eventq", "gerror"])?
-            .add_u32(p_iommu_cells, 1)?
-            .add_u32(p_phandle, phandle)?
-            .add_null(p_dma_coherent)?
-            .end_node()?;
-    }
-
-    // ARM64 Architectural Timer.
-    // The DT `interrupts` property uses the PPI offset (INTID - 16).
-    assert!((16..32).contains(&processor_topology.virt_timer_ppi()));
-    let virt_timer_ppi_offset = processor_topology.virt_timer_ppi() - 16;
-    let timer = root_builder
-        .start_node("timer")?
-        .add_str(p_compatible, "arm,armv8-timer")?
-        .add_u32(p_interrupt_parent, PHANDLE_GIC)?
-        .add_str(p_interrupt_names, "virt")?
-        .add_u32_array(
-            p_interrupts,
-            &[GIC_PPI, virt_timer_ppi_offset, IRQ_TYPE_LEVEL_LOW],
-        )?
-        .add_null(p_always_on)?;
-    root_builder = timer.end_node()?;
-
-    // Add PMU, if the interrupt is configured.
-    if let Some(pmu_gsiv) = processor_topology.pmu_gsiv() {
-        assert!((16..32).contains(&pmu_gsiv));
-        let ppi_index = pmu_gsiv - 16;
-        let pmu = root_builder
-            .start_node("pmu")?
-            .add_str(p_compatible, "arm,armv8-pmuv3")?
-            .add_u32_array(p_interrupts, &[GIC_PPI, ppi_index, IRQ_TYPE_LEVEL_HIGH])?;
-        root_builder = pmu.end_node()?;
-    }
-
-    // Add a PCIe host bridge node for each bridge.
-    for bridge in pcie_host_bridges {
-        let name = format!("pcie@{:x}", bridge.ecam_range.start());
-        let ranges = super::pcie::identity_ranges(bridge);
-
-        // No interrupt-map is provided because all devices use MSIs via the
-        // ITS or v2m frame; legacy INTx routing is not supported.
-        let mut node = root_builder
-            .start_node(name.as_str())?
-            .add_str(p_compatible, "pci-host-ecam-generic")?
-            .add_str(p_device_type, "pci")?
-            .add_u32(p_linux_pci_domain, bridge.segment as u32)?
-            .add_u64_array(p_reg, &[bridge.ecam_range.start(), bridge.ecam_range.len()])?
-            .add_u32_array(
-                p_bus_range,
-                &[bridge.start_bus as u32, bridge.end_bus as u32],
-            )?
-            .add_u32(p_address_cells, 3)?
-            .add_u32(p_size_cells, 2)?
-            .add_u32(p_interrupt_parent, PHANDLE_GIC)?
-            .add_u32_array(p_ranges, &ranges)?;
-        match gic_msi {
-            GicMsiController::Its(_) => {
-                node = node.add_u32(p_msi_parent, PHANDLE_ITS)?;
-            }
-            GicMsiController::V2m(_) => {
-                node = node.add_u32(p_msi_parent, PHANDLE_V2M)?;
-            }
-            GicMsiController::None => {}
-        }
-        if let Some((_, phandle)) = smmu_phandles.iter().find(|(idx, _)| *idx == bridge.index) {
-            // iommu-map: <rid_base> <&smmu_phandle> <stream_id_base> <length>
-            // Maps the full RID range (0..0x10000) for this root complex
-            // through its SMMU instance. stream_id_base is 0 because each
-            // SMMU is 1:1 with its RC — stream IDs are plain BDFs.
-            node = node.add_u32_array(p_iommu_map, &[0, *phandle, 0, 0x10000])?;
-        }
-        if bridge.preserve_boot_config {
-            // Tell Linux to keep the firmware-assigned PCI boot configuration
-            // (bus numbers and BARs) instead of re-enumerating. Linux checks
-            // this via of_pci_preserve_config(). This is the device-tree
-            // equivalent of the host-bridge "Ignore PCI Boot Configurations"
-            // _DSM emitted on the ACPI path.
-            node = node.add_u32(p_linux_pci_probe_only, 1)?;
-        }
-        root_builder = node.end_node()?;
-    }
-
-    let mut soc = root_builder
-        .start_node("openvmm")?
-        .add_str(p_compatible, "simple-bus")?
-        .add_u32(p_address_cells, 2)?
-        .add_u32(p_size_cells, 2)?
-        .add_null(p_ranges)?
-        .add_u32(p_interrupt_parent, PHANDLE_GIC)?;
-
-    if enable_serial {
-        // Uses the scoped down "arm,sbsa-aurt" rather than the full "arm,pl011" device.
-        for (serial_base, serial_interrupt) in [
-            (PL011_SERIAL0_BASE, PL011_SERIAL0_IRQ),
-            (PL011_SERIAL1_BASE, PL011_SERIAL1_IRQ),
-        ] {
-            let name = format!("uart@{:x}", serial_base);
-            soc = soc
-                .start_node(name.as_ref())?
-                .add_str_array(p_compatible, &["arm,sbsa-uart", "arm,primecell"])?
-                .add_str_array(p_clock_names, &["apb_pclk"])?
-                .add_u32(p_clocks, PHANDLE_APB_PCLK)?
-                .add_u32(p_interrupt_parent, PHANDLE_GIC)?
-                .add_u64_array(p_reg, &[serial_base, 0x1000])?
-                .add_u32(p_current_speed, PL011_BAUD)?
-                .add_u32(p_arm_periph_id, PL011_PERIPH_ID)?
-                .add_u32_array(
-                    p_interrupts,
-                    &[GIC_SPI, serial_interrupt, IRQ_TYPE_LEVEL_HIGH],
-                )?
-                .add_str(p_status, "okay")?
-                .end_node()?;
-        }
-    }
-
-    // Build VMBus MMIO ranges from the chipset MMIO ranges.
-    soc = soc
-        .start_node("vmbus")?
-        .add_u32(p_address_cells, 2)?
-        .add_u32(p_size_cells, 2)?
-        .add_null(p_dma_coherent)?
-        .add_u64_array(
-            p_ranges,
-            &[
-                chipset_low_mmio.start(),
-                chipset_low_mmio.len(),
-                chipset_high_mmio.start(),
-                chipset_high_mmio.len(),
-            ],
-        )?
-        .add_str(p_compatible, "microsoft,vmbus")?
-        .add_u32(p_interrupt_parent, PHANDLE_GIC)?
-        .add_u32_array(
-            p_interrupts,
-            // Here 3 parameters are used as the "#interrupt-cells"
-            // above specifies.
-            &[GIC_PPI, VMBUS_PPI_OFFSET, IRQ_TYPE_EDGE_RISING],
-        )?
-        .end_node()?;
-
-    root_builder = soc.end_node()?;
-
-    let mut chosen = root_builder
-        .start_node("chosen")?
-        .add_str(p_bootargs, cfg.cmdline)?;
-    chosen = chosen.add_u64(p_initrd_start, initrd_start)?;
-    chosen = chosen.add_u64(p_initrd_end, initrd_end)?;
-    if enable_serial {
-        chosen = chosen.add_str(
-            p_stdout_path,
-            format!("/hvlite/uart@{PL011_SERIAL0_BASE:x}").as_str(),
-        )?;
-    }
-
-    root_builder = chosen.end_node()?;
-
-    let boot_cpu_id = 0;
-    let dt_size = root_builder.end_node()?.build(boot_cpu_id)?;
-    buffer.truncate(dt_size);
-
-    Ok(buffer)
-}
-
 /// Write synthesized EFI and ACPI structures into guest memory.
 ///
 /// On ARM64, the Linux kernel can discover devices via ACPI instead of a
@@ -864,7 +437,7 @@ fn write_efi_and_acpi_tables(
 
 /// Build a "stub" device tree for ACPI-mode ARM64 direct boot.
 ///
-/// Unlike the full device tree built by [`build_dt`], this DT contains no
+/// Unlike the full device tree built by [`DeviceTreeBuilder`], this DT contains no
 /// hardware descriptions — no CPU nodes, no GIC, no timer, no devices.
 /// Its only purpose is a `/chosen` node that tells the Linux EFI stub
 /// where to find the EFI system table and memory map written by
@@ -935,7 +508,8 @@ fn build_stub_dt(
 pub fn load_linux_arm64(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
-    enable_serial: bool,
+    uarts: &[UartId],
+    console: Option<UartId>,
     processor_topology: &ProcessorTopology<Aarch64Topology>,
     pcie_host_bridges: &[PcieHostBridge],
     smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
@@ -993,21 +567,22 @@ pub fn load_linux_arm64(
             cfg.smbios,
         )?;
         build_stub_dt(cfg.cmdline, initrd_start, initrd_end, &efi_info)
-            .map_err(|e| Error::Dt(DtError(e)))?
+            .map_err(|e| Error::Dt(e.into()))?
     } else {
-        build_dt(
-            cfg,
-            gm,
-            enable_serial,
+        DeviceTreeBuilder::new(
             processor_topology,
+            cfg.mem_layout.ram(),
+            uarts,
             pcie_host_bridges,
-            smmu_configs,
-            chipset_mmio.low,
-            chipset_mmio.high,
-            initrd_start,
-            initrd_end,
         )
-        .map_err(|e| Error::Dt(DtError(e)))?
+        .with_linux_direct(chipset_mmio.low, chipset_mmio.high)
+        .with_linux_initrd(Some((initrd_start, initrd_end)))
+        .with_linux_smmus(smmu_configs)
+        .with_command_line(cfg.cmdline)
+        .with_console(console)
+        .with_capacity(0x200000)
+        .finish()
+        .map_err(Error::Dt)?
     };
 
     let initrd_config = initrd_reader.as_mut().map(|r| InitrdConfig {

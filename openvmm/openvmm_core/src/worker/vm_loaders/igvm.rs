@@ -4,6 +4,8 @@
 //! Loader implementation to load IGVM files.
 
 use super::super::memory_layout::ChipsetMmioRanges;
+use super::device_tree::DeviceTreeBuilder;
+use super::device_tree::DeviceTreeError;
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use igvm::IgvmDirectiveHeader;
@@ -28,7 +30,6 @@ use loader::importer::TableRegister;
 use loader::importer::X86Register;
 use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
-use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use range_map_vec::RangeMap;
 use std::collections::HashMap;
@@ -44,6 +45,7 @@ use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::x86::X86Topology;
+use vmm_core_defs::uart::UartId;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
@@ -79,7 +81,7 @@ pub enum Error {
     #[error("no vtl2 memory source in igvm file")]
     Vtl2MemorySource,
     #[error("building device tree for partition failed")]
-    DeviceTree(fdt::builder::Error),
+    DeviceTree(#[source] DeviceTreeError),
     #[error("unsupported SNP PCIe device tree configuration")]
     SnpPcieDeviceTree(#[from] SnpPcieDeviceTreeError),
     #[error("supplied vtl2 memory {0} is not aligned to 2MB")]
@@ -132,15 +134,14 @@ pub enum SnpPcieDeviceTreeError {
     Iommu,
 }
 
-/// Select the model-A topology only when servicing a DeviceTree request.
-/// VBS/OpenHCL keeps its existing device tree contract.
+/// Validate the SNP consumer's restrictions without filtering the inventory.
 fn device_tree_pcie_bridges(
     is_snp: bool,
     bridges: &[PcieHostBridge],
     has_iommu: bool,
 ) -> Result<&[PcieHostBridge], SnpPcieDeviceTreeError> {
     if !is_snp {
-        return Ok(&[]);
+        return Ok(bridges);
     }
     if has_iommu {
         return Err(SnpPcieDeviceTreeError::Iommu);
@@ -176,6 +177,13 @@ fn device_tree_pcie_bridges(
         }
     }
     Ok(bridges)
+}
+
+fn device_tree_capacity(max_size: u64, byte_offset: u32) -> Result<usize, Error> {
+    max_size
+        .checked_sub(u64::from(byte_offset))
+        .and_then(|available| usize::try_from(available).ok())
+        .ok_or(Error::ParameterTooLarge)
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -468,271 +476,6 @@ pub fn vtl2_memory_layout_request(
     Ok(Vtl2MemoryLayoutRequest { size, alignment })
 }
 
-/// Parameters for [`build_device_tree`].
-struct BuildDeviceTreeParams<'a> {
-    processor_topology: &'a ProcessorTopology<X86Topology>,
-    all_ram: &'a [MemoryRangeWithNode],
-    vtl2_protectable_ram: &'a [MemoryRange],
-    vtl2_base_address: Vtl2BaseAddressType,
-    command_line: &'a str,
-    with_vmbus_redirect: bool,
-    com_serial: Option<SerialInformation>,
-    entropy: Option<&'a [u8]>,
-    chipset_mmio: ChipsetMmioRanges,
-    pcie_host_bridges: &'a [PcieHostBridge],
-}
-
-/// Build a device tree representing the whole guest partition.
-fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::builder::Error> {
-    let BuildDeviceTreeParams {
-        processor_topology,
-        all_ram,
-        vtl2_protectable_ram,
-        vtl2_base_address,
-        command_line,
-        with_vmbus_redirect,
-        com_serial,
-        entropy,
-        chipset_mmio,
-        pcie_host_bridges,
-    } = params;
-
-    let ChipsetMmioRanges {
-        low: chipset_low_mmio,
-        high: chipset_high_mmio,
-        vtl2: vtl2_chipset_mmio,
-    } = chipset_mmio;
-
-    let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
-
-    let mut builder = fdt::builder::Builder::new(fdt::builder::BuilderConfig {
-        blob_buffer: buf.as_mut_slice(),
-        string_table_cap: 1024,
-        memory_reservations: &[],
-    })?;
-    let p_address_cells = builder.add_string("#address-cells")?;
-    let p_size_cells = builder.add_string("#size-cells")?;
-    let p_model = builder.add_string("model")?;
-    let p_reg = builder.add_string("reg")?;
-    let p_ranges = builder.add_string("ranges")?;
-    let p_device_type = builder.add_string("device_type")?;
-    let p_status = builder.add_string("status")?;
-    let p_igvm_type = builder.add_string(igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY)?;
-    let p_compatible = builder.add_string("compatible")?;
-    let p_numa_node_id = builder.add_string("numa-node-id")?;
-    let p_vmbus_connection_id = builder.add_string("microsoft,message-connection-id")?;
-    let p_vtl = builder.add_string(igvm_defs::dt::IGVM_DT_VTL_PROPERTY)?;
-    let p_bootargs = builder.add_string("bootargs")?;
-    let p_clock_frequency = builder.add_string("clock-frequency")?;
-    let p_current_speed = builder.add_string("current-speed")?;
-    let p_interrupts = builder.add_string("interrupts")?;
-
-    let mut cpus = builder
-        .start_node("")?
-        .add_u32(p_address_cells, 2)? // 64bit
-        .add_u32(p_size_cells, 2)? // 64bit
-        .add_str(p_model, "microsoft,hyperv")?
-        .start_node("cpus")?
-        .add_u32(p_address_cells, 1)?
-        .add_u32(p_size_cells, 0)?;
-
-    // Add a CPU node for each VP.
-    for proc in processor_topology.vps_arch() {
-        let name = format!("cpu@{:x}", proc.base.vp_index.index() + 1);
-        cpus = cpus
-            .start_node(name.as_ref())?
-            .add_str(p_device_type, "cpu")?
-            .add_u32(p_reg, proc.apic_id)?
-            .add_u32(p_numa_node_id, proc.base.vnode)?
-            .add_str(p_status, "okay")?
-            .end_node()?;
-    }
-
-    let mut root = cpus.end_node()?;
-
-    let (memory_map, vnodes) = build_memory_map(all_ram, vtl2_protectable_ram);
-
-    // Build the memory entries in reverse order to require the underhill fdt
-    // parser to sort them correctly.
-    for (entry, vnode) in memory_map.iter().zip(vnodes.iter()).rev() {
-        let start_address = entry.starting_gpa_page_number * HV_PAGE_SIZE;
-        let size = entry.number_of_pages * HV_PAGE_SIZE;
-        let name = format!("memory@{:x}", start_address);
-        let mut mem = root.start_node(&name)?;
-        mem = mem.add_str(p_device_type, "memory")?;
-        mem = mem.add_u64_array(p_reg, &[start_address, size])?;
-        mem = mem.add_u32(p_igvm_type, entry.entry_type.0 as u32)?;
-        mem = mem.add_u32(p_numa_node_id, *vnode)?;
-        root = mem.end_node()?;
-    }
-
-    if !pcie_host_bridges.is_empty() {
-        let p_bus_range = root.add_string("bus-range")?;
-        let p_linux_pci_domain = root.add_string("linux,pci-domain")?;
-        for bridge in pcie_host_bridges {
-            let name = format!("pcie@{:x}", bridge.ecam_range.start());
-            // reg names the actual first bus, not the bus-zero MCFG base.
-            // Native APIC MSI/MSI-X needs no ARM interrupt-parent phandle.
-            root = root
-                .start_node(&name)?
-                .add_str(p_compatible, "pci-host-ecam-generic")?
-                .add_str(p_device_type, "pci")?
-                .add_u64_array(p_reg, &[bridge.ecam_range.start(), bridge.ecam_range.len()])?
-                .add_u32_array(
-                    p_bus_range,
-                    &[u32::from(bridge.start_bus), u32::from(bridge.end_bus)],
-                )?
-                .add_u32(p_linux_pci_domain, u32::from(bridge.segment))?
-                .add_u32(p_address_cells, 3)?
-                .add_u32(p_size_cells, 2)?
-                .add_u32_array(p_ranges, &super::pcie::identity_ranges(bridge))?
-                .add_u32(p_numa_node_id, bridge.vnode.unwrap_or(0))?
-                .end_node()?;
-        }
-    }
-
-    // Linux requires vmbus to be under a simple-bus node.
-    let mut simple_bus = root
-        .start_node("bus")?
-        .add_str(p_compatible, "simple-bus")?
-        .add_u32(p_address_cells, 2)?
-        .add_u32(p_size_cells, 2)?
-        .add_prop_array(p_ranges, &[])?;
-
-    // Build DT ranges for VMBus devices. VTL0 gets the chipset low/high MMIO
-    // ranges; VTL2 gets its own private chipset MMIO range.
-    let ranges_vtl0: Vec<u64> = [chipset_low_mmio, chipset_high_mmio]
-        .into_iter()
-        .flat_map(|range| [range.start(), range.start(), range.len()])
-        .collect();
-
-    let ranges_vtl2: Vec<u64> = if vtl2_chipset_mmio.is_empty() {
-        vec![]
-    } else {
-        vec![
-            vtl2_chipset_mmio.start(),
-            vtl2_chipset_mmio.start(),
-            vtl2_chipset_mmio.len(),
-        ]
-    };
-
-    // VTL0 vmbus root device
-    let vmbus_vtl0_name = if ranges_vtl0.is_empty() {
-        "vmbus-vtl0".into()
-    } else {
-        format!("vmbus-vtl0@{:x}", ranges_vtl0[0])
-    };
-    let vmbus_vtl0 = simple_bus.start_node(&vmbus_vtl0_name)?;
-    simple_bus = vmbus_vtl0
-        .add_u32(p_address_cells, 2)?
-        .add_u32(p_size_cells, 2)?
-        .add_str(p_compatible, "microsoft,vmbus")?
-        .add_u64_array(p_ranges, &ranges_vtl0)?
-        .add_u32(p_vtl, 0)?
-        .add_u32(p_vmbus_connection_id, 1)?
-        .end_node()?;
-
-    // VTL2 vmbus root device
-    let vmbus_vtl2_name = if ranges_vtl2.is_empty() {
-        "vmbus-vtl2".into()
-    } else {
-        format!("vmbus-vtl2@{:x}", ranges_vtl2[0])
-    };
-    let vmbus_vtl2 = simple_bus.start_node(&vmbus_vtl2_name)?;
-    simple_bus = vmbus_vtl2
-        .add_u32(p_address_cells, 2)?
-        .add_u32(p_size_cells, 2)?
-        .add_str(p_compatible, "microsoft,vmbus")?
-        .add_u64_array(p_ranges, &ranges_vtl2)?
-        .add_u32(p_vtl, 2)?
-        .add_u32(
-            p_vmbus_connection_id,
-            if with_vmbus_redirect {
-                // TODO: is this value defined anywhere? can we pass it in instead?
-                0x800074
-            } else {
-                4
-            },
-        )?
-        .end_node()?;
-
-    root = simple_bus.end_node()?;
-
-    if let Some(serial_cfg) = com_serial {
-        let mut io_port_bus = root
-            .start_node("pio-bus")?
-            .add_str(p_compatible, "x86-pio-bus")?
-            .add_u32(p_address_cells, 1)?
-            .add_u32(p_size_cells, 1)?
-            .add_prop_array(p_ranges, &[])?;
-
-        let serial_name = format!("serial@{:x}", serial_cfg.io_port);
-        io_port_bus = io_port_bus
-            .start_node(&serial_name)?
-            .add_str(p_compatible, "ns16550")?
-            .add_u32(p_clock_frequency, 0)?
-            .add_u32(p_current_speed, 115200)?
-            .add_u64_array(p_reg, &[serial_cfg.io_port.into(), 0x8])?
-            .add_u64_array(p_interrupts, &[serial_cfg.irq.into()])?
-            .end_node()?;
-
-        root = io_port_bus.end_node()?;
-    }
-
-    // Chosen node - contains cmdline.
-    root = root
-        .start_node("chosen")?
-        .add_str(p_bootargs, command_line)?
-        .end_node()?;
-
-    // openhcl node - contains memory allocation mode.
-    let p_memory_allocation_mode = root.add_string("memory-allocation-mode")?;
-    let p_memory_size = root.add_string("memory-size")?;
-    let p_mmio_size = root.add_string("mmio-size")?;
-    let p_vf_keep_alive_devs = root.add_string("device-types")?;
-    let mut openhcl = root.start_node("openhcl")?;
-
-    let memory_allocation_mode = match vtl2_base_address {
-        Vtl2BaseAddressType::Vtl2Allocate { size } => {
-            if let Some(size) = size {
-                // Encode the size at the expected property.
-                openhcl = openhcl.add_u64(p_memory_size, size)?;
-            }
-
-            // TODO: allow configuring more mmio size, but report 128 MB for
-            // now.
-            openhcl = openhcl.add_u64(p_mmio_size, 128 * 1024 * 1024)?;
-
-            "vtl2"
-        }
-        _ => "host",
-    };
-
-    openhcl = openhcl.add_str(p_memory_allocation_mode, memory_allocation_mode)?;
-
-    if let Some(entropy) = entropy {
-        openhcl = openhcl
-            .start_node("entropy")?
-            .add_prop_array(p_reg, &[entropy])?
-            .end_node()?;
-    }
-
-    // Indicate that NVMe keep-alive feature is supported by this VMM.
-    openhcl = openhcl
-        .start_node("keep-alive")?
-        .add_str(p_vf_keep_alive_devs, "nvme")?
-        .end_node()?;
-
-    root = openhcl.end_node()?;
-
-    let bytes_used = root
-        .end_node()?
-        .build(processor_topology.vp_arch(virt::VpIndex::BSP).apic_id)?;
-    buf.truncate(bytes_used);
-
-    Ok(buf)
-}
-
 #[derive(Clone, Copy)]
 pub struct AcpiTables<'a> {
     pub madt: &'a [u8],
@@ -765,13 +508,15 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub vtl2_only: bool,
     /// Is vmbus redirection to VTL2 enabled for this guest.
     pub with_vmbus_redirect: bool,
-    /// Should a com device be configured.
-    pub com_serial: Option<SerialInformation>,
+    /// Complete attached UART inventory.
+    pub uarts: &'a [UartId],
+    /// Explicit console selection, independent of UART presence.
+    pub console: Option<UartId>,
     /// Entropy
     pub entropy: Option<&'a [u8]>,
     /// Resolved chipset MMIO ranges for device tree and UEFI config.
     pub chipset_mmio: ChipsetMmioRanges,
-    /// Resolved host bridges to publish for SNP images requesting a device tree.
+    /// Resolved host bridges to publish for images requesting a device tree.
     pub pcie_host_bridges: &'a [PcieHostBridge],
     /// Whether the runtime configured an IOMMU or interrupt remapping.
     pub pcie_has_iommu: bool,
@@ -810,7 +555,8 @@ fn load_igvm_x86(
         vtl2_framebuffer_gpa_base,
         vtl2_only,
         with_vmbus_redirect,
-        com_serial,
+        uarts,
+        console,
         entropy,
         chipset_mmio,
         pcie_host_bridges,
@@ -964,10 +710,12 @@ fn load_igvm_x86(
             } => (data, max_size),
             ParameterAreaState::Inserted => panic!("igvmfile is not valid"),
         };
-        let offset = info.byte_offset as usize;
-        let end_of_parameter = offset + parameter.len();
+        let offset = usize::try_from(info.byte_offset).map_err(|_| Error::ParameterTooLarge)?;
+        let end_of_parameter = offset
+            .checked_add(parameter.len())
+            .ok_or(Error::ParameterTooLarge)?;
 
-        if end_of_parameter > max_size as usize {
+        if u64::try_from(end_of_parameter).map_err(|_| Error::ParameterTooLarge)? > max_size {
             // TODO: tracing for which parameter was too big?
             return Err(Error::ParameterTooLarge);
         }
@@ -1228,19 +976,22 @@ fn load_igvm_x86(
             IgvmDirectiveHeader::DeviceTree(ref info) => {
                 let pcie_host_bridges =
                     device_tree_pcie_bridges(is_snp, pcie_host_bridges, pcie_has_iommu)?;
-                let dt = build_device_tree(BuildDeviceTreeParams {
-                    processor_topology,
-                    all_ram: &all_ram,
-                    vtl2_protectable_ram: &vtl2_protectable_ram,
-                    vtl2_base_address,
-                    command_line: &cmdline,
-                    with_vmbus_redirect,
-                    com_serial,
-                    entropy,
-                    chipset_mmio,
-                    pcie_host_bridges,
-                })
-                .map_err(Error::DeviceTree)?;
+                let max_size = match parameter_areas.get(&info.parameter_area_index) {
+                    Some(ParameterAreaState::Allocated { max_size, .. }) => *max_size,
+                    _ => return Err(Error::ParameterTooLarge),
+                };
+                let capacity = device_tree_capacity(max_size, info.byte_offset)?;
+                let dt =
+                    DeviceTreeBuilder::new(processor_topology, &all_ram, uarts, pcie_host_bridges)
+                        .with_igvm(chipset_mmio, vtl2_base_address)
+                        .with_igvm_protectable_ram(&vtl2_protectable_ram)
+                        .with_igvm_vmbus_redirect(with_vmbus_redirect)
+                        .with_command_line(&cmdline)
+                        .with_console(console)
+                        .with_igvm_entropy(entropy)
+                        .with_capacity(capacity)
+                        .finish()
+                        .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;
             }
             IgvmDirectiveHeader::RequiredMemory {
@@ -1659,6 +1410,7 @@ mod tests {
     use super::*;
     use fdt::parser::Node;
     use fdt::parser::Parser;
+    use serial_16550_resources::ComPort;
     use test_with_tracing::test;
     use vm_topology::processor::TopologyBuilder;
 
@@ -1679,25 +1431,27 @@ mod tests {
     }
 
     fn device_tree(bridges: &[PcieHostBridge]) -> Vec<u8> {
-        build_device_tree(BuildDeviceTreeParams {
-            processor_topology: &TopologyBuilder::new_x86().build(2).unwrap(),
-            all_ram: &[MemoryRangeWithNode {
+        DeviceTreeBuilder::new(
+            &TopologyBuilder::new_x86().build(2).unwrap(),
+            &[MemoryRangeWithNode {
                 range: MemoryRange::new(0..0x4000_0000),
                 vnode: 0,
             }],
-            vtl2_protectable_ram: &[],
-            vtl2_base_address: Vtl2BaseAddressType::File,
-            command_line: "console=ttyS0",
-            with_vmbus_redirect: false,
-            com_serial: None,
-            entropy: Some(&[1, 2, 3, 4]),
-            chipset_mmio: ChipsetMmioRanges {
+            &[],
+            bridges,
+        )
+        .with_igvm(
+            ChipsetMmioRanges {
                 low: MemoryRange::new(0xf000_0000..0x1_0000_0000),
                 high: MemoryRange::new(0x20_0000_0000..0x21_0000_0000),
                 vtl2: MemoryRange::EMPTY,
             },
-            pcie_host_bridges: bridges,
-        })
+            Vtl2BaseAddressType::File,
+        )
+        .with_command_line("console=ttyS0")
+        .with_igvm_entropy(Some(&[1, 2, 3, 4]))
+        .with_capacity(0x10000)
+        .finish()
         .unwrap()
     }
 
@@ -1706,6 +1460,34 @@ mod tests {
         (0..property.data.len() / 4)
             .map(|i| property.read_u32(i).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn device_tree_parameter_capacity_uses_remaining_area() {
+        assert_eq!(device_tree_capacity(0x10000, 0x1000).unwrap(), 0xf000);
+        assert_eq!(device_tree_capacity(100, 100).unwrap(), 0);
+        assert!(matches!(
+            device_tree_capacity(100, 101),
+            Err(Error::ParameterTooLarge)
+        ));
+    }
+
+    #[test]
+    fn device_tree_inventory_does_not_depend_on_isolation() {
+        let bridges = [bridge(7)];
+        for is_snp in [false, true] {
+            let inventory = device_tree_pcie_bridges(is_snp, &bridges, false).unwrap();
+            assert_eq!(inventory.len(), 1);
+            let dt = device_tree(inventory);
+            assert!(
+                Parser::new(&dt)
+                    .unwrap()
+                    .root()
+                    .unwrap()
+                    .children()
+                    .any(|node| node.unwrap().name == "pcie@80000000")
+            );
+        }
     }
 
     #[test]
@@ -1872,28 +1654,33 @@ mod tests {
             let high_start = 0x10_0000_0000 + offset * 0x1_0000_0000;
             bridge.high_mmio = MemoryRange::new(high_start..high_start + 0x1_0000_0000);
         }
-        let dt = build_device_tree(BuildDeviceTreeParams {
-            processor_topology: &TopologyBuilder::new_x86().build(255).unwrap(),
-            all_ram: &[MemoryRangeWithNode {
+        let dt = DeviceTreeBuilder::new(
+            &TopologyBuilder::new_x86().build(255).unwrap(),
+            &[MemoryRangeWithNode {
                 range: MemoryRange::new(0..0x4000_0000),
                 vnode: 0,
             }],
-            vtl2_protectable_ram: &[],
-            vtl2_base_address: Vtl2BaseAddressType::File,
-            command_line: "console=ttyS0",
-            with_vmbus_redirect: false,
-            com_serial: Some(SerialInformation {
-                io_port: 0x3f8,
-                irq: 4,
-            }),
-            entropy: Some(&[0xab; 64]),
-            chipset_mmio: ChipsetMmioRanges {
+            &[
+                UartId::Com(ComPort::Com1),
+                UartId::Com(ComPort::Com2),
+                UartId::Com(ComPort::Com3),
+                UartId::Com(ComPort::Com4),
+            ],
+            device_tree_pcie_bridges(true, &bridges, false).unwrap(),
+        )
+        .with_igvm(
+            ChipsetMmioRanges {
                 low: MemoryRange::new(0xf000_0000..0x1_0000_0000),
                 high: MemoryRange::new(0x20_0000_0000..0x21_0000_0000),
                 vtl2: MemoryRange::EMPTY,
             },
-            pcie_host_bridges: device_tree_pcie_bridges(true, &bridges, false).unwrap(),
-        })
+            Vtl2BaseAddressType::File,
+        )
+        .with_command_line("console=ttyS0")
+        .with_console(Some(UartId::Com(ComPort::Com3)))
+        .with_igvm_entropy(Some(&[0xab; 64]))
+        .with_capacity(0x10000)
+        .finish()
         .unwrap();
         let parser = Parser::new(&dt).unwrap();
         let root = parser.root().unwrap();
@@ -1954,11 +1741,12 @@ mod tests {
             device_tree_pcie_bridges(true, &bridges, false),
             Err(SnpPcieDeviceTreeError::Cxl(7))
         ));
-        // VBS/OpenHCL must neither publish these bridges nor reject them.
-        assert!(
+        // These restrictions belong to SNP, not to the common publisher.
+        assert_eq!(
             device_tree_pcie_bridges(false, &bridges, true)
                 .unwrap()
-                .is_empty()
+                .len(),
+            bridges.len()
         );
     }
 
@@ -2055,7 +1843,8 @@ mod tests {
                 vtl2_framebuffer_gpa_base: None,
                 vtl2_only: false,
                 with_vmbus_redirect: false,
-                com_serial: None,
+                uarts: &[],
+                console: None,
                 entropy: None,
                 chipset_mmio: ChipsetMmioRanges {
                     low: MemoryRange::EMPTY,

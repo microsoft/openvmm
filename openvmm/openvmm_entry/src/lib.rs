@@ -83,7 +83,8 @@ use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
-use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UartId;
+use openvmm_defs::config::UartInventory;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -1320,6 +1321,7 @@ async fn vm_config_from_command_line(
 
     let layout_config = chipset.layout_config();
     let VmChipsetResult {
+        uarts,
         chipset,
         mut chipset_devices,
         pci_chipset_devices,
@@ -1377,10 +1379,7 @@ async fn vm_config_from_command_line(
             } else {
                 Vtl2BaseAddressType::File
             },
-            com_serial: has_com3.then(|| SerialInformation {
-                io_port: ComPort::Com3.io_port(),
-                irq: ComPort::Com3.irq().into(),
-            }),
+            com_serial: has_com3.then_some(UartId::Com(ComPort::Com3)),
         };
 
         // An IGVM launch carries no SMBIOS field of its own; the identity is
@@ -2195,6 +2194,7 @@ async fn vm_config_from_command_line(
         pci_chipset_devices,
         isa_dma_controller,
         chipset_capabilities: capabilities,
+        uarts: UartInventory::Devices(uarts),
         layout: layout_config,
         #[cfg(windows)]
         vpci_resources,

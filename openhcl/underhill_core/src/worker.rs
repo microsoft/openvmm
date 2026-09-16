@@ -2699,6 +2699,7 @@ async fn new_underhill_vm(
     }
 
     let vm_manifest_builder::VmChipsetResult {
+        uarts: _,
         chipset,
         mut chipset_devices,
         pci_chipset_devices,
