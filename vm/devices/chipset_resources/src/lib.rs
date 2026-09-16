@@ -470,10 +470,10 @@ pub mod pm {
     /// Default PIO base address for the PM dynamic register region.
     ///
     /// This value must match what is reported by the firmware (FADT).
-    pub const DEFAULT_PM_PIO_BASE: u16 = 0x400;
+    pub const DEFAULT_PM_PIO_BASE: u16 = acpi_spec::hyperv::DEFAULT_PM_PIO_BASE;
 
     /// Default ACPI IRQ line for the Hyper-V power management device.
-    pub const DEFAULT_ACPI_IRQ: u32 = 9;
+    pub const DEFAULT_ACPI_IRQ: u32 = acpi_spec::hyperv::DEFAULT_ACPI_IRQ;
 
     impl ResourceId<ChipsetDeviceHandleKind> for Piix4PowerManagementDeviceHandle {
         const ID: &'static str = "piix4_power_management";

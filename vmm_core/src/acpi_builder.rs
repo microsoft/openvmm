@@ -1476,6 +1476,7 @@ mod test {
     use super::*;
     use acpi_spec::madt::MadtParser;
     use acpi_spec::mcfg::parse_mcfg;
+    use test_with_tracing::test;
     use virt::VpIndex;
     use virt::VpInfo;
     use vm_topology::processor::TopologyBuilder;
@@ -1516,6 +1517,64 @@ mod test {
                 acpi_irq: 2,
                 iommu: None,
             },
+        }
+    }
+
+    #[test]
+    fn snp_tables_match_hosted_fixed_chipset() {
+        let memory = MemoryLayout::new(160 * MB, &[], &[], &[], None).unwrap();
+        let bridges = vec![];
+        for count in [1, 255] {
+            let topology = TopologyBuilder::new_x86()
+                .build_with_vp_info((0..count).map(|id| X86VpInfo {
+                    base: VpInfo {
+                        vp_index: VpIndex::new(id),
+                        vnode: 0,
+                    },
+                    apic_id: id,
+                }))
+                .unwrap();
+            let mut hosted = new_builder(&memory, &topology, &bridges);
+            hosted.arch = AcpiArchConfig::X86 {
+                with_ioapic: true,
+                with_pic: true,
+                with_pit: true,
+                with_psp: false,
+                pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
+                acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
+                iommu: None,
+            };
+            let cpus: Vec<_> = (0..count)
+                .map(|apic_id| acpi::snp::Cpu {
+                    apic_id,
+                    numa_node: 0,
+                    enabled: true,
+                })
+                .collect();
+            let tables = acpi::snp::Topology::new(
+                count,
+                0,
+                &cpus,
+                acpi::snp::Ram {
+                    start: 0,
+                    length: 160 * MB,
+                    numa_node: 0,
+                },
+                &[],
+            )
+            .unwrap()
+            .build(&OEM_INFO);
+            assert_eq!(tables.madt, hosted.build_madt(), "{count} CPUs");
+            assert_eq!(tables.srat, hosted.build_srat(), "{count} CPUs");
+
+            let all = hosted.build_acpi_tables(0xe0000, |dsdt| {
+                dsdt.add_apic();
+                dsdt.add_rtc();
+            });
+            assert_eq!(&all.tables[..tables.dsdt.len()], &tables.dsdt);
+            let fadt = tables.fadt(0xe1000, &OEM_INFO).unwrap();
+            let offset = tables.dsdt.len().next_multiple_of(8);
+            assert_eq!(&all.tables[offset..offset + fadt.len()], &fadt);
         }
     }
 

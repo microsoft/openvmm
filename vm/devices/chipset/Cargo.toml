@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+acpi_spec.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
 chipset_resources.workspace = true

@@ -34,7 +34,8 @@ use x86defs::msi::MsiData;
 
 pub mod resolver;
 
-pub const IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS: u64 = 0xfec00000;
+pub const IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS: u64 =
+    acpi_spec::hyperv::IOAPIC_BASE_ADDRESS as u64;
 
 mod spec {
     use bitfield_struct::bitfield;

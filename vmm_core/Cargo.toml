@@ -65,5 +65,8 @@ iced-x86 = { optional = true, workspace = true, features = ["std", "fast_fmt"] }
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
