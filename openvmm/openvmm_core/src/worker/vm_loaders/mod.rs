@@ -6,4 +6,5 @@
 pub mod igvm;
 pub mod linux;
 pub mod pcat;
+mod pcie;
 pub mod uefi;

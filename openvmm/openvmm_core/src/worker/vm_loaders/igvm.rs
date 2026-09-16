@@ -39,6 +39,7 @@ use vm_loader::InitialLoad;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
+use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::aarch64::Aarch64Topology;
@@ -79,6 +80,8 @@ pub enum Error {
     Vtl2MemorySource,
     #[error("building device tree for partition failed")]
     DeviceTree(fdt::builder::Error),
+    #[error("unsupported SNP PCIe device tree configuration")]
+    SnpPcieDeviceTree(#[from] SnpPcieDeviceTreeError),
     #[error("supplied vtl2 memory {0} is not aligned to 2MB")]
     Vtl2MemoryAligned(u64),
     #[error("supplied vtl2 memory {0} is smaller than igvm file VTL2 range {1}")]
@@ -107,6 +110,72 @@ pub enum Error {
     LowerVtlContext,
     #[error("missing required memory range {0}")]
     MissingRequiredMemory(MemoryRange),
+}
+
+#[derive(Debug, Error)]
+pub enum SnpPcieDeviceTreeError {
+    #[error("at most eight PCIe host bridges are supported")]
+    TooManyBridges,
+    #[error("PCIe segment {0} is not unique")]
+    DuplicateSegment(u16),
+    #[error("PCIe segment {0} has CXL metadata")]
+    Cxl(u16),
+    #[error("PCIe segment {0} requests preservation of BARs or boot configuration")]
+    PreserveConfig(u16),
+    #[error("PCIe segment {0} is not on NUMA node zero")]
+    NumaNode(u16),
+    #[error("PCIe segment {0} has an invalid ECAM or bus range")]
+    EcamRange(u16),
+    #[error("PCIe segment {0} has a low MMIO window above 4 GiB")]
+    LowMmio(u16),
+    #[error("IOMMU or interrupt remapping is not supported")]
+    Iommu,
+}
+
+/// Select the model-A topology only when servicing a DeviceTree request.
+/// VBS/OpenHCL keeps its existing device tree contract.
+fn device_tree_pcie_bridges(
+    is_snp: bool,
+    bridges: &[PcieHostBridge],
+    has_iommu: bool,
+) -> Result<&[PcieHostBridge], SnpPcieDeviceTreeError> {
+    if !is_snp {
+        return Ok(&[]);
+    }
+    if has_iommu {
+        return Err(SnpPcieDeviceTreeError::Iommu);
+    }
+    if bridges.len() > 8 {
+        return Err(SnpPcieDeviceTreeError::TooManyBridges);
+    }
+    for (index, bridge) in bridges.iter().enumerate() {
+        let segment = bridge.segment;
+        if bridges[..index].iter().any(|b| b.segment == segment) {
+            return Err(SnpPcieDeviceTreeError::DuplicateSegment(segment));
+        }
+        // Model A uses native APIC MSI/MSI-X, with no INTx or IOMMU map.
+        // Do not describe CXL or pinned firmware resources as ordinary PCIe.
+        if bridge.cxl.is_some() {
+            return Err(SnpPcieDeviceTreeError::Cxl(segment));
+        }
+        if bridge.preserve_bars || bridge.preserve_boot_config {
+            return Err(SnpPcieDeviceTreeError::PreserveConfig(segment));
+        }
+        if bridge.vnode.unwrap_or(0) != 0 {
+            return Err(SnpPcieDeviceTreeError::NumaNode(segment));
+        }
+        if bridge.start_bus > bridge.end_bus
+            || bridge.ecam_range.len()
+                != (u64::from(bridge.end_bus) + 1 - u64::from(bridge.start_bus)) << 20
+            || !bridge.ecam_range.start().is_multiple_of(1 << 20)
+        {
+            return Err(SnpPcieDeviceTreeError::EcamRange(segment));
+        }
+        if !bridge.low_mmio.is_empty() && bridge.low_mmio.end() > 1 << 32 {
+            return Err(SnpPcieDeviceTreeError::LowMmio(segment));
+        }
+    }
+    Ok(bridges)
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -410,6 +479,7 @@ struct BuildDeviceTreeParams<'a> {
     com_serial: Option<SerialInformation>,
     entropy: Option<&'a [u8]>,
     chipset_mmio: ChipsetMmioRanges,
+    pcie_host_bridges: &'a [PcieHostBridge],
 }
 
 /// Build a device tree representing the whole guest partition.
@@ -424,6 +494,7 @@ fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::
         com_serial,
         entropy,
         chipset_mmio,
+        pcie_host_bridges,
     } = params;
 
     let ChipsetMmioRanges {
@@ -493,6 +564,31 @@ fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::
         mem = mem.add_u32(p_igvm_type, entry.entry_type.0 as u32)?;
         mem = mem.add_u32(p_numa_node_id, *vnode)?;
         root = mem.end_node()?;
+    }
+
+    if !pcie_host_bridges.is_empty() {
+        let p_bus_range = root.add_string("bus-range")?;
+        let p_linux_pci_domain = root.add_string("linux,pci-domain")?;
+        for bridge in pcie_host_bridges {
+            let name = format!("pcie@{:x}", bridge.ecam_range.start());
+            // reg names the actual first bus, not the bus-zero MCFG base.
+            // Native APIC MSI/MSI-X needs no ARM interrupt-parent phandle.
+            root = root
+                .start_node(&name)?
+                .add_str(p_compatible, "pci-host-ecam-generic")?
+                .add_str(p_device_type, "pci")?
+                .add_u64_array(p_reg, &[bridge.ecam_range.start(), bridge.ecam_range.len()])?
+                .add_u32_array(
+                    p_bus_range,
+                    &[u32::from(bridge.start_bus), u32::from(bridge.end_bus)],
+                )?
+                .add_u32(p_linux_pci_domain, u32::from(bridge.segment))?
+                .add_u32(p_address_cells, 3)?
+                .add_u32(p_size_cells, 2)?
+                .add_u32_array(p_ranges, &super::pcie::identity_ranges(bridge))?
+                .add_u32(p_numa_node_id, bridge.vnode.unwrap_or(0))?
+                .end_node()?;
+        }
     }
 
     // Linux requires vmbus to be under a simple-bus node.
@@ -675,6 +771,10 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub entropy: Option<&'a [u8]>,
     /// Resolved chipset MMIO ranges for device tree and UEFI config.
     pub chipset_mmio: ChipsetMmioRanges,
+    /// Resolved host bridges to publish for SNP images requesting a device tree.
+    pub pcie_host_bridges: &'a [PcieHostBridge],
+    /// Whether the runtime configured an IOMMU or interrupt remapping.
+    pub pcie_has_iommu: bool,
 }
 
 pub fn load_igvm(
@@ -713,6 +813,8 @@ fn load_igvm_x86(
         com_serial,
         entropy,
         chipset_mmio,
+        pcie_host_bridges,
+        pcie_has_iommu,
     } = params;
 
     let ChipsetMmioRanges {
@@ -743,6 +845,7 @@ fn load_igvm_x86(
         return Err(Error::CommandLineContainsNul(pos));
     }
 
+    let is_snp = igvm_isolation_type == igvm::IsolationType::Snp;
     let (mask, max_vtl) = match selected_platform_header(igvm_file, igvm_isolation_type)? {
         IgvmPlatformHeader::SupportedPlatform(info) => (info.compatibility_mask, info.highest_vtl),
     };
@@ -1123,6 +1226,8 @@ fn load_igvm_x86(
                 import_parameter(&mut parameter_areas, info, &bytes)?;
             }
             IgvmDirectiveHeader::DeviceTree(ref info) => {
+                let pcie_host_bridges =
+                    device_tree_pcie_bridges(is_snp, pcie_host_bridges, pcie_has_iommu)?;
                 let dt = build_device_tree(BuildDeviceTreeParams {
                     processor_topology,
                     all_ram: &all_ram,
@@ -1133,6 +1238,7 @@ fn load_igvm_x86(
                     com_serial,
                     entropy,
                     chipset_mmio,
+                    pcie_host_bridges,
                 })
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;
@@ -1551,6 +1657,427 @@ impl PageDataBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fdt::parser::Node;
+    use fdt::parser::Parser;
+    use test_with_tracing::test;
+    use vm_topology::processor::TopologyBuilder;
+
+    fn bridge(segment: u16) -> PcieHostBridge {
+        PcieHostBridge {
+            index: u32::from(segment),
+            segment,
+            start_bus: 32,
+            end_bus: 47,
+            ecam_range: MemoryRange::new(0x8000_0000..0x8100_0000),
+            low_mmio: MemoryRange::new(0x9000_0000..0xa000_0000),
+            high_mmio: MemoryRange::new(0x12_0000_0000..0x14_0000_0000),
+            cxl: None,
+            vnode: None,
+            preserve_bars: false,
+            preserve_boot_config: false,
+        }
+    }
+
+    fn device_tree(bridges: &[PcieHostBridge]) -> Vec<u8> {
+        build_device_tree(BuildDeviceTreeParams {
+            processor_topology: &TopologyBuilder::new_x86().build(2).unwrap(),
+            all_ram: &[MemoryRangeWithNode {
+                range: MemoryRange::new(0..0x4000_0000),
+                vnode: 0,
+            }],
+            vtl2_protectable_ram: &[],
+            vtl2_base_address: Vtl2BaseAddressType::File,
+            command_line: "console=ttyS0",
+            with_vmbus_redirect: false,
+            com_serial: None,
+            entropy: Some(&[1, 2, 3, 4]),
+            chipset_mmio: ChipsetMmioRanges {
+                low: MemoryRange::new(0xf000_0000..0x1_0000_0000),
+                high: MemoryRange::new(0x20_0000_0000..0x21_0000_0000),
+                vtl2: MemoryRange::EMPTY,
+            },
+            pcie_host_bridges: bridges,
+        })
+        .unwrap()
+    }
+
+    fn cells(node: &Node<'_>, name: &str) -> Vec<u32> {
+        let property = node.find_property(name).unwrap().unwrap();
+        (0..property.data.len() / 4)
+            .map(|i| property.read_u32(i).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn pcie_device_tree_resolved_resources() {
+        let mut bridges = [bridge(7), bridge(0x1234)];
+        bridges[1].ecam_range = MemoryRange::new(0x10_0000_0000..0x10_0100_0000);
+        bridges[1].start_bus = 240;
+        bridges[1].end_bus = 255;
+        bridges[1].low_mmio = MemoryRange::EMPTY;
+        bridges[1].high_mmio = MemoryRange::new(0x30_0000_0000..0x31_0000_0000);
+        bridges[1].vnode = Some(0);
+        let bridges = device_tree_pcie_bridges(true, &bridges, false).unwrap();
+        let dt = device_tree(bridges);
+        let parser = Parser::new(&dt).unwrap();
+        let nodes: Vec<_> = parser
+            .root()
+            .unwrap()
+            .children()
+            .map(Result::unwrap)
+            .filter(|node| node.name.starts_with("pcie@"))
+            .collect();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "pcie@80000000");
+        assert_eq!(nodes[1].name, "pcie@1000000000");
+        for (node, bridge) in nodes.iter().zip(bridges) {
+            assert_eq!(
+                node.find_property("compatible")
+                    .unwrap()
+                    .unwrap()
+                    .read_str()
+                    .unwrap(),
+                "pci-host-ecam-generic"
+            );
+            assert_eq!(
+                node.find_property("device_type")
+                    .unwrap()
+                    .unwrap()
+                    .read_str()
+                    .unwrap(),
+                "pci"
+            );
+            let reg = node.find_property("reg").unwrap().unwrap();
+            assert_eq!(reg.data.len(), 16);
+            assert_eq!(reg.read_u64(0).unwrap(), bridge.ecam_range.start());
+            assert_eq!(reg.read_u64(1).unwrap(), bridge.ecam_range.len());
+            assert_eq!(
+                cells(node, "bus-range"),
+                [u32::from(bridge.start_bus), u32::from(bridge.end_bus)]
+            );
+            assert_eq!(cells(node, "linux,pci-domain"), [u32::from(bridge.segment)]);
+            assert_eq!(cells(node, "#address-cells"), [3]);
+            assert_eq!(cells(node, "#size-cells"), [2]);
+            assert_eq!(cells(node, "numa-node-id"), [0]);
+            for absent in [
+                "interrupt-parent",
+                "msi-parent",
+                "interrupt-map",
+                "iommu-map",
+                "linux,pci-probe-only",
+            ] {
+                assert!(node.find_property(absent).unwrap().is_none());
+            }
+        }
+        assert_eq!(
+            cells(&nodes[0], "ranges"),
+            [
+                0x02000000, 0, 0x90000000, 0, 0x90000000, 0, 0x10000000, 0x03000000, 0x12, 0, 0x12,
+                0, 2, 0,
+            ]
+        );
+        assert_eq!(
+            cells(&nodes[1], "ranges"),
+            [0x03000000, 0x30, 0, 0x30, 0, 1, 0]
+        );
+    }
+
+    fn non_pcie_properties(dt: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+        fn collect(
+            node: Node<'_>,
+            path: &str,
+            properties: &mut std::collections::BTreeMap<String, Vec<u8>>,
+        ) {
+            if node.name.starts_with("pcie@") {
+                return;
+            }
+            let path = format!("{path}/{}", node.name);
+            for property in node.properties() {
+                let property = property.unwrap();
+                properties.insert(format!("{path}:{}", property.name), property.data.to_vec());
+            }
+            for child in node.children() {
+                collect(child.unwrap(), &path, properties);
+            }
+        }
+        let mut properties = std::collections::BTreeMap::new();
+        collect(
+            Parser::new(dt).unwrap().root().unwrap(),
+            "",
+            &mut properties,
+        );
+        properties
+    }
+
+    #[test]
+    fn pcie_device_tree_preserves_existing_nodes() {
+        let empty = device_tree(&[]);
+        let populated = device_tree(&[bridge(7)]);
+        assert_eq!(non_pcie_properties(&empty), non_pcie_properties(&populated));
+        let parser = Parser::new(&empty).unwrap();
+        let root = parser.root().unwrap();
+        let names: Vec<_> = root.children().map(|node| node.unwrap().name).collect();
+        assert_eq!(names, ["cpus", "memory@0", "bus", "chosen", "openhcl"]);
+        assert_eq!(cells(&root, "#address-cells"), [2]);
+        assert_eq!(cells(&root, "#size-cells"), [2]);
+        assert_eq!(parser.boot_cpuid_phys, 0);
+    }
+
+    #[test]
+    fn pcie_device_tree_bridge_limit_and_segments() {
+        let mut bridges: Vec<_> = (0..8).map(bridge).collect();
+        for bridge in &mut bridges {
+            let offset = u64::from(bridge.segment);
+            let ecam_start = 0x8000_0000 + offset * 0x100_0000;
+            bridge.ecam_range = MemoryRange::new(ecam_start..ecam_start + 0x100_0000);
+            bridge.low_mmio = MemoryRange::EMPTY;
+            let high_start = 0x10_0000_0000 + offset * 0x1_0000_0000;
+            bridge.high_mmio = MemoryRange::new(high_start..high_start + 0x1_0000_0000);
+        }
+        assert!(device_tree_pcie_bridges(true, &bridges, false).is_ok());
+        let dt = device_tree(&bridges);
+        assert_eq!(
+            Parser::new(&dt)
+                .unwrap()
+                .root()
+                .unwrap()
+                .children()
+                .map(Result::unwrap)
+                .filter(|node| node.name.starts_with("pcie@"))
+                .count(),
+            8
+        );
+        bridges.push(bridge(8));
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::TooManyBridges)
+        ));
+        bridges.truncate(2);
+        bridges[1].segment = bridges[0].segment;
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::DuplicateSegment(0))
+        ));
+    }
+
+    #[test]
+    fn pcie_device_tree_maximum_topology_fits_parameter_area() {
+        let mut bridges: Vec<_> = (0..8).map(bridge).collect();
+        for bridge in &mut bridges {
+            let offset = u64::from(bridge.segment);
+            let ecam_start = 0x8000_0000 + offset * 0x100_0000;
+            bridge.ecam_range = MemoryRange::new(ecam_start..ecam_start + 0x100_0000);
+            let low_start = 0x9000_0000 + offset * 0x100_0000;
+            bridge.low_mmio = MemoryRange::new(low_start..low_start + 0x100_0000);
+            let high_start = 0x10_0000_0000 + offset * 0x1_0000_0000;
+            bridge.high_mmio = MemoryRange::new(high_start..high_start + 0x1_0000_0000);
+        }
+        let dt = build_device_tree(BuildDeviceTreeParams {
+            processor_topology: &TopologyBuilder::new_x86().build(255).unwrap(),
+            all_ram: &[MemoryRangeWithNode {
+                range: MemoryRange::new(0..0x4000_0000),
+                vnode: 0,
+            }],
+            vtl2_protectable_ram: &[],
+            vtl2_base_address: Vtl2BaseAddressType::File,
+            command_line: "console=ttyS0",
+            with_vmbus_redirect: false,
+            com_serial: Some(SerialInformation {
+                io_port: 0x3f8,
+                irq: 4,
+            }),
+            entropy: Some(&[0xab; 64]),
+            chipset_mmio: ChipsetMmioRanges {
+                low: MemoryRange::new(0xf000_0000..0x1_0000_0000),
+                high: MemoryRange::new(0x20_0000_0000..0x21_0000_0000),
+                vtl2: MemoryRange::EMPTY,
+            },
+            pcie_host_bridges: device_tree_pcie_bridges(true, &bridges, false).unwrap(),
+        })
+        .unwrap();
+        let parser = Parser::new(&dt).unwrap();
+        let root = parser.root().unwrap();
+        let cpus = root
+            .children()
+            .map(Result::unwrap)
+            .find(|node| node.name == "cpus")
+            .unwrap();
+        assert_eq!(cpus.children().map(Result::unwrap).count(), 255);
+        assert_eq!(
+            root.children()
+                .map(Result::unwrap)
+                .filter(|node| node.name.starts_with("pcie@"))
+                .count(),
+            8
+        );
+        assert_eq!(parser.total_size, dt.len());
+        // The model-A measured handoff reserves a 64-KiB DeviceTree area.
+        assert!(
+            dt.len() <= 64 * 1024,
+            "DeviceTree requires {} bytes",
+            dt.len()
+        );
+        eprintln!("255 VPs and 8 PCIe bridges: {} DeviceTree bytes", dt.len());
+    }
+
+    #[test]
+    fn pcie_device_tree_rejects_unsupported_semantics() {
+        let mut bridges = [bridge(7)];
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, true),
+            Err(SnpPcieDeviceTreeError::Iommu)
+        ));
+        bridges[0].preserve_bars = true;
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::PreserveConfig(7))
+        ));
+        bridges[0].preserve_bars = false;
+        bridges[0].preserve_boot_config = true;
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::PreserveConfig(7))
+        ));
+        bridges[0].preserve_boot_config = false;
+        bridges[0].vnode = Some(1);
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::NumaNode(7))
+        ));
+        bridges[0].vnode = None;
+        bridges[0].cxl = Some(vm_topology::pcie::PcieHostBridgeCxlInfo {
+            chbcr_range: MemoryRange::EMPTY,
+            hdm_range: MemoryRange::EMPTY,
+            hdm_window_restrictions: Default::default(),
+        });
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::Cxl(7))
+        ));
+        // VBS/OpenHCL must neither publish these bridges nor reject them.
+        assert!(
+            device_tree_pcie_bridges(false, &bridges, true)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn pcie_device_tree_rejects_invalid_ranges() {
+        let mut bridges = [bridge(7)];
+        bridges[0].start_bus = 48;
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::EcamRange(7))
+        ));
+        bridges[0].start_bus = 31;
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::EcamRange(7))
+        ));
+        bridges[0] = bridge(7);
+        bridges[0].ecam_range = MemoryRange::new(0x8000_1000..0x8100_1000);
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::EcamRange(7))
+        ));
+        bridges[0] = bridge(7);
+        bridges[0].low_mmio = MemoryRange::new(0xffff_f000..0x1_0000_1000);
+        assert!(matches!(
+            device_tree_pcie_bridges(true, &bridges, false),
+            Err(SnpPcieDeviceTreeError::LowMmio(7))
+        ));
+    }
+
+    #[test]
+    fn snp_pcie_validation_requires_device_tree_request() {
+        for request_device_tree in [false, true] {
+            let mut directives = vec![IgvmDirectiveHeader::PageData {
+                gpa: 0,
+                compatibility_mask: 1,
+                flags: igvm_defs::IgvmPageDataFlags::new(),
+                data_type: IgvmPageDataType::NORMAL,
+                data: vec![0xab; HV_PAGE_SIZE as usize],
+            }];
+            if request_device_tree {
+                directives.extend([
+                    IgvmDirectiveHeader::ParameterArea {
+                        number_of_bytes: 0x10000,
+                        parameter_area_index: 0,
+                        initial_data: vec![],
+                    },
+                    IgvmDirectiveHeader::DeviceTree(IGVM_VHS_PARAMETER {
+                        parameter_area_index: 0,
+                        byte_offset: 0,
+                    }),
+                    IgvmDirectiveHeader::ParameterInsert(IGVM_VHS_PARAMETER_INSERT {
+                        gpa: 0x10000,
+                        compatibility_mask: 1,
+                        parameter_area_index: 0,
+                    }),
+                ]);
+            }
+            let igvm_file = IgvmFile::new(
+                igvm::IgvmRevision::V1,
+                vec![IgvmPlatformHeader::SupportedPlatform(
+                    igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM {
+                        compatibility_mask: 1,
+                        highest_vtl: 0,
+                        platform_type: IgvmPlatformType::SEV_SNP,
+                        platform_version: 1,
+                        shared_gpa_boundary: 0,
+                    },
+                )],
+                vec![IgvmInitializationHeader::GuestPolicy {
+                    policy: 0x30000,
+                    compatibility_mask: 1,
+                }],
+                directives,
+            )
+            .unwrap();
+            let gm = GuestMemory::allocate(0x20000);
+            let mut bridges = [bridge(7)];
+            bridges[0].preserve_bars = true;
+            let result = load_igvm_x86(LoadIgvmParams {
+                igvm_file: &igvm_file,
+                igvm_isolation_type: igvm::IsolationType::Snp,
+                gm: &gm,
+                processor_topology: &TopologyBuilder::new_x86().build(1).unwrap(),
+                mem_layout: &MemoryLayout::new(0x20000, &[], &[], &[], None).unwrap(),
+                cmdline: "",
+                acpi_tables: AcpiTables {
+                    madt: &[],
+                    srat: &[],
+                    slit: None,
+                    pptt: None,
+                },
+                vtl2_base_address: Vtl2BaseAddressType::File,
+                vtl2_framebuffer_gpa_base: None,
+                vtl2_only: false,
+                with_vmbus_redirect: false,
+                com_serial: None,
+                entropy: None,
+                chipset_mmio: ChipsetMmioRanges {
+                    low: MemoryRange::EMPTY,
+                    high: MemoryRange::EMPTY,
+                    vtl2: MemoryRange::EMPTY,
+                },
+                pcie_host_bridges: &bridges,
+                pcie_has_iommu: true,
+            });
+            if request_device_tree {
+                assert!(matches!(
+                    result,
+                    Err(Error::SnpPcieDeviceTree(SnpPcieDeviceTreeError::Iommu))
+                ));
+            } else {
+                result.unwrap();
+                let mut page = [0; HV_PAGE_SIZE as usize];
+                gm.read_at(0, &mut page).unwrap();
+                assert_eq!(page, [0xab; HV_PAGE_SIZE as usize]);
+            }
+        }
+    }
 
     #[test]
     fn error_range_requires_nonempty_page_aligned_range() {

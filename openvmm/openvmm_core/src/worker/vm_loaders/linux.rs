@@ -538,47 +538,9 @@ fn build_dt(
     }
 
     // Add a PCIe host bridge node for each bridge.
-    // PCI address space type bits (phys.hi bits 25:24).
-    const PCI_SPACE_MEM32: u32 = 0x02000000; // 32-bit non-prefetchable MMIO
-    const PCI_SPACE_MEM64: u32 = 0x03000000; // 64-bit prefetchable MMIO
-
     for bridge in pcie_host_bridges {
         let name = format!("pcie@{:x}", bridge.ecam_range.start());
-
-        // The `ranges` property encodes translations from PCI MMIO address
-        // space to CPU physical address space.  Each entry is 7 cells:
-        //   [pci-phys.hi, pci-phys.mid, pci-phys.lo,
-        //    cpu-phys.hi, cpu-phys.lo,
-        //    size.hi, size.lo]
-        let mut ranges: Vec<u32> = Vec::new();
-
-        let low_start = bridge.low_mmio.start();
-        let low_len = bridge.low_mmio.len();
-        if low_len > 0 {
-            ranges.extend_from_slice(&[
-                PCI_SPACE_MEM32,
-                0,
-                low_start as u32,
-                (low_start >> 32) as u32,
-                (low_start & 0xFFFF_FFFF) as u32,
-                (low_len >> 32) as u32,
-                (low_len & 0xFFFF_FFFF) as u32,
-            ]);
-        }
-
-        let high_start = bridge.high_mmio.start();
-        let high_len = bridge.high_mmio.len();
-        if high_len > 0 {
-            ranges.extend_from_slice(&[
-                PCI_SPACE_MEM64,
-                (high_start >> 32) as u32,
-                (high_start & 0xFFFF_FFFF) as u32,
-                (high_start >> 32) as u32,
-                (high_start & 0xFFFF_FFFF) as u32,
-                (high_len >> 32) as u32,
-                (high_len & 0xFFFF_FFFF) as u32,
-            ]);
-        }
+        let ranges = super::pcie::identity_ranges(bridge);
 
         // No interrupt-map is provided because all devices use MSIs via the
         // ITS or v2m frame; legacy INTx routing is not supported.
