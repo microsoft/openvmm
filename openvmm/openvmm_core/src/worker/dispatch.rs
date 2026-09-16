@@ -106,6 +106,7 @@ use std::fs::File;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
+use tpm_resources::TpmVersion;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -3204,7 +3205,7 @@ impl LoadedVmInner {
                 enable_debugging,
                 enable_memory_protections,
                 disable_frontpage,
-                enable_tpm,
+                tpm_version,
                 enable_battery,
                 enable_serial,
                 enable_vpci_boot,
@@ -3225,7 +3226,7 @@ impl LoadedVmInner {
                     debugging: enable_debugging,
                     memory_protections: enable_memory_protections,
                     frontpage: !disable_frontpage,
-                    tpm: enable_tpm,
+                    tpm: tpm_version.is_some(),
                     battery: enable_battery,
                     guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
                     vpci_boot: enable_vpci_boot,
@@ -3235,6 +3236,7 @@ impl LoadedVmInner {
                     bios_guid,
                     vmbus: enable_vmbus,
                     force_dma_bounce,
+                    disable_sha1_pcr: tpm_version.is_some_and(|v| v >= TpmVersion::V185),
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {

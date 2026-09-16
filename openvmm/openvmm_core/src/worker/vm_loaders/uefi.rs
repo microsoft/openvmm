@@ -50,6 +50,8 @@ pub struct UefiLoadSettings {
     pub vmbus: bool,
     /// Force UEFI to bounce-buffer all DMA traffic.
     pub force_dma_bounce: bool,
+    /// Whether to disable the usage of SHA-1 PCRs.
+    pub disable_sha1_pcr: bool,
 }
 
 /// All inputs needed by [`load_uefi`].
@@ -147,7 +149,8 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         .with_default_boot_always_attempt(settings.default_boot_always_attempt)
         .with_vmbus_disabled(!settings.vmbus)
         .with_pci_resources_pre_assigned(true)
-        .with_force_dma_bounce_enabled(settings.force_dma_bounce);
+        .with_force_dma_bounce_enabled(settings.force_dma_bounce)
+        .with_disable_sha1_pcr(settings.disable_sha1_pcr);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {

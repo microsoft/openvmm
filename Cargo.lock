@@ -347,6 +347,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitfield-struct"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ca6739863c590881f038d033a146c51ddae239186a4327014839fd864f44ed5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4773,7 +4784,7 @@ dependencies = [
 [[package]]
 name = "ms-tcg-tpm-sys"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f#fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=ed7078db7e4f42461e69732010a1346b695f75fc#ed7078db7e4f42461e69732010a1346b695f75fc"
 dependencies = [
  "bitfield-struct 0.13.0",
  "cmake",
@@ -5663,6 +5674,7 @@ dependencies = [
  "sparse_mmap",
  "state_unit",
  "thiserror 2.0.16",
+ "tpm_resources",
  "tracelimit",
  "tracing",
  "uefi_specs",
@@ -5708,6 +5720,7 @@ dependencies = [
  "net_backend_resources",
  "openvmm_pcat_locator",
  "thiserror 2.0.16",
+ "tpm_resources",
  "unix_socket",
  "virt",
  "virt_whp",
@@ -5783,6 +5796,7 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tpm_resources",
+ "tpm_vmgs",
  "tracelimit",
  "tracing",
  "tracing-subscriber",
@@ -6403,6 +6417,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "tpm_resources",
+ "tpm_vmgs",
  "tracing",
  "tracing-subscriber",
  "uidevices_resources",
@@ -8467,6 +8482,13 @@ dependencies = [
  "inspect",
  "mesh",
  "vm_resource",
+]
+
+[[package]]
+name = "tpm_vmgs"
+version = "0.0.0"
+dependencies = [
+ "tpm_resources",
  "vmgs_format",
 ]
 
@@ -8893,6 +8915,7 @@ dependencies = [
  "tpm_device",
  "tpm_protocol",
  "tpm_resources",
+ "tpm_vmgs",
  "tracelimit",
  "tracing",
  "tracing-subscriber",

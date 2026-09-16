@@ -171,16 +171,6 @@ pub enum HardwareSealingPolicy {
     Signer,
 }
 
-/// Version of the Microsoft TPM reference implementation to expose to the
-/// guest.
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-pub enum GetTpmVersion {
-    /// TPM reference implementation version 1.38
-    V138,
-    /// TPM reference implementation version 1.85
-    V185,
-}
-
 /// Management VTL Feature Flags
 #[bitfield(u64)]
 #[derive(Deserialize, Serialize)]
@@ -193,7 +183,10 @@ pub struct ManagementVtlFeatures {
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
-    #[bits(59)]
+    _flag5: bool, // Reserved for NonMaskableDebugInterrupt
+    pub use_tpm_138_by_default: bool,
+    pub use_tpm_185_by_default: bool,
+    #[bits(56)]
     pub _reserved2: u64,
 }
 
@@ -257,8 +250,6 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub force_dma_bounce_enabled: bool,
     #[serde(default)]
     pub hardware_sealing_policy_id: HardwareSealingPolicy,
-    #[serde(default)]
-    pub tpm_version: Option<GetTpmVersion>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
