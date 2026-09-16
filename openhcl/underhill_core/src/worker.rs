@@ -511,9 +511,6 @@ pub struct UnderhillEnvCfg {
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
     pub enable_vpci_relay: Option<bool>,
-    /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the VPCI
-    /// relay's device filter, overriding the host's DPS value
-    pub nvidia_vpci_relay_allowed: Option<bool>,
     /// Disable proxy interrupt redirection
     pub disable_proxy_redirect: bool,
     /// Disable lower VTL timer virtualization
@@ -525,6 +522,11 @@ pub struct UnderhillEnvCfg {
     pub servicing_timeout_dump_collection_in_ms: u64,
     /// Hardware sealing policy (overrides DPS value when set)
     pub hardware_sealing_policy: Option<HardwareSealingPolicyCli>,
+    /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the VPCI
+    /// relay's device filter, overriding the host's DPS value.
+    ///
+    /// Declared last to keep `MeshPayload` field numbers stable.
+    pub nvidia_vpci_relay_allowed: Option<bool>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1980,7 +1982,7 @@ async fn new_underhill_vm(
             isolated: isolation.is_isolated(),
             attestation_suppressed: dps.general.suppress_attestation.unwrap_or(false),
             launch_authorized: nvidia_relay_authorized_by_launch(
-                env_cfg.nvidia_vpci_relay_allowed.is_some(),
+                env_cfg.nvidia_vpci_relay_allowed.is_some() && confidential_debug_enabled(),
                 isolation,
                 host_requested_nvidia_relay,
                 dps.general.suppress_attestation.unwrap_or(false),

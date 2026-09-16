@@ -69,9 +69,6 @@ pub mod ged {
         pub serial_tx_only: bool,
         /// Enable vmbus redirection.
         pub vmbus_redirection: bool,
-        /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the
-        /// VPCI relay's device filter.
-        pub nvidia_vpci_relay_allowed: bool,
         /// The TPM reference implementation version to expose to the guest.
         pub tpm_version: Option<GedTpmVersion>,
         /// Encoded VTL2 settings.
@@ -104,6 +101,11 @@ pub mod ged {
         pub enable_hibernation: bool,
         /// SMBIOS identity overrides delivered to the guest firmware.
         pub smbios: smbios_defs::SmbiosConfig,
+        /// Allow NVIDIA GPUs and NVLink/NVSwitch fabric devices through the
+        /// VPCI relay's device filter.
+        ///
+        /// Declared last to keep `MeshPayload` field numbers stable.
+        pub nvidia_vpci_relay_allowed: bool,
     }
 
     /// The firmware and chipset configuration for the guest.
