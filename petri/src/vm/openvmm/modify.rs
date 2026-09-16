@@ -158,6 +158,43 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Add a single-vport MANA VF to VTL2 and expose its synthetic NIC to VTL0.
+    pub fn with_mana_vf(mut self, instance_id: Guid, mac_address: MacAddress) -> Self {
+        let vtl2_settings = self
+            .runtime_config
+            .vtl2_settings
+            .as_mut()
+            .expect("a VTL2 MANA VF requires OpenHCL firmware");
+        let endpoint = net_backend_resources::consomme::ConsommeHandle {
+            cidr: None,
+            ports: Vec::new(),
+            recv: None,
+        }
+        .into_resource();
+
+        self.config.vpci_devices.push(VpciDeviceConfig {
+            vtl: DeviceVtl::Vtl2,
+            instance_id,
+            resource: GdmaDeviceHandle {
+                vports: vec![VportDefinition {
+                    mac_address,
+                    endpoint,
+                }],
+            }
+            .into_resource(),
+            vnode: None,
+        });
+        vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
+            vtl2_settings_proto::NicDeviceLegacy {
+                instance_id: instance_id.to_string(),
+                subordinate_instance_id: None,
+                max_sub_channels: None,
+            },
+        );
+
+        self
+    }
+
     /// Add a PCIe NIC to the VM using the MANA emulator.
     pub fn with_pcie_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {

@@ -12,6 +12,7 @@ use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
+use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
@@ -22,6 +23,11 @@ use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_test_macros::openvmm_test;
 use zerocopy::FromBytes;
+
+const FIRST_VTL2_MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
+const SECOND_VTL2_MANA_INSTANCE: Guid = guid::guid!("2ad64873-df8e-4c3d-9e5a-d3078d9c4987");
+const FIRST_VTL2_MANA_MAC_ADDRESS: net_backend_resources::mac_address::MacAddress =
+    net_backend_resources::mac_address::MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x13]);
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
 /// implementation.
@@ -51,6 +57,33 @@ async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), any
         .await?;
 
     validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Reproduces bug 64115645 with two single-vport VTL2 MANA VFs and no
+/// subordinate VTL0 VFs. The first VTL2 settings entry must become eth0.
+#[openvmm_test(unstable(reason = "reproduces bug 64115645", openhcl_linux_direct_x64))]
+async fn two_mana_vfs_preserve_primary_netvsp_offer_order(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let (vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| {
+            b.with_mana_vf(FIRST_VTL2_MANA_INSTANCE, FIRST_VTL2_MANA_MAC_ADDRESS)
+                .with_mana_vf(SECOND_VTL2_MANA_INSTANCE, NIC_MAC_ADDRESS)
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+    let primary_mac = cmd!(sh, "cat /sys/class/net/eth0/address")
+        .read()
+        .await?;
+    assert_eq!(primary_mac, "00:15:5d:12:12:13");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
