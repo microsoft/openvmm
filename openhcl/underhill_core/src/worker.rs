@@ -352,7 +352,12 @@ fn launch_data_authorizes_nvidia_relay(data: &[u8]) -> bool {
     {
         return false;
     }
-    data[NVIDIA_RELAY_LAUNCH_FLAGS_OFFSET] & NVIDIA_RELAY_LAUNCH_FLAG_ALLOWED != 0
+    // Reject unknown flag bits so an unrecognized encoding fails closed.
+    let flags = data[NVIDIA_RELAY_LAUNCH_FLAGS_OFFSET];
+    if flags & !NVIDIA_RELAY_LAUNCH_FLAG_ALLOWED != 0 {
+        return false;
+    }
+    flags & NVIDIA_RELAY_LAUNCH_FLAG_ALLOWED != 0
 }
 
 /// Extract the launch-measured host-data field from a raw isolation attestation
@@ -4880,6 +4885,11 @@ mod device_policy_tests {
         // A different flag bit alone does not grant the relay.
         let mut bad = authorized_launch_data(32);
         bad[5] = 0b10;
+        assert!(!launch_data_authorizes_nvidia_relay(&bad));
+
+        // Unknown flag bits alongside the allowed bit still fail closed.
+        let mut bad = authorized_launch_data(32);
+        bad[5] = 0b11;
         assert!(!launch_data_authorizes_nvidia_relay(&bad));
     }
 
