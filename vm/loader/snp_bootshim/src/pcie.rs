@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Bounded conversion of the host's DeviceTree PCIe topology to ACPI.
+//! Bounded conversion of the host's DeviceTree hardware topology to ACPI.
 //!
 //! The topology is unmeasured and is not attested. Attestation policy is deferred
 //! for bring-up. This supports only native x86 MSI/MSI-X, node 0, and identity
 //! memory windows. Unsupported features fail before Linux runs. The caller must
-//! provide a stable private copy of the DT and measured base tables.
+//! provide a stable private copy of the DT and measured workspace bounds.
 
 use acpi_core::builder::{Builder, OemInfo, Table};
 use acpi_core::ssdt::{PcieHostBridgeEntry, Ssdt};
@@ -20,7 +20,6 @@ const MAX_NODES: usize = 1024;
 const MAX_DEPTH: usize = 16;
 const MAX_PROPERTIES: usize = 32;
 const MAX_BRIDGES: usize = loader_defs::linux::SNP_BOOT_SHIM_MAX_PCIE_BRIDGES;
-const MAX_BASE_ENTRIES: usize = 16;
 const HEADER_SIZE: usize = size_of::<acpi_spec::Header>();
 const BUS_SIZE: u64 = 1 << 20;
 const FOUR_GB: u64 = 1 << 32;
@@ -49,11 +48,11 @@ pub(crate) enum Error<'a> {
     Overlap,
     #[error("invalid physical address limit")]
     AddressLimit,
-    #[error("invalid original RSDP")]
+    #[error("invalid generated RSDP")]
     Rsdp,
-    #[error("invalid base ACPI table header, checksum, or pointer")]
+    #[error("invalid generated ACPI table header, checksum, or pointer")]
     BaseAcpi,
-    #[error("base ACPI has ambiguous or unsupported tables")]
+    #[error("generated ACPI has ambiguous or unsupported tables")]
     BaseTopology,
     #[error("ACPI output exceeds its reserved capacity")]
     Capacity,
@@ -65,12 +64,12 @@ impl<'a> From<fdt::parser::Error<'a>> for Error<'a> {
     }
 }
 
-struct Properties<'a> {
+pub(crate) struct Properties<'a> {
     entries: [Option<Property<'a>>; MAX_PROPERTIES],
 }
 
 impl<'a> Properties<'a> {
-    fn read(node: &Node<'a>) -> Result<Self, Error<'a>> {
+    pub(crate) fn read(node: &Node<'a>) -> Result<Self, Error<'a>> {
         let mut entries: [Option<Property<'a>>; MAX_PROPERTIES] = core::array::from_fn(|_| None);
         for (index, property) in node.properties().enumerate() {
             let property = property?;
@@ -89,7 +88,7 @@ impl<'a> Properties<'a> {
         Ok(Self { entries })
     }
 
-    fn get(&self, name: &str) -> Option<&'a [u8]> {
+    pub(crate) fn get(&self, name: &str) -> Option<&'a [u8]> {
         self.entries
             .iter()
             .flatten()
@@ -97,14 +96,30 @@ impl<'a> Properties<'a> {
             .map(|property| property.data)
     }
 
-    fn required(&self, name: &'static str, length: usize) -> Result<&'a [u8], Error<'a>> {
+    pub(crate) fn required(
+        &self,
+        name: &'static str,
+        length: usize,
+    ) -> Result<&'a [u8], Error<'a>> {
         self.get(name)
             .filter(|data| data.len() == length)
             .ok_or(Error::Property(name))
     }
 
-    fn cell(&self, name: &'static str) -> Result<u32, Error<'a>> {
+    pub(crate) fn cell(&self, name: &'static str) -> Result<u32, Error<'a>> {
         Ok(be32(self.required(name, 4)?))
+    }
+
+    pub(crate) fn only(&self, allowed: &[&str]) -> Result<(), Error<'a>> {
+        if self
+            .entries
+            .iter()
+            .flatten()
+            .any(|p| !allowed.contains(&p.name))
+        {
+            return Err(Error::Unsupported("unknown hardware property"));
+        }
+        Ok(())
     }
 }
 
@@ -114,7 +129,7 @@ fn be32(bytes: &[u8]) -> u32 {
     u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-fn be64(bytes: &[u8]) -> u64 {
+pub(crate) fn be64(bytes: &[u8]) -> u64 {
     (u64::from(be32(bytes)) << 32) | u64::from(be32(&bytes[4..]))
 }
 
@@ -239,6 +254,19 @@ fn parse_bridge<'a>(
     if props.get("numa-node-id").is_some() && props.cell("numa-node-id")? != 0 {
         return Err(Error::Unsupported("nonzero NUMA node"));
     }
+    props.only(&[
+        "compatible",
+        "device_type",
+        "#address-cells",
+        "#size-cells",
+        "linux,pci-domain",
+        "bus-range",
+        "reg",
+        "ranges",
+        "numa-node-id",
+        "status",
+        "linux,pci-probe-only",
+    ])?;
     let segment = u16::try_from(props.cell("linux,pci-domain")?)
         .map_err(|_| Error::Property("linux,pci-domain"))?;
     let buses = props.required("bus-range", 8)?;
@@ -402,11 +430,13 @@ fn validate_address_limit<'a>(ram_end: u64, c_bit_mask: u64) -> Result<(), Error
 /// RAM. The DT parameter is already imported as private unmeasured pages.
 pub(crate) fn validate_device_tree(
     dt: &[u8],
+    expected_cpu_count: u32,
     ram_end: u64,
     c_bit_mask: u64,
 ) -> Result<(), Error<'_>> {
     validate_address_limit(ram_end, c_bit_mask)?;
     parse_bridges(dt, ram_end, c_bit_mask)?;
+    crate::topology::parse(dt, expected_cpu_count, ram_end)?;
     Ok(())
 }
 
@@ -455,103 +485,97 @@ fn validate_fadt(base: &[u8], base_gpa: u64, fadt: &[u8]) -> Result<(), Error<'s
     Ok(())
 }
 
-fn base_entries(
-    base: &[u8],
-    base_gpa: u64,
-    original_rsdp: &[u8],
-) -> Result<(Vec<u64>, OemInfo), Error<'static>> {
-    let (rsdp, _) = acpi_spec::Rsdp::read_from_prefix(original_rsdp).map_err(|_| Error::Rsdp)?;
+fn validate_output(
+    tables: &[u8],
+    output_gpa: u64,
+    rsdp_bytes: &[u8],
+    bridge_count: usize,
+) -> Result<(), Error<'static>> {
+    let rsdp = acpi_spec::Rsdp::read_from_bytes(rsdp_bytes).map_err(|_| Error::Rsdp)?;
     if rsdp.signature != *b"RSD PTR "
         || rsdp.revision != 2
         || rsdp.length as usize != size_of::<acpi_spec::Rsdp>()
-        || checksum(&original_rsdp[..20]) != 0
-        || checksum(&original_rsdp[..size_of::<acpi_spec::Rsdp>()]) != 0
+        || checksum(&rsdp_bytes[..20]) != 0
+        || checksum(rsdp_bytes) != 0
         || rsdp.rsdt != 0
         || rsdp.rsvd != [0; 3]
     {
         return Err(Error::Rsdp);
     }
-    let xsdt = base_table(base, base_gpa, rsdp.xsdt)?;
+    let xsdt = base_table(tables, output_gpa, rsdp.xsdt)?;
     if &xsdt[..4] != b"XSDT" {
         return Err(Error::BaseAcpi);
     }
     let entries = &xsdt[HEADER_SIZE..];
-    if !entries.len().is_multiple_of(8) || entries.len() / 8 > MAX_BASE_ENTRIES {
+    let signatures: &[&[u8; 4]] = if bridge_count == 0 {
+        &[b"FACP", b"APIC", b"SRAT"]
+    } else {
+        &[b"FACP", b"APIC", b"SRAT", b"MCFG", b"SSDT"]
+    };
+    if entries.len() != signatures.len() * 8 {
         return Err(Error::BaseAcpi);
     }
-    let mut addresses = Vec::with_capacity(MAX_BASE_ENTRIES);
-    let mut signatures = [[0; 4]; MAX_BASE_ENTRIES];
     for (index, bytes) in entries.chunks_exact(8).enumerate() {
         let address = le64(bytes);
-        let table = base_table(base, base_gpa, address)?;
-        let signature = [table[0], table[1], table[2], table[3]];
-        if matches!(
-            &signature,
-            b"MCFG" | b"SSDT" | b"CEDT" | b"DMAR" | b"IVRS" | b"IORT" | b"XSDT" | b"RSDT" | b"DSDT"
-        ) || signatures[..index].contains(&signature)
-        {
+        let table = base_table(tables, output_gpa, address)?;
+        if &table[..4] != signatures[index].as_slice() {
             return Err(Error::BaseTopology);
         }
-        if signature == *b"FACP" {
-            validate_fadt(base, base_gpa, table)?;
+        if index == 0 {
+            validate_fadt(tables, output_gpa, table)?;
         }
-        signatures[index] = signature;
-        addresses.push(address);
     }
-    let (header, _) = acpi_spec::Header::read_from_prefix(xsdt).map_err(|_| Error::BaseAcpi)?;
-    Ok((
-        addresses,
-        OemInfo {
-            oem_id: header.oem_id,
-            oem_tableid: header.oem_tableid,
-            oem_revision: header.oem_revision.get(),
-            creator_id: header.creator_id.get().to_le_bytes(),
-            creator_revision: header.creator_revision.get(),
-        },
-    ))
+    Ok(())
 }
 
 /// Returns RSDP bytes and output-region table bytes, as in `Builder::build`.
 ///
-/// Original tables (including the FADT's DSDT) remain at their measured GPAs.
-/// The output must not overlap the base blob. Capacity covers table bytes, not
+/// All final pointers refer to the permanent output region. Capacity covers table bytes, not
 /// the separately returned RSDP. The caller bounds the allocator independently.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "matches the measured handoff inputs"
-)]
-pub(crate) fn build_pcie_acpi<'a>(
+pub(crate) fn build_acpi<'a>(
     dt: &'a [u8],
-    base_acpi: &[u8],
-    base_acpi_gpa: u64,
-    original_rsdp: &[u8],
+    expected_cpu_count: u32,
     output_gpa: u64,
     output_capacity: usize,
     ram_end: u64,
     c_bit_mask: u64,
 ) -> Result<(Vec<u8>, Vec<u8>), Error<'a>> {
     validate_address_limit(ram_end, c_bit_mask)?;
-    let base_end = base_acpi_gpa
-        .checked_add(base_acpi.len() as u64)
-        .ok_or(Error::BaseAcpi)?;
     let output_end = output_gpa
         .checked_add(output_capacity as u64)
         .ok_or(Error::Capacity)?;
-    if base_end > ram_end
+    if output_gpa == 0
         || output_end > ram_end
+        || output_capacity > loader_defs::linux::SNP_BOOT_SHIM_ACPI_SIZE as usize
         || !output_gpa.is_multiple_of(8)
-        || (output_gpa < base_end && base_acpi_gpa < output_end)
     {
         return Err(Error::BaseAcpi);
     }
-    let (entries, oem) = base_entries(base_acpi, base_acpi_gpa, original_rsdp)?;
     let bridges = parse_bridges(dt, ram_end, c_bit_mask)?;
+    let topology = crate::topology::parse(dt, expected_cpu_count, ram_end)?;
+    let oem = OemInfo {
+        oem_id: *b"HVLITE",
+        oem_tableid: *b"HVLITETB",
+        oem_revision: 0,
+        creator_id: *b"MSHV",
+        creator_revision: 0,
+    };
     let bridge_count = bridges.iter().flatten().count();
-    let mut builder = Builder::new(output_gpa, oem);
-    for address in &entries {
-        builder.add_existing_table(*address);
+    let base = topology.build(&oem);
+    let fadt = base.fadt(output_gpa, &oem).map_err(|_| Error::BaseAcpi)?;
+    let mut required =
+        (HEADER_SIZE + (3 + if bridge_count == 0 { 0 } else { 2 }) * 8).next_multiple_of(8);
+    for table in [&base.dsdt, &fadt, &base.madt, &base.srat] {
+        required += table.len().next_multiple_of(8);
     }
-    let mut required = (HEADER_SIZE + entries.len() * 8).next_multiple_of(8);
+    if required > output_capacity {
+        return Err(Error::Capacity);
+    }
+    let mut builder = Builder::new(output_gpa, oem);
+    builder.append_raw(&base.dsdt);
+    builder.append_raw(&fadt);
+    builder.append_raw(&base.madt);
+    builder.append_raw(&base.srat);
     if bridge_count != 0 {
         let mut ssdt = Ssdt::new();
         let mut segments = Vec::with_capacity(bridge_count);
@@ -582,8 +606,7 @@ pub(crate) fn build_pcie_acpi<'a>(
         }
         let ssdt = ssdt.to_bytes();
         let mcfg = acpi_spec::mcfg::McfgHeader::new();
-        required += 16
-            + ssdt.len().next_multiple_of(8)
+        required += ssdt.len().next_multiple_of(8)
             + (HEADER_SIZE + size_of_val(&mcfg) + size_of_val(segments.as_slice()))
                 .next_multiple_of(8);
         if required > output_capacity {
@@ -604,6 +627,7 @@ pub(crate) fn build_pcie_acpi<'a>(
     if result.1.len() > output_capacity {
         return Err(Error::Capacity);
     }
+    validate_output(&result.1, output_gpa, &result.0, bridge_count)?;
     Ok(result)
 }
 
@@ -614,13 +638,137 @@ mod tests {
     use alloc::vec;
     use test_with_tracing::test;
 
-    const BASE: u64 = 0x10_0000;
     const OUTPUT: u64 = 0x20_0000;
     const RAM_END: u64 = 0x1000_0000;
     const CAPACITY: usize = 64 * 1024;
     const C_BIT: u64 = 1 << 47;
 
     type TestProperties = Vec<(&'static str, Vec<u8>)>;
+
+    #[derive(Clone)]
+    struct TestNode {
+        name: String,
+        properties: TestProperties,
+        children: Vec<TestNode>,
+    }
+
+    fn node(name: String, properties: TestProperties) -> TestNode {
+        TestNode {
+            name,
+            properties,
+            children: vec![],
+        }
+    }
+
+    fn hardware(cpu_count: usize, ram_count: usize, uart_mask: u8) -> Vec<TestNode> {
+        let mut cpus = node(
+            "cpus".into(),
+            vec![
+                ("#address-cells", cells(&[1])),
+                ("#size-cells", cells(&[0])),
+            ],
+        );
+        for index in 0..cpu_count {
+            cpus.children.push(node(
+                alloc::format!("cpu@{:x}", index + 1),
+                vec![
+                    ("device_type", b"cpu\0".to_vec()),
+                    ("reg", cells(&[index as u32])),
+                    ("numa-node-id", cells(&[0])),
+                    ("status", b"okay\0".to_vec()),
+                ],
+            ));
+        }
+        let mut nodes = vec![cpus];
+        let mut start = 0;
+        for index in 0..ram_count {
+            let end = if index + 1 == ram_count {
+                RAM_END
+            } else {
+                start + 4096
+            };
+            nodes.push(node(
+                alloc::format!("memory@{start:x}"),
+                vec![
+                    ("device_type", b"memory\0".to_vec()),
+                    (
+                        "reg",
+                        [start.to_be_bytes(), (end - start).to_be_bytes()].concat(),
+                    ),
+                    ("numa-node-id", cells(&[0])),
+                    (
+                        igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY,
+                        cells(&[u32::from(igvm_defs::MemoryMapEntryType::MEMORY.0)]),
+                    ),
+                ],
+            ));
+            start = end;
+        }
+        if uart_mask != 0 {
+            let mut pio = node(
+                "pio-bus".into(),
+                vec![
+                    ("compatible", b"x86-pio-bus\0".to_vec()),
+                    ("#address-cells", cells(&[1])),
+                    ("#size-cells", cells(&[1])),
+                    ("ranges", vec![]),
+                ],
+            );
+            for index in 0..4 {
+                if uart_mask & (1 << index) == 0 {
+                    continue;
+                }
+                let base = u64::from(x86defs::serial::COM_BASES[index]);
+                pio.children.push(node(
+                    alloc::format!("serial@{base:x}"),
+                    vec![
+                        ("compatible", b"ns16550\0".to_vec()),
+                        ("reg", [base.to_be_bytes(), 8u64.to_be_bytes()].concat()),
+                        (
+                            "interrupts",
+                            u64::from(x86defs::serial::COM_IRQS[index])
+                                .to_be_bytes()
+                                .to_vec(),
+                        ),
+                        ("current-speed", cells(&[115200])),
+                        ("clock-frequency", cells(&[0])),
+                    ],
+                ));
+            }
+            nodes.push(pio);
+        }
+        nodes
+    }
+
+    fn emit<'a, N>(
+        mut builder: fdt::builder::Builder<'a, N>,
+        nodes: &[TestNode],
+        names: &std::collections::BTreeMap<&str, fdt::builder::StringId>,
+    ) -> fdt::builder::Builder<'a, N> {
+        for node in nodes {
+            let mut child = builder.start_node(&node.name).unwrap();
+            for (name, data) in &node.properties {
+                child = child.add_prop_array(names[name], &[data]).unwrap();
+            }
+            for node in &node.children {
+                assert!(node.children.is_empty());
+                let mut leaf = child.start_node(&node.name).unwrap();
+                for (name, data) in &node.properties {
+                    leaf = leaf.add_prop_array(names[name], &[data]).unwrap();
+                }
+                child = leaf.end_node().unwrap();
+            }
+            builder = child.end_node().unwrap();
+        }
+        builder
+    }
+
+    fn root_properties() -> TestProperties {
+        vec![
+            ("#address-cells", cells(&[2])),
+            ("#size-cells", cells(&[2])),
+        ]
+    }
 
     fn cells(values: &[u32]) -> Vec<u8> {
         values
@@ -673,6 +821,14 @@ mod tests {
     }
 
     fn dt_with_root(bridges: &[TestProperties], root_properties: TestProperties) -> Vec<u8> {
+        let mut nodes = hardware(1, 1, 0);
+        for (index, props) in bridges.iter().enumerate() {
+            nodes.push(node(alloc::format!("pcie@{index:x}"), props.clone()));
+        }
+        tree(&nodes, root_properties)
+    }
+
+    fn tree(nodes: &[TestNode], root_properties: TestProperties) -> Vec<u8> {
         let mut bytes = vec![0; MAX_DT_SIZE];
         let mut builder = fdt::builder::Builder::new(fdt::builder::BuilderConfig {
             blob_buffer: &mut bytes,
@@ -682,59 +838,27 @@ mod tests {
         .unwrap()
         .start_node("")
         .unwrap();
-        for (name, data) in &root_properties {
-            let name = builder.add_string(name).unwrap();
-            builder = builder.add_prop_array(name, &[data]).unwrap();
-        }
-        for properties in bridges {
-            let mut child = builder.start_node("pcie").unwrap();
-            for (name, data) in properties {
-                let name = child.add_string(name).unwrap();
-                child = child.add_prop_array(name, &[data]).unwrap();
+        let mut names = std::collections::BTreeMap::new();
+        for (name, _) in root_properties.iter().chain(nodes.iter().flat_map(|node| {
+            node.properties
+                .iter()
+                .chain(node.children.iter().flat_map(|child| &child.properties))
+        })) {
+            if !names.contains_key(name) {
+                names.insert(*name, builder.add_string(name).unwrap());
             }
-            builder = child.end_node().unwrap();
         }
+        for (name, data) in &root_properties {
+            builder = builder.add_prop_array(names[name], &[data]).unwrap();
+        }
+        builder = emit(builder, nodes, &names);
         let length = builder.end_node().unwrap().build(0).unwrap();
         bytes.truncate(length);
         bytes
     }
 
     fn dt(bridges: &[TestProperties]) -> Vec<u8> {
-        dt_with_root(
-            bridges,
-            vec![
-                ("#address-cells", cells(&[2])),
-                ("#size-cells", cells(&[2])),
-            ],
-        )
-    }
-
-    fn oem() -> OemInfo {
-        OemInfo {
-            oem_id: *b"MSFTVM",
-            oem_tableid: *b"TESTACPI",
-            oem_revision: 1,
-            creator_id: *b"MSFT",
-            creator_revision: 1,
-        }
-    }
-
-    fn raw_table(signature: &[u8; 4], payload: &[u8]) -> Vec<u8> {
-        let header = acpi_spec::Header {
-            signature: *signature,
-            length: ((HEADER_SIZE + payload.len()) as u32).into(),
-            revision: 1,
-            checksum: 0,
-            oem_id: oem().oem_id,
-            oem_tableid: oem().oem_tableid,
-            oem_revision: 1.into(),
-            creator_id: 0.into(),
-            creator_revision: 0.into(),
-        };
-        let mut bytes = header.as_bytes().to_vec();
-        bytes.extend_from_slice(payload);
-        fix_checksum(&mut bytes);
-        bytes
+        dt_with_root(bridges, root_properties())
     }
 
     fn fix_checksum(table: &mut [u8]) {
@@ -742,23 +866,8 @@ mod tests {
         table[9] = 0u8.wrapping_sub(checksum(table));
     }
 
-    fn base_fixture() -> (Vec<u8>, Vec<u8>) {
-        let mut builder = Builder::new(BASE, oem());
-        let dsdt = builder.append_raw(&raw_table(b"DSDT", &[]));
-        let fadt = acpi_spec::fadt::Fadt {
-            dsdt: dsdt as u32,
-            x_dsdt: dsdt,
-            ..Default::default()
-        };
-        builder.append(&Table::new(6, None, &fadt));
-        builder.append_raw(&raw_table(b"APIC", &[0; 8]));
-        builder.append_raw(&raw_table(b"SRAT", &[0; 12]));
-        builder.build()
-    }
-
     fn build(dt: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error<'_>> {
-        let (rsdp, base) = base_fixture();
-        build_pcie_acpi(dt, &base, BASE, &rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT)
+        build_acpi(dt, 1, OUTPUT, CAPACITY, RAM_END, C_BIT)
     }
 
     fn root_addresses(rsdp: &[u8], tables: &[u8], gpa: u64) -> Vec<u64> {
@@ -778,13 +887,14 @@ mod tests {
     #[test]
     fn preflight_validates_without_a_heap() {
         let dt = dt(&(0..MAX_BRIDGES as u32).map(bridge).collect::<Vec<_>>());
-        let (result, bytes) =
-            crate::heap::allocation_measure::measure(|| validate_device_tree(&dt, RAM_END, C_BIT));
+        let (result, bytes) = crate::heap::allocation_measure::measure(|| {
+            validate_device_tree(&dt, 1, RAM_END, C_BIT)
+        });
         result.unwrap();
         assert_eq!(bytes, 0);
 
         let (result, bytes) = crate::heap::allocation_measure::measure(|| {
-            validate_device_tree(&dt, 0x8000_1000, C_BIT)
+            validate_device_tree(&dt, 1, 0x8000_1000, C_BIT)
         });
         assert!(matches!(result, Err(Error::Overlap)));
         assert_eq!(bytes, 0);
@@ -801,34 +911,43 @@ mod tests {
             );
             replace(properties, "bus-range", cells(&[240, 255]));
         }
-        let dt = dt(&bridges);
-        let (old_rsdp, base) = base_fixture();
-        let (result, bytes) = crate::heap::allocation_measure::measure(|| {
-            build_pcie_acpi(
-                &dt, &base, BASE, &old_rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT,
-            )
+        let mut nodes = hardware(255, 32, 15);
+        for (index, properties) in bridges.into_iter().enumerate() {
+            nodes.push(node(alloc::format!("pcie@{index:x}"), properties));
+        }
+        nodes.extend(metadata());
+        let dt = tree(&nodes, root_properties());
+        let (preflight, allocated) = crate::heap::allocation_measure::measure(|| {
+            validate_device_tree(&dt, 255, RAM_END, C_BIT)
         });
-        result.unwrap();
+        preflight.unwrap();
+        assert_eq!(allocated, 0);
+        let (result, bytes) = crate::heap::allocation_measure::measure(|| {
+            build_acpi(&dt, 255, OUTPUT, CAPACITY, RAM_END, C_BIT)
+        });
+        let (_, tables) = result.unwrap();
+        assert!(tables.len() <= CAPACITY);
+        println!(
+            "maximum topology DT: {} bytes; ACPI: {} bytes",
+            dt.len(),
+            tables.len()
+        );
+        assert!(build_acpi(&dt, 255, OUTPUT, tables.len(), RAM_END, C_BIT).is_ok());
+        assert!(matches!(
+            build_acpi(&dt, 255, OUTPUT, tables.len() - 1, RAM_END, C_BIT),
+            Err(Error::Capacity)
+        ));
         println!("cumulative allocation upper bound, including alignment: {bytes} bytes");
         assert!(bytes <= loader_defs::linux::SNP_BOOT_SHIM_HEAP_SIZE as usize);
     }
 
     #[test]
-    fn zero_bridges_preserve_fixed_base_tables() {
+    fn zero_bridges_generate_complete_tables() {
         let dt = dt(&[]);
-        let (old_rsdp, base) = base_fixture();
-        let original = base.clone();
-        let (rsdp, tables) = build_pcie_acpi(
-            &dt, &base, BASE, &old_rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT,
-        )
-        .unwrap();
-        assert_eq!(base, original);
-        assert_eq!(
-            root_addresses(&rsdp, &tables, OUTPUT),
-            root_addresses(&old_rsdp, &base, BASE)
-        );
-        assert_eq!(&tables[..4], b"XSDT");
-        assert_eq!(tables.len(), 64);
+        let (rsdp, tables) = build(&dt).unwrap();
+        assert_eq!(root_addresses(&rsdp, &tables, OUTPUT).len(), 3);
+        assert_eq!(&tables[..4], b"DSDT");
+        validate_output(&tables, OUTPUT, &rsdp, 0).unwrap();
     }
 
     #[test]
@@ -836,9 +955,7 @@ mod tests {
         for count in [1, MAX_BRIDGES] {
             let dt = dt(&(0..count as u32).map(bridge).collect::<Vec<_>>());
             let (rsdp, tables) = build(&dt).unwrap();
-            let (old_rsdp, base) = base_fixture();
             let addresses = root_addresses(&rsdp, &tables, OUTPUT);
-            assert_eq!(&addresses[..3], root_addresses(&old_rsdp, &base, BASE));
             assert_eq!(addresses.len(), 5);
             let mcfg = base_table(&tables, OUTPUT, addresses[3]).unwrap();
             let mut segment_count = 0;
@@ -1075,109 +1192,62 @@ mod tests {
     fn capacity_is_checked_exactly() {
         for count in [0, 1, 8] {
             let dt = dt(&(0..count).map(bridge).collect::<Vec<_>>());
-            let (old_rsdp, base) = base_fixture();
             let (_, tables) = build(&dt).unwrap();
-            assert!(
-                build_pcie_acpi(
-                    &dt,
-                    &base,
-                    BASE,
-                    &old_rsdp,
-                    OUTPUT,
-                    tables.len(),
-                    RAM_END,
-                    C_BIT,
-                )
-                .is_ok()
-            );
+            assert!(build_acpi(&dt, 1, OUTPUT, tables.len(), RAM_END, C_BIT,).is_ok());
             assert!(matches!(
-                build_pcie_acpi(
-                    &dt,
-                    &base,
-                    BASE,
-                    &old_rsdp,
-                    OUTPUT,
-                    tables.len() - 1,
-                    RAM_END,
-                    C_BIT,
-                ),
+                build_acpi(&dt, 1, OUTPUT, tables.len() - 1, RAM_END, C_BIT,),
                 Err(Error::Capacity)
             ));
         }
     }
 
     #[test]
-    fn corrupt_rsdp_and_base_tables_fail() {
+    fn corrupt_generated_rsdp_and_tables_fail() {
         let dt = dt(&[]);
-        let (rsdp, base) = base_fixture();
+        let (rsdp, base) = build(&dt).unwrap();
         for index in [0, 8, 15, 20, 24, 32] {
             let mut corrupt = rsdp.clone();
             corrupt[index] ^= 1;
-            assert!(
-                build_pcie_acpi(&dt, &base, BASE, &corrupt, OUTPUT, CAPACITY, RAM_END, C_BIT,)
-                    .is_err()
-            );
+            assert!(validate_output(&base, OUTPUT, &corrupt, 0).is_err());
         }
         for length in [0, 19, 35] {
             assert!(matches!(
-                build_pcie_acpi(
-                    &dt,
-                    &base,
-                    BASE,
-                    &rsdp[..length],
-                    OUTPUT,
-                    CAPACITY,
-                    RAM_END,
-                    C_BIT,
-                ),
+                validate_output(&base, OUTPUT, &rsdp[..length], 0),
                 Err(Error::Rsdp)
             ));
         }
-        let addresses = root_addresses(&rsdp, &base, BASE);
+        let addresses = root_addresses(&rsdp, &base, OUTPUT);
         for address in addresses {
             let mut corrupt = base.clone();
-            corrupt[(address - BASE) as usize + 9] ^= 1;
+            corrupt[(address - OUTPUT) as usize + 9] ^= 1;
             assert!(matches!(
-                build_pcie_acpi(&dt, &corrupt, BASE, &rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT,),
+                validate_output(&corrupt, OUTPUT, &rsdp, 0),
                 Err(Error::BaseAcpi)
             ));
         }
         let mut corrupt_dsdt = base.clone();
         corrupt_dsdt[9] ^= 1;
         assert!(matches!(
-            build_pcie_acpi(
-                &dt,
-                &corrupt_dsdt,
-                BASE,
-                &rsdp,
-                OUTPUT,
-                CAPACITY,
-                RAM_END,
-                C_BIT,
-            ),
+            validate_output(&corrupt_dsdt, OUTPUT, &rsdp, 0),
             Err(Error::BaseAcpi)
         ));
     }
 
     #[test]
-    fn ambiguous_base_tables_and_external_pointers_fail() {
+    fn unsupported_generated_table_signatures_fail() {
         let dt = dt(&[]);
+        let (rsdp, tables) = build(&dt).unwrap();
+        let fadt = (root_addresses(&rsdp, &tables, OUTPUT)[0] - OUTPUT) as usize;
+        let length = le32(&tables[fadt + 4..]) as usize;
         for signature in [b"MCFG", b"SSDT", b"CEDT", b"IORT"] {
-            let mut builder = Builder::new(BASE, oem());
-            builder.append_raw(&raw_table(signature, &[]));
-            let (rsdp, base) = builder.build();
+            let mut corrupt = tables.clone();
+            corrupt[fadt..fadt + 4].copy_from_slice(signature);
+            fix_checksum(&mut corrupt[fadt..fadt + length]);
             assert!(matches!(
-                build_pcie_acpi(&dt, &base, BASE, &rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT,),
+                validate_output(&corrupt, OUTPUT, &rsdp, 0),
                 Err(Error::BaseTopology)
             ));
         }
-        let mut builder = Builder::new(BASE, oem());
-        builder.add_existing_table(BASE - 8);
-        let (rsdp, base) = builder.build();
-        assert!(matches!(
-            build_pcie_acpi(&dt, &base, BASE, &rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT,),
-            Err(Error::BaseAcpi)
-        ));
     }
 
     #[test]
@@ -1189,6 +1259,10 @@ mod tests {
         for length in [0, 4, 39] {
             assert!(build(&dt[..length]).is_err());
         }
+        let mut over = self::dt(&[]);
+        over.resize(MAX_DT_SIZE + 4, 0);
+        over[4..8].copy_from_slice(&((MAX_DT_SIZE + 4) as u32).to_be_bytes());
+        assert!(matches!(build(&over), Err(Error::DtLimit)));
     }
 
     fn insert_children(dt: &mut Vec<u8>, structure: &[u8]) {
@@ -1263,8 +1337,8 @@ mod tests {
     #[test]
     fn xsdt_lengths_entry_limits_and_dsdt_pointers_are_checked() {
         let dt = dt(&[]);
-        let (rsdp, base) = base_fixture();
-        let xsdt_offset = (le64(&rsdp[24..]) - BASE) as usize;
+        let (rsdp, base) = build(&dt).unwrap();
+        let xsdt_offset = (le64(&rsdp[24..]) - OUTPUT) as usize;
         for length in [0, 35, 37, u32::MAX] {
             let mut corrupt = base.clone();
             corrupt[xsdt_offset + 4..xsdt_offset + 8].copy_from_slice(&length.to_le_bytes());
@@ -1272,49 +1346,30 @@ mod tests {
                 fix_checksum(&mut corrupt[xsdt_offset..xsdt_offset + length as usize]);
             }
             assert!(matches!(
-                build_pcie_acpi(&dt, &corrupt, BASE, &rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT,),
+                validate_output(&corrupt, OUTPUT, &rsdp, 0),
                 Err(Error::BaseAcpi)
             ));
         }
-        let mut builder = Builder::new(BASE, oem());
-        for _ in 0..=MAX_BASE_ENTRIES {
-            builder.add_existing_table(BASE);
-        }
-        let (large_rsdp, large_base) = builder.build();
-        assert!(matches!(
-            build_pcie_acpi(
-                &dt,
-                &large_base,
-                BASE,
-                &large_rsdp,
-                OUTPUT,
-                CAPACITY,
-                RAM_END,
-                C_BIT,
-            ),
-            Err(Error::BaseAcpi)
-        ));
-
-        let fadt_offset = (root_addresses(&rsdp, &base, BASE)[0] - BASE) as usize;
+        let fadt_offset = (root_addresses(&rsdp, &base, OUTPUT)[0] - OUTPUT) as usize;
         let fadt_length = le32(&base[fadt_offset + 4..]) as usize;
-        for pointer in [BASE - 8, BASE + base.len() as u64, u64::MAX] {
+        for pointer in [OUTPUT - 8, OUTPUT + base.len() as u64, u64::MAX] {
             let mut corrupt = base.clone();
             let fadt = &mut corrupt[fadt_offset..fadt_offset + fadt_length];
             fadt[40..44].fill(0);
             fadt[140..148].copy_from_slice(&pointer.to_le_bytes());
             fix_checksum(fadt);
             assert!(matches!(
-                build_pcie_acpi(&dt, &corrupt, BASE, &rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT,),
+                validate_output(&corrupt, OUTPUT, &rsdp, 0),
                 Err(Error::BaseAcpi)
             ));
         }
         let mut corrupt = base.clone();
         let length = le32(&corrupt[xsdt_offset + 4..]) as usize;
         corrupt[xsdt_offset + HEADER_SIZE..xsdt_offset + HEADER_SIZE + 8]
-            .copy_from_slice(&(BASE - 8).to_le_bytes());
+            .copy_from_slice(&(OUTPUT - 8).to_le_bytes());
         fix_checksum(&mut corrupt[xsdt_offset..xsdt_offset + length]);
         assert!(matches!(
-            build_pcie_acpi(&dt, &corrupt, BASE, &rsdp, OUTPUT, CAPACITY, RAM_END, C_BIT,),
+            validate_output(&corrupt, OUTPUT, &rsdp, 0),
             Err(Error::BaseAcpi)
         ));
     }
@@ -1344,18 +1399,324 @@ mod tests {
     #[test]
     fn invalid_output_and_address_limits_fail() {
         let dt = dt(&[]);
-        let (rsdp, base) = base_fixture();
-        for output in [BASE, OUTPUT + 1, RAM_END, u64::MAX - 7] {
-            assert!(
-                build_pcie_acpi(&dt, &base, BASE, &rsdp, output, CAPACITY, RAM_END, C_BIT,)
-                    .is_err()
-            );
+        for output in [0, OUTPUT + 1, RAM_END, u64::MAX - 7] {
+            assert!(build_acpi(&dt, 1, output, CAPACITY, RAM_END, C_BIT).is_err());
         }
         for c_bit in [0, C_BIT + 1, 1 << 52] {
             assert!(matches!(
-                build_pcie_acpi(&dt, &base, BASE, &rsdp, OUTPUT, CAPACITY, RAM_END, c_bit,),
+                build_acpi(&dt, 1, OUTPUT, CAPACITY, RAM_END, c_bit),
                 Err(Error::AddressLimit)
             ));
         }
+    }
+
+    fn rejected(nodes: &[TestNode], expected: u32) {
+        let dt = tree(nodes, root_properties());
+        let (result, bytes) = crate::heap::allocation_measure::measure(|| {
+            validate_device_tree(&dt, expected, RAM_END, C_BIT)
+        });
+        assert!(result.is_err(), "accepted malformed topology");
+        assert_eq!(bytes, 0);
+        assert!(build_acpi(&dt, expected, OUTPUT, CAPACITY, RAM_END, C_BIT).is_err());
+    }
+
+    #[test]
+    fn cpu_identity_status_and_measured_count_are_required() {
+        for (count, expected) in [(0, 1), (1, 0), (1, 2), (2, 1), (256, 256), (255, 256)] {
+            rejected(&hardware(count, 1, 0), expected);
+        }
+        for (property, value) in [
+            ("reg", cells(&[255])),
+            ("reg", cells(&[0, 0])),
+            ("numa-node-id", cells(&[1])),
+            ("status", b"disabled\0".to_vec()),
+            ("device_type", b"other\0".to_vec()),
+        ] {
+            let mut nodes = hardware(1, 1, 0);
+            replace(&mut nodes[0].children[0].properties, property, value);
+            rejected(&nodes, 1);
+        }
+        let mut nodes = hardware(2, 1, 0);
+        replace(&mut nodes[0].children[1].properties, "reg", cells(&[0]));
+        rejected(&nodes, 2);
+        let mut nodes = hardware(2, 1, 0);
+        nodes[0].children[1].name = "cpu@01".into();
+        rejected(&nodes, 2);
+        let mut nodes = hardware(1, 1, 0);
+        nodes[0].children[0].properties.push(("reg", cells(&[0])));
+        rejected(&nodes, 1);
+        let mut dt = tree(&hardware(1, 1, 0), root_properties());
+        dt[28..32].copy_from_slice(&1u32.to_be_bytes());
+        assert!(validate_device_tree(&dt, 1, RAM_END, C_BIT).is_err());
+    }
+
+    #[test]
+    fn memory_records_must_normalize_to_measured_ram() {
+        let mut nodes = hardware(1, 32, 0);
+        nodes[1..].reverse();
+        let dt = tree(&nodes, root_properties());
+        validate_device_tree(&dt, 1, RAM_END, C_BIT).unwrap();
+        rejected(&hardware(1, 33, 0), 1);
+        rejected(&hardware(1, 0, 0), 1);
+        for (start, len) in [
+            (0, 0),
+            (0, RAM_END - 4096),
+            (0, RAM_END + 4096),
+            (4096, RAM_END - 4096),
+            (0, RAM_END - 1),
+            (u64::MAX - 4095, 4096),
+        ] {
+            let mut nodes = hardware(1, 1, 0);
+            nodes[1].name = alloc::format!("memory@{start:x}");
+            replace(
+                &mut nodes[1].properties,
+                "reg",
+                [start.to_be_bytes(), len.to_be_bytes()].concat(),
+            );
+            rejected(&nodes, 1);
+        }
+        for (property, value) in [
+            ("numa-node-id", cells(&[1])),
+            (
+                igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY,
+                cells(&[u32::MAX]),
+            ),
+            (
+                igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY,
+                cells(&[u32::from(igvm_defs::MemoryMapEntryType::VTL2_PROTECTABLE.0)]),
+            ),
+            ("reg", vec![0; 8]),
+        ] {
+            let mut nodes = hardware(1, 1, 0);
+            replace(&mut nodes[1].properties, property, value);
+            rejected(&nodes, 1);
+        }
+        let mut nodes = hardware(1, 2, 0);
+        nodes[2].name = "memory@0".into();
+        replace(
+            &mut nodes[2].properties,
+            "reg",
+            [0u64.to_be_bytes(), RAM_END.to_be_bytes()].concat(),
+        );
+        rejected(&nodes, 1);
+    }
+
+    #[test]
+    fn uart_inventory_is_not_inferred_from_console_metadata() {
+        for mask in [0, 3, 7, 11, 15] {
+            let mut nodes = hardware(1, 1, mask);
+            nodes.push(node(
+                "chosen".into(),
+                vec![
+                    ("bootargs", b"ignored\0".to_vec()),
+                    ("stdout-path", b"/pio-bus/serial@3e8\0".to_vec()),
+                ],
+            ));
+            let (rsdp, tables) = build(&tree(&nodes, root_properties())).unwrap();
+            let dsdt = base_table(&tables, OUTPUT, OUTPUT).unwrap();
+            for index in 0..4 {
+                let name = [b'U', b'A', b'R', b'1' + index];
+                assert_eq!(has(dsdt, &name), mask & (1 << index) != 0);
+            }
+            validate_output(&tables, OUTPUT, &rsdp, 0).unwrap();
+        }
+        for (property, value) in [
+            ("compatible", b"arm,pl011\0".to_vec()),
+            ("reg", [0x3f8u64.to_be_bytes(), 9u64.to_be_bytes()].concat()),
+            ("reg", cells(&[0x3f8, 8])),
+            ("interrupts", 3u64.to_be_bytes().to_vec()),
+            ("interrupts", cells(&[4])),
+            ("current-speed", cells(&[0])),
+        ] {
+            let mut nodes = hardware(1, 1, 3);
+            replace(&mut nodes[2].children[0].properties, property, value);
+            rejected(&nodes, 1);
+        }
+        let mut nodes = hardware(1, 1, 15);
+        let mut duplicate = nodes[2].children[0].clone();
+        duplicate.name = "serial@03f8".into();
+        nodes[2].children.push(duplicate);
+        rejected(&nodes, 1);
+        let mut nodes = hardware(1, 1, 3);
+        nodes[2].children[1] = nodes[2].children[0].clone();
+        nodes[2].children[1].name = "serial@03f8".into();
+        rejected(&nodes, 1);
+    }
+
+    fn metadata() -> Vec<TestNode> {
+        let mut bus = node(
+            "bus".into(),
+            vec![
+                ("compatible", b"simple-bus\0".to_vec()),
+                ("#address-cells", cells(&[2])),
+                ("#size-cells", cells(&[2])),
+                ("ranges", vec![]),
+            ],
+        );
+        for vtl in [0, 2] {
+            bus.children.push(node(
+                alloc::format!("vmbus-vtl{vtl}"),
+                vec![
+                    ("compatible", b"microsoft,vmbus\0".to_vec()),
+                    ("#address-cells", cells(&[2])),
+                    ("#size-cells", cells(&[2])),
+                    (igvm_defs::dt::IGVM_DT_VTL_PROPERTY, cells(&[vtl])),
+                    (
+                        "microsoft,message-connection-id",
+                        cells(&[if vtl == 0 { 1 } else { 4 }]),
+                    ),
+                    ("ranges", vec![]),
+                ],
+            ));
+        }
+        let mut openhcl = node(
+            "openhcl".into(),
+            vec![("memory-allocation-mode", b"host\0".to_vec())],
+        );
+        openhcl
+            .children
+            .push(node("entropy".into(), vec![("reg", vec![42; 256])]));
+        openhcl.children.push(node(
+            "keep-alive".into(),
+            vec![("device-types", b"nvme\0".to_vec())],
+        ));
+        vec![
+            bus,
+            openhcl,
+            node(
+                "chosen".into(),
+                vec![("bootargs", b"unmeasured\0".to_vec())],
+            ),
+        ]
+    }
+
+    #[test]
+    fn known_partition_metadata_is_not_guest_hardware() {
+        let mut nodes = hardware(1, 1, 0);
+        nodes.extend(metadata());
+        replace(
+            &mut nodes[2].children[0].properties,
+            "ranges",
+            [
+                0xe000_0000u64,
+                0xe000_0000,
+                0x1000_0000,
+                FOUR_GB,
+                FOUR_GB,
+                0x1000_0000,
+            ]
+            .into_iter()
+            .flat_map(u64::to_be_bytes)
+            .collect(),
+        );
+        let (_, tables) = build(&tree(&nodes, root_properties())).unwrap();
+        assert!(!has(&tables, b"VMBUS"));
+        assert!(!has(&tables, b"unmeasured"));
+        let mut bad = nodes.clone();
+        bad.push(node(
+            "watchdog".into(),
+            vec![("compatible", b"watchdog\0".to_vec())],
+        ));
+        rejected(&bad, 1);
+        let mut bad = nodes.clone();
+        bad[2].children.push(node("mystery".into(), vec![]));
+        rejected(&bad, 1);
+        let mut bad = nodes.clone();
+        bad[3].children.push(node("mystery".into(), vec![]));
+        rejected(&bad, 1);
+        let mut bad = nodes.clone();
+        replace(
+            &mut bad[3].properties,
+            "memory-allocation-mode",
+            b"vtl2\0".to_vec(),
+        );
+        rejected(&bad, 1);
+        let mut bad = nodes.clone();
+        replace(
+            &mut bad[2].children[1].properties,
+            igvm_defs::dt::IGVM_DT_VTL_PROPERTY,
+            cells(&[0]),
+        );
+        rejected(&bad, 1);
+        for values in [
+            [RAM_END - 4096, RAM_END - 4096, 8192],
+            [FOUR_GB, FOUR_GB + 4096, 4096],
+            [u64::MAX - 4095, u64::MAX - 4095, 4096],
+        ] {
+            let mut bad = nodes.clone();
+            replace(
+                &mut bad[2].children[0].properties,
+                "ranges",
+                values.into_iter().flat_map(u64::to_be_bytes).collect(),
+            );
+            rejected(&bad, 1);
+        }
+        let mut bad = nodes.clone();
+        replace(
+            &mut bad[2].children[1].properties,
+            "microsoft,message-connection-id",
+            cells(&[0x800074]),
+        );
+        rejected(&bad, 1);
+        let mut bad = nodes.clone();
+        replace(
+            &mut bad[4].properties,
+            "bootargs",
+            b"bad\0suffix\0".to_vec(),
+        );
+        rejected(&bad, 1);
+        let mut bad = nodes.clone();
+        bad[4]
+            .properties
+            .push(("bootargs", b"duplicate\0".to_vec()));
+        rejected(&bad, 1);
+        let mut bad = nodes.clone();
+        bad.push(nodes[4].clone());
+        rejected(&bad, 1);
+        let mut bad = nodes;
+        bad[1].properties.push(("mystery", vec![]));
+        rejected(&bad, 1);
+    }
+
+    #[test]
+    fn table_cpu_identities_and_affinities_match_dt() {
+        let dt = tree(&hardware(255, 32, 15), root_properties());
+        let (rsdp, tables) = build_acpi(&dt, 255, OUTPUT, CAPACITY, RAM_END, C_BIT).unwrap();
+        let addresses = root_addresses(&rsdp, &tables, OUTPUT);
+        let fadt = base_table(&tables, OUTPUT, addresses[0]).unwrap();
+        assert_eq!(le64(&fadt[140..]), OUTPUT);
+        let madt = base_table(&tables, OUTPUT, addresses[1]).unwrap();
+        let srat = base_table(&tables, OUTPUT, addresses[2]).unwrap();
+        let mut apics = 0;
+        let mut entries = &madt[HEADER_SIZE + 8..];
+        while !entries.is_empty() {
+            let length = entries[1] as usize;
+            if entries[0] == 0 {
+                assert_eq!(entries[2], apics + 1);
+                assert_eq!(entries[3], apics);
+                assert_eq!(le32(&entries[4..]), 1);
+                apics += 1;
+            }
+            entries = &entries[length..];
+        }
+        assert_eq!(apics, 255);
+        let mut apics = 0;
+        let mut memories = 0;
+        let mut entries = &srat[HEADER_SIZE + 12..];
+        while !entries.is_empty() {
+            let length = entries[1] as usize;
+            if entries[0] == 0 {
+                assert_eq!(entries[2], 0);
+                assert_eq!(entries[3], apics);
+                apics += 1;
+            } else if entries[0] == 1 {
+                assert_eq!(le32(&entries[2..]), 0);
+                assert_eq!(le64(&entries[8..]), 0);
+                assert_eq!(le64(&entries[16..]), RAM_END);
+                memories += 1;
+            }
+            entries = &entries[length..];
+        }
+        assert_eq!((apics, memories), (255, 1));
     }
 }

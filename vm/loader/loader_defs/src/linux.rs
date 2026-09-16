@@ -300,21 +300,23 @@ pub struct cc_setup_data {
 /// Magic value for a measured [`SnpBootShimParams`] page.
 pub const SNP_BOOT_SHIM_PARAMS_MAGIC: u64 = u64::from_le_bytes(*b"SNPBSHIM");
 /// Version of the [`SnpBootShimParams`] handoff ABI.
-pub const SNP_BOOT_SHIM_PARAMS_VERSION: u32 = 1;
-/// Version that interprets the reserved handoff slot as a platform-page GPA.
-pub const SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM: u32 = 2;
+pub const SNP_BOOT_SHIM_PARAMS_VERSION: u32 = 3;
 /// Magic value for the measured platform extension.
-pub const SNP_BOOT_SHIM_PLATFORM_MAGIC: u64 = u64::from_le_bytes(*b"SNPACPI2");
+pub const SNP_BOOT_SHIM_PLATFORM_MAGIC: u64 = u64::from_le_bytes(*b"SNPACPI3");
 /// Version of the platform extension.
 pub const SNP_BOOT_SHIM_PLATFORM_VERSION: u32 = 1;
 /// Maximum host device-tree size accepted by the fixed SNP profile.
 pub const SNP_BOOT_SHIM_DT_SIZE: u64 = 64 * 1024;
-/// Reserved ACPI output capacity for the PCIe tables and updated root tables.
+/// Reserved capacity for the complete generated ACPI table set.
 pub const SNP_BOOT_SHIM_ACPI_SIZE: u64 = 64 * 1024;
-/// Temporary allocator capacity for bounded PCIe ACPI generation.
+/// Temporary allocator capacity for bounded full ACPI generation.
 pub const SNP_BOOT_SHIM_HEAP_SIZE: u64 = 1024 * 1024;
 /// Maximum number of PCIe host bridges supported by the SNP bootshim.
 pub const SNP_BOOT_SHIM_MAX_PCIE_BRIDGES: usize = 8;
+/// Maximum CPU count, with contiguous APIC IDs starting at zero.
+pub const SNP_BOOT_SHIM_MAX_CPUS: usize = 255;
+/// Maximum number of host RAM records before normalization.
+pub const SNP_BOOT_SHIM_MAX_RAM_RECORDS: usize = 32;
 const SNP_BOOT_SHIM_PARAMS_HEADER_SIZE: usize = 48;
 /// Maximum number of RAM ranges that fit in one [`SnpBootShimParams`] page.
 pub const SNP_BOOT_SHIM_MAX_RANGES: usize = (hvdef::HV_PAGE_SIZE as usize
@@ -351,13 +353,13 @@ pub struct SnpBootShimParams {
     pub linux_zero_page: u64,
     /// Exclusive end of the configured, contiguous guest RAM.
     pub ram_end: u64,
-    /// Zero in v1; page-aligned GPA of [`SnpBootShimPlatformParams`] in v2.
-    pub reserved: u64,
+    /// Page-aligned GPA of the mandatory [`SnpBootShimPlatformParams`].
+    pub platform_gpa: u64,
     /// Sorted, non-overlapping RAM ranges omitted from measured page data.
     pub ranges: [SnpBootShimRange; SNP_BOOT_SHIM_MAX_RANGES],
 }
 
-/// Measured locations and capacities for host-DT-based PCIe ACPI generation.
+/// Measured locations and capacities for host-DT-based full ACPI generation.
 ///
 /// The device-tree contents are unmeasured host input. These bounds, unlike
 /// those contents, are part of the measured image and cannot be supplied by DT.
@@ -366,13 +368,14 @@ pub struct SnpBootShimParams {
 pub struct SnpBootShimPlatformParams {
     pub magic: u64,
     pub version: u32,
-    pub reserved: u32,
+    /// Must equal the size of this structure.
+    pub size: u32,
     pub dt_gpa: u64,
     pub dt_size: u64,
     pub heap_gpa: u64,
     pub heap_size: u64,
-    pub base_acpi_gpa: u64,
-    pub base_acpi_size: u64,
+    pub expected_cpu_count: u32,
+    pub reserved: u32,
     pub acpi_output_gpa: u64,
     pub acpi_output_size: u64,
     pub rsdp_gpa: u64,
@@ -383,7 +386,7 @@ pub struct SnpBootShimPlatformParams {
     pub c_bit_mask: u64,
 }
 
-const_assert_eq!(size_of::<SnpBootShimPlatformParams>(), 120);
+const_assert_eq!(size_of::<SnpBootShimPlatformParams>(), 112);
 const_assert_eq!(core::mem::offset_of!(boot_params, acpi_rsdp_addr), 0x70);
 
 const_assert_eq!(size_of::<SnpBootShimRange>(), 16);

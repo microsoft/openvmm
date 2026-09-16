@@ -21,8 +21,7 @@
                         "command_line": "console=ttyS0 earlyprintk=serial earlycon panic=-1"
                     },
                     "memory_page_count": 40960,
-                    "c_bit_position": 51,
-                    "pcie": true
+                    "c_bit_position": 51
                 }
             }
         }

@@ -119,12 +119,14 @@ describes the source definitions.
    image's RAM size, not a multi-node `--numa` configuration. Set
    `--processors N --vps-per-socket N` to match the image's VP count and
    contiguous APIC IDs; leave the APIC ID offset at 0. SMT can remain `auto`.
-   These launch arguments do not rewrite the measured ACPI tables. Regenerate
-   the IGVM after changing its topology or updating the generator.
- 
-  The opt-in `snp-linux-direct-pcie.json` profile (`pcie: true`) lets the
-  bootshim generate PCIe ACPI from the runtime's device-tree parameter. Its
-  ECAM and BAR-window addresses need not be fixed in the image. Use the usual
+   The measured image constrains CPU count and RAM. Regenerate it after changing
+   either constraint or updating the bootshim handoff.
+
+   The SNP Linux bootshim generates all ACPI tables from the runtime's IGVM
+   device tree and the fixed chipset definitions. No prebuilt ACPI tables are
+   embedded in the image. The former `pcie` manifest switch is no longer used;
+   PCIe tables are generated when the device tree contains host bridges.
+   ECAM and BAR-window addresses need not be fixed in the image. Use the usual
   `--pcie-root-complex`, `--pcie-root-port`, and PCIe virtio device options.
   For direct Linux kernels that reject high ECAM without a recent SMBIOS BIOS
   date, also use `--pcie-ecam-below-4gb`. The initial profile supports up to
@@ -196,6 +198,13 @@ describes the source definitions.
 
   With `--igvm --vtl2`, omit `--igvm-personality`. OpenVMM retains the
   existing HCL-host device shape and VBS-compatible IGVM behavior.
+
+  On x86, the IGVM device tree publishes COM1 and COM2 when any serial backend
+  is configured. It publishes COM3 and COM4 only when each port's backend is
+  configured. OpenHCL continues to select a published COM3 as its console.
+  These publication rules do not remove disconnected emulated UARTs. Native
+  x86 Linux-direct ACPI still describes all four ports when serial is enabled;
+  ARM64 DT and ACPI still describe both PL011 UARTs.
 * `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
   `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
   are also accepted.

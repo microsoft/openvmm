@@ -7,19 +7,16 @@ name = "igvmfilegen"
 rust-version.workspace = true
 
 [dependencies]
-chipset_resources.workspace = true
 igvmfilegen_config.workspace = true
 loader.workspace = true
 loader_defs.workspace = true
 product_policy.workspace = true
-serial_16550_resources.workspace = true
 
 hvdef.workspace = true
 
 memory_range.workspace = true
 underhill_confidentiality.workspace = true
 vm_topology.workspace = true
-vmm_core.workspace = true
 x86defs.workspace = true
 
 anyhow.workspace = true
@@ -42,7 +39,6 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
-acpi_spec.workspace = true
 crypto = { workspace = true, features = ["test_helpers"] }
 signature.workspace = true
 test_with_tracing.workspace = true

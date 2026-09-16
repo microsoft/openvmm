@@ -134,9 +134,6 @@ pub enum Image {
         memory_page_count: u64,
         /// The page-table address bit used as the SNP encryption bit.
         c_bit_position: u8,
-        /// Generate PCIe ACPI in the bootshim from the host device tree.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        pcie: bool,
     },
 }
 
@@ -187,6 +184,9 @@ impl Image {
             if processor_count == 0 {
                 return Err(ImageValidationError::ZeroProcessorCount);
             }
+            if processor_count > 255 {
+                return Err(ImageValidationError::TooManyProcessors);
+            }
             if memory_page_count == 0 {
                 return Err(ImageValidationError::ZeroMemoryPageCount);
             }
@@ -219,6 +219,9 @@ pub enum ImageValidationError {
     /// The image requests no virtual processors.
     #[error("processor_count must be nonzero")]
     ZeroProcessorCount,
+    /// The initial SNP ACPI contract uses legacy APIC IDs 0 through 254.
+    #[error("processor_count must not exceed 255")]
+    TooManyProcessors,
     /// The image requests no guest memory.
     #[error("memory_page_count must be nonzero")]
     ZeroMemoryPageCount,
@@ -434,7 +437,6 @@ mod test {
             processor_count,
             memory_page_count,
             c_bit_position,
-            pcie: false,
         }
     }
 
@@ -472,9 +474,7 @@ mod test {
                 processor_count,
                 memory_page_count,
                 c_bit_position,
-                pcie,
             } => {
-                assert!(!pcie);
                 assert!(linux.use_initrd);
                 assert_eq!(
                     linux.command_line.as_bytes(),
@@ -500,7 +500,6 @@ mod test {
         assert!(matches!(
             guest.image,
             Image::SnpLinuxDirect {
-                pcie: true,
                 processor_count: 2,
                 memory_page_count: 40960,
                 ..
@@ -641,6 +640,13 @@ mod test {
             image.validate(),
             Err(ImageValidationError::ZeroProcessorCount)
         );
+        assert_eq!(
+            snp_linux_direct_image(false, 256, 40960, 51).validate(),
+            Err(ImageValidationError::TooManyProcessors)
+        );
+        snp_linux_direct_image(false, 255, 40960, 51)
+            .validate()
+            .unwrap();
     }
 
     #[test]

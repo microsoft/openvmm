@@ -9,8 +9,6 @@ use crate::file_loader::SnpLinuxDirectConfig;
 use crate::vp_context_builder::snp::InjectionType;
 use anyhow::Context;
 use anyhow::ensure;
-use chipset_resources::pm::DEFAULT_ACPI_IRQ;
-use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
 use igvm_defs::SnpPolicy;
 use igvmfilegen_config::LinuxImage;
 use igvmfilegen_config::ResourceType;
@@ -28,22 +26,14 @@ use loader_defs::linux::SNP_BOOT_SHIM_HEAP_SIZE;
 use loader_defs::linux::SNP_BOOT_SHIM_MAX_RANGES;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
-use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
 use loader_defs::linux::SnpBootShimPlatformParams;
 use loader_defs::linux::SnpBootShimRange;
 use memory_range::MemoryRange;
-use serial_16550_resources::ComPort;
 use std::io::Seek;
 use vm_topology::memory::MemoryLayout;
-use vm_topology::pcie::PcieHostBridge;
-use vm_topology::processor::ProcessorTopology;
-use vm_topology::processor::TopologyBuilder;
-use vm_topology::processor::x86::X86Topology;
-use vmm_core::acpi_builder::AcpiArchConfig;
-use vmm_core::acpi_builder::AcpiTablesBuilder;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -60,14 +50,12 @@ const KVM_VMSA_GPA: u64 = 0xffff_ffff_f000;
 pub struct BuildParams<'a> {
     /// The Linux payload configuration.
     pub linux: &'a LinuxImage,
-    /// The processor count described by the embedded topology and ACPI tables.
+    /// The measured CPU count that the host topology must match.
     pub processor_count: u32,
     /// The number of configured 4-KiB RAM pages.
     pub memory_page_count: u64,
     /// The page-table address bit used as the SNP encryption bit.
     pub c_bit_position: u8,
-    /// Request host device-tree input and bootshim-generated PCIe ACPI.
-    pub pcie: bool,
     /// The SNP guest policy.
     pub policy: SnpPolicy,
     /// The SNP interrupt-injection mode.
@@ -79,54 +67,20 @@ pub struct BuildParams<'a> {
 /// The fixed platform layout embedded in the bring-up IGVM.
 struct FixedGuestLayout {
     memory: MemoryLayout,
-    processors: ProcessorTopology<X86Topology>,
-    pcie_host_bridges: Vec<PcieHostBridge>,
 }
 
 impl FixedGuestLayout {
     fn new(memory_page_count: u64, processor_count: u32) -> anyhow::Result<Self> {
+        ensure!(
+            (1..=loader_defs::linux::SNP_BOOT_SHIM_MAX_CPUS as u32).contains(&processor_count),
+            "SNP CPU count must be in 1 through 255"
+        );
         let memory_size = memory_page_count
             .checked_mul(PAGE_SIZE)
             .context("RAM size overflow")?;
         let memory = MemoryLayout::new(memory_size, &[], &[], &[], None)
             .context("building memory layout")?;
-        let mut processors = TopologyBuilder::new_x86()
-            .build(processor_count)
-            .context("building processor topology")?;
-        // Match the single RAM node instead of inheriting per-socket vnodes.
-        processors.set_vnodes(&vec![0; processor_count as usize]);
-
-        Ok(Self {
-            memory,
-            processors,
-            pcie_host_bridges: Vec::new(),
-        })
-    }
-
-    fn acpi_builder(&self) -> AcpiTablesBuilder<'_, X86Topology> {
-        // This profile embeds OpenVMM's standard PC-compatible chipset
-        // contract. The ACPI values must match the devices supplied by the
-        // backend.
-        //
-        // TODO: Accept an external platform description when this bring-up
-        // profile needs layouts other than the fixed OpenVMM defaults.
-        AcpiTablesBuilder {
-            processor_topology: &self.processors,
-            mem_layout: &self.memory,
-            cache_topology: None,
-            pcie_host_bridges: &self.pcie_host_bridges,
-            slit_info: None,
-            generic_initiators: &[],
-            arch: AcpiArchConfig::X86 {
-                with_ioapic: true,
-                with_pic: true,
-                with_pit: true,
-                with_psp: false,
-                pm_base: DEFAULT_PM_PIO_BASE,
-                acpi_irq: DEFAULT_ACPI_IRQ,
-                iommu: None,
-            },
-        }
+        Ok(Self { memory })
     }
 }
 
@@ -188,26 +142,23 @@ fn new_loader(
     })
 }
 
-/// Builds the deterministic topology, ACPI tables, Linux payload, and BSP
-/// launch context embedded in the standalone SNP IGVM.
+/// Builds the measured layout, Linux payload, and BSP launch context.
+/// The shim creates ACPI from the host's unmeasured DeviceTree after launch.
 pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
     let BuildParams {
         linux,
         processor_count,
         memory_page_count,
         c_bit_position,
-        pcie,
         policy,
         injection_type,
         resources,
     } = params;
 
     let layout = FixedGuestLayout::new(memory_page_count, processor_count)?;
-    let acpi_builder = layout.acpi_builder();
     let (mut kernel, mut initrd) = open_linux_resources(linux, resources)?;
     let initrd_config = initrd_config(&mut initrd)?;
     let mut loader = new_loader(policy, c_bit_position, memory_page_count, injection_type);
-    let com1 = ComPort::Com1;
     let mut platform = None;
 
     let load_info = loader::linux::load_x86(
@@ -217,21 +168,16 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         &linux.command_line,
         &layout.memory,
         |gpa| {
-            let mut tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                dsdt.add_apic();
-                dsdt.add_uart(b"\\_SB.UAR1", b"COM1", 1, com1.io_port(), com1.irq().into());
-                dsdt.add_rtc();
-            });
-            if pcie {
-                platform = Some(reserve_acpi_output(
-                    gpa,
-                    &mut tables.tables,
-                    1u64 << c_bit_position,
-                ));
-            }
+            platform = Some(reserve_acpi_output(
+                gpa,
+                processor_count,
+                1u64 << c_bit_position,
+            ));
+            // Import zero-filled permanent storage, not static ACPI. The shim
+            // publishes the RSDP only after it validates and builds all tables.
             loader::linux::AcpiTables {
-                rsdp: tables.rsdp,
-                tables: tables.tables,
+                rsdp: vec![0; PAGE_SIZE as usize],
+                tables: vec![0; SNP_BOOT_SHIM_ACPI_SIZE as usize],
             }
         },
         None,
@@ -240,7 +186,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         }),
     )
     .context("loading direct-Linux image")?;
-    let platform = platform.transpose()?;
+    let platform = platform.context("Linux loader did not reserve ACPI output")??;
 
     let kernel_runtime_end = kernel_runtime_end(
         load_info.kernel.gpa,
@@ -281,7 +227,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
 /// The parameter page lists every gap in configured RAM not imported through
 /// page data or parameter areas. The bootshim makes those pages private,
 /// validates them, and then enters Linux with RSI restored to the zero page.
-/// The opt-in platform extension, device tree, and temporary heap follow the
+/// The mandatory platform extension, device tree, and temporary heap follow the
 /// parameter page. Only the heap remains in the acceptance gaps.
 fn load_bootshim_and_handoff(
     loader: &mut IgvmLoader<X86Register>,
@@ -290,7 +236,7 @@ fn load_bootshim_and_handoff(
     linux_zero_page: u64,
     memory_page_count: u64,
     kernel_runtime_end: u64,
-    platform: Option<SnpBootShimPlatformParams>,
+    platform: SnpBootShimPlatformParams,
 ) -> anyhow::Result<Vec<SnpBootShimRange>> {
     let shim_base = align_up_to_page(loader.next_available_gpa()?.max(kernel_runtime_end))?;
 
@@ -330,7 +276,7 @@ fn import_bootshim_handoff(
     linux_entry: u64,
     linux_zero_page: u64,
     memory_page_count: u64,
-    platform: Option<SnpBootShimPlatformParams>,
+    mut platform: SnpBootShimPlatformParams,
 ) -> anyhow::Result<Vec<SnpBootShimRange>> {
     let ram_end = memory_page_count
         .checked_mul(PAGE_SIZE)
@@ -338,7 +284,7 @@ fn import_bootshim_handoff(
     let mut cursor = align_up_to_page(shim.next_available_address)?;
     let params_gpa = reserve_region(&mut cursor, PAGE_SIZE, ram_end)?;
     let params_page = params_gpa / PAGE_SIZE;
-    let platform_gpa = if let Some(mut platform) = platform {
+    let platform_gpa = {
         ensure!(
             shim.minimum_address_used.is_multiple_of(PAGE_SIZE)
                 && shim.minimum_address_used < params_gpa
@@ -355,12 +301,10 @@ fn import_bootshim_handoff(
             .checked_sub(platform.shim_gpa)
             .context("invalid SNP bootshim range")?;
         ensure!(
-            platform.base_acpi_gpa.checked_add(platform.base_acpi_size)
-                == Some(platform.acpi_output_gpa)
-                && platform
-                    .acpi_output_gpa
-                    .checked_add(platform.acpi_output_size)
-                    .is_some_and(|end| end <= platform.shim_gpa && end <= ram_end),
+            platform
+                .acpi_output_gpa
+                .checked_add(platform.acpi_output_size)
+                .is_some_and(|end| end <= platform.shim_gpa && end <= ram_end),
             "SNP ACPI workspace overlaps the bootshim or lies outside RAM"
         );
         let mut importer = loader.loader();
@@ -386,9 +330,7 @@ fn import_bootshim_handoff(
             .context("requesting SNP device tree")?;
         // The heap has no PageData: accept it with the RAM gaps before use.
         // No final ACPI pointer may refer to this temporary storage.
-        Some(platform_gpa)
-    } else {
-        None
+        platform_gpa
     };
 
     let bootshim_ranges = loader
@@ -402,10 +344,7 @@ fn import_bootshim_handoff(
 
     let mut bootshim_params =
         build_bootshim_params(linux_entry, linux_zero_page, ram_end, &bootshim_ranges)?;
-    if let Some(platform_gpa) = platform_gpa {
-        bootshim_params.version = SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM;
-        bootshim_params.reserved = platform_gpa;
-    }
+    bootshim_params.platform_gpa = platform_gpa;
     {
         let mut importer = loader.loader();
         importer
@@ -450,30 +389,21 @@ fn reserve_region(cursor: &mut u64, size: u64, ram_end: u64) -> anyhow::Result<u
 
 fn reserve_acpi_output(
     nominal_rsdp_gpa: u64,
-    tables: &mut Vec<u8>,
+    expected_cpu_count: u32,
     c_bit_mask: u64,
 ) -> anyhow::Result<SnpBootShimPlatformParams> {
-    // The ACPI builder starts the table blob one page after its nominal RSDP.
-    // The Linux loader imports only the blob here and pins the RSDP elsewhere.
+    // Match the Linux loader's table-storage address and pinned RSDP page.
     let gpa = nominal_rsdp_gpa
         .checked_add(PAGE_SIZE)
         .context("ACPI base GPA overflow")?;
-    let base_size = align_up_to_page(tables.len().try_into()?)?;
-    let output_gpa = gpa
-        .checked_add(base_size)
-        .context("ACPI output GPA overflow")?;
-    let size = base_size
-        .checked_add(SNP_BOOT_SHIM_ACPI_SIZE)
-        .context("ACPI workspace size overflow")?;
-    gpa.checked_add(size)
+    gpa.checked_add(SNP_BOOT_SHIM_ACPI_SIZE)
         .context("ACPI workspace end overflow")?;
-    tables.resize(size.try_into()?, 0);
     Ok(SnpBootShimPlatformParams {
         magic: SNP_BOOT_SHIM_PLATFORM_MAGIC,
         version: SNP_BOOT_SHIM_PLATFORM_VERSION,
-        base_acpi_gpa: gpa,
-        base_acpi_size: base_size,
-        acpi_output_gpa: output_gpa,
+        size: size_of::<SnpBootShimPlatformParams>() as u32,
+        expected_cpu_count,
+        acpi_output_gpa: gpa,
         acpi_output_size: SNP_BOOT_SHIM_ACPI_SIZE,
         rsdp_gpa: loader::linux::RSDP_BASE,
         c_bit_mask,
@@ -525,11 +455,6 @@ mod tests {
     use super::*;
     use crate::vp_context_builder::VpContextBuilder;
     use crate::vp_context_builder::snp::SnpHardwareContext;
-    use acpi_spec::Header;
-    use acpi_spec::srat::SratApic;
-    use acpi_spec::srat::SratHeader;
-    use acpi_spec::srat::SratMemory;
-    use acpi_spec::srat::SratX2Apic;
     use igvm::IgvmDirectiveHeader;
     use igvm::IgvmFile;
     use igvm::IgvmInitializationHeader;
@@ -692,44 +617,15 @@ mod tests {
     }
 
     #[test]
-    fn fixed_layout_srat_assigns_all_cpus_and_memory_to_node_zero() {
-        for processor_count in [1, 2, 4, 8, 256] {
+    fn fixed_layout_bounds_measured_cpus_and_ram() {
+        for processor_count in [1, 2, 4, 8, 255] {
             let layout = FixedGuestLayout::new(64, processor_count).unwrap();
-            assert_eq!(layout.processors.vp_count(), processor_count);
             assert_eq!(layout.memory.ram().len(), 1);
-            assert!(layout.processors.vps().all(|vp| vp.vnode == 0));
-
-            let srat = layout.acpi_builder().build_srat();
-            let (header, data) = Header::read_from_prefix(&srat).unwrap();
-            assert_eq!(header.signature, *b"SRAT");
-            assert_eq!(header.length.get() as usize, srat.len());
-            assert_eq!(
-                srat.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)),
-                0
-            );
-            let (_, mut entries) = SratHeader::read_from_prefix(data).unwrap();
-
-            for apic_id in 0..processor_count {
-                if apic_id <= 0xfe {
-                    let (entry, rest) = SratApic::read_from_prefix(entries).unwrap();
-                    assert_eq!(entry.as_bytes(), SratApic::new(apic_id as u8, 0).as_bytes());
-                    entries = rest;
-                } else {
-                    let (entry, rest) = SratX2Apic::read_from_prefix(entries).unwrap();
-                    assert_eq!(entry.as_bytes(), SratX2Apic::new(apic_id, 0).as_bytes());
-                    entries = rest;
-                }
-            }
-            for range in layout.memory.ram() {
-                let (entry, rest) = SratMemory::read_from_prefix(entries).unwrap();
-                assert_eq!(
-                    entry.as_bytes(),
-                    SratMemory::new(range.range.start(), range.range.len(), 0).as_bytes(),
-                );
-                entries = rest;
-            }
-            assert!(entries.is_empty());
+            assert_eq!(layout.memory.ram()[0].vnode, 0);
+            assert_eq!(layout.memory.ram()[0].range.len(), 64 * PAGE_SIZE);
         }
+        assert!(FixedGuestLayout::new(64, 0).is_err());
+        assert!(FixedGuestLayout::new(64, 256).is_err());
     }
 
     #[test]
@@ -993,7 +889,7 @@ mod tests {
     const LAYOUT_SHIM_GPA: u64 = 0x200000;
     const LAYOUT_PARAMS_GPA: u64 = LAYOUT_SHIM_GPA + 2 * PAGE_SIZE;
 
-    fn generated_layout(pcie: bool) -> (IgvmOutput, Vec<SnpBootShimRange>) {
+    fn generated_layout() -> (IgvmOutput, Vec<SnpBootShimRange>) {
         let layout = FixedGuestLayout::new(LAYOUT_RAM_PAGES, 2).unwrap();
         let mut loader = test_loader(LAYOUT_RAM_PAGES);
         let mut platform = None;
@@ -1010,18 +906,10 @@ mod tests {
             &c"console=ttyS0".to_owned(),
             &layout.memory,
             |gpa| {
-                let mut tables = layout.acpi_builder().build_acpi_tables(gpa, |_| {});
-                if pcie {
-                    let original = tables.tables.clone();
-                    platform = Some(
-                        reserve_acpi_output(gpa, &mut tables.tables, TEST_C_BIT_MASK).unwrap(),
-                    );
-                    assert_eq!(&tables.tables[..original.len()], original);
-                    assert!(tables.tables[original.len()..].iter().all(|&b| b == 0));
-                }
+                platform = Some(reserve_acpi_output(gpa, 2, TEST_C_BIT_MASK).unwrap());
                 loader::linux::AcpiTables {
-                    rsdp: tables.rsdp,
-                    tables: tables.tables,
+                    rsdp: vec![0; PAGE_SIZE as usize],
+                    tables: vec![0; SNP_BOOT_SHIM_ACPI_SIZE as usize],
                 }
             },
             None,
@@ -1048,7 +936,7 @@ mod tests {
             0x100000,
             loader::linux::ZERO_PAGE_BASE,
             LAYOUT_RAM_PAGES,
-            platform,
+            platform.unwrap(),
         )
         .unwrap();
         (loader.finalize().unwrap(), ranges)
@@ -1071,19 +959,26 @@ mod tests {
 
     #[test]
     fn platform_handoff_reserves_dt_and_accepts_heap_once() {
-        let (output, ranges) = generated_layout(true);
+        let (output, ranges) = generated_layout();
         let params =
             SnpBootShimParams::read_from_bytes(&imported_page(&output, LAYOUT_PARAMS_GPA)).unwrap();
-        assert_eq!(params.version, SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM);
-        assert_eq!(params.reserved, LAYOUT_PARAMS_GPA + PAGE_SIZE);
-        let (platform, _) =
-            SnpBootShimPlatformParams::read_from_prefix(&imported_page(&output, params.reserved))
-                .unwrap();
+        assert_eq!(params.version, SNP_BOOT_SHIM_PARAMS_VERSION);
+        assert_eq!(params.platform_gpa, LAYOUT_PARAMS_GPA + PAGE_SIZE);
+        let (platform, _) = SnpBootShimPlatformParams::read_from_prefix(&imported_page(
+            &output,
+            params.platform_gpa,
+        ))
+        .unwrap();
         assert_eq!(platform.magic, SNP_BOOT_SHIM_PLATFORM_MAGIC);
         assert_eq!(platform.c_bit_mask, TEST_C_BIT_MASK);
         assert_eq!(platform.version, SNP_BOOT_SHIM_PLATFORM_VERSION);
         assert_eq!(platform.reserved, 0);
         assert_eq!(platform.reserved2, 0);
+        assert_eq!(
+            platform.size as usize,
+            size_of::<SnpBootShimPlatformParams>()
+        );
+        assert_eq!(platform.expected_cpu_count, 2);
         assert_eq!(platform.shim_gpa, LAYOUT_SHIM_GPA);
         assert_eq!(platform.shim_size, 2 * PAGE_SIZE);
         assert_eq!(platform.dt_gpa, LAYOUT_PARAMS_GPA + 2 * PAGE_SIZE);
@@ -1159,7 +1054,7 @@ mod tests {
 
     #[test]
     fn acpi_output_is_inside_linux_e820_acpi_reservation() {
-        let (output, _) = generated_layout(true);
+        let (output, _) = generated_layout();
         let (platform, _) = SnpBootShimPlatformParams::read_from_prefix(&imported_page(
             &output,
             LAYOUT_PARAMS_GPA + PAGE_SIZE,
@@ -1174,15 +1069,8 @@ mod tests {
             .iter()
             .find(|entry| entry.typ.get() == loader_defs::linux::E820_ACPI)
             .unwrap();
-        assert_eq!(acpi.addr.get(), platform.base_acpi_gpa);
-        assert_eq!(
-            acpi.size.get(),
-            platform.base_acpi_size + platform.acpi_output_size
-        );
-        assert_eq!(
-            platform.acpi_output_gpa,
-            platform.base_acpi_gpa + platform.base_acpi_size
-        );
+        assert_eq!(acpi.addr.get(), platform.acpi_output_gpa);
+        assert_eq!(acpi.size.get(), platform.acpi_output_size);
         assert_eq!(platform.rsdp_gpa, loader::linux::RSDP_BASE);
         for gpa in (platform.acpi_output_gpa..platform.acpi_output_gpa + platform.acpi_output_size)
             .step_by(PAGE_SIZE as usize)
@@ -1190,26 +1078,10 @@ mod tests {
             assert_eq!(imported_page(&output, gpa), [0; PAGE_SIZE as usize]);
         }
 
-        let (legacy, _) = generated_layout(false);
+        assert_eq!(zero_page.acpi_rsdp_addr, 0);
         assert_eq!(
             imported_page(&output, loader::linux::RSDP_BASE),
-            imported_page(&legacy, loader::linux::RSDP_BASE),
-        );
-        for gpa in (platform.base_acpi_gpa..platform.acpi_output_gpa).step_by(PAGE_SIZE as usize) {
-            assert_eq!(imported_page(&output, gpa), imported_page(&legacy, gpa));
-        }
-        let legacy_zero = loader_defs::linux::boot_params::read_from_bytes(&imported_page(
-            &legacy,
-            loader::linux::ZERO_PAGE_BASE,
-        ))
-        .unwrap();
-        let legacy_acpi = legacy_zero.e820_map[..legacy_zero.e820_entries as usize]
-            .iter()
-            .find(|entry| entry.typ.get() == loader_defs::linux::E820_ACPI)
-            .unwrap();
-        assert_eq!(
-            legacy_acpi.size.get() + SNP_BOOT_SHIM_ACPI_SIZE,
-            acpi.size.get()
+            [0; PAGE_SIZE as usize]
         );
         let secrets_gpa = |output: &IgvmOutput| {
             output
@@ -1230,40 +1102,52 @@ mod tests {
             secrets_gpa(&output),
             platform.acpi_output_gpa + platform.acpi_output_size
         );
-        assert_eq!(
-            secrets_gpa(&output),
-            secrets_gpa(&legacy) + SNP_BOOT_SHIM_ACPI_SIZE
-        );
     }
 
     #[test]
-    fn legacy_handoff_bytes_are_unchanged() {
-        let (output, ranges) = generated_layout(false);
-        let expected = build_bootshim_params(
+    fn full_handoff_bytes_roundtrip() {
+        let (output, ranges) = generated_layout();
+        let mut expected = build_bootshim_params(
             0x100000,
             loader::linux::ZERO_PAGE_BASE,
             LAYOUT_RAM_PAGES * PAGE_SIZE,
             &ranges,
         )
         .unwrap();
+        expected.platform_gpa = LAYOUT_PARAMS_GPA + PAGE_SIZE;
         assert_eq!(
             imported_page(&output, LAYOUT_PARAMS_GPA),
             expected.as_bytes()
         );
-        assert!(!output.guest.directives().iter().any(|directive| matches!(
-            directive,
-            IgvmDirectiveHeader::ParameterArea { .. }
-                | IgvmDirectiveHeader::DeviceTree(_)
-                | IgvmDirectiveHeader::ParameterInsert(_)
-        )));
+        let mut bytes = Vec::new();
+        IgvmSerializer::new(&output.guest)
+            .unwrap()
+            .serialize(&mut bytes)
+            .unwrap();
+        let reparsed = IgvmFile::new_from_binary(&bytes, Some(igvm::IsolationType::Snp)).unwrap();
+        let (platform, _) = SnpBootShimPlatformParams::read_from_prefix(&imported_page(
+            &output,
+            expected.platform_gpa,
+        ))
+        .unwrap();
+        for directive in reparsed.directives() {
+            if let IgvmDirectiveHeader::PageData { gpa, data, .. } = directive {
+                if *gpa == platform.rsdp_gpa
+                    || (platform.acpi_output_gpa
+                        ..platform.acpi_output_gpa + platform.acpi_output_size)
+                        .contains(gpa)
+                {
+                    assert!(data.iter().all(|&b| b == 0), "static ACPI at {gpa:#x}");
+                }
+            }
+        }
     }
 
     #[test]
     fn rejects_workspace_overflow_and_insufficient_ram() {
         for ram_pages in [0x202, 0x203, 0x204, 0x213, 0x214, 0x313] {
             let mut loader = test_loader(ram_pages);
-            let platform =
-                reserve_acpi_output(0x10000, &mut vec![0; 100], TEST_C_BIT_MASK).unwrap();
+            let platform = reserve_acpi_output(0x10000, 2, TEST_C_BIT_MASK).unwrap();
             assert!(
                 import_bootshim_handoff(
                     &mut loader,
@@ -1275,25 +1159,21 @@ mod tests {
                     0x100000,
                     loader::linux::ZERO_PAGE_BASE,
                     ram_pages,
-                    Some(platform),
+                    platform,
                 )
                 .is_err()
             );
         }
         let mut cursor = !(PAGE_SIZE - 1);
         assert!(reserve_region(&mut cursor, PAGE_SIZE, u64::MAX).is_err());
-        assert!(reserve_acpi_output(u64::MAX, &mut Vec::new(), TEST_C_BIT_MASK).is_err());
+        assert!(reserve_acpi_output(u64::MAX, 2, TEST_C_BIT_MASK).is_err());
     }
 
     #[test]
     fn rejects_acpi_workspace_overlapping_shim() {
         let mut loader = test_loader(LAYOUT_RAM_PAGES);
-        let platform = reserve_acpi_output(
-            LAYOUT_SHIM_GPA - PAGE_SIZE,
-            &mut vec![0; 100],
-            TEST_C_BIT_MASK,
-        )
-        .unwrap();
+        let platform =
+            reserve_acpi_output(LAYOUT_SHIM_GPA - PAGE_SIZE, 2, TEST_C_BIT_MASK).unwrap();
         assert!(
             import_bootshim_handoff(
                 &mut loader,
@@ -1305,7 +1185,7 @@ mod tests {
                 0x100000,
                 loader::linux::ZERO_PAGE_BASE,
                 LAYOUT_RAM_PAGES,
-                Some(platform),
+                platform,
             )
             .unwrap_err()
             .to_string()

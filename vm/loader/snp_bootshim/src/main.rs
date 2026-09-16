@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Measured SEV-SNP boot stage that accepts sparse guest RAM, prepares optional
-//! host-derived PCIe ACPI, and enters a direct-boot Linux kernel.
+//! Measured SEV-SNP boot stage that validates host topology, accepts sparse
+//! guest RAM, builds complete ACPI, and enters a direct-boot Linux kernel.
 //!
 //! The IGVM generator starts this x86_64 bare-metal payload with `RSI` pointing
 //! to a measured [`SnpBootShimParams`] page. After validating that complete
@@ -26,13 +26,13 @@ extern crate alloc;
 
 mod heap;
 mod pcie;
+mod topology;
 
 use loader_defs::linux::SNP_BOOT_SHIM_ACPI_SIZE;
 use loader_defs::linux::SNP_BOOT_SHIM_DT_SIZE;
 use loader_defs::linux::SNP_BOOT_SHIM_HEAP_SIZE;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
-use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
@@ -50,7 +50,6 @@ enum ParamsError {
     InvalidRamEnd,
     InvalidLinuxEntry,
     InvalidLinuxZeroPage,
-    ReservedNotZero,
     EmptyRange,
     RangeOverflow,
     RangeOutsideRam,
@@ -78,9 +77,7 @@ fn validate_params(
     if params.magic != SNP_BOOT_SHIM_PARAMS_MAGIC {
         return Err(ParamsError::InvalidMagic);
     }
-    if params.version != SNP_BOOT_SHIM_PARAMS_VERSION
-        && params.version != SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM
-    {
+    if params.version != SNP_BOOT_SHIM_PARAMS_VERSION {
         return Err(ParamsError::UnsupportedVersion);
     }
     let range_count =
@@ -92,22 +89,18 @@ fn validate_params(
     if params.ram_end == 0 || !params.ram_end.is_multiple_of(PAGE_SIZE) {
         return Err(ParamsError::InvalidRamEnd);
     }
-    if params.version == SNP_BOOT_SHIM_PARAMS_VERSION && params.reserved != 0 {
-        return Err(ParamsError::ReservedNotZero);
-    }
     let params_end = params_gpa
         .checked_add(PAGE_SIZE)
         .ok_or(ParamsError::RangeOverflow)?;
     if params_end > params.ram_end {
         return Err(ParamsError::RangeOutsideRam);
     }
-    if params.version == SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM
-        && (params.reserved < params_end
-            || !params.reserved.is_multiple_of(PAGE_SIZE)
-            || params
-                .reserved
-                .checked_add(PAGE_SIZE)
-                .is_none_or(|end| end > params.ram_end))
+    if params.platform_gpa < params_end
+        || !params.platform_gpa.is_multiple_of(PAGE_SIZE)
+        || params
+            .platform_gpa
+            .checked_add(PAGE_SIZE)
+            .is_none_or(|end| end > params.ram_end)
     {
         return Err(ParamsError::InvalidPlatform);
     }
@@ -152,10 +145,7 @@ fn validate_params(
         if start < params_end && params_gpa < end {
             return Err(ParamsError::ParamsRangeOverlap);
         }
-        if params.version == SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM
-            && start < params.reserved + PAGE_SIZE
-            && params.reserved < end
-        {
+        if start < params.platform_gpa + PAGE_SIZE && params.platform_gpa < end {
             return Err(ParamsError::ParamsRangeOverlap);
         }
         previous_end = end;
@@ -187,15 +177,16 @@ fn validate_platform(
     platform: &SnpBootShimPlatformParams,
 ) -> Result<(), ParamsError> {
     let ranges = validate_params(params, params_gpa)?;
-    if params.version != SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM
-        || platform.magic != SNP_BOOT_SHIM_PLATFORM_MAGIC
+    if platform.magic != SNP_BOOT_SHIM_PLATFORM_MAGIC
         || platform.version != SNP_BOOT_SHIM_PLATFORM_VERSION
+        || platform.size != size_of::<SnpBootShimPlatformParams>() as u32
+        || !(1..=loader_defs::linux::SNP_BOOT_SHIM_MAX_CPUS as u32)
+            .contains(&platform.expected_cpu_count)
         || platform.reserved != 0
         || platform.reserved2 != 0
         || platform.dt_size != SNP_BOOT_SHIM_DT_SIZE
         || platform.heap_size != SNP_BOOT_SHIM_HEAP_SIZE
         || platform.acpi_output_size != SNP_BOOT_SHIM_ACPI_SIZE
-        || platform.base_acpi_size > SNP_BOOT_SHIM_ACPI_SIZE
         || !platform.c_bit_mask.is_power_of_two()
         || !(32..52).contains(&platform.c_bit_mask.trailing_zeros())
         || params.ram_end > 1u64 << 32
@@ -205,11 +196,6 @@ fn validate_platform(
 
     let dt = platform_region(platform.dt_gpa, platform.dt_size, params.ram_end)?;
     let heap = platform_region(platform.heap_gpa, platform.heap_size, params.ram_end)?;
-    let base = platform_region(
-        platform.base_acpi_gpa,
-        platform.base_acpi_size,
-        params.ram_end,
-    )?;
     let output = platform_region(
         platform.acpi_output_gpa,
         platform.acpi_output_size,
@@ -217,13 +203,12 @@ fn validate_platform(
     )?;
     let rsdp = platform_region(platform.rsdp_gpa, PAGE_SIZE, params.ram_end)?;
     let shim = platform_region(platform.shim_gpa, platform.shim_size, params.ram_end)?;
-    let extension = platform_region(params.reserved, PAGE_SIZE, params.ram_end)?;
+    let extension = platform_region(params.platform_gpa, PAGE_SIZE, params.ram_end)?;
 
     // The generator places permanent ACPI below the legacy RSDP, and
     // temporary DT/heap storage after the loaded shim. Keep that ordering
     // explicit so malformed handoffs cannot alias code or published tables.
-    if params.linux_zero_page + PAGE_SIZE > base.start
-        || base.end != output.start
+    if params.linux_zero_page + PAGE_SIZE > output.start
         || output.end > rsdp.start
         || rsdp.end > params.linux_entry
         || params.linux_entry >= shim.start
@@ -240,10 +225,14 @@ fn validate_platform(
     for range in ranges {
         let start = range.start_gpn * PAGE_SIZE;
         let end = start + range.page_count * PAGE_SIZE;
-        for protected in [&base, &output, &rsdp, &shim, &extension, &dt] {
+        let zero_page = params.linux_zero_page..params.linux_zero_page + PAGE_SIZE;
+        for protected in [&output, &rsdp, &shim, &extension, &dt, &zero_page] {
             if start < protected.end && protected.start < end {
                 return Err(ParamsError::PlatformRangeOverlap);
             }
+        }
+        if (start..end).contains(&params.linux_entry) {
+            return Err(ParamsError::PlatformRangeOverlap);
         }
         heap_accepted |= start <= heap.start && end >= heap.end;
     }
@@ -279,24 +268,12 @@ fn install_platform_acpi(params: &SnpBootShimParams, platform: &SnpBootShimPlatf
     }
     // SAFETY: The measured platform descriptor fixes these mapped regions;
     // only the bytes inside the validated DT region are host-controlled.
-    let (dt, base, original_rsdp) = unsafe {
-        (
-            core::slice::from_raw_parts(platform.dt_gpa as *const u8, platform.dt_size as usize),
-            core::slice::from_raw_parts(
-                platform.base_acpi_gpa as *const u8,
-                platform.base_acpi_size as usize,
-            ),
-            core::slice::from_raw_parts(
-                platform.rsdp_gpa as *const u8,
-                size_of::<acpi_spec::Rsdp>(),
-            ),
-        )
+    let dt = unsafe {
+        core::slice::from_raw_parts(platform.dt_gpa as *const u8, platform.dt_size as usize)
     };
-    let (rsdp, tables) = match pcie::build_pcie_acpi(
+    let (rsdp, tables) = match pcie::build_acpi(
         dt,
-        base,
-        platform.base_acpi_gpa,
-        original_rsdp,
+        platform.expected_cpu_count,
         platform.acpi_output_gpa,
         platform.acpi_output_size as usize,
         params.ram_end,
@@ -547,10 +524,10 @@ extern "C" fn start(params_gpa: u64) -> ! {
         Ok(ranges) => ranges,
         Err(_) => minimal_rt::arch::fault(),
     };
-    let platform = if params.version == SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM {
+    let platform = {
         // SAFETY: validate_params checked the measured extension page address
         // and bounds. It is imported before the BSP starts, not accepted here.
-        let platform = unsafe { &*(params.reserved as *const SnpBootShimPlatformParams) };
+        let platform = unsafe { &*(params.platform_gpa as *const SnpBootShimPlatformParams) };
         if validate_platform(params, params_gpa, platform).is_err() {
             terminate();
         }
@@ -560,12 +537,17 @@ extern "C" fn start(params_gpa: u64) -> ! {
         let dt = unsafe {
             core::slice::from_raw_parts(platform.dt_gpa as *const u8, platform.dt_size as usize)
         };
-        if pcie::validate_device_tree(dt, params.ram_end, platform.c_bit_mask).is_err() {
+        if pcie::validate_device_tree(
+            dt,
+            platform.expected_cpu_count,
+            params.ram_end,
+            platform.c_bit_mask,
+        )
+        .is_err()
+        {
             terminate();
         }
-        Some(platform)
-    } else {
-        None
+        platform
     };
 
     for &range in ranges {
@@ -574,9 +556,7 @@ extern "C" fn start(params_gpa: u64) -> ! {
         }
     }
 
-    if let Some(platform) = platform {
-        install_platform_acpi(params, platform);
-    }
+    install_platform_acpi(params, platform);
 
     // SAFETY: These statics are single-threaded bootshim handoff state. Their
     // values came from the measured parameter page and are consumed
@@ -615,8 +595,7 @@ mod tests {
 
     fn platform_params() -> (SnpBootShimParams, SnpBootShimPlatformParams) {
         let mut params = valid_params();
-        params.version = SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM;
-        params.reserved = 0x203000;
+        params.platform_gpa = 0x203000;
         params.ram_end = 0x800000;
         params.range_count = 1;
         params.ranges[0] = SnpBootShimRange {
@@ -630,8 +609,8 @@ mod tests {
             dt_size: SNP_BOOT_SHIM_DT_SIZE,
             heap_gpa: 0x214000,
             heap_size: SNP_BOOT_SHIM_HEAP_SIZE,
-            base_acpi_gpa: 0x19000,
-            base_acpi_size: PAGE_SIZE,
+            size: size_of::<SnpBootShimPlatformParams>() as u32,
+            expected_cpu_count: 2,
             acpi_output_gpa: 0x1a000,
             acpi_output_size: SNP_BOOT_SHIM_ACPI_SIZE,
             rsdp_gpa: 0xe0000,
@@ -665,8 +644,10 @@ mod tests {
             |p| p.dt_size += PAGE_SIZE,
             |p| p.heap_gpa = p.dt_gpa,
             |p| p.heap_size += PAGE_SIZE,
-            |p| p.base_acpi_gpa = 0x1000,
-            |p| p.acpi_output_gpa = p.base_acpi_gpa,
+            |p| p.acpi_output_gpa = 0x1000,
+            |p| p.size += 1,
+            |p| p.expected_cpu_count = 0,
+            |p| p.expected_cpu_count = 256,
             |p| p.rsdp_gpa = p.acpi_output_gpa,
             |p| p.shim_gpa = 0x100000,
             |p| p.shim_size = u64::MAX,
@@ -688,12 +669,16 @@ mod tests {
         let (mut params, platform) = platform_params();
         params.range_count = 2;
         params.ranges[1] = params.ranges[0];
-        for start in [params.reserved, platform.dt_gpa, platform.acpi_output_gpa] {
+        for start in [
+            params.platform_gpa,
+            platform.dt_gpa,
+            platform.acpi_output_gpa,
+        ] {
             params.ranges[0] = SnpBootShimRange {
                 start_gpn: start / PAGE_SIZE,
                 page_count: 1,
             };
-            let expected = if start == params.reserved {
+            let expected = if start == params.platform_gpa {
                 ParamsError::ParamsRangeOverlap
             } else {
                 ParamsError::PlatformRangeOverlap
@@ -713,7 +698,7 @@ mod tests {
             linux_entry: 0x10_0000,
             linux_zero_page: 0x2000,
             ram_end: 0x20_0000,
-            reserved: 0,
+            platform_gpa: 0x3000,
             ranges: {
                 let mut ranges = [SnpBootShimRange {
                     start_gpn: 0,
@@ -757,12 +742,14 @@ mod tests {
             Err(ParamsError::InvalidMagic)
         );
 
-        params = valid_params();
-        params.version = SNP_BOOT_SHIM_PARAMS_VERSION_PLATFORM + 1;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::UnsupportedVersion)
-        );
+        for version in [1, 2, SNP_BOOT_SHIM_PARAMS_VERSION + 1] {
+            params = valid_params();
+            params.version = version;
+            assert_eq!(
+                validate_params(&params, 0x1000),
+                Err(ParamsError::UnsupportedVersion)
+            );
+        }
     }
 
     #[test]
@@ -909,10 +896,10 @@ mod tests {
         );
 
         params = valid_params();
-        params.reserved = 1;
+        params.platform_gpa = 1;
         assert_eq!(
             validate_params(&params, 0x1000),
-            Err(ParamsError::ReservedNotZero)
+            Err(ParamsError::InvalidPlatform)
         );
     }
 }
