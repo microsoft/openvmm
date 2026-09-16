@@ -4,11 +4,12 @@
 use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
+use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 /// PCI Express Base Specification Revision 6.3 Section 11.3.11 DEVICE_INTERFACE_REPORT
 #[bitfield(u16)]
-#[derive(KnownLayout, FromBytes, Immutable)]
+#[derive(KnownLayout, FromBytes, Immutable, IntoBytes)]
 pub struct TdispTdiReportInterfaceInfo {
     /// When 1, indicates that device firmware updates are not permitted
     /// while in CONFIG_LOCKED or RUN. When 0, indicates that firmware
@@ -32,7 +33,7 @@ pub struct TdispTdiReportInterfaceInfo {
 
 /// PCI Express Base Specification Revision 6.3 Section 11.3.11 DEVICE_INTERFACE_REPORT
 #[bitfield(u16)]
-#[derive(KnownLayout, FromBytes, Immutable)]
+#[derive(KnownLayout, FromBytes, Immutable, IntoBytes)]
 pub struct TdispTdiReportMmioFlags {
     /// MSI-X Table – if the range maps MSI-X table. This must be reported only if locked by the LOCK_INTERFACE_REQUEST.
     pub range_maps_msix_table: bool,
@@ -51,7 +52,8 @@ pub struct TdispTdiReportMmioFlags {
 }
 
 /// PCI Express Base Specification Revision 6.3 Section 11.3.11 DEVICE_INTERFACE_REPORT
-#[derive(KnownLayout, FromBytes, Immutable, Clone, Debug)]
+#[derive(KnownLayout, FromBytes, Immutable, IntoBytes, Clone, Debug)]
+#[repr(C)]
 pub struct TdispTdiReportMmioInterfaceInfo {
     /// First 4K page with offset added
     pub first_4k_page_offset: u64,
@@ -70,7 +72,7 @@ pub struct TdispTdiReportMmioInterfaceInfo {
 static_assertions::const_assert_eq!(size_of::<TdispTdiReportMmioInterfaceInfo>(), 0x10);
 
 /// PCI Express Base Specification Revision 6.3 Section 11.3.11 DEVICE_INTERFACE_REPORT
-#[derive(KnownLayout, FromBytes, Immutable, Debug)]
+#[derive(KnownLayout, FromBytes, Immutable, IntoBytes, Debug)]
 #[repr(C)]
 struct TdiReportStructSerialized {
     pub interface_info: TdispTdiReportInterfaceInfo,
@@ -137,4 +139,27 @@ pub fn deserialize_tdi_report(data: &[u8]) -> anyhow::Result<TdiReportStruct> {
         tph_control: report.tph_control,
         mmio_interface_info: read_mmio_elems.0.to_vec(),
     })
+}
+
+/// Writes a TDI interface report out in the form a host reports it, so that an
+/// emulated device can describe the MMIO ranges it claims.
+///
+/// * `report` - The report to write out. Its MMIO ranges are written in the
+///   order they appear, and their count is taken from the list rather than
+///   being supplied separately.
+pub fn serialize_tdi_report(report: &TdiReportStruct) -> Vec<u8> {
+    let header = TdiReportStructSerialized {
+        interface_info: report.interface_info,
+        _reserved0: 0,
+        msi_x_message_control: report.msi_x_message_control,
+        lnr_control: report.lnr_control,
+        tph_control: report.tph_control,
+        mmio_range_count: report.mmio_interface_info.len() as u32,
+    };
+
+    let mut buffer = header.as_bytes().to_vec();
+    for range in &report.mmio_interface_info {
+        buffer.extend_from_slice(range.as_bytes());
+    }
+    buffer
 }
