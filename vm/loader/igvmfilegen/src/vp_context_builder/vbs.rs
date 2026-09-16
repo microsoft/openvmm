@@ -19,12 +19,21 @@ use std::mem::discriminant;
 /// architectures need to do different conversions and emit different
 /// [`IgvmDirectiveHeader`] types.
 pub trait VbsRegister: Sized {
+    /// Whether this register variant is supported by the IGVM register schema.
+    fn is_supported(&self) -> bool {
+        true
+    }
+
     /// Convert the list of registers into the corresponding
     /// [`IgvmDirectiveHeader`] for this architecture.
     fn into_igvm_header(vtl: Vtl, list: &[Self]) -> IgvmDirectiveHeader;
 }
 
 impl VbsRegister for X86Register {
+    fn is_supported(&self) -> bool {
+        !matches!(self, Self::Rbx(_))
+    }
+
     fn into_igvm_header(vtl: Vtl, list: &[Self]) -> IgvmDirectiveHeader {
         IgvmDirectiveHeader::X64VbsVpContext {
             registers: list
@@ -87,6 +96,10 @@ impl<R: VbsRegister> VbsVpContext<R> {
 
 impl<R: VbsRegister> VpContextBuilder for VbsVpContext<R> {
     type Register = R;
+
+    fn supports_vp_register(&self, register: &R) -> bool {
+        register.is_supported()
+    }
 
     fn import_vp_register(&mut self, register: R) {
         // Check for duplicate register

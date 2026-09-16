@@ -105,7 +105,7 @@ pub struct AcpiTables {
 /// Guest-visible processor and interrupt data for Xen PVH boot tables.
 #[derive(Debug, Clone, Copy)]
 pub struct BootConfig<'a> {
-    /// APIC IDs in virtual-processor order. The first entry is the BSP.
+    /// 8-bit APIC IDs in virtual-processor order. The first entry is the BSP.
     pub apic_ids: &'a [u32],
     /// ISA IRQs described as active-high, level-triggered.
     pub level_triggered_irqs: &'a [u32],
@@ -148,6 +148,8 @@ pub enum Error {
     SegmentBelowOneMb { start: u64, end: u64 },
     #[error("ELF load segments overlap at page granularity")]
     OverlappingLoadSegments,
+    #[error("ELF load segment overlaps PVH reserved memory")]
+    SegmentOverlapsReservedMemory,
     #[error("ELF note segment exceeds the 1-MiB parser bound")]
     NoteTooLarge,
     #[error("malformed ELF note")]
@@ -172,12 +174,8 @@ pub enum Error {
     AcpiTablesTooLarge,
     #[error("PVH processor topology must contain at least one processor")]
     NoProcessors,
-    #[error("PVH processor {index} has APIC ID {apic_id}; expected {expected}")]
-    InvalidApicId {
-        index: usize,
-        apic_id: u32,
-        expected: u32,
-    },
+    #[error("PVH processor {index} has APIC ID {apic_id}, which does not fit in 8 bits")]
+    InvalidApicId { index: usize, apic_id: u32 },
     #[error("PVH MP table has too many processor or interrupt entries")]
     TooManyMpEntries,
     #[error("PVH MP table IRQ {0} is outside the ISA range")]
@@ -190,6 +188,8 @@ pub enum Error {
     InitrdDoesNotFit,
     #[error("guest address computation overflowed")]
     AddressOverflow,
+    #[error("PVH register {0:?} is not supported by this loader backend")]
+    UnsupportedRegister(X86Register),
     #[error("required guest RAM is unavailable for {tag}")]
     VerifyMemory {
         tag: &'static str,
@@ -245,6 +245,10 @@ where
     F: Read + Seek,
     R: Read + Seek,
 {
+    let boot_info_register = X86Register::Rbx(START_INFO_ADDR);
+    if !importer.supports_vp_register(&boot_info_register) {
+        return Err(Error::UnsupportedRegister(boot_info_register));
+    }
     if cmdline.contains('\0') {
         return Err(Error::CommandLineNul);
     }
@@ -258,10 +262,34 @@ where
         entrypoint,
     } = parse_kernel(kernel)?;
 
-    let mut chunk = ChunkBuf::new();
+    let memory_ranges = pvh_memory_map(memory_layout, boot_config.reserved_memory_ranges)?;
     for segment in &segments {
         let (page_base, page_count) = segment.page_span()?;
+        if overlaps_reserved_memory(page_base, page_count, boot_config.reserved_memory_ranges)? {
+            return Err(Error::SegmentOverlapsReservedMemory);
+        }
         verify_memory(importer, page_base, page_count, "pvh-kernel")?;
+    }
+    let initrd = match initrd {
+        Some(initrd) => {
+            if initrd.size == 0 {
+                return Err(Error::EmptyInitrd);
+            }
+            let base = place_initrd(
+                memory_layout,
+                initrd.size,
+                &segments,
+                boot_config.reserved_memory_ranges,
+            )?;
+            let (page_base, page_count) = page_span(base, initrd.size)?;
+            verify_memory(importer, page_base, page_count, "pvh-initrd")?;
+            Some((initrd, base))
+        }
+        None => None,
+    };
+
+    let mut chunk = ChunkBuf::new();
+    for segment in &segments {
         chunk
             .import_file_region(
                 importer,
@@ -279,14 +307,7 @@ where
     }
 
     let initrd = match initrd {
-        Some(initrd) => {
-            if initrd.size == 0 {
-                return Err(Error::EmptyInitrd);
-            }
-            let base = place_initrd(memory_layout, initrd.size, &segments)?;
-
-            let (page_base, page_count) = page_span(base, initrd.size)?;
-            verify_memory(importer, page_base, page_count, "pvh-initrd")?;
+        Some((initrd, base)) => {
             chunk
                 .import_file_region(
                     importer,
@@ -309,7 +330,7 @@ where
     import_boot_structures(
         importer,
         cmdline,
-        memory_layout,
+        &memory_ranges,
         initrd,
         acpi_tables,
         boot_config,
@@ -323,6 +344,7 @@ fn place_initrd(
     memory_layout: &MemoryLayout,
     size: u64,
     segments: &[Segment],
+    reserved_ranges: &[MemoryRange],
 ) -> Result<u64, Error> {
     let low_range = memory_layout
         .ram()
@@ -338,6 +360,9 @@ fn place_initrd(
     }
 
     let (initrd_page_base, initrd_page_count) = page_span(base, size)?;
+    if overlaps_reserved_memory(initrd_page_base, initrd_page_count, reserved_ranges)? {
+        return Err(Error::InitrdDoesNotFit);
+    }
     let initrd_page_end = initrd_page_base
         .checked_add(initrd_page_count)
         .ok_or(Error::AddressOverflow)?;
@@ -351,6 +376,19 @@ fn place_initrd(
         }
     }
     Ok(base)
+}
+
+fn overlaps_reserved_memory(
+    page_base: u64,
+    page_count: u64,
+    reserved_ranges: &[MemoryRange],
+) -> Result<bool, Error> {
+    let page_end = page_base
+        .checked_add(page_count)
+        .ok_or(Error::AddressOverflow)?;
+    Ok(reserved_ranges.iter().any(|range| {
+        page_base < range.end() / HV_PAGE_SIZE && range.start() / HV_PAGE_SIZE < page_end
+    }))
 }
 
 fn parse_kernel<F: Read + Seek>(kernel: &mut F) -> Result<ParsedKernel, Error> {
@@ -521,7 +559,7 @@ fn read_note_u32(bytes: &[u8], offset: usize) -> Result<u32, Error> {
 fn import_boot_structures(
     importer: &mut dyn ImageLoad<X86Register>,
     cmdline: &str,
-    memory_layout: &MemoryLayout,
+    memory_ranges: &[HvmMemmapTableEntry],
     initrd: Option<(u64, u64)>,
     acpi_tables: Option<&AcpiTables>,
     boot_config: &BootConfig<'_>,
@@ -541,7 +579,6 @@ fn import_boot_structures(
     }
     import_pages(importer, 0, 1, "pvh-boot-tables", &boot_page)?;
 
-    let memory_ranges = pvh_memory_map(memory_layout, boot_config.reserved_memory_ranges)?;
     let memmap_size = memory_ranges
         .len()
         .checked_mul(size_of::<HvmMemmapTableEntry>())
@@ -772,15 +809,7 @@ pub fn build_mp_config_table(boot_config: &BootConfig<'_>) -> Result<Vec<u8>, Er
     assert_eq!(table.len(), MP_CONFIG_HEADER_SIZE);
 
     for (index, &apic_id) in boot_config.apic_ids.iter().enumerate() {
-        let expected = u32::try_from(index).map_err(|_| Error::TooManyMpEntries)?;
-        if apic_id != expected {
-            return Err(Error::InvalidApicId {
-                index,
-                apic_id,
-                expected,
-            });
-        }
-        let apic_id = u8::try_from(apic_id).map_err(|_| Error::TooManyMpEntries)?;
+        let apic_id = u8::try_from(apic_id).map_err(|_| Error::InvalidApicId { index, apic_id })?;
         table.extend_from_slice(&[0, apic_id, 0x14, if index == 0 { 3 } else { 1 }]);
         table.extend_from_slice(&0u32.to_le_bytes());
         table.extend_from_slice(&0u32.to_le_bytes());
@@ -808,7 +837,7 @@ pub fn build_mp_config_table(boot_config: &BootConfig<'_>) -> Result<Vec<u8>, Er
         table.extend_from_slice(&[0, irq, 0, pin]);
     }
 
-    let table_len = u16::try_from(table.len()).expect("MP table fits in one page");
+    let table_len = u16::try_from(table.len()).map_err(|_| Error::TooManyMpEntries)?;
     table[4..6].copy_from_slice(&table_len.to_le_bytes());
     table[7] = checksum(&table);
     Ok(table)
@@ -947,6 +976,7 @@ mod tests {
     use crate::importer::ParameterAreaIndex;
     use memory_range::MemoryRange;
     use std::io::Cursor;
+    use test_with_tracing::test;
 
     fn load<F, R>(
         importer: &mut dyn ImageLoad<X86Register>,
@@ -1301,8 +1331,13 @@ mod tests {
     fn emits_smp_mp_processor_entries() {
         const LEVEL_TRIGGERED_IRQS: &[u32] = &[4, 5, 6, 7, 9, 10, 11, 12];
 
-        for processor_count in [1usize, 2, 4, 8] {
-            let apic_ids = (0..processor_count as u32).collect::<Vec<_>>();
+        for apic_ids in [
+            vec![0],
+            vec![13, 14],
+            vec![0, 2, 127, 255],
+            (0..8).collect(),
+        ] {
+            let processor_count = apic_ids.len();
             let boot_config = BootConfig {
                 apic_ids: &apic_ids,
                 level_triggered_irqs: LEVEL_TRIGGERED_IRQS,
@@ -1337,7 +1372,7 @@ mod tests {
                 .enumerate()
             {
                 assert_eq!(entry[0], 0);
-                assert_eq!(entry[1], index as u8);
+                assert_eq!(u32::from(entry[1]), apic_ids[index]);
                 assert_eq!(entry[2], 0x14);
                 assert_eq!(entry[3], if index == 0 { 3 } else { 1 });
             }
@@ -1362,7 +1397,7 @@ mod tests {
             write_mp_tables(
                 &mut boot_page,
                 &BootConfig {
-                    apic_ids: &[0, 2],
+                    apic_ids: &[0, 256],
                     level_triggered_irqs: &[],
                     reserved_memory_ranges: &[],
                 }
@@ -1379,6 +1414,18 @@ mod tests {
                 }
             ),
             Err(Error::MpTableOverlap { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_oversized_mp_table() {
+        assert!(matches!(
+            build_mp_config_table(&BootConfig {
+                apic_ids: &vec![0; usize::from(u16::MAX) / 20],
+                level_triggered_irqs: &[],
+                reserved_memory_ranges: &[],
+            }),
+            Err(Error::TooManyMpEntries)
         ));
     }
 
@@ -1486,6 +1533,72 @@ mod tests {
     }
 
     #[test]
+    fn rejects_reserved_kernel_pages_before_import() {
+        let mut image = test_elf();
+        write_u16(&mut image, 56, 3);
+        write_u32(&mut image, 176, elf::PT_LOAD);
+        write_u64(&mut image, 176 + 8, 0x1000);
+        write_u64(&mut image, 176 + 24, HIMEM_START + 2 * HV_PAGE_SIZE);
+        write_u64(&mut image, 176 + 32, 4);
+        write_u64(&mut image, 176 + 40, HV_PAGE_SIZE + 1);
+
+        let mut importer = RecordingImporter::default();
+        let error = load_with_boot_config::<_, Cursor<Vec<u8>>>(
+            &mut importer,
+            &mut Cursor::new(image),
+            None,
+            "",
+            &make_layout(),
+            None,
+            &BootConfig {
+                apic_ids: &[0],
+                level_triggered_irqs: &[],
+                reserved_memory_ranges: &[MemoryRange::new(
+                    HIMEM_START + 3 * HV_PAGE_SIZE..HIMEM_START + 4 * HV_PAGE_SIZE,
+                )],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::SegmentOverlapsReservedMemory));
+        assert!(importer.pages.is_empty());
+        assert!(importer.registers.is_empty());
+    }
+
+    #[test]
+    fn initrd_respects_reserved_page_boundaries() {
+        let layout = make_layout();
+        let ram_end = layout.ram_size();
+        for reserved_start in [ram_end - HV_PAGE_SIZE, ram_end - 2 * HV_PAGE_SIZE] {
+            let mut importer = RecordingImporter::default();
+            let result = load_with_boot_config(
+                &mut importer,
+                &mut Cursor::new(test_elf()),
+                Some(InitrdConfig {
+                    image: &mut Cursor::new(vec![0x5a; 17]),
+                    size: 17,
+                }),
+                "",
+                &layout,
+                None,
+                &BootConfig {
+                    apic_ids: &[0],
+                    level_triggered_irqs: &[],
+                    reserved_memory_ranges: &[MemoryRange::new(
+                        reserved_start..reserved_start + HV_PAGE_SIZE,
+                    )],
+                },
+            );
+            if reserved_start == ram_end - HV_PAGE_SIZE {
+                assert!(matches!(result, Err(Error::InitrdDoesNotFit)));
+                assert!(importer.pages.is_empty());
+                assert!(importer.registers.is_empty());
+            } else {
+                assert_eq!(result.unwrap().initrd, Some((ram_end - HV_PAGE_SIZE, 17)));
+            }
+        }
+    }
+
+    #[test]
     fn high_kernel_segment_does_not_block_low_initrd() {
         let layout = MemoryLayout::new(
             8 * 1024 * 1024 * 1024,
@@ -1510,7 +1623,7 @@ mod tests {
             },
         ];
 
-        let base = place_initrd(&layout, HV_PAGE_SIZE, &segments).unwrap();
+        let base = place_initrd(&layout, HV_PAGE_SIZE, &segments, &[]).unwrap();
         assert_eq!(base, 0xc000_0000 - HV_PAGE_SIZE);
     }
 }

@@ -1293,7 +1293,22 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
             .import_pages(page_base, page_count, debug_tag, acceptance, data)
     }
 
+    fn supports_vp_register(&self, register: &R) -> bool {
+        if let Some(vp_context) = &self.vp_context {
+            vp_context.supports_vp_register(register)
+        } else {
+            self.loader
+                .vp_context
+                .as_ref()
+                .is_some_and(|context| context.supports_vp_register(register))
+        }
+    }
+
     fn import_vp_register(&mut self, register: R) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.supports_vp_register(&register),
+            "VP register is not supported by this IGVM backend"
+        );
         if let Some(vp_context) = &mut self.vp_context {
             vp_context.import_vp_register(register)
         } else {
@@ -1531,6 +1546,82 @@ mod tests {
     use loader::importer::BootPageAcceptance;
     use loader::importer::ImageLoad;
     use loader_defs::paravisor::ImportedRegionDescriptor;
+    use std::io::Cursor;
+    use test_with_tracing::test;
+    use vm_topology::memory::MemoryLayout;
+
+    #[test]
+    fn rejects_pvh_before_import_for_unsupported_backends() {
+        let memory_layout = MemoryLayout::new(
+            64 * 1024 * 1024,
+            &[MemoryRange::new(0xc000_0000..0x1_0000_0000)],
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+        for isolation in [
+            LoaderIsolationType::None,
+            LoaderIsolationType::Vbs {
+                enable_debug: false,
+            },
+            LoaderIsolationType::Tdx {
+                policy: TdxPolicy::new(),
+            },
+        ] {
+            let mut loader = IgvmLoader::<X86Register>::new(false, isolation);
+            {
+                let mut importer = loader.loader();
+                let error = loader::pvh::load_with_boot_config::<_, Cursor<Vec<u8>>>(
+                    &mut importer,
+                    &mut Cursor::new(Vec::<u8>::new()),
+                    None,
+                    "",
+                    &memory_layout,
+                    None,
+                    &loader::pvh::BootConfig {
+                        apic_ids: &[0],
+                        level_triggered_irqs: &[],
+                        reserved_memory_ranges: &[],
+                    },
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    error,
+                    loader::pvh::Error::UnsupportedRegister(X86Register::Rbx(_))
+                ));
+                assert!(
+                    importer
+                        .import_vp_register(X86Register::Rbx(0x6000))
+                        .is_err()
+                );
+            }
+            assert!(loader.imported_regions().is_empty());
+            assert!(loader.required_memory.is_empty());
+            assert!(loader.directives.is_empty());
+        }
+    }
+
+    #[test]
+    fn supports_rbx_in_snp_hardware_but_not_nested_vbs() {
+        let mut loader = IgvmLoader::<X86Register>::new(
+            true,
+            LoaderIsolationType::Snp {
+                shared_gpa_boundary_bits: Some(39),
+                policy: SnpPolicy::from((1 << 17) | (1 << 16) | 0x1f),
+                injection_type: InjectionType::Restricted,
+                secure_avic: SecureAvic::Disabled,
+            },
+        );
+        let mut importer = loader.loader();
+        let register = X86Register::Rbx(0x6000);
+        assert!(importer.supports_vp_register(&register));
+        importer.import_vp_register(register).unwrap();
+
+        let mut nested = importer.nested_loader();
+        assert!(!nested.supports_vp_register(&register));
+        assert!(nested.import_vp_register(register).is_err());
+    }
 
     #[test]
     fn reported_ranges_appear_in_map_output() {

@@ -31,6 +31,11 @@ pub trait VpContextBuilder {
     /// The register type which is different on different architectures.
     type Register;
 
+    /// Whether this context can encode the register variant, independent of its value.
+    fn supports_vp_register(&self, _register: &Self::Register) -> bool {
+        true
+    }
+
     /// Import a register to the BSP at the given vtl.
     fn import_vp_register(&mut self, register: Self::Register);
 

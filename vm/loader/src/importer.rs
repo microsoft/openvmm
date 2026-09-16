@@ -476,6 +476,11 @@ where
         data: &[u8],
     ) -> anyhow::Result<()>;
 
+    /// Whether the backend can encode this register variant, independent of its value.
+    fn supports_vp_register(&self, _register: &R) -> bool {
+        true
+    }
+
     /// Import a register into the BSP.
     fn import_vp_register(&mut self, register: R) -> anyhow::Result<()>;
 

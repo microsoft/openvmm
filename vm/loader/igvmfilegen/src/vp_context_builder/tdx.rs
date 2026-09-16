@@ -35,6 +35,13 @@ impl TdxHardwareContext {
 impl VpContextBuilder for TdxHardwareContext {
     type Register = X86Register;
 
+    fn supports_vp_register(&self, register: &X86Register) -> bool {
+        !matches!(
+            register,
+            X86Register::Rbx(_) | X86Register::R12(_) | X86Register::Rflags(_)
+        )
+    }
+
     /// Import a register into the hardware context. Only a subset of registers
     /// are allowed.
     fn import_vp_register(&mut self, register: X86Register) {
