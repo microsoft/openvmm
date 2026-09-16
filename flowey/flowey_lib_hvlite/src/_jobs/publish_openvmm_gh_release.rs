@@ -119,7 +119,7 @@ impl SimpleFlowNode for Node {
 
                 let branches = flowey::shell_cmd!(
                     rt,
-                    "{gh_cli} api --paginate --slurp repos/microsoft/openvmm/branches?protected=true&per_page=100"
+                    "{gh_cli} api --paginate --slurp 'repos/microsoft/openvmm/branches?protected=true&per_page=100'"
                 )
                 .read()
                 .context("failed to list the protected branches")?;
