@@ -493,7 +493,6 @@ pub mod runtime_claims {
         /// Whether the serial console, if enabled, is interactive
         pub interactive_console_enabled: bool,
         /// Whether the IPMI KCS interface is enabled
-        #[serde(default)]
         pub ipmi_enabled: bool,
         /// Whether secure boot is enabled
         pub secure_boot: bool,

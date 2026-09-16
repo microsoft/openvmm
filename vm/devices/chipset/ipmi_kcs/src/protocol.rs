@@ -23,6 +23,7 @@ use zerocopy::IntoBytes;
 impl IpmiKcs {
     /// Dispatches the accumulated IPMI request and stages its KCS response.
     pub(crate) fn process_ipmi_message(&mut self) {
+        // Keep a local copy so the command handlers can mutably borrow the device.
         let request = self.transaction.request;
         let request = &request[..self.transaction.request_len];
         let Ok((header, data)) = MessageHeader::read_from_prefix(request) else {
@@ -67,13 +68,15 @@ impl IpmiKcs {
         out: &mut [u8; KCS_MESSAGE_MAX],
     ) -> usize {
         match command {
-            COMMAND_GET_DEVICE_ID => write_response(out, &GetDeviceIdResponse::new()),
+            COMMAND_GET_DEVICE_ID => write_response(out, &GetDeviceIdResponse::virtual_bmc()),
             _ => completion(out, COMPLETION_INVALID_COMMAND),
         }
     }
 }
 
 /// Writes a fixed-format response body into the KCS output buffer.
+///
+/// Returns the number of bytes written to the beginning of `out`.
 pub(crate) fn write_response<T: IntoBytes + Immutable>(
     out: &mut [u8; KCS_MESSAGE_MAX],
     response: &T,

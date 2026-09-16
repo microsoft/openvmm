@@ -2,6 +2,10 @@
 // Licensed under the MIT License.
 
 //! Wire-level definitions for the IPMI KCS interface and System Event Log.
+//!
+//! These definitions follow the [IPMI v2.0 specification][ipmi-spec].
+//!
+//! [ipmi-spec]: https://www.intel.com/content/dam/www/public/us/en/documents/product-briefs/ipmi-second-gen-interface-spec-v2-rev1-1.pdf
 
 #![forbid(unsafe_code)]
 
@@ -19,6 +23,12 @@ use zerocopy::Unaligned;
 
 /// Size of an IPMI System Event Log record.
 pub const SEL_RECORD_SIZE: usize = 16;
+
+/// IPMI 2.0 version encoding used by Get Device ID.
+pub const IPMI_VERSION_2_0: u8 = 0x02;
+
+/// Additional device support bit indicating that the BMC provides a SEL.
+pub const ADDITIONAL_DEVICE_SUPPORT_SEL: u8 = 0x04;
 
 /// IPMI SEL version 1.5.
 pub const SEL_VERSION: u8 = 0x51;
@@ -201,26 +211,36 @@ pub struct GetDeviceIdResponse {
     pub product_id: U16<LittleEndian>,
 }
 
+const VIRTUAL_BMC_DEVICE_ID: u8 = 0x20;
+const VIRTUAL_BMC_DEVICE_REVISION: u8 = 0x01;
+const VIRTUAL_BMC_FIRMWARE_MAJOR: u8 = 0x02;
+const VIRTUAL_BMC_FIRMWARE_MINOR: u8 = 0x00;
+const VIRTUAL_BMC_MANUFACTURER_ID: [u8; 3] = [0; 3];
+const VIRTUAL_BMC_PRODUCT_ID: U16<LittleEndian> = U16::ZERO;
+
 impl GetDeviceIdResponse {
-    /// Creates the identity returned by the virtual BMC.
-    pub const fn new() -> Self {
+    /// Creates the fixed identity returned by the virtual BMC for Get Device ID.
+    ///
+    /// The device, firmware, manufacturer, and product values are synthetic.
+    /// The IPMI version and additional support fields advertise IPMI 2.0 with SEL support.
+    pub const fn virtual_bmc() -> Self {
         Self {
             completion_code: COMPLETION_SUCCESS,
-            device_id: 0x20,
-            device_revision: 0x01,
-            firmware_revision_1: 0x02,
-            firmware_revision_2: 0x00,
-            ipmi_version: 0x02,
-            additional_device_support: 0x04,
-            manufacturer_id: [0; 3],
-            product_id: U16::ZERO,
+            device_id: VIRTUAL_BMC_DEVICE_ID,
+            device_revision: VIRTUAL_BMC_DEVICE_REVISION,
+            firmware_revision_1: VIRTUAL_BMC_FIRMWARE_MAJOR,
+            firmware_revision_2: VIRTUAL_BMC_FIRMWARE_MINOR,
+            ipmi_version: IPMI_VERSION_2_0,
+            additional_device_support: ADDITIONAL_DEVICE_SUPPORT_SEL,
+            manufacturer_id: VIRTUAL_BMC_MANUFACTURER_ID,
+            product_id: VIRTUAL_BMC_PRODUCT_ID,
         }
     }
 }
 
 impl Default for GetDeviceIdResponse {
     fn default() -> Self {
-        Self::new()
+        Self::virtual_bmc()
     }
 }
 
@@ -374,7 +394,7 @@ mod tests {
     #[test]
     fn get_device_id_wire_layout() {
         assert_eq!(
-            GetDeviceIdResponse::new().as_bytes(),
+            GetDeviceIdResponse::virtual_bmc().as_bytes(),
             [0x00, 0x20, 0x01, 0x02, 0x00, 0x02, 0x04, 0, 0, 0, 0, 0]
         );
     }
