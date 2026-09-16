@@ -24,6 +24,20 @@ Trace events that can be triggered repeatedly by guest interactions are
 rate-limited by default. To disable rate limiting (useful for debugging), set
 `OPENVMM_DISABLE_TRACING_RATELIMITS=1`.
 
+### OpenTelemetry
+
+Build OpenVMM with the `otel` feature, then set `OPENVMM_OTEL=1` to export
+enabled spans using OTLP over HTTP with protobuf encoding. The exporter uses
+the standard OpenTelemetry environment variables. For example:
+
+```shell
+cargo build -p openvmm --features otel
+
+OPENVMM_OTEL=1 \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+target/debug/openvmm [...]
+```
+
 ## Configuring OpenHCL Trace Logging
 
 OpenHCL also supports `EnvFilter`-style trace logging, configured via the
