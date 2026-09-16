@@ -12,6 +12,7 @@
 #[cfg(target_os = "linux")]
 pub mod linux_mmio;
 
+mod tdispmock;
 mod tests;
 
 // Exported to make it easier to define filters without explicitly pulling in
@@ -48,9 +49,6 @@ use std::task::Waker;
 use tdisp::TdispIsolationReport;
 use tdisp::TdispRelayedDeviceTarget;
 use tdisp::TdispTdiState;
-use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
-use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
-use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
 use user_driver::DmaClient;
 use virt::IsolationType;
 use vmbus_client::driver::OpenParams;
@@ -353,12 +351,10 @@ impl VpciRelay {
 
         tracing::info!(%instance_id, vendor_id = hw_ids.vendor_id, device_id = hw_ids.device_id, "vpci relay device arrived");
 
-        // Each device gets a validator of its own. The validators keep
-        // per-device state that is not keyed by device ID, and on some
-        // platforms they hold a firmware handle, so sharing one across devices
-        // would let them overwrite each other's resource state. Built after the
-        // allowed-device filter so a device the relay is about to reject never
-        // takes a handle.
+        // Create a TDISP platform validator based on the environment the relay
+        // is running in. Validators take care of platform firmware operations
+        // specific to the isolation technology in use. Test environments use
+        // mocked firmware interfaces.
         let resource_validator =
             new_resource_validator(self.isolation_type, self.vtom, self.options.test_tdisp_flow)
                 .context("failed to create a TDISP resource validator")?;
@@ -379,7 +375,7 @@ impl VpciRelay {
 
         // If testing the mock TDISP flow...
         if self.options.test_tdisp_flow {
-            Self::tdisp_test_mock_flow(vpci_device.clone())
+            tdispmock::run_test_flow(vpci_device.clone())
                 .await
                 .expect("failed to exercise TDISP flow test");
 
@@ -458,74 +454,6 @@ impl VpciRelay {
         });
 
         state_units.start_stopped_units().await;
-        Ok(())
-    }
-
-    /// Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
-    async fn tdisp_test_mock_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
-        // For now, exercise just the "get device interface" flow and ensure that the device responds as
-        // TDISP capable and with the right mocked device information.
-
-        tracing::info!(
-            "tdisp_test_mock_flow: exercising TDISP flow because OPENHCL_TEST_CONFIG=TDISP_VPCI_FLOW_TEST was set"
-        );
-
-        assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
-
-        let device_interface_info = device
-            .tdisp_get_device_interface_info(TDISP_MOCK_GUEST_PROTOCOL)
-            .await
-            .context("tdisp_test_mock_flow: failed to get device interface info over vpci")?;
-
-        tracing::info!(
-            "tdisp_test_mock_flow: device interface info: {:?}",
-            device_interface_info
-        );
-
-        assert_eq!(
-            device_interface_info.guest_protocol_type,
-            TDISP_MOCK_GUEST_PROTOCOL as i32
-        );
-        assert_eq!(device_interface_info.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
-        assert_eq!(
-            device_interface_info.supported_features,
-            TDISP_MOCK_SUPPORTED_FEATURES
-        );
-        assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
-
-        Self::tdisp_test_mock_attest_flow(device.clone())
-            .await
-            .context("tdisp_test_mock_flow: failed to exercise TDISP attestation flow")?;
-
-        Ok(())
-    }
-
-    async fn tdisp_test_mock_attest_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
-        // Ensure the device appears to be tdisp capable
-        let tdisp_capabilities = device
-            .tdisp_query_capabilities()
-            .await
-            .context("tdisp_test_mock_flow: failed to query TDISP capabilities over vpci")?;
-
-        assert_eq!(
-            tdisp_capabilities.guest_protocol_type,
-            TDISP_MOCK_GUEST_PROTOCOL as i32
-        );
-        assert_eq!(tdisp_capabilities.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
-        assert_eq!(
-            tdisp_capabilities.supported_features,
-            TDISP_MOCK_SUPPORTED_FEATURES
-        );
-        assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
-
-        // If the above interface works, try to attest the device through the TDISP flow and ensure that it succeeds.
-        device
-            .tdisp_attest_device(tdisp_capabilities)
-            .await
-            .context("tdisp_test_mock_flow: failed to attest device over vpci")?;
-
-        assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Run);
-
         Ok(())
     }
 }
