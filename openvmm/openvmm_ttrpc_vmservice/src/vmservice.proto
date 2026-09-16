@@ -73,22 +73,31 @@ message DirectBoot {
     string kernel_cmdline = 3;
 }
 
+// Boot from an IGVM file.
 message IgvmBoot {
     enum Personality {
+        // Linux direct boot with Hyper-V enlightenments.
         LINUX_DIRECT = 0;
+        // Reserved for UEFI IGVM boot.
         UEFI = 1;
     }
 
+    // Path to the IGVM file on the host.
     string igvm_path = 1;
+    // Guest boot environment.
     Personality personality = 2;
 }
 
+// Confidential-computing isolation configuration.
 message IsolationConfig {
     enum Type {
+        // No confidential-computing isolation.
         NONE = 0;
+        // AMD SEV-SNP isolation.
         SNP = 1;
     }
 
+    // Isolation mode.
     Type isolation_type = 1;
 }
 
@@ -609,7 +618,8 @@ message VMConfig {
 
     optional string crash_dump_path = 14;
 
-    bool no_vmbus = 16;
+    // Run without VMBus.
+    bool disable_vmbus = 16;
 
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 17;
