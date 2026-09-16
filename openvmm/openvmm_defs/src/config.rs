@@ -15,6 +15,7 @@ use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
 use std::fs::File;
+use tpm_resources::TpmVersion;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -151,7 +152,7 @@ pub enum LoadMode {
         enable_debugging: bool,
         enable_memory_protections: bool,
         disable_frontpage: bool,
-        enable_tpm: bool,
+        tpm_version: Option<TpmVersion>,
         enable_battery: bool,
         enable_serial: bool,
         enable_vpci_boot: bool,
