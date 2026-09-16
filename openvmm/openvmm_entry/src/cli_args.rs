@@ -829,6 +829,10 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
 
+    /// select the bus for virtio vsock devices (pci | pcie\[:port\] | mmio)
+    #[clap(long, value_name = "BUS", value_parser = parse_virtio_vsock_bus)]
+    pub virtio_vsock_bus: Option<VirtioBusCli>,
+
     /// add a virtio vsock device with the given Unix socket base path
     #[clap(long, value_name = "PATH")]
     pub virtio_vsock_path: Option<String>,
@@ -1586,20 +1590,39 @@ impl FromStr for VirtioBusCli {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_virtio_bus(value)
+        parse_virtio_bus(value, false)
     }
 }
 
-fn parse_virtio_bus(value: &str) -> Result<VirtioBusCli, String> {
+fn parse_virtio_bus(value: &str, ignore_case: bool) -> Result<VirtioBusCli, String> {
+    let eq = |value: &str, expected: &str| {
+        if ignore_case {
+            value.eq_ignore_ascii_case(expected)
+        } else {
+            value == expected
+        }
+    };
+
     match value.split_once(':') {
-        None if value == "auto" => Ok(VirtioBusCli::Auto),
-        None if value == "mmio" => Ok(VirtioBusCli::Mmio),
-        None if value == "pci" => Ok(VirtioBusCli::Pci),
-        None if value == "vpci" => Ok(VirtioBusCli::Vpci),
-        Some(("pcie", port)) if !port.is_empty() && !port.contains(':') => {
+        None if eq(value, "auto") => Ok(VirtioBusCli::Auto),
+        None if eq(value, "mmio") => Ok(VirtioBusCli::Mmio),
+        None if eq(value, "pci") => Ok(VirtioBusCli::Pci),
+        None if eq(value, "vpci") => Ok(VirtioBusCli::Vpci),
+        Some((bus, port)) if eq(bus, "pcie") && !port.is_empty() && !port.contains(':') => {
             Ok(VirtioBusCli::Pcie(port.to_string()))
         }
         _ => Err("expected auto, mmio, pci, pcie:<port>, or vpci".to_string()),
+    }
+}
+
+fn parse_virtio_vsock_bus(value: &str) -> Result<VirtioBusCli, String> {
+    if value.eq_ignore_ascii_case("pcie") {
+        return Ok(VirtioBusCli::Pcie("vsock".to_string()));
+    }
+
+    match parse_virtio_bus(value, true) {
+        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci | VirtioBusCli::Pcie(_))) => Ok(bus),
+        _ => Err("expected mmio, pci, pcie, or pcie:<port>".to_string()),
     }
 }
 
@@ -5864,16 +5887,45 @@ mod tests {
     }
 
     #[test]
-    fn test_virtio_bus_cli_pcie() {
+    fn test_virtio_vsock_bus_cli() {
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "mmio"]).unwrap();
+        assert_eq!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio));
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pci"]).unwrap();
+        assert_eq!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci));
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("vsock".to_string()))
+        );
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:custom"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("custom".to_string()))
+        );
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "PCIE:custom"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("custom".to_string()))
+        );
+
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "auto"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "vpci"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:"]).is_err());
+        assert!(
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:custom:extra"])
+                .is_err()
+        );
+
         let opt =
             Options::try_parse_from(["openvmm", "--virtio-rng", "--virtio-rng-bus", "pcie:custom"])
                 .unwrap();
         assert_eq!(opt.virtio_rng_bus, VirtioBusCli::Pcie("custom".to_string()));
-
-        assert!(Options::try_parse_from(["openvmm", "--virtio-rng-bus", "pcie:"]).is_err());
-        assert!(
-            Options::try_parse_from(["openvmm", "--virtio-rng-bus", "pcie:custom:extra"]).is_err()
-        );
     }
 
     #[test]
