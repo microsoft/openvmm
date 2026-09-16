@@ -77,6 +77,12 @@ pub trait CreateMemoryAccess: 'static + Send + Sync {
 /// The size of the MMIO region required for each VPCI device.
 pub const VPCI_RELAY_MMIO_PER_DEVICE: u64 = vpci_client::MMIO_SIZE;
 
+/// Size and alignment of the window the mocked TDISP flow programs into a
+/// device BAR so that it can reach the device's registers. Only reserved when
+/// that flow is enabled, and large enough for the BARs the emulated test
+/// devices implement.
+const MOCK_BAR_MMIO_SIZE: u64 = 0x10000;
+
 /// Flags for controlling optional behavior of the VPCI relay.
 #[derive(Inspect, Debug, Default, Copy, Clone)]
 pub struct VpciRelayOptions {
@@ -108,6 +114,11 @@ pub struct VpciRelay {
     vtom: Option<u64>,
     isolation_type: IsolationType,
     options: VpciRelayOptions,
+    /// Base of the window the mocked TDISP flow programs into a device BAR,
+    /// carved out of `mmio_range` and never handed to a device's config space.
+    /// Only set when that flow is enabled and the range had room for it.
+    #[inspect(hex)]
+    mock_bar_mmio: Option<u64>,
 }
 
 #[derive(Inspect)]
@@ -221,6 +232,25 @@ impl VpciRelay {
             vtom
         };
 
+        // The mocked flow needs an address it can program into a device BAR and
+        // then reach, and no guest has assigned any BARs by the time it runs.
+        // Take an aligned block off the top of the relay's own MMIO and keep it
+        // away from the per-device config space windows below.
+        let (mmio_range, mock_bar_mmio) = if options.test_tdisp_flow {
+            match Self::reserve_mock_bar_mmio(mmio_range) {
+                Some((rest, mock)) => (rest, Some(mock)),
+                None => {
+                    tracing::warn!(
+                        ?mmio_range,
+                        "not enough relay MMIO to reserve a window for the mocked TDISP flow"
+                    );
+                    (mmio_range, None)
+                }
+            }
+        } else {
+            (mmio_range, None)
+        };
+
         Self {
             driver_source,
             dma_client,
@@ -234,7 +264,27 @@ impl VpciRelay {
             vtom: target_vtom,
             isolation_type: target_isolation_type,
             options,
+            mock_bar_mmio,
         }
+    }
+
+    /// Splits an aligned block off the end of `mmio_range` for the mocked TDISP
+    /// flow to program into a device BAR, returning the rest of the range and
+    /// the block's base address.
+    ///
+    /// Returns `None` when the range cannot give up an aligned block of that
+    /// size, in which case the caller keeps the whole range and the mocked flow
+    /// has no window to use.
+    ///
+    /// * `mmio_range` - The relay's MMIO range, which otherwise supplies one
+    ///   config space window per device.
+    fn reserve_mock_bar_mmio(mmio_range: MemoryRange) -> Option<(MemoryRange, u64)> {
+        let end = mmio_range.end() & !(MOCK_BAR_MMIO_SIZE - 1);
+        let base = end.checked_sub(MOCK_BAR_MMIO_SIZE)?;
+        if base < mmio_range.start() {
+            return None;
+        }
+        Some((MemoryRange::new(mmio_range.start()..base), base))
     }
 
     /// Adds an allowed device to the list. If one of the hardware ID is `!0`
@@ -375,7 +425,10 @@ impl VpciRelay {
 
         // If testing the mock TDISP flow...
         if self.options.test_tdisp_flow {
-            tdispmock::run_test_flow(vpci_device.clone())
+            let bar_mmio = self
+                .mock_bar_mmio
+                .expect("the mocked TDISP flow needs a reserved MMIO window");
+            tdispmock::run_test_flow(vpci_device.clone(), self.mmio_access.as_ref(), bar_mmio)
                 .await
                 .expect("failed to exercise TDISP flow test");
 
@@ -638,9 +691,8 @@ impl PollDevice for RelayedVpciDevice {
             if fut.as_mut().poll(cx).is_pending() {
                 break;
             }
-            // The operation is done. Release the write that started it, then
-            // let the writes that queued up behind it through. If one of those
-            // starts another operation, the loop picks it up here.
+
+            // Keep queueing any deferred writes that are ready and re-poll them.
             let (deferred, _) = self.pending.take().expect("just checked");
             deferred.complete();
             self.drain_queued();
