@@ -10,6 +10,9 @@ use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
+pub use x86defs::serial::COM_BASES;
+pub use x86defs::serial::COM_IRQS;
+pub use x86defs::serial::COM_REGISTER_COUNT;
 
 /// A handle to a 16550A serial device.
 #[derive(MeshPayload)]
@@ -37,7 +40,7 @@ impl ResourceId<ChipsetDeviceHandleKind> for Serial16550DeviceHandle {
 }
 
 /// A PC standard COM port.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, mesh::payload::Protobuf)]
 pub enum ComPort {
     /// COM1, at 0x3f8/IRQ4.
     Com1,
@@ -53,20 +56,20 @@ impl ComPort {
     /// The IO port for the COM port.
     pub const fn io_port(&self) -> u16 {
         match *self {
-            ComPort::Com1 => 0x3f8,
-            ComPort::Com2 => 0x2f8,
-            ComPort::Com3 => 0x3e8,
-            ComPort::Com4 => 0x2e8,
+            ComPort::Com1 => COM_BASES[0],
+            ComPort::Com2 => COM_BASES[1],
+            ComPort::Com3 => COM_BASES[2],
+            ComPort::Com4 => COM_BASES[3],
         }
     }
 
     /// The IRQ line for the COM port.
     pub const fn irq(&self) -> u8 {
         match *self {
-            ComPort::Com1 => 4,
-            ComPort::Com2 => 3,
-            ComPort::Com3 => 4,
-            ComPort::Com4 => 3,
+            ComPort::Com1 => COM_IRQS[0],
+            ComPort::Com2 => COM_IRQS[1],
+            ComPort::Com3 => COM_IRQS[2],
+            ComPort::Com4 => COM_IRQS[3],
         }
     }
 }
