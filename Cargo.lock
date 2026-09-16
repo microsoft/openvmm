@@ -5340,6 +5340,7 @@ dependencies = [
 name = "nvme_test"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chipset_device",
  "device_emulators",
@@ -5360,6 +5361,7 @@ dependencies = [
  "scsi_buffers",
  "task_control",
  "tdisp",
+ "tdisp_proto",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
