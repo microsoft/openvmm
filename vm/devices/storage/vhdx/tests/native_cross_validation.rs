@@ -18,6 +18,7 @@
 // UNSAFETY: Windows FFI calls for virtual disk APIs and raw disk I/O.
 #![expect(unsafe_code)]
 
+use guid::Guid;
 use pal_async::DefaultDriver;
 use parking_lot::Mutex;
 use std::borrow::Borrow;
