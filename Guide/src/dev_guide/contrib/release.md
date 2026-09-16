@@ -15,6 +15,17 @@ identifies their repository baseline. OpenHCL currently ships about twice a
 year and selects one of the repository releases as the baseline for each
 product release.
 
+Before publishing an OpenVMM source release from `main` or a release branch,
+set the workspace version to a new, globally unique SemVer in a normal pull
+request. A new feature release from `main` typically increments the minor
+version, such as `1.1.0` to `1.2.0`. A servicing release from a release branch
+increments the patch version, such as `1.1.0` to `1.1.1`. The same workspace
+version may exist in multiple branches during development, but it can be
+published as an `openvmm-v<VERSION>` release only once. Continuing development
+or creating a release branch does not by itself require a version bump. See
+[Cutting an OpenVMM source release](openvmm_source_release.md) for the
+publication process.
+
 We expect a high quality bar for all code that goes into the OpenVMM main
 branch, and we ask developers to hold release branches to the highest quality
 standards. The OpenVMM maintainers will gradually slow the rate of churn into
