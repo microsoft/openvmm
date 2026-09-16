@@ -1992,6 +1992,8 @@ async fn vm_config_from_command_line(
         }
     }
 
+    let virtio_vsock_bus = opt.virtio_vsock_bus.clone().unwrap_or(VirtioBusCli::Auto);
+
     if let Some(vsock_path) = &opt.virtio_vsock_path {
         let listener = vsock_listener(Some(vsock_path))?.unwrap();
         let resource: Resource<VirtioDeviceHandle> = virtio_resources::vsock::VirtioVsockHandle {
@@ -2002,7 +2004,7 @@ async fn vm_config_from_command_line(
             listener,
         }
         .into_resource();
-        add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
+        add_virtio_device(virtio_vsock_bus.clone(), resource, &mut pcie_devices);
     }
 
     #[cfg(target_os = "linux")]
@@ -2015,7 +2017,7 @@ async fn vm_config_from_command_line(
             .into();
         let resource =
             virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource();
-        add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
+        add_virtio_device(virtio_vsock_bus, resource, &mut pcie_devices);
     }
 
     #[cfg(target_os = "linux")]
@@ -3179,6 +3181,40 @@ mod tests {
                     == std::mem::discriminant(&expected)
             );
         }
+    }
+
+    #[test]
+    fn maps_virtio_vsock_to_named_pcie_port() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let socket_path = temp_dir.path().join("vsock");
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--virtio-vsock-path",
+                socket_path.to_str().unwrap(),
+                "--virtio-vsock-bus",
+                "pcie:custom",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .unwrap();
+
+            assert_eq!(config.pcie_devices.len(), 1);
+            assert_eq!(config.pcie_devices[0].port_name, "custom");
+            mesh.shutdown().await;
+        });
     }
 
     #[test]
