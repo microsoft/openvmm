@@ -47,15 +47,24 @@ version.
 
 ## Running the workflow
 
-Dispatch the **OpenVMM Source Release** workflow against the commit to
-release. It has no automatic triggers; it only runs when someone asks
-for it.
+Resolve the commit to release, then request the release with a repository
+dispatch:
 
-A dispatch may name any ref, so the workflow confirms that the commit it is
-about to tag is contained in a protected `main` or `release/*` branch. It asks
-GitHub which branches are protected rather than keeping its own list, so a
-newly cut release branch works immediately. Dispatching an unmerged commit
-fails before the tag is created.
+```bash
+REVISION=$(git rev-parse <REF>)
+gh api repos/microsoft/openvmm/dispatches \
+  -f event_type=openvmm-source-release \
+  -f "client_payload[revision]=$REVISION"
+```
+
+GitHub loads repository-dispatch workflows from the default branch. The
+workflow and its Flowey bootstrap therefore come from reviewed code, while
+`client_payload.revision` selects only the source tree being released.
+
+The workflow confirms that the requested commit is contained in a protected
+`main` or `release/*` branch. It asks GitHub which branches are protected
+rather than keeping its own list, so a newly cut release branch works
+immediately. Requesting an unmerged commit fails before the tag is created.
 
 The workflow:
 

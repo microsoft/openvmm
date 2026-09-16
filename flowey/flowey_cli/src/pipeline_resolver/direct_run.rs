@@ -77,6 +77,8 @@ fn direct_run_do_work(
         ado_variables: _,
         ado_job_id_overrides: _,
         gh_name: _,
+        gh_workflow_dispatch_disabled: _,
+        gh_repository_dispatch_triggers: _,
         gh_schedule_triggers: _,
         gh_ci_triggers: _,
         gh_pr_triggers: _,
