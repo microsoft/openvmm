@@ -63,9 +63,16 @@ Releases naturally fall into several phases:
 | Servicing          | Only essential fixes are made to support the release (a.k.a. maintenance mode).                                                |
 | Out of service     | A previous release which is no longer receiving updates.                                                                       |
 
+By default, a monthly release branch receives short-term servicing until the
+next monthly release supersedes it. Branches selected for an OpenHCL product
+release receive extended servicing.
+
 For OpenHCL, the plan of record is to service the current product release and
-the two preceding product releases. When a new OpenHCL release ships, the
-release that is now three product releases behind moves out of service.
+the two preceding product releases. Because OpenHCL currently releases about
+twice a year, this is approximately 18 months of servicing. The release-count
+policy is authoritative if the release cadence changes. When a new OpenHCL
+release ships, the release that is now three product releases behind moves out
+of service.
 
 ### Release branch process
 
