@@ -37,16 +37,9 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::task::Waker;
 use task_control::StopTask;
-use tdisp::TdispDeviceInterfaceInfo;
-use tdisp::TdispGuestProtocolType;
-use tdisp::TdispHostDeviceInterface;
 use tdisp::TdispHostDeviceTargetEmulator;
-use tdisp::TdispMmioRangeAction;
-use tdisp::TdispReportType;
 use tdisp::TdispTdiState;
-use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
-use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
-use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
+use tdisp::test_helpers::new_null_tdisp_interface;
 use test_with_tracing::test;
 use virt::IsolationType;
 use vmbus_channel::simple::SimpleVmbusDevice;
@@ -65,57 +58,6 @@ const SCRATCH_OFFSET: u16 = 0x40;
 
 /// The VTOM most SNP platforms report, which TDISP setup expects to be present.
 const TEST_VTOM: u64 = 0x400000000000;
-
-/// The host side of the TDISP interface for the emulated device. It accepts
-/// every lifecycle transition and hands back the reports an attestation needs,
-/// so that a TDISP operation started from config space runs to completion.
-struct AttestingHostInterface;
-
-impl TdispHostDeviceInterface for AttestingHostInterface {
-    fn tdisp_negotiate_protocol(
-        &mut self,
-        _requested_guest_protocol: TdispGuestProtocolType,
-    ) -> anyhow::Result<TdispDeviceInterfaceInfo> {
-        Ok(TdispDeviceInterfaceInfo {
-            guest_protocol_type: TDISP_MOCK_GUEST_PROTOCOL as i32,
-            supported_features: TDISP_MOCK_SUPPORTED_FEATURES,
-            tdisp_device_id: TDISP_MOCK_DEVICE_ID,
-        })
-    }
-
-    fn tdisp_bind_device(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn tdisp_start_device(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn tdisp_unbind_device(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn tdisp_get_device_report(&mut self, report_type: TdispReportType) -> anyhow::Result<Vec<u8>> {
-        match report_type {
-            // The wire format is a little-endian u64.
-            TdispReportType::GuestDeviceId => Ok(TDISP_MOCK_DEVICE_ID.to_le_bytes().to_vec()),
-            // A well-formed report header describing a TDI with no MMIO
-            // ranges, which is all the device implements.
-            TdispReportType::InterfaceReport => Ok(vec![0; 16]),
-            other => anyhow::bail!("unexpected report type requested: {other:?}"),
-        }
-    }
-
-    fn tdisp_modify_mmio_range(
-        &mut self,
-        _action: TdispMmioRangeAction,
-        _range_id: u16,
-        _gpa_base: u64,
-        _range_len_bytes: u64,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
 
 /// The config space the emulated host device presents, plus a log of everything
 /// the relay has pushed through to it.
@@ -215,10 +157,7 @@ struct TestRelay {
 async fn connect_relay(driver: &DefaultDriver, tdisp_capable: bool) -> TestRelay {
     let cfg = Arc::new(Mutex::new(HostConfigSpace::default()));
     let host_device = Arc::new(CloseableMutex::new(TestHostDevice {
-        tdisp_interface: TdispHostDeviceTargetEmulator::new(
-            Arc::new(Mutex::new(AttestingHostInterface)),
-            "vpci-relay-unit-test",
-        ),
+        tdisp_interface: new_null_tdisp_interface("vpci-relay-unit-test"),
         cfg: cfg.clone(),
     }));
 

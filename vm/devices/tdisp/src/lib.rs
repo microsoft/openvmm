@@ -305,8 +305,8 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             Some(Command::ModifyMmioRange(cmd)) => {
                 let action = TdispMmioRangeAction::from_i32(cmd.action);
 
-                // `range_id` is a BAR index; the wire widens it to u32 because
-                // protobuf has no 16-bit type.
+                // `range_id` is a BAR index here, but not necessarily for all devices.
+                // Future platforms might support sub-BAR ranges by the TDISP spec.
                 match (action, u16::try_from(cmd.range_id)) {
                     (Some(action), Ok(range_id)) => {
                         let modify_res = self.machine.request_modify_mmio_range(
