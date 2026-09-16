@@ -3934,6 +3934,7 @@ async fn new_underhill_vm(
             &runtime_params,
             load_kind,
             &dps,
+            dps.general.tpm_enabled && tpm_version >= TpmVersion::V185,
             isolation.is_isolated(),
             &chipset_mmio,
         )
@@ -4344,6 +4345,7 @@ async fn load_firmware(
     runtime_params: &RuntimeParameters,
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
+    disable_sha1_pcr: bool,
     isolated: bool,
     chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), anyhow::Error> {
@@ -4351,7 +4353,10 @@ async fn load_firmware(
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
         None => CString::default(),
     };
-    let loader_config = crate::loader::Config { cmdline_append };
+    let loader_config = crate::loader::Config {
+        cmdline_append,
+        disable_sha1_pcr,
+    };
     let caps = partition.caps();
     let vtl0_vp_context = crate::loader::load(
         gm,
