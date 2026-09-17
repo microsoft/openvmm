@@ -16,13 +16,16 @@ year and selects one of the repository releases as the baseline for each
 product release.
 
 Before publishing an OpenVMM source release from `main` or a release branch,
-set the workspace version to a new, globally unique SemVer in a normal pull
-request. A new feature release from `main` typically increments the minor
-version, such as `1.1.0` to `1.2.0`. A servicing release from a release branch
-increments the patch version, such as `1.1.0` to `1.1.1`. The same workspace
-version may exist in multiple branches during development, but it can be
-published as an `openvmm-v<VERSION>` release only once. Continuing development
-or creating a release branch does not by itself require a version bump. See
+ensure that the workspace version is the intended SemVer and has not previously
+been published. If the current version has already been published, update it in
+a normal pull request. A new feature release from `main` typically increments
+the minor version, such as `1.1.0` to `1.2.0`. A servicing release from a
+release branch increments the patch version, such as `1.1.0` to `1.1.1`. An
+already committed, unpublished version can be selected without changing
+`Cargo.toml`. The same workspace version may exist in multiple branches during
+development, but it can be published as an `openvmm-v<VERSION>` release only
+once. Continuing development or creating a release branch does not by itself
+require a version bump. See
 [Cutting an OpenVMM source release](openvmm_source_release.md) for the
 publication process.
 
@@ -85,6 +88,9 @@ When creating a monthly release branch:
    `backported_<RELEASE>` labels in GitHub.
 2. Add the `release_<RELEASE>` base-branch rule to `.github/labeler.yml` so pull
    requests targeting the branch are labeled consistently.
+3. Add the branch to both `run_filters` and `test_filters` in
+   `petri/logview/src/branch_quick_filters.tsx` so it appears in the Runs,
+   Tests, and TestDetails quick filters.
 
 We track the state of candidates for a given release by tagging the PRs with the following labels:
 
