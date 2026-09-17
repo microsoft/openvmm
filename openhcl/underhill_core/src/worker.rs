@@ -104,6 +104,7 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 use openhcl_dma_manager::AllocationVisibility;
@@ -131,6 +132,8 @@ use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
+use tpm_vmgs::tpm_nvram_file_id;
 use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
@@ -1452,14 +1455,18 @@ fn guest_memory_access_self_test(
 }
 
 /// Write a diagnostic provisioning marker to a newly-created VMGS file.
-async fn write_provisioning_marker(vmgs: &mut Vmgs) -> anyhow::Result<()> {
+async fn write_provisioning_marker(vmgs: &mut Vmgs, tpm_version: TpmVersion) -> anyhow::Result<()> {
     let marker = VmgsProvisioningMarker {
         provisioner: VmgsProvisioner::OpenHcl,
         reason: vmgs
             .provisioning_reason()
             .unwrap_or(VmgsProvisioningReason::Unknown),
-        tpm_version: tpm_protocol::TPM_DEFAULT_VERSION.to_string(),
-        tpm_nvram_size: tpm_device::DEFAULT_VTPM_SIZE,
+        tpm_version: match tpm_version {
+            TpmVersion::V138 => tpm_protocol::TPM_V138_VERSION,
+            TpmVersion::V185 => tpm_protocol::TPM_V185_VERSION,
+        }
+        .to_string(),
+        tpm_nvram_size: tpm_device::default_vtpm_size(tpm_version),
         akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
         akcert_attrs: format!(
             "0x{:x}",
@@ -1872,9 +1879,36 @@ async fn new_underhill_vm(
         }
     };
 
+    let tpm_hint_version = match (
+        dps.general.management_vtl_features.use_tpm_138_by_default(),
+        dps.general.management_vtl_features.use_tpm_185_by_default(),
+    ) {
+        (true, false) => TpmVersion::V138,
+        (false, true) => TpmVersion::V185,
+        (false, false) => TpmVersion::V138,
+        (true, true) => TpmVersion::V185,
+    };
+    let tpm_version = if let Some((_, ref vmgs)) = vmgs {
+        if vmgs.check_file_allocated(tpm_nvram_file_id(TpmVersion::V185)) {
+            TpmVersion::V185
+        } else if vmgs.check_file_allocated(tpm_nvram_file_id(TpmVersion::V138)) {
+            TpmVersion::V138
+        } else {
+            tpm_hint_version
+        }
+    } else {
+        tpm_hint_version
+    };
+
+    let tpm_nvram_id = tpm_nvram_file_id(tpm_version);
+    let tpm_size = vmgs
+        .as_ref()
+        .and_then(|(_, vmgs)| vmgs.get_file_info(tpm_nvram_id).ok())
+        .map(|info| info.valid_bytes as usize);
+
     if let Some((_, ref mut vmgs)) = vmgs {
         if vmgs.was_provisioned_this_boot() {
-            let result = write_provisioning_marker(vmgs).await;
+            let result = write_provisioning_marker(vmgs, tpm_version).await;
 
             if let Err(err) = result {
                 tracing::warn!(
@@ -1885,15 +1919,6 @@ async fn new_underhill_vm(
             }
         }
     }
-
-    // Get TPM data size from VMGS. This is used by the TPM device later to
-    // initialize it with the correct size. VMGS file control blocks are saved
-    // and restored during servicing, so this is cached and doesn't directly
-    // access the VMGS file.
-    let tpm_size = vmgs
-        .as_ref()
-        .and_then(|(_, vmgs)| vmgs.get_file_info(vmgs::FileId::TPM_NVRAM).ok())
-        .map(|info| info.valid_bytes as usize);
 
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =
@@ -2129,6 +2154,10 @@ async fn new_underhill_vm(
         interactive_console_enabled: interactive_console,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
+        tpm_version: match tpm_version {
+            TpmVersion::V138 => AttestationTpmVersion::V138,
+            TpmVersion::V185 => AttestationTpmVersion::V185,
+        },
         // Legacy claim; `stateful` reflects its true meaning (attestation not
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
@@ -2564,12 +2593,28 @@ async fn new_underhill_vm(
         use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
-            SecureBootTemplateType::MicrosoftWindows => {
-                Some(secure_boot_templates::microsoft_windows())
-            }
-            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                Some(secure_boot_templates::microsoft_uefi_ca())
-            }
+            SecureBootTemplateType::MicrosoftWindows => Some({
+                #[cfg(guest_arch = "aarch64")]
+                let template = secure_boot_templates::microsoft_windows();
+                #[cfg(guest_arch = "x86_64")]
+                let template = if isolation.is_isolated() {
+                    secure_boot_templates::microsoft_windows_confidential()
+                } else {
+                    secure_boot_templates::microsoft_windows()
+                };
+                template
+            }),
+            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => Some({
+                #[cfg(guest_arch = "aarch64")]
+                let template = secure_boot_templates::microsoft_uefi_ca();
+                #[cfg(guest_arch = "x86_64")]
+                let template = if isolation.is_isolated() {
+                    secure_boot_templates::microsoft_uefi_ca_confidential()
+                } else {
+                    secure_boot_templates::microsoft_uefi_ca()
+                };
+                template
+            }),
         };
 
         // check if vmgs includes custom UEFI JSON
@@ -2712,11 +2757,29 @@ async fn new_underhill_vm(
                 num_lock_enabled: dps.general.num_lock_enabled,
                 smbios: firmware_pcat::config::SmbiosConstants {
                     bios_guid: dps.general.bios_guid,
-                    system_serial_number: dps.smbios.serial_number.clone(),
-                    base_board_serial_number: (dps.smbios).base_board_serial_number.clone(),
-                    chassis_serial_number: (dps.smbios).chassis_serial_number.clone(),
-                    chassis_asset_tag: (dps.smbios).chassis_asset_tag.clone(),
-                    bios_lock_string: dps.smbios.bios_lock_string.clone(),
+                    // Truncate rather than fail: the serial comes from the host
+                    // via DPS, and the PCAT config port caps each string at a
+                    // fixed length regardless.
+                    system_serial_number: {
+                        let mut serial = dps.smbios.serial_number.clone().into_bytes();
+                        if serial.len() > firmware_pcat::config::SMBIOS_STRING_MAX_LEN {
+                            tracing::warn!(
+                                len = serial.len(),
+                                max = firmware_pcat::config::SMBIOS_STRING_MAX_LEN,
+                                "SMBIOS system serial number too long; truncating for PCAT"
+                            );
+                            serial.truncate(firmware_pcat::config::SMBIOS_STRING_MAX_LEN);
+                        }
+                        serial
+                    },
+                    base_board_serial_number: dps
+                        .smbios
+                        .base_board_serial_number
+                        .clone()
+                        .into_bytes(),
+                    chassis_serial_number: dps.smbios.chassis_serial_number.clone().into_bytes(),
+                    chassis_asset_tag: dps.smbios.chassis_asset_tag.clone().into_bytes(),
+                    bios_lock_string: dps.smbios.bios_lock_string.clone().into_bytes(),
                     processor_manufacturer: dps.smbios.processor_manufacturer.clone(),
                     processor_version: dps.smbios.processor_version.clone(),
                     cpu_info_bundle: Some(firmware_pcat::config::SmbiosProcessorInfoBundle {
@@ -3009,7 +3072,7 @@ async fn new_underhill_vm(
 
             (
                 VmgsFileHandle::new(vmgs::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(vmgs::FileId::TPM_NVRAM, true).into_resource(),
+                VmgsFileHandle::new(tpm_nvram_id, true).into_resource(),
             )
         };
 
@@ -3064,6 +3127,7 @@ async fn new_underhill_vm(
             name: "tpm".to_owned(),
             resource: RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
+                    version: tpm_version,
                     ppi_store,
                     nvram_store,
                     refresh_tpm_seeds: platform_attestation_data
@@ -3870,6 +3934,7 @@ async fn new_underhill_vm(
             &runtime_params,
             load_kind,
             &dps,
+            dps.general.tpm_enabled && tpm_version >= TpmVersion::V185,
             isolation.is_isolated(),
             &chipset_mmio,
         )
@@ -4280,6 +4345,7 @@ async fn load_firmware(
     runtime_params: &RuntimeParameters,
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
+    disable_sha1_pcr: bool,
     isolated: bool,
     chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), anyhow::Error> {
@@ -4287,7 +4353,10 @@ async fn load_firmware(
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
         None => CString::default(),
     };
-    let loader_config = crate::loader::Config { cmdline_append };
+    let loader_config = crate::loader::Config {
+        cmdline_append,
+        disable_sha1_pcr,
+    };
     let caps = partition.caps();
     let vtl0_vp_context = crate::loader::load(
         gm,

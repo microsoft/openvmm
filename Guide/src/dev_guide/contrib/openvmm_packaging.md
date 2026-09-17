@@ -94,6 +94,9 @@ OpenVMM's release validation job installs:
 | `pkg-config` | `pkg-config` | `pkgconf-pkg-config` |
 | `protoc` | `protobuf-compiler` | `protobuf-compiler` |
 
+Building with the optional `tpm` feature additionally requires CMake, provided
+by the `cmake` package on both Debian / Ubuntu and Fedora.
+
 Do not use `cargo xflowey restore-packages` when building a distribution
 package. That command restores prebuilt native dependencies intended for
 repository development.

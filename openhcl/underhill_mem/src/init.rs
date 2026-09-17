@@ -347,14 +347,15 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         });
 
         if params.isolation == IsolationType::Snp {
-            // Register all VTL0 memory, starting with contiguous 1 GB ranges, and then 2 MB ranges for any remaining edges.
+            // Register complete 1 GB VTL0 ranges first, then complete 2 MB
+            // ranges. Leave any remaining sub-2 MB edges unregistered.
             let _span = tracing::info_span!("register_vtl0_memory", CVM_ALLOWED).entered();
             vtl0_mapping
                 .register_all_aligned_memory(SNP_PUD_REGISTRATION_GRANULARITY, true)
                 .context("failed to eagerly register SNP VTL0 memory")?;
             vtl0_mapping
-                .register_all_aligned_memory(SNP_PMD_REGISTRATION_GRANULARITY, false)
-                .context("failed to register SNP VTL0 memory edges")?;
+                .register_all_aligned_memory(SNP_PMD_REGISTRATION_GRANULARITY, true)
+                .context("failed to register aligned SNP VTL0 memory")?;
         }
         let vtl0_mapping = Arc::new(vtl0_mapping);
 

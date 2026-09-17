@@ -25,6 +25,7 @@ use petri::ResolvedArtifact;
 use petri::pipette::cmd;
 use petri_artifacts_vmm_test::artifacts;
 use std::io::Write;
+use std::net::TcpListener;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
@@ -151,7 +152,13 @@ async fn test_ttrpc_interface(
         let com1_path = tempdir.path().join(format!("com1-{i}.sock"));
         let console_path = tempdir.path().join(format!("console-{i}.sock"));
         let virtiofs_root = tempdir.path().join(format!("virtiofs-{i}"));
+        let hotplug_virtiofs_root = tempdir.path().join(format!("hotplug-virtiofs-{i}"));
+        let second_hotplug_virtiofs_root =
+            tempdir.path().join(format!("hotplug-virtiofs-second-{i}"));
         std::fs::create_dir_all(&virtiofs_root)?;
+        std::fs::create_dir_all(&hotplug_virtiofs_root)?;
+        std::fs::create_dir_all(&second_hotplug_virtiofs_root)?;
+        std::fs::write(virtiofs_root.join("content"), b"boot virtio-fs share")?;
         let hvsocket_path = tempdir.path().join(format!("hvsocket-{i}"));
         let pipette_listener = if i == 0 {
             let path = format!(
@@ -165,6 +172,17 @@ async fn test_ttrpc_interface(
         };
 
         let consomme_nic_id = Guid::new_random().to_string();
+        let host_address = match i {
+            0 => "127.0.0.1",
+            1 => "::1",
+            _ => "",
+        };
+        let probe_address = if host_address.is_empty() {
+            "0.0.0.0"
+        } else {
+            host_address
+        };
+        let host_port = TcpListener::bind((probe_address, 0))?.local_addr()?.port();
 
         // On iteration 0, test `connect: true` for both serial and
         // virtio console by pre-creating listeners that the VM will
@@ -340,6 +358,29 @@ async fn test_ttrpc_interface(
             )
         };
 
+        // Exercise SMBIOS identity overrides on iteration 0, where pipette
+        // is available to read back the guest's DMI.
+        let smbios_config = (i == 0).then(|| vmservice::SmbiosConfig {
+            bios: Some(vmservice::smbios_config::Bios {
+                vendor: Some(SMBIOS_BIOS_VENDOR.to_string()),
+                version: Some(SMBIOS_BIOS_VERSION.to_string()),
+                release_date: Some(SMBIOS_BIOS_DATE.to_string()),
+                release: Some(vmservice::smbios_config::bios::Release {
+                    major: SMBIOS_BIOS_RELEASE_MAJOR,
+                    minor: SMBIOS_BIOS_RELEASE_MINOR,
+                }),
+            }),
+            system: Some(vmservice::smbios_config::System {
+                manufacturer: Some(SMBIOS_SYS_MANUFACTURER.to_string()),
+                product_name: Some(SMBIOS_SYS_PRODUCT.to_string()),
+                version: Some(SMBIOS_SYS_VERSION.to_string()),
+                serial_number: Some(SMBIOS_SYS_SERIAL.to_string()),
+                sku_number: Some(SMBIOS_SYS_SKU.to_string()),
+                family: Some(SMBIOS_SYS_FAMILY.to_string()),
+                uuid: Some(SMBIOS_SYS_UUID.to_string()),
+            }),
+        });
+
         client
             .call()
             .start(
@@ -371,7 +412,12 @@ async fn test_ttrpc_interface(
                                 backend: Some(vmservice::nic_config::Backend::Consomme(
                                     vmservice::ConsommeBackend {
                                         cidr: String::new(),
-                                        ports: vec![],
+                                        ports: vec![vmservice::PortConfig {
+                                            host_port: host_port.into(),
+                                            guest_port: 80,
+                                            protocol: vmservice::IpProtocol::Tcp as i32,
+                                            host_address: host_address.to_string(),
+                                        }],
                                     },
                                 )),
                                 ..Default::default()
@@ -380,9 +426,10 @@ async fn test_ttrpc_interface(
                                 socket_path: console_path.to_string_lossy().into(),
                                 connect: use_connect,
                             }),
-                            virtiofs_config: vec![vmservice::VirtioFsConfig {
+                            virtiofs_config: vec![vmservice::VirtioFs {
                                 tag: "testfs".to_string(),
                                 root_path: virtiofs_root.to_string_lossy().into(),
+                                read_only: i == 0,
                             }],
                             // A SCSI controller keeps a request channel
                             // alive for the lifetime of the VM, which used
@@ -400,6 +447,7 @@ async fn test_ttrpc_interface(
                         hvsocket_config: (i == 0).then(|| vmservice::HvSocketConfig {
                             path: hvsocket_path.to_string_lossy().to_string(),
                         }),
+                        smbios_config,
                         ..Default::default()
                     }),
                     log_id: String::new(),
@@ -407,6 +455,30 @@ async fn test_ttrpc_interface(
             )
             .await
             .unwrap();
+
+        assert_eq!(
+            TcpListener::bind((probe_address, host_port))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AddrInUse,
+            "CreateVm should bind the requested host address"
+        );
+        // An explicit loopback address must not become a wildcard bind.
+        if host_address.is_empty() {
+            #[cfg(not(windows))]
+            assert_eq!(
+                TcpListener::bind(("127.0.0.2", host_port))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::AddrInUse,
+                "an empty host address should retain the wildcard default"
+            );
+        } else {
+            drop(
+                TcpListener::bind(("127.0.0.2", host_port))
+                    .context("port forward unexpectedly bound another address")?,
+            );
+        }
 
         let props = query_props().await.unwrap();
         assert_eq!(
@@ -419,45 +491,61 @@ async fn test_ttrpc_interface(
             "memory/processor stats should be unset, not zeroed"
         );
 
-        // Invalid protocols exercise Consomme update/remove without binding a port.
+        // Invalid options exercise Consomme update/remove without binding a port.
         for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
-            let err = client
-                .call()
-                .start(
-                    vmservice::Vm::ModifyResource,
-                    vmservice::ModifyResourceRequest {
-                        r#type: modify_type as i32,
-                        resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
-                            vmservice::NicConfig {
-                                nic_id: consomme_nic_id.clone(),
-                                mac_address: "00-15-5D-12-12-12".to_string(),
-                                backend: Some(vmservice::nic_config::Backend::Consomme(
-                                    vmservice::ConsommeBackend {
-                                        cidr: String::new(),
-                                        ports: vec![vmservice::PortConfig {
-                                            host_port: 8080,
-                                            guest_port: 80,
-                                            protocol: 99,
-                                        }],
+            for (protocol, host_address, expected_error) in [
+                (99, "", "invalid protocol"),
+                (
+                    vmservice::IpProtocol::Tcp as i32,
+                    "not-an-ip-address",
+                    "invalid host address",
+                ),
+                (
+                    vmservice::IpProtocol::Udp as i32,
+                    "127.0.0.1:8080",
+                    "invalid host address",
+                ),
+            ] {
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::ModifyResource,
+                        vmservice::ModifyResourceRequest {
+                            r#type: modify_type as i32,
+                            resource: Some(
+                                vmservice::modify_resource_request::Resource::NicConfig(
+                                    vmservice::NicConfig {
+                                        nic_id: consomme_nic_id.clone(),
+                                        mac_address: "00-15-5D-12-12-12".to_string(),
+                                        backend: Some(vmservice::nic_config::Backend::Consomme(
+                                            vmservice::ConsommeBackend {
+                                                cidr: String::new(),
+                                                ports: vec![vmservice::PortConfig {
+                                                    host_port: 8080,
+                                                    guest_port: 80,
+                                                    protocol,
+                                                    host_address: host_address.to_string(),
+                                                }],
+                                            },
+                                        )),
+                                        ..Default::default()
                                     },
-                                )),
-                                ..Default::default()
-                            },
-                        )),
-                    },
-                )
-                .await
-                .unwrap_err();
-            assert!(
-                err.message.contains("invalid protocol"),
-                "expected invalid protocol error, got: {}",
-                err.message
-            );
+                                ),
+                            ),
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert!(
+                    err.message.contains(expected_error),
+                    "expected {expected_error}, got: {}",
+                    err.message
+                );
+            }
         }
 
-        // On iteration 0, hot-add a virtio-rng device to the empty
-        // hotplug-capable port and then hot-remove it, exercising the
-        // AddPcieDevice/RemovePcieDevice RPCs.
+        // On iteration 0, exercise AddPcieDevice/RemovePcieDevice with
+        // both a simple virtio device and one with a host backend.
         if i == 0 {
             client
                 .call()
@@ -483,6 +571,62 @@ async fn test_ttrpc_interface(
                 )
                 .await
                 .unwrap();
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::AddPcieDevice,
+                    vmservice::AddPcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                        device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
+                            vmservice::VirtioFs {
+                                tag: "hotplugfs".to_string(),
+                                root_path: hotplug_virtiofs_root.to_string_lossy().into(),
+                                read_only: true,
+                            },
+                        ))),
+                    },
+                )
+                .await
+                .unwrap();
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::RemovePcieDevice,
+                    vmservice::RemovePcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            #[cfg(windows)]
+            {
+                let instance_id = Guid::new_random();
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::AddVpciDevice,
+                        virtio_fs_vpci_request(
+                            &instance_id,
+                            "vpci-fs",
+                            &hotplug_virtiofs_root,
+                            false,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::RemoveVpciDevice,
+                        vmservice::RemoveVpciDeviceRequest {
+                            instance_id: instance_id.to_string(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
         }
 
         // Get the serial connection - either by accepting on our listener
@@ -559,6 +703,23 @@ async fn test_ttrpc_interface(
                     )
                     .await?;
                     validate_pcie_config(&agent).await?;
+                    #[cfg(windows)]
+                    {
+                        mount_virtio_fs(&agent, "testfs", "/mnt/testfs").await?;
+                        validate_virtio_fs_access(&agent, "/mnt/testfs", &virtiofs_root, true)
+                            .await?;
+                        let sh = agent.unix_shell();
+                        cmd!(sh, "umount /mnt/testfs").run().await?;
+                        validate_vpci_virtio_fs_hotplug(
+                            &client,
+                            &agent,
+                            &hotplug_virtiofs_root,
+                            &second_hotplug_virtiofs_root,
+                        )
+                        .await?;
+                    }
+
+                    validate_smbios(&agent).await?;
                     agent.power_off().await?;
                 }
 
@@ -934,6 +1095,183 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
+#[cfg(windows)]
+fn virtio_fs_vpci_request(
+    instance_id: &Guid,
+    tag: &str,
+    root_path: &Path,
+    read_only: bool,
+) -> vmservice::AddVpciDeviceRequest {
+    vmservice::AddVpciDeviceRequest {
+        instance_id: instance_id.to_string(),
+        device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
+            vmservice::VirtioFs {
+                tag: tag.to_string(),
+                root_path: root_path.to_string_lossy().into_owned(),
+                read_only,
+            },
+        ))),
+    }
+}
+
+#[cfg(windows)]
+async fn validate_vpci_virtio_fs_hotplug(
+    client: &mesh_rpc::Client,
+    agent: &pipette_client::PipetteClient,
+    first_root: &Path,
+    second_root: &Path,
+) -> anyhow::Result<()> {
+    const FIRST_CONTENT: &[u8] = b"first VPCI virtio-fs share";
+    const SECOND_CONTENT: &[u8] = b"second VPCI virtio-fs share";
+    std::fs::write(first_root.join("content"), FIRST_CONTENT)?;
+    std::fs::write(second_root.join("content"), SECOND_CONTENT)?;
+
+    let first_instance_id = Guid::new_random();
+    client
+        .call()
+        .start(
+            vmservice::Vm::AddVpciDevice,
+            virtio_fs_vpci_request(&first_instance_id, "vpci-fs-1", first_root, false),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.message))?;
+    let second_instance_id = Guid::new_random();
+    client
+        .call()
+        .start(
+            vmservice::Vm::AddVpciDevice,
+            virtio_fs_vpci_request(&second_instance_id, "vpci-fs-2", second_root, true),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.message))?;
+    anyhow::ensure!(
+        first_instance_id != second_instance_id,
+        "VPCI instance IDs must be unique"
+    );
+
+    let first_mount = "/mnt/vpci-fs-1";
+    let second_mount = "/mnt/vpci-fs-2";
+    mount_virtio_fs(agent, "vpci-fs-1", first_mount).await?;
+    mount_virtio_fs(agent, "vpci-fs-2", second_mount).await?;
+    anyhow::ensure!(
+        agent.read_file(format!("{first_mount}/content")).await? == FIRST_CONTENT,
+        "first VPCI virtio-fs share returned unexpected contents"
+    );
+    anyhow::ensure!(
+        agent.read_file(format!("{second_mount}/content")).await? == SECOND_CONTENT,
+        "second VPCI virtio-fs share returned unexpected contents"
+    );
+    validate_virtio_fs_access(agent, first_mount, first_root, false).await?;
+    validate_virtio_fs_access(agent, second_mount, second_root, true).await?;
+    let sh = agent.unix_shell();
+    cmd!(sh, "umount {second_mount}").run().await?;
+    client
+        .call()
+        .start(
+            vmservice::Vm::RemoveVpciDevice,
+            vmservice::RemoveVpciDeviceRequest {
+                instance_id: second_instance_id.to_string(),
+            },
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.message))?;
+    anyhow::ensure!(
+        agent.read_file(format!("{first_mount}/content")).await?
+            == std::fs::read(first_root.join("content"))?,
+        "first share stopped working after removing second share"
+    );
+
+    cmd!(sh, "umount {first_mount}").run().await?;
+    client
+        .call()
+        .start(
+            vmservice::Vm::RemoveVpciDevice,
+            vmservice::RemoveVpciDeviceRequest {
+                instance_id: first_instance_id.to_string(),
+            },
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.message))?;
+    let err = client
+        .call()
+        .start(
+            vmservice::Vm::RemoveVpciDevice,
+            vmservice::RemoveVpciDeviceRequest {
+                instance_id: first_instance_id.to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+    anyhow::ensure!(
+        err.message.contains("no dynamically added VPCI device"),
+        "unexpected repeated-remove error: {}",
+        err.message
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn validate_virtio_fs_access(
+    agent: &pipette_client::PipetteClient,
+    target: &str,
+    root: &Path,
+    read_only: bool,
+) -> anyhow::Result<()> {
+    let original = std::fs::read(root.join("content"))?;
+    anyhow::ensure!(
+        agent.read_file(format!("{target}/content")).await? == original,
+        "virtio-fs share returned unexpected contents"
+    );
+    for name in ["content", "new-file"] {
+        let path = format!("{target}/{name}");
+        if read_only {
+            // Do not mount with -o ro: the host backend must enforce the restriction.
+            let sh = agent.unix_shell();
+            let script = format!("printf modified > {path}");
+            let output = cmd!(sh, "sh -c {script}")
+                .env("LC_ALL", "C")
+                .ignore_status()
+                .output()
+                .await?;
+            anyhow::ensure!(
+                !output.status.success()
+                    && String::from_utf8_lossy(&output.stderr).contains("Read-only file system"),
+                "expected a read-only filesystem error writing {path}, got {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        } else {
+            agent.write_file(&path, &b"modified"[..]).await?;
+            anyhow::ensure!(
+                std::fs::read(root.join(name))? == b"modified",
+                "writable share did not propagate guest writes to {name}"
+            );
+        }
+    }
+    if read_only {
+        anyhow::ensure!(
+            std::fs::read(root.join("content"))? == original && !root.join("new-file").exists(),
+            "guest writes modified the read-only share"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn mount_virtio_fs(
+    agent: &pipette_client::PipetteClient,
+    tag: &str,
+    target: &str,
+) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let script = format!(
+        "mkdir -p {target}; i=0; while [ $i -lt 200 ]; do \
+         mount -t virtiofs {tag} {target} && exit 0; \
+         i=$((i + 1)); sleep 0.1; done; exit 1"
+    );
+    cmd!(sh, "sh -c {script}").run().await
+}
+
 /// Spawns `openvmm --rpc path=<socket_path>,transport=ttrpc --pidfile
 /// <pidfile_path>`, waits for it to signal readiness (by closing stdout),
 /// validates the pidfile, and connects a ttrpc client.
@@ -1075,6 +1413,53 @@ fn file_disk(path: &Path) -> vmservice::DiskBackend {
             direct: false,
         })),
     }
+}
+
+const SMBIOS_BIOS_VENDOR: &str = "Contoso BIOS";
+const SMBIOS_BIOS_VERSION: &str = "1.2.3";
+const SMBIOS_BIOS_DATE: &str = "01/01/2026";
+const SMBIOS_BIOS_RELEASE_MAJOR: u32 = 4;
+const SMBIOS_BIOS_RELEASE_MINOR: u32 = 1;
+const SMBIOS_SYS_MANUFACTURER: &str = "Contoso";
+const SMBIOS_SYS_PRODUCT: &str = "Contoso Virtual Machine";
+const SMBIOS_SYS_VERSION: &str = "9.8.7";
+const SMBIOS_SYS_SERIAL: &str = "SN-0123456789";
+const SMBIOS_SYS_SKU: &str = "SKU-CONTOSO-42";
+const SMBIOS_SYS_FAMILY: &str = "Contoso VM Family";
+const SMBIOS_SYS_UUID: &str = "12345678-9abc-def0-1234-56789abcdef0";
+
+async fn validate_smbios(agent: &pipette_client::PipetteClient) -> anyhow::Result<()> {
+    for (file, expected) in [
+        ("bios_vendor", SMBIOS_BIOS_VENDOR),
+        ("bios_version", SMBIOS_BIOS_VERSION),
+        ("bios_date", SMBIOS_BIOS_DATE),
+        ("sys_vendor", SMBIOS_SYS_MANUFACTURER),
+        ("product_name", SMBIOS_SYS_PRODUCT),
+        ("product_version", SMBIOS_SYS_VERSION),
+        ("product_serial", SMBIOS_SYS_SERIAL),
+        ("product_sku", SMBIOS_SYS_SKU),
+        ("product_family", SMBIOS_SYS_FAMILY),
+        ("product_uuid", SMBIOS_SYS_UUID),
+    ] {
+        let actual = String::from_utf8(agent.read_file(format!("/sys/class/dmi/id/{file}")).await?)
+            .with_context(|| format!("dmi id {file} is not UTF-8"))?;
+        anyhow::ensure!(
+            actual.trim() == expected,
+            "dmi id {file}: expected {expected:?}, got {:?}",
+            actual.trim()
+        );
+    }
+
+    let bios_release = String::from_utf8(agent.read_file("/sys/class/dmi/id/bios_release").await?)
+        .context("dmi id bios_release is not UTF-8")?;
+    let expected = format!("{SMBIOS_BIOS_RELEASE_MAJOR}.{SMBIOS_BIOS_RELEASE_MINOR}");
+    anyhow::ensure!(
+        bios_release.trim() == expected,
+        "dmi id bios_release: expected {expected:?}, got {:?}",
+        bios_release.trim()
+    );
+
+    Ok(())
 }
 
 async fn validate_pcie_config(agent: &pipette_client::PipetteClient) -> anyhow::Result<()> {

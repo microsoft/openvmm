@@ -387,6 +387,15 @@ impl virt::BindProcessor for MshvProcessorBinder {
             self.vcpufd.as_ref().unwrap()
         };
 
+        // Set the MPIDR for this VP; otherwise, the hypervisor assigns a value
+        // that would not match the identity firmware advertises.
+        vcpufd
+            .set_hvdef_regs(&[HvRegisterAssoc::from((
+                HvArm64RegisterName::MpidrEl1,
+                u64::from(inner.vp_info.mpidr),
+            ))])
+            .map_err(ErrorInner::Register)?;
+
         // Set the GIC redistributor base for this VP (GICv3 only).
         if let Some(gicr) = inner.vp_info.gicr {
             vcpufd

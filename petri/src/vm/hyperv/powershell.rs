@@ -235,13 +235,30 @@ impl ps::AsVal for HyperVGuestStateEncryptionPolicy {
 #[bitfield_struct::bitfield(u64)]
 pub struct HyperVManagementVtlFeatureFlags {
     pub strict_encryption_policy: bool,
-    pub _reserved1: bool,
+    pub load_firmware_supported: bool,
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
-    #[bits(59)]
+    pub _reserved5: bool,
+    pub use_tpm_138_by_default: bool,
+    pub use_tpm_185_by_default: bool,
+    #[bits(56)]
     pub _reserved2: u64,
 }
+
+// impl HyperVManagementVtlFeatureFlags {
+//     fn with_tpm_version(self, version: Option<crate::PetriTpmVersion>) -> Self {
+//         match version {
+//             Some(crate::PetriTpmVersion::V138) => self
+//                 .with_use_tpm_138_by_default(true)
+//                 .with_use_tpm_185_by_default(false),
+//             Some(crate::PetriTpmVersion::V185) => self
+//                 .with_use_tpm_138_by_default(false)
+//                 .with_use_tpm_185_by_default(true),
+//             None => self,
+//         }
+//     }
+// }
 
 impl ps::AsVal for HyperVManagementVtlFeatureFlags {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
@@ -550,6 +567,8 @@ impl HyperVNewCustomVMArgs {
                         .map(|p| p.is_strict())
                         .unwrap_or(false),
                 )
+                // TODO Once UEFI is fixed
+                //.with_tpm_version(tpm.as_ref().map(|t| t.version))
             }),
             guest_state_encryption_policy: {
                 // A requested hardware sealing policy takes precedence over the

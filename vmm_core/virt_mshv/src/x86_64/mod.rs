@@ -69,14 +69,24 @@ use zerocopy::IntoBytes;
 
 mod snp;
 
+pub(crate) use snp::MshvSnpConfig;
 pub(super) use snp::SnpError;
 pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
 pub(crate) use snp::acquire_snp_host_access;
+use snp::prepare_snp_config;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
 use snp::snp_start_vp_vmsa_gpa;
+
+pub(crate) enum MshvProtoPartitionIsolation {
+    None,
+    Snp {
+        config: Option<Box<MshvSnpConfig>>,
+        disable_cpuid_offload: bool,
+    },
+}
 
 impl virt::Hypervisor for LinuxMshv {
     type ProtoPartition<'a> = MshvProtoPartition<'a>;
@@ -91,13 +101,15 @@ impl virt::Hypervisor for LinuxMshv {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
-        let isolation = config.isolation.isolation_type();
-        validate_snp_cpuid_offload_config(isolation, self.snp_disable_cpuid_offload)?;
-        let snp = match isolation {
-            virt::IsolationType::None => false,
-            virt::IsolationType::Snp => true,
+        // An IGVM supplies SNP state that MSHV needs before partition build.
+        let igvm_snp_config = match &config.isolation {
+            virt::ProtoPartitionIsolation::None => None,
+            virt::ProtoPartitionIsolation::Snp(snp_config) => snp_config.as_deref(),
             _ => return Err(ErrorInner::IsolationNotSupported.into()),
         };
+        let isolation = config.isolation.isolation_type();
+        validate_snp_cpuid_offload_config(isolation, self.snp_disable_cpuid_offload)?;
+        let snp = isolation == virt::IsolationType::Snp;
         let x2apic = matches!(
             config.processor_topology.apic_mode(),
             vm_topology::processor::x86::ApicMode::X2ApicSupported
@@ -133,11 +145,17 @@ impl virt::Hypervisor for LinuxMshv {
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
 
         if snp {
-            let snp_policy = mshv_bindings::snp::get_default_snp_guest_policy();
+            let snp_policy = igvm_snp_config.as_ref().map_or_else(
+                || {
+                    let policy = mshv_bindings::snp::get_default_snp_guest_policy();
+                    // SAFETY: This generated C union contains a valid u64 view.
+                    unsafe { policy.as_uint64 }
+                },
+                |config| config.policy,
+            );
             let vmgexit_offloads = snp_vmgexit_offloads(self.snp_disable_cpuid_offload);
-            // SAFETY: These generated C unions always contain a valid u64 view.
-            let (snp_policy, vmgexit_offloads) =
-                unsafe { (snp_policy.as_uint64, vmgexit_offloads.as_uint64) };
+            // SAFETY: This generated C union contains a valid u64 view.
+            let vmgexit_offloads = unsafe { vmgexit_offloads.as_uint64 };
 
             for (code, value) in [
                 (HvPartitionPropertyCode::IsolationPolicy, snp_policy),
@@ -164,8 +182,29 @@ impl virt::Hypervisor for LinuxMshv {
         )
         .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
-        Ok(MshvProtoPartition::new(config, vmfd)?
-            .with_snp_cpuid_offload_disabled(self.snp_disable_cpuid_offload))
+        let snp_config = if let Some(snp_config) = igvm_snp_config {
+            let physical_address_width =
+                vmfd.get_partition_property(HvPartitionPropertyCode::PhysicalAddressWidth.0)
+                    .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))? as u8;
+            Some(Box::new(prepare_snp_config(
+                snp_config,
+                physical_address_width,
+            )?))
+        } else {
+            None
+        };
+
+        let isolation = if snp {
+            MshvProtoPartitionIsolation::Snp {
+                config: snp_config,
+                disable_cpuid_offload: self.snp_disable_cpuid_offload,
+            }
+        } else {
+            MshvProtoPartitionIsolation::None
+        };
+        let mut proto = MshvProtoPartition::new(config, vmfd)?;
+        proto.isolation = isolation;
+        Ok(proto)
     }
 }
 
@@ -374,9 +413,27 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        let isolation = self.config.isolation.isolation_type();
+        let snp_config = match &self.isolation {
+            MshvProtoPartitionIsolation::None => None,
+            MshvProtoPartitionIsolation::Snp { config, .. } => config.as_deref(),
+        };
+        if let Some(snp_config) = snp_config {
+            // The IGVM VMSA has separate stable userspace backing. It cannot
+            // overlap the normal RAM mapping because that would register two
+            // different host mappings for the same GPA with MSHV.
+            let vmsa_range =
+                MemoryRange::new(snp_config.vmsa_gpa..snp_config.vmsa_gpa + hvdef::HV_PAGE_SIZE);
+            if config
+                .mem_layout
+                .ram()
+                .iter()
+                .any(|range| range.range.overlaps(&vmsa_range))
+            {
+                return Err(ErrorInner::SnpVmsaOverlapsRam.into());
+            }
+        }
         let mut cpuid = config.cpuid.to_vec();
-        if isolation == virt::IsolationType::Snp {
+        if matches!(&self.isolation, MshvProtoPartitionIsolation::Snp { .. }) {
             let expose_hypervisor = self.config.hv_config.is_some();
             cpuid.extend(snp_cpuid_overrides(expose_hypervisor));
             if expose_hypervisor {
@@ -473,12 +530,15 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             .map(|vp| vp.apic_id)
             .collect();
 
-        let isolation = match self.config.isolation.isolation_type() {
-            virt::IsolationType::None => MshvIsolationState::None,
-            virt::IsolationType::Snp => {
-                MshvIsolationState::Snp(SnpPartitionState::new(self.snp_disable_cpuid_offload))
-            }
-            _ => return Err(ErrorInner::IsolationNotSupported.into()),
+        let isolation = match self.isolation {
+            MshvProtoPartitionIsolation::None => MshvIsolationState::None,
+            MshvProtoPartitionIsolation::Snp {
+                config,
+                disable_cpuid_offload,
+            } => MshvIsolationState::Snp(SnpPartitionState::with_config(
+                disable_cpuid_offload,
+                config,
+            )),
         };
         let time_frozen = isolation.is_isolated();
         let inner = Arc::new(MshvPartitionInner {
@@ -499,6 +559,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             // SNP partition creation set TimeFreeze=1 before this object was built.
             time_frozen: Mutex::new(time_frozen),
         });
+        inner.add_snp_vmsa_mapping()?;
 
         let partition = MshvPartition {
             synic_ports: Arc::new(virt::synic::SynicPorts::new(inner.clone())),

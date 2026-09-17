@@ -56,6 +56,14 @@ pub mod config {
     use vm_topology::processor::ProcessorTopology;
     use vm_topology::processor::x86::X86Topology;
 
+    /// Maximum number of bytes of a variable-length SMBIOS string (e.g. the
+    /// system serial number) that the config port can deliver to the BIOS ROM.
+    ///
+    /// The port returns each string in eight 4-byte chunks (`read_count % 8`),
+    /// so any bytes beyond this are never read by the guest and would be
+    /// silently truncated.
+    pub const SMBIOS_STRING_MAX_LEN: usize = 8 * 4;
+
     /// Subset of SMBIOS v2.4 CPU Information structure.
     #[derive(Debug, Inspect)]
     #[expect(missing_docs)] // self-explanatory fields
@@ -258,6 +266,12 @@ pub enum PcatBiosDeviceInitError {
     InvalidRomSize(u64),
     #[error("error mapping ROM")]
     Rom(#[source] std::io::Error),
+    #[error("SMBIOS {field} of {len} bytes exceeds the config port's {max}-byte limit")]
+    SmbiosStringTooLong {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
 }
 
 impl PcatBiosDevice {
@@ -277,6 +291,17 @@ impl PcatBiosDevice {
         } = runtime_deps;
 
         let initial_generation_id = config.initial_generation_id;
+
+        // The config port delivers each variable-length SMBIOS string in
+        // fixed-size chunks; reject an over-long serial rather than silently
+        // truncating what the guest sees.
+        if config.smbios.system_serial_number.len() > config::SMBIOS_STRING_MAX_LEN {
+            return Err(PcatBiosDeviceInitError::SmbiosStringTooLong {
+                field: "system serial number",
+                len: config.smbios.system_serial_number.len(),
+                max: config::SMBIOS_STRING_MAX_LEN,
+            });
+        }
 
         if config.chipset_low_mmio.is_empty() || config.chipset_high_mmio.is_empty() {
             return Err(PcatBiosDeviceInitError::IncorrectMmioHoles);

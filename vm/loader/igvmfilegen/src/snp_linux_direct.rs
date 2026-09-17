@@ -15,6 +15,7 @@ use igvm_defs::SnpPolicy;
 use igvmfilegen_config::LinuxImage;
 use igvmfilegen_config::ResourceType;
 use igvmfilegen_config::Resources;
+use igvmfilegen_config::SnpInjectionType;
 use loader::importer::BootPageAcceptance;
 use loader::importer::ImageLoad;
 use loader::importer::X86Register;
@@ -43,7 +44,8 @@ const PAGE_SIZE: u64 = igvm_defs::PAGE_SIZE_4K;
 /// finish, after all userspace-provided launch-update pages.
 ///
 /// Keep the BSP context at this address until KVM supports userspace-supplied
-/// VMSA pages. MSHV can import the same context at this fixed address.
+/// VMSA pages. The MSHV path validates this address against the partition's
+/// physical address width and maps separate userspace backing for the VMSA.
 const KVM_VMSA_GPA: u64 = 0xffff_ffff_f000;
 
 /// Inputs for the deterministic SNP Linux-direct guest layout.
@@ -58,6 +60,8 @@ pub struct BuildParams<'a> {
     pub c_bit_position: u8,
     /// The SNP guest policy.
     pub policy: SnpPolicy,
+    /// The SNP interrupt-injection mode.
+    pub injection_type: &'a SnpInjectionType,
     /// The kernel, optional initrd, and bootshim resources.
     pub resources: &'a Resources,
 }
@@ -158,13 +162,17 @@ fn new_loader(
     policy: SnpPolicy,
     c_bit_position: u8,
     memory_page_count: u64,
+    injection_type: &SnpInjectionType,
 ) -> IgvmLoader<X86Register> {
     IgvmLoader::new_snp_linux_direct(SnpLinuxDirectConfig {
         policy,
         c_bit_mask: 1u64 << c_bit_position,
         ram_page_count: memory_page_count,
         vmsa_page: Some(KVM_VMSA_GPA / PAGE_SIZE),
-        injection_type: InjectionType::Normal,
+        injection_type: match injection_type {
+            SnpInjectionType::Normal => InjectionType::Normal,
+            SnpInjectionType::Restricted => InjectionType::Restricted,
+        },
     })
 }
 
@@ -177,6 +185,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         memory_page_count,
         c_bit_position,
         policy,
+        injection_type,
         resources,
     } = params;
 
@@ -184,7 +193,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
     let acpi_builder = layout.acpi_builder();
     let (mut kernel, mut initrd) = open_linux_resources(linux, resources)?;
     let initrd_config = initrd_config(&mut initrd)?;
-    let mut loader = new_loader(policy, c_bit_position, memory_page_count);
+    let mut loader = new_loader(policy, c_bit_position, memory_page_count, injection_type);
     let com1 = ComPort::Com1;
 
     let load_info = loader::linux::load_x86(
@@ -384,14 +393,21 @@ mod tests {
     const TEST_C_BIT_MASK: u64 = 1 << 51;
     const TEST_SHIM_ENTRY: u64 = 0x100000;
 
-    fn test_loader(ram_page_count: u64) -> IgvmLoader<X86Register> {
+    fn test_loader_with_injection(
+        ram_page_count: u64,
+        injection_type: InjectionType,
+    ) -> IgvmLoader<X86Register> {
         IgvmLoader::new_snp_linux_direct(SnpLinuxDirectConfig {
             policy: SnpPolicy::from(TEST_POLICY),
             c_bit_mask: TEST_C_BIT_MASK,
             ram_page_count,
             vmsa_page: Some(KVM_VMSA_GPA / PAGE_SIZE),
-            injection_type: InjectionType::Normal,
+            injection_type,
         })
+    }
+
+    fn test_loader(ram_page_count: u64) -> IgvmLoader<X86Register> {
+        test_loader_with_injection(ram_page_count, InjectionType::Normal)
     }
 
     fn import_test_registers(importer: &mut dyn ImageLoad<X86Register>, params_gpa: u64) {
@@ -595,6 +611,30 @@ mod tests {
         assert_eq!(vmsa.idtr.limit, 0xffff);
         assert_eq!(vmsa.x87_fcw, x86defs::xsave::INIT_FCW);
         assert_eq!(vmsa.mxcsr, x86defs::xsave::DEFAULT_MXCSR);
+    }
+
+    #[test]
+    fn normal_and_restricted_vmsas_use_the_selected_injection_mode() {
+        for (injection_type, restricted) in [
+            (InjectionType::Normal, false),
+            (InjectionType::Restricted, true),
+        ] {
+            let mut loader = test_loader_with_injection(1, injection_type);
+            import_test_registers(&mut loader.loader(), 0x6000);
+            let output = loader.finalize().unwrap();
+            let vmsa = output
+                .guest
+                .directives()
+                .iter()
+                .find_map(|directive| match directive {
+                    IgvmDirectiveHeader::SnpVpContext { vmsa, .. } => Some(vmsa),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(vmsa.sev_features.snp());
+            assert_eq!(vmsa.sev_features.restrict_injection(), restricted);
+            assert!(!vmsa.sev_features.alternate_injection());
+        }
     }
 
     #[test]

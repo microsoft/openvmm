@@ -211,7 +211,7 @@ impl<'a> MshvProtoPartition<'a> {
         Ok(MshvProtoPartition {
             config,
             #[cfg(guest_arch = "x86_64")]
-            snp_disable_cpuid_offload: false,
+            isolation: arch::MshvProtoPartitionIsolation::None,
             vmfd,
             vps,
             bsp,
@@ -232,18 +232,10 @@ pub fn is_available() -> Result<bool, Error> {
 pub struct MshvProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     #[cfg(guest_arch = "x86_64")]
-    snp_disable_cpuid_offload: bool,
+    isolation: arch::MshvProtoPartitionIsolation,
     vmfd: VmFd,
     vps: Vec<MshvVpInner>,
     bsp: VcpuFd,
-}
-
-#[cfg(guest_arch = "x86_64")]
-impl MshvProtoPartition<'_> {
-    fn with_snp_cpuid_offload_disabled(mut self, disabled: bool) -> Self {
-        self.snp_disable_cpuid_offload = disabled;
-        self
-    }
 }
 
 /// A partition running on the /dev/mshv hypervisor.
@@ -760,6 +752,38 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error("invalid MSHV configuration: {0}")]
     InvalidConfiguration(&'static str),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM requests unsupported highest VTL {0}")]
+    UnsupportedSnpVtl(u8),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM requests unsupported shared GPA boundary {0:#x}")]
+    UnsupportedSnpSharedGpaBoundary(u64),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("MSHV does not support SNP IGVM relocation")]
+    SnpIgvmRelocationUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM must contain exactly one BSP VP context")]
+    InvalidSnpIgvmTopology,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to parse the SNP IGVM VMSA")]
+    InvalidSnpIgvmVmsa,
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "unsupported SNP IGVM VMSA state: SEV features {sev_features:#x}, virtual TOM {virtual_tom:#x}"
+    )]
+    UnsupportedSnpIgvmVmsa { sev_features: u64, virtual_tom: u64 },
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM VMSA backing memory is not contiguous")]
+    InvalidSnpVmsaBacking,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM VMSA GPA {0:#x} is invalid")]
+    InvalidSnpVmsaGpa(u64),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM VMSA overlaps configured guest RAM")]
+    SnpVmsaOverlapsRam,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP VMSA import does not match the configured IGVM VP context")]
+    InvalidSnpVmsaImport,
     #[error("failed to stat /dev/mshv")]
     AvailableCheck(#[source] io::Error),
     #[cfg(guest_arch = "x86_64")]

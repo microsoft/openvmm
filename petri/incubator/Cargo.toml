@@ -10,6 +10,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 crossterm = { workspace = true, features = ["windows"] }
+fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 initrd_cpio.workspace = true

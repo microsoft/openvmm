@@ -193,6 +193,7 @@ impl SimpleFlowNode for Node {
                     built_artifacts,
                     is_repo_root: test_content_dir_as_repo_root,
                     needs_release_igvm,
+                    needs_incubator_profiles: needs_incubator,
                     done: v,
                 });
 

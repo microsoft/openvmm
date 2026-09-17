@@ -213,23 +213,18 @@ impl GuestEmulationTransportClient {
 
         Ok(platform_settings::DevicePlatformSettings {
             smbios: platform_settings::Smbios {
-                serial_number: json.v1.serial_number.into(),
-                base_board_serial_number: json.v1.base_board_serial_number.into(),
-                chassis_serial_number: json.v1.chassis_serial_number.into(),
-                chassis_asset_tag: json.v1.chassis_asset_tag.into(),
+                serial_number: json.v1.serial_number,
+                base_board_serial_number: json.v1.base_board_serial_number,
+                chassis_serial_number: json.v1.chassis_serial_number,
+                chassis_asset_tag: json.v1.chassis_asset_tag,
 
-                system_manufacturer: json.v2.r#static.smbios.system_manufacturer.into(),
-                system_product_name: json.v2.r#static.smbios.system_product_name.into(),
-                system_version: json.v2.r#static.smbios.system_version.into(),
-                system_sku_number: json.v2.r#static.smbios.system_sku_number.into(),
-                system_family: json.v2.r#static.smbios.system_family.into(),
-                bios_lock_string: json.v2.r#static.smbios.bios_lock_string.into(),
-                memory_device_serial_number: json
-                    .v2
-                    .r#static
-                    .smbios
-                    .memory_device_serial_number
-                    .into(),
+                system_manufacturer: json.v2.r#static.smbios.system_manufacturer,
+                system_product_name: json.v2.r#static.smbios.system_product_name,
+                system_version: json.v2.r#static.smbios.system_version,
+                system_sku_number: json.v2.r#static.smbios.system_sku_number,
+                system_family: json.v2.r#static.smbios.system_family,
+                bios_lock_string: json.v2.r#static.smbios.bios_lock_string,
+                memory_device_serial_number: json.v2.r#static.smbios.memory_device_serial_number,
                 processor_manufacturer: json.v2.dynamic.smbios.processor_manufacturer,
                 processor_version: json.v2.dynamic.smbios.processor_version,
                 processor_id: json.v2.dynamic.smbios.processor_id,

@@ -141,8 +141,8 @@ impl SimpleFlowNode for Node {
                 let xtask = rt.read(xtask);
                 let repo_path = rt.read(repo_path);
 
-                // guest_test_uefi is uefi-only, and is handled separately below
-                let mut exclude = vec!["guest_test_uefi".into()];
+                // These crates need to be checked for their UEFI targets below.
+                let mut exclude = vec!["guest_test_uefi".into(), "opentmk_executor".into()];
 
                 // packages depending on libfuzzer-sys are currently x86 only
                 if !(matches!(target.architecture, target_lexicon::Architecture::X86_64)
@@ -306,6 +306,20 @@ impl SimpleFlowNode for Node {
             reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
                 in_folder: openvmm_repo_path.clone(),
                 package: CargoPackage::Crate("guest_test_uefi".into()),
+                profile: profile.clone(),
+                features: CargoFeatureSet::All,
+                target: target_lexicon::triple!(uefi_target),
+                extra_env: None,
+                exclude: ReadVar::from_static(None),
+                keep_going: true,
+                all_targets: false,
+                pre_build_deps: pre_build_deps.clone(),
+                done: v,
+            }));
+
+            reqs.push(ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
+                in_folder: openvmm_repo_path.clone(),
+                package: CargoPackage::Crate("opentmk_executor".into()),
                 profile: profile.clone(),
                 features: CargoFeatureSet::All,
                 target: target_lexicon::triple!(uefi_target),
