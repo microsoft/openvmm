@@ -160,6 +160,7 @@
   - [OpenHCL Architecture](./reference/architecture/openhcl.md)
     - [Processes and Components](./reference/architecture/openhcl/processes.md)
     - [`openvmm_hcl`](./reference/architecture/openhcl/openvmm_hcl.md)
+    - [Attestation and VMGS Protection](./reference/architecture/openhcl/attestation.md)
     - [VMBus Relay and Device Interception](./reference/architecture/openhcl/vmbus.md)
     - [Storage Translation](./reference/architecture/openhcl/storage_translation.md)
     - [Storage Configuration Model](./reference/architecture/openhcl/storage_configuration.md)
