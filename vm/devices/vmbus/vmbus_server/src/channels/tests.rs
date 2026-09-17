@@ -2115,6 +2115,52 @@ fn test_channel_id_order() {
 }
 
 #[test]
+fn test_netvsp_channel_id_order() {
+    let mut env = TestEnv::new();
+    let interface_id = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
+    let primary_instance_id = guid::guid!("f8615163-0000-1000-2000-00155d121213");
+    let secondary_instance_id = guid::guid!("f8615163-0000-1000-2000-00155d121212");
+
+    assert!(secondary_instance_id < primary_instance_id);
+
+    for (instance_id, offer_order) in [(secondary_instance_id, 1), (primary_instance_id, 0)] {
+        env.c()
+            .offer_channel(OfferParamsInternal {
+                interface_id,
+                instance_id,
+                offer_order: Some(offer_order),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+
+    env.connect(Version::Win10, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+
+    env.notifier.check_messages([
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id,
+            instance_id: primary_instance_id,
+            channel_id: ChannelId(1),
+            connection_id: 0x2001,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id,
+            instance_id: secondary_instance_id,
+            channel_id: ChannelId(2),
+            connection_id: 0x2002,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::AllOffersDelivered {}),
+    ]);
+}
+
+#[test]
 fn test_channel_id_order_absolute() {
     let mut env = TestEnv::with_params(true, false);
 
