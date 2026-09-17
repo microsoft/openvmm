@@ -477,10 +477,15 @@ The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 **NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
 
 ```sh
+--net mac=00-15-5d-12-12-13:consomme
 --virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
 --net pcie_port=rp0:consomme
 --mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
 ```
+
+Use `mac=<XX-XX-XX-XX-XX-XX>:` to set the MAC address exposed to the guest.
+If it is omitted, OpenVMM generates a random MAC address. This prefix can be
+combined with the other NIC prefixes.
 
 **Filesystems and other virtio devices** (colon-prefixed):
 `--virtio-fs`, `--virtio-fs-shmem`, `--virtio-9p`, `--virtio-pmem`
