@@ -1,6 +1,11 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# Sends an Add SEL command through Linux's /dev/ipmi ioctl interface. Sysfs can
+# verify device discovery but cannot submit the command, and ipmitool is not
+# installed in the Petri Ubuntu image. This can be replaced by ipmitool if it
+# becomes a guaranteed image dependency, or by a dedicated Rust guest utility.
+
 import ctypes
 import os
 import select
@@ -8,6 +13,8 @@ import select
 IPMI_SYSTEM_INTERFACE_ADDR_TYPE = 0x0C
 IPMI_BMC_CHANNEL = 0x0F
 IPMI_RESPONSE_RECV_TYPE = 1
+IOC_WRITE = 1
+IOC_READ = 2
 
 
 class IpmiSystemInterfaceAddr(ctypes.Structure):
@@ -100,7 +107,9 @@ request = IpmiReq(
 
 fd = os.open(device_path, os.O_RDWR)
 try:
-    ioctl(fd, ioctl_code(2, 13, ctypes.sizeof(IpmiReq)), request)
+    # Linux defines IPMICTL_SEND_COMMAND with _IOR despite the command sending
+    # request data from userspace to the kernel.
+    ioctl(fd, ioctl_code(IOC_READ, 13, ctypes.sizeof(IpmiReq)), request)
     if not select.select([fd], [], [], 10)[0]:
         raise TimeoutError("timed out waiting for the Add SEL response")
 
@@ -113,7 +122,7 @@ try:
         0,
         IpmiMsg(0, 0, len(response_data), ctypes.addressof(response_data)),
     )
-    ioctl(fd, ioctl_code(3, 11, ctypes.sizeof(IpmiRecv)), response)
+    ioctl(fd, ioctl_code(IOC_READ | IOC_WRITE, 11, ctypes.sizeof(IpmiRecv)), response)
 
     data = bytes(response_data[: response.msg.data_len])
     if response.recv_type != IPMI_RESPONSE_RECV_TYPE:
