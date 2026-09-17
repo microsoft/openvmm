@@ -1,0 +1,46 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+import "google/protobuf/empty.proto";
+
+// Host PCI device assigned to the guest via Linux VFIO. Linux only. The device
+// must be bound to vfio-pci on the host before VM start.
+message VfioDevice {
+    // Host PCI address (BDF), e.g. "0000:01:00.0".
+    string host_pci_address = 1;
+    // BARs whose initial addresses are pinned. Omitted BARs are assigned by
+    // the guest normally.
+    repeated VfioBarAddress bar_addresses = 2;
+    // Use VFIO cdev + iommufd with the named VMConfig.iommufds context.
+    // Absent => legacy VFIO group/container assignment. A present value must
+    // be non-empty and reference a declared context; invalid references or
+    // unavailable iommufd support are errors, not a fallback to legacy VFIO.
+    // Applies to both boot-time attachment and AddVmPcieDevice.
+    optional string iommufd_id = 3;
+}
+
+// A host iommufd context for Linux VFIO cdev assignment. This does not
+// configure a guest-visible IOMMU. The server opens /dev/iommu; no client
+// file descriptor or kernel object ID is passed over the protocol.
+message IommufdConfig {
+    // Non-empty identifier, unique within VMConfig.iommufds. Devices using
+    // the same ID share an iommufd context and its DMA address space.
+    string id = 1;
+}
+
+// Initial address configuration for one VFIO device BAR.
+message VfioBarAddress {
+    // BAR index, from 0 through 5.
+    uint32 bar_index = 1;
+    oneof source {
+        // Use the physical BAR address reported by the host.
+        google.protobuf.Empty host = 2;
+        // Use an explicit host physical address.
+        uint64 fixed = 3;
+    }
+}

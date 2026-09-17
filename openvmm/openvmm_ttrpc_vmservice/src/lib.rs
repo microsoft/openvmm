@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Rust binadings to the `vmservice.proto` TTRPC API
+//! Rust bindings to the `vmservice.proto` TTRPC API
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
