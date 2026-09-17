@@ -19,11 +19,12 @@ use openssl::ec::EcKey;
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::convert::TryInto;
 use std::io::Read;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::{fs, fs::File, vec};
 use zerocopy::FromZeros;
 
@@ -433,9 +434,9 @@ fn create_vtpm_blob(
     }
 
     // Get the nv state of the TPM.
-    let nv_blob = nvm_state_blob.lock().unwrap().clone();
+    let nv_blob = nvm_state_blob.lock().clone();
     tracing::trace!("Retrieved NV blob size: {}", nv_blob.len());
-    nv_blob.to_vec()
+    nv_blob
 }
 
 /// Export the vTPM SRK public key to a file in TPM2B format.
@@ -1152,7 +1153,7 @@ fn print_vtpm_srk_pub_key_name(srkpub_path: String) {
     // Deserialize the srkpub to a public area.
     let public_key =
         Tpm2bPublic::deserialize(&srkpub_content_buf).expect("failed to deserialize srkpub");
-    let public_area: TpmtPublic = public_key.public_area.into();
+    let public_area: TpmtPublic = public_key.public_area;
     // Compute SHA256 hash of the public area
     let mut hasher = Sha256::new();
     hasher.update(public_area.serialize());
@@ -1192,7 +1193,7 @@ fn print_vtpm_srk_pub_key_name(srkpub_path: String) {
 
 /// Create random RSA or ECC key. Export the public public key to a file and private key in TPM2B format.
 fn create_random_key_in_tpm2_import_blob_format(
-    algorithm: &String,
+    algorithm: &str,
     public_key_file: &String,
     private_key_tpm2b_file: &String,
 ) {
@@ -1229,7 +1230,7 @@ fn create_random_key_in_tpm2_import_blob_format(
             );
             let private_key_der = pkey.private_key_to_der().unwrap();
 
-            print_sha256_hash(&private_key_der.as_slice());
+            print_sha256_hash(private_key_der.as_slice());
         }
         "ecc" => {
             // Create a random ECC P-256 key using openssl-sys crate.
@@ -1258,7 +1259,6 @@ fn create_random_key_in_tpm2_import_blob_format(
         }
         _ => {
             tracing::error!("Invalid algorithm. Supported algorithms are rsa and ecc.");
-            return;
         }
     }
 }
@@ -1478,7 +1478,6 @@ fn test_import_tpm2b_keys(public_key_file: &str, private_key_file: &str) {
     } else {
         // Try TPM2B format as last resort
         tracing::error!("Failed to parse public as DER formats...");
-        return;
     }
 }
 
@@ -1766,7 +1765,7 @@ fn import_sealed_key_blob_into_vtpm(vtpm_blob_path: &str, sealed_key_path: &str)
     }
 
     // Save the updated vTPM state back to the blob file
-    let updated_blob = nv_blob_accessor.lock().unwrap().clone();
+    let updated_blob = nv_blob_accessor.lock().clone();
 
     // Create backup of original blob
     let backup_path = format!("{}.backup", vtpm_blob_path);
@@ -1964,7 +1963,7 @@ fn create_exportable_rsa_key_template() -> TpmtPublic {
     rsa_params.scheme = TpmtRsaScheme::new_zeroed();
 
     // Set RSA parameters
-    key_template.parameters = TpmsRsaParams::from(rsa_params);
+    key_template.parameters = rsa_params;
 
     // No auth policy for simplicity
     key_template.auth_policy = Tpm2bBuffer::new_zeroed();
@@ -2040,8 +2039,8 @@ fn create_sealed_key_blob_v2_with_real_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vtpm_helper::TestPlatformCallbacks;
     use std::fs;
-    use std::path::Path;
 
     #[test]
     fn test_srk_template_generation() {

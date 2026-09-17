@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Marshal selected TPM structures used by cvmutil.
+//! TPM reference documents such as TPM-Rev-2.0-Part-2-Structures-01.38.pdf are a good source.
+
 use crate::Tpm2bPublic;
-///! Marshal TPM structures: selected ones only for our use case in cvmutil.
-///! TPM reference documents such as TPM-Rev-2.0-Part-2-Structures-01.38.pdf is a good source.
 use tpm_protocol::tpm20proto::AlgId;
 use tpm_protocol::tpm20proto::protocol::Tpm2bBuffer;
 use std::io;
@@ -225,7 +226,7 @@ impl AfSplitData {
             self.data.len() % self.stripes as usize
         );
 
-        if self.data.len() % self.stripes as usize != 0 {
+        if !self.data.len().is_multiple_of(self.stripes as usize) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -533,7 +534,7 @@ pub fn tpmt_sensitive_marshal(source: &TpmtSensitive) -> Result<Vec<u8>, io::Err
         sensitive_type_bytes.len(),
         sensitive_type_bytes
     );
-    buffer.extend_from_slice(&sensitive_type_bytes);
+    buffer.extend_from_slice(sensitive_type_bytes);
 
     // Marshal auth_value (TPM2B_AUTH) - size + data
     let auth_value_bytes = source.auth_value.serialize();

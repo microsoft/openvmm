@@ -1,13 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-///! TPM socket server implementation using vTPM blob as backing state
-///! This allows using standard TPM2 tools with a vTPM instance over TCP sockets.
+//! TPM socket server backed by a vTPM blob.
+//! This allows standard TPM2 tools to use a vTPM instance over TCP sockets.
+
+use parking_lot::Mutex;
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 use crate::vtpm_helper::{TpmEngineHelper, create_tpm_engine_helper};
@@ -78,10 +80,10 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
     let ctrl_addr = format!("{}:{}", host, ctrl_port);
 
     let data_listener = TcpListener::bind(&data_addr)
-        .expect(&format!("Failed to bind to data address: {}", data_addr));
+        .unwrap_or_else(|_| panic!("Failed to bind to data address: {}", data_addr));
 
     let ctrl_listener = TcpListener::bind(&ctrl_addr)
-        .expect(&format!("Failed to bind to control address: {}", ctrl_addr));
+        .unwrap_or_else(|_| panic!("Failed to bind to control address: {}", ctrl_addr));
 
     // Set non-blocking mode for graceful shutdown
     data_listener
@@ -161,7 +163,7 @@ fn parse_bind_address(bind_addr: &str) -> (String, u16) {
         let port_str = &bind_addr[colon_pos + 1..];
         let port = port_str
             .parse::<u16>()
-            .expect(&format!("Invalid port number: {}", port_str));
+            .unwrap_or_else(|_| panic!("Invalid port number: {}", port_str));
         (host, port)
     } else {
         panic!(
@@ -474,7 +476,7 @@ fn handle_tpm_data_client(
                 }
 
                 let resp = {
-                    let mut engine = tpm_engine.lock().unwrap();
+                    let mut engine = tpm_engine.lock();
                     process_tpm_command(&mut engine, &cmd_buf).unwrap_or_else(|e| {
                         tracing::error!("Exec error: {}", e);
                         // Minimal TPM error skeleton if desired; for now empty.

@@ -1222,6 +1222,7 @@ dependencies = [
  "hex",
  "ms-tpm-20-ref",
  "openssl",
+ "parking_lot",
  "sha2",
  "tempfile",
  "tpm_lib",

@@ -1,11 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Helper for creating and managing a TPM engine with in-memory NV state.
+
 use ms_tpm_20_ref::DynResult;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Instant;
-///! Helper to create and manage a TPM engine instance with in-memory NV state for testing.
 use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineError;
 
@@ -42,7 +44,7 @@ impl TpmEngine for CvmTpmEngine {
 }
 
 pub type TpmEngineHelper = tpm_lib::TpmEngineHelper<CvmTpmEngine>;
-struct TestPlatformCallbacks {
+pub(crate) struct TestPlatformCallbacks {
     blob: Vec<u8>,
     time: Instant,
     // Add shared access to the blob
@@ -50,7 +52,7 @@ struct TestPlatformCallbacks {
 }
 
 impl TestPlatformCallbacks {
-    fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
+    pub(crate) fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
         let shared_blob = Arc::new(Mutex::new(Vec::new()));
         let callbacks = TestPlatformCallbacks {
             blob: vec![],
@@ -66,7 +68,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TestPlatformCallbacks {
         tracing::trace!("committing nv state with len {}", state.len());
         self.blob = state.to_vec();
         // Also update the shared blob
-        *self.shared_blob.lock().unwrap() = state.to_vec();
+        *self.shared_blob.lock() = state.to_vec();
 
         Ok(())
     }
