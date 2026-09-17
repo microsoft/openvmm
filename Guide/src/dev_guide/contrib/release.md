@@ -77,6 +77,22 @@ policy is authoritative if the release cadence changes. When a new OpenHCL
 release ships, the release that is now three product releases behind moves out
 of service.
 
+### Backport acceptance bar
+
+Release branches accept security fixes and critical bug fixes only. A critical
+bug fix addresses one of the following:
+
+- A crash, data corruption, or data loss.
+- A severe reliability or availability regression.
+- A critical compatibility or servicing failure.
+- An issue that prevents a supported scenario from functioning.
+
+New features, routine performance improvements, cleanup, and refactoring are
+not accepted. A narrowly scoped prerequisite for an approved fix may be
+considered with the same level of scrutiny. Changes must land in `main` first
+and are selectively backported after assessing their risk to the serviced
+release.
+
 ### Release branch process
 
 In the label and tooling examples below, `<RELEASE>` is the suffix of the
