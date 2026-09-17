@@ -290,6 +290,12 @@ pub struct PlatformAttestationData {
     pub agent_data: Option<Vec<u8>>,
     /// The guest secret key.
     pub guest_secret_key: Option<Vec<u8>>,
+    /// Runtime-only floor collected from trusted local boot reports, without
+    /// extra hardware calls. Retained across SKR errors and unlock retries.
+    /// `None` means unsupported/disabled sealing, no report, or a malformed,
+    /// incompatible, or lowered observation. In that case runtime hardware
+    /// resealing must stay disabled; do not lazily initialize after an event.
+    pub runtime_tcb_floor: Option<runtime_sealing::RuntimeTcbFloor>,
 }
 
 /// The attestation type to use.
@@ -322,6 +328,7 @@ async fn try_unlock_vmgs(
     require_hardware_sealing: bool,
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
     key_protector_by_id: &mut KeyProtectorById,
+    boot_tcb_floor: &mut runtime_sealing::BootTcbFloor,
 ) -> Result<bool, (AttestationErrorInner, bool)> {
     let skr_response = if let Some(tee_call) = tee_call {
         if !require_hardware_sealing {
@@ -333,6 +340,7 @@ async fn try_unlock_vmgs(
                 vmgs,
                 attestation_vm_config,
                 agent_data,
+                boot_tcb_floor,
             )
             .await
         } else {
@@ -344,6 +352,7 @@ async fn try_unlock_vmgs(
             let report = tee_call
                 .get_attestation_report(&[0; REPORT_DATA_SIZE])
                 .map_err(|e| (AttestationErrorInner::GetAttestationReport(e), false))?;
+            boot_tcb_floor.observe(tee_call, &report);
 
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: None,
@@ -672,6 +681,7 @@ pub async fn initialize_platform_security(
             },
             agent_data: Some(agent_data.to_vec()),
             guest_secret_key: None,
+            runtime_tcb_floor: None,
         });
     }
 
@@ -727,6 +737,9 @@ pub async fn initialize_platform_security(
 
     let mut timer = pal_async::timer::PolledTimer::new(&driver);
     let mut i = 0;
+    // Observe existing reports at their source, independently of SKR success.
+    // Never recreate this collector on retry or request a fallback report.
+    let mut boot_tcb_floor = runtime_sealing::BootTcbFloor::new(tee_call, attestation_vm_config);
 
     let state_refresh_request_from_gsp = loop {
         tracing::info!(CVM_ALLOWED, attempt = i, "attempt to unlock VMGS file");
@@ -742,6 +755,7 @@ pub async fn initialize_platform_security(
             require_hardware_sealing,
             &mut agent_data,
             &mut key_protector_by_id,
+            &mut boot_tcb_floor,
         )
         .await;
 
@@ -782,6 +796,7 @@ pub async fn initialize_platform_security(
         host_attestation_settings,
         agent_data: Some(agent_data.to_vec()),
         guest_secret_key,
+        runtime_tcb_floor: boot_tcb_floor.finish(),
     })
 }
 
@@ -2013,11 +2028,92 @@ mod tests {
             vm_unique_id: String::new(),
             vmgs_provisioner: None,
             hardware_sealing_policy: HardwareSealingPolicy::None,
+            }
+            }
+
+    /// Models a trusted local SNP report with real ABI offsets, independently
+    /// of the deliberately opaque reports used by the older SKR fixtures.
+    struct BootReportTee {
+        inner: MockTeeCall,
+        report_data: parking_lot::Mutex<Vec<[u8; REPORT_DATA_SIZE]>>,
+        malformed: bool,
+    }
+
+    impl BootReportTee {
+        fn new() -> Self {
+            Self {
+                inner: MockTeeCall::new([0x12; 32]),
+                report_data: parking_lot::Mutex::new(Vec::new()),
+                malformed: false,
+            }
+        }
+    }
+
+    impl TeeCall for BootReportTee {
+        fn get_attestation_report(
+            &self,
+            report_data: &[u8; REPORT_DATA_SIZE],
+        ) -> Result<tee_call::GetAttestationReportResult, tee_call::Error> {
+            self.report_data.lock().push(*report_data);
+            let mut report = vec![0; 1184];
+            report[..4].copy_from_slice(&3u32.to_le_bytes());
+            report[0x50..0x50 + REPORT_DATA_SIZE].copy_from_slice(report_data);
+            report[0x180..0x188].copy_from_slice(&self.inner.tcb_version.to_le_bytes());
+            report[0x188] = 0x19;
+            if self.malformed {
+                report.truncate(1183);
+            }
+            Ok(tee_call::GetAttestationReportResult {
+                report,
+                key_derivation_svn: Some(tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: self.inner.tcb_version,
+                }),
+            })
+        }
+
+        fn supports_get_derived_key(&self) -> Option<&dyn tee_call::TeeCallGetDerivedKey> {
+            self.inner.supports_get_derived_key()
+        }
+
+        fn tee_type(&self) -> TeeType {
+            TeeType::Snp
         }
     }
 
     fn new_test_file() -> Disk {
         ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
+    }
+
+    /// Supplies exactly one trusted report per unlock attempt, while retaining
+    /// the existing mock's hardware-key derivation and claims-hash recording.
+    struct SequencedBootReportTee {
+        inner: BootReportTee,
+        report_svns: parking_lot::Mutex<VecDeque<u64>>,
+    }
+
+    impl TeeCall for SequencedBootReportTee {
+        fn get_attestation_report(
+            &self,
+            report_data: &[u8; REPORT_DATA_SIZE],
+        ) -> Result<tee_call::GetAttestationReportResult, tee_call::Error> {
+            let tcb_version = self
+                .report_svns
+                .lock()
+                .pop_front()
+                .expect("unexpected extra boot report acquisition");
+            let mut result = self.inner.get_attestation_report(report_data)?;
+            result.report[0x180..0x188].copy_from_slice(&tcb_version.to_le_bytes());
+            result.key_derivation_svn = Some(tee_call::KeyDerivationSvn::Snp { tcb_version });
+            Ok(result)
+        }
+
+        fn supports_get_derived_key(&self) -> Option<&dyn tee_call::TeeCallGetDerivedKey> {
+            self.inner.supports_get_derived_key()
+        }
+
+        fn tee_type(&self) -> TeeType {
+            self.inner.tee_type()
+        }
     }
 
     async fn new_formatted_vmgs() -> Vmgs {
@@ -3171,6 +3267,328 @@ mod tests {
     }
 
     // --- initialize_platform_security tests ---
+
+    fn init_sec_with_retry_reports(
+        report_svns: [u64; 2],
+    ) -> (
+        Option<runtime_sealing::RuntimeTcbFloor>,
+        [u8; AES_GCM_KEY_LENGTH],
+    ) {
+        // GET tasks need their own running executor. Keep the local executor
+        // alive around initialization itself so its real one-second retry timer
+        // progresses, rather than returning an orphaned LocalDriver.
+        let (get_thread, driver) = pal_async::DefaultPool::spawn_on_thread("boot-report-retry-get");
+        let result = pal_async::local::block_with_io(async |ldriver| {
+            let mut plan = IgvmAgentTestPlan::default();
+            plan.insert(
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    // RespondFailure and RespondFailureSkipHwUnsealing both
+                    // explicitly set retry=false. NoResponse completes GET
+                    // with an empty response, producing a retryable parse error.
+                    IgvmAgentAction::NoResponse,
+                    IgvmAgentAction::RespondSuccess,
+                ]),
+            );
+            let get_pair = new_test_get(driver, true, Some(plan)).await;
+            let bios_guid = Guid::new_random();
+            let mut config = new_attestation_vm_config();
+            config.hardware_sealing_policy = HardwareSealingPolicy::Hash;
+            let disk = new_test_file();
+            let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+            let provision_tee = BootReportTee::new();
+
+            // Provisioning is setup only: neither its report nor its collector
+            // participates in the single retried initialization below.
+            let provisioned = initialize_platform_security(
+                &get_pair.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&provision_tee),
+                false,
+                ldriver.clone(),
+                GuestStateEncryptionPolicy::Auto,
+                true,
+            )
+            .await
+            .unwrap();
+            assert!(provisioned.runtime_tcb_floor.is_some());
+            assert_eq!(provision_tee.report_data.lock().len(), 1);
+            assert!(vmgs.encrypted());
+            assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
+
+            // A working hardware backup would make the first failed SKR
+            // attempt succeed without retrying. Remove only that backup and
+            // reopen the encrypted store to require an actual SKR unlock.
+            vmgs.delete_file(FileId::HW_KEY_PROTECTOR).await.unwrap();
+            vmgs.flush().await.unwrap();
+            drop(vmgs);
+            let mut vmgs = Vmgs::open(disk, None).await.unwrap();
+            assert!(vmgs.encrypted());
+            assert!(matches!(
+                vmgs.active_encryption_key(),
+                Err(::vmgs::Error::NeedsUnlock)
+            ));
+            assert!(hardware_key_protector_is_empty(&mut vmgs).await);
+
+            let tee = SequencedBootReportTee {
+                inner: BootReportTee::new(),
+                report_svns: parking_lot::Mutex::new(report_svns.into()),
+            };
+            let recovered = initialize_platform_security(
+                &get_pair.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                false,
+                ldriver,
+                GuestStateEncryptionPolicy::Auto,
+                true,
+            )
+            .await
+            .unwrap();
+
+            // Both attempts belong to the invocation above. No collector or
+            // fallback report may be requested, and both keep their SKR hash.
+            assert!(tee.report_svns.lock().is_empty());
+            {
+                let reports = tee.inner.report_data.lock();
+                assert_eq!(reports.len(), 2);
+                assert!(reports.iter().all(|data| *data != [0; REPORT_DATA_SIZE]));
+            }
+            assert_eq!(provision_tee.report_data.lock().len(), 1);
+            assert!(vmgs.encrypted());
+            let active_dek = *vmgs.active_encryption_key().unwrap();
+
+            // Boot sealing still uses the successful report's SVN, including
+            // a lower SVN, rather than substituting the runtime collector's
+            // high-water mark or making that collector's failure fatal.
+            let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+            let policy = protector.key_derivation_policy().unwrap();
+            assert!(policy.mix_measurement);
+            assert!(matches!(
+                policy.svn,
+                tee_call::KeyDerivationSvn::Snp { tcb_version } if tcb_version == report_svns[1]
+            ));
+            let keys = HardwareDerivedKeys::derive_key(
+                tee.supports_get_derived_key().unwrap(),
+                &config,
+                policy,
+            )
+            .unwrap();
+            assert_eq!(protector.unseal_key(&keys).unwrap(), active_dek);
+            vmgs.unlock_with_encryption_key(&active_dek).await.unwrap();
+
+            (recovered.runtime_tcb_floor, active_dek)
+        });
+        get_thread.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn init_sec_retry_high_then_lower_svn_succeeds_without_runtime_floor() {
+        let (floor, _) = init_sec_with_retry_reports([0x1235, 0x1234]);
+        // Recreating the collector on retry, or observing only successful SKR
+        // reports, would incorrectly export the second (lower) report here.
+        assert!(floor.is_none());
+    }
+
+    #[test]
+    fn init_sec_retry_low_then_higher_svn_exports_highest_runtime_floor() {
+        let (floor, active_dek) = init_sec_with_retry_reports([0x1234, 0x1235]);
+        let mut floor = floor.unwrap();
+        let mut config = new_attestation_vm_config();
+        config.hardware_sealing_policy = HardwareSealingPolicy::Hash;
+
+        // Use a separate runtime TEE so these intentional fresh reports cannot
+        // hide extra boot report acquisitions in the two-attempt assertion.
+        let mut tee = BootReportTee::new();
+        let err = floor
+            .create_protector(&tee, &config, &active_dek)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "local TCB has a component below the runtime floor"
+        );
+        tee.inner.tcb_version = 0x1235;
+        let protector = floor.create_protector(&tee, &config, &active_dek).unwrap();
+        assert!(
+            runtime_sealing::protector_matches(&tee, &config, &protector, &active_dek).unwrap()
+        );
+        assert_eq!(&*tee.report_data.lock(), &[[0; REPORT_DATA_SIZE]; 2]);
+    }
+
+    #[async_test]
+    async fn init_sec_hardware_cached_lower_svn_preserves_boot_policy(driver: DefaultDriver) {
+        let get_pair = new_test_get(driver, false, None).await;
+        for malformed in [false, true] {
+            let mut vmgs = new_formatted_vmgs().await;
+            let bootstrap = [0x33; AES_GCM_KEY_LENGTH];
+            vmgs.test_add_new_encryption_key(&bootstrap, EncryptionAlgorithm::AES_GCM)
+                .await
+                .unwrap();
+            let mut tee = BootReportTee::new();
+            let mut config = new_attestation_vm_config();
+            config.hardware_sealing_policy = HardwareSealingPolicy::Hash;
+            let cached_svn = tee.inner.tcb_version;
+            let keys = HardwareDerivedKeys::derive_key(
+                tee.supports_get_derived_key().unwrap(),
+                &config,
+                KeyDerivationPolicy {
+                    svn: tee_call::KeyDerivationSvn::Snp {
+                        tcb_version: cached_svn,
+                    },
+                    mix_measurement: true,
+                },
+            )
+            .unwrap();
+            let protector = hardware_key_sealing::seal_key(&keys, &bootstrap).unwrap();
+            vmgs::write_hardware_key_protector(&protector, &mut vmgs)
+                .await
+                .unwrap();
+
+            // Current hardware has advanced, but the boot unseal/rotation path
+            // must continue using the older cached policy, not the runtime floor.
+            tee.inner.tcb_version += 1;
+            tee.malformed = malformed;
+            let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+            let result = initialize_platform_security(
+                &get_pair.client,
+                Guid::new_random(),
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                true,
+                ldriver,
+                GuestStateEncryptionPolicy::HardwareSealing,
+                true,
+            )
+            .await
+            .unwrap();
+            assert!(vmgs.encrypted());
+            assert!(!result.host_attestation_settings.refresh_tpm_seeds);
+            // Exactly the original hardware-only report; no collector report.
+            assert_eq!(&*tee.report_data.lock(), &[[0; REPORT_DATA_SIZE]]);
+            let rotated = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+            assert!(matches!(
+                rotated.key_derivation_policy().unwrap().svn,
+                tee_call::KeyDerivationSvn::Snp { tcb_version } if tcb_version == cached_svn
+            ));
+            let active_dek = rotated.unseal_key(&keys).unwrap();
+            vmgs.unlock_with_encryption_key(&active_dek).await.unwrap();
+
+            if malformed {
+                // Collection failure must not make a previously valid boot fail.
+                assert!(result.runtime_tcb_floor.is_none());
+            } else {
+                let mut floor = result.runtime_tcb_floor.unwrap();
+                tee.inner.tcb_version = cached_svn;
+                let err = floor
+                    .create_protector(&tee, &config, &active_dek)
+                    .unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    "local TCB has a component below the runtime floor"
+                );
+            }
+        }
+    }
+
+    #[async_test]
+    async fn init_sec_skr_failure_hardware_fallback_exports_existing_report(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+        let mut plan = IgvmAgentTestPlan::default();
+        plan.insert(
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+            VecDeque::from([
+                IgvmAgentAction::RespondSuccess,
+                IgvmAgentAction::RespondFailure,
+            ]),
+        );
+        let get_pair = new_test_get(driver, true, Some(plan)).await;
+        let bios_guid = Guid::new_random();
+        let mut config = new_attestation_vm_config();
+        config.hardware_sealing_policy = HardwareSealingPolicy::Hash;
+        let mut tee = BootReportTee::new();
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let first = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &config,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(first.runtime_tcb_floor.is_some());
+        assert_eq!(tee.report_data.lock().len(), 1);
+        assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
+
+        // SKR fails after report acquisition on the next boot. The fallback
+        // unseals at the cached SVN, but must export the newer observed floor.
+        let cached_svn = tee.inner.tcb_version;
+        tee.inner.tcb_version += 1;
+        let recovered = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &config,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(vmgs.encrypted());
+        {
+            let reports = tee.report_data.lock();
+            assert_eq!(reports.len(), 2);
+            // Both reports retain their SKR claims hashes, not zero report_data.
+            assert!(reports.iter().all(|data| *data != [0; REPORT_DATA_SIZE]));
+        }
+        let mut floor = recovered.runtime_tcb_floor.unwrap();
+        tee.inner.tcb_version = cached_svn;
+        let err = floor.create_protector(&tee, &config, &[0; 32]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "local TCB has a component below the runtime floor"
+        );
+    }
+
+    #[async_test]
+    async fn init_sec_suppressed_eligible_tee_does_not_bootstrap_floor(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+        let get_pair = new_test_get(driver, false, None).await;
+        let tee = BootReportTee::new();
+        let mut config = new_attestation_vm_config();
+        config.hardware_sealing_policy = HardwareSealingPolicy::Hash;
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let result = initialize_platform_security(
+            &get_pair.client,
+            Guid::new_random(),
+            &config,
+            &mut vmgs,
+            Some(&tee),
+            true,
+            ldriver,
+            GuestStateEncryptionPolicy::None,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(result.runtime_tcb_floor.is_none());
+        assert!(tee.report_data.lock().is_empty());
+        assert!(!vmgs.encrypted());
+    }
 
     #[async_test]
     async fn init_sec_suppress_attestation(driver: DefaultDriver) {

@@ -139,12 +139,13 @@ pub struct VmgsEncryptionKeys {
 }
 
 /// Request the VMGS encryption keys via host call-outs with optional retry logic.
-pub async fn request_vmgs_encryption_keys(
+pub(crate) async fn request_vmgs_encryption_keys(
     get: &GuestEmulationTransportClient,
     tee_call: &dyn TeeCall,
     vmgs: &Vmgs,
     attestation_vm_config: &AttestationVmConfig,
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
+    boot_tcb_floor: &mut crate::runtime_sealing::BootTcbFloor,
 ) -> Result<VmgsEncryptionKeys, (RequestVmgsEncryptionKeysError, bool)> {
     const TRANSFER_RSA_KEY_BITS: u32 = 2048;
 
@@ -180,6 +181,10 @@ pub async fn request_vmgs_encryption_keys(
                 false,
             )
         })?;
+
+    // Capture trusted local metadata before any host response or RSA unwrap
+    // failure. Keep the original claims-bound report and boot SVN behavior.
+    boot_tcb_floor.observe(tee_call, &result);
 
     // Get tenant keys based on attestation results, this might fail.
     match make_igvm_attest_requests(

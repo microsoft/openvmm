@@ -7,6 +7,15 @@
 //! supplies the active DEK and is responsible for persisting a replacement
 //! protector. Hardware-derived keys are freshly obtained on every operation;
 //! they must not be cached across migration, even when the SVN is unchanged.
+//!
+//! Runtime recovery must use a resident [`RuntimeTcbFloor`], initialized from
+//! trusted local hardware before worker events are accepted. The stateless
+//! helpers below do not enforce a runtime TCB floor.
+
+mod tcb_floor;
+
+pub(crate) use tcb_floor::BootTcbFloor;
+pub use tcb_floor::RuntimeTcbFloor;
 
 use crate::hardware_key_sealing::HardwareDerivedKeys;
 use crate::hardware_key_sealing::HardwareDerivedKeysError;
@@ -46,6 +55,14 @@ enum ErrorInner {
     MissingKeyDerivationSvn,
     #[error("local report key derivation SVN does not match the TEE")]
     ReportSvnMismatch,
+    #[error("local SNP report is malformed or truncated")]
+    MalformedReport,
+    #[error("local SNP report TCB does not match its key derivation SVN")]
+    ReportTcbMismatch,
+    #[error("local TCB has a component below the runtime floor")]
+    TcbLowered,
+    #[error("local TCB is incompatible with the runtime floor comparison domain")]
+    TcbIncompatible,
     #[error("failed to freshly derive hardware sealing keys")]
     Derive(#[source] HardwareDerivedKeysError),
     #[error("failed to unseal the hardware protector")]
@@ -123,6 +140,8 @@ fn validated_policy(protector: &HwKeyProtector) -> Option<KeyDerivationPolicy> {
 /// crypto operational failures return `Err`, not a mismatch. An unavailable
 /// source SVN is a derivation error: the caller may explicitly retry by creating
 /// a protector with the destination's current SVN. No derived keys are cached.
+/// This stateless helper does not obtain a report or enforce a runtime TCB floor;
+/// runtime candidate verification must use [`RuntimeTcbFloor::verify_protector`].
 pub fn protector_matches(
     tee: &dyn TeeCall,
     config: &AttestationVmConfig,
@@ -158,6 +177,10 @@ pub fn protector_matches(
 /// Disabled sealing, unsupported TEEs, TDX signer policy, missing or incompatible
 /// report SVN, and report/derivation/sealing failures return `Err`. No fallback
 /// policy or remote key release is attempted.
+///
+/// This stateless compatibility helper enforces **no runtime TCB floor** and
+/// does not validate the raw SNP comparison domain. Runtime recovery must use
+/// [`RuntimeTcbFloor::create_protector`] instead.
 pub fn create_protector(
     tee: &dyn TeeCall,
     config: &AttestationVmConfig,
@@ -173,6 +196,18 @@ pub fn create_protector(
     if !svn_matches_tee(svn, tee.tee_type()) {
         return Err(Error(ErrorInner::ReportSvnMismatch));
     }
+    create_protector_with_svn(hardware, config, svn, mix_measurement, dek)
+}
+
+/// Seal with the already observed SVN, without fetching another report. The
+/// runtime caller must have committed its floor ratchet before entering here.
+fn create_protector_with_svn(
+    hardware: &dyn TeeCallGetDerivedKey,
+    config: &AttestationVmConfig,
+    svn: KeyDerivationSvn,
+    mix_measurement: bool,
+    dek: &[u8; 32],
+) -> Result<Vec<u8>, Error> {
     let keys = HardwareDerivedKeys::derive_key(
         hardware,
         config,
