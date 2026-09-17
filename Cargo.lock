@@ -3917,6 +3917,9 @@ dependencies = [
  "fs-err",
  "igvm",
  "igvm_defs",
+ "resource_dll_parser",
+ "tempfile",
+ "test_with_tracing",
  "tracing-subscriber",
  "zerocopy",
 ]

@@ -9,35 +9,38 @@
 #![forbid(unsafe_code)]
 
 mod extract;
+mod image;
 
 use anyhow::Context;
 use clap::Parser;
 use igvm::IgvmFile;
 use igvm_defs::IGVM_FIXED_HEADER;
+pub(crate) use image::read_igvm_image;
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
 use zerocopy::FromBytes;
-use zerocopy::IntoBytes;
 
 #[derive(Parser)]
 #[clap(name = "igvminspect", about = "Tool to inspect IGVM files")]
 enum Options {
     /// Dumps the contents of an IGVM file in a human-readable format
     Dump {
-        /// Dump file path
+        /// IGVM file or firmware resource DLL to dump
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
     },
     /// Extract the constituent parts of an IGVM file into a directory tree
     Extract {
-        /// IGVM file to extract
+        /// IGVM file or firmware resource DLL to extract
         #[clap(short, long)]
         file: PathBuf,
         /// Map file (.bin.map) for the IGVM file
         #[clap(short, long)]
         map: Option<PathBuf>,
-        /// Output directory to write the extracted parts into
+        /// New output directory to write the extracted parts into (must not exist)
         #[clap(short, long)]
         output: PathBuf,
     },
@@ -57,20 +60,24 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match opts {
-        Options::Dump { file_path } => {
-            let image = fs_err::read(file_path).context("reading input file")?;
-            let (fixed_header, _) = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())
-                .map_err(|e| anyhow::anyhow!("invalid IGVM fixed header: {e}"))?;
-
-            let igvm_data = IgvmFile::new_from_binary(&image, None)
-                .map_err(|e| anyhow::anyhow!("failed to parse IGVM file: {e:?}"))?;
-            println!("Total file size: {} bytes\n", fixed_header.total_file_size);
-            println!("{:#X?}", fixed_header);
-            println!("{}", igvm_data);
-            Ok(())
-        }
+        Options::Dump { file_path } => dump_igvm_file(&file_path, std::io::stdout().lock()),
         Options::Extract { file, map, output } => {
             extract::extract_igvm_file(&file, map.as_deref(), &output)
         }
     }
+}
+
+fn dump_igvm_file(file_path: &Path, mut output: impl Write) -> anyhow::Result<()> {
+    let image = read_igvm_image(file_path)?;
+    let (fixed_header, _) = IGVM_FIXED_HEADER::read_from_prefix(image.as_slice())
+        .map_err(|e| anyhow::anyhow!("invalid IGVM fixed header: {e}"))?;
+    let igvm_data = IgvmFile::new_from_binary(&image, None)
+        .with_context(|| format!("parsing IGVM file {}", file_path.display()))?;
+
+    writeln!(
+        output,
+        "Total file size: {} bytes\n\n{:#X?}\n{}",
+        fixed_header.total_file_size, fixed_header, igvm_data
+    )
+    .context("writing IGVM dump")
 }
