@@ -240,8 +240,7 @@ message VmConfig {
     NumaConfig numa_config = 10;
     // PCIe root complexes / ports / switches.
     PcieTopologyConfig pcie = 11;
-    // Actions to take on guest power events. Each unset action uses its
-    // default.
+    // Actions to take on guest power events.
     GuestPowerActions guest_power_actions = 12;
 
     // SMBIOS (DMI) identity overrides. Applied to whichever boot type is
