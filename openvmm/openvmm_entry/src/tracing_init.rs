@@ -10,10 +10,6 @@ use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::fmt::time::uptime;
-#[cfg(windows)]
-use tracing_subscriber::layer::Context as LayerContext;
-#[cfg(windows)]
-use tracing_subscriber::registry::LookupSpan;
 
 const PERF_TARGET: &str = "openvmm::perf";
 const PERF_TARGET_PREFIX: &str = "openvmm::perf::";
@@ -42,70 +38,12 @@ fn legacy_openvmm_env(name: &str) -> Result<String, std::env::VarError> {
 
 fn exclude_perf_targets() -> FilterFn<fn(&tracing::Metadata<'_>) -> bool> {
     fn enabled(metadata: &tracing::Metadata<'_>) -> bool {
-        !is_perf_target(metadata)
+        let target = metadata.target();
+
+        target != PERF_TARGET && !target.starts_with(PERF_TARGET_PREFIX)
     }
 
     filter_fn(enabled)
-}
-
-fn is_perf_target(metadata: &tracing::Metadata<'_>) -> bool {
-    let target = metadata.target();
-    target == PERF_TARGET || target.starts_with(PERF_TARGET_PREFIX)
-}
-
-/// Suppresses performance spans without hiding them from the ETW layer's context.
-///
-/// `win_etw_tracing` expects every contextual parent span to remain visible,
-/// even when that parent is not emitted to ETW.
-#[cfg(windows)]
-struct PerfFilteredEtwLayer {
-    inner: win_etw_tracing::TracelogSubscriber,
-}
-
-#[cfg(windows)]
-impl<S> tracing_subscriber::Layer<S> for PerfFilteredEtwLayer
-where
-    S: tracing::Subscriber + for<'span> LookupSpan<'span>,
-{
-    fn on_new_span(
-        &self,
-        attrs: &tracing::span::Attributes<'_>,
-        id: &tracing::Id,
-        ctx: LayerContext<'_, S>,
-    ) {
-        if !is_perf_target(attrs.metadata()) {
-            self.inner.on_new_span(attrs, id, ctx);
-        }
-    }
-
-    fn on_record(
-        &self,
-        id: &tracing::Id,
-        values: &tracing::span::Record<'_>,
-        ctx: LayerContext<'_, S>,
-    ) {
-        let is_perf = ctx
-            .span(id)
-            .is_some_and(|span| is_perf_target(span.metadata()));
-        if !is_perf {
-            self.inner.on_record(id, values, ctx);
-        }
-    }
-
-    fn on_event(&self, event: &tracing::Event<'_>, ctx: LayerContext<'_, S>) {
-        if !is_perf_target(event.metadata()) {
-            self.inner.on_event(event, ctx);
-        }
-    }
-
-    fn on_close(&self, id: tracing::Id, ctx: LayerContext<'_, S>) {
-        let is_perf = ctx
-            .span(&id)
-            .is_some_and(|span| is_perf_target(span.metadata()));
-        if !is_perf {
-            self.inner.on_close(id, ctx);
-        }
-    }
 }
 
 /// Enables tracing output to stderr.
@@ -187,7 +125,7 @@ pub fn enable_tracing() -> anyhow::Result<TracingGuard> {
         // Set a keyword for events at "trace" level to distinguish them from "debug" level events,
         // since both are logged at the ETW "Verbose" level.
         etw.set_trace_keyword(OPENVMM_KEYWORD_TRACE_LEVEL);
-        sub.with(PerfFilteredEtwLayer { inner: etw })
+        sub.with(etw)
     };
 
     sub.try_init()
