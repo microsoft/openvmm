@@ -1142,6 +1142,11 @@ impl NicBuilder {
         self
     }
 
+    /// Sets the VMBus offer order for this NIC. Lower values sort first among
+    /// pending offers with the same interface ID; instance IDs break ties.
+    ///
+    /// The default is `None`, which sorts as `u64::MAX` and results in instance-ID
+    /// ordering.
     pub fn offer_order(mut self, offer_order: u64) -> Self {
         self.offer_order = Some(offer_order);
         self

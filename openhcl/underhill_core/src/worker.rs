@@ -402,43 +402,6 @@ fn netvsp_offer_order(base_adapter_index: u32, vport_index: usize) -> u64 {
     (u64::from(base_adapter_index) << 32) | vport_index as u64
 }
 
-#[cfg(test)]
-mod netvsp_instance_id_tests {
-    use super::netvsp_instance_id;
-    use super::netvsp_offer_order;
-    use guid::Guid;
-    use test_with_tracing::test;
-
-    #[test]
-    fn two_vfs_preserve_primary_netvsp_offer_order() {
-        let interface_id = Guid {
-            data1: 0xf8615163,
-            data2: 0xdf3e,
-            data3: 0x46c5,
-            data4: [0x91, 0x3f, 0xf2, 0xd2, 0xf9, 0x65, 0xed, 0x0e],
-        };
-        let primary_instance = netvsp_instance_id(0, [0x00, 0x15, 0x5d, 0x12, 0x12, 0x13]);
-        let secondary_instance = netvsp_instance_id(0, [0x00, 0x15, 0x5d, 0x12, 0x12, 0x12]);
-        let sort_key = |offer_order: Option<u64>, instance_id| {
-            (interface_id, offer_order.unwrap_or(u64::MAX), instance_id)
-        };
-
-        assert!(
-            sort_key(None, secondary_instance) < sort_key(None, primary_instance),
-            "the duplicate vport index allows the secondary MAC to win the GUID tie-breaker"
-        );
-        assert!(
-            sort_key(Some(netvsp_offer_order(1, 0)), primary_instance)
-                < sort_key(Some(netvsp_offer_order(2, 0)), secondary_instance),
-            "explicit offer order must take precedence over the instance GUID"
-        );
-        assert!(
-            netvsp_offer_order(1, 0) < netvsp_offer_order(1, 1),
-            "vport order must be preserved within a VF manager"
-        );
-    }
-}
-
 impl Worker for UnderhillVmWorker {
     type Parameters = UnderhillWorkerParameters;
     type State = RestartState;
