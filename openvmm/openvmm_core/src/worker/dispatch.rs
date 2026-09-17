@@ -93,6 +93,7 @@ use pal_async::DefaultPool;
 use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use pci_core::PciInterruptPin;
 use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
@@ -103,9 +104,12 @@ use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::fs::File;
+use std::future::Future;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
+use tpm_resources::TpmVersion;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -176,6 +180,23 @@ use watchdog_core::resources::StaticWatchdogPlatformResolver;
 const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
+const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+enum VpciEjectResult {
+    Complete(anyhow::Result<()>),
+    TimedOut,
+}
+
+async fn wait_for_vpci_eject(
+    driver: &(impl pal_async::driver::Driver + ?Sized),
+    eject: impl Future<Output = anyhow::Result<()>>,
+    grace_period: Duration,
+) -> VpciEjectResult {
+    let eject = eject.map(VpciEjectResult::Complete);
+    let mut timer = PolledTimer::new(driver);
+    let timeout = timer.sleep(grace_period).map(|_| VpciEjectResult::TimedOut);
+    (eject, timeout).race().await
+}
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
@@ -189,6 +210,7 @@ impl Manifest {
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
+            pcie_ecam_below_4gb: config.pcie_ecam_below_4gb,
             pcie_devices: config.pcie_devices,
             pcie_switches: config.pcie_switches,
             pcie_generic_initiators: config.pcie_generic_initiators,
@@ -232,6 +254,7 @@ pub struct Manifest {
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pcie_ecam_below_4gb: bool,
     pcie_devices: Vec<PcieDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
     pcie_generic_initiators: Vec<openvmm_defs::config::PcieGenericInitiatorConfig>,
@@ -406,7 +429,7 @@ enum ResolvedIommu {
     None,
     /// Arm SMMUv3 resources, one per instance.
     #[cfg(guest_arch = "aarch64")]
-    Smmu(Vec<smmu_wiring::ResolvedSmmuResources>),
+    Smmu(smmu_wiring::ResolvedSmmu),
     /// AMD IOMMU resources, one per instance.
     #[cfg(guest_arch = "x86_64")]
     AmdVi(Vec<amd_iommu_wiring::ResolvedIommuResources>),
@@ -671,7 +694,6 @@ fn build_aarch64_topology(
     let gic_msi = if let Some(count) = v2m_spi_count {
         GicMsiController::V2m(GicV2mInfo {
             frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-            doorbell_base: openvmm_defs::config::DEFAULT_GIC_V2M_DOORBELL_BASE,
             spi_base: spi_layout
                 .v2m_spi_base
                 .expect("v2m base must be allocated when v2m_spi_count is Some"),
@@ -707,6 +729,49 @@ fn build_aarch64_topology(
     })
 }
 
+#[cfg(guest_arch = "aarch64")]
+fn resolve_device_assignment_msi_iova_range(
+    policy: virt::DeviceAssignmentMsiIova,
+) -> Option<MemoryRange> {
+    match policy {
+        virt::DeviceAssignmentMsiIova::Unsupported => None,
+        virt::DeviceAssignmentMsiIova::Fixed(range) => Some(range),
+        virt::DeviceAssignmentMsiIova::Configurable => {
+            Some(openvmm_defs::config::DEFAULT_DEVICE_ASSIGNMENT_MSI_IOVA_RANGE)
+        }
+    }
+}
+
+#[cfg(all(test, guest_arch = "aarch64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_device_assignment_msi_iova_range_is_preserved() {
+        let range = MemoryRange::new(0x0800_0000..0x0810_0000);
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Fixed(range)),
+            Some(range)
+        );
+    }
+
+    #[test]
+    fn configurable_device_assignment_msi_iova_range_uses_openvmm_default() {
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Configurable),
+            Some(openvmm_defs::config::DEFAULT_DEVICE_ASSIGNMENT_MSI_IOVA_RANGE)
+        );
+    }
+
+    #[test]
+    fn unsupported_device_assignment_msi_iova_has_no_range() {
+        assert_eq!(
+            resolve_device_assignment_msi_iova_range(virt::DeviceAssignmentMsiIova::Unsupported),
+            None
+        );
+    }
+}
+
 /// A VM that has been loaded and can be run.
 ///
 /// Most new state should be added to [`LoadedVmInner`].
@@ -714,6 +779,11 @@ pub(crate) struct LoadedVm {
     state_units: StateUnits,
     inner: LoadedVmInner,
     running: bool,
+}
+
+struct DynamicVpciDeviceEntry {
+    instance_id: guid::Guid,
+    device: vmm_core::device_builder::DynamicVpciDevice,
 }
 
 /// Most of the VM state for [`LoadedVm`], excluding things that are necessary
@@ -795,6 +865,7 @@ struct LoadedVmInner {
         vmotherboard::DynamicDeviceUnit,
         Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
     )>,
+    dynamic_vpci_devices: Vec<DynamicVpciDeviceEntry>,
 }
 
 /// Helper to determine the x86 IOMMU shared state for a given root complex.
@@ -967,13 +1038,33 @@ impl InitializedVm {
             .await
             .unwrap();
 
-        // Pre-parse the igvm file early.
+        let partition_isolation = cfg
+            .hypervisor
+            .with_isolation
+            .map(Into::into)
+            .unwrap_or(virt::IsolationType::None);
+        // Pre-parse the IGVM file early so the backend can consume opaque
+        // isolation metadata before it creates memory regions or VPs.
         let igvm_file = if let LoadMode::Igvm { file, .. } = &cfg.load_mode {
-            let igvm_file = super::vm_loaders::igvm::read_igvm_file(file)
-                .context("reading igvm file failed")?;
+            let igvm_file = super::vm_loaders::igvm::read_igvm_file(
+                file,
+                super::vm_loaders::igvm::igvm_isolation_type(partition_isolation),
+            )
+            .context("reading igvm file failed")?;
             Some(igvm_file)
         } else {
             None
+        };
+        let proto_partition_isolation = match partition_isolation {
+            virt::IsolationType::Snp => virt::ProtoPartitionIsolation::Snp(
+                igvm_file
+                    .as_ref()
+                    .map(super::vm_loaders::igvm::snp_isolation_config)
+                    .transpose()
+                    .context("reading IGVM SNP configuration failed")?
+                    .map(Box::new),
+            ),
+            isolation => isolation.into(),
         };
 
         let hv_config = if cfg.hypervisor.with_hv {
@@ -1044,17 +1135,19 @@ impl InitializedVm {
             anyhow::bail!("the selected hypervisor does not support nested virtualization");
         }
 
+        #[cfg(guest_arch = "aarch64")]
+        let device_assignment_msi_iova_range =
+            resolve_device_assignment_msi_iova_range(platform_info.device_assignment_msi_iova);
+
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
                 hv_config,
                 vmtime: &vmtime_source,
-                isolation: cfg
-                    .hypervisor
-                    .with_isolation
-                    .map(|typ| typ.into())
-                    .unwrap_or(virt::IsolationType::None),
+                isolation: proto_partition_isolation,
                 nested_virt: cfg.hypervisor.nested_virt,
+                #[cfg(guest_arch = "aarch64")]
+                device_assignment_msi_iova_range,
             })
             .context("failed to create the prototype partition")?;
 
@@ -1129,6 +1222,7 @@ impl InitializedVm {
             layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
+            pcie_ecam_below_4gb: cfg.pcie_ecam_below_4gb,
             vtl2_layout,
             ram_start_address,
             vtl2_framebuffer_size,
@@ -1156,7 +1250,11 @@ impl InitializedVm {
         #[cfg(guest_arch = "aarch64")]
         let resolved_iommu = match &resolved_layout.iommu_ranges {
             ResolvedIommuRanges::Smmu(ranges) => {
-                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(ranges, &spi_layout))
+                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
+                    ranges,
+                    &spi_layout,
+                    device_assignment_msi_iova_range,
+                ))
             }
             _ => ResolvedIommu::None,
         };
@@ -1169,6 +1267,45 @@ impl InitializedVm {
             cfg.vtl0_alias_map
                 .then_some(1 << (physical_address_size - 1))
         });
+
+        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
+            if !matches!(
+                cfg.load_mode,
+                LoadMode::Linux { .. } | LoadMode::Igvm { .. }
+            ) {
+                anyhow::bail!(
+                    "KVM SNP guest_memfd currently only supports direct Linux or IGVM load mode"
+                );
+            }
+            if cfg.hypervisor.with_vtl2.is_some() {
+                anyhow::bail!("KVM SNP guest_memfd does not support VTL2");
+            }
+            if cfg.chipset.with_hyperv_vga {
+                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V VGA");
+            }
+            if cfg.chipset_capabilities.with_i440bx_host_pci_bridge {
+                anyhow::bail!("KVM SNP guest_memfd does not support the i440BX host PCI bridge");
+            }
+            if cfg.vmbus.is_some() || cfg.vtl2_vmbus.is_some() || !cfg.vmbus_devices.is_empty() {
+                anyhow::bail!("KVM SNP guest_memfd does not support VMBus");
+            }
+            if !cfg.floppy_disks.is_empty()
+                || !cfg.ide_disks.is_empty()
+                || !cfg.virtio_devices.is_empty()
+            {
+                anyhow::bail!("KVM SNP guest_memfd does not support disks");
+            }
+            if matches!(
+                cfg.vmgs,
+                Some(
+                    VmgsResource::Disk(_)
+                        | VmgsResource::ReprovisionOnFailure(_)
+                        | VmgsResource::Reprovision(_)
+                )
+            ) {
+                anyhow::bail!("KVM SNP guest_memfd does not support VMGS disks");
+            }
+        }
 
         // Build per-node RAM backing requests. Each NUMA node with memory
         // gets its own backing (memfd), enabling per-node hugepage settings
@@ -1308,7 +1445,12 @@ impl InitializedVm {
         let partition = Arc::new(partition);
 
         memory_manager
-            .attach_partition(Vtl::Vtl0, &partition.memory_mapper(Vtl::Vtl0), None)
+            .attach_partition(
+                Vtl::Vtl0,
+                &partition.memory_mapper(Vtl::Vtl0),
+                None,
+                partition.host_access(),
+            )
             .await
             .context("failed to attach memory to the partition")?;
 
@@ -1318,6 +1460,7 @@ impl InitializedVm {
                     Vtl::Vtl2,
                     &partition.memory_mapper(Vtl::Vtl2),
                     vtl2_memory_process,
+                    None,
                 )
                 .await
                 .context("failed to attach memory to VTL2")?;
@@ -1491,6 +1634,8 @@ impl InitializedVm {
             LoadMode::Pcat {
                 firmware,
                 boot_order,
+                hibernation_enabled,
+                smbios,
             } => {
                 tracing::debug!(?firmware, "Loading BIOS firmware.");
                 let rom_builder = RomBuilder::new("bios".into(), Box::new(mapper.clone()));
@@ -1546,7 +1691,7 @@ impl InitializedVm {
                             chipset_high_mmio: chipset_mmio.high,
                             srat,
 
-                            hibernation_enabled: false,
+                            hibernation_enabled: *hibernation_enabled,
                             initial_generation_id: {
                                 let mut generation_id = [0; 16];
                                 getrandom::fill(&mut generation_id).expect("rng failure");
@@ -1568,23 +1713,7 @@ impl InitializedVm {
                                 })
                             },
                             num_lock_enabled: false,
-                            // TODO: these are all very bogus values, and need to be swapped out with something better
-                            smbios: firmware_pcat::config::SmbiosConstants {
-                                bios_guid: guid::Guid {
-                                    data1: 0xC4066C45,
-                                    data2: 0x503D,
-                                    data3: 0x40E8,
-                                    data4: [0xB1, 0x5C, 0x31, 0x26, 0x4E, 0x5F, 0xE1, 0xD9],
-                                },
-                                system_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                base_board_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                chassis_serial_number: "9583-9572-9874-4843-7295-1653-92".into(),
-                                chassis_asset_tag: "9583-9572-9874-4843-7295-1653-92".into(),
-                                bios_lock_string: "00000000000000000000000000000000".into(),
-                                processor_manufacturer: b"\0".to_vec(),
-                                processor_version: b"\0".to_vec(),
-                                cpu_info_bundle: None,
-                            },
+                            smbios: super::vm_loaders::pcat::smbios_constants_from_config(smbios)?,
                         }
                     },
                 })
@@ -2136,9 +2265,12 @@ impl InitializedVm {
                     cxl,
                     vnode: rc.vnode,
                     preserve_bars: rc.preserve_bars,
-                    // A request to pin BARs (GPA = HPA) also requires the guest
-                    // to leave the firmware's boot configuration alone.
-                    preserve_boot_config: rc.preserve_bars,
+                    // Pinned BARs require the guest to preserve their assigned
+                    // addresses. UEFI also consumes OpenVMM's preassigned PCI
+                    // configuration, so tell the guest OS not to reallocate it
+                    // and transiently overlap BAR mappings.
+                    preserve_boot_config: rc.preserve_bars
+                        || matches!(&cfg.load_mode, LoadMode::Uefi { .. }),
                 });
 
                 pcie_root_complexes.push(root_complex.clone());
@@ -2306,6 +2438,9 @@ impl InitializedVm {
             // Register the VFIO cdev + iommufd resolver for devices opened
             // via the cdev interface. Spawns a VfioCdevManager task that
             // shares IOAS contexts across devices with the same --iommu ID.
+            // Devices behind an accel-capable SMMU carry their nesting
+            // context in the per-device DmaTarget, so no separate side-channel
+            // is needed.
             let cdev_resolver = vfio_assigned_device::resolver::VfioCdevDeviceResolver::new(
                 driver_source.builder().build("vfio-cdev-mgr"),
                 dma_mapper_client,
@@ -2327,17 +2462,31 @@ impl InitializedVm {
         // and MSI writes through the emulated SMMUv3.
         #[cfg(guest_arch = "aarch64")]
         let smmu_devices = {
-            let resolved: &[smmu_wiring::ResolvedSmmuResources] = match &resolved_iommu {
-                ResolvedIommu::Smmu(resources) => resources,
-                _ => &[],
+            let acpi_available = match &cfg.load_mode {
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                    ..
+                } => false,
+                LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    ..
+                }
+                | LoadMode::Uefi { .. }
+                | LoadMode::Pcat { .. }
+                | LoadMode::Igvm { .. }
+                | LoadMode::None => true,
             };
-            smmu_wiring::setup_smmu(
-                &cfg.pcie_root_complexes,
-                resolved,
-                &pcie_host_bridges,
-                &chipset_builder,
-                &gm,
-            )?
+            match &resolved_iommu {
+                ResolvedIommu::Smmu(resolved) => smmu_wiring::setup_smmu(
+                    &cfg.pcie_root_complexes,
+                    resolved,
+                    &mut pcie_host_bridges,
+                    &chipset_builder,
+                    &gm,
+                    acpi_available,
+                )?,
+                _ => smmu_wiring::SmmuDevicesResult::default(),
+            }
         };
 
         // Instantiate an AMD IOMMU on each root complex listed in
@@ -2978,6 +3127,7 @@ impl InitializedVm {
                 pcie_root_complexes,
                 generic_initiator_sources,
                 pcie_hotplug_devices: Vec::new(),
+                dynamic_vpci_devices: Vec::new(),
             },
         };
 
@@ -3112,7 +3262,9 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
+                isolation,
                 boot_mode,
+                ref smbios,
             } => {
                 match boot_mode {
                     openvmm_defs::config::LinuxDirectBootMode::DeviceTree => {
@@ -3120,33 +3272,67 @@ impl LoadedVmInner {
                     }
                     openvmm_defs::config::LinuxDirectBootMode::Acpi => {}
                 }
+                let isolation = match (isolation, self.hypervisor_cfg.with_isolation) {
+                    (
+                        openvmm_defs::config::LinuxIsolationConfig::Snp {
+                            restricted_injection,
+                        },
+                        Some(openvmm_defs::config::IsolationType::Snp),
+                    ) => super::vm_loaders::linux::KernelIsolationConfig::Snp(
+                        super::vm_loaders::linux::SnpKernelConfig {
+                            c_bit: self
+                                .partition
+                                .caps()
+                                .snp_c_bit
+                                .context("missing SNP C-bit CPUID information")?,
+                            restricted_injection,
+                        },
+                    ),
+                    (
+                        openvmm_defs::config::LinuxIsolationConfig::None,
+                        Some(openvmm_defs::config::IsolationType::Snp),
+                    ) => anyhow::bail!("SNP partition requires SNP Linux loader configuration"),
+                    (openvmm_defs::config::LinuxIsolationConfig::Snp { .. }, _) => {
+                        anyhow::bail!("SNP Linux loader configuration requires SNP isolation")
+                    }
+                    (openvmm_defs::config::LinuxIsolationConfig::None, _) => {
+                        super::vm_loaders::linux::KernelIsolationConfig::None
+                    }
+                };
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: self.hypervisor_cfg.with_isolation,
+                    isolation,
+                    smbios,
                 };
-                super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
-                    let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                        add_devices_to_dsdt_x64(
-                            dsdt,
-                            &self.chipset_cfg,
-                            &self.chipset_capabilities,
-                            enable_serial,
-                            self.vmbus_server.is_some(),
-                            &self.chipset_mmio,
-                            self.virtio_mmio_region,
-                            self.virtio_mmio_irq,
-                            &self.pci_legacy_interrupts,
-                        )
-                    });
+                super::vm_loaders::linux::load_linux_x86(
+                    &kernel_config,
+                    &self.gm,
+                    self.partition.caps(),
+                    &self.processor_topology.vp_arch(VpIndex::BSP),
+                    |gpa| {
+                        let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                            add_devices_to_dsdt_x64(
+                                dsdt,
+                                &self.chipset_cfg,
+                                &self.chipset_capabilities,
+                                enable_serial,
+                                self.vmbus_server.is_some(),
+                                &self.chipset_mmio,
+                                self.virtio_mmio_region,
+                                self.virtio_mmio_irq,
+                                &self.pci_legacy_interrupts,
+                            )
+                        });
 
-                    loader::linux::AcpiTables {
-                        rsdp: tables.rsdp,
-                        tables: tables.tables,
-                    }
-                })?
+                        loader::linux::AcpiTables {
+                            rsdp: tables.rsdp,
+                            tables: tables.tables,
+                        }
+                    },
+                )?
             }
             #[cfg(guest_arch = "aarch64")]
             &LoadMode::Linux {
@@ -3154,16 +3340,22 @@ impl LoadedVmInner {
                 ref initrd,
                 ref cmdline,
                 enable_serial,
+                isolation,
                 boot_mode,
+                ref smbios,
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
 
+                if isolation != openvmm_defs::config::LinuxIsolationConfig::None {
+                    anyhow::bail!("SNP Linux loader configuration is not supported on aarch64");
+                }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: self.hypervisor_cfg.with_isolation,
+                    isolation: super::vm_loaders::linux::KernelIsolationConfig::None,
+                    smbios,
                 };
 
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
@@ -3203,15 +3395,17 @@ impl LoadedVmInner {
                 enable_debugging,
                 enable_memory_protections,
                 disable_frontpage,
-                enable_tpm,
+                tpm_version,
                 enable_battery,
                 enable_serial,
                 enable_vpci_boot,
                 uefi_console_mode,
                 default_boot_always_attempt,
-                bios_guid,
+                ref smbios,
                 enable_vmbus,
                 force_dma_bounce,
+                enable_hv,
+                hibernation_enabled,
             } => {
                 let acpi_tables = [
                     // MADT
@@ -3238,16 +3432,19 @@ impl LoadedVmInner {
                     debugging: enable_debugging,
                     memory_protections: enable_memory_protections,
                     frontpage: !disable_frontpage,
-                    tpm: enable_tpm,
+                    tpm: tpm_version.is_some(),
                     battery: enable_battery,
                     guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
                     vpci_boot: enable_vpci_boot,
                     serial: enable_serial,
                     uefi_console_mode,
                     default_boot_always_attempt,
-                    bios_guid,
+                    smbios: (**smbios).clone(),
                     vmbus: enable_vmbus,
                     force_dma_bounce,
+                    hv: enable_hv,
+                    hibernation: hibernation_enabled,
+                    disable_sha1_pcr: tpm_version.is_some_and(|v| v >= TpmVersion::V185),
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
@@ -3290,6 +3487,12 @@ impl LoadedVmInner {
 
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
+                    igvm_isolation_type: super::vm_loaders::igvm::igvm_isolation_type(
+                        self.hypervisor_cfg
+                            .with_isolation
+                            .map(Into::into)
+                            .unwrap_or(virt::IsolationType::None),
+                    ),
                     gm: &self.gm,
                     processor_topology: &self.processor_topology,
                     mem_layout: &self.mem_layout,
@@ -3764,6 +3967,112 @@ impl LoadedVm {
                         })
                         .await
                     }
+                    VmRpc::AddVpciDevice(rpc) => {
+                        rpc.handle_failable(async |(instance_id, resource)| {
+                            anyhow::ensure!(
+                                !self
+                                    .inner
+                                    .dynamic_vpci_devices
+                                    .iter()
+                                    .any(|entry| entry.instance_id == instance_id),
+                                "a dynamically added VPCI device with instance ID '{instance_id}' already exists"
+                            );
+                            anyhow::ensure!(
+                                self.inner.partition.supports_virtual_devices(),
+                                "partition does not support VPCI devices"
+                            );
+
+                            let vmbus = self
+                                .inner
+                                .vmbus_server
+                                .as_ref()
+                                .context("VTL0 VMBus is not available")?;
+                            let device = vmm_core::device_builder::build_dynamic_vpci_device(
+                                vmm_core::device_builder::PciDeviceResolveContext {
+                                    driver_source: &self.inner.driver_source,
+                                    resolver: &self.inner.resolver,
+                                    resource,
+                                    doorbell_registration: self
+                                        .inner
+                                        .partition
+                                        .clone()
+                                        .into_doorbell_registration(Vtl::Vtl0),
+                                    shared_mem_mapper: None,
+                                },
+                                vmbus.control(),
+                                &self.inner.chipset_devices,
+                                &mut self.state_units,
+                                VpciBusConfig {
+                                    instance_id,
+                                    vtom: None,
+                                    vnode: None,
+                                },
+                                self.inner.gm.clone(),
+                                |device_id| {
+                                    let hv_device = self
+                                        .inner
+                                        .partition
+                                        .new_virtual_device(Vtl::Vtl0, device_id)?;
+                                    Ok((
+                                        hv_device.clone().target(),
+                                        hv_device.interrupt_mapper(),
+                                    ))
+                                },
+                            )
+                            .await?;
+
+                            self.inner
+                                .dynamic_vpci_devices
+                                .push(DynamicVpciDeviceEntry {
+                                    instance_id,
+                                    device,
+                                });
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
+                    VmRpc::RemoveVpciDevice(rpc) => {
+                        rpc.handle_failable(async |instance_id: guid::Guid| {
+                            let index = self
+                                .inner
+                                .dynamic_vpci_devices
+                                .iter()
+                                .position(|entry| entry.instance_id == instance_id)
+                                .with_context(|| {
+                                    format!(
+                                        "no dynamically added VPCI device with instance ID '{instance_id}'"
+                                    )
+                                })?;
+                            if self.running {
+                                let driver = self.inner.driver_source.simple();
+                                let eject_result = wait_for_vpci_eject(
+                                    &driver,
+                                    self.inner.dynamic_vpci_devices[index].device.eject(),
+                                    VPCI_EJECT_GRACE_PERIOD,
+                                )
+                                .await;
+                                match eject_result {
+                                    VpciEjectResult::Complete(Ok(())) => {}
+                                    VpciEjectResult::Complete(Err(error)) => tracing::warn!(
+                                        %instance_id,
+                                        error = <anyhow::Error as AsRef<
+                                            dyn std::error::Error + Send + Sync,
+                                        >>::as_ref(&error),
+                                        "VPCI eject failed; forcing removal"
+                                    ),
+                                    VpciEjectResult::TimedOut => tracing::warn!(
+                                        %instance_id,
+                                        timeout_ms = VPCI_EJECT_GRACE_PERIOD.as_millis() as u64,
+                                        "VPCI eject timed out; forcing removal"
+                                    ),
+                                }
+                            }
+                            let entry = self.inner.dynamic_vpci_devices.remove(index);
+                            entry.device.remove().await;
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
                     VmRpc::DumpState(rpc) => {
                         rpc.handle_failable(async |file| self.dump_state(file).await)
                             .await
@@ -3776,6 +4085,9 @@ impl LoadedVm {
             }
         }
 
+        while let Some(entry) = self.inner.dynamic_vpci_devices.pop() {
+            entry.device.remove().await;
+        }
         self.inner.partition_unit.teardown().await;
         if let Some(vmbus) = self.inner.vmbus_server {
             vmbus.remove().await.shutdown().await;
@@ -3787,8 +4099,17 @@ impl LoadedVm {
         self.inner.next_igvm_file = None;
 
         // Load the new IGVM file into memory.
-        let igvm_file =
-            super::vm_loaders::igvm::read_igvm_file(file).context("reading igvm file failed")?;
+        let isolation = self
+            .inner
+            .hypervisor_cfg
+            .with_isolation
+            .map(Into::into)
+            .unwrap_or(virt::IsolationType::None);
+        let igvm_file = super::vm_loaders::igvm::read_igvm_file(
+            file,
+            super::vm_loaders::igvm::igvm_isolation_type(isolation),
+        )
+        .context("reading igvm file failed")?;
 
         self.inner.next_igvm_file = Some(igvm_file);
         Ok(())
@@ -3899,6 +4220,7 @@ impl LoadedVm {
             floppy_disks: vec![],            // TODO
             ide_disks: vec![],               // TODO
             pcie_root_complexes: vec![],     // TODO
+            pcie_ecam_below_4gb: false,      // TODO
             pcie_devices: vec![],            // TODO
             pcie_switches: vec![],           // TODO
             pcie_generic_initiators: vec![], // TODO

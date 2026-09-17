@@ -31,6 +31,15 @@ impl From<Vec<u8>> for BaseTemplateJson {
     }
 }
 
+/// A complete base template deferred as raw JSON.
+///
+/// This envelope leaves room for adding reliably sourced template metadata
+/// without changing the UEFI configuration interface.
+#[derive(Debug, Clone, Protobuf)]
+pub struct BaseTemplate {
+    pub json: BaseTemplateJson,
+}
+
 /// A customer-provided UEFI variable delta deferred as raw JSON.
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(transparent)]
@@ -70,6 +79,13 @@ pub struct FinalVars(UefiVars);
 impl From<UefiVars> for BaseTemplateVars {
     fn from(vars: UefiVars) -> Self {
         Self(vars)
+    }
+}
+
+impl BaseTemplateVars {
+    /// Return the Secure Boot signatures supplied by this template.
+    pub fn signatures(&self) -> Option<&Signatures> {
+        self.0.signatures.as_ref()
     }
 }
 

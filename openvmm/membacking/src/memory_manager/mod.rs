@@ -796,6 +796,9 @@ impl GuestMemoryManager {
     /// process. This is necessary to work around WHP's lack of support for
     /// mapping multiple partitions from a single process.
     ///
+    /// `host_access` configures fault-driven host access on the primary VTL0
+    /// mapper. It must be `None` when attaching any other VTL.
+    ///
     /// TODO: currently, all VTLs will get the same mappings--no support for
     /// per-VTL memory protections is supported.
     pub async fn attach_partition(
@@ -803,7 +806,17 @@ impl GuestMemoryManager {
         vtl: Vtl,
         partition: &Arc<dyn virt::PartitionMemoryMap>,
         process: Option<RemoteProcess>,
+        host_access: Option<Arc<dyn virt::PartitionHostAccess>>,
     ) -> Result<(), PartitionAttachError> {
+        if let Some(host_access) = host_access {
+            assert_eq!(
+                vtl,
+                Vtl::Vtl0,
+                "host access must be installed while attaching VTL0"
+            );
+            self.va_mapper.install_host_access(host_access);
+        }
+
         let va_mapper = if let Some(process) = process {
             self.mapping_manager
                 .client()

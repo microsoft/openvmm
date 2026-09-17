@@ -27,6 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BASE_URL: https://openvmmghtestresults.blob.core.windows.net
+      VMMPERF_STORAGE_ACCOUNT: vmmperfmetricssa
+      VMMPERF_STORAGE_CONTAINER: allmetrics
+      VMMPERF_METRICS_PREFIX: openvmm-petri
 
     steps:
       - name: Free Disk Space (Ubuntu)
@@ -102,6 +105,47 @@ jobs:
         env:
           run_id: ${{ github.event.workflow_run.id }}
           run_attempt: ${{ github.event.workflow_run.run_attempt }}
+
+      - name: Upload VMM.Perf results to Azure Blob Storage
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+
+          mkdir -p vmm-perf-results
+          artifact_names=$(gh api \
+            --paginate \
+            "repos/$repo/actions/runs/$run_id/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | .name | select(endswith("-vmm-perf-results"))')
+          if [ -z "$artifact_names" ]; then
+            echo "No VMM.Perf results found; skipping dedicated results publication."
+            exit 0
+          fi
+
+          prefix="$VMMPERF_METRICS_PREFIX/${run_id}/attempt-${run_attempt}"
+          while IFS= read -r artifact_name; do
+            result_dir="vmm-perf-results/$artifact_name"
+            mkdir -p "$result_dir"
+            gh run \
+              -R "$repo" \
+              download "$run_id" \
+              -n "$artifact_name" \
+              -D "$result_dir"
+            pool="${artifact_name%-vmm-perf-results}"
+            az storage blob upload-batch \
+              --account-name "$VMMPERF_STORAGE_ACCOUNT" \
+              --destination "$VMMPERF_STORAGE_CONTAINER" \
+              --destination-path "$prefix/$pool" \
+              --source "$result_dir" \
+              --auth-mode login \
+              --overwrite false \
+              --only-show-errors \
+              --output none
+          done <<< "$artifact_names"
+        env:
+          repo: ${{ github.event.workflow_run.repository.full_name }}
+          run_id: ${{ github.event.workflow_run.id }}
+          run_attempt: ${{ github.event.workflow_run.run_attempt }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to memory validation results to Azure Blob Storage
         run: |

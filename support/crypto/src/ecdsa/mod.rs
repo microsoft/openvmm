@@ -25,7 +25,7 @@ use thiserror::Error;
 
 /// An error for ECDSA operations.
 #[derive(Debug, Error)]
-#[error("ECDSA error")]
+#[error("ECDSA operation failed")]
 pub struct EcdsaError(#[source] pub(crate) super::BackendError);
 
 /// The ECC curve to use.

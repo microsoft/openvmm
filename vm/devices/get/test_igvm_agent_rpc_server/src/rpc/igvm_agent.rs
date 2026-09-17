@@ -169,11 +169,27 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
         ),
         (
+            "ubuntu_2504_server_x64_tdx_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
             "ubuntu_2504_server_x64_snp_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
         (
@@ -206,6 +222,129 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        // `multiarch::tpm138` runs the same tests against the 1.38 vTPM. Its
+        // test-function names are abbreviated to keep VM names under the
+        // 100-character limit, so they need their own patterns here.
+        (
+            "ubuntu_2504_server_x64_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2022_x64_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2022_x64_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_skip_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_skip_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_use_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_use_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_hw_ak_stbl",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stbl",
             IgvmAttestTestConfig::StateRefresh,
         ),
     ];

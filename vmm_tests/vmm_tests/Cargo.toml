@@ -18,10 +18,6 @@ harness = false
 name = "opentmk"
 harness = false
 
-[[test]]
-name = "cca"
-harness = false
-
 [dev-dependencies]
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true

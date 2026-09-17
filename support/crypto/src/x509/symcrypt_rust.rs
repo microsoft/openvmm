@@ -41,7 +41,10 @@ fn rsa_to_x509(crate::rsa::RsaError(e): crate::rsa::RsaError) -> X509Error {
 /// test-only).
 #[cfg(rust)]
 fn rsa_to_x509(_e: crate::rsa::RsaError) -> X509Error {
-    der_err(der::ErrorKind::Failed.into(), "constructing RSA public key")
+    der_err(
+        der::ErrorKind::Failed.into(),
+        "constructing the RSA public key",
+    )
 }
 
 pub(crate) struct X509CertificateInner(pub(crate) Certificate);
@@ -49,7 +52,7 @@ pub(crate) struct X509CertificateInner(pub(crate) Certificate);
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
         let cert =
-            Certificate::from_der(data).map_err(|e| der_err(e, "parsing DER certificate"))?;
+            Certificate::from_der(data).map_err(|e| der_err(e, "parsing the DER certificate"))?;
         Ok(Self(cert))
     }
 
@@ -64,7 +67,7 @@ impl X509CertificateInner {
 
         if spki.algorithm.oid == RSA_ENCRYPTION {
             let key = pkcs1::RsaPublicKey::from_der(spki.subject_public_key.raw_bytes())
-                .map_err(|e| der_err(e, "parsing PKCS#1 RSA public key"))?;
+                .map_err(|e| der_err(e, "parsing the PKCS#1 RSA public key"))?;
             let rsa = crate::rsa::RsaPublicKey::from_components(
                 key.modulus.as_bytes(),
                 key.public_exponent.as_bytes(),
@@ -83,7 +86,10 @@ impl X509CertificateInner {
             // the ECDSA parser, which validates the curve and imports the key.
             let point = spki.subject_public_key.raw_bytes();
             let qxqy = point.strip_prefix(&[0x04u8]).ok_or_else(|| {
-                der_err(der::ErrorKind::Failed.into(), "parsing EC public key point")
+                der_err(
+                    der::ErrorKind::Failed.into(),
+                    "parsing the EC public key point",
+                )
             })?;
             let key = crate::ecdsa::EcdsaPublicKey::from_public_key_bytes(
                 crate::ecdsa::EcdsaCurve::P384,
@@ -95,7 +101,7 @@ impl X509CertificateInner {
 
         Err(der_err(
             der::ErrorKind::Failed.into(),
-            "extracting certificate public key",
+            "extracting the certificate public key",
         ))
     }
 
@@ -105,13 +111,13 @@ impl X509CertificateInner {
     ) -> Result<bool, crate::rsa::RsaError> {
         let oid = self.0.signature_algorithm().oid;
         let hash = crate::HashAlgorithm::try_from(oid)
-            .map_err(|e| rsa_der_err(e, "unrecognized signature algorithm OID"))?;
+            .map_err(|e| rsa_der_err(e, "reading the certificate signature algorithm"))?;
 
         let tbs_der = self
             .0
             .tbs_certificate()
             .to_der()
-            .map_err(|e| rsa_der_err(e, "encoding TBS certificate"))?;
+            .map_err(|e| rsa_der_err(e, "encoding the TBS certificate"))?;
         let signature = self.0.signature().raw_bytes();
 
         issuer_public_key.pkcs1_verify(&tbs_der, signature, hash)
@@ -135,7 +141,7 @@ impl X509CertificateInner {
         // signing other certificates.
         let ku = issuer_tbs
             .get_extension::<KeyUsage>()
-            .map_err(|e| der_err(e, "parsing KeyUsage extension"))?;
+            .map_err(|e| der_err(e, "parsing the KeyUsage extension"))?;
         if let Some((_crit, ku)) = ku
             && !ku.key_cert_sign()
         {
@@ -146,12 +152,12 @@ impl X509CertificateInner {
         // populated fields against this certificate (the candidate issuer).
         let akid = subject_tbs
             .get_extension::<AuthorityKeyIdentifier>()
-            .map_err(|e| der_err(e, "parsing AuthorityKeyIdentifier extension"))?;
+            .map_err(|e| der_err(e, "parsing the AuthorityKeyIdentifier extension"))?;
         if let Some((_crit, akid)) = akid {
             if let Some(akid_key_id) = &akid.key_identifier {
                 let skid = issuer_tbs
                     .get_extension::<SubjectKeyIdentifier>()
-                    .map_err(|e| der_err(e, "parsing SubjectKeyIdentifier extension"))?;
+                    .map_err(|e| der_err(e, "parsing the SubjectKeyIdentifier extension"))?;
                 match skid {
                     Some((_crit, ski)) => {
                         if akid_key_id != &ski.0 {
@@ -187,7 +193,7 @@ impl X509CertificateInner {
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0
             .to_der()
-            .map_err(|e| der_err(e, "encoding certificate as DER"))
+            .map_err(|e| der_err(e, "encoding the certificate as DER"))
     }
 
     #[cfg(any(test, feature = "test_helpers"))]
@@ -236,7 +242,7 @@ impl X509CertificateInner {
             .tbs_certificate()
             .subject()
             .common_name()
-            .map_err(|e| der_err(e, "getting common_name"))?
+            .map_err(|e| der_err(e, "reading the subject common name"))?
             .map(|s| s.value().into_owned()))
     }
 }

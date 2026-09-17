@@ -43,8 +43,10 @@ impl RunContext<'_> {
                 processor_topology: &self.state.processor_topology,
                 hv_config: None,
                 vmtime: self.vmtime_source,
-                isolation: virt::IsolationType::None,
+                isolation: virt::ProtoPartitionIsolation::None,
                 nested_virt: false,
+                #[cfg(guest_arch = "aarch64")]
+                device_assignment_msi_iova_range: None,
             })
             .context("failed to create proto partition")?;
 

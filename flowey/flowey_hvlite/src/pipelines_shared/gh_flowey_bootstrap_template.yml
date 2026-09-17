@@ -30,7 +30,7 @@
 # but that currently needs to be preinstalled on the actions runner.
 - run: |
     set -x
-    curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+    curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
     ./rustup-init.exe -y --default-toolchain={{RUSTUP_TOOLCHAIN}}
     echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
   if: runner.os == 'Windows' && runner.arch == 'X64'
@@ -39,7 +39,7 @@
 
 - run: |
     set -x
-    curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+    curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
     ./rustup-init.exe -y --default-toolchain={{RUSTUP_TOOLCHAIN}}
     echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
   if: runner.os == 'Windows' && runner.arch == 'ARM64'

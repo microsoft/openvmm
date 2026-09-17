@@ -44,13 +44,13 @@ pub struct Pkcs7SignedData(sys::Pkcs7SignedDataInner);
 /// An error for PKCS#7 operations.
 #[cfg(not(rust))]
 #[derive(Clone, Debug, Error)]
-#[error("PKCS#7 error")]
+#[error("PKCS#7 operation failed")]
 pub struct Pkcs7Error(#[source] super::BackendError);
 
 /// An error for PKCS#7 operations.
 #[cfg(rust)]
 #[derive(Clone, Debug, Error)]
-#[error("PKCS#7 error during {1}")]
+#[error("PKCS#7 operation failed while {1}")]
 pub struct Pkcs7Error(#[source] der::Error, &'static str);
 
 /// An error encountered while verifying a PKCS#7 signed data object.
@@ -58,13 +58,13 @@ pub struct Pkcs7Error(#[source] der::Error, &'static str);
 #[derive(Debug, Error)]
 pub enum Pkcs7VerifyError {
     /// A PKCS#7 parsing or structural error.
-    #[error("PKCS#7 error")]
+    #[error("failed to process the PKCS#7 signed data")]
     Pkcs7(#[from] Pkcs7Error),
     /// An RSA signature verification error.
-    #[error("RSA error")]
+    #[error("failed to verify a signature")]
     Rsa(#[from] crate::rsa::RsaError),
     /// An X.509 certificate error.
-    #[error("X509 error")]
+    #[error("failed to process a certificate")]
     X509(#[from] crate::x509::X509Error),
 }
 

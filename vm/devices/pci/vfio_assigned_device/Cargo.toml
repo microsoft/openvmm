@@ -14,8 +14,10 @@ memory_range.workspace = true
 membacking.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+parking_lot.workspace = true
 pci_core.workspace = true
 pci_resources.workspace = true
+smmu.workspace = true
 vfio_sys.workspace = true
 vfio-bindings.workspace = true
 vfio_assigned_device_resources.workspace = true
@@ -24,9 +26,9 @@ vmcore.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-parking_lot.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
+zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 test_with_tracing.workspace = true

@@ -61,11 +61,16 @@ fn enable_uefi_vtl_protection() {
 /// tables while boot services are still available, then enables VTL protection
 /// (which exits boot services).
 pub fn init() -> Result<(), Status> {
+    init_with_logger(&crate::tmk_logger::LOGGER)
+}
+
+/// Prepares the UEFI environment using the specified logger.
+pub fn init_with_logger(logger: &'static dyn log::Log) -> Result<(), Status> {
     let r: bool = ALLOCATOR.switch_to_capped_heap(512);
     if !r {
         return Err(Status::ABORTED);
     }
-    crate::tmk_logger::init().map_err(|_| Status::NOT_READY)?;
+    crate::tmk_logger::init_with(logger).map_err(|_| Status::NOT_READY)?;
     // Initialize ACPI table context before exit_boot_services (called
     // within enable_uefi_vtl_protection) so that the UEFI system table
     // configuration entries are still accessible.

@@ -69,7 +69,9 @@ where
 
 /// Writes a preformatted record to the logger's serial writer.
 pub(crate) fn write_str(s: &str) {
-    _ = opentmk_core::tmk_logger::LOGGER.get_writer().write_str(s);
+    _ = opentmk_core::tmk_logger::COM1_LOGGER
+        .get_writer()
+        .write_str(s);
 }
 
 #[macro_export]

@@ -848,7 +848,7 @@ mod x86 {
 
             WhpHypercallExit::DISPATCHER.dispatch(
                 &vpref.partition.gm,
-                hv1_hypercall::X64RegisterIo::new(&mut this, is_64bit),
+                hv1_hypercall::X64RegisterIo::new(&mut this, is_64bit, true),
             );
             this.flush()
         }
@@ -1037,7 +1037,7 @@ mod x86 {
             let exit_context = self.registers.exit_context;
             let is_64bit =
                 exit_context.ExecutionState.Cr0Pe() && exit_context.ExecutionState.EferLma();
-            hv1_hypercall::X64RegisterIo::new(self, is_64bit).advance_ip();
+            hv1_hypercall::X64RegisterIo::new(self, is_64bit, true).advance_ip();
         }
 
         fn inject_invalid_opcode_fault(&mut self) {
@@ -1658,6 +1658,39 @@ mod x86 {
                     let vsm_config = hvdef::HvRegisterVsmPartitionConfig::from(value);
 
                     tracing::trace!(?vsm_config, "set VsmPartitionConfig");
+                }
+                HvX64RegisterName::GuestVsmPartitionConfig => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid guest vsm partition config set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // Since guest VSM is unsupported, the only configuration
+                    // that can be applied is the one `get_vp_register` already
+                    // reports. VTL2 writes this to revoke guest VSM, which is
+                    // already the case, so accept that and reject anything that
+                    // would grant the guest a VTL, or do anything else.
+                    if value.as_u64() != 0 {
+                        return Err(HvError::InvalidParameter);
+                    }
+                }
+                HvX64RegisterName::PmTimerAssist => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid pm timer assist set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // TODO: the assist is not implemented.
+                    return Err(HvError::InvalidParameter);
+                }
+                HvX64RegisterName::RegisterPage => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid register page set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // TODO: the VTL2 register page is not implemented.
+                    return Err(HvError::InvalidParameter);
                 }
                 HvX64RegisterName::DeliverabilityNotifications => {
                     if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl0 {

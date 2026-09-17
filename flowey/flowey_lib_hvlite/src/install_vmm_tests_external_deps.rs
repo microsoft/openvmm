@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Hyper-V test pre-reqs
+//! Configure system-wide external dependencies for use with OpenVMM and/or
+//! Hyper-V VMM tests.
 
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -20,23 +21,31 @@ const VIRT_REG_PATH: &str = r#"HKLM\Software\Microsoft\Windows NT\CurrentVersion
 const HYPERVISOR_REG_PATH: &str = r#"HKLM\System\CurrentControlSet\Control\Hypervisor"#;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub enum VmmTestsDepSelections {
-    Windows(VmmTestsDepSelectionsWindows),
-    Linux,
+pub enum VmmTestsExternalDeps {
+    Windows(VmmTestsExternalDepsWindows),
+    Linux(VmmTestsExternalDepsLinux),
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct VmmTestsDepSelectionsWindows {
+pub struct VmmTestsExternalDepsWindows {
     pub hyperv: bool,
     pub whp: bool,
     pub hardware_isolation: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct VmmTestsExternalDepsLinux {
+    /// If set, configure this 2 MiB hugetlb surplus page overcommit limit before running tests.
+    pub hugetlb_2mb_overcommit_pages: Option<u64>,
+    /// Load vhost-vsock and make `/dev/vhost-vsock` accessible before tests.
+    pub prepare_vhost_vsock: bool,
+}
+
 flowey_config! {
-    /// Config for the install_vmm_tests_deps node.
+    /// Config for the install_vmm_tests_external_deps node.
     pub struct Config {
         /// Specify the necessary dependencies
-        pub selections: Option<VmmTestsDepSelections>,
+        pub selections: Option<VmmTestsExternalDeps>,
         /// Automatically install dependencies (requires admin privileges).
         ///
         /// When false, skip checks that require admin privileges.
@@ -50,6 +59,8 @@ flowey_request! {
     pub enum Request {
         /// Install the dependencies
         Install(WriteVar<SideEffect>),
+        // TODO: rip this out since it is broken and not used anymore
+        // with the introduction of `vmm_tests_run_target`
         /// Generate a list of commands that would install the dependencies
         GetCommands(WriteVar<Vec<String>>),
     }
@@ -88,11 +99,18 @@ impl FlowNodeWithConfig for Node {
         let selections = config
             .selections
             .ok_or(anyhow::anyhow!("missing config: selections"))?;
-        let auto_install = config.auto_install;
+        // Resolve auto_install for local backend
+        let auto_install = match ctx.backend() {
+            FlowBackend::Local => config
+                .auto_install
+                .ok_or_else(|| anyhow::anyhow!("Missing essential request: AutoInstall"))?,
+            // CI backends always auto-install
+            FlowBackend::Ado | FlowBackend::Github => true,
+        };
         let installing = !installed.is_empty();
 
         match selections {
-            VmmTestsDepSelections::Windows(selections) => {
+            VmmTestsExternalDeps::Windows(selections) => {
                 ctx.emit_rust_step("install vmm tests deps (windows)", move |ctx| {
                     installed.claim(ctx);
                     let write_commands = write_commands.claim(ctx);
@@ -108,17 +126,13 @@ impl FlowNodeWithConfig for Node {
                     }
                 });
             }
-            VmmTestsDepSelections::Linux => {
+            VmmTestsExternalDeps::Linux(selections) => {
                 ctx.emit_rust_step("install vmm tests deps (linux)", |ctx| {
                     installed.claim(ctx);
                     let write_commands = write_commands.claim(ctx);
 
-                    |rt| {
-                        for write_cmds in write_commands {
-                            rt.write(write_cmds, &Vec::new());
-                        }
-
-                        Ok(())
+                    move |rt| {
+                        install_linux_deps(rt, installing, auto_install, selections, write_commands)
                     }
                 });
             }
@@ -131,11 +145,11 @@ impl FlowNodeWithConfig for Node {
 fn install_windows_deps(
     rt: &mut RustRuntimeServices<'_>,
     installing: bool,
-    auto_install: Option<bool>,
-    selections: VmmTestsDepSelectionsWindows,
+    auto_install: bool,
+    selections: VmmTestsExternalDepsWindows,
     write_commands: Vec<WriteVar<Vec<String>, VarClaimed>>,
 ) -> anyhow::Result<()> {
-    let VmmTestsDepSelectionsWindows {
+    let VmmTestsExternalDepsWindows {
         hyperv,
         whp,
         hardware_isolation,
@@ -148,15 +162,6 @@ fn install_windows_deps(
     {
         anyhow::bail!("Must be on Windows or WSL2 to install Windows deps.")
     }
-
-    // Resolve auto_install for local backend
-    let auto_install = match rt.backend() {
-        FlowBackend::Local => {
-            auto_install.ok_or_else(|| anyhow::anyhow!("Missing essential request: AutoInstall"))?
-        }
-        // CI backends always auto-install
-        FlowBackend::Ado | FlowBackend::Github => true,
-    };
 
     // TODO: add these features and reg keys to the initial CI image
 
@@ -382,6 +387,102 @@ Please re-run in an Administrator window with `--install-missing-deps`.
 
     for write_cmds in write_commands {
         rt.write(write_cmds, &commands);
+    }
+
+    Ok(())
+}
+
+fn install_linux_deps(
+    rt: &mut RustRuntimeServices<'_>,
+    installing: bool,
+    auto_install: bool,
+    selections: VmmTestsExternalDepsLinux,
+    write_commands: Vec<WriteVar<Vec<String>, VarClaimed>>,
+) -> anyhow::Result<()> {
+    let VmmTestsExternalDepsLinux {
+        hugetlb_2mb_overcommit_pages,
+        prepare_vhost_vsock,
+    } = selections;
+
+    // command output not currently supported
+    for write_cmds in write_commands {
+        rt.write(write_cmds, &Vec::new());
+    }
+
+    if !installing || !auto_install {
+        return Ok(());
+    }
+
+    // ensure hypervisor device is accessible
+    {
+        // Make whichever hypervisor device exists accessible.
+        // KVM machines have /dev/kvm, MSHV machines have /dev/mshv.
+        if Path::new("/dev/kvm").exists() {
+            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/kvm").run()?;
+        }
+        if Path::new("/dev/mshv").exists() {
+            flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/mshv").run()?;
+        }
+    }
+
+    // ensure 2 MiB hugetlb pages are available
+    if let Some(overcommit_pages) = hugetlb_2mb_overcommit_pages {
+        let hugepages_dir = Path::new("/sys/kernel/mm/hugepages/hugepages-2048kB");
+
+        let read_counter = |name: &str| -> anyhow::Result<u64> {
+            let path = hugepages_dir.join(name);
+            let value = fs_err::read_to_string(&path)?;
+            Ok(value.trim().parse()?)
+        };
+
+        let write_overcommit_script = format!(
+            "echo {overcommit_pages} | sudo tee {path}",
+            path = hugepages_dir.join("nr_overcommit_hugepages").display(),
+        );
+        flowey::shell_cmd!(rt, "sh -c {write_overcommit_script}").run()?;
+
+        let nr_hugepages = read_counter("nr_hugepages")?;
+        let free_hugepages = read_counter("free_hugepages")?;
+        let nr_overcommit_hugepages = read_counter("nr_overcommit_hugepages")?;
+        let surplus_hugepages = read_counter("surplus_hugepages")?;
+
+        log::info!("2 MiB hugetlb nr_hugepages={nr_hugepages}");
+        log::info!("2 MiB hugetlb free_hugepages={free_hugepages}");
+        log::info!("2 MiB hugetlb nr_overcommit_hugepages={nr_overcommit_hugepages}");
+        log::info!("2 MiB hugetlb surplus_hugepages={surplus_hugepages}");
+
+        if nr_overcommit_hugepages < overcommit_pages {
+            anyhow::bail!(
+                "2 MiB hugetlb overcommit remains {}, below requested {}",
+                nr_overcommit_hugepages,
+                overcommit_pages
+            );
+        }
+    }
+
+    // prepare vhost-vsock
+    if prepare_vhost_vsock {
+        flowey::shell_cmd!(rt, "sudo modprobe vhost_vsock").run()?;
+        // The kernel creates /dev/vhost-vsock as part of
+        // loading the module, but udev then processes the
+        // corresponding uevent asynchronously and applies
+        // its own (root-only) permissions to the node.
+        // Without settling first, that races with - and
+        // frequently wins against - the chmod below,
+        // leaving the device inaccessible to the tests.
+        flowey::shell_cmd!(rt, "sudo udevadm settle").run()?;
+        if !Path::new("/dev/vhost-vsock").exists() {
+            anyhow::bail!("/dev/vhost-vsock did not appear after loading vhost_vsock");
+        }
+        flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/vhost-vsock").run()?;
+        // Confirm the permissions actually stuck, so that a
+        // failure here is reported by this step instead of
+        // as an opaque test failure minutes later.
+        fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/vhost-vsock")
+            .context("/dev/vhost-vsock is not accessible to the test user")?;
     }
 
     Ok(())

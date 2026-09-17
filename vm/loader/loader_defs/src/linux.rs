@@ -295,3 +295,61 @@ pub struct cc_setup_data {
     pub cc_blob_address: u32,
     pub _padding: [u32; 3],
 }
+
+/// Magic value for a measured [`SnpBootShimParams`] page.
+pub const SNP_BOOT_SHIM_PARAMS_MAGIC: u64 = u64::from_le_bytes(*b"SNPBSHIM");
+/// Version of the [`SnpBootShimParams`] handoff ABI.
+pub const SNP_BOOT_SHIM_PARAMS_VERSION: u32 = 1;
+const SNP_BOOT_SHIM_PARAMS_HEADER_SIZE: usize = 48;
+/// Maximum number of RAM ranges that fit in one [`SnpBootShimParams`] page.
+pub const SNP_BOOT_SHIM_MAX_RANGES: usize = (hvdef::HV_PAGE_SIZE as usize
+    - SNP_BOOT_SHIM_PARAMS_HEADER_SIZE)
+    / size_of::<SnpBootShimRange>();
+
+/// A contiguous range of private RAM for the SNP bootshim to accept.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpBootShimRange {
+    /// The first 4-KiB guest page number in the range.
+    pub start_gpn: u64,
+    /// The number of 4-KiB pages in the range.
+    pub page_count: u64,
+}
+
+/// The measured handoff from the IGVM generator to the SNP Linux bootshim.
+///
+/// The generator imports one page with this layout and starts the bootshim
+/// with RSI pointing to it. The bootshim validates the complete header and the
+/// active prefix of `ranges` before it accepts any omitted RAM or enters Linux.
+#[repr(C, align(4096))]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpBootShimParams {
+    /// Must equal [`SNP_BOOT_SHIM_PARAMS_MAGIC`].
+    pub magic: u64,
+    /// Must equal [`SNP_BOOT_SHIM_PARAMS_VERSION`].
+    pub version: u32,
+    /// Number of valid entries at the start of `ranges`.
+    pub range_count: u32,
+    /// Identity-mapped address of the direct-boot Linux entry point.
+    pub linux_entry: u64,
+    /// Guest physical address of the Linux zero page passed in RSI.
+    pub linux_zero_page: u64,
+    /// Exclusive end of the configured, contiguous guest RAM.
+    pub ram_end: u64,
+    /// Reserved for future ABI versions and must be zero.
+    pub reserved: u64,
+    /// Sorted, non-overlapping RAM ranges omitted from measured page data.
+    pub ranges: [SnpBootShimRange; SNP_BOOT_SHIM_MAX_RANGES],
+}
+
+const_assert_eq!(size_of::<SnpBootShimRange>(), 16);
+const_assert_eq!(align_of::<SnpBootShimRange>(), 8);
+const_assert_eq!(
+    core::mem::offset_of!(SnpBootShimParams, ranges),
+    SNP_BOOT_SHIM_PARAMS_HEADER_SIZE
+);
+const_assert_eq!(size_of::<SnpBootShimParams>(), hvdef::HV_PAGE_SIZE as usize);
+const_assert_eq!(
+    align_of::<SnpBootShimParams>(),
+    hvdef::HV_PAGE_SIZE as usize
+);

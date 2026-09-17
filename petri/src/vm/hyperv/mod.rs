@@ -277,6 +277,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
+        // TODO: Set vTPM version via WMI
+
         // Map VMBus storage controllers (SCSI and NVMe).
         let mut storage_controllers = HashMap::new();
         for (
@@ -594,8 +596,11 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         })
     }
 
-    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.vm.wait_for_boot_event().await
+    async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>> {
+        self.vm.wait_for_boot_event(timeout).await
     }
 
     async fn wait_for_opentmk(
@@ -629,6 +634,9 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         match kind {
             ShutdownKind::Shutdown => self.vm.stop().await?,
             ShutdownKind::Reboot => self.vm.restart().await?,
+            ShutdownKind::Hibernate => {
+                anyhow::bail!("hibernate is not yet supported on the Hyper-V backend")
+            }
         }
 
         Ok(())

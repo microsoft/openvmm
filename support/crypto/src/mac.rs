@@ -162,7 +162,7 @@ pub(crate) unsafe fn sec_err(error: CFErrorRef, op: &'static str) -> super::Back
     // CFStringRef (or null) which cf_string_to_string handles.
     let msg = unsafe { cf_string_to_string(CFErrorCopyDescription(error)) };
     drop(release);
-    super::BackendError::Sec(format!("code {}: {}", code, msg), op)
+    super::BackendError::Sec(format!("OSStatus {code}: {msg}"), op)
 }
 
 /// Returns the CFError's numeric code, or `None` if `error` is null. Does

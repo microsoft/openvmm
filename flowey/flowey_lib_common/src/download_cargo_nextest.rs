@@ -5,6 +5,7 @@
 
 use crate::cache::CacheHit;
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
 
 flowey_config! {
     /// Config for the download_cargo_nextest node.
@@ -20,7 +21,7 @@ flowey_request! {
         /// to be installed.
         ///
         /// Useful when running archived nextest tests in a separate job.
-        Get(ReadVar<target_lexicon::Triple>, WriteVar<PathBuf>),
+        Get(target_lexicon::Triple, WriteVar<PathBuf>),
     }
 }
 
@@ -39,11 +40,13 @@ impl FlowNodeWithConfig for Node {
         requests: Vec<Self::Request>,
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
-        let mut reqs = Vec::new();
+        let mut reqs: BTreeMap<String, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
         for req in requests {
             match req {
-                Request::Get(target, path) => reqs.push((target, path)),
+                Request::Get(target, path) => {
+                    reqs.entry(target.to_string()).or_default().push(path)
+                }
             }
         }
 
@@ -62,16 +65,15 @@ impl FlowNodeWithConfig for Node {
             |_| Ok(std::env::current_dir()?.absolute()?)
         });
 
-        for (target, path) in reqs {
+        for (target, paths) in reqs {
             let (cache_key, cache_dir) = {
                 let version = version.clone();
-                let cache_key = target.map(ctx, move |target| {
-                    format!("cargo-nextest-{version}-{target}")
+                let cache_key = format!("cargo-nextest-{version}-{target}");
+                let cache_dir = cache_dir.map(ctx, {
+                    let k = cache_key.clone();
+                    |p| p.join(k)
                 });
-                let cache_dir = cache_dir
-                    .zip(ctx, cache_key.clone())
-                    .map(ctx, |(p, k)| p.join(k));
-                (cache_key, cache_dir)
+                (ReadVar::from_static(cache_key), cache_dir)
             };
 
             let hitvar = ctx.reqv(|v| {
@@ -86,26 +88,22 @@ impl FlowNodeWithConfig for Node {
 
             let version = version.clone();
             ctx.emit_rust_step("downloading cargo-nextest", |ctx| {
-                let path = path.claim(ctx);
+                let paths = paths.claim(ctx);
                 let cache_dir = cache_dir.claim(ctx);
                 let hitvar = hitvar.claim(ctx);
-                let target = target.claim(ctx);
 
                 move |rt| {
                     let cache_dir = rt.read(cache_dir);
-                    let target = rt.read(target);
 
-                    let cargo_nextest_bin = match target.operating_system {
-                        target_lexicon::OperatingSystem::Windows => "cargo-nextest.exe",
-                        _ => "cargo-nextest",
+                    let cargo_nextest_bin = if target.contains("windows") {
+                        "cargo-nextest.exe"
+                    } else {
+                        "cargo-nextest"
                     };
                     let cached_bin_path = cache_dir.join(cargo_nextest_bin);
-                    let target = target.to_string();
 
                     if !matches!(rt.read(hitvar), CacheHit::Hit) {
-                        let nextest_archive = "nextest.tar.gz";
-                        flowey::shell_cmd!(rt, "curl --fail -L https://get.nexte.st/{version}/{target}.tar.gz -o {nextest_archive}").run()?;
-                        flowey::shell_cmd!(rt, "tar -xf {nextest_archive}").run()?;
+                        download_cargo_nextest(rt, version, target)?;
 
                         // move the downloaded bin into the cache dir
                         fs_err::create_dir_all(&cache_dir)?;
@@ -115,7 +113,9 @@ impl FlowNodeWithConfig for Node {
                     let cached_bin_path = cached_bin_path.absolute()?;
                     log::info!("downloaded to {}", cached_bin_path.to_string_lossy());
                     assert!(cached_bin_path.exists());
-                    rt.write(path, &cached_bin_path);
+                    for path in paths {
+                        rt.write(path, &cached_bin_path);
+                    }
 
                     Ok(())
                 }
@@ -124,4 +124,22 @@ impl FlowNodeWithConfig for Node {
 
         Ok(())
     }
+}
+
+/// downloads and extracts nextest to the current dir.
+/// split out to make rustfmt happy.
+fn download_cargo_nextest(
+    rt: &mut RustRuntimeServices<'_>,
+    version: String,
+    target: String,
+) -> anyhow::Result<()> {
+    let nextest_archive = "nextest.tar.gz";
+    flowey::shell_cmd!(
+        rt,
+        "curl --fail -L https://get.nexte.st/{version}/{target}.tar.gz -o {nextest_archive}"
+    )
+    .run()?;
+    flowey::shell_cmd!(rt, "tar -xf {nextest_archive}").run()?;
+
+    Ok(())
 }

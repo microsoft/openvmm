@@ -65,11 +65,6 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-
-        let default_nextest_config_file =
-            openvmm_repo_path.map(ctx, |p| p.join(".config").join("nextest.toml"));
-
         let base_env = [
             // Used by the test_with_tracing macro in test runners
             ("RUST_LOG", "trace"),
@@ -86,7 +81,7 @@ impl FlowNode for Node {
             nextest_working_dir,
             nextest_config_file,
             run_ignored,
-            mut pre_run_deps,
+            pre_run_deps,
             results,
             extra_env,
         } in requests
@@ -103,19 +98,13 @@ impl FlowNode for Node {
                 ReadVar::from_static(base_env.clone())
             };
 
-            let working_dir = if let Some(nextest_working_dir) = nextest_working_dir {
-                pre_run_deps.push(openvmm_repo_path.clone().into_side_effect());
-                nextest_working_dir
-            } else {
-                openvmm_repo_path.clone()
-            };
+            let working_dir = nextest_working_dir
+                .unwrap_or_else(|| ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir));
 
-            let config_file = if let Some(nextest_config_file) = nextest_config_file {
-                pre_run_deps.push(default_nextest_config_file.clone().into_side_effect());
-                nextest_config_file
-            } else {
-                default_nextest_config_file.clone()
-            };
+            let config_file = nextest_config_file.unwrap_or_else(|| {
+                ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir)
+                    .map(ctx, |p| p.join(".config").join("nextest.toml"))
+            });
 
             ctx.req(flowey_lib_common::run_cargo_nextest_run::Request::Run(
                 flowey_lib_common::run_cargo_nextest_run::Run {

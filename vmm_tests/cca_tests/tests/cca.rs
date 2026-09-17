@@ -705,9 +705,7 @@ fn write_visible_output(line: &[u8], logged_len: &mut usize, output_send: &mpsc:
     *logged_len = line.len();
 }
 
-petri::multitest!(vec![
-    petri::SimpleTest::new("cca_runtime", resolve_cca_runtime, cca_runtime).into()
-]);
+petri::test_sync!(cca_runtime, resolve_cca_runtime);
 
 fn main() {
     petri::test_main(|name, requirements| {

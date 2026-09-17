@@ -28,7 +28,7 @@
 # but that currently needs to be preinstalled on the actions runner.
 - bash: |
     set -x
-    curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+    curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
     ./rustup-init.exe -y --default-toolchain={{RUSTUP_TOOLCHAIN}}
     echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
   condition: eq(variables['Agent.OS'], 'Windows_NT')

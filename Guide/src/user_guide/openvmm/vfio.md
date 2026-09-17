@@ -160,6 +160,36 @@ Devices opened via the cdev path read their device node from
 `/sys/bus/pci/devices/<pci_id>/vfio-dev/vfioN` and open
 `/dev/vfio/devices/vfioN` instead of `/dev/vfio/<group>`.
 
+### Assigning a device behind a guest IOMMU (aarch64)
+
+By default an assigned device sees guest physical addresses directly: the
+guest programs DMA with GPAs and the host IOMMU maps them to host physical
+addresses. To instead expose an IOMMU *to the guest* — so the guest builds
+its own IOVA→GPA translations — put the device's root complex behind an
+accelerated SMMUv3 with `--smmu rc=<name>,accel`:
+
+```bash
+sudo openvmm \
+  --pcie-root-complex rc0 \
+  --pcie-root-port rc0:rp0 \
+  --smmu rc=rc0,accel \
+  --iommu id=iommu0 \
+  --vfio host=0000:01:00.0,port=rp0,iommu=iommu0 \
+  ...
+```
+
+The guest's stage-1 page tables are installed into the host IOMMU as a
+nested domain, so the physical SMMU performs the translation. This needs a
+host SMMUv3 with iommufd nesting support, every device behind the same SMMU
+must reference the same `--iommu` id, and the guest must boot with ACPI
+(`--device-tree` is rejected).
+
+Omitting `accel` leaves the SMMU translating in software, which cannot
+program the host IOMMU — assignment then fails rather than silently
+bypassing the guest's translations. See
+[Arm SMMUv3](../../reference/emulated/iommu/smmuv3.md) for the device
+reference.
+
 ## Step 6: Verify in the guest
 
 If the guest boots with PCI support, the assigned device should be visible:

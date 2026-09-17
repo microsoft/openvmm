@@ -24,11 +24,11 @@ static XTS_AES_256: LazyLock<Result<AlgHandle, XtsAes256Error>> = LazyLock::new(
     }
     .ok()
     .map(|()| AlgHandle(handle))
-    .map_err(|e| err(e, "open algorithm provider"))
+    .map_err(|e| err(e, "opening the XTS-AES algorithm provider"))
 });
 
 fn err(err: windows_result::Error, op: &'static str) -> XtsAes256Error {
-    XtsAes256Error(crate::BackendError(err, op))
+    XtsAes256Error(crate::BackendError::Windows(err, op))
 }
 
 pub struct XtsAes256Inner {
@@ -58,7 +58,7 @@ impl XtsAes256Inner {
         }
         .ok()
         .map(|()| KeyHandle(handle))
-        .map_err(|e| err(e, "generate symmetric key"))?;
+        .map_err(|e| err(e, "creating the XTS-AES key"))?;
 
         // SAFETY: the key handle is valid.
         unsafe {
@@ -70,7 +70,7 @@ impl XtsAes256Inner {
             )
         }
         .ok()
-        .map_err(|e| err(e, "set message block length"))?;
+        .map_err(|e| err(e, "setting the data unit size"))?;
 
         Ok(XtsAes256Inner { key })
     }
@@ -105,7 +105,7 @@ impl XtsAes256EncCtxInner<'_> {
                 windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
             )
             .ok()
-            .map_err(|e| err(e, "encrypt"))
+            .map_err(|e| err(e, "encrypting data"))
         }?;
         assert_eq!(n as usize, data.len());
         Ok(())
@@ -133,7 +133,7 @@ impl XtsAes256DecCtxInner<'_> {
                 windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
             )
             .ok()
-            .map_err(|e| err(e, "decrypt"))
+            .map_err(|e| err(e, "decrypting data"))
         }?;
         assert_eq!(n as usize, data.len());
         Ok(())

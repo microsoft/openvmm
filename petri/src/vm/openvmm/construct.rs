@@ -19,14 +19,13 @@ use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
 use crate::ProcessorTopology;
+use crate::SIZE_1_MB;
 use crate::SecureBootTemplate;
 use crate::TpmConfig;
 use crate::UefiConfig;
+use crate::VmbusStorageController;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
-
-use crate::SIZE_1_MB;
-use crate::VmbusStorageController;
 use crate::openvmm::memdiff_vmgs;
 use crate::openvmm::petri_disk_to_openvmm;
 use crate::vm::PetriVmProperties;
@@ -83,6 +82,7 @@ use storvsp_resources::ScsiPath;
 use tempfile::TempPath;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_vmgs::tpm_nvram_file_id;
 use uidevices_resources::SynthVideoHandle;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
@@ -119,6 +119,7 @@ impl PetriVmConfigOpenVmm {
             arch,
             host_log_levels,
             firmware,
+            hibernation_enabled,
             memory,
             proc_topology,
             vmgs,
@@ -146,6 +147,7 @@ impl PetriVmConfigOpenVmm {
         let setup = PetriVmConfigSetupCore {
             arch,
             firmware: &firmware,
+            hibernation_enabled,
             driver,
             logger: log_source,
             vmgs: &vmgs,
@@ -156,6 +158,7 @@ impl PetriVmConfigOpenVmm {
             enable_serial: properties.enable_serial,
             use_virtio_vsock: properties.use_virtio_vsock,
             no_vmbus: properties.no_vmbus,
+            no_hv: properties.no_hv,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -403,7 +406,7 @@ impl PetriVmConfigOpenVmm {
             use firmware_uefi_resources::x64_secure_boot_templates;
 
             let uefi_cfg = firmware.uefi_config();
-            let base_template_json =
+            let base_template =
                 uefi_cfg
                     .and_then(|c| c.secure_boot_template)
                     .map(|template| match (arch, template) {
@@ -447,7 +450,7 @@ impl PetriVmConfigOpenVmm {
                     MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
                     MachineArch::Aarch64 => vm_manifest_builder::MachineArch::Aarch64,
                 },
-                base_template_json,
+                base_template,
                 custom_uefi_json,
                 secure_boot,
                 log_level,
@@ -655,7 +658,7 @@ impl PetriVmConfigOpenVmm {
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {
-                with_hv: true,
+                with_hv: !properties.no_hv,
                 with_vtl2,
                 with_isolation: match firmware.isolation() {
                     Some(IsolationType::Vbs) => Some(openvmm_defs::config::IsolationType::Vbs),
@@ -685,6 +688,7 @@ impl PetriVmConfigOpenVmm {
             floppy_disks: vec![],
             ide_disks,
             pcie_root_complexes: vec![],
+            pcie_ecam_below_4gb: false,
             pcie_devices,
             pcie_switches: vec![],
             pcie_generic_initiators: vec![],
@@ -771,6 +775,7 @@ impl PetriVmConfigOpenVmm {
 struct PetriVmConfigSetupCore<'a> {
     arch: MachineArch,
     firmware: &'a Firmware,
+    hibernation_enabled: bool,
     driver: &'a DefaultDriver,
     logger: &'a PetriLogSource,
     vmgs: &'a PetriVmgsResource,
@@ -781,6 +786,7 @@ struct PetriVmConfigSetupCore<'a> {
     enable_serial: bool,
     use_virtio_vsock: bool,
     no_vmbus: bool,
+    no_hv: bool,
 }
 
 struct SerialData {
@@ -908,7 +914,9 @@ impl PetriVmConfigSetupCore<'_> {
                     initrd: Some(initrd),
                     cmdline,
                     enable_serial: self.enable_serial,
+                    isolation: openvmm_defs::config::LinuxIsolationConfig::None,
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    smbios: Default::default(),
                 }
             }
             (
@@ -925,6 +933,8 @@ impl PetriVmConfigSetupCore<'_> {
                 LoadMode::Pcat {
                     firmware,
                     boot_order: DEFAULT_PCAT_BOOT_ORDER,
+                    hibernation_enabled: self.hibernation_enabled,
+                    smbios: Box::new(openvmm_defs::config::SmbiosConfig::default()),
                 }
             }
             (
@@ -946,6 +956,10 @@ impl PetriVmConfigSetupCore<'_> {
                         },
                 },
             ) => {
+                anyhow::ensure!(
+                    !(self.no_hv && self.arch == MachineArch::X86_64),
+                    "x86_64 UEFI firmware requires Hyper-V enlightenments"
+                );
                 let firmware = File::open(firmware.clone())
                     .context("Failed to open uefi firmware file")?
                     .into();
@@ -954,15 +968,23 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_debugging: false,
                     enable_memory_protections: false,
                     disable_frontpage: *disable_frontpage,
-                    enable_tpm: self.tpm_config.is_some(),
+                    tpm_version: self.tpm_config.map(|c| c.version.into()),
                     enable_battery: false,
                     enable_serial: true,
                     enable_vpci_boot: *enable_vpci_boot,
                     uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: *default_boot_always_attempt,
-                    bios_guid: Guid::new_random(),
+                    smbios: Box::new(openvmm_defs::config::SmbiosConfig {
+                        system: openvmm_defs::config::SmbiosSystemOverrides {
+                            uuid: Guid::new_random(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
                     enable_vmbus: !self.no_vmbus,
                     force_dma_bounce: *force_dma_bounce,
+                    enable_hv: !self.no_hv,
+                    hibernation_enabled: self.hibernation_enabled,
                 }
             }
             (
@@ -981,6 +1003,7 @@ impl PetriVmConfigSetupCore<'_> {
             ) => {
                 let OpenHclConfig {
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
+                    enable_mana_keepalive: _,
                     custom_command_line: _,
                     log_levels: _,
                     vtl2_base_address_type,
@@ -1161,7 +1184,7 @@ impl PetriVmConfigSetupCore<'_> {
             vmgs: memdiff_vmgs(self.vmgs).await?,
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
-            enable_tpm: self.tpm_config.is_some(),
+            tpm_version: self.tpm_config.map(|c| c.version.into() ),
             firmware_event_send: Some(firmware_event_send.clone()),
             secure_boot_enabled: *secure_boot_enabled,
             secure_boot_template: match secure_boot_template {
@@ -1174,6 +1197,7 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
+            enable_hibernation: self.hibernation_enabled,
             no_persistent_secrets: self.tpm_config.as_ref().is_some_and(|c| c.no_persistent_secrets),
             igvm_attest_test_config: None,
             test_gsp_by_id,
@@ -1189,6 +1213,7 @@ impl PetriVmConfigSetupCore<'_> {
                 }
             },
             force_dma_bounce_enabled: *force_dma_bounce,
+            smbios: Default::default(),
         };
 
         Ok((ged, guest_request_send))
@@ -1237,8 +1262,9 @@ impl PetriVmConfigSetupCore<'_> {
 
     async fn config_tpm(&self) -> anyhow::Result<Option<ChipsetDeviceHandle>> {
         if !self.firmware.is_openhcl()
-            && let Some(TpmConfig {
+            && let Some(&TpmConfig {
                 no_persistent_secrets,
+                version,
                 ..
             }) = self.tpm_config
         {
@@ -1247,7 +1273,9 @@ impl PetriVmConfigSetupCore<'_> {
                 MachineArch::Aarch64 => TpmRegisterLayout::Mmio,
             };
 
-            let (ppi_store, nvram_store) = if self.vmgs.disk().is_none() || *no_persistent_secrets {
+            let tpm_version = version.into();
+
+            let (ppi_store, nvram_store) = if self.vmgs.disk().is_none() || no_persistent_secrets {
                 (
                     EphemeralNonVolatileStoreHandle.into_resource(),
                     EphemeralNonVolatileStoreHandle.into_resource(),
@@ -1255,7 +1283,7 @@ impl PetriVmConfigSetupCore<'_> {
             } else {
                 (
                     VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                    VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
+                    VmgsFileHandle::new(tpm_nvram_file_id(tpm_version), true).into_resource(),
                 )
             };
 
@@ -1263,6 +1291,7 @@ impl PetriVmConfigSetupCore<'_> {
                 name: "tpm".to_string(),
                 resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                     device: TpmDeviceHandle {
+                        version: tpm_version,
                         ppi_store,
                         nvram_store,
                         refresh_tpm_seeds: false,

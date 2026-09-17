@@ -4,12 +4,12 @@
 //! UEFI entrypoint for the OpenTMK test binary.
 
 use crate::tmk_assert;
-use opentmk_core::uefi::init::init;
+use opentmk_core::uefi::init::init_with_logger;
 use uefi::Status;
 
 #[uefi::entry]
 fn uefi_main() -> Status {
-    let r = init();
+    let r = init_with_logger(&opentmk_core::tmk_logger::COM1_LOGGER);
     tmk_assert!(r.is_ok(), "init should succeed");
     log::warn!("TEST_START");
     crate::tests::run_test();

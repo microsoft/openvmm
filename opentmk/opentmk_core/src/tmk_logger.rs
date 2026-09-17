@@ -16,13 +16,13 @@ use serde::Serialize;
 use spin::Mutex;
 use spin::MutexGuard;
 
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::InstrIoAccess;
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::Serial;
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::SerialPort;
-#[cfg(target_arch = "aarch64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "aarch64")]
 use minimal_rt::arch::Serial;
 
 #[derive(Serialize)]
@@ -108,18 +108,32 @@ where
     fn flush(&self) {}
 }
 
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 type SerialPortWriter = Serial<InstrIoAccess>;
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
-/// The global logger instance for x86_64 architecture, using COM1 serial port.
+#[cfg(target_arch = "x86_64")]
+/// The global logger instance for x86_64 architecture, using COM2 serial port.
 pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
+    TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
+
+#[cfg(target_arch = "x86_64")]
+/// A COM1 logger for guests whose host protocol consumes the primary serial port.
+pub static COM1_LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
     TmkLogger::new(SerialPortWriter::new(SerialPort::COM1, InstrIoAccess));
 
-#[cfg(target_arch = "aarch64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "aarch64")]
 /// The global logger instance for aarch64 architecture, using the default serial implementation.
 pub static LOGGER: TmkLogger<Mutex<Serial>> = TmkLogger::new(Serial {});
 
+#[cfg(target_arch = "aarch64")]
+/// The logger used by guests whose host protocol consumes the primary serial port.
+pub static COM1_LOGGER: TmkLogger<Mutex<Serial>> = TmkLogger::new(Serial {});
+
 /// Initializes the global logger.
 pub fn init() -> Result<(), SetLoggerError> {
-    log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Debug))
+    init_with(&LOGGER)
+}
+
+/// Initializes logging with the specified static logger.
+pub fn init_with(logger: &'static dyn log::Log) -> Result<(), SetLoggerError> {
+    log::set_logger(logger).map(|()| log::set_max_level(log::LevelFilter::Debug))
 }

@@ -16,6 +16,9 @@ const K_CC_ENCRYPT: u32 = 0;
 const K_CC_DECRYPT: u32 = 1;
 const K_CC_ALGORITHM_AES: u32 = 0;
 const K_CC_OPTION_ECB_MODE: u32 = 2;
+/// `kCCDecodeError`, the CommonCrypto status for input that fails an
+/// integrity check.
+const K_CC_DECODE_ERROR: i32 = -4304;
 
 // CommonCrypto ships in libSystem.dylib, which is auto-linked on macOS, so
 // no explicit `#[link]` attribute is required.
@@ -68,9 +71,9 @@ fn ecb_block(
         return Err(err(
             status,
             if op == K_CC_ENCRYPT {
-                "AES-ECB encrypt"
+                "encrypting an AES-ECB block"
             } else {
-                "AES-ECB decrypt"
+                "decrypting an AES-ECB block"
             },
         ));
     }
@@ -119,8 +122,7 @@ impl AesKeyUnwrapCtxInner<'_> {
     pub fn unwrap(&mut self, wrapped: &[u8]) -> Result<Vec<u8>, AesKeyWrapError> {
         match kwp::unwrap(wrapped, |block| ecb_block(self.key, K_CC_DECRYPT, block))? {
             Some(v) => Ok(v),
-            // -4304 == kCCDecodeError
-            None => Err(err(-4304, "AES key unwrap integrity check")),
+            None => Err(err(K_CC_DECODE_ERROR, "checking the key unwrap integrity")),
         }
     }
 }
