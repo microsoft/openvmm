@@ -2225,7 +2225,7 @@ async fn new_underhill_vm(
     // that is passed to vTPM.
     // `agent_data` and `guest_secret_key` may also be used by vTPM
     // initialization.
-    let platform_attestation_data = {
+    let mut platform_attestation_data = {
         if !is_restoring && let Some(vmgs) = vmgs.as_mut() {
             // Perform attestation by calling `initialize_platform_security`. This
             // will unlock the VMGS file internally.
@@ -2268,6 +2268,7 @@ async fn new_underhill_vm(
                 },
                 agent_data: None,
                 guest_secret_key: None,
+                runtime_tcb_floor: None,
             }
         }
     };
@@ -2301,6 +2302,26 @@ async fn new_underhill_vm(
                 && !(matches!(tee.tee_type(), tee_call::TeeType::Tdx)
                     && matches!(hardware_sealing_policy, HardwareSealingPolicy::Signer))
         });
+
+    // Reuse observations from boot's existing local report calls, including
+    // reports obtained before a failed SKR call-out. Do not initialize from
+    // VMGS metadata or lazily from the first post-migration report.
+    let runtime_tcb_floor = platform_attestation_data.runtime_tcb_floor.take();
+    if hardware_reseal_enabled {
+        anyhow::ensure!(
+            !is_restoring,
+            "cannot restore hardware resealing without a trusted TCB floor"
+        );
+        if runtime_tcb_floor.is_none() {
+            // Preserve boot's existing hardware recovery behavior, but never
+            // enable runtime resealing without a trustworthy source floor.
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                "runtime hardware resealing disabled: no usable boot TCB floor"
+            );
+        }
+    }
+    let hardware_reseal_enabled = hardware_reseal_enabled && runtime_tcb_floor.is_some();
 
     let (vmgs_client, vmgs) = if let Some((meta, vmgs)) = vmgs {
         // Spawn the VMGS client for multi-task access.
@@ -2854,13 +2875,6 @@ async fn new_underhill_vm(
     get_client.set_debug_interrupt_callback(Box::new(debug_interrupt_callback));
 
     let hardware_reseal = if hardware_reseal_enabled {
-        if is_restoring {
-            // Restored VMGS metadata may include a write whose final flush
-            // failed before save. Force a durable rewrite, not a cached check.
-            // This is an explicit local restore signal, not startup or periodic
-            // verification. Isolated-VM servicing remains unsupported.
-            migration_notification.notify();
-        }
         let resealer = crate::hardware_reseal::HardwareReseal::new(
             migration_notification,
             pal_async::timer::PolledTimer::new(tp.driver(0)),
@@ -2870,6 +2884,7 @@ async fn new_underhill_vm(
                 .clone(),
             tee_call.expect("resealing requires a TEE"),
             attestation_vm_config.clone(),
+            runtime_tcb_floor.expect("resealing requires a trusted boot TCB floor"),
         );
         Some(
             state_units
