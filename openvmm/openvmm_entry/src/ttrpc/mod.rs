@@ -692,10 +692,10 @@ impl VmService {
                 response.send(Ok(()));
                 return HandleAction::Quit;
             }
-            vmservice::Vm::CapabilitiesVm((), response) => {
+            vmservice::Vm::Capabilities((), response) => {
                 response.send(Ok(self.build_capabilities()));
             }
-            vmservice::Vm::PropertiesVm(_request, response) => {
+            vmservice::Vm::VmProperties(_request, response) => {
                 response.send(Ok(self.build_properties()));
             }
             vmservice::Vm::PauseVm((), response) => {
@@ -715,23 +715,23 @@ impl VmService {
                     self.wait_vm_response = Some((ctx.clone(), response));
                 }
             }
-            vmservice::Vm::ModifyResource(request, response) => {
+            vmservice::Vm::ModifyVmResource(request, response) => {
                 let r = self.modify_resource(request);
                 self.start_rpc(response, r);
             }
-            vmservice::Vm::AddPcieDevice(request, response) => {
+            vmservice::Vm::AddVmPcieDevice(request, response) => {
                 let r = self.add_pcie_device(request);
                 self.start_rpc(response, r);
             }
-            vmservice::Vm::RemovePcieDevice(request, response) => {
+            vmservice::Vm::RemoveVmPcieDevice(request, response) => {
                 let r = self.remove_pcie_device(request);
                 self.start_rpc(response, r);
             }
-            vmservice::Vm::AddVpciDevice(request, response) => {
+            vmservice::Vm::AddVmVpciDevice(request, response) => {
                 let r = self.add_vpci_device(request);
                 self.start_rpc(response, r);
             }
-            vmservice::Vm::RemoveVpciDevice(request, response) => {
+            vmservice::Vm::RemoveVmVpciDevice(request, response) => {
                 let r = self.remove_vpci_device(request);
                 self.start_rpc(response, r);
             }
@@ -864,35 +864,50 @@ impl VmService {
                 )
             }
             vmservice::vm_config::BootConfig::Uefi(uefi) => {
+                use vmservice::uefi::initial_variables::SecureBootTemplate;
+
                 let firmware = File::open(&uefi.firmware_path).with_context(|| {
                     format!("failed to open uefi firmware {}", uefi.firmware_path)
                 })?;
-                let initial_variables = uefi.initial_variables.unwrap_or_default();
-                let base_template = match (arch, initial_variables.secure_boot_template()) {
-                    (_, vmservice::uefi::initial_variables::SecureBootTemplate::None) => {
-                        None
+
+                // distinguish between `initial_variables` field is unset (implies
+                // `secure_boot_template = SecureBootTemplate::None`), and it being set but
+                // `secure_boot_template` being left uninitialized or incorrectly set.
+                let secure_boot_template = uefi
+                    .initial_variables
+                    .map(|iv| iv.secure_boot_template())
+                    .unwrap_or(SecureBootTemplate::None);
+                let base_template = match (arch, secure_boot_template) {
+                    (_, SecureBootTemplate::Unspecified) => {
+                        bail!(
+                            "unknown or unspecified uefi secure boot template value ({})",
+                            uefi.initial_variables
+                                .map(|iv| iv.secure_boot_template)
+                                .unwrap_or_default()
+                        );
                     }
+                    (_, SecureBootTemplate::None) => None,
                     (
                         vm_manifest_builder::MachineArch::X86_64,
-                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                        SecureBootTemplate::MicrosoftWindows,
                     ) => Some(
                         firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows(),
                     ),
                     (
                         vm_manifest_builder::MachineArch::Aarch64,
-                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
+                        SecureBootTemplate::MicrosoftWindows,
                     ) => Some(
                         firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_windows(),
                     ),
                     (
                         vm_manifest_builder::MachineArch::X86_64,
-                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                        SecureBootTemplate::MicrosoftUefiCertificateAuthority,
                     ) => Some(
                         firmware_uefi_resources::x64_secure_boot_templates::microsoft_uefi_ca(),
                     ),
                     (
                         vm_manifest_builder::MachineArch::Aarch64,
-                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                        SecureBootTemplate::MicrosoftUefiCertificateAuthority,
                     ) => Some(
                         firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_uefi_ca(),
                     ),
@@ -1056,21 +1071,31 @@ impl VmService {
         let guest_power_actions = {
             use vmservice::vm_config::GuestPowerAction as ProtoAction;
 
-            let requested = req_config.guest_power_actions.unwrap_or_default();
             let defaults = GuestPowerActions::default();
-            let action = |value: i32, default| -> anyhow::Result<GuestPowerAction> {
-                Ok(match ProtoAction::from_i32(value) {
-                    Some(ProtoAction::Default) => default,
-                    Some(ProtoAction::Restart) => GuestPowerAction::Reset,
-                    Some(ProtoAction::Halt) => GuestPowerAction::Halt,
-                    None => bail!("unknown guest power action {value}"),
-                })
-            };
-            GuestPowerActions {
-                shutdown: action(requested.shutdown, defaults.shutdown)?,
-                reset: action(requested.reset, defaults.reset)?,
-                crash: action(requested.crash, defaults.crash)?,
-                watchdog: action(requested.watchdog, defaults.watchdog)?,
+            if let Some(requested) = req_config.guest_power_actions {
+                let action = |value: Option<i32>, default| -> anyhow::Result<GuestPowerAction> {
+                    Ok(if let Some(value) = value {
+                        match ProtoAction::from_i32(value) {
+                            Some(ProtoAction::Unspecified) => {
+                                bail!("unspecified guest power action")
+                            }
+                            Some(ProtoAction::Default) => default,
+                            Some(ProtoAction::Restart) => GuestPowerAction::Reset,
+                            Some(ProtoAction::Halt) => GuestPowerAction::Halt,
+                            None => bail!("unknown guest power action {value}"),
+                        }
+                    } else {
+                        default
+                    })
+                };
+                GuestPowerActions {
+                    shutdown: action(requested.shutdown, defaults.shutdown)?,
+                    reset: action(requested.reset, defaults.reset)?,
+                    crash: action(requested.crash, defaults.crash)?,
+                    watchdog: action(requested.watchdog, defaults.watchdog)?,
+                }
+            } else {
+                defaults
             }
         };
 
@@ -1099,10 +1124,9 @@ impl VmService {
             }
 
             for nic in devices_config.nic_config {
-                let is_consomme = matches!(
-                    &nic.backend,
-                    Some(vmservice::nic_config::Backend::Consomme(_))
-                );
+                let is_consomme = nic.backend.as_ref().is_some_and(|b| {
+                    matches!(&b.kind, Some(vmservice::nic_backend::Kind::Consomme(_)),)
+                });
                 // Only wire the bind/unbind RPC channel to the first consomme
                 // NIC. Additional consomme NICs work but cannot be targeted by
                 // runtime bind/unbind commands.
@@ -1259,12 +1283,12 @@ impl VmService {
         Ok(())
     }
 
-    fn build_properties(&self) -> vmservice::PropertiesVmResponse {
+    fn build_properties(&self) -> vmservice::VmPropertiesResponse {
         let halt_reason = match &self.lifecycle {
             VmLifecycle::Halted(reason) => Some(reason.clone()),
             _ => None,
         };
-        vmservice::PropertiesVmResponse {
+        vmservice::VmPropertiesResponse {
             memory_stats: None,
             processor_stats: None,
             state: vmservice::VmState::from(&self.lifecycle) as i32,
@@ -1272,12 +1296,12 @@ impl VmService {
         }
     }
 
-    fn build_capabilities(&self) -> vmservice::CapabilitiesVmResponse {
-        use vmservice::capabilities_vm_response::Resource;
-        use vmservice::capabilities_vm_response::SupportedGuestOs;
-        use vmservice::capabilities_vm_response::SupportedResource;
+    fn build_capabilities(&self) -> vmservice::CapabilitiesResponse {
+        use vmservice::capabilities_response::Resource;
+        use vmservice::capabilities_response::SupportedGuestOs;
+        use vmservice::capabilities_response::SupportedResource;
 
-        vmservice::CapabilitiesVmResponse {
+        vmservice::CapabilitiesResponse {
             supported_resources: vec![
                 SupportedResource {
                     resource: Resource::Scsi as i32,
@@ -1373,14 +1397,14 @@ impl VmService {
 
     fn add_pcie_device(
         &self,
-        request: vmservice::AddPcieDeviceRequest,
+        request: vmservice::AddVmPcieDeviceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         let vm = self.vm.as_ref().context("VM not created yet")?;
         let worker_rpc = vm.worker_rpc.clone();
         let iommufds = vm.iommufds.clone();
         let registry = self.registry.clone();
         Ok(async move {
-            let vmservice::AddPcieDeviceRequest { port_name, device } = request;
+            let vmservice::AddVmPcieDeviceRequest { port_name, device } = request;
             let resource =
                 build_pci_device(device.context("missing device")?, &registry, &iommufds).await?;
             worker_rpc
@@ -1392,7 +1416,7 @@ impl VmService {
 
     fn remove_pcie_device(
         &self,
-        request: vmservice::RemovePcieDeviceRequest,
+        request: vmservice::RemoveVmPcieDeviceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         let recv = self
             .vm
@@ -1405,7 +1429,7 @@ impl VmService {
 
     fn add_vpci_device(
         &self,
-        request: vmservice::AddVpciDeviceRequest,
+        request: vmservice::AddVmVpciDeviceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         let vm = self.vm.as_ref().context("VM not created yet")?;
         let worker_rpc = vm.worker_rpc.clone();
@@ -1431,7 +1455,7 @@ impl VmService {
 
     fn remove_vpci_device(
         &self,
-        request: vmservice::RemoveVpciDeviceRequest,
+        request: vmservice::RemoveVmVpciDeviceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         let instance_id = request
             .instance_id
@@ -1448,9 +1472,9 @@ impl VmService {
 
     fn modify_resource(
         &self,
-        request: vmservice::ModifyResourceRequest,
+        request: vmservice::ModifyVmResourceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
-        use vmservice::modify_resource_request::Resource;
+        use vmservice::modify_vm_resource_request::Resource;
         let vm = self.vm.as_ref().context("VM not created yet")?;
         match request.resource.context("missing resource")? {
             Resource::ScsiDisk(disk) => {
@@ -1460,88 +1484,108 @@ impl VmService {
                     lun: disk.lun.try_into().ok().context("lun value out of range")?,
                 };
 
-                if request.r#type == vmservice::ModifyType::Add as i32 {
-                    if disk.controller != 0 {
-                        anyhow::bail!("controller must be 0");
+                match vmservice::ResourceModifyType::from_i32(request.r#type) {
+                    Some(vmservice::ResourceModifyType::Unspecified) => {
+                        bail!("unspecified SCSI disk modify request type")
                     }
-                    let scsi_rpc = vm.scsi_rpc.as_ref().context("no scsi controller")?.clone();
-                    Ok(async move {
-                        let config = make_disk_config(disk).await?;
-                        scsi_rpc
-                            .call_failable(ScsiControllerRequest::AddDevice, config)
-                            .await
-                            .map_err(anyhow::Error::from)
+                    Some(vmservice::ResourceModifyType::Add) => {
+                        if disk.controller != 0 {
+                            anyhow::bail!("controller must be 0");
+                        }
+                        let scsi_rpc = vm.scsi_rpc.as_ref().context("no scsi controller")?.clone();
+                        Ok(async move {
+                            let config = make_disk_config(disk).await?;
+                            scsi_rpc
+                                .call_failable(ScsiControllerRequest::AddDevice, config)
+                                .await
+                                .map_err(anyhow::Error::from)
+                        }
+                        .boxed())
                     }
-                    .boxed())
-                } else if request.r#type == vmservice::ModifyType::Remove as i32 {
-                    let recv = vm
-                        .scsi_rpc
-                        .as_ref()
-                        .context("no scsi controller")?
-                        .call_failable(ScsiControllerRequest::RemoveDevice, scsi_path);
-                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
-                } else {
-                    anyhow::bail!("unsupported request type {}", request.r#type);
+                    Some(vmservice::ResourceModifyType::Remove) => {
+                        let recv = vm
+                            .scsi_rpc
+                            .as_ref()
+                            .context("no scsi controller")?
+                            .call_failable(ScsiControllerRequest::RemoveDevice, scsi_path);
+                        Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+                    }
+                    _ => anyhow::bail!("unsupported SCSI modify request type {}", request.r#type),
                 }
             }
             Resource::NicConfig(nic) => {
-                if request.r#type == vmservice::ModifyType::Add as i32 {
-                    if matches!(
-                        &nic.backend,
-                        Some(vmservice::nic_config::Backend::Consomme(_))
-                    ) {
-                        anyhow::bail!(
-                            "adding a consomme NIC via ModifyResource is not supported; \
-                             configure it at VM creation time"
-                        );
+                match vmservice::ResourceModifyType::from_i32(request.r#type) {
+                    Some(vmservice::ResourceModifyType::Unspecified) => {
+                        bail!("unspecified NIC modify request type")
                     }
-                    let config = parse_nic_config(nic, None, &self.registry)?;
-                    let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
-                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
-                } else if request.r#type == vmservice::ModifyType::Update as i32 {
-                    let consomme = match nic.backend.context("missing backend")? {
-                        vmservice::nic_config::Backend::Consomme(c) => c,
-                        _ => anyhow::bail!("port update only supported for consomme backend"),
-                    };
-                    let consomme_rpc = vm
-                        .consomme_rpc
-                        .as_ref()
-                        .context("no consomme port channel")?
-                        .clone();
-                    Ok(async move {
-                        for port in consomme.ports {
-                            let cfg = parse_port_config(port)?;
-                            consomme_rpc
-                                .call_failable(ConsommeRequest::Bind, cfg)
-                                .await
-                                .map_err(anyhow::Error::from)?;
+                    Some(vmservice::ResourceModifyType::Add) => {
+                        if nic.backend.as_ref().is_some_and(|b| {
+                            matches!(&b.kind, Some(vmservice::nic_backend::Kind::Consomme(_)),)
+                        }) {
+                            anyhow::bail!(
+                                "adding a consomme NIC via ModifyResource is not supported; \
+                                 configure it at VM creation time"
+                            );
                         }
-                        Ok(())
+                        let config = parse_nic_config(nic, None, &self.registry)?;
+                        let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
+                        Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
                     }
-                    .boxed())
-                } else if request.r#type == vmservice::ModifyType::Remove as i32 {
-                    let consomme = match nic.backend.context("missing backend")? {
-                        vmservice::nic_config::Backend::Consomme(c) => c,
-                        _ => anyhow::bail!("port remove only supported for consomme backend"),
-                    };
-                    let consomme_rpc = vm
-                        .consomme_rpc
-                        .as_ref()
-                        .context("no consomme port channel")?
-                        .clone();
-                    Ok(async move {
-                        for port in consomme.ports {
-                            let cfg = parse_port_config(port)?;
-                            consomme_rpc
-                                .call_failable(ConsommeRequest::Unbind, cfg)
-                                .await
-                                .map_err(anyhow::Error::from)?;
+                    Some(vmservice::ResourceModifyType::Update) => {
+                        let consomme = match nic
+                            .backend
+                            .context("missing backend")?
+                            .kind
+                            .context("missing backend kind")?
+                        {
+                            vmservice::nic_backend::Kind::Consomme(c) => c,
+                            _ => anyhow::bail!("port update only supported for consomme backend"),
+                        };
+                        let consomme_rpc = vm
+                            .consomme_rpc
+                            .as_ref()
+                            .context("no consomme port channel")?
+                            .clone();
+                        Ok(async move {
+                            for port in consomme.ports {
+                                let cfg = parse_port_config(port)?;
+                                consomme_rpc
+                                    .call_failable(ConsommeRequest::Bind, cfg)
+                                    .await
+                                    .map_err(anyhow::Error::from)?;
+                            }
+                            Ok(())
                         }
-                        Ok(())
+                        .boxed())
                     }
-                    .boxed())
-                } else {
-                    anyhow::bail!("unsupported NIC modify type {}", request.r#type);
+                    Some(vmservice::ResourceModifyType::Remove) => {
+                        let consomme = match nic
+                            .backend
+                            .context("missing backend")?
+                            .kind
+                            .context("missing backend kind")?
+                        {
+                            vmservice::nic_backend::Kind::Consomme(c) => c,
+                            _ => anyhow::bail!("port remove only supported for consomme backend"),
+                        };
+                        let consomme_rpc = vm
+                            .consomme_rpc
+                            .as_ref()
+                            .context("no consomme port channel")?
+                            .clone();
+                        Ok(async move {
+                            for port in consomme.ports {
+                                let cfg = parse_port_config(port)?;
+                                consomme_rpc
+                                    .call_failable(ConsommeRequest::Unbind, cfg)
+                                    .await
+                                    .map_err(anyhow::Error::from)?;
+                            }
+                            Ok(())
+                        }
+                        .boxed())
+                    }
+                    _ => anyhow::bail!("unsupported NIC modify request type {}", request.r#type),
                 }
             }
             Resource::VpmemDisk(_) => anyhow::bail!("vpmem not supported"),
@@ -1646,12 +1690,11 @@ fn parse_port_config(port: vmservice::PortConfig) -> anyhow::Result<HostPortConf
         protocol,
         host_address,
     } = port;
-    let protocol = if protocol == vmservice::IpProtocol::Tcp as i32 {
-        HostPortProtocol::Tcp
-    } else if protocol == vmservice::IpProtocol::Udp as i32 {
-        HostPortProtocol::Udp
-    } else {
-        anyhow::bail!("invalid protocol {protocol}");
+    let protocol = match vmservice::IpProtocol::from_i32(protocol) {
+        Some(vmservice::IpProtocol::Unspecified) => bail!("unspecified ip protocol"),
+        Some(vmservice::IpProtocol::Tcp) => HostPortProtocol::Tcp,
+        Some(vmservice::IpProtocol::Udp) => HostPortProtocol::Udp,
+        None => anyhow::bail!("invalid protocol {protocol}"),
     };
     Ok(HostPortConfig {
         protocol,
@@ -1675,20 +1718,25 @@ fn parse_nic_config(
     recv: Option<mesh::Receiver<ConsommeRequest>>,
     registry: &FdRegistry,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
-    use self::vmservice::nic_config::Backend;
+    use self::vmservice::nic_backend::Kind;
     #[cfg(not(target_os = "linux"))]
     let _ = registry;
-    let endpoint = match nic.backend.context("missing backend")? {
+    let endpoint = match nic
+        .backend
+        .context("missing backend")?
+        .kind
+        .context("missing backend kind")?
+    {
         #[cfg(windows)]
-        Backend::LegacyPortId(port_id) => net_backend_resources::dio::WindowsDirectIoHandle {
+        Kind::Legacy(legacy) => net_backend_resources::dio::WindowsDirectIoHandle {
             switch_port_id: net_backend_resources::dio::SwitchPortId {
-                switch: nic.legacy_switch_id.parse().context("invalid switch ID")?,
-                port: port_id.parse().context("invalid port ID")?,
+                switch: legacy.switch_id.parse().context("invalid switch ID")?,
+                port: legacy.port_id.parse().context("invalid port ID")?,
             },
         }
         .into_resource(),
         #[cfg(windows)]
-        Backend::Dio(dio) => net_backend_resources::dio::WindowsDirectIoHandle {
+        Kind::Dio(dio) => net_backend_resources::dio::WindowsDirectIoHandle {
             switch_port_id: net_backend_resources::dio::SwitchPortId {
                 switch: dio.switch_id.parse().context("invalid switch ID")?,
                 port: dio.port_id.parse().context("invalid port ID")?,
@@ -1696,13 +1744,9 @@ fn parse_nic_config(
         }
         .into_resource(),
         #[cfg(target_os = "linux")]
-        Backend::Tap(tap) => build_tap_backend(tap, registry)?,
-        Backend::Consomme(consomme) => net_backend_resources::consomme::ConsommeHandle {
-            cidr: if consomme.cidr.is_empty() {
-                None
-            } else {
-                Some(consomme.cidr)
-            },
+        Kind::Tap(tap) => build_tap_backend(tap, registry)?,
+        Kind::Consomme(consomme) => net_backend_resources::consomme::ConsommeHandle {
+            cidr: consomme.cidr.filter(|s| !s.is_empty()), // user explicitly passed in an empty string
             ports: consomme
                 .ports
                 .into_iter()
@@ -1733,6 +1777,7 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
             lun: disk.lun.try_into().ok().context("lun value out of range")?,
         },
         device: SimpleScsiDiskHandle {
+            // TODO: have `open_disk_type` use `disk.r#type` (alongside extension) to detect disk type
             disk: open_disk_type(
                 disk.host_path.as_ref(),
                 OpenDiskOptions {
@@ -1853,7 +1898,7 @@ async fn build_pcie_topology(
     let mut switches = Vec::new();
     // Devices are built after the topology walk so that the (async) device
     // construction does not need to recurse.
-    let mut pending_devices: Vec<(String, vmservice::PcieDeviceKind)> = Vec::new();
+    let mut pending_devices: Vec<(String, vmservice::PciDeviceKind)> = Vec::new();
 
     for (index, rc) in proto_root_complexes.into_iter().enumerate() {
         let vmservice::PcieRootComplex {
@@ -1970,7 +2015,7 @@ fn walk_pcie_attachment(
     port_name: String,
     attachment: vmservice::PcieAttachment,
     switches: &mut Vec<PcieSwitchConfig>,
-    pending_devices: &mut Vec<(String, vmservice::PcieDeviceKind)>,
+    pending_devices: &mut Vec<(String, vmservice::PciDeviceKind)>,
 ) -> anyhow::Result<()> {
     match attachment.kind.context("missing attachment kind")? {
         vmservice::pcie_attachment::Kind::Device(device) => {
@@ -2024,12 +2069,12 @@ fn walk_pcie_attachment(
 /// Builds the resource for a single endpoint PCIe device function (a virtio
 /// function, an NVMe controller, or a VFIO-assigned host device).
 async fn build_pci_device(
-    device: vmservice::PcieDeviceKind,
+    device: vmservice::PciDeviceKind,
     registry: &FdRegistry,
     iommufds: &IommufdContexts,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
-    use vmservice::pcie_device_kind::Kind;
-    let vmservice::PcieDeviceKind { kind } = device;
+    use vmservice::pci_device_kind::Kind;
+    let vmservice::PciDeviceKind { kind } = device;
     Ok(match kind.context("missing PCIe device kind")? {
         Kind::Virtio(virtio) => {
             let resource = build_virtio_device(virtio, registry).await?;
@@ -2305,7 +2350,7 @@ fn build_nic_backend(
     Ok(match kind.context("missing network backend")? {
         Kind::Consomme(vmservice::ConsommeBackend { cidr, ports }) => {
             net_backend_resources::consomme::ConsommeHandle {
-                cidr: (!cidr.is_empty()).then_some(cidr),
+                cidr: cidr.filter(|s| !s.is_empty()), // user explicitly passed in an empty string
                 ports: ports
                     .into_iter()
                     .map(parse_port_config)

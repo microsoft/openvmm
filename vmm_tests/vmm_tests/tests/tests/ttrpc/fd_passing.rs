@@ -278,15 +278,19 @@ fn create_vm_request(
                 nic_config: vec![vmservice::NicConfig {
                     nic_id: Guid::new_random().to_string(),
                     mac_address: "00-15-5D-12-12-14".to_string(),
-                    backend: Some(vmservice::nic_config::Backend::Tap(vmservice::TapBackend {
-                        source: Some(vmservice::tap_backend::Source::FdName(fd_name.to_string())),
-                    })),
+                    backend: Some(vmservice::NicBackend {
+                        kind: Some(vmservice::nic_backend::Kind::Tap(vmservice::TapBackend {
+                            source: Some(vmservice::tap_backend::Source::FdName(
+                                fd_name.to_string(),
+                            )),
+                        })),
+                    }),
                     ..Default::default()
                 }],
                 ..Default::default()
             }),
             ..Default::default()
         }),
-        log_id: String::new(),
+        log_id: None,
     }
 }
