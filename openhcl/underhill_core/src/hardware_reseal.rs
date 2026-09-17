@@ -12,6 +12,7 @@ use inspect::Inspect;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
+use parking_lot::Mutex;
 use state_unit::StateRequest;
 use state_unit::StateUnit;
 use std::future::poll_fn;
@@ -122,6 +123,10 @@ pub(crate) struct HardwareReseal {
     tee: Arc<dyn TeeCall>,
     #[inspect(skip)]
     config: Arc<AttestationVmConfig>,
+    // Only trusted local reports can initialize/advance this resident floor.
+    // A shared mutex preserves advances even when a blocking job returns Err.
+    #[inspect(skip)]
+    tcb_floor: Arc<Mutex<runtime_sealing::RuntimeTcbFloor>>,
 }
 
 impl HardwareReseal {
@@ -131,6 +136,7 @@ impl HardwareReseal {
         vmgs: VmgsClient,
         tee: Box<dyn TeeCall>,
         config: AttestationVmConfig,
+        tcb_floor: runtime_sealing::RuntimeTcbFloor,
     ) -> Self {
         Self {
             schedule: Schedule::new(Instant::now()),
@@ -139,6 +145,7 @@ impl HardwareReseal {
             vmgs,
             tee: tee.into(),
             config: Arc::new(config),
+            tcb_floor: Arc::new(Mutex::new(tcb_floor)),
         }
     }
 
@@ -211,13 +218,15 @@ impl HardwareReseal {
         // in flight, and each is awaited before advancing the attempt.
         let tee = self.tee.clone();
         let config = self.config.clone();
+        let tcb_floor = self.tcb_floor.clone();
         let span = tracing::Span::current();
         let protector = blocking::unblock(move || {
             span.in_scope(|| -> anyhow::Result<Vec<u8>> {
-                let protector = runtime_sealing::create_protector(&*tee, &config, &key)?;
+                let mut floor = tcb_floor.lock();
+                let protector = floor.create_protector(&*tee, &config, &key)?;
                 // Validate with a second derivation, not the seal-time keys.
                 anyhow::ensure!(
-                    runtime_sealing::protector_matches(&*tee, &config, &protector, &key)?,
+                    floor.verify_protector(&*tee, &config, &protector, &key)?,
                     "hardware changed while constructing the protector"
                 );
                 Ok(protector)
@@ -238,11 +247,14 @@ impl HardwareReseal {
         // here remains latched for another attempt regardless of this result.
         let tee = self.tee.clone();
         let config = self.config.clone();
+        let tcb_floor = self.tcb_floor.clone();
         let span = tracing::Span::current();
         blocking::unblock(move || {
             span.in_scope(|| -> anyhow::Result<()> {
                 anyhow::ensure!(
-                    runtime_sealing::protector_matches(&*tee, &config, &protector, &key)?,
+                    tcb_floor
+                        .lock()
+                        .verify_protector(&*tee, &config, &protector, &key)?,
                     "hardware changed while persisting the protector"
                 );
                 Ok(())
@@ -275,10 +287,9 @@ impl StateUnit for HardwareReseal {
     }
 
     async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
-        // VMGS owns the DEK. No additional secret or scheduling state is saved;
-        // saved-state reconstruction explicitly notifies the new worker to
-        // rewrite for durability. Starting alone does not trigger recovery.
-        Ok(None)
+        // Memory-preserving migration retains the floor. Serialized servicing
+        // must not reconstruct a new, potentially lower floor from VMGS/report.
+        Err(SaveError::NotSupported)
     }
 
     async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
