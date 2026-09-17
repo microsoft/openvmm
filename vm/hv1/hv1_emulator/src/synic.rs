@@ -115,6 +115,11 @@ impl SharedProcessorState {
             sint: [hvdef::HvSynicSint::new().with_masked(true); NUM_SINTS],
         }
     }
+
+    fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
+        self.siefp_page.reset(prot_access);
+        *self = Self::at_reset();
+    }
 }
 
 /// A partition-wide synthetic interrupt controller.
@@ -135,6 +140,31 @@ fn sint_interrupt(request: &mut dyn RequestInterrupt, sint: hvdef::HvSynicSint) 
 }
 
 impl Timer {
+    fn set_count(&mut self, v: u64) {
+        self.count = v;
+        if self.config.auto_enable() && self.count != 0 {
+            self.config.set_enabled(true);
+        }
+        self.reevaluate = true;
+    }
+
+    fn set_count_at(&mut self, v: u64, ref_time: u64) {
+        self.count = v;
+        if self.config.auto_enable() && self.count != 0 {
+            self.config.set_enabled(true);
+        }
+        self.reevaluate = false;
+        self.due_time = if self.config.enabled() && self.count != 0 {
+            Some(if self.config.periodic() {
+                ref_time.wrapping_add(self.count)
+            } else {
+                self.count
+            })
+        } else {
+            None
+        };
+    }
+
     fn evaluate(
         &mut self,
         timer_index: u32,
@@ -237,8 +267,15 @@ impl GlobalSynic {
         };
         let vp = vp.read();
         let sint_index = sint_index as usize;
+        if sint_index >= NUM_SINTS {
+            return Ok(false);
+        }
         let sint = vp.sint[sint_index];
         let flag = flag as usize;
+        // Each SINT owns this many event flags in the SIEFP page
+        if flag >= (HV_PAGE_SIZE_USIZE / NUM_SINTS) * 8 {
+            return Ok(false);
+        }
         if sint.proxy() {
             return Err(SintProxied);
         }
@@ -271,16 +308,17 @@ impl GlobalSynic {
 
 impl ProcessorSynic {
     /// Resets the synic state back to its initial state.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
         let Self {
             sints,
             timers,
             shared,
             vina,
         } = self;
-        *sints = SintState::default();
+
+        sints.reset(prot_access);
         *timers = array::from_fn(|_| Timer::default());
-        *shared.write() = SharedProcessorState::at_reset();
+        shared.write().reset(prot_access);
         *vina = HvRegisterVsmVina::new();
     }
 
@@ -347,16 +385,10 @@ impl ProcessorSynic {
         let siefp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?siefp, "setting siefp");
         let mut shared = self.shared.write();
-        if siefp.enabled()
-            && (!self.sints.siefp.enabled() || siefp.base_gpn() != self.sints.siefp.base_gpn())
-        {
-            shared
-                .siefp_page
-                .remap(siefp.base_gpn(), prot_access)
-                .map_err(|_| MsrError::InvalidAccess)?;
-        } else if !siefp.enabled() {
-            shared.siefp_page.unmap(prot_access);
-        }
+        shared
+            .siefp_page
+            .sync(siefp.enabled(), siefp.base_gpn(), prot_access)
+            .map_err(|_| MsrError::InvalidAccess)?;
         self.sints.siefp = siefp;
         Ok(())
     }
@@ -369,16 +401,10 @@ impl ProcessorSynic {
     ) -> Result<(), MsrError> {
         let simp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?simp, "setting simp");
-        if simp.enabled()
-            && (!self.sints.simp.enabled() || simp.base_gpn() != self.sints.simp.base_gpn())
-        {
-            self.sints
-                .simp_page
-                .remap(simp.base_gpn(), prot_access)
-                .map_err(|_| MsrError::InvalidAccess)?;
-        } else if !simp.enabled() {
-            self.sints.simp_page.unmap(prot_access);
-        }
+        self.sints
+            .simp_page
+            .sync(simp.enabled(), simp.base_gpn(), prot_access)
+            .map_err(|_| MsrError::InvalidAccess)?;
         self.sints.simp = simp;
         Ok(())
     }
@@ -410,12 +436,12 @@ impl ProcessorSynic {
 
     /// Sets the specified synthetic timer count register.
     pub fn set_stimer_count(&mut self, n: usize, v: u64) {
-        self.timers[n].count = v;
-        if self.timers[n].config.auto_enable() && self.timers[n].count != 0 {
-            self.timers[n].config.set_enabled(true);
-        }
+        self.timers[n].set_count(v);
+    }
 
-        self.timers[n].reevaluate = true;
+    /// Sets a synthetic timer count written at the given reference time.
+    pub fn set_stimer_count_at(&mut self, n: usize, v: u64, ref_time: u64) {
+        self.timers[n].set_count_at(v, ref_time);
     }
 
     /// Requests a notification when any of the requested sints has a free
@@ -435,6 +461,9 @@ impl ProcessorSynic {
         message: &HvMessage,
         interrupt: &mut dyn RequestInterrupt,
     ) -> Result<(), HvError> {
+        if sint_index as usize >= NUM_SINTS {
+            return Err(HvError::InvalidSynicState);
+        }
         let sint = &self.sints.sint[sint_index as usize];
         if sint.masked() || sint.proxy() {
             return Err(HvError::InvalidSynicState);
@@ -719,5 +748,66 @@ impl SintState {
         }
         self.ready_sints |= 1 << sint;
         true
+    }
+
+    fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
+        self.simp_page.reset(prot_access);
+        *self = Self::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restored_periodic_timer_preserves_program_time() {
+        let mut timer = Timer {
+            config: HvSynicStimerConfig::new()
+                .with_periodic(true)
+                .with_auto_enable(true),
+            ..Default::default()
+        };
+
+        timer.set_count_at(100, 1000);
+
+        assert!(timer.config.enabled());
+        assert_eq!(timer.due_time, Some(1100));
+        assert!(!timer.reevaluate);
+    }
+
+    #[test]
+    fn restored_oneshot_timer_preserves_absolute_deadline() {
+        let mut timer = Timer {
+            config: HvSynicStimerConfig::new().with_auto_enable(true),
+            ..Default::default()
+        };
+
+        timer.set_count_at(2000, 1000);
+
+        assert!(timer.config.enabled());
+        assert_eq!(timer.due_time, Some(2000));
+        assert!(!timer.reevaluate);
+    }
+
+    #[test]
+    fn restored_expired_timer_is_evaluated() {
+        let mut timer = Timer {
+            config: HvSynicStimerConfig::new()
+                .with_auto_enable(true)
+                .with_direct_mode(true)
+                .with_apic_vector(0x40),
+            ..Default::default()
+        };
+        let mut sints = SintState::default();
+        let mut requested = None;
+        let mut interrupt = |vector, auto_eoi| requested = Some((vector, auto_eoi));
+
+        timer.set_count_at(1000, 900);
+        timer.evaluate(0, &mut sints, 1001, &mut interrupt);
+
+        assert_eq!(requested, Some((0x40, false)));
+        assert!(!timer.config.enabled());
+        assert_eq!(timer.due_time, None);
     }
 }

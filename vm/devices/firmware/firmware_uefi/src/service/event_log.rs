@@ -4,9 +4,9 @@
 //! UEFI Event Logging subsystem.
 
 use crate::UefiDevice;
-use crate::platform::logger::BootInfo;
-use crate::platform::logger::UefiEvent;
-use crate::platform::logger::UefiLogger;
+use firmware_uefi_resources::platform::BootInfo;
+use firmware_uefi_resources::platform::UefiEvent;
+use firmware_uefi_resources::platform::UefiLogger;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;

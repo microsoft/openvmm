@@ -4,8 +4,7 @@
 This page offers a high-level overview of different ways to launch and interact
 with OpenVMM.
 
-These examples are by no means "exhaustive", and should be treated as a useful
-jumping-off point for subsequent self-guided experimentation with OpenVMM.
+These examples provide a starting point for launching and configuring OpenVMM.
 
 ## Obtaining a copy of OpenVMM
 
@@ -50,17 +49,19 @@ When running the `openvmm` binary directly, these environment variables are
 To fix this, **explicitly pass the firmware** using `--uefi-firmware`:
 
 ```shell
-openvmm --uefi --uefi-firmware path/to/MSVM.fd --disk memdiff:path/to/disk.vhdx
+openvmm --uefi --uefi-firmware path/to/MSVM.fd \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:path/to/disk.vhdx,on=scsi0
 ```
 
 If you ran `cargo xflowey restore-packages`, the firmware is at:
 
 ```text
 .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd        # x64
-.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd # aarch64
+.packages/hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd # aarch64
 ```
 
-If you used `cargo xflowey vmm-tests --build-only --dir <out>`, the firmware
+If you used `cargo xflowey vmm-tests-run --build-only --dir <out>`, the firmware
 is copied into that output directory under the same relative path.
 
 Alternatively, set the environment variable so you don't need the flag each time:
@@ -124,7 +125,10 @@ A copy of the `mu_msvm` UEFI firmware is automatically downloaded via `cargo
 xflowey restore-packages`.
 
 ```shell
-cargo run -- --uefi --disk memdiff:path/to/windows.vhdx --gfx
+cargo run -- --uefi \
+  --vmbus-scsi id=scsi0 \
+  --disk memdiff:path/to/windows.vhdx,on=scsi0 \
+  --gfx
 ```
 
 For more info on `--gfx`, and how to actually interact with the VM using a
@@ -133,12 +137,14 @@ docs.
 
 The file `windows.vhdx` can be any format of VHD(X).
 
-Note that OpenVMM does not currently support using dynamic VHD/VHDX files on
-Linux hosts. Unless you have a fixed VHD1 image, you will need to convert the
-image to raw format, using the following command:
+VHDX files (dynamic, fixed, and differencing) are supported on non-Windows
+platforms via the pure-Rust [`vhdx`](../../reference/backends/vhdx.md)
+parser. On Windows, `.vhdx` files use the native kernel-mode VHD path
+instead. Fixed VHD1 images work on all platforms. Dynamic and differencing VHD1
+files are **not** supported — convert them to VHDX first:
 
-```shell
-qemu-img convert -f vhdx -O raw windows.vhdx windows.img
+```bash
+qemu-img convert -f vpc -O vhdx dynamic.vhd converted.vhdx
 ```
 
 Also, note the use of `memdiff`, which creates a memory-backed "differencing
@@ -147,6 +153,59 @@ writes the VM makes to the VHD are not persisted between runs. This is very
 useful when iterating on OpenVMM code, since booting the VM becomes repeatable
 and you don't have to worry about shutting down properly. Use `file` instead for
 normal persistent storage.
+
+### OpenHCL, via Linux Direct Boot
+
+This example will boot OpenHCL in Linux direct mode, running a minimal shell
+inside VTL2. This is the same configuration used by the `openhcl_linux_direct_x64`
+integration tests.
+
+First, build the test artifacts from Linux or WSL using `vmm-tests-run --build-only`.
+The IGVM must be built on Linux:
+
+```shell
+cargo xflowey vmm-tests-run --build-only --dir <out> --target windows-x64
+```
+
+```admonish tip
+If you only need the IGVM binary (and already have `openvmm.exe`), you can
+use `cargo xflowey build-igvm` instead — it's faster than building the full
+test suite.
+```
+
+This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
+`<out>` directory. Then, on Windows, from the `<out>` directory:
+
+```powershell
+.\openvmm.exe `
+    --hv `
+    --vtl2 `
+    --igvm openhcl-x64-test-linux-direct.bin `
+    -c "panic=-1 reboot=triple UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=rdinit=/bin/sh" `
+    -m 2GB `
+    --vmbus-com1-serial "term,name=VTL0 Linux" `
+    --com3 "term,name=VTL2 OpenHCL" `
+    --vmbus-vtl2-vsock-path $env:temp\ohcldiag-dev
+```
+
+```admonish warning
+The `--vmbus-com1-serial` flag is **required** when using `rdinit=/bin/sh`.
+The shell running as PID 1 needs a controlling terminal (tty) — without one
+it exits immediately, causing a kernel panic and infinite reboot loop.
+
+The `--com3` flag is optional but recommended — it gives you VTL2 (OpenHCL)
+kernel console output for debugging.
+```
+
+For more details on running OpenHCL on OpenVMM, including
+[VMBus relay](../../reference/architecture/openhcl/vmbus.md) and device
+assignment, see [Running OpenHCL: OpenVMM](../openhcl/run/openvmm.md).
+
+### Alpine Linux, via Direct Boot
+
+See the dedicated [Alpine Linux](./alpine.md) guide for a full walkthrough of
+booting Alpine from a cloud disk image using direct boot with PCIe and
+virtio-blk.
 
 ### DOS, via PCAT BIOS
 

@@ -298,6 +298,9 @@ pub(crate) mod msg {
         /// CVM NOTE: The returned value should not be relied on for security purposes.
         /// It is expected that the guest will use NTP (or some other time source) after boot.
         HostTime(Rpc<(), Protocol<get_protocol::TimeResponse>>),
+        /// Ask the host to (re)load a firmware image into VTL0 guest RAM,
+        /// keyed by an opaque firmware token.
+        LoadFirmware(Rpc<u64, Protocol<get_protocol::LoadFirmwareResponse>>),
         /// Send an attestation request.
         IgvmAttest(Rpc<Box<IgvmAttestRequestData>, Result<Vec<u8>, crate::error::IgvmAttestError>>),
         /// Tell the host the location of the framebuffer.
@@ -1246,6 +1249,11 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::ResetRamGpaRange(req) => {
                 self.push_basic_host_request_handler(req, |input| {
                     get_protocol::ResetRamGpaRangeRequest::new(input)
+                });
+            }
+            Msg::LoadFirmware(req) => {
+                self.push_basic_host_request_handler(req, |token| {
+                    get_protocol::LoadFirmwareRequest::new(token)
                 });
             }
             Msg::SendServicingState(req) => self.push_primary_host_request_handler(move |access| {

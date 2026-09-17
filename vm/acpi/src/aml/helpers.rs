@@ -100,8 +100,7 @@ pub fn encode_package_len(len: usize) -> Vec<u8> {
 
 pub fn encode_integer(value: u64) -> Vec<u8> {
     let mut byte_stream: Vec<u8> = Vec::new();
-    let end;
-    if value == 0 {
+    let end = if value == 0 {
         // 0 has its own op
         return vec![0];
     } else if value == 1 {
@@ -109,17 +108,17 @@ pub fn encode_integer(value: u64) -> Vec<u8> {
         return vec![1];
     } else if value <= 0xff {
         byte_stream.push(0xa);
-        end = 1;
+        1
     } else if value <= 0xffff {
         byte_stream.push(0xb);
-        end = 2;
+        2
     } else if value <= 0xffffffff {
         byte_stream.push(0xc);
-        end = 4;
+        4
     } else {
         byte_stream.push(0xe);
-        end = 8;
-    }
+        8
+    };
 
     let bytes = value.to_le_bytes();
     byte_stream.extend_from_slice(&bytes[..end]);
@@ -150,6 +149,18 @@ pub fn char_to_hex(value: u8) -> u8 {
         b'A'..=b'F' => 10 + value - b'A',
         _ => panic!("Unsupported hex char {}", value),
     }
+}
+
+/// Encode an AML Arg reference (Arg0-Arg6: opcodes 0x68-0x6e).
+pub fn encode_arg(n: u8) -> Vec<u8> {
+    assert!(n < 7, "Arg index must be 0-6");
+    vec![0x68 + n]
+}
+
+/// Encode an AML Local variable reference (Local0-Local7: opcodes 0x60-0x67).
+pub fn encode_local(n: u8) -> Vec<u8> {
+    assert!(n < 8, "Local index must be 0-7");
+    vec![0x60 + n]
 }
 
 #[cfg(test)]

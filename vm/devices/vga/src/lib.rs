@@ -26,6 +26,8 @@ mod text_mode;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::PortIoIntercept;
 use framebuffer::FramebufferLocalControl;
@@ -103,11 +105,11 @@ impl ChipsetDevice for VgaDevice {
 }
 
 impl PciConfigSpace for VgaDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
         self.emu.notify_pci_config_access_read(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         self.emu.notify_pci_config_access_write(offset, value)
     }
 

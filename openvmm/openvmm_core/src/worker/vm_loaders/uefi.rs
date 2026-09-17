@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::worker::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
-use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use loader::importer::Register;
 use loader::uefi::IMAGE_SIZE;
@@ -23,13 +23,19 @@ pub enum Error {
     Firmware(#[source] std::io::Error),
     #[error("uefi loader error")]
     Loader(#[source] loader::uefi::Error),
-    #[error("UEFI requires at least two MMIO ranges")]
-    UnsupportedMmio,
+    #[error("failed to build PCIe ACPI tables")]
+    PcieAcpi(#[source] vmm_core::acpi_builder::PcieAcpiBuildError),
+    #[error("SMBIOS field `{0}` cannot be configured on UEFI boot")]
+    UnsupportedSmbiosField(&'static str),
+    #[cfg(guest_arch = "aarch64")]
+    #[error("UEFI boot with GICv2 is not supported")]
+    GicV2NotSupported,
 }
 
 pub struct UefiLoadSettings {
     pub debugging: bool,
     pub battery: bool,
+    pub hibernation: bool,
     pub memory_protections: bool,
     pub frontpage: bool,
     pub tpm: bool,
@@ -38,29 +44,50 @@ pub struct UefiLoadSettings {
     pub serial: bool,
     pub uefi_console_mode: Option<UefiConsoleMode>,
     pub default_boot_always_attempt: bool,
-    pub bios_guid: Guid,
+    /// SMBIOS (DMI) configuration. The system UUID is delivered as the VM's
+    /// `BiosGuid`, and any set Type 1 (System Information) overrides are emitted
+    /// as config blobs so the firmware reports the configured identity. Type 0
+    /// (BIOS) overrides are rejected because the firmware self-describes the
+    /// BIOS (see [`add_smbios_blobs`]).
+    pub smbios: openvmm_defs::config::SmbiosConfig,
+    /// Whether VMBus is present in this VM. When `false`, the firmware's
+    /// `vmbus_disabled` flag is set; the `MmioRanges` blob is still provided
+    /// but the high MMIO range will be empty. The firmware must support this
+    /// mode.
+    pub vmbus: bool,
+    /// Force UEFI to bounce-buffer all DMA traffic.
+    pub force_dma_bounce: bool,
+    /// Whether the hypervisor (HV#1) enlightenments are exposed to the guest.
+    pub hv: bool,
+}
+
+/// All inputs needed by [`load_uefi`].
+pub struct LoadUefiParams<'a> {
+    pub firmware: &'a std::fs::File,
+    pub gm: &'a GuestMemory,
+    pub processor_topology: &'a ProcessorTopology,
+    pub mem_layout: &'a MemoryLayout,
+    pub pcie_host_bridges: &'a [PcieHostBridge],
+    pub settings: UefiLoadSettings,
+    pub chipset_mmio: &'a ChipsetMmioRanges,
+    pub acpi_tables: &'a [&'a [u8]],
 }
 
 /// Loads the UEFI firmware.
-///
-/// If `firmware` is `None`, load the embedded firmware.
-pub fn load_uefi(
-    mut firmware: &std::fs::File,
-    gm: &GuestMemory,
-    processor_topology: &ProcessorTopology,
-    mem_layout: &MemoryLayout,
-    pcie_host_bridges: &Vec<PcieHostBridge>,
-    load_settings: UefiLoadSettings,
-    madt: &[u8],
-    srat: &[u8],
-    mcfg: Option<&[u8]>,
-    pptt: Option<&[u8]>,
-) -> Result<Vec<Register>, Error> {
-    if mem_layout.mmio().len() < 2 {
-        return Err(Error::UnsupportedMmio);
-    }
+pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
+    let LoadUefiParams {
+        firmware,
+        gm,
+        processor_topology,
+        mem_layout,
+        pcie_host_bridges,
+        ref settings,
+        chipset_mmio,
+        acpi_tables,
+    } = *params;
 
     let mut loaded_image;
+    let mut firmware = firmware;
     let image = {
         loaded_image = Vec::new();
         firmware.rewind().map_err(Error::Firmware)?;
@@ -84,30 +111,27 @@ pub fn load_uefi(
         })
         .collect();
 
-    let low_mmio = mem_layout.mmio()[0];
-    let high_mmio = mem_layout.mmio()[1];
-
     let flags = config::Flags::new()
-        .with_hibernate_enabled(true)
-        .with_serial_controllers_enabled(load_settings.serial)
-        .with_vpci_boot_enabled(load_settings.vpci_boot)
-        .with_debugger_enabled(load_settings.debugging)
-        .with_virtual_battery_enabled(load_settings.battery)
-        .with_disable_frontpage(!load_settings.frontpage)
-        .with_tpm_enabled(load_settings.tpm)
-        .with_measure_additional_pcrs(load_settings.tpm)
-        .with_tpm_locality_regs_enabled(load_settings.tpm)
-        .with_watchdog_enabled(load_settings.guest_watchdog)
+        .with_hibernate_enabled(settings.hibernation)
+        .with_serial_controllers_enabled(settings.serial)
+        .with_vpci_boot_enabled(settings.vpci_boot)
+        .with_debugger_enabled(settings.debugging)
+        .with_virtual_battery_enabled(settings.battery)
+        .with_disable_frontpage(!settings.frontpage)
+        .with_tpm_enabled(settings.tpm)
+        .with_measure_additional_pcrs(settings.tpm)
+        .with_tpm_locality_regs_enabled(settings.tpm)
+        .with_watchdog_enabled(settings.guest_watchdog)
         // OpenVMM pre-sets the MTRRs; tell the firmware
         .with_mtrrs_initialized_at_load(true)
         // TODO: plumb all 4 kinds of memory protection modes through
-        .with_memory_protection(if load_settings.memory_protections {
+        .with_memory_protection(if settings.memory_protections {
             config::MemoryProtection::Default
         } else {
             config::MemoryProtection::Disabled
         })
         .with_console(
-            match load_settings
+            match settings
                 .uefi_console_mode
                 .unwrap_or(UefiConsoleMode::Default)
             {
@@ -117,26 +141,26 @@ pub fn load_uefi(
                 UefiConsoleMode::None => config::ConsolePort::None,
             },
         )
-        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt);
+        .with_default_boot_always_attempt(settings.default_boot_always_attempt)
+        .with_vmbus_disabled(!settings.vmbus)
+        .with_pci_resources_pre_assigned(true)
+        .with_force_dma_bounce_enabled(settings.force_dma_bounce);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {
         bios_size_pages: (IMAGE_SIZE / HV_PAGE_SIZE) as u32,
         flags: 0,
     })
-    .add_raw(config::BlobStructureType::Madt, madt)
-    .add_raw(config::BlobStructureType::Srat, srat)
     .add_raw(config::BlobStructureType::MemoryMap, memory_map.as_bytes())
-    .add(&config::BiosGuid(load_settings.bios_guid))
     .add(&config::Entropy(entropy))
     .add(&config::MmioRanges([
         config::Mmio {
-            mmio_page_number_start: low_mmio.start() / HV_PAGE_SIZE,
-            mmio_size_in_pages: (low_mmio.end() - low_mmio.start()) / HV_PAGE_SIZE,
+            mmio_page_number_start: chipset_mmio.low.start() / HV_PAGE_SIZE,
+            mmio_size_in_pages: chipset_mmio.low.len() / HV_PAGE_SIZE,
         },
         config::Mmio {
-            mmio_page_number_start: high_mmio.start() / HV_PAGE_SIZE,
-            mmio_size_in_pages: (high_mmio.end() - high_mmio.start()) / HV_PAGE_SIZE,
+            mmio_page_number_start: chipset_mmio.high.start() / HV_PAGE_SIZE,
+            mmio_size_in_pages: chipset_mmio.high.len() / HV_PAGE_SIZE,
         },
     ]))
     .add(&config::ProcessorInformation {
@@ -151,34 +175,58 @@ pub fn load_uefi(
     })
     .add(&flags);
 
-    #[cfg(guest_arch = "aarch64")]
-    cfg.add(&config::Gic {
-        gic_distributor_base: processor_topology.gic_distributor_base(),
-        gic_redistributors_base: processor_topology.gic_redistributors_base(),
-    });
+    // Emit the SMBIOS configuration: the system UUID (as the VM's `BiosGuid`)
+    // plus any overridden Type 1 strings. Rejects overrides the firmware can't
+    // honor.
+    add_smbios_blobs(&mut cfg, &settings.smbios)?;
 
-    if let Some(mcfg) = mcfg {
-        cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);
+    #[cfg(guest_arch = "aarch64")]
+    {
+        let redistributors_base = match processor_topology.gic_version() {
+            vm_topology::processor::aarch64::GicVersion::V3 {
+                redistributors_base,
+            } => redistributors_base,
+            vm_topology::processor::aarch64::GicVersion::V2 { .. } => {
+                return Err(Error::GicV2NotSupported);
+            }
+        };
+        cfg.add(&config::Gic {
+            gic_distributor_base: processor_topology.gic_distributor_base(),
+            gic_redistributors_base: redistributors_base,
+        });
     }
 
-    if let Some(pptt) = pptt {
-        cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+    for table in acpi_tables {
+        cfg.add_raw(config::BlobStructureType::AcpiTable, table);
     }
 
     if !pcie_host_bridges.is_empty() {
-        let mut ssdt = acpi::ssdt::Ssdt::new();
-        for bridge in pcie_host_bridges {
-            ssdt.add_pcie(
-                bridge.index,
-                bridge.segment,
-                bridge.start_bus,
-                bridge.end_bus,
-                bridge.ecam_range,
-                bridge.low_mmio,
-                bridge.high_mmio,
-            );
+        let pcie_tables = vmm_core::acpi_builder::build_pcie_acpi_tables(pcie_host_bridges)
+            .map_err(Error::PcieAcpi)?;
+        cfg.add_raw(config::BlobStructureType::AcpiTable, &pcie_tables.ssdt);
+        if let Some(cedt) = pcie_tables.cedt {
+            cfg.add_raw(config::BlobStructureType::AcpiTable, &cedt);
         }
-        cfg.add_raw(config::BlobStructureType::Ssdt, &ssdt.to_bytes());
+    }
+
+    if !pcie_host_bridges.is_empty() {
+        let entries: Vec<config::PcieBarApertureEntry> = pcie_host_bridges
+            .iter()
+            .map(|b| config::PcieBarApertureEntry {
+                segment: b.segment,
+                start_bus: b.start_bus,
+                end_bus: b.end_bus,
+                uid: b.index,
+                low_mmio_base: b.low_mmio.start(),
+                low_mmio_length: b.low_mmio.len(),
+                high_mmio_base: b.high_mmio.start(),
+                high_mmio_length: b.high_mmio.len(),
+            })
+            .collect();
+        cfg.add_raw(
+            config::BlobStructureType::PcieBarApertures,
+            entries.as_bytes(),
+        );
     }
 
     let mut loader = Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);
@@ -187,8 +235,159 @@ pub fn load_uefi(
         &mut loader,
         image,
         loader::uefi::ConfigType::ConfigBlob(cfg),
+        settings.hv,
     )
     .map_err(Error::Loader)?;
 
     Ok(loader.initial_regs())
+}
+
+/// Adds the SMBIOS configuration to the UEFI config blob, failing closed on any
+/// override the firmware can't honor.
+///
+/// On UEFI boot the firmware builds the SMBIOS tables itself, so only fields
+/// with a corresponding config blob can be overridden. The entire
+/// [`SmbiosConfig`](openvmm_defs::config::SmbiosConfig) is destructured here in
+/// one place so every field must be explicitly handled — emitted as a blob, or
+/// rejected with an error because the firmware self-describes it. Adding a field
+/// to `SmbiosConfig` is therefore a compile error until its UEFI handling is
+/// decided, rather than being silently dropped. As blobs are added for
+/// currently-unsupported fields, the corresponding override simply stops
+/// erroring.
+fn add_smbios_blobs(
+    cfg: &mut config::Blob,
+    smbios: &openvmm_defs::config::SmbiosConfig,
+) -> Result<(), Error> {
+    use config::BlobStructureType;
+
+    let openvmm_defs::config::SmbiosConfig {
+        bios:
+            openvmm_defs::config::SmbiosBiosOverrides {
+                vendor,
+                version: bios_version,
+                release_date,
+                release,
+            },
+        system:
+            openvmm_defs::config::SmbiosSystemOverrides {
+                manufacturer,
+                product_name,
+                version: system_version,
+                serial_number,
+                sku_number,
+                family,
+                uuid,
+            },
+    } = smbios;
+
+    // Type 0 (BIOS Information) has no config blobs: the firmware self-describes
+    // the BIOS, so reject any override rather than silently dropping it.
+    if vendor.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS vendor"));
+    }
+    if bios_version.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS version"));
+    }
+    if release_date.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS release date"));
+    }
+    if release.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS release"));
+    }
+
+    // Type 1 (System Information): the UUID is always delivered as the VM's
+    // `BiosGuid`; the string fields are emitted only when overridden (otherwise
+    // the firmware uses its own default).
+    cfg.add(&config::BiosGuid(*uuid));
+    for (structure_type, value) in [
+        (BlobStructureType::SmbiosSystemManufacturer, manufacturer),
+        (BlobStructureType::SmbiosSystemProductName, product_name),
+        (BlobStructureType::SmbiosSystemVersion, system_version),
+        (BlobStructureType::SmbiosSystemSerialNumber, serial_number),
+        (BlobStructureType::SmbiosSystemSkuNumber, sku_number),
+        (BlobStructureType::SmbiosSystemFamily, family),
+    ] {
+        if let Some(value) = value {
+            cfg.add_cstring(structure_type, value.as_bytes());
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openvmm_defs::config::SmbiosBiosOverrides;
+    use openvmm_defs::config::SmbiosConfig;
+    use openvmm_defs::config::SmbiosSystemOverrides;
+
+    #[test]
+    fn accepts_system_overrides() {
+        let smbios = SmbiosConfig {
+            bios: SmbiosBiosOverrides::default(),
+            system: SmbiosSystemOverrides {
+                manufacturer: Some("Acme".to_string()),
+                family: Some("Widgets".to_string()),
+                ..Default::default()
+            },
+        };
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(&mut cfg, &smbios).unwrap();
+    }
+
+    #[test]
+    fn rejects_bios_overrides() {
+        for bios in [
+            SmbiosBiosOverrides {
+                vendor: Some("Acme".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                version: Some("1.0".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                release_date: Some("01/01/2020".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                release: Some((4, 1)),
+                ..Default::default()
+            },
+        ] {
+            let smbios = SmbiosConfig {
+                bios,
+                system: SmbiosSystemOverrides::default(),
+            };
+            let mut cfg = config::Blob::new();
+            assert!(matches!(
+                add_smbios_blobs(&mut cfg, &smbios),
+                Err(Error::UnsupportedSmbiosField(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn emits_uuid_and_only_set_string_overrides() {
+        // The default config (no string overrides) still emits the `BiosGuid`.
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(&mut cfg, &SmbiosConfig::default()).unwrap();
+        let baseline = cfg.complete().len();
+
+        // Setting a Type 1 string override emits an additional blob.
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(
+            &mut cfg,
+            &SmbiosConfig {
+                system: SmbiosSystemOverrides {
+                    manufacturer: Some("Acme".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(cfg.complete().len() > baseline);
+    }
 }

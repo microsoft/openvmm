@@ -63,6 +63,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
+            AttestationType::Cca => Some(tee_call::TeeType::Cca),
             AttestationType::Vbs => Some(tee_call::TeeType::Vbs),
             AttestationType::Host => None,
         };
@@ -226,8 +227,15 @@ pub mod resources {
 
             let tee_call: Option<Arc<dyn tee_call::TeeCall>> = match handle.attestation_type {
                 AttestationType::Snp => Some(Arc::new(tee_call::SnpCall)),
-                AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall)),
+                // The AK cert request path only issues `get_attestation_report`
+                // and never derives hardware keys, so hardware-bound seal key
+                // enablement is irrelevant here.
+                AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall::new(false))),
                 AttestationType::Vbs => Some(Arc::new(tee_call::VbsCall)),
+                AttestationType::Cca => {
+                    tracing::warn!("CCA: resolve: tee_call is not implemented yet");
+                    None
+                }
                 AttestationType::Host => None,
             };
 

@@ -51,9 +51,18 @@ use zerocopy::IntoBytes;
 pub mod config {
     use guid::Guid;
     use inspect::Inspect;
+    use memory_range::MemoryRange;
     use vm_topology::memory::MemoryLayout;
     use vm_topology::processor::ProcessorTopology;
     use vm_topology::processor::x86::X86Topology;
+
+    /// Maximum number of bytes of a variable-length SMBIOS string (e.g. the
+    /// system serial number) that the config port can deliver to the BIOS ROM.
+    ///
+    /// The port returns each string in eight 4-byte chunks (`read_count % 8`),
+    /// so any bytes beyond this are never read by the guest and would be
+    /// silently truncated.
+    pub const SMBIOS_STRING_MAX_LEN: usize = 8 * 4;
 
     /// Subset of SMBIOS v2.4 CPU Information structure.
     #[derive(Debug, Inspect)]
@@ -118,6 +127,10 @@ pub mod config {
         pub processor_topology: ProcessorTopology<X86Topology>,
         /// The VM's memory layout
         pub mem_layout: MemoryLayout,
+        /// Chipset low MMIO range (below 4 GB).
+        pub chipset_low_mmio: MemoryRange,
+        /// Chipset high MMIO range (above RAM).
+        pub chipset_high_mmio: MemoryRange,
         /// The SRAT ACPI table reflected into the guest
         pub srat: Vec<u8>,
         /// Initial [Generation Id](generation_id) value
@@ -232,7 +245,11 @@ pub struct PcatBiosDevice {
 
 // Begin and end range are inclusive.
 const IO_PORT_RANGE_BEGIN: u16 = 0x28;
-const IO_PORT_RANGE_END: u16 = 0x2f;
+// The device only decodes dword accesses at IO_PORT_ADDR_OFFSET and
+// IO_PORT_DATA_OFFSET, so the top of the data dword (0x2e/0x2f) is left
+// unclaimed for the "missing-superio" device to absorb guest probes of the
+// legacy SuperIO ports.
+const IO_PORT_RANGE_END: u16 = 0x2d;
 const IO_PORT_ADDR_OFFSET: u16 = 0x0;
 const IO_PORT_DATA_OFFSET: u16 = 0x4;
 
@@ -243,12 +260,18 @@ const POST_IO_PORT: u16 = 0x80;
 #[derive(Debug, Error)]
 #[expect(missing_docs)] // self-explanatory variants
 pub enum PcatBiosDeviceInitError {
-    #[error("expected exactly 2 mmio holes, found {0}")]
-    IncorrectMmioHoles(usize),
+    #[error("PCAT requires non-empty chipset low and high MMIO ranges")]
+    IncorrectMmioHoles,
     #[error("invalid ROM size {0:x} bytes, expected 256KB")]
     InvalidRomSize(u64),
     #[error("error mapping ROM")]
     Rom(#[source] std::io::Error),
+    #[error("SMBIOS {field} of {len} bytes exceeds the config port's {max}-byte limit")]
+    SmbiosStringTooLong {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
 }
 
 impl PcatBiosDevice {
@@ -269,10 +292,19 @@ impl PcatBiosDevice {
 
         let initial_generation_id = config.initial_generation_id;
 
-        if config.mem_layout.mmio().len() != 2 {
-            return Err(PcatBiosDeviceInitError::IncorrectMmioHoles(
-                config.mem_layout.mmio().len(),
-            ));
+        // The config port delivers each variable-length SMBIOS string in
+        // fixed-size chunks; reject an over-long serial rather than silently
+        // truncating what the guest sees.
+        if config.smbios.system_serial_number.len() > config::SMBIOS_STRING_MAX_LEN {
+            return Err(PcatBiosDeviceInitError::SmbiosStringTooLong {
+                field: "system serial number",
+                len: config.smbios.system_serial_number.len(),
+                max: config::SMBIOS_STRING_MAX_LEN,
+            });
+        }
+
+        if config.chipset_low_mmio.is_empty() || config.chipset_high_mmio.is_empty() {
+            return Err(PcatBiosDeviceInitError::IncorrectMmioHoles);
         }
 
         let mut rom_mems = Vec::new();
@@ -384,7 +416,14 @@ impl PcatBiosDevice {
                 // Consumers:
                 // - vmbios/source/bsp/em/smbios/Smbport.asm,
                 // - core/src/MEM.ASM.
-                self.config.mem_layout.ram_above_4gb().to_mb()
+                self.config
+                    .mem_layout
+                    .ram()
+                    .iter()
+                    .filter(|r| r.range.end() >= 0x1_0000_0000)
+                    .map(|r| r.range.len())
+                    .sum::<u64>()
+                    .to_mb()
             }
             PcatAddress::SLEEP_STATES => {
                 // The AMI BIOS wants to read a byte value of flags to determine
@@ -402,7 +441,7 @@ impl PcatBiosDevice {
                 }
             }
             PcatAddress::PCI_IO_GAP_START => {
-                self.config.mem_layout.mmio()[0].start().try_into().unwrap()
+                self.config.chipset_low_mmio.start().try_into().unwrap()
             }
             PcatAddress::PROCESSOR_STA_ENABLE => {
                 // Read by the ACPI _STA (status) method in the Processor
@@ -424,15 +463,18 @@ impl PcatBiosDevice {
                 // - core/src/MEM.ASM.
                 self.config
                     .mem_layout
-                    .ram_above_high_mmio()
-                    .expect("validated exactly 2 mmio ranges")
+                    .ram()
+                    .iter()
+                    .filter(|r| r.range.start() >= self.config.chipset_high_mmio.end())
+                    .map(|r| r.range.len())
+                    .sum::<u64>()
                     .to_mb()
             }
             PcatAddress::HIGH_MMIO_GAP_BASE_IN_MB => {
                 // Consumers:
                 // - vmbios/source/bsp/em/smbios/Smbport.asm,
                 // - core/src/MEM.ASM.
-                self.config.mem_layout.mmio()[1].start().to_mb()
+                self.config.chipset_high_mmio.start().to_mb()
             }
             PcatAddress::HIGH_MMIO_GAP_LENGTH_IN_MB => {
                 // Consumers:
@@ -444,7 +486,7 @@ impl PcatBiosDevice {
                 // this code was written in Hyper-V, the `end - start`
                 // calculation used an _inclusive_ `start..=end` range from the
                 // MMIO gaps API, which wasn't properly compensated for here.
-                self.config.mem_layout.mmio()[1].len().to_mb() - 1
+                self.config.chipset_high_mmio.len().to_mb() - 1
             }
             PcatAddress::E820_ENTRY => handle_int15_e820_query(
                 &self.config.mem_layout,
@@ -453,7 +495,14 @@ impl PcatBiosDevice {
             ),
             PcatAddress::INITIAL_MEGABYTES_BELOW_GAP => {
                 // Consumers: vmbios/source/bsp/em/smbios/smbios/Smbport.asm
-                self.config.mem_layout.ram_below_4gb().to_mb()
+                self.config
+                    .mem_layout
+                    .ram()
+                    .iter()
+                    .filter(|r| r.range.end() < 0x1_0000_0000)
+                    .map(|r| r.range.len())
+                    .sum::<u64>()
+                    .to_mb()
             }
             _ => {
                 tracelimit::warn_ratelimited!(?addr, "unknown bios read");
@@ -842,14 +891,6 @@ impl PortIoIntercept for PcatBiosDevice {
             return IoResult::Ok;
         }
 
-        // Some OSes probe for an 8-bit superio device at this location,
-        // silence the logs generated by this.
-        if io_port == 0x2f && data.len() == 1 {
-            tracing::trace!(?io_port, "stubbed superio pio read");
-            data.fill(!0);
-            return IoResult::Ok;
-        }
-
         if data.len() != 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
@@ -899,13 +940,6 @@ impl PortIoIntercept for PcatBiosDevice {
 
         if self.pre_boot_pio.contains_port(io_port) {
             tracing::trace!(?io_port, ?data, "stubbed pre-boot pio write");
-            return IoResult::Ok;
-        }
-
-        // Some OSes probe for an 8-bit superio device at this location,
-        // silence the logs generated by this.
-        if io_port == 0x2e && data.len() == 1 {
-            tracing::trace!(?io_port, ?data, "stubbed superio pio write");
             return IoResult::Ok;
         }
 

@@ -225,9 +225,9 @@ impl BounceBuffer {
 }
 
 /// A set of locked memory ranges, represented by [`IoBuffer`]s.
-pub struct LockedIoBuffers(LockedRangeImpl<LockedIoVecs>);
+pub struct LockedIoBuffers<'a>(LockedRangeImpl<'a, LockedIoVecs>);
 
-impl LockedIoBuffers {
+impl LockedIoBuffers<'_> {
     /// Returns the slice of IO buffers.
     pub fn io_vecs(&self) -> &[IoBuffer<'_>] {
         // SAFETY: the LockedRangeImpl passed to new guarantees that only
@@ -245,8 +245,8 @@ impl LockedIoVecs {
     }
 }
 
-impl LockedRange for LockedIoVecs {
-    fn push_sub_range(&mut self, sub_range: &[AtomicU8]) {
+impl<'a> LockedRange<'a> for LockedIoVecs {
+    fn push_sub_range(&mut self, sub_range: &'a [AtomicU8]) {
         self.0.push(sub_range.into());
     }
 }
@@ -397,14 +397,19 @@ impl<'a> RequestBuffers<'a> {
     /// Locks the guest memory ranges described by this buffer and returns an
     /// object containing [`IoBuffer`]s, suitable for executing asynchronous I/O
     /// operations.
-    pub fn lock(&self, for_write: bool) -> Result<LockedIoBuffers, AccessError> {
+    pub fn lock(&self, for_write: bool) -> Result<LockedIoBuffers<'_>, AccessError> {
         if for_write && !self.is_write {
             return Err(AccessError::ReadOnly);
         }
-        Ok(LockedIoBuffers(
-            self.guest_memory
-                .lock_range(self.range, LockedIoVecs::new())?,
-        ))
+        Ok(LockedIoBuffers(self.guest_memory.lock_range(
+            if for_write {
+                guestmem::AccessType::Write
+            } else {
+                guestmem::AccessType::Read
+            },
+            self.range,
+            LockedIoVecs::new(),
+        )?))
     }
 
     /// Returns a subrange of this set of buffers.
@@ -525,7 +530,7 @@ impl BounceBufferTracker {
         &'b self,
         size: usize,
         thread: usize,
-    ) -> Box<TrackedBounceBuffer<'a>>
+    ) -> TrackedBounceBuffer<'a>
     where
         'b: 'a,
     {
@@ -544,11 +549,11 @@ impl BounceBufferTracker {
             listener.await;
         }
 
-        Box::new(TrackedBounceBuffer {
+        TrackedBounceBuffer {
             buffer: BounceBuffer::new(size),
             free_pages,
             event,
-        })
+        }
     }
 }
 

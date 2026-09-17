@@ -8,20 +8,16 @@
 use super::SendSyncRawHandle;
 use super::UnicodeString;
 use super::chk_status;
-use ioapiset::DeviceIoControl;
-use minwinbase::OVERLAPPED;
-use ntapi::ntioapi::NtOpenFile;
-use ntdef::OBJECT_ATTRIBUTES;
 use std::fs::File;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
-use winapi::shared::ntdef;
-use winapi::shared::winerror;
-use winapi::um::ioapiset;
-use winapi::um::minwinbase;
-use winapi::um::winnt;
-use winerror::ERROR_IO_PENDING;
+use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Storage::FileSystem::NtOpenFile;
+use windows_sys::Win32::Foundation::ERROR_IO_PENDING;
+use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+use windows_sys::Win32::System::IO::DeviceIoControl;
+use windows_sys::Win32::System::IO::OVERLAPPED;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
@@ -58,7 +54,7 @@ const IOCTL_AFD_POLL: u32 = 0x00012024;
 pub fn open_afd() -> std::io::Result<File> {
     unsafe {
         let mut pathu: UnicodeString = "\\Device\\Afd\\hvlite".try_into().expect("string fits");
-        let mut oa = OBJECT_ATTRIBUTES {
+        let oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
             RootDirectory: null_mut(),
             ObjectName: pathu.as_mut_ptr(),
@@ -68,15 +64,8 @@ pub fn open_afd() -> std::io::Result<File> {
         };
         let mut handle = null_mut();
         let mut iosb = zeroed();
-        chk_status(NtOpenFile(
-            &mut handle,
-            winnt::SYNCHRONIZE,
-            &mut oa,
-            &mut iosb,
-            0,
-            0,
-        ))?;
-        Ok(File::from_raw_handle(handle))
+        chk_status(NtOpenFile(&mut handle, SYNCHRONIZE, &oa, &mut iosb, 0, 0))?;
+        Ok(File::from_raw_handle(handle.cast::<std::ffi::c_void>()))
     }
 }
 

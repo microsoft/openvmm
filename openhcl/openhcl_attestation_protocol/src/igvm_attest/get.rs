@@ -99,6 +99,8 @@ open_enum! {
         TVM_REPORT = 3,
         /// TDX report
         TDX_VM_REPORT = 4,
+        /// CCA report
+        CCA_VM_REPORT = 5,
     }
 }
 
@@ -167,12 +169,25 @@ impl IgvmAttestRequestHeader {
 /// Bitmap of additional Igvm request attributes.
 /// 0 - error_code: Requesting IGVM Agent Error code
 /// 1 - retry: Retry preference
+/// 2 - skip_hw_unsealing: Skip hardware unsealing in case key release request fails
+/// 3 - use_rsa_aes_key_wrap_384: Request that the IGVM Agent ask Azure Key Vault
+///     (AKV) to wrap and release the key with the SHA-384 variant of the
+///     composite RSA+AES key-wrap scheme (PKCS#11 CKM_RSA_AES_KEY_WRAP /
+///     AKV's RSA_AES_KEY_WRAP_384): RSA-OAEP-SHA384 (MGF1-SHA-384) wraps an
+///     AES-256 KEK that performs AES Key Wrap on the released key. The default
+///     is the same CKM_RSA_AES_KEY_WRAP scheme with the inner RSA-OAEP using
+///     SHA-1 (MGF1-SHA-1).
+/// 4 - corim_endorsement: Request that the IGVM Agent fetch the CoRIM launch
+///     endorsement for the guest and include it in the attestation flow.
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
     pub error_code: bool,
     pub retry: bool,
-    #[bits(30)]
+    pub skip_hw_unsealing: bool,
+    pub use_rsa_aes_key_wrap_384: bool,
+    pub corim_endorsement: bool,
+    #[bits(27)]
     _reserved: u32,
 }
 
@@ -228,12 +243,23 @@ impl IgvmAttestRequestDataExt {
 }
 
 /// Bitmap indicates a signal to requestor
-/// 0 - IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
+/// 0 - IGVM_SIGNAL_RETRY_RECOMMENDED_BIT: Retry recommendation
+/// 1 - IGVM_SIGNAL_SKIP_HW_UNSEALING_RECOMMENDED_BIT: Skip hardware unsealing
+/// 2 - IGVM_SIGNAL_RSA_AES_KEY_WRAP_384_USED_BIT: Set by the IGVM Agent to
+///     indicate that the agent asked AKV for the SHA-384 variant
+///     (RSA_AES_KEY_WRAP_384) and AKV used it to wrap the key in the payload.
+///     If this bit is clear, AKV wrapped the key with the default
+///     CKM_RSA_AES_KEY_WRAP scheme (inner RSA-OAEP using SHA-1).
+/// 3 - IGVM_SIGNAL_CORIM_ENDORSEMENT_REQUESTED_BIT: Set by the IGVM Agent to
+///     indicate that the agent requested the CoRIM endorsement.
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
     pub retry: bool,
-    #[bits(31)]
+    pub skip_hw_unsealing: bool,
+    pub rsa_aes_key_wrap_384_used: bool,
+    pub corim_endorsement_requested: bool,
+    #[bits(28)]
     _reserved: u32,
 }
 
@@ -302,6 +328,7 @@ pub struct IgvmAttestAkCertResponseHeader {
 /// `IgvmAttestRequestBase` in raw bytes.
 pub mod runtime_claims {
     use base64_serde::base64_serde_type;
+    use guid::Guid;
     use mesh::MeshPayload;
     use serde::Deserialize;
     use serde::Serialize;
@@ -418,6 +445,40 @@ pub mod runtime_claims {
         }
     }
 
+    /// Claims for VMGS provenance.
+    #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct VmgsProvisioner {
+        /// VMGS ID
+        #[serde(with = "serde_helpers::as_string")]
+        pub id: Guid,
+        /// Signer (root cert thumbprint + leaf subject name as a decentralized
+        /// identifier)
+        pub signer: String,
+    }
+
+    /// Supported hardware sealing policy
+    #[derive(Clone, Copy, Debug, Deserialize, Serialize, MeshPayload)]
+    pub enum HardwareSealingPolicy {
+        #[serde(rename = "none")]
+        None,
+        #[serde(rename = "hash")]
+        Hash,
+        #[serde(rename = "signer")]
+        Signer,
+    }
+
+    /// TPM reference implementation version.
+    #[derive(Clone, Copy, Debug, Deserialize, Serialize, MeshPayload)]
+    pub enum AttestationTpmVersion {
+        /// TPM reference implementation version 1.38
+        #[serde(rename = "1.38")]
+        V138,
+        /// TPM reference implementation version 1.85
+        #[serde(rename = "185")]
+        V185,
+    }
+
     /// VM configuration to be included in the `RuntimeClaims`.
     #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
     #[serde(rename_all = "kebab-case")]
@@ -435,12 +496,47 @@ pub mod runtime_claims {
         pub secure_boot: bool,
         /// Whether the TPM is enabled
         pub tpm_enabled: bool,
-        /// Whether the TPM states is persisted
+        /// TPM reference implementation version
+        pub tpm_version: AttestationTpmVersion,
+        /// Whether the VM is in stateful mode (i.e. attestation is not
+        /// suppressed).
+        ///
+        /// NOTE: This is a legacy field. Its name (`tpm-persisted` on the wire)
+        /// predates stateless + hardware sealing and does NOT describe whether
+        /// TPM state is actually persisted to the VMGS at runtime — that broader
+        /// decision is made by the VMM (see `no_persistent_secrets` in
+        /// `underhill_core`). The name and value semantics are kept unchanged to
+        /// preserve the attestation runtime-claims contract and the
+        /// hardware-derived key KDF input.
         pub tpm_persisted: bool,
         /// Whether certain vPCI devices are allowed through the device filter
         pub filtered_vpci_devices_allowed: bool,
         /// VM id
         #[serde(rename = "vmUniqueId")]
         pub vm_unique_id: String,
+        /// VMGS provenance data
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub vmgs_provisioner: Option<VmgsProvisioner>,
+        /// Hardware sealing policy
+        pub hardware_sealing_policy: HardwareSealingPolicy,
+    }
+
+    impl Default for AttestationVmConfig {
+        fn default() -> Self {
+            Self {
+                current_time: None,
+                root_cert_thumbprint: String::new(),
+                console_enabled: false,
+                interactive_console_enabled: false,
+                secure_boot: false,
+                tpm_enabled: true,
+                tpm_version: AttestationTpmVersion::V138,
+                tpm_persisted: true,
+                filtered_vpci_devices_allowed: false,
+                vm_unique_id: String::new(),
+                vmgs_provisioner: None,
+                hardware_sealing_policy: HardwareSealingPolicy::None,
+            }
+        }
     }
 }

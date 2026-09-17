@@ -41,8 +41,6 @@ pub enum GuestMedia {
         disk_type: Resource<DiskHandleKind>,
         /// Whether the disk is read-only.
         read_only: bool,
-        /// The disk parameters, used for the vmbus SCSI interface.
-        disk_parameters: Option<scsidisk_resources::DiskParameters>,
     },
 }
 

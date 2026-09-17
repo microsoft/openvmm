@@ -3,6 +3,7 @@
 
 mod partition_memory_map;
 
+pub use partition_memory_map::PartitionHostAccess;
 pub use partition_memory_map::PartitionMemoryMap;
 pub use vm_topology::processor::VpIndex;
 
@@ -12,10 +13,12 @@ use crate::io::CpuIo;
 use crate::irqcon::ControlGic;
 use crate::irqcon::IoApicRouting;
 use crate::irqcon::MsiRequest;
+use crate::irqfd::IrqFd;
 use crate::x86::DebugState;
 use crate::x86::HardwareBreakpoint;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryBackingError;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -34,15 +37,64 @@ use std::task::Poll;
 use std::task::Waker;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
-use vmcore::monitor::MonitorId;
 use vmcore::reference_time::ReferenceTimeSource;
-use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeSource;
 use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptParameters;
 
+/// Platform capabilities detected from the hypervisor before partition
+/// creation. On x86 there are currently no pre-partition queries.
+#[cfg(guest_arch = "x86_64")]
+#[derive(Debug, Clone, Default)]
+pub struct PlatformInfo {}
+
+/// Platform capabilities detected from the hypervisor before partition
+/// creation.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Debug, Clone)]
+pub struct PlatformInfo {
+    /// The platform PMU GSIV (GIC INTID), if available.
+    pub platform_gsiv: Option<u32>,
+    /// Whether the hypervisor supports GICv3. When `false`, only
+    /// GICv2 is available (e.g., Raspberry Pi 5 with GIC-400).
+    pub supports_gic_v3: bool,
+    /// Whether the hypervisor supports an in-kernel GICv3 ITS for
+    /// MSI delivery via LPIs. When `true`, the topology can include
+    /// a `GicItsInfo` and the backend will create/manage the ITS device.
+    pub supports_its: bool,
+    /// How the physical SMMU implementation selects the IOVA range reserved
+    /// for device-assignment MSI writes.
+    pub device_assignment_msi_iova: DeviceAssignmentMsiIova,
+}
+
+/// Selection policy for the device-assignment MSI IOVA reservation.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Debug, Clone, Copy)]
+pub enum DeviceAssignmentMsiIova {
+    /// Device assignment does not expose an MSI IOVA reservation contract.
+    Unsupported,
+    /// The physical SMMU driver requires this exact range.
+    Fixed(MemoryRange),
+    /// The VMM selects the range and passes its base to the physical SMMU
+    /// implementation during partition creation.
+    Configurable,
+}
+
+/// A hypervisor backend capable of creating partitions.
+///
+/// # Recognized features
+///
+/// The `recognizes_*` methods report whether the backend acts on an optional
+/// partition request rather than silently ignoring it: it either honors the
+/// request or fails partition creation with a specific error. They let the code
+/// assembling a [`ProtoPartitionConfig`] reject a request up front when the
+/// backend has no concept of it, instead of the request being quietly dropped.
+/// Recognition is *not* a promise that the request succeeds — the backend may
+/// still reject it in combination with another feature, or fail later during
+/// partition creation. Each method defaults to `false`, so a new optional
+/// feature is unrecognized everywhere until a backend overrides its method.
 pub trait Hypervisor: 'static {
     /// The prototype partition type.
     type ProtoPartition<'a>: ProtoPartition<Partition = Self::Partition>;
@@ -51,8 +103,19 @@ pub trait Hypervisor: 'static {
     /// The error type when creating the partition.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Returns whether this hypervisor is available on this machine.
-    fn is_available(&self) -> Result<bool, Self::Error>;
+    /// Returns platform capabilities detected from the hypervisor.
+    ///
+    /// This is called before partition creation to query platform-specific
+    /// information needed for topology construction and firmware table
+    /// generation.
+    fn platform_info(&self) -> PlatformInfo;
+
+    /// Whether the backend recognizes a request to expose hardware
+    /// virtualization (VMX/SVM) to the guest so it can run its own hypervisor.
+    /// See the [`Hypervisor`] trait docs on recognized features.
+    fn recognizes_nested_virt(&self) -> bool {
+        false
+    }
 
     /// Returns a new prototype partition from the given configuration.
     fn new_partition<'a>(
@@ -72,6 +135,8 @@ pub enum IsolationType {
     Snp,
     /// Trust domain extensions (Intel TDX) - hardware based isolation.
     Tdx,
+    /// Confidential Compute Architecture (ARM CCA) - hardware based isolation.
+    Cca,
 }
 
 impl IsolationType {
@@ -82,7 +147,7 @@ impl IsolationType {
 
     /// Returns whether the isolation type is hardware-backed.
     pub fn is_hardware_isolated(&self) -> bool {
-        matches!(self, Self::Snp | Self::Tdx)
+        matches!(self, Self::Snp | Self::Tdx | Self::Cca)
     }
 }
 
@@ -99,6 +164,7 @@ impl IsolationType {
             hvdef::HvPartitionIsolationType::VBS => Ok(IsolationType::Vbs),
             hvdef::HvPartitionIsolationType::SNP => Ok(IsolationType::Snp),
             hvdef::HvPartitionIsolationType::TDX => Ok(IsolationType::Tdx),
+            hvdef::HvPartitionIsolationType::CCA => Ok(IsolationType::Cca),
             _ => Err(UnexpectedIsolationType),
         }
     }
@@ -109,6 +175,7 @@ impl IsolationType {
             IsolationType::Vbs => hvdef::HvPartitionIsolationType::VBS,
             IsolationType::Snp => hvdef::HvPartitionIsolationType::SNP,
             IsolationType::Tdx => hvdef::HvPartitionIsolationType::TDX,
+            IsolationType::Cca => hvdef::HvPartitionIsolationType::CCA,
         }
     }
 }
@@ -122,6 +189,153 @@ pub enum PageVisibility {
     Shared,
 }
 
+/// Initial page import type for isolated partitions.
+#[derive(Eq, PartialEq, Debug, Copy, Clone, Inspect)]
+pub enum InitialPageImportType {
+    /// A measured page with exclusive guest access.
+    Normal,
+    /// An unmeasured page with exclusive guest access.
+    NormalUnmeasured,
+    /// A page shared between the guest and host.
+    Shared,
+    /// A virtual processor context page.
+    VpContext,
+    /// An SNP secrets page.
+    Secrets,
+    /// An SNP CPUID page.
+    Cpuid,
+    /// An SNP CPUID extended state page.
+    CpuidExtendedState,
+}
+
+impl InitialPageImportType {
+    /// Returns the visibility implied by this import type.
+    pub fn page_visibility(self) -> PageVisibility {
+        match self {
+            Self::Shared => PageVisibility::Shared,
+            Self::Normal
+            | Self::NormalUnmeasured
+            | Self::VpContext
+            | Self::Secrets
+            | Self::Cpuid
+            | Self::CpuidExtendedState => PageVisibility::Exclusive,
+        }
+    }
+}
+
+/// Initial page import metadata for isolated partitions.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct InitialPageImport {
+    /// The guest physical range being imported.
+    pub range: MemoryRange,
+    /// The hypervisor-facing import type for this range.
+    pub import_type: InitialPageImportType,
+    /// Loader-provided debug tag identifying the source of this range.
+    pub tag: &'static str,
+}
+
+/// An opaque SNP virtual processor context.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct SnpVpContext {
+    /// The guest physical address associated with the context.
+    pub gpa: u64,
+    /// The virtual processor described by the context.
+    pub vp_index: VpIndex,
+    /// The complete 4-KiB VMSA page.
+    pub page: Box<[u8; 4096]>,
+}
+
+/// SNP ID block and authentication data supplied by an IGVM file.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct SnpIdBlock {
+    /// Whether the author key is enabled.
+    pub author_key_enabled: u8,
+    /// The launch digest supplied by the IGVM file.
+    pub launch_digest: [u8; 48],
+    /// The guest family identifier.
+    pub family_id: [u8; 16],
+    /// The guest image identifier.
+    pub image_id: [u8; 16],
+    /// The ID-block format version.
+    pub version: u32,
+    /// The guest security version number.
+    pub guest_svn: u32,
+    /// The ID-key algorithm.
+    pub id_key_algorithm: u32,
+    /// The author-key algorithm.
+    pub author_key_algorithm: u32,
+    /// The ID-block signature.
+    pub id_key_signature: x86defs::snp::SnpIdBlockSignature,
+    /// The ID public key.
+    pub id_public_key: x86defs::snp::SnpIdBlockPublicKey,
+    /// The author-key signature.
+    pub author_key_signature: x86defs::snp::SnpIdBlockSignature,
+    /// The author public key.
+    pub author_public_key: x86defs::snp::SnpIdBlockPublicKey,
+}
+
+/// Backend-neutral SNP launch configuration extracted from an IGVM file.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct SnpConfig {
+    /// The SNP guest policy.
+    pub policy: u64,
+    /// The highest VTL requested by the selected IGVM platform.
+    pub highest_vtl: u8,
+    /// The shared GPA boundary requested by the selected IGVM platform.
+    pub shared_gpa_boundary: u64,
+    /// Whether the IGVM contains relocation metadata.
+    pub has_relocation: bool,
+    /// Opaque virtual processor contexts in file order.
+    pub vp_contexts: Vec<SnpVpContext>,
+    /// Optional ID block and authentication data.
+    pub id_block: Option<SnpIdBlock>,
+}
+
+/// Isolation configuration needed before a backend creates a partition.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub enum ProtoPartitionIsolation {
+    /// No isolation.
+    None,
+    /// Hypervisor-based isolation.
+    Vbs,
+    /// AMD SEV-SNP, optionally with launch configuration from an IGVM file.
+    Snp(Option<Box<SnpConfig>>),
+    /// Intel Trust Domain Extensions.
+    Tdx,
+    /// Arm Confidential Compute Architecture.
+    Cca,
+}
+
+impl ProtoPartitionIsolation {
+    /// Returns the simple isolation classification.
+    pub fn isolation_type(&self) -> IsolationType {
+        match self {
+            Self::None => IsolationType::None,
+            Self::Vbs => IsolationType::Vbs,
+            Self::Snp(_) => IsolationType::Snp,
+            Self::Tdx => IsolationType::Tdx,
+            Self::Cca => IsolationType::Cca,
+        }
+    }
+
+    /// Returns whether the partition is isolated.
+    pub fn is_isolated(&self) -> bool {
+        self.isolation_type().is_isolated()
+    }
+}
+
+impl From<IsolationType> for ProtoPartitionIsolation {
+    fn from(value: IsolationType) -> Self {
+        match value {
+            IsolationType::None => Self::None,
+            IsolationType::Vbs => Self::Vbs,
+            IsolationType::Snp => Self::Snp(None),
+            IsolationType::Tdx => Self::Tdx,
+            IsolationType::Cca => Self::Cca,
+        }
+    }
+}
+
 /// Prototype partition creation configuration.
 pub struct ProtoPartitionConfig<'a> {
     /// The set of VPs to create.
@@ -130,10 +344,18 @@ pub struct ProtoPartitionConfig<'a> {
     pub hv_config: Option<HvConfig>,
     /// VM time access.
     pub vmtime: &'a VmTimeSource,
-    /// Use the user-mode APIC emulator, if supported.
-    pub user_mode_apic: bool,
-    /// Isolation type for this partition.
-    pub isolation: IsolationType,
+    /// Isolation type and optional backend configuration for this partition.
+    pub isolation: ProtoPartitionIsolation,
+    /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
+    /// its own hypervisor.
+    ///
+    /// The code assembling this config must only set this when the chosen
+    /// backend recognizes it via [`Hypervisor::recognizes_nested_virt`]; a
+    /// backend that receives an unrecognized request may silently ignore it.
+    pub nested_virt: bool,
+    /// Device-assignment MSI IOVA reservation selected for this partition.
+    #[cfg(guest_arch = "aarch64")]
+    pub device_assignment_msi_iova_range: Option<MemoryRange>,
 }
 
 /// Partition creation configuration.
@@ -147,6 +369,41 @@ pub struct PartitionConfig<'a> {
     /// The offset of the VTL0 alias map. This maps VTL0's view of memory into
     /// VTL2 at the specified offset (which must be a power of 2).
     pub vtl0_alias_map: Option<u64>,
+    /// An optional resolver used to prepare guest-memory backing on demand when
+    /// the partition delivers memory-access faults back to the VMM.
+    ///
+    /// This is set only when the backend reports
+    /// [`ProtoPartition::supports_memory_fault_resolution`]. The backend calls
+    /// it from its memory-fault handler to commit lazily-backed pages and to
+    /// learn the (possibly widened) GPA range to map; the backend retains the
+    /// final per-page safety decision over the returned range.
+    pub fault_resolver: Option<Arc<dyn ResolveMemoryFault>>,
+}
+
+/// Prepares guest-memory backing to resolve a memory-access fault, and reports
+/// the GPA range the partition should map in response.
+///
+/// This is implemented by the memory backing and called by hypervisor backends
+/// (e.g. WHP) that forward guest memory-access faults to the VMM. It lets the
+/// backing commit lazily-backed pages and opportunistically widen the mapped
+/// range to a large page (soft large pages), while the backend keeps the final
+/// per-page safety decision over the returned range.
+pub trait ResolveMemoryFault: Send + Sync {
+    /// Prepares backing for the faulting range `fault` and returns the GPA range
+    /// the partition should map.
+    ///
+    /// The caller passes the range it needs backed (expressed in whatever page
+    /// granularity the backend uses), so this layer never needs to know the
+    /// guest page size. The returned range is always a superset of `fault`,
+    /// clamped to a single uniform RAM region. It is widened (e.g. to 2 MB) only
+    /// on the first fault of a large-page-eligible region that fully contains
+    /// `fault`; otherwise `fault` is returned unchanged. Subsequent faults of an
+    /// already-attempted region are not widened.
+    fn resolve(
+        &self,
+        fault: MemoryRange,
+        write: bool,
+    ) -> Result<MemoryRange, GuestMemoryBackingError>;
 }
 
 /// Trait for a prototype partition, one that is partially created but still
@@ -162,10 +419,6 @@ pub trait ProtoPartition {
     /// The error type when creating the partition.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Gets the default guest cpuid value for inputs `eax` and `ecx`.
-    #[cfg(guest_arch = "x86_64")]
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4];
-
     /// The maximum physical address width that processors and devices for this
     /// partition can access.
     ///
@@ -173,6 +426,18 @@ pub trait ProtoPartition {
     /// interfaces by default, and it may be larger or smaller than what the VMM
     /// ultimately chooses to report to the guest.
     fn max_physical_address_size(&self) -> u8;
+
+    /// Whether the partition delivers guest-memory-access faults back to the
+    /// VMM and resolves them through a [`ResolveMemoryFault`] supplied in
+    /// [`PartitionConfig::fault_resolver`].
+    ///
+    /// Defaults to `false`. A backend that forwards memory faults to the VMM
+    /// (e.g. WHP) overrides this to `true`. The code assembling
+    /// [`PartitionConfig`] uses it to decide whether to supply a resolver, and
+    /// the memory backing uses it to select a lazy commit strategy.
+    fn supports_memory_fault_resolution(&self) -> bool {
+        false
+    }
 
     /// Constructs the full partition.
     fn build(
@@ -240,8 +505,6 @@ pub struct Vtl2Config {
 /// Hypervisor configuration.
 #[derive(Debug)]
 pub struct HvConfig {
-    /// Use the hypervisor's in-built enlightenment support if available.
-    pub offload_enlightenments: bool,
     /// Allow device assignment on the partition.
     pub allow_device_assignment: bool,
     /// Enable VTL2 support if set. Additional options are described by
@@ -249,11 +512,23 @@ pub struct HvConfig {
     pub vtl2: Option<Vtl2Config>,
 }
 
+/// Source of the initial virtual processor state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialVpStateSource {
+    /// The partition unit writes the loader-produced register state.
+    Registers,
+    /// The state is supplied through an imported isolation context.
+    ImportedContext,
+}
+
 /// Methods for manipulating a VM partition.
 pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
-    /// Returns a trait object to accept pages on behalf of the guest during the
-    /// initial start import flow.
-    fn supports_initial_accept_pages(
+    /// Returns the source of the initial virtual processor state.
+    fn initial_vp_state_source(&self) -> InitialVpStateSource;
+
+    /// Returns a trait object for initial page imports during the initial start
+    /// flow.
+    fn supports_initial_page_acceptance(
         &self,
     ) -> Option<&dyn AcceptInitialPages<Error = <Self as Hv1>::Error>> {
         None
@@ -291,8 +566,19 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// create MSI interrupts.
     ///
     /// Not all partitions support this.
-    fn as_signal_msi(self: &Arc<Self>, vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         let _ = vtl;
+        None
+    }
+
+    /// Returns an irqfd routing interface for this partition.
+    ///
+    /// irqfd allows the kernel to inject MSIs directly into the guest when an
+    /// eventfd is signaled, without a userspace transition. This is used for
+    /// device passthrough with VFIO.
+    ///
+    /// Not all partitions support this.
+    fn irqfd(&self) -> Option<Arc<dyn IrqFd>> {
         None
     }
 
@@ -329,10 +615,7 @@ pub trait AcceptInitialPages {
     /// accept pages on behalf of the guest that were set as part of the load
     /// process. The host virtstack cannot accept pages on behalf of the guest
     /// once it has started running.
-    fn accept_initial_pages(
-        &self,
-        pages: &[(MemoryRange, PageVisibility)],
-    ) -> Result<(), Self::Error>;
+    fn accept_initial_pages(&self, pages: &[InitialPageImport]) -> Result<(), Self::Error>;
 }
 
 /// Extension trait for resetting the partition.
@@ -343,6 +626,10 @@ pub trait ResetPartition {
     /// state.
     ///
     /// The caller must ensure that no VPs are running when this is called.
+    ///
+    /// This resets partition-level (VM-wide) state. After this completes,
+    /// the caller dispatches [`Processor::reset`] to each VP's thread to
+    /// reset per-VP state (registers, APIC, synic message queues, etc.).
     ///
     /// If this fails, the partition is in a bad state and cannot be resumed
     /// until a subsequent reset call succeeds.
@@ -358,6 +645,10 @@ pub trait ScrubVtl {
     /// and restarting a higher VTL without touching the lower VTL.
     ///
     /// The caller must ensure that no VPs are running when this is called.
+    ///
+    /// This scrubs partition-level state. After this completes, the caller
+    /// dispatches [`Processor::scrub`] to each VP's thread to scrub per-VP
+    /// state for the specified VTL.
     ///
     /// Note that this does not reset page protections. This is necessary
     /// because there may be devices assigned to lower VTLs, and they should not
@@ -431,6 +722,34 @@ pub trait Processor: InspectMut {
     /// VTL0 is always inspectable.
     fn vtl_inspectable(&self, vtl: Vtl) -> bool {
         vtl == Vtl::Vtl0
+    }
+
+    /// Resets per-VP state after a partition-level reset.
+    ///
+    /// Called on each VP's thread while VPs are stopped, after
+    /// [`ResetPartition::reset`] has completed.
+    ///
+    /// The default implementation panics. Backends that support
+    /// [`ResetPartition`] must override this.
+    #[expect(unreachable_code)]
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        Ok::<(), Infallible>(unimplemented!(
+            "Processor::reset not implemented for this backend"
+        ))
+    }
+
+    /// Scrubs per-VP state for a specific VTL.
+    ///
+    /// Called on each VP's thread while VPs are stopped, after
+    /// [`ScrubVtl::scrub`] has completed.
+    ///
+    /// The default implementation panics. Backends that support
+    /// [`ScrubVtl`] must override this.
+    #[expect(unreachable_code)]
+    fn scrub(&mut self, _vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        Ok::<(), Infallible>(unimplemented!(
+            "Processor::scrub not implemented for this backend"
+        ))
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_>;
@@ -580,6 +899,11 @@ impl From<VpStopped> for VpHaltReason {
 pub trait PartitionMemoryMapper {
     /// Returns a memory mapper for the partition backing `vtl`.
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap>;
+
+    /// Returns an interface for acquiring host access to memory.
+    fn host_access(&self) -> Option<Arc<dyn PartitionHostAccess>> {
+        None
+    }
 }
 
 pub trait Hv1 {
@@ -591,6 +915,10 @@ pub trait Hv1 {
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn DeviceBuilder<Device = Self::Device, Error = Self::Error>>;
+
+    /// Returns the partition's synic port access, or an error if the
+    /// backend cannot support synic in its current configuration.
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>>;
 }
 
 pub trait DeviceBuilder: Hv1 {
@@ -614,73 +942,8 @@ impl MapVpciInterrupt for UnimplementedDevice {
 }
 
 impl SignalMsi for UnimplementedDevice {
-    fn signal_msi(&self, _rid: u32, _address: u64, _data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, _address: u64, _data: u32) {
         match *self {}
-    }
-}
-
-pub trait Synic: Send + Sync {
-    /// Adds a fast path to signal `event` when the guest signals
-    /// `connection_id` from VTL >= `minimum_vtl`.
-    ///
-    /// Returns Ok(None) if this acceleration is not supported.
-    fn new_host_event_port(
-        &self,
-        connection_id: u32,
-        minimum_vtl: Vtl,
-        event: &pal_event::Event,
-    ) -> Result<Option<Box<dyn Sync + Send>>, vmcore::synic::Error> {
-        let _ = (connection_id, minimum_vtl, event);
-        Ok(None)
-    }
-
-    /// Posts a message to the guest.
-    fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]);
-
-    /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
-    fn new_guest_event_port(
-        &self,
-        vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Box<dyn GuestEventPort>;
-
-    /// Returns whether callers should pass an OS event when creating event
-    /// ports, as opposed to passing a function to call.
-    ///
-    /// This is true when the hypervisor can more quickly dispatch an OS event
-    /// and resume the VP than it can take an intercept into user mode and call
-    /// a function.
-    fn prefer_os_events(&self) -> bool;
-
-    /// Returns an object for manipulating the monitor page, or None if monitor pages aren't
-    /// supported.
-    fn monitor_support(&self) -> Option<&dyn SynicMonitor> {
-        None
-    }
-}
-
-/// Provides monitor page functionality for a `Synic` implementation.
-pub trait SynicMonitor: Synic {
-    /// Registers a monitored interrupt. The returned struct will unregister the ID when dropped.
-    ///
-    /// # Panics
-    ///
-    /// Panics if monitor_id is already in use.
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send>;
-
-    /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()>;
-
-    /// Allocates a monitor page and sets it as the monitor page currently in use. If allocating
-    /// monitor pages is not supported, returns `Ok(None)`.
-    ///
-    /// The page will be deallocated if the monitor page is subsequently changed or cleared using
-    /// [`SynicMonitor::set_monitor_page`].
-    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<u64>> {
-        let _ = vtl;
-        Ok(None)
     }
 }
 

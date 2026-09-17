@@ -9,6 +9,7 @@ use futures::executor::block_on;
 use pal_async::local::block_with_io;
 use unix_socket::UnixListener;
 
+#[expect(clippy::allow_attributes)]
 mod items {
     // Generated types use these crates, reference them here to ensure they are
     // not removed by automated tooling.

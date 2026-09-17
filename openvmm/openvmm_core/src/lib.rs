@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod emuplat;
+pub mod hypervisor_backend;
 mod partition;
 mod vmgs_non_volatile_store;
 mod worker;

@@ -16,7 +16,6 @@ range_map_vec.workspace = true
 
 arbitrary = { workspace = true, features = ["derive"] }
 parking_lot.workspace = true
-zerocopy.workspace = true
 tracing.workspace = true
 
 [lints]

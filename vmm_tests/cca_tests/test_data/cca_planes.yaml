@@ -1,0 +1,83 @@
+#
+# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-FileCopyrightText: Copyright TF-RMM Contributors.
+#
+# This file is consumed by Arm software emulator FVP (Fixed Virtual Platform)
+# when running OpenVMM CCA tests
+%YAML 1.2
+---
+description: >-
+  Overlay to build TF-RMM with standard build settings.
+  In order to use this overlay, the RMM_SRC btvar must be defined containing
+  the absolute path for the local TF-RMM repository.
+
+  The overlay allows to overwrite the default log level for TF-RMM, by
+  using ``RMM_LOG_LEVEL`` btvar as well as to define the SHA/Branch of TF-A
+  to be used for the particular instance of RMM to build through the
+  ``TFA_REVISION`` btvar. It also allows to define the host platform through
+  the ``RMM_CONFIG`` btvar.
+
+buildex:
+  btvars:
+    # Determines the RMM Log level
+    RMM_LOG_LEVEL:
+      type: string
+      value: '10'
+
+    # Determines the RMM Configuration (a.k.a. platform) to build
+    RMM_CONFIG:
+      type: string
+      value: 'fvp_defcfg'
+
+    # Determines the branch or SHA to pull for TF-A which is suitable
+    # for the current RMM
+    TFA_REVISION:
+      type: string
+      value: master
+
+build:
+  rmm:
+    params:
+      -DLOG_LEVEL: ${btvar:RMM_LOG_LEVEL}
+      -DRMM_CONFIG: ${btvar:RMM_CONFIG}
+      -DRMM_V1_1: 1
+      -DPLAT_CMN_CTX_MAX_XLAT_TABLES: 13
+    repo:
+      remote: https://github.com/TF-RMM/tf-rmm.git
+      revision: 9a98e8fcb1645b9917b2abd79212e6e3062e09fd
+  tfa:
+    params:
+      GIC_ENABLE_V4_EXTN: 1
+    repo:
+      revision: ${btvar:TFA_REVISION}
+  linux:
+    repo:
+      remote: https://gitlab.arm.com/linux-arm/linux-cca.git
+      revision: cca/planes/rfc-v1
+    prebuild:
+      # Use source dir modification time as timestamp (for locally reproducible build)
+      - export KBUILD_BUILD_TIMESTAMP="@$$(stat -c '%Y' ${param:sourcedir})"
+      - ./scripts/config --file ${param:builddir}/.config --enable CONFIG_VIRT_DRIVERS
+      # Reduce the number of timer exits from the guest
+      - ./scripts/config --file ${param:builddir}/.config --disable CONFIG_HZ_250 --enable CONFIG_HZ_100
+      - ./scripts/config --file ${param:builddir}/.config --disable CONFIG_RANDOMIZE_BASE
+  kvmtool:
+    repo:
+      kvmtool:
+        remote: https://gitlab.arm.com/linux-arm/kvmtool-cca.git
+        revision: cca/planes/rfc-v1
+
+
+run:
+  params:
+     # Enable Permission Indirection
+    -C cluster0.has_permission_indirection_s1: 2
+    -C cluster1.has_permission_indirection_s1: 2
+    -C cluster0.has_permission_indirection_s2: 2
+    -C cluster1.has_permission_indirection_s2: 2
+
+    # Enable Permission Overlay
+    -C cluster0.has_permission_overlay_s1: 2
+    -C cluster1.has_permission_overlay_s1: 2
+    -C cluster0.has_permission_overlay_s2: 2
+    -C cluster1.has_permission_overlay_s2: 2

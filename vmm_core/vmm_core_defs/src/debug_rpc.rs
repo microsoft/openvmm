@@ -108,4 +108,6 @@ pub enum DebugStopReason {
         vp: u32,
         breakpoint: HardwareBreakpoint,
     },
+    /// The guest watchdog timer expired.
+    Watchdog,
 }

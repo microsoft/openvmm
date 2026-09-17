@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "intel_vtd"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitfield-struct.workspace = true
+chipset_device.workspace = true
+guestmem.workspace = true
+inspect.workspace = true
+iommu_common.workspace = true
+open_enum.workspace = true
+parking_lot.workspace = true
+pci_core.workspace = true
+thiserror.workspace = true
+tracelimit.workspace = true
+tracing.workspace = true
+vmcore.workspace = true
+x86defs.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

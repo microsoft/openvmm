@@ -53,21 +53,28 @@ fn resolve_protoc_from_dir(
     })
 }
 
+flowey_config! {
+    /// Config for the resolve_protoc node.
+    pub struct Config {
+        /// What version to download (e.g: 27.1)
+        pub version: Option<String>,
+        /// Use a locally downloaded protoc
+        pub local_path: Option<ConfigVar<PathBuf>>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Use a locally downloaded protoc
-        LocalPath(ReadVar<PathBuf>),
-        /// What version to download (e.g: 27.1)
-        Version(String),
         /// Return paths to items in the protoc package
         Get(WriteVar<ProtocPackage>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_dist_pkg::Node>();
@@ -75,30 +82,27 @@ impl FlowNode for Node {
         ctx.import::<crate::cache::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
-        let mut local_path: Option<ReadVar<PathBuf>> = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
+        let version = config.version;
+        let local_path = config.local_path;
         let mut get_reqs = Vec::new();
 
         for req in requests {
             match req {
-                Request::LocalPath(path) => {
-                    if local_path.is_some() {
-                        anyhow::bail!("Duplicate LocalPath requests")
-                    }
-                    local_path = Some(path);
-                }
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::Get(v) => get_reqs.push(v),
             }
         }
 
         if version.is_some() && local_path.is_some() {
-            anyhow::bail!("Cannot specify both Version and LocalPath requests");
+            anyhow::bail!("Cannot specify both version and local_path config");
         }
 
         if version.is_none() && local_path.is_none() {
-            anyhow::bail!("Must specify a Version or LocalPath request");
+            anyhow::bail!("Must specify a version or local_path config");
         }
 
         // -- end of req processing -- //

@@ -64,11 +64,7 @@ async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
 async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_vmbus_redirect(true)
-        .with_processor_topology(ProcessorTopology {
-            vp_count: 16,
-            vps_per_socket: Some(8),
-            ..Default::default()
-        })
+        .with_processor_topology(ProcessorTopology::heavy())
         .run()
         .await?;
     agent.power_off().await?;
@@ -81,7 +77,10 @@ async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> any
 /// TODO: investigate flakiness for openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)). Tracked by: #2100
 #[openvmm_test(
     openvmm_openhcl_linux_direct_x64,
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    ignore(
+        reason = "flaky (microsoft/openvmm#2100)",
+        openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    )
 )]
 async fn validate_mnf_usage_in_guest(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

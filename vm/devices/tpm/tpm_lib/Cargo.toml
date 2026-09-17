@@ -7,13 +7,13 @@ rust-version.workspace = true
 edition.workspace = true
 
 [features]
-# Use this feature to enable tests that pulls in the `ms-tpm-20-ref`
-# with dependency on openssl.
-test_tpm = ["ms-tpm-20-ref", "ms-tpm-20-ref/vendored"]
+# Use this feature to enable tests that pull in `ms-tpm-20-ref` and `ms-tcg-tpm-sys`.
+test_tpm = ["dep:ms-tpm-20-ref", "dep:ms-tcg-tpm-sys"]
 
 [dependencies]
-ms-tpm-20-ref = { optional = true, workspace = true }
 tpm_protocol.workspace = true
+ms-tpm-20-ref = { optional = true, workspace = true }
+ms-tcg-tpm-sys = { optional = true, workspace = true }
 cvm_tracing.workspace = true
 inspect.workspace = true
 
@@ -21,7 +21,17 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
 getrandom.workspace = true
+
+[[test]]
+name = "tpm_1_38"
+required-features = ["test_tpm"]
+
+[[test]]
+name = "tpm_1_85"
+required-features = ["test_tpm"]
 
 [lints]
 workspace = true

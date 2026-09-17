@@ -24,7 +24,8 @@
                     "shared_gpa_boundary_bits": 39,
                     "policy": 196639,
                     "enable_debug": true,
-                    "injection_type": "restricted"
+                    "injection_type": "restricted",
+                    "secure_avic": "enabled"
                 }
             },
             "image": {

@@ -4,5 +4,5 @@
 #![expect(missing_docs)]
 
 fn main() {
-    vergen::EmitBuilder::builder().all_git().emit().unwrap();
+    build_rs_git_info::emit_git_info().unwrap();
 }

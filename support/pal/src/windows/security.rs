@@ -14,26 +14,23 @@ use std::ptr::null_mut;
 use std::str::FromStr;
 use widestring::U16CStr;
 use widestring::U16CString;
-use winapi::shared::minwindef::BOOL;
-use winapi::shared::sddl::ConvertSecurityDescriptorToStringSecurityDescriptorW;
-use winapi::shared::sddl::ConvertSidToStringSidW;
-use winapi::shared::sddl::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-use winapi::shared::sddl::SDDL_REVISION_1;
-use winapi::um::securitybaseapi::DeriveCapabilitySidsFromName;
-use winapi::um::winbase::LocalFree;
-use winapi::um::winnt::DACL_SECURITY_INFORMATION;
-use winapi::um::winnt::GROUP_SECURITY_INFORMATION;
-use winapi::um::winnt::HANDLE;
-use winapi::um::winnt::LABEL_SECURITY_INFORMATION;
-use winapi::um::winnt::LPSECURITY_CAPABILITIES;
-use winapi::um::winnt::OWNER_SECURITY_INFORMATION;
-use winapi::um::winnt::PHANDLE;
-use winapi::um::winnt::PSECURITY_DESCRIPTOR;
-use winapi::um::winnt::PSID;
-use winapi::um::winnt::SACL_SECURITY_INFORMATION;
-use winapi::um::winnt::SE_GROUP_ENABLED;
-use winapi::um::winnt::SECURITY_CAPABILITIES;
-use winapi::um::winnt::SID_AND_ATTRIBUTES;
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
+use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
+use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::LABEL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
+use windows_sys::Win32::Security::PSID;
+use windows_sys::Win32::Security::SACL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
+use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
 
@@ -248,7 +245,7 @@ impl FromStr for LocalSecurityDescriptor {
                 U16CString::from_str(s)
                     .map_err(|e| std::io::Error::new(ErrorKind::InvalidInput, e))?
                     .as_ptr(),
-                SDDL_REVISION_1.into(),
+                SDDL_REVISION_1,
                 &mut ptr,
                 &mut len,
             ) == 0
@@ -293,7 +290,7 @@ impl SecurityDescriptor {
             let mut s16 = null_mut();
             if ConvertSecurityDescriptorToStringSecurityDescriptorW(
                 self.as_ptr(),
-                SDDL_REVISION_1.into(),
+                SDDL_REVISION_1,
                 OWNER_SECURITY_INFORMATION
                     | GROUP_SECURITY_INFORMATION
                     | DACL_SECURITY_INFORMATION
@@ -325,9 +322,9 @@ impl SecurityDescriptor {
 unsafe extern "C" {
     fn CreateAppContainerToken(
         token: HANDLE,
-        caps: LPSECURITY_CAPABILITIES,
-        new_token: PHANDLE,
-    ) -> BOOL;
+        caps: *mut SECURITY_CAPABILITIES,
+        new_token: *mut HANDLE,
+    ) -> windows_sys::core::BOOL;
 }
 
 #[repr(transparent)]
@@ -356,7 +353,7 @@ where
 {
     let mut caps_and_attrs: Vec<_> = capabilities
         .into_iter()
-        .map(|c| SidAndAttributes::new(c.as_ref(), SE_GROUP_ENABLED))
+        .map(|c| SidAndAttributes::new(c.as_ref(), SE_GROUP_ENABLED as u32))
         .collect();
     let mut caps = SECURITY_CAPABILITIES {
         AppContainerSid: sid.as_ptr(),

@@ -12,10 +12,13 @@ mod diag;
 mod dispatch;
 mod emuplat;
 mod get_tracing;
+mod hibernate;
 mod inspect_internal;
 mod inspect_proc;
 mod livedump;
 mod loader;
+#[cfg(feature = "product_policy")]
+mod measured_product_policy;
 mod nvme_manager;
 mod options;
 mod reference_time;
@@ -81,7 +84,11 @@ use vnc_worker_defs::VncParameters;
 
 fn new_underhill_remote_console_cfg(
     framebuffer_gpa_base: Option<u64>,
-) -> anyhow::Result<(UnderhillRemoteConsoleCfg, Option<FramebufferAccess>)> {
+) -> anyhow::Result<(
+    UnderhillRemoteConsoleCfg,
+    Option<FramebufferAccess>,
+    Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+)> {
     if let Some(framebuffer_gpa_base) = framebuffer_gpa_base {
         // Underhill accesses the framebuffer by using /dev/mshv_vtl_low to read
         // from a second mapping placed after the end of RAM at a static
@@ -103,6 +110,8 @@ fn new_underhill_remote_console_cfg(
             .context("allocating framebuffer")?;
         tracing::debug!("framebuffer_gpa_base: {:#x}", framebuffer_gpa_base);
 
+        let (dirt_send, dirt_recv) = mesh::channel();
+
         Ok((
             UnderhillRemoteConsoleCfg {
                 synth_keyboard: true,
@@ -110,8 +119,10 @@ fn new_underhill_remote_console_cfg(
                 synth_video: true,
                 input: mesh::Receiver::new(),
                 framebuffer: Some(fb),
+                dirt_send: Some(dirt_send),
             },
             Some(fba),
+            Some(dirt_recv),
         ))
     } else {
         Ok((
@@ -121,7 +132,9 @@ fn new_underhill_remote_console_cfg(
                 synth_video: false,
                 input: mesh::Receiver::new(),
                 framebuffer: None,
+                dirt_send: None,
             },
+            None,
             None,
         ))
     }
@@ -193,7 +206,14 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
 
     let crate_name = build_info::get().crate_name();
     let crate_revision = build_info::get().scm_revision();
-    tracing::info!(CVM_ALLOWED, ?crate_name, ?crate_revision, "VMM process");
+    let openhcl_version = build_info::get().openhcl_version();
+    tracing::info!(
+        CVM_ALLOWED,
+        ?crate_name,
+        ?crate_revision,
+        ?openhcl_version,
+        "VMM process"
+    );
     log_boot_times().context("failure logging boot times")?;
 
     // Write the current pid to a file.
@@ -275,6 +295,7 @@ impl DiagState {
 
 #[derive(Inspect)]
 struct Workers {
+    #[inspect(safe)]
     vm: WorkerHandle,
     #[inspect(skip)]
     vm_rpc: mesh::Sender<UhVmRpc>,
@@ -310,6 +331,7 @@ async fn launch_workers(
         vmbus_max_version: opt.vmbus_max_version,
         vmbus_enable_mnf: opt.vmbus_enable_mnf,
         vmbus_force_confidential_external_memory: opt.vmbus_force_confidential_external_memory,
+        vmbus_force_gpa_pinning: opt.vmbus_force_gpa_pinning,
         vmbus_channel_unstick_delay: (opt.vmbus_channel_unstick_delay_ms != 0)
             .then(|| Duration::from_millis(opt.vmbus_channel_unstick_delay_ms)),
         cmdline_append: opt.cmdline_append.clone(),
@@ -318,7 +340,6 @@ async fn launch_workers(
         emulated_serial_wait_for_rts: opt.serial_wait_for_rts,
         force_load_vtl0_image: opt.force_load_vtl0_image,
         nvme_vfio: opt.nvme_vfio,
-        mcr: opt.mcr,
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
@@ -331,6 +352,9 @@ async fn launch_workers(
         default_boot_always_attempt: opt.default_boot_always_attempt,
         guest_state_lifetime: opt.guest_state_lifetime,
         guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        hardware_sealing_policy: opt.hardware_sealing_policy,
+        efi_diagnostics_log_level: opt.efi_diagnostics_log_level,
+        efi_diagnostics_rate_limit: opt.efi_diagnostics_rate_limit,
         strict_encryption_policy: opt.strict_encryption_policy,
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,
@@ -340,7 +364,7 @@ async fn launch_workers(
         servicing_timeout_dump_collection_in_ms: opt.servicing_timeout_dump_collection_in_ms,
     };
 
-    let (mut remote_console_cfg, framebuffer_access) =
+    let (mut remote_console_cfg, framebuffer_access, dirty_rect_recv) =
         new_underhill_remote_console_cfg(opt.framebuffer_gpa_base)?;
 
     let mut vnc_worker = None;
@@ -362,6 +386,9 @@ async fn launch_workers(
                         listener,
                         framebuffer,
                         input_send,
+                        dirty_recv: dirty_rect_recv,
+                        max_clients: 16,
+                        evict_oldest: false,
                     },
                 )
                 .await?,

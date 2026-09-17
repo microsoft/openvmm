@@ -1,13 +1,74 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Defines the [`Disk`] type, which provides an interface to a block
-//! device, used for different disk frontends (such as the floppy disk, IDE,
-//! SCSI, or NVMe emulators) as well as direct disk access for other purposes
-//! (such as the VMGS file system).
+//! The shared disk backend abstraction for OpenVMM storage.
 //!
-//! `Disk`s are backed by a [`DiskIo`] implementation. Specific disk
-//! backends should be in their own crates.
+//! This crate defines [`Disk`] and the [`DiskIo`] trait, the central
+//! interface between storage frontends (NVMe, SCSI/StorVSP, IDE) and disk
+//! backends (host files, block devices, remote blobs, and more).
+//!
+//! # Architecture
+//!
+//! Every disk backend implements [`DiskIo`]. Frontends don't interact with
+//! backends directly — they hold a [`Disk`], which wraps a type-erased
+//! backend (`DynDisk`, an adapter around [`DiskIo`] that normalizes return
+//! futures) behind an `Arc` for cheap, concurrent cloning. The `Disk`
+//! wrapper caches immutable metadata (sector size, physical sector size,
+//! disk ID, FUA support) at construction time and validates that sector
+//! sizes are powers of two and at least 512 bytes.
+//!
+//! # I/O model
+//!
+//! All I/O is **async** and uses **scatter-gather** buffers via
+//! [`RequestBuffers`]. Callers must pass
+//! buffers that are an integral number of sectors.
+//!
+//! The key operations are:
+//!
+//! - [`DiskIo::read_vectored`] / [`DiskIo::write_vectored`] — async
+//!   scatter-gather read and write. The `fua` parameter on writes requests
+//!   Force Unit Access (write-through to stable storage). Whether FUA is
+//!   actually respected depends on the backend — check
+//!   [`DiskIo::is_fua_respected`].
+//! - [`DiskIo::sync_cache`] — flush (equivalent to SCSI SYNCHRONIZE CACHE
+//!   or NVMe FLUSH).
+//! - [`DiskIo::unmap`] — trim / deallocate sectors. The
+//!   [`DiskIo::unmap_behavior`] method reports whether unmapped sectors
+//!   become zero, become indeterminate, or whether unmap is ignored
+//!   entirely.
+//! - [`DiskIo::eject`] — eject media (optical drives only). The default
+//!   returns [`DiskError::UnsupportedEject`]. Eject is a media state change
+//!   managed by the SCSI DVD layer, not by the backend.
+//! - [`DiskIo::wait_resize`] — block until the disk's sector count changes.
+//!   The default returns [`std::future::pending()`], meaning the backend
+//!   never signals a resize. Only backends that can detect runtime capacity
+//!   changes (e.g., `BlockDeviceDisk` via Linux uevent, `NvmeDisk` via AEN)
+//!   should override this. Decorators and layered disks delegate to the
+//!   inner backend.
+//!
+//! # Error model
+//!
+//! All I/O methods return [`DiskError`], which frontends translate into
+//! protocol-specific errors (NVMe status codes, SCSI sense keys). The
+//! variants cover out-of-range LBAs, I/O errors, medium errors with
+//! sub-classification, guest memory access failures, read-only violations,
+//! persistent reservation conflicts, and unsupported eject.
+//!
+//! # Available backends
+//!
+//! | Backend | Crate | Description |
+//! |---------|-------|-------------|
+//! | `FileDisk` | `disk_file` | Host file, cross-platform |
+//! | `Vhd1Disk` | `disk_vhd1` | VHD1 fixed format |
+//! | `VhdmpDisk` | `disk_vhdmp` | Windows vhdmp driver |
+//! | `BlobDisk` | `disk_blob` | Read-only HTTP / Azure Blob |
+//! | `BlockDeviceDisk` | `disk_blockdevice` | Linux block device (io_uring) |
+//! | `NvmeDisk` | `disk_nvme` | Physical NVMe (user-mode driver) |
+//! | `StripedDisk` | `disk_striped` | Striped across multiple disks |
+//! | `CryptDisk` | `disk_crypt` | XTS-AES-256 encryption wrapper |
+//! | `DelayDisk` | `disk_delay` | Injected I/O latency wrapper |
+//! | `DiskWithReservations` | `disk_prwrap` | In-memory PR emulation wrapper |
+//! | `LayeredDisk` | `disk_layered` | Layered disk with per-sector presence |
 
 #![forbid(unsafe_code)]
 
@@ -74,6 +135,29 @@ pub enum MediumErrorDetails {
 }
 
 /// Disk metadata and IO operations.
+///
+/// # Sector range validation
+///
+/// Sector numbers reaching a backend originate with the guest, so
+/// implementations **must not panic** for any sector value, and must return
+/// [`DiskError::IllegalBlock`] for requests that fall outside the disk.
+/// Callers are *not* required to validate the range beforehand — they cannot
+/// do so meaningfully, since [`DiskIo::sector_count`] may change at runtime,
+/// so a range checked by a caller can be invalidated before the request is
+/// issued. Only the backend can validate against its own state.
+///
+/// An implementation may delegate this to whatever it is layered on top of,
+/// but only if the backing object's bounds coincide exactly with the disk's,
+/// out-of-range operations fail rather than silently succeeding, and the
+/// resulting error is mapped to [`DiskError::IllegalBlock`].
+///
+/// In exchange, implementations may rely on one guarantee from [`Disk`]: the
+/// end byte offset of any request — that is, `(sector + count) * sector_size`
+/// — is representable and no greater than [`i64::MAX`]. Sector arithmetic
+/// therefore cannot overflow, and a backend that transforms the offset (adding
+/// a header size, a chunk base, and so on) has 2^63 bytes of headroom in which
+/// to do so. Note that this says nothing about how large the disk is, so it is
+/// not a substitute for the range check above.
 pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// Returns the disk type name as a string.
     ///
@@ -112,6 +196,9 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     fn is_read_only(&self) -> bool;
 
     /// Unmap sectors from the layer.
+    ///
+    /// See the [trait documentation](DiskIo#sector-range-validation) for the
+    /// requirements on out-of-range requests.
     fn unmap(
         &self,
         sector: u64,
@@ -120,6 +207,13 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     ) -> impl Future<Output = Result<(), DiskError>> + Send;
 
     /// Returns the behavior of the unmap operation.
+    ///
+    /// This tells callers what happens to the content of unmapped sectors:
+    ///
+    /// - [`UnmapBehavior::Zeroes`] — unmapped sectors read back as zero.
+    /// - [`UnmapBehavior::Unspecified`] — content may or may not change, and
+    ///   not necessarily to zero.
+    /// - [`UnmapBehavior::Ignored`] — unmap is a no-op; content is unchanged.
     fn unmap_behavior(&self) -> UnmapBehavior;
 
     /// Returns the optimal granularity for unmaps, in sectors.
@@ -134,6 +228,11 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     }
 
     /// Issues an asynchronous eject media operation to the disk.
+    ///
+    /// The default implementation returns [`DiskError::UnsupportedEject`].
+    /// Eject is primarily a media state change managed by the SCSI DVD layer
+    /// (`SimpleScsiDvd`), not by disk backends. Backends generally do not
+    /// need to override this.
     fn eject(&self) -> impl Future<Output = Result<(), DiskError>> + Send {
         ready(Err(DiskError::UnsupportedEject))
     }
@@ -164,7 +263,18 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// Issues an asynchronous flush operation to the disk.
     fn sync_cache(&self) -> impl Future<Output = Result<(), DiskError>> + Send;
 
-    /// Waits for the disk sector size to be different than the specified value.
+    /// Waits for the disk sector count to change from the specified value.
+    ///
+    /// Returns the new sector count once [`DiskIo::sector_count`] would return
+    /// a value different from `sector_count`. Frontends use this to detect
+    /// runtime capacity changes and notify the guest (NVMe via AEN, SCSI via
+    /// UNIT_ATTENTION).
+    ///
+    /// The default implementation returns [`std::future::pending()`], meaning
+    /// the disk never signals a resize. Only backends that can detect runtime
+    /// capacity changes should override this — for example, `BlockDeviceDisk`
+    /// (via Linux uevent) and `NvmeDisk` (via NVMe AEN). Decorator wrappers
+    /// and `LayeredDisk` should delegate to the inner disk.
     fn wait_resize(&self, sector_count: u64) -> impl Future<Output = u64> + Send {
         let _ = sector_count;
         std::future::pending()
@@ -289,14 +399,75 @@ impl Disk {
         self.0.is_read_only
     }
 
+    /// Returns the largest sector number that may appear as the end of a
+    /// request while keeping the end byte offset representable.
+    fn max_sector(&self) -> u64 {
+        (i64::MAX as u64) >> self.0.sector_shift
+    }
+
+    /// Checks that a request's end byte offset is representable.
+    ///
+    /// This is deliberately *not* a range check: it never consults
+    /// [`sector_count`](Self::sector_count), so it cannot mask a bug in a
+    /// backend that fails to validate the range itself, and it cannot be
+    /// invalidated by the disk being resized. Range validation belongs to the
+    /// backend, which is the only component that can perform it atomically
+    /// with the I/O.
+    ///
+    /// What it does guarantee is that `(sector + count) * sector_size` does not
+    /// overflow and is at most [`i64::MAX`], which is the real limit imposed by
+    /// `pread64`/`pwrite64` and the Windows file APIs. Backends may rely on
+    /// this to do sector and offset arithmetic without worrying about
+    /// wraparound.
+    fn check_representable(&self, sector: u64, count: u64) -> Result<(), DiskError> {
+        match sector.checked_add(count) {
+            Some(end) if end <= self.max_sector() => Ok(()),
+            // No disk can be 2^63 bytes, so such a sector is out of range for
+            // any disk.
+            _ => Err(DiskError::IllegalBlock),
+        }
+    }
+
+    /// Returns the number of sectors spanned by `buffers`.
+    ///
+    /// Callers must pass a whole number of sectors, so this is normally exact.
+    /// Rounding down is nonetheless the right choice for a caller that does
+    /// not: `max_sector` is `i64::MAX` rounded *down* to a sector, which for a
+    /// power-of-two sector size leaves exactly `sector_size - 1` bytes of slack
+    /// below `i64::MAX` — enough to cover a partial trailing sector. So the end
+    /// byte offset stays representable either way.
+    fn buffer_sectors(&self, buffers: &RequestBuffers<'_>) -> u64 {
+        (buffers.len() as u64) >> self.0.sector_shift
+    }
+
     /// Unmap sectors from the disk.
-    pub fn unmap(
+    ///
+    /// If the disk reports [`UnmapBehavior::Ignored`], the request is not
+    /// passed to the backing object at all, since by definition it would do
+    /// nothing. The range is still validated first — a no-op is still not a
+    /// legal response to a request naming sectors the disk does not have.
+    pub async fn unmap(
         &self,
         sector: u64,
         count: u64,
         block_level_only: bool,
-    ) -> impl use<'_> + Future<Output = Result<(), DiskError>> + Send {
-        self.0.disk.unmap(sector, count, block_level_only)
+    ) -> Result<(), DiskError> {
+        self.check_representable(sector, count)?;
+        if self.unmap_behavior() == UnmapBehavior::Ignored {
+            // This is the one place where `Disk` range checks a request, and it
+            // is sound precisely because it is the one place where `Disk` does
+            // not delegate: there is no backend check for it to be redundant
+            // with, and none for it to mask. The check being momentarily stale
+            // if the disk is resized is harmless here, because the operation
+            // does nothing either way — only the status code is observable.
+            //
+            // The addition cannot overflow because of `check_representable`.
+            if sector + count > self.sector_count() {
+                return Err(DiskError::IllegalBlock);
+            }
+            return Ok(());
+        }
+        self.0.disk.unmap(sector, count, block_level_only).await
     }
 
     /// Returns the behavior of the unmap operation.
@@ -326,12 +497,13 @@ impl Disk {
     ///
     /// * `buffers` - An object representing the data buffers into which the disk data will be transferred.
     /// * `sector` - The logical sector at which the read operation starts.
-    pub fn read_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'_>,
+    pub async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
-    ) -> impl use<'a> + Future<Output = Result<(), DiskError>> + Send {
-        self.0.disk.read_vectored(buffers, sector)
+    ) -> Result<(), DiskError> {
+        self.check_representable(sector, self.buffer_sectors(buffers))?;
+        self.0.disk.read_vectored(buffers, sector).await
     }
 
     /// Issues an asynchronous write-gather operation to the disk.
@@ -345,13 +517,14 @@ impl Disk {
     /// # Panics
     ///
     /// The caller must pass a buffer with an integer number of sectors.
-    pub fn write_vectored<'a>(
-        &'a self,
-        buffers: &'a RequestBuffers<'_>,
+    pub async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
-    ) -> impl use<'a> + Future<Output = Result<(), DiskError>> + Send {
-        self.0.disk.write_vectored(buffers, sector, fua)
+    ) -> Result<(), DiskError> {
+        self.check_representable(sector, self.buffer_sectors(buffers))?;
+        self.0.disk.write_vectored(buffers, sector, fua).await
     }
 
     /// Issues an asynchronous flush operation to the disk.
@@ -359,20 +532,27 @@ impl Disk {
         self.0.disk.sync_cache()
     }
 
-    /// Waits for the disk sector size to be different than the specified value.
+    /// Waits for the disk sector count to change from the specified value.
     pub fn wait_resize(&self, sector_count: u64) -> impl use<'_> + Future<Output = u64> {
         self.0.disk.wait_resize(sector_count)
     }
 }
 
-/// The behavior of unmap.
+/// The behavior of the [`DiskIo::unmap`] operation.
+///
+/// This describes what happens to the content of unmapped sectors. Frontends
+/// use this to report the correct behavior to the guest (e.g., SCSI
+/// `LBPRZ` bit or NVMe DLFEAT field).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Inspect)]
 pub enum UnmapBehavior {
     /// Unmap may or may not change the content, and not necessarily to zero.
+    /// The guest cannot assume anything about the content of unmapped sectors.
     Unspecified,
-    /// Unmaps are guaranteed to be ignored.
+    /// Unmaps are guaranteed to be ignored — the content is unchanged.
+    /// The disk reports that unmap is not supported.
     Ignored,
-    /// Unmap will deterministically zero the content.
+    /// Unmap will deterministically zero the content. The guest can rely on
+    /// reading back zeroes from unmapped sectors.
     Zeroes,
 }
 

@@ -5,37 +5,46 @@
 
 use flowey::node::prelude::*;
 
+flowey_config! {
+    /// Config for the init_openvmm_cargo_config_deny_warnings node.
+    pub struct Config {
+        /// Whether to deny warnings in .cargo/config.toml
+        pub deny_warnings: Option<bool>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        DenyWarnings(bool),
         Done(WriteVar<SideEffect>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut done = Vec::new();
-        let mut deny_warnings = None;
 
         for req in requests {
             match req {
                 Request::Done(v) => done.push(v),
-                Request::DenyWarnings(v) => {
-                    same_across_all_reqs("DenyWarnings", &mut deny_warnings, v)?
-                }
             }
         }
 
-        let deny_warnings =
-            deny_warnings.ok_or(anyhow::anyhow!("Missing essential request: DenyWarnings"))?;
+        let deny_warnings = config
+            .deny_warnings
+            .ok_or(anyhow::anyhow!("missing config: deny_warnings"))?;
 
         // -- end of req processing -- //
 

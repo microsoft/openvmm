@@ -1047,7 +1047,9 @@ pub mod protocol {
                     let actual_data_size = bytes.len() - start;
                     tracing::debug!(
                         "TPM2B_PRIVATE compatibility: expected {} bytes, got {} bytes, using actual size {}",
-                        size, bytes.len() - start, actual_data_size
+                        size,
+                        bytes.len() - start,
+                        actual_data_size
                     );
 
                     let mut buffer = [0u8; MAX_DIGEST_BUFFER_SIZE];

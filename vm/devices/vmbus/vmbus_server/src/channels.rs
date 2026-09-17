@@ -131,8 +131,15 @@ pub struct Server {
     gpadls: GpadlMap,
     incomplete_gpadls: IncompleteGpadlMap,
     child_connection_id: u32,
+    /// Limits the protocol version and feature flags that will be accepted for the next connection.
     max_version: Option<MaxVersionInfo>,
+    /// Version limit that will be applied after the next connection is established. This is used
+    /// for testing scenarios where the first client to connect (usually UEFI) may not be able to
+    /// support the older protocol version being tested.
     delayed_max_version: Option<MaxVersionInfo>,
+    /// Limits the protocol version and feature flags that will be accepted when restoring from
+    /// saved state.
+    max_restore_version: Option<MaxVersionInfo>,
     // This must be separate from the connection state because e.g. the UnloadComplete message,
     // or messages for reserved channels, can be pending even when disconnected.
     pending_messages: PendingMessages,
@@ -141,6 +148,7 @@ pub struct Server {
     // shared memory and we cannot set protections on shared memory.
     require_server_allocated_mnf: bool,
     use_absolute_channel_order: bool,
+    support_gpa_pinning: bool,
 }
 
 pub struct ServerWithNotifier<'a, T> {
@@ -685,13 +693,21 @@ impl From<OfferParams> for OfferParamsInternal {
                 flags.set_enumerate_device_interface(true);
                 user_defined = interface_user_defined;
             }
-            ChannelType::Pipe { message_mode } => {
+            ChannelType::Pipe {
+                message_mode,
+                user_defined: pipe_user_defined,
+                pipe_flags,
+            } => {
                 flags.set_enumerate_device_interface(true);
                 flags.set_named_pipe_mode(true);
-                user_defined.as_pipe_params_mut().pipe_type = if message_mode {
-                    protocol::PipeType::MESSAGE
-                } else {
-                    protocol::PipeType::BYTE
+                *user_defined.as_pipe_params_mut() = protocol::PipeUserDefinedParameters {
+                    pipe_type: if message_mode {
+                        protocol::PipeType::MESSAGE
+                    } else {
+                        protocol::PipeType::BYTE
+                    },
+                    user_defined: pipe_user_defined,
+                    flags: pipe_flags,
                 };
             }
             ChannelType::HvSocket {
@@ -1076,6 +1092,9 @@ impl ChannelList {
     }
 
     /// Gets a channel by guest channel ID.
+    ///
+    /// It is an error to call this function on a channel that has been released
+    /// by the guest, since the guest should not be using that ID anymore.
     fn get_by_channel_id_mut(
         &mut self,
         assigned_channels: &AssignedChannels,
@@ -1272,7 +1291,8 @@ impl OpenParams {
             },
             connection_id,
             event_flag,
-            monitor_info,
+            // Only include monitor info if the request has interrupts enabled.
+            monitor_info: request.target_vp.and(monitor_info),
             flags: request.flags.with_unused(0),
             reserved_target,
             channel_id: info.channel_id,
@@ -1312,6 +1332,7 @@ static SUPPORTED_VERSIONS: &[Version] = &[
 
 // Feature flags that are always supported.
 // N.B. Confidential channels are conditionally supported if running in the paravisor.
+// N.B. GPA pinning is conditionally supported if the server is configured to support it.
 const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_channel_interrupt_redirection(true)
@@ -1362,6 +1383,7 @@ impl Server {
         child_connection_id: u32,
         channel_id_offset: u16,
         use_absolute_channel_order: bool,
+        support_gpa_pinning: bool,
     ) -> Self {
         Server {
             state: ConnectionState::Disconnected,
@@ -1373,9 +1395,11 @@ impl Server {
             child_connection_id,
             max_version: None,
             delayed_max_version: None,
+            max_restore_version: None,
             pending_messages: PendingMessages(VecDeque::new()),
             require_server_allocated_mnf: false,
             use_absolute_channel_order,
+            support_gpa_pinning,
         }
     }
 
@@ -1407,7 +1431,10 @@ impl Server {
         }
     }
 
-    /// Indicates the maximum supported version by the real host in an Underhill relay scenario.
+    /// Sets a limit on the version and featuref flags that will be offered to the guest.
+    ///
+    /// If `delay` is true, the limit will not apply to the first connection, but to all subsequent
+    /// connections.
     pub fn set_compatibility_version(&mut self, version: MaxVersionInfo, delay: bool) {
         if delay {
             self.delayed_max_version = Some(version)
@@ -1415,6 +1442,18 @@ impl Server {
             tracing::info!(?version, "Limiting VmBus connections to version");
             self.max_version = Some(version);
         }
+    }
+
+    /// Indicates the maximum supported version when restoring from saved
+    /// state. This is configured separately from [`Self::set_compatibility_version`]
+    /// so that the restore-time limit can be configured independently of the
+    /// limit used for live negotiation.
+    ///
+    /// This allows features to be enabled for rollback scenarios while not yet enabling them for
+    /// new connections.
+    pub fn set_restore_compatibility_version(&mut self, version: MaxVersionInfo) {
+        tracing::info!(?version, "Limiting VmBus restore to version");
+        self.max_restore_version = Some(version);
     }
 
     pub fn channel_gpadls(&self, offer_id: OfferId) -> Vec<RestoredGpadl> {
@@ -2038,14 +2077,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 ..
             } => {
                 channel.state = ChannelState::Closed;
-                if matches!(self.inner.state, ConnectionState::Connected { .. }) {
-                    let channel_id = channel.info.expect("assigned").channel_id;
-                    self.send_close_reserved_channel_response(
-                        channel_id,
-                        offer_id,
-                        reserved_state.target,
-                    );
-                } else {
+                let channel_id = channel.info.expect("assigned").channel_id;
+                // Always send the close response to the reserved channel's
+                // requested target, even while disconnected/ing. Reserved
+                // channels are independent of the connection state.
+                self.send_close_reserved_channel_response(
+                    channel_id,
+                    offer_id,
+                    reserved_state.target,
+                );
+
+                if !matches!(self.inner.state, ConnectionState::Connected { .. }) {
+                    // Re-borrow the channel after the &mut self call above.
+                    let channel = &mut self.inner.channels[offer_id];
                     // Handle closing reserved channels while disconnected/ing. Since we weren't waiting
                     // on the channel, no need to call check_disconnected, but we do need to release it.
                     if Self::client_release_channel(
@@ -2059,6 +2103,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         &mut self.inner.assigned_channels,
                         &mut self.inner.assigned_monitors,
                         None,
+                        false,
                     ) {
                         self.inner.channels.remove(offer_id);
                     }
@@ -2249,14 +2294,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return;
         };
 
-        tracelimit::info_ratelimited!(
-            vtl,
-            ?version,
-            client_id = ?request.client_id,
-            trusted = request.trusted,
-            "Guest negotiated version"
-        );
-
         // Make sure we can receive incoming interrupts on the monitor page. The parent to child
         // page is not used as this server doesn't send monitored interrupts.
         let monitor_page = match request.monitor_page {
@@ -2332,7 +2369,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         //      supported.
         const LOCAL_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
             .with_client_id(true)
-            .with_confidential_channels(true);
+            .with_confidential_channels(true)
+            .with_gpa_pinning(true);
 
         let (relay_feature_flags, server_specified_monitor_page) = match response {
             // There is no relay, or it successfully processed our request.
@@ -2401,6 +2439,14 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 .set_server_specified_monitor_pages(false);
         }
 
+        tracelimit::info_ratelimited!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            version = ?info.version,
+            client_id = ?info.client_id,
+            trusted = info.trusted,
+            "guest negotiated version"
+        );
+
         let version = info.version;
         self.inner.state = ConnectionState::Connected(info);
 
@@ -2429,8 +2475,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         let supported_flags = if version >= Version::Copper {
             // Confidential channels should only be enabled if the connection is trusted.
-            let max_supported_flags =
-                SUPPORTED_FEATURE_FLAGS.with_confidential_channels(request.trusted);
+            let max_supported_flags = SUPPORTED_FEATURE_FLAGS
+                .with_confidential_channels(request.trusted)
+                .with_gpa_pinning(self.inner.support_gpa_pinning);
 
             // The max features may be limited in order to test older protocol versions.
             if let Some(max_version) = self.inner.max_version {
@@ -2446,10 +2493,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         assert!(version >= Version::Copper || feature_flags == FeatureFlags::new());
         if feature_flags.into_bits() != request.feature_flags {
-            tracelimit::warn_ratelimited!(
+            // This is a common occurrence, especially with the difference between flags that may
+            // be supported by Hyper-V, OpenVMM, and OpenHCL, so this does not need to be a warning.
+            tracelimit::info_ratelimited!(
                 supported = feature_flags.into_bits(),
                 requested = request.feature_flags,
-                "Guest requested unsupported feature flags."
+                "guest requested unsupported feature flags."
             );
         }
 
@@ -2544,6 +2593,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     None,
+                    vm_reset,
                 )
         });
 
@@ -2708,27 +2758,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         Ok(())
     }
 
-    /// Sends a GPADL to the device when `ranges` is Some. Returns false if the
-    /// GPADL should be removed because the channel is already revoked.
-    #[must_use]
-    fn gpadl_updated(
+    /// Sends a GPADL to the device after the full list of ranges was received.
+    fn gpadl_completed(
         mut sender: MessageSender<'_, N>,
         offer_id: OfferId,
         channel: &Channel,
         gpadl_id: GpadlId,
-        gpadl: &Gpadl,
-    ) -> bool {
+        gpadl: &mut Gpadl,
+    ) {
         if channel.state.is_revoked() {
             let channel_id = channel.info.as_ref().expect("assigned").channel_id;
-            sender.send_gpadl_created(channel_id, gpadl_id, protocol::STATUS_UNSUCCESSFUL);
-            false
+
+            // A gpadl for a channel that was revoked but still referenced is
+            // allowed. In this case there is no channel to notify so
+            // immediately send a success response.
+            gpadl.state = GpadlState::Accepted;
+            sender.send_gpadl_created(channel_id, gpadl_id, protocol::STATUS_SUCCESS);
         } else {
-            // Notify the channel if the GPADL is done.
+            // Notify the channel of the completed GPADL.
             sender.notifier.notify(
                 offer_id,
                 Action::Gpadl(gpadl_id, gpadl.count, gpadl.buf.clone()),
             );
-            true
         }
     }
 
@@ -2760,12 +2811,22 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             Entry::Occupied(_) => return Err(ChannelError::DuplicateGpadlId),
         };
 
-        // If we're not done, track the offer ID for GPADL body requests
-        // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique, which
-        //      allows for a guest to reuse a gpadl ID in use by a reserved channel (which it may
-        //      not know about). But for in-progress GPADLs we need to ensure the gpadl ID itself
-        //      is unique, since the body message doesn't include a channel ID.
-        if !done {
+        if done {
+            Self::gpadl_completed(
+                self.inner
+                    .pending_messages
+                    .sender(self.notifier, self.inner.state.is_paused()),
+                offer_id,
+                channel,
+                input.gpadl_id,
+                gpadl,
+            )
+        } else {
+            // If we're not done, track the offer ID for GPADL body requests
+            // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique,
+            //      which allows for a guest to reuse a gpadl ID in use by a reserved channel (which
+            //      it may not know about). But for in-progress GPADLs we need to ensure the gpadl
+            //      ID itself is unique, since the body message doesn't include a channel ID.
             match self.inner.incomplete_gpadls.entry(input.gpadl_id) {
                 Entry::Vacant(entry) => {
                     entry.insert(offer_id);
@@ -2781,20 +2842,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     return Err(ChannelError::DuplicateGpadlId);
                 }
             }
-        }
-
-        if done
-            && !Self::gpadl_updated(
-                self.inner
-                    .pending_messages
-                    .sender(self.notifier, self.inner.state.is_paused()),
-                offer_id,
-                channel,
-                input.gpadl_id,
-                gpadl,
-            )
-        {
-            self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
         }
         Ok(())
     }
@@ -2848,7 +2895,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             Ok(done) => {
                 if done {
                     self.inner.incomplete_gpadls.remove(&input.gpadl_id);
-                    if !Self::gpadl_updated(
+                    Self::gpadl_completed(
                         self.inner
                             .pending_messages
                             .sender(self.notifier, self.inner.state.is_paused()),
@@ -2856,9 +2903,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         channel,
                         input.gpadl_id,
                         gpadl,
-                    ) {
-                        self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
-                    }
+                    )
                 }
             }
             Err(err) => {
@@ -3198,6 +3243,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
         info: Option<&ConnectionInfo>,
+        vm_reset: bool,
     ) -> bool {
         tracelimit::info_ratelimited!(?offer_id, key = %channel.offer.key(), "client released channel");
         // Release any GPADLs that remain for this channel.
@@ -3255,7 +3301,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 true
             }
             ChannelState::Opening { .. } => {
-                channel.state = ChannelState::OpeningClientRelease;
+                // Normally we transition to `OpeningClientRelease` and wait
+                // for the device to deliver an `open_complete`, then close
+                // the channel. During a VM reset, however, channel device
+                // tasks may already be stopped (state-unit reset stops them
+                // in reverse-dependency order, before the vmbus unit), in
+                // which case the in-flight `Action::Open` has been pended
+                // in the device task's stopped-state queue and will never
+                // be answered. Waiting would deadlock the vmbus reset,
+                // which in turn blocks the channel-unit reset that would
+                // drain the queue.
+                //
+                // Force-release directly to `ClientReleased` in that case.
+                // The device has not opened the channel yet, so there is
+                // no resource to tear down. Any late `Action::Open`
+                // response that does arrive (for a still-running device
+                // that races us) is caught by the `invalid open complete`
+                // branch of `open_complete` and ignored.
+                if vm_reset {
+                    channel.state = ChannelState::ClientReleased;
+                } else {
+                    channel.state = ChannelState::OpeningClientRelease;
+                }
                 false
             }
             ChannelState::Open { .. } => {
@@ -3306,6 +3373,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     self.inner.state.get_connected_info(),
+                    false,
                 ) {
                     self.inner.channels.remove(offer_id);
                 }
@@ -3911,6 +3979,8 @@ impl<N: Notifier> MessageSender<'_, N> {
     fn send_offer(&mut self, channel: &mut Channel, connection_info: &ConnectionInfo) {
         let info = channel.info.as_ref().expect("assigned");
         let mut flags = channel.offer.flags;
+
+        // Disable offer flags that are not supported by the current set of feature flags.
         if !connection_info
             .version
             .feature_flags
@@ -3918,6 +3988,10 @@ impl<N: Notifier> MessageSender<'_, N> {
         {
             flags.set_confidential_ring_buffer(false);
             flags.set_confidential_external_memory(false);
+        }
+
+        if !connection_info.version.feature_flags.gpa_pinning() {
+            flags.set_require_pinned_external_memory(false);
         }
 
         // Send the monitor ID only if the guest supports MNF. MNF may also be disabled if the guest

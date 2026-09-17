@@ -10,6 +10,7 @@ use windows_sys::core::HRESULT;
 
 pub const WHV_E_UNKNOWN_CAPABILITY: HRESULT = 0x80370300u32 as HRESULT;
 pub const WHV_E_INSUFFICIENT_BUFFER: HRESULT = 0x80370301u32 as HRESULT;
+pub const WHV_E_UNKNOWN_PROPERTY: HRESULT = 0x80370302u32 as HRESULT;
 
 #[link(
     name = "WinHvPlatform.dll",
@@ -43,6 +44,14 @@ unsafe extern "system" {
         code: WHV_PARTITION_PROPERTY_CODE,
         data: *const u8,
         len: u32,
+    ) -> HRESULT;
+
+    pub fn WHvGetPartitionCounters(
+        _: WHV_PARTITION_HANDLE,
+        counter_set: WHV_PARTITION_COUNTER_SET,
+        buffer: *mut u8,
+        len: u32,
+        out_len: *mut u32,
     ) -> HRESULT;
 
     pub fn WHvRequestInterrupt(

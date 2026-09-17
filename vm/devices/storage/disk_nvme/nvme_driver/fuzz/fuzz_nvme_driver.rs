@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 //! An interface to fuzz the nvme driver with arbitrary actions
-use crate::arbitrary_data;
 use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
 use arbitrary::Arbitrary;
+use arbitrary::Unstructured;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use guestmem::GuestMemory;
 use guid::Guid;
@@ -13,9 +13,12 @@ use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
 use nvme_driver::NamespaceHandle;
 use nvme_driver::NvmeDriver;
+use nvme_spec::nvm;
 use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
+use pci_core::bus_range::AssignedBusRange;
+use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use scsi_buffers::OwnedRequestBuffers;
 use std::convert::TryFrom;
@@ -33,9 +36,12 @@ pub struct FuzzNvmeDriver {
 
 impl FuzzNvmeDriver {
     /// Setup a new nvme driver with a fuzz-enabled backend device.
-    pub async fn new(driver: DefaultDriver) -> Result<Self, anyhow::Error> {
+    pub async fn new(
+        driver: DefaultDriver,
+        u: &mut Unstructured<'_>,
+    ) -> Result<Self, anyhow::Error> {
         let cpu_count = 64; // TODO: [use-arbitrary-input]
-        let pages = 512; // 2MB TODO: [use-arbitrary-input]
+        let pages = 512; // 2MB
         let mem = DeviceTestMemory::new(pages, false, "fuzz_nvme_driver");
 
         // Transfer buffer
@@ -45,27 +51,40 @@ impl FuzzNvmeDriver {
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
         let msi_conn = MsiConnection::new();
 
-        let guid = arbitrary_guid()?;
+        let guid = arbitrary_guid(u)?;
+        let dma_target = DmaTarget::new(
+            AssignedBusRange::new(),
+            0,
+            mem.guest_memory().clone(),
+            &msi_conn,
+        );
         let nvme = NvmeController::new(
             &driver_source,
-            mem.guest_memory().clone(),
-            msi_conn.target(),
+            &dma_target,
             &mut ExternallyManagedMmioIntercepts,
             NvmeControllerCaps {
-                msix_count: 2,     // TODO: [use-arbitrary-input]
-                max_io_queues: 64, // TODO: [use-arbitrary-input]
+                msix_count: 2,
+                max_io_queues: 64,
                 subsystem_id: guid,
             },
         );
 
         nvme.client()
-            .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap()) // TODO: [use-arbitrary-input]
+            .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
             .await
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_conn, mem.dma_client());
-        let mut nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?; // TODO: [use-arbitrary-input]
-        let namespace = nvme_driver.namespace(1).await?; // TODO: [use-arbitrary-input]
+        let fused_keepalive_device: bool = u.arbitrary()?;
+        let mut nvme_driver = NvmeDriver::new(
+            &driver_source,
+            cpu_count,
+            device,
+            false,
+            fused_keepalive_device,
+        )
+        .await?;
+        let namespace = nvme_driver.namespace(1).await?;
 
         Ok(Self {
             driver: Some(nvme_driver),
@@ -77,25 +96,6 @@ impl FuzzNvmeDriver {
 
     /// Clean up fuzzing infrastructure.
     pub async fn shutdown(&mut self) {
-        self.namespace
-            .deallocate(
-                0, // TODO: [use-arbitrary-input]
-                &[
-                    DsmRange {
-                        context_attributes: 0, // TODO: [use-arbitrary-input]
-                        starting_lba: 1000,    // TODO: [use-arbitrary-input]
-                        lba_count: 2000,       // TODO: [use-arbitrary-input]
-                    },
-                    DsmRange {
-                        context_attributes: 0, // TODO: [use-arbitrary-input]
-                        starting_lba: 2,       // TODO: [use-arbitrary-input]
-                        lba_count: 2,          // TODO: [use-arbitrary-input]
-                    },
-                ],
-            )
-            .await
-            .unwrap();
-
         self.driver.take().unwrap().shutdown().await;
     }
 
@@ -110,8 +110,11 @@ impl FuzzNvmeDriver {
     ///
     /// All that being said, be careful when deciding to sanitize inputs here: consider
     /// and explicitly rule out adding graceful error handling in the `NvmeDriver` itself.
-    pub async fn execute_arbitrary_action(&mut self) -> Result<(), anyhow::Error> {
-        let action = arbitrary_data::<NvmeDriverAction>()?;
+    pub async fn execute_arbitrary_action(
+        &mut self,
+        u: &mut Unstructured<'_>,
+    ) -> Result<(), anyhow::Error> {
+        let action = u.arbitrary::<NvmeDriverAction>()?;
 
         match action {
             NvmeDriverAction::Read {
@@ -163,11 +166,91 @@ impl FuzzNvmeDriver {
                 self.namespace.flush(target_cpu % self.cpu_count).await?; // TODO: [panic-or-bail-on-fuzz]
             }
 
+            NvmeDriverAction::Deallocate {
+                target_cpu,
+                context_attributes,
+                starting_lba,
+                lba_count,
+            } => {
+                self.namespace
+                    .deallocate(
+                        target_cpu % self.cpu_count,
+                        &[DsmRange {
+                            context_attributes,
+                            starting_lba,
+                            lba_count,
+                        }],
+                    )
+                    .await?;
+            }
+
             NvmeDriverAction::UpdateServicingFlags { nvme_keepalive } => {
                 self.driver
                     .as_mut()
                     .unwrap()
                     .update_servicing_flags(nvme_keepalive);
+            }
+
+            NvmeDriverAction::ReservationReport { target_cpu } => {
+                let _ = self
+                    .namespace
+                    .reservation_report_extended(target_cpu % self.cpu_count)
+                    .await;
+            }
+
+            NvmeDriverAction::ReservationAcquire {
+                target_cpu,
+                action,
+                crkey,
+                prkey,
+                reservation_type,
+            } => {
+                let _ = self
+                    .namespace
+                    .reservation_acquire(
+                        target_cpu % self.cpu_count,
+                        nvm::ReservationAcquireAction(action),
+                        crkey,
+                        prkey,
+                        nvm::ReservationType(reservation_type),
+                    )
+                    .await;
+            }
+
+            NvmeDriverAction::ReservationRelease {
+                target_cpu,
+                action,
+                crkey,
+                reservation_type,
+            } => {
+                let _ = self
+                    .namespace
+                    .reservation_release(
+                        target_cpu % self.cpu_count,
+                        nvm::ReservationReleaseAction(action),
+                        crkey,
+                        nvm::ReservationType(reservation_type),
+                    )
+                    .await;
+            }
+
+            NvmeDriverAction::ReservationRegister {
+                target_cpu,
+                action,
+                crkey,
+                nrkey,
+                ptpl,
+            } => {
+                let _ = self
+                    .namespace
+                    .reservation_register(
+                        target_cpu % self.cpu_count,
+                        nvm::ReservationRegisterAction(action),
+                        crkey,
+                        nrkey,
+                        ptpl,
+                    )
+                    .await;
             }
         }
 
@@ -175,19 +258,9 @@ impl FuzzNvmeDriver {
     }
 }
 
-/// Returns a Guid with arbitrary bytes or an error if there isn't enought arbitrary data left
-fn arbitrary_guid() -> Result<Guid, arbitrary::Error> {
-    let mut guid: Guid = Guid::new_random();
-
-    guid.data1 = arbitrary_data::<u32>()?;
-    guid.data2 = arbitrary_data::<u16>()?;
-    guid.data3 = arbitrary_data::<u16>()?;
-
-    for byte in &mut guid.data4 {
-        *byte = arbitrary_data::<u8>()?;
-    }
-
-    Ok(guid)
+fn arbitrary_guid(u: &mut Unstructured<'_>) -> Result<Guid, arbitrary::Error> {
+    let bytes: [u8; 16] = u.arbitrary()?;
+    Ok(Guid::from_slice(&bytes))
 }
 
 #[derive(Debug, Arbitrary)]
@@ -205,7 +278,36 @@ pub enum NvmeDriverAction {
     Flush {
         target_cpu: u32,
     },
+    Deallocate {
+        target_cpu: u32,
+        context_attributes: u32,
+        starting_lba: u64,
+        lba_count: u32,
+    },
     UpdateServicingFlags {
         nvme_keepalive: bool,
+    },
+    ReservationReport {
+        target_cpu: u32,
+    },
+    ReservationAcquire {
+        target_cpu: u32,
+        action: u8,
+        crkey: u64,
+        prkey: u64,
+        reservation_type: u8,
+    },
+    ReservationRelease {
+        target_cpu: u32,
+        action: u8,
+        crkey: u64,
+        reservation_type: u8,
+    },
+    ReservationRegister {
+        target_cpu: u32,
+        action: u8,
+        crkey: Option<u64>,
+        nrkey: u64,
+        ptpl: Option<bool>,
     },
 }

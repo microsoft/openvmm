@@ -6,7 +6,6 @@
 
 pub mod protocol;
 
-use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
 use inspect::Inspect;
@@ -14,7 +13,6 @@ use protocol::HEADER_SIZE;
 use protocol::MAX_MESSAGE_SIZE;
 use protocol::MessageHeader;
 use protocol::VmbusMessage;
-use std::future::Future;
 use std::str::FromStr;
 use std::task::Poll;
 use thiserror::Error;
@@ -59,24 +57,6 @@ where
         } else {
             Poll::Ready(None)
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct TaggedFuture<T, F>(T, F);
-
-impl<T: Clone, F: Future + Unpin> Future for TaggedFuture<T, F>
-where
-    Self: Unpin,
-{
-    type Output = (T, F::Output);
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Self::Output> {
-        let r = std::task::ready!(self.1.poll_unpin(cx));
-        Poll::Ready((self.0.clone(), r))
     }
 }
 

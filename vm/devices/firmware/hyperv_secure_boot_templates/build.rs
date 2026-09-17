@@ -8,6 +8,9 @@ use std::path::PathBuf;
 
 pub fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=./templates/aarch64");
+    println!("cargo::rerun-if-changed=./templates/x64");
+
     let out_dir: PathBuf = std::env::var_os("OUT_DIR").unwrap().into();
 
     minify_json_in_folder(Path::new("./templates/aarch64"), &out_dir.join("aarch64"));

@@ -14,13 +14,14 @@ pub use vp_set::VpRunner;
 pub use vp_set::block_on_vp;
 
 use self::vp_set::RegisterSetError;
+#[cfg(feature = "dump")]
+use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::InspectMut;
-use memory_range::MemoryRange;
 use mesh::Receiver;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -33,8 +34,11 @@ use state_unit::UnitBuilder;
 use state_unit::UnitHandle;
 use std::sync::Arc;
 use thiserror::Error;
+use virt::InitialPageImport;
 use virt::InitialRegs;
-use virt::PageVisibility;
+use virt::InitialVpStateSource;
+#[cfg(feature = "dump")]
+use virt::VpIndex;
 use vm_topology::processor::ProcessorTopology;
 use vmcore::save_restore::ProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
@@ -52,17 +56,25 @@ pub struct PartitionUnit {
 /// Trait with the minimal methods needed to run the partition.
 #[async_trait]
 pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore {
+    /// Returns the source of the initial virtual processor state.
+    fn initial_vp_state_source(&self) -> InitialVpStateSource;
+
     /// Resets the partition.
     fn reset(&mut self) -> anyhow::Result<()>;
 
     /// Scrubs the VTL state for a partition.
     fn scrub_vtl(&mut self, vtl: Vtl) -> anyhow::Result<()>;
 
-    /// Accepts pages on behalf of the loader.
-    fn accept_initial_pages(
-        &mut self,
-        pages: Vec<(MemoryRange, PageVisibility)>,
-    ) -> anyhow::Result<()>;
+    /// Finalizes initial page imports on behalf of the loader.
+    fn accept_initial_pages(&mut self, pages: Vec<InitialPageImport>) -> anyhow::Result<()>;
+
+    /// Returns the guest OS ID (from `HV_X64_MSR_GUEST_OS_ID`).
+    ///
+    /// Returns 0 if the guest hasn't written the MSR (unenlightened guest)
+    /// or if the backend doesn't support reading it.
+    fn guest_os_id(&self) -> u64 {
+        0
+    }
 }
 
 /// An object to run the VM partition state unit.
@@ -116,11 +128,12 @@ impl InspectMut for PartitionUnitRunner {
 enum PartitionRequest {
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     SetInitialRegs(Rpc<(Vtl, Arc<InitialRegs>), Result<(), InitialRegError>>),
-    SetInitialPageVisibility(
-        Rpc<Vec<(MemoryRange, PageVisibility)>, Result<(), InitialVisibilityError>>,
-    ),
+    AcceptInitialPages(Rpc<Vec<InitialPageImport>, Result<(), AcceptInitialPagesError>>),
     StopVps(Rpc<(), ()>),
     StartVps,
+    /// Build the partition state blob for a dump file.
+    #[cfg(feature = "dump")]
+    BuildDumpPartitionState(Rpc<(), anyhow::Result<Vec<u8>>>),
 }
 
 pub struct PartitionUnitParams<'a> {
@@ -164,11 +177,11 @@ pub enum InitialRegError {
     ScrubVtl(#[source] anyhow::Error),
 }
 
-/// Error returned by [`PartitionUnit::set_initial_page_visibility()`].
+/// Error returned by [`PartitionUnit::accept_initial_pages()`].
 #[derive(Debug, Error)]
-pub enum InitialVisibilityError {
-    #[error("failed to set initial page acceptance")]
-    PageAcceptance(#[source] anyhow::Error),
+pub enum AcceptInitialPagesError {
+    #[error("failed to finalize initial page imports")]
+    Finalize(#[source] anyhow::Error),
 }
 
 impl PartitionUnit {
@@ -276,12 +289,25 @@ impl PartitionUnit {
             .unwrap()
     }
 
-    pub async fn set_initial_page_visibility(
+    pub async fn accept_initial_pages(
         &mut self,
-        vis: Vec<(MemoryRange, PageVisibility)>,
-    ) -> Result<(), InitialVisibilityError> {
+        initial_pages: Vec<InitialPageImport>,
+    ) -> Result<(), AcceptInitialPagesError> {
         self.req_send
-            .call(PartitionRequest::SetInitialPageVisibility, vis)
+            .call(PartitionRequest::AcceptInitialPages, initial_pages)
+            .await
+            .unwrap()
+    }
+
+    /// Builds the partition state blob for a `.vmrs` dump file.
+    ///
+    /// Stops VPs internally for a consistent snapshot and resumes them
+    /// afterward. Returns the serialized partition state (VP registers
+    /// as hypervisor save/restore chunks).
+    #[cfg(feature = "dump")]
+    pub async fn build_dump_partition_state(&mut self) -> anyhow::Result<Vec<u8>> {
+        self.req_send
+            .call(PartitionRequest::BuildDumpPartitionState, ())
             .await
             .unwrap()
     }
@@ -344,20 +370,22 @@ impl PartitionUnitRunner {
                         rpc.handle(async |(vtl, state)| self.set_initial_regs(vtl, state).await)
                             .await
                     }
-                    PartitionRequest::SetInitialPageVisibility(rpc) => {
-                        rpc.handle(async |vis| self.set_initial_page_visibility(vis).await)
-                            .await
-                    }
-                    PartitionRequest::StopVps(rpc) => {
-                        rpc.handle(async |()| {
-                            self.vp_set.stop().await;
-                            self.vp_stop_count += 1;
+                    PartitionRequest::AcceptInitialPages(rpc) => {
+                        rpc.handle(async |initial_pages| {
+                            self.accept_initial_pages(initial_pages).await
                         })
                         .await
                     }
+                    PartitionRequest::StopVps(rpc) => {
+                        rpc.handle(async |()| self.stop_vps().await).await
+                    }
                     PartitionRequest::StartVps => {
-                        self.vp_stop_count -= 1;
-                        self.try_start();
+                        self.resume_vps();
+                    }
+                    #[cfg(feature = "dump")]
+                    PartitionRequest::BuildDumpPartitionState(rpc) => {
+                        rpc.handle(async |()| self.build_dump_partition_state().await)
+                            .await
                     }
                 },
                 #[cfg(feature = "gdb")]
@@ -448,27 +476,36 @@ impl PartitionUnitRunner {
             self.partition
                 .scrub_vtl(vtl)
                 .map_err(InitialRegError::ScrubVtl)?;
+            self.vp_set
+                .scrub(vtl)
+                .await
+                .map_err(InitialRegError::ScrubVtl)?;
             self.needs_reset = false;
         }
 
-        self.vp_set
-            .set_initial_regs(vtl, state.clone(), vp_set::RegistersToSet::All)
-            .await
-            .map_err(InitialRegError::RegisterSet)?;
+        match self.partition.initial_vp_state_source() {
+            InitialVpStateSource::Registers => {
+                self.vp_set
+                    .set_initial_regs(vtl, state.clone(), vp_set::RegistersToSet::All)
+                    .await
+                    .map_err(InitialRegError::RegisterSet)?;
+            }
+            InitialVpStateSource::ImportedContext => {}
+        }
 
         self.initial_regs = Some(state);
         Ok(())
     }
 
-    async fn set_initial_page_visibility(
+    async fn accept_initial_pages(
         &mut self,
-        visibility: Vec<(MemoryRange, PageVisibility)>,
-    ) -> Result<(), InitialVisibilityError> {
+        initial_pages: Vec<InitialPageImport>,
+    ) -> Result<(), AcceptInitialPagesError> {
         assert!(!self.unit_started);
 
         self.partition
-            .accept_initial_pages(visibility)
-            .map_err(InitialVisibilityError::PageAcceptance)
+            .accept_initial_pages(initial_pages)
+            .map_err(AcceptInitialPagesError::Finalize)
     }
 
     fn try_start(&mut self) {
@@ -476,6 +513,62 @@ impl PartitionUnitRunner {
             self.needs_reset = true;
             self.vp_set.start();
         }
+    }
+
+    async fn stop_vps(&mut self) {
+        self.vp_set.stop().await;
+        self.vp_stop_count += 1;
+    }
+
+    fn resume_vps(&mut self) {
+        assert!(
+            self.vp_stop_count > 0,
+            "resume_vps called without matching stop"
+        );
+        self.vp_stop_count -= 1;
+        self.try_start();
+    }
+}
+
+#[cfg(feature = "dump")]
+impl PartitionUnitRunner {
+    /// Builds the partition state blob for a `.vmrs` dump file.
+    ///
+    /// Collects VP register state and assembles the chunk stream.
+    async fn build_dump_partition_state(&mut self) -> anyhow::Result<Vec<u8>> {
+        // Stop VPs for a consistent snapshot (and to ensure guest_os_id
+        // doesn't block on backends that retrieve it from a VP).
+        self.stop_vps().await;
+        let result = self.build_dump_partition_state_inner().await;
+        self.resume_vps();
+        result
+    }
+
+    async fn build_dump_partition_state_inner(&mut self) -> anyhow::Result<Vec<u8>> {
+        use hyperv_dump::PartitionStateBuilder;
+        use hyperv_dump::ProcessorArch;
+
+        #[cfg(guest_arch = "x86_64")]
+        let arch = ProcessorArch::X64;
+        #[cfg(guest_arch = "aarch64")]
+        let arch = ProcessorArch::Aarch64;
+
+        let mut builder = PartitionStateBuilder::new(arch);
+        builder.set_os_id(self.partition.guest_os_id());
+
+        let vp_count = self.topology.vp_count();
+        for vp_idx in 0..vp_count {
+            let vtl = Vtl::Vtl0;
+            let vp_state = self
+                .vp_set
+                .get_dump_vp_state(VpIndex::new(vp_idx), vtl)
+                .await
+                .with_context(|| format!("failed to get state for VP {vp_idx}"))?;
+
+            builder.add_vp(vp_idx, vec![(vtl, vp_state)]);
+        }
+
+        Ok(builder.finish())
     }
 }
 
@@ -507,6 +600,7 @@ impl StateUnit for PartitionUnitRunner {
 
     async fn reset(&mut self) -> anyhow::Result<()> {
         self.partition.reset()?;
+        self.vp_set.reset().await?;
         self.clear_halt();
         self.needs_reset = false;
         Ok(())

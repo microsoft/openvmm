@@ -256,6 +256,17 @@ pub struct QueryBusRelations {
     pub device: [DeviceDescription; 0],
 }
 
+/// Flags for [`DeviceDescription2`].
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct DeviceDescription2Flags {
+    /// The `numa_node` field contains valid NUMA affinity information.
+    pub numa_affinity_specified: bool,
+    /// Reserved bits.
+    #[bits(31)]
+    pub reserved: u32,
+}
+
 /// Extended device description (version 2).
 ///
 /// This version adds support for NUMA node information and additional flags.
@@ -269,7 +280,7 @@ pub struct DeviceDescription2 {
     /// Device serial number
     pub serial_num: u32,
     /// Device-specific flags
-    pub flags: u32,
+    pub flags: DeviceDescription2Flags,
     /// NUMA node the device is associated with
     pub numa_node: u16,
     /// Reserved field

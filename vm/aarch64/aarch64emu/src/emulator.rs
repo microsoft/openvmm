@@ -93,9 +93,10 @@ impl<T: Cpu> EmulatorOperations<T> {
         &mut self,
         gpa: u64,
         data: &mut [u8],
+        exec: bool,
     ) -> Result<(), Box<Error<T::Error>>> {
         self.cpu
-            .read_physical_memory(gpa, data)
+            .read_physical_memory(gpa, data, exec)
             .await
             .map_err(|err| Error::MemoryAccess(gpa, OperationKind::Read, err))?;
         Ok(())
@@ -182,7 +183,16 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         ) {
             return Ok(false);
         }
-        let iss = aarch64defs::IssDataAbort::from(syndrome.iss());
+
+        let iss: u32 = (syndrome.lower_iss() as u32)
+            | ((syndrome.wnr() as u32) << 6)
+            | ((syndrome.mid_iss() as u32) << 7)
+            | ((syndrome.b_srt() as u32) << 16)
+            | ((syndrome.a() as u32) << 21)
+            | ((syndrome.b() as u32) << 22)
+            | ((syndrome.c() as u32) << 23)
+            | ((syndrome.d() as u32) << 24);
+        let iss = aarch64defs::IssDataAbort::from(iss);
         if !iss.isv() {
             return Ok(false);
         }
@@ -214,7 +224,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             let mut data = [0; 8];
             // tracing::info!(gpa, len = data.len(), "reading memory from syndrome decode");
             self.inner
-                .read_physical_memory(gpa, &mut data[..len])
+                .read_physical_memory(gpa, &mut data[..len], false)
                 .await?;
             let mut data = u64::from_ne_bytes(data);
             if sign_extend {

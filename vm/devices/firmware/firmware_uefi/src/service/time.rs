@@ -10,9 +10,9 @@
 use crate::UefiDevice;
 use guestmem::GuestMemoryError;
 use inspect::InspectMut;
+use jiff::civil::DateTime;
 use local_clock::InspectableLocalClock;
 use thiserror::Error;
-use time::OffsetDateTime;
 use uefi_specs::hyperv::time::VmEfiTime;
 use uefi_specs::uefi::common::EfiStatus;
 use uefi_specs::uefi::time::EFI_TIME;
@@ -23,33 +23,34 @@ use uefi_specs::uefi::time::EfiTimezone;
 pub enum TimeServiceError {
     #[error("Invalid Argument")]
     InvalidArg,
-    #[error("Time")]
-    Time(#[from] time::Error),
+    #[error("jiff")]
+    Jiff(#[from] jiff::Error),
     #[error("Overflow")]
     Overflow,
 }
 
-/// The same information as [`EFI_TIME`] but backed by [`OffsetDateTime`]
+/// The same information as [`EFI_TIME`] but backed by [`DateTime`]
 /// instead of raw numbers to make the values easier to manipulate.
 struct EfiOffsetDateTime {
-    datetime: OffsetDateTime,
+    datetime: DateTime,
     timezone: EfiTimezone,
     daylight: EfiDaylight,
 }
 
 impl TryFrom<EFI_TIME> for EfiOffsetDateTime {
-    type Error = time::Error;
+    type Error = jiff::Error;
 
     fn try_from(v: EFI_TIME) -> Result<Self, Self::Error> {
         Ok(Self {
-            datetime: OffsetDateTime::from_unix_timestamp(0)?
-                .replace_year(v.year as i32)?
-                .replace_month(v.month.try_into()?)?
-                .replace_day(v.day)?
-                .replace_hour(v.hour)?
-                .replace_minute(v.minute)?
-                .replace_second(v.second)?
-                .replace_nanosecond(v.nanosecond)?,
+            datetime: DateTime::new(
+                v.year as i16,
+                v.month as i8,
+                v.day as i8,
+                v.hour as i8,
+                v.minute as i8,
+                v.second as i8,
+                v.nanosecond as i32,
+            )?,
             timezone: v.timezone,
             daylight: v.daylight,
         })
@@ -60,13 +61,13 @@ impl From<EfiOffsetDateTime> for EFI_TIME {
     fn from(v: EfiOffsetDateTime) -> Self {
         Self {
             year: v.datetime.year() as u16,
-            month: v.datetime.month().into(),
-            day: v.datetime.day(),
-            hour: v.datetime.hour(),
-            minute: v.datetime.minute(),
-            second: v.datetime.second(),
+            month: v.datetime.month() as u8,
+            day: v.datetime.day() as u8,
+            hour: v.datetime.hour() as u8,
+            minute: v.datetime.minute() as u8,
+            second: v.datetime.second() as u8,
             pad1: 0,
-            nanosecond: v.datetime.nanosecond(),
+            nanosecond: v.datetime.subsec_nanosecond() as u32,
             timezone: v.timezone,
             daylight: v.daylight,
             pad2: 0,
@@ -101,11 +102,12 @@ impl TimeServices {
             return Err(TimeServiceError::InvalidArg);
         }
 
-        let datetime: OffsetDateTime = self
+        let timestamp: jiff::Timestamp = self
             .clock
             .get_time()
             .try_into()
             .map_err(|_| TimeServiceError::Overflow)?;
+        let datetime = timestamp.to_zoned(jiff::tz::TimeZone::UTC).datetime();
 
         Ok(EfiOffsetDateTime {
             datetime,
@@ -132,7 +134,8 @@ impl TimeServices {
 
         self.timezone = timezone;
         self.daylight = daylight;
-        self.clock.set_time(datetime.into());
+        let timestamp = datetime.to_zoned(jiff::tz::TimeZone::UTC)?.timestamp();
+        self.clock.set_time(timestamp.into());
 
         Ok(())
     }

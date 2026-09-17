@@ -3,15 +3,15 @@
 
 //! Build `xtask` binary
 
+use crate::common::CommonTriple;
 use crate::run_cargo_build::BuildProfile;
-use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 
 #[derive(Serialize, Deserialize)]
 pub enum XtaskOutput {
     LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    WindowsBin { exe: PathBuf, pdb: Option<PathBuf> },
 }
 
 flowey_request! {

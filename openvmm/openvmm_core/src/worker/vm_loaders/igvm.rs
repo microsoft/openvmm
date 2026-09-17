@@ -3,10 +3,12 @@
 
 //! Loader implementation to load IGVM files.
 
+use super::super::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
+use igvm::IgvmInitializationHeader;
 use igvm::IgvmPlatformHeader;
 use igvm::IgvmRelocatableRegion;
 use igvm::page_table::CpuPagingState;
@@ -30,11 +32,10 @@ use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use range_map_vec::RangeMap;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
-use virt::PageVisibility;
+use vm_loader::InitialLoad;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
@@ -46,8 +47,8 @@ use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("command line is not a valid C string")]
-    InvalidCommandLine(#[source] std::ffi::NulError),
+    #[error("command line contains an embedded NUL byte at offset {0}")]
+    CommandLineContainsNul(usize),
     #[error("failed to read igvm file")]
     Igvm(#[source] std::io::Error),
     #[error("invalid igvm file")]
@@ -76,26 +77,36 @@ pub enum Error {
     NoVtl2MemoryRange,
     #[error("no vtl2 memory source in igvm file")]
     Vtl2MemorySource,
-    #[error("invalid memory config")]
-    MemoryConfig(#[source] vm_topology::memory::Error),
-    #[error("not enough physical address bits to allocate vtl2 range")]
-    NotEnoughPhysicalAddressBits,
     #[error("building device tree for partition failed")]
     DeviceTree(fdt::builder::Error),
     #[error("supplied vtl2 memory {0} is not aligned to 2MB")]
     Vtl2MemoryAligned(u64),
     #[error("supplied vtl2 memory {0} is smaller than igvm file VTL2 range {1}")]
     Vtl2MemoryTooSmall(u64, u64),
-    #[error("unsupported guest architecture")]
-    UnsupportedGuestArch,
+    #[error("invalid vtl2 relocation alignment {0:#x}")]
+    Vtl2RelocationAlignment(u64),
+    #[error("unsupported IGVM isolation type {0:?}")]
+    UnsupportedIgvmIsolationType(igvm::IsolationType),
+    #[error("IGVM loading is not supported for guest architecture {0}")]
+    UnsupportedIgvmGuestArchitecture(&'static str),
     #[error("igvm file does not support vbs")]
     NoVbsSupport,
+    #[error("igvm file does not support SNP")]
+    NoSnpSupport,
+    #[error("SNP IGVM file does not contain a guest policy")]
+    MissingSnpGuestPolicy,
+    #[error("unsupported IGVM page data type {0:?}")]
+    UnsupportedPageDataType(IgvmPageDataType),
+    #[error("invalid SNP VMSA page size")]
+    InvalidSnpVmsaSize,
+    #[error(
+        "IGVM error range at GPA {gpa:#x} with size {size_bytes:#x} must be non-empty and 4-KiB aligned"
+    )]
+    InvalidErrorRange { gpa: u64, size_bytes: u64 },
     #[error("vp context for lower VTL not supported")]
     LowerVtlContext,
     #[error("missing required memory range {0}")]
     MissingRequiredMemory(MemoryRange),
-    #[error("IGVM file requires at least two mmio ranges")]
-    UnsupportedMmio,
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -125,17 +136,29 @@ fn from_igvm_vtl(vtl: igvm::hv_defs::Vtl) -> hvdef::Vtl {
     }
 }
 
-/// Read and parse an IgvmFile from a File. This assumes the file is a VBS IGVM
-/// file.
-pub fn read_igvm_file(mut file: &std::fs::File) -> Result<IgvmFile, Error> {
+/// Read and parse an IGVM file for a specific isolation type.
+pub fn read_igvm_file(
+    mut file: &std::fs::File,
+    igvm_isolation_type: igvm::IsolationType,
+) -> Result<IgvmFile, Error> {
     let mut file_contents = Vec::new();
     file.rewind().map_err(Error::Igvm)?;
     file.read_to_end(&mut file_contents).map_err(Error::Igvm)?;
 
-    let igvm_file = IgvmFile::new_from_binary(&file_contents, Some(igvm::IsolationType::Vbs))
+    let igvm_file = IgvmFile::new_from_binary(&file_contents, Some(igvm_isolation_type))
         .map_err(Error::InvalidIgvmFile)?;
 
     Ok(igvm_file)
+}
+
+/// Maps the partition isolation type to the IGVM isolation type.
+pub fn igvm_isolation_type(isolation: virt::IsolationType) -> igvm::IsolationType {
+    match isolation {
+        virt::IsolationType::None | virt::IsolationType::Vbs => igvm::IsolationType::Vbs,
+        virt::IsolationType::Snp => igvm::IsolationType::Snp,
+        virt::IsolationType::Tdx => igvm::IsolationType::Tdx,
+        virt::IsolationType::Cca => igvm::IsolationType::Cca,
+    }
 }
 
 /// Extract the vbs supported platform header from an igvm file.
@@ -148,6 +171,124 @@ fn vbs_platform_header(igvm_file: &IgvmFile) -> Result<&IgvmPlatformHeader, Erro
             info.platform_type == IgvmPlatformType::VSM_ISOLATION
         })
         .ok_or(Error::NoVbsSupport)
+}
+
+fn snp_platform_header(igvm_file: &IgvmFile) -> Result<&IgvmPlatformHeader, Error> {
+    igvm_file
+        .platforms()
+        .iter()
+        .find(|header| {
+            let IgvmPlatformHeader::SupportedPlatform(info) = header;
+            info.platform_type == IgvmPlatformType::SEV_SNP
+        })
+        .ok_or(Error::NoSnpSupport)
+}
+
+fn selected_platform_header(
+    igvm_file: &IgvmFile,
+    igvm_isolation_type: igvm::IsolationType,
+) -> Result<&IgvmPlatformHeader, Error> {
+    match igvm_isolation_type {
+        igvm::IsolationType::Vbs => vbs_platform_header(igvm_file),
+        igvm::IsolationType::Snp => snp_platform_header(igvm_file),
+        unsupported => Err(Error::UnsupportedIgvmIsolationType(unsupported)),
+    }
+}
+
+/// Extract backend-owned SNP configuration from an IGVM file.
+pub fn snp_isolation_config(igvm_file: &IgvmFile) -> Result<virt::SnpConfig, Error> {
+    let IgvmPlatformHeader::SupportedPlatform(platform) = snp_platform_header(igvm_file)?;
+    let policy = igvm_file
+        .initializations()
+        .iter()
+        .find_map(|header| match header {
+            IgvmInitializationHeader::GuestPolicy { policy, .. } => Some(*policy),
+            _ => None,
+        })
+        .ok_or(Error::MissingSnpGuestPolicy)?;
+
+    let has_relocation = igvm_file.initializations().iter().any(|header| {
+        matches!(
+            header,
+            IgvmInitializationHeader::RelocatableRegion { .. }
+                | IgvmInitializationHeader::PageTableRelocationRegion { .. }
+        )
+    });
+
+    let mut vp_contexts = Vec::new();
+    let mut id_block = None;
+    for directive in igvm_file.directives() {
+        match directive {
+            IgvmDirectiveHeader::SnpVpContext {
+                gpa,
+                vp_index,
+                vmsa,
+                ..
+            } => {
+                let page = <&[u8; 4096]>::try_from(vmsa.as_bytes())
+                    .map_err(|_| Error::InvalidSnpVmsaSize)?;
+                vp_contexts.push(virt::SnpVpContext {
+                    gpa: *gpa,
+                    vp_index: virt::VpIndex::new(u32::from(*vp_index)),
+                    page: Box::new(*page),
+                });
+            }
+            IgvmDirectiveHeader::SnpIdBlock {
+                author_key_enabled,
+                ld,
+                family_id,
+                image_id,
+                version,
+                guest_svn,
+                id_key_algorithm,
+                author_key_algorithm,
+                id_key_signature,
+                id_public_key,
+                author_key_signature,
+                author_public_key,
+                ..
+            } => {
+                id_block = Some(virt::SnpIdBlock {
+                    author_key_enabled: *author_key_enabled,
+                    launch_digest: *ld,
+                    family_id: *family_id,
+                    image_id: *image_id,
+                    version: *version,
+                    guest_svn: *guest_svn,
+                    id_key_algorithm: *id_key_algorithm,
+                    author_key_algorithm: *author_key_algorithm,
+                    id_key_signature: x86defs::snp::SnpIdBlockSignature {
+                        r: id_key_signature.r_comp,
+                        s: id_key_signature.s_comp,
+                    },
+                    id_public_key: x86defs::snp::SnpIdBlockPublicKey {
+                        curve: id_public_key.curve,
+                        qx: id_public_key.qx,
+                        qy: id_public_key.qy,
+                    },
+                    author_key_signature: x86defs::snp::SnpIdBlockSignature {
+                        r: author_key_signature.r_comp,
+                        s: author_key_signature.s_comp,
+                    },
+                    author_public_key: x86defs::snp::SnpIdBlockPublicKey {
+                        curve: author_public_key.curve,
+                        qx: author_public_key.qx,
+                        qy: author_public_key.qy,
+                    },
+                });
+            }
+            _ => {}
+        }
+    }
+
+    Ok(virt::SnpConfig {
+        policy,
+        highest_vtl: platform.highest_vtl,
+        shared_gpa_boundary: platform.shared_gpa_boundary,
+        has_relocation,
+        vp_contexts,
+        id_block,
+    })
 }
 
 /// Determine if the given `igvm_file` supports relocations or not.
@@ -199,17 +340,21 @@ pub fn vtl2_memory_info(igvm_file: &IgvmFile) -> Result<MemoryRange, Error> {
     }
 }
 
-/// Determine a location to allocate VTL2 memory, based on VM information and a
-/// provided `igvm_file`.
-pub fn vtl2_memory_range(
-    physical_address_size: u8,
-    mem_size: u64,
-    mmio_gaps: &[MemoryRange],
-    pci_ecam_gaps: &[MemoryRange],
-    pci_mmio_gaps: &[MemoryRange],
+/// Information needed to allocate a VTL2 memory range in the VM memory layout.
+#[derive(Debug, Clone, Copy)]
+pub struct Vtl2MemoryLayoutRequest {
+    /// The number of bytes to reserve for VTL2.
+    pub size: u64,
+    /// The required relocation alignment.
+    pub alignment: u64,
+}
+
+/// Determine the VTL2 memory allocation constraints from a provided
+/// `igvm_file`.
+pub fn vtl2_memory_layout_request(
     igvm_file: &IgvmFile,
     vtl2_size: Option<u64>,
-) -> Result<MemoryRange, Error> {
+) -> Result<Vtl2MemoryLayoutRequest, Error> {
     let (mask, _max_vtl) = match vbs_platform_header(igvm_file)? {
         IgvmPlatformHeader::SupportedPlatform(info) => {
             debug_assert_eq!(info.platform_type, IgvmPlatformType::VSM_ISOLATION);
@@ -228,6 +373,9 @@ pub fn vtl2_memory_range(
     let reloc_region = relocs.0.ok_or(Error::RelocationNotSupported)?[0].clone();
 
     let alignment = reloc_region.relocation_alignment;
+    if alignment < HV_PAGE_SIZE || !alignment.is_power_of_two() {
+        return Err(Error::Vtl2RelocationAlignment(alignment));
+    }
 
     let size = match vtl2_size {
         Some(vtl2_size) => {
@@ -248,64 +396,42 @@ pub fn vtl2_memory_range(
         }
     };
 
-    let align_base = |base| -> u64 { (base + alignment - 1) & !(alignment - 1) };
+    Ok(Vtl2MemoryLayoutRequest { size, alignment })
+}
 
-    // Use one bit below the maximum possible address, as the VTL0 alias map
-    // will use the highest available bit of the physical address space.
-    let physical_address_size = physical_address_size - 1;
-
-    // Create an initial memory layout to determine the highest used address.
-    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, pci_ecam_gaps, pci_mmio_gaps, None)
-        .map_err(Error::MemoryConfig)?;
-
-    // TODO: Underhill kernel panics if loaded at 32TB or higher. Restrict the
-    // max address to 32TB until this is fixed.
-    const MAX_ADDR_32TB: u64 = 32u64 << 40; // 0x2000_0000_0000 bytes
-    let max_physical_address = 1 << physical_address_size;
-    let max_physical_address = max_physical_address.min(MAX_ADDR_32TB);
-
-    // With more than two mmio gaps, it's harder to reason about which space is
-    // free or not in the address space to allocate a VTL2 range. Take a
-    // shortcut and place VTL2 above the end of ram or mmio.
-    let (min_addr, max_addr) = (dummy_layout.end_of_layout(), max_physical_address);
-
-    let aligned_min_addr = align_base(min_addr);
-    let aligned_max_addr = (max_addr / alignment) * alignment;
-
-    assert!(aligned_min_addr >= reloc_region.minimum_relocation_gpa);
-    assert!(aligned_max_addr <= reloc_region.maximum_relocation_gpa);
-
-    // It's possible that the min_addr is above the physical address size of the
-    // system. Fail now as mapping ram would fail later.
-    if aligned_min_addr >= aligned_max_addr {
-        return Err(Error::NotEnoughPhysicalAddressBits);
-    }
-
-    tracing::trace!(min_addr, aligned_min_addr, max_addr, aligned_max_addr);
-
-    // Select a random base within the alignment
-    let possible_bases = (aligned_max_addr - aligned_min_addr) / alignment;
-    let mut num: u64 = 0;
-    getrandom::fill(num.as_mut_bytes()).expect("crng failure");
-    let selected_base = num % (possible_bases - 1);
-    let selected_addr = aligned_min_addr + (selected_base * alignment);
-    tracing::trace!(possible_bases, selected_base, selected_addr);
-
-    Ok(MemoryRange::new(selected_addr..(selected_addr + size)))
+/// Parameters for [`build_device_tree`].
+struct BuildDeviceTreeParams<'a> {
+    processor_topology: &'a ProcessorTopology<X86Topology>,
+    all_ram: &'a [MemoryRangeWithNode],
+    vtl2_protectable_ram: &'a [MemoryRange],
+    vtl2_base_address: Vtl2BaseAddressType,
+    command_line: &'a str,
+    with_vmbus_redirect: bool,
+    com_serial: Option<SerialInformation>,
+    entropy: Option<&'a [u8]>,
+    chipset_mmio: ChipsetMmioRanges,
 }
 
 /// Build a device tree representing the whole guest partition.
-fn build_device_tree(
-    processor_topology: &ProcessorTopology<X86Topology>,
-    mem_layout: &MemoryLayout,
-    all_ram: &[MemoryRangeWithNode],
-    vtl2_protectable_ram: &[MemoryRange],
-    vtl2_base_address: Vtl2BaseAddressType,
-    command_line: &str,
-    with_vmbus_redirect: bool,
-    com_serial: Option<SerialInformation>,
-    entropy: Option<&[u8]>,
-) -> Result<Vec<u8>, fdt::builder::Error> {
+fn build_device_tree(params: BuildDeviceTreeParams<'_>) -> Result<Vec<u8>, fdt::builder::Error> {
+    let BuildDeviceTreeParams {
+        processor_topology,
+        all_ram,
+        vtl2_protectable_ram,
+        vtl2_base_address,
+        command_line,
+        with_vmbus_redirect,
+        com_serial,
+        entropy,
+        chipset_mmio,
+    } = params;
+
+    let ChipsetMmioRanges {
+        low: chipset_low_mmio,
+        high: chipset_high_mmio,
+        vtl2: vtl2_chipset_mmio,
+    } = chipset_mmio;
+
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
     let mut builder = fdt::builder::Builder::new(fdt::builder::BuilderConfig {
@@ -377,26 +503,22 @@ fn build_device_tree(
         .add_u32(p_size_cells, 2)?
         .add_prop_array(p_ranges, &[])?;
 
-    // Determine how much mmio this system has. 2 or less gaps are reported to
-    // VTL0. The 3rd and/or 4th gap will be reported to VTL2. Any more are
-    // ignored.
-    let mut mmio_chunks = mem_layout.mmio().chunks(2);
+    // Build DT ranges for VMBus devices. VTL0 gets the chipset low/high MMIO
+    // ranges; VTL2 gets its own private chipset MMIO range.
+    let ranges_vtl0: Vec<u64> = [chipset_low_mmio, chipset_high_mmio]
+        .into_iter()
+        .flat_map(|range| [range.start(), range.start(), range.len()])
+        .collect();
 
-    let extract_ranges = |mmio: Option<&[MemoryRange]>| -> Vec<u64> {
-        let mut ranges = Vec::new();
-
-        if let Some(mmio) = mmio {
-            for entry in mmio {
-                ranges.push(entry.start());
-                ranges.push(entry.start());
-                ranges.push(entry.len());
-            }
-        }
-        ranges
+    let ranges_vtl2: Vec<u64> = if vtl2_chipset_mmio.is_empty() {
+        vec![]
+    } else {
+        vec![
+            vtl2_chipset_mmio.start(),
+            vtl2_chipset_mmio.start(),
+            vtl2_chipset_mmio.len(),
+        ]
     };
-
-    let ranges_vtl0 = extract_ranges(mmio_chunks.next());
-    let ranges_vtl2 = extract_ranges(mmio_chunks.next());
 
     // VTL0 vmbus root device
     let vmbus_vtl0_name = if ranges_vtl0.is_empty() {
@@ -527,6 +649,8 @@ pub struct AcpiTables<'a> {
 pub struct LoadIgvmParams<'a, T: ArchTopology> {
     /// The IGVM file to load.
     pub igvm_file: &'a IgvmFile,
+    /// The isolation type used to parse the IGVM file.
+    pub igvm_isolation_type: igvm::IsolationType,
     /// The guest memory instance to access guest memory with.
     pub gm: &'a GuestMemory,
     /// The processor topology of the guest.
@@ -549,17 +673,13 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub com_serial: Option<SerialInformation>,
     /// Entropy
     pub entropy: Option<&'a [u8]>,
+    /// Resolved chipset MMIO ranges for device tree and UEFI config.
+    pub chipset_mmio: ChipsetMmioRanges,
 }
 
 pub fn load_igvm(
     params: LoadIgvmParams<'_, vm_topology::processor::TargetTopology>,
-) -> Result<
-    (
-        Vec<loader::importer::Register>,
-        Vec<(MemoryRange, PageVisibility)>,
-    ),
-    Error,
-> {
+) -> Result<InitialLoad<loader::importer::Register>, Error> {
     #[cfg(guest_arch = "x86_64")]
     {
         load_igvm_x86(params)
@@ -577,9 +697,10 @@ pub fn load_igvm(
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn load_igvm_x86(
     params: LoadIgvmParams<'_, X86Topology>,
-) -> Result<(Vec<X86Register>, Vec<(MemoryRange, PageVisibility)>), Error> {
+) -> Result<InitialLoad<X86Register>, Error> {
     let LoadIgvmParams {
         igvm_file,
+        igvm_isolation_type,
         gm,
         processor_topology,
         mem_layout,
@@ -591,7 +712,14 @@ fn load_igvm_x86(
         with_vmbus_redirect,
         com_serial,
         entropy,
+        chipset_mmio,
     } = params;
+
+    let ChipsetMmioRanges {
+        low: chipset_low_mmio,
+        high: chipset_high_mmio,
+        ..
+    } = chipset_mmio;
 
     let relocations_enabled = match vtl2_base_address {
         Vtl2BaseAddressType::File | Vtl2BaseAddressType::Vtl2Allocate { .. } => false,
@@ -608,13 +736,15 @@ fn load_igvm_x86(
         cmdline.to_string()
     };
 
-    let command_line = CString::new(cmdline).map_err(Error::InvalidCommandLine)?;
+    // The command line is exposed to the guest as a NUL-terminated byte
+    // sequence (via the IGVM CommandLine parameter), so reject any embedded NUL
+    // bytes up front.
+    if let Some(pos) = cmdline.as_bytes().iter().position(|&b| b == 0) {
+        return Err(Error::CommandLineContainsNul(pos));
+    }
 
-    let (mask, max_vtl) = match vbs_platform_header(igvm_file)? {
-        IgvmPlatformHeader::SupportedPlatform(info) => {
-            debug_assert_eq!(info.platform_type, IgvmPlatformType::VSM_ISOLATION);
-            (info.compatibility_mask, info.highest_vtl)
-        }
+    let (mask, max_vtl) = match selected_platform_header(igvm_file, igvm_isolation_type)? {
+        IgvmPlatformHeader::SupportedPlatform(info) => (info.compatibility_mask, info.highest_vtl),
     };
 
     let (relocation_regions, mut page_table_fixup) = igvm_file.relocations(mask);
@@ -864,6 +994,9 @@ fn load_igvm_x86(
                 IgvmDirectiveHeader::X64NativeVpContext { .. } => {
                     todo!("native igvm type not supported yet")
                 }
+                IgvmDirectiveHeader::AArch64CcaVpContext { .. } => {
+                    todo!("AArch64 CCA VP context not supported yet")
+                }
             }
         } else {
             panic!("no relocation region, cannot filter to VTL2");
@@ -909,8 +1042,10 @@ fn load_igvm_x86(
                             BootPageAcceptance::Exclusive
                         }
                     }
-                    // TODO: other data types SNP / TDX only, unsupported
-                    _ => todo!("unsupported IgvmPageDataType"),
+                    IgvmPageDataType::SECRETS => BootPageAcceptance::SecretsPage,
+                    IgvmPageDataType::CPUID_DATA => BootPageAcceptance::CpuidPage,
+                    IgvmPageDataType::CPUID_XF => BootPageAcceptance::CpuidExtendedStatePage,
+                    unsupported => return Err(Error::UnsupportedPageDataType(unsupported)),
                 };
 
                 if data.is_empty() {
@@ -968,14 +1103,12 @@ fn load_igvm_x86(
                 }
             }
             IgvmDirectiveHeader::MmioRanges(ref info) => {
-                // Convert the OpenVMM format to the IGVM format
-                // Any gaps above 2 are ignored.
-                let mmio = mem_layout.mmio();
-                if mmio.len() < 2 {
-                    return Err(Error::UnsupportedMmio);
-                }
+                // Convert the chipset MMIO ranges to the IGVM format.
                 let mmio_ranges = IGVM_VHS_MMIO_RANGES {
-                    mmio_ranges: [from_memory_range(&mmio[0]), from_memory_range(&mmio[1])],
+                    mmio_ranges: [
+                        from_memory_range(&chipset_low_mmio),
+                        from_memory_range(&chipset_high_mmio),
+                    ],
                 };
                 import_parameter(&mut parameter_areas, info, mmio_ranges.as_bytes())?;
             }
@@ -984,20 +1117,23 @@ fn load_igvm_x86(
                 import_parameter(&mut parameter_areas, info, memory_map.as_bytes())?;
             }
             IgvmDirectiveHeader::CommandLine(ref info) => {
-                import_parameter(&mut parameter_areas, info, command_line.as_bytes_with_nul())?;
+                let mut bytes = Vec::with_capacity(cmdline.len() + 1);
+                bytes.extend_from_slice(cmdline.as_bytes());
+                bytes.push(0);
+                import_parameter(&mut parameter_areas, info, &bytes)?;
             }
             IgvmDirectiveHeader::DeviceTree(ref info) => {
-                let dt = build_device_tree(
+                let dt = build_device_tree(BuildDeviceTreeParams {
                     processor_topology,
-                    mem_layout,
-                    &all_ram,
-                    &vtl2_protectable_ram,
+                    all_ram: &all_ram,
+                    vtl2_protectable_ram: &vtl2_protectable_ram,
                     vtl2_base_address,
-                    &String::from_utf8_lossy(command_line.as_bytes()),
+                    command_line: &cmdline,
                     with_vmbus_redirect,
                     com_serial,
                     entropy,
-                )
+                    chipset_mmio,
+                })
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;
             }
@@ -1028,8 +1164,17 @@ fn load_igvm_x86(
                     igvm_defs::IgvmEnvironmentInfo::new().with_memory_is_shared(false);
                 import_parameter(&mut parameter_areas, info, environment_info.as_bytes())?;
             }
-            IgvmDirectiveHeader::SnpVpContext { .. } => todo!("snp not supported"),
-            IgvmDirectiveHeader::SnpIdBlock { .. } => todo!("snp not supported"),
+            IgvmDirectiveHeader::SnpVpContext { gpa, .. } => {
+                // The marker must retain its position relative to measured page
+                // imports, so flush any buffered PageData first.
+                page_data.flush(&mut loader)?;
+                let gpa = relocate_gpa(gpa);
+                loader
+                    .record_vp_context_import(gpa / HV_PAGE_SIZE, "igvm-vmsa")
+                    .map_err(Error::Loader)?;
+            }
+            // This metadata was passed to the backend before partition build.
+            IgvmDirectiveHeader::SnpIdBlock { .. } => {}
             IgvmDirectiveHeader::VbsMeasurement { .. } => todo!("vbs not supported"),
             IgvmDirectiveHeader::X64VbsVpContext {
                 vtl,
@@ -1194,11 +1339,29 @@ fn load_igvm_x86(
                     ParameterAreaState::Inserted => panic!("igvmfile is invalid, multiple insert"),
                 }
             }
-            IgvmDirectiveHeader::ErrorRange { .. } => {
-                todo!("Error Range not supported")
+            IgvmDirectiveHeader::ErrorRange {
+                gpa, size_bytes, ..
+            } => {
+                // Error ranges become shared page imports and must remain in
+                // directive order relative to buffered PageData.
+                page_data.flush(&mut loader)?;
+                let gpa = relocate_gpa(gpa);
+                let (page_base, page_count) = error_range_pages(gpa, size_bytes.into())?;
+                loader
+                    .import_pages(
+                        page_base,
+                        page_count,
+                        "igvm-error-range",
+                        BootPageAcceptance::Shared,
+                        &[],
+                    )
+                    .map_err(Error::Loader)?;
             }
             IgvmDirectiveHeader::X64NativeVpContext { .. } => {
                 todo!("native vp context not supported")
+            }
+            IgvmDirectiveHeader::AArch64CcaVpContext { .. } => {
+                todo!("AArch64 CCA VP context not supported")
             }
         }
     }
@@ -1234,7 +1397,7 @@ fn load_igvm_x86(
             .map_err(Error::Loader)?;
     }
 
-    Ok(loader.initial_regs_and_accepted_ranges())
+    Ok(loader.initial_regs_and_ordered_page_imports())
 }
 
 /// Build the IGVM memory map reported to the guest, with the specified memory
@@ -1280,8 +1443,19 @@ fn build_memory_map(
 #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
 fn load_igvm_aarch64(
     _params: LoadIgvmParams<'_, Aarch64Topology>,
-) -> Result<(Vec<Aarch64Register>, Vec<(MemoryRange, PageVisibility)>), Error> {
-    Err(Error::UnsupportedGuestArch)
+) -> Result<InitialLoad<Aarch64Register>, Error> {
+    Err(Error::UnsupportedIgvmGuestArchitecture("aarch64"))
+}
+
+fn error_range_pages(gpa: u64, size_bytes: u64) -> Result<(u64, u64), Error> {
+    if size_bytes == 0
+        || !gpa.is_multiple_of(HV_PAGE_SIZE)
+        || !size_bytes.is_multiple_of(HV_PAGE_SIZE)
+    {
+        return Err(Error::InvalidErrorRange { gpa, size_bytes });
+    }
+
+    Ok((gpa / HV_PAGE_SIZE, size_bytes / HV_PAGE_SIZE))
 }
 
 // Used to reduce calls into `import_pages`.
@@ -1371,5 +1545,25 @@ impl PageDataBuffer {
         self.data.clear();
         self.len = 0;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_range_requires_nonempty_page_aligned_range() {
+        assert_eq!(error_range_pages(0x2000, 0x3000).unwrap(), (2, 3));
+
+        for (gpa, size_bytes) in [(0x2001, 0x3000), (0x2000, 0x3001), (0x2000, 0)] {
+            assert!(matches!(
+                error_range_pages(gpa, size_bytes),
+                Err(Error::InvalidErrorRange {
+                    gpa: error_gpa,
+                    size_bytes: error_size,
+                }) if error_gpa == gpa && error_size == size_bytes
+            ));
+        }
     }
 }

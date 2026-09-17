@@ -1,0 +1,771 @@
+#!/usr/bin/env python3
+
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+"""investigate_ci.py - Quick CI failure investigation for OpenVMM PRs.
+
+Usage:
+    python repo_support/investigate_ci.py [PR_NUMBER_OR_RUN_ID]
+
+Examples:
+    python repo_support/investigate_ci.py                # Investigate the current branch's PR
+    python repo_support/investigate_ci.py 2946          # Investigate PR #2946
+    python repo_support/investigate_ci.py 23017249697   # Investigate run directly
+
+This script:
+  1. Finds every failed CI run for the commit (or uses the given run ID).
+     A single commit can have multiple CI workflows (e.g. "OpenVMM PR" and
+     "OpenVMM Docs PR"); all failing ones are investigated. Only the newest
+     run of each workflow is considered, so superseded runs are ignored.
+  2. Identifies failed jobs
+  3. Downloads unit test JUnit XML artifacts and reports failures
+  4. Downloads petri VMM test log artifacts for the run
+  5. Finds tests with petri.failed markers
+  6. Extracts ERROR/WARN lines from petri.jsonl for quick diagnosis
+
+Requires: gh (GitHub CLI), authenticated to microsoft/openvmm
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+
+REPO = "microsoft/openvmm"
+
+# Leading timestamp emitted by GitHub Actions on each raw log line,
+# e.g. "2026-07-28T12:34:56.7890123Z ".
+_TIMESTAMP_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*")
+
+
+def gh(*args: str, check: bool = True, quiet: bool = False) -> str:
+    """Run a gh CLI command and return its stdout.
+
+    When *check* is False and the command fails, returns an empty string
+    (ignoring any error body the server may have sent on stdout).
+    When *quiet* is True, suppresses warning output on failure.
+    """
+    result = subprocess.run(
+        ["gh", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        if check:
+            print(f"ERROR: gh {' '.join(args)}", file=sys.stderr)
+            print(result.stderr.strip(), file=sys.stderr)
+            sys.exit(1)
+        if not quiet:
+            print(
+                f"WARNING: gh {' '.join(args)} failed with exit code {result.returncode}",
+                file=sys.stderr,
+            )
+            if result.stderr.strip():
+                print(result.stderr.strip(), file=sys.stderr)
+        return ""
+    return result.stdout.strip()
+
+
+# Workflow names for the main CI pipelines, in priority order.
+_CI_WORKFLOW_NAMES = ["OpenVMM PR", "[Optional] OpenVMM Release PR", "OpenVMM Docs PR"]
+
+# Conclusions that indicate a non-successful run.
+_FAILURE_CONCLUSIONS = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
+
+
+def _workflow_sort_key(run: dict) -> int:
+    """Sort key placing known CI workflows first, in priority order."""
+    try:
+        return _CI_WORKFLOW_NAMES.index(run.get("name", ""))
+    except ValueError:
+        return len(_CI_WORKFLOW_NAMES)
+
+
+def _latest_per_workflow(runs: list[dict]) -> list[dict]:
+    """Keep only the newest run of each workflow.
+
+    A single commit can accumulate several runs of the *same* workflow: any
+    event that re-fires `pull_request` (reopening the PR, marking it ready for
+    review, ...) starts a fresh run against the same head SHA, and the
+    workflows' `cancel-in-progress` concurrency groups leave the superseded
+    run marked `cancelled`. Only the newest run of each workflow reflects the
+    current state, so drop the rest.
+
+    Note that GitHub's "re-run jobs" does *not* create a new run — it adds an
+    attempt to the existing run — so re-runs need no special handling here.
+    """
+    latest: dict[str, dict] = {}
+    for run in runs:
+        name = run.get("name", "")
+        prev = latest.get(name)
+        if prev is None or _recency_key(run) > _recency_key(prev):
+            latest[name] = run
+    return list(latest.values())
+
+
+def _recency_key(run: dict) -> tuple[str, int]:
+    """Sort key ordering runs from oldest to newest."""
+    return (run.get("createdAt", ""), run.get("databaseId", 0))
+
+
+def _pick_runs(runs: list[dict]) -> list[dict]:
+    """Pick the relevant runs from a list.
+
+    A single commit typically has several workflow runs (e.g. "OpenVMM PR"
+    and "OpenVMM Docs PR"), and more than one of them can fail. Return every
+    failed run so that none are silently ignored, plus any still-running CI
+    workflow, since it may already have failed jobs. If there is nothing to
+    investigate, return a single run so the caller can still report status.
+    """
+    runs = _latest_per_workflow(runs)
+    if not runs:
+        return []
+
+    interesting = [
+        r
+        for r in runs
+        if r.get("conclusion") in _FAILURE_CONCLUSIONS
+        or (r.get("status") != "completed" and r.get("name") in _CI_WORKFLOW_NAMES)
+    ]
+    if interesting:
+        return sorted(interesting, key=_workflow_sort_key)
+
+    # Nothing failed: report on a single known CI workflow run, if any.
+    known = sorted(
+        (r for r in runs if r.get("name") in _CI_WORKFLOW_NAMES),
+        key=_workflow_sort_key,
+    )
+    return [known[0]] if known else [runs[0]]
+
+
+def _run_ids_from_sha(head_sha: str, label: str) -> list[str]:
+    """List CI runs for a commit SHA and return the relevant runs' IDs."""
+    print(f"    Head SHA: {head_sha}")
+    runs_json = gh(
+        "run",
+        "list",
+        "-R",
+        REPO,
+        "--commit",
+        head_sha,
+        "--json",
+        "databaseId,status,conclusion,name,createdAt",
+    )
+    runs = json.loads(runs_json)
+    if not runs:
+        print(f"ERROR: No CI runs found for {label}", file=sys.stderr)
+        sys.exit(1)
+
+    # Warn about workflows that haven't finished: their results are incomplete,
+    # and more failures may show up later.
+    pending = [r for r in _latest_per_workflow(runs) if r.get("status") != "completed"]
+    for r in sorted(pending, key=_workflow_sort_key):
+        print(f"    NOTE: {r.get('name', '?')} is still {r.get('status', '?')}")
+
+    chosen = _pick_runs(runs)
+    run_ids: list[str] = []
+    for r in chosen:
+        run_id = str(r["databaseId"])
+        run_ids.append(run_id)
+        print(f"    Found run: {r.get('name', '?')} (ID: {run_id})")
+    return run_ids
+
+
+def resolve_current_branch_runs() -> list[str]:
+    """Resolve the CI runs for the PR associated with the current git branch.
+
+    Uses `gh pr view` with no argument, which resolves the PR for the
+    current branch. Exits with an error if there is no associated PR.
+    """
+    print("==> No PR/run specified; resolving PR for the current branch...")
+    pr_proc = subprocess.run(
+        ["gh", "pr", "view", "--json", "number,headRefOid"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if pr_proc.returncode != 0:
+        print(
+            "ERROR: No PR found for the current branch. Push the branch and "
+            "open a PR, or pass a PR number or run ID explicitly.",
+            file=sys.stderr,
+        )
+        if pr_proc.stderr.strip():
+            print(pr_proc.stderr.strip(), file=sys.stderr)
+        sys.exit(1)
+    try:
+        pr = json.loads(pr_proc.stdout)
+        number = pr["number"]
+        head_sha = pr["headRefOid"]
+    except (json.JSONDecodeError, KeyError):
+        print("ERROR: Could not parse PR info for the current branch", file=sys.stderr)
+        sys.exit(1)
+    print(f"    Current branch PR: #{number}")
+    return _run_ids_from_sha(head_sha, f"PR #{number}")
+
+
+def resolve_run_ids(input_val: str) -> list[str]:
+    """Resolve a PR number or run ID string to a list of run IDs."""
+    try:
+        num = int(input_val)
+    except ValueError:
+        print(
+            f"ERROR: '{input_val}' is not a valid PR number or run ID",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Try to interpret as a PR number first.
+    print(f"==> Trying to resolve '{input_val}' as PR #{num}...")
+    pr_proc = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(num),
+            "-R",
+            REPO,
+            "--json",
+            "headRefOid",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if pr_proc.returncode == 0 and pr_proc.stdout.strip():
+        try:
+            head_sha = json.loads(pr_proc.stdout)["headRefOid"]
+        except (json.JSONDecodeError, KeyError):
+            head_sha = None
+
+        if head_sha:
+            return _run_ids_from_sha(head_sha, f"PR #{num}")
+
+    # PR lookup failed or returned invalid data; treat as run ID.
+    print(f"==> Treating '{input_val}' as run ID...")
+    return [input_val]
+
+
+def get_run_status(run_id: str) -> None:
+    """Print the run's status and conclusion."""
+    print()
+    print("==> Run status:")
+    run_json = gh("run", "view", run_id, "-R", REPO, "--json", "status,conclusion,name")
+    run = json.loads(run_json)
+    conclusion = run.get("conclusion") or "pending"
+    print(f"  {run['name']}: {run['status']} ({conclusion})")
+
+
+def log_viewer_url(run_id: str) -> str:
+    """Build the petri log viewer URL for a run.
+
+    Logs are uploaded per re-run attempt, under "<run id>_<attempt>", so the
+    viewer is keyed on that rather than on the run ID alone. Fall back to the
+    first attempt if the attempt number can't be determined.
+    """
+    attempt = gh(
+        "api", f"repos/{REPO}/actions/runs/{run_id}",
+        "--jq", ".run_attempt",
+        check=False, quiet=True,
+    )
+    if not attempt.isdigit():
+        attempt = "1"
+    return f"https://openvmm.dev/test-results/#/runs/{run_id}_{attempt}"
+
+
+def get_failed_jobs(run_id: str) -> list[dict]:
+    """Return list of failed job dicts with 'name' and 'databaseId'."""
+    print()
+    print("==> Checking for failed jobs...")
+    jobs_json = gh("run", "view", run_id, "-R", REPO, "--json", "jobs")
+    jobs = json.loads(jobs_json)["jobs"]
+    non_success = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
+    failed = [j for j in jobs if j.get("conclusion") in non_success]
+
+    if not failed:
+        print("    No failed jobs found.")
+    else:
+        print("    Failed jobs:")
+        for j in failed:
+            print(f"      - {j['name']}")
+
+    return failed
+
+
+def list_artifacts(run_id: str) -> list[str]:
+    """List all artifact names for a run."""
+    api_json = gh(
+        "api", f"repos/{REPO}/actions/runs/{run_id}/artifacts",
+        "--paginate", check=False,
+    )
+    if not api_json:
+        return []
+    names: list[str] = []
+    # --paginate concatenates multiple JSON objects; parse each one.
+    decoder = json.JSONDecoder()
+    pos = 0
+    text = api_json.strip()
+    while pos < len(text):
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+            names.extend(a["name"] for a in obj.get("artifacts", []))
+            pos = end
+        except json.JSONDecodeError as e:
+            print(f"WARNING: Failed to parse artifact JSON at position {pos}: {e}", file=sys.stderr)
+            print(f"  Context: ...{text[max(0, pos-20):pos+40]}...", file=sys.stderr)
+            break
+        # skip whitespace between objects
+        while pos < len(text) and text[pos] in " \t\n\r":
+            pos += 1
+    return names
+
+
+def list_test_log_artifacts(all_artifacts: list[str]) -> list[str]:
+    """List available *-vmm-tests-logs artifact names for a run."""
+    print()
+    print("==> Listing available test log artifacts...")
+    log_artifacts = [n for n in all_artifacts if n.endswith("-vmm-tests-logs")]
+    if log_artifacts:
+        print("    Available artifacts:")
+        for name in log_artifacts:
+            print(f"      - {name}")
+    else:
+        print("    No vmm-tests-logs artifacts found.")
+        print("    This run may not have produced test artifacts (build failure?)")
+
+    return log_artifacts
+
+
+def list_junit_artifacts(all_artifacts: list[str]) -> list[str]:
+    """List available *-unit-tests-junit-xml artifact names."""
+    return [n for n in all_artifacts if n.endswith("-unit-tests-junit-xml")]
+
+
+def download_artifacts(run_id: str, artifact_names: list[str], workdir: Path) -> None:
+    """Download test log artifacts into workdir."""
+    print()
+    print(f"==> Downloading test log artifacts to {workdir}...")
+    for name in artifact_names:
+        dest = workdir / name
+        if dest.is_dir():
+            print(f"    {name} (cached)")
+            continue
+        print(f"    Downloading {name}...")
+        result = subprocess.run(
+            ["gh", "run", "download", run_id, "-R", REPO, "-n", name, "-D", str(dest)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            print(f"    WARNING: Failed to download {name}")
+            if result.stderr.strip():
+                for line in result.stderr.strip().splitlines():
+                    print(f"      {line}")
+
+
+def extract_errors_from_jsonl(jsonl_path: Path) -> list[str]:
+    """Extract ERROR and WARN lines from a petri.jsonl file."""
+    lines = []
+    try:
+        with open(jsonl_path, encoding="utf-8", errors="replace") as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                sev = entry.get("severity", "")
+                if sev in ("ERROR", "WARN"):
+                    ts = entry.get("timestamp", "?")
+                    src = entry.get("source", "?")
+                    msg = entry.get("message", "").strip()
+                    if len(msg) > 200:
+                        msg = msg[:200] + "..."
+                    lines.append(f"    [{sev}] [{ts}] {src}: {msg}")
+    except OSError as e:
+        lines.append(f"    (failed to read petri.jsonl: {e})")
+    return lines
+
+
+def parse_junit_failures(xml_path: Path) -> list[dict]:
+    """Parse a JUnit XML file and return a list of failure dicts.
+
+    Each dict has keys: 'suite', 'test', 'message', 'output'.
+    """
+    failures: list[dict] = []
+    try:
+        # CI artifacts come from potentially-untrusted PR code.
+        # Python's expat-based parser does not resolve external entities and
+        # has built-in entity expansion limits, but use defusedxml when
+        # available for belt-and-suspenders protection against XML DoS.
+        try:
+            import defusedxml.ElementTree as SafeET
+            tree = SafeET.parse(xml_path)
+        except ImportError:
+            tree = ET.parse(xml_path)
+    except (ET.ParseError, OSError) as e:
+        failures.append({"suite": "?", "test": "?", "message": f"(failed to parse JUnit XML: {e})", "output": ""})
+        return failures
+
+    for testcase in tree.iter("testcase"):
+        failure = testcase.find("failure")
+        error = testcase.find("error")
+        elem = failure if failure is not None else error
+        if elem is None:
+            continue
+        suite = testcase.get("classname", "")
+        name = testcase.get("name", "")
+        msg = elem.get("message", "")
+
+        # nextest puts the actual test output in <system-out>/<system-err>
+        # rather than in the <failure> element body, so collect all sources.
+        output_parts: list[str] = []
+        failure_text = (elem.text or "").strip()
+        if failure_text:
+            output_parts.append(failure_text)
+        for tag in ("system-out", "system-err"):
+            el = testcase.find(tag)
+            if el is not None and el.text and el.text.strip():
+                output_parts.append(el.text.strip())
+        output = "\n".join(output_parts)
+
+        failures.append({"suite": suite, "test": name, "message": msg, "output": output})
+
+    return failures
+
+
+def show_junit_failures(run_id: str, junit_artifact_names: list[str], workdir: Path) -> int:
+    """Download JUnit XML artifacts and display any failures. Returns failure count."""
+    if not junit_artifact_names:
+        return 0
+
+    print()
+    print("==> Downloading unit test JUnit XML artifacts...")
+    total_failures = 0
+
+    for name in junit_artifact_names:
+        dest = workdir / name
+        if not dest.is_dir():
+            print(f"    Downloading {name}...")
+            result = subprocess.run(
+                ["gh", "run", "download", run_id, "-R", REPO, "-n", name, "-D", str(dest)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                print(f"    WARNING: Failed to download {name}")
+                continue
+        else:
+            print(f"    {name} (cached)")
+
+        # Find all XML files in the artifact directory.
+        xml_files = sorted(dest.rglob("*.xml"))
+        if not xml_files:
+            print(f"    WARNING: No XML files found in {name}")
+            continue
+
+        for xml_file in xml_files:
+            failures = parse_junit_failures(xml_file)
+            if not failures:
+                continue
+            total_failures += len(failures)
+            for f in failures:
+                print()
+                print(f"  FAIL: {f['suite']}::{f['test']}")
+                if f["message"]:
+                    msg = f["message"]
+                    if len(msg) > 300:
+                        msg = msg[:300] + "..."
+                    print(f"    Message: {msg}")
+                if f["output"]:
+                    # Extract the most useful lines from the test output.
+                    # nextest system-out includes the full "running 1 test"
+                    # harness output; we want the failure details.
+                    output_lines = f["output"].splitlines()
+                    # Look for the "failures:" section which has the cause.
+                    useful_lines: list[str] = []
+                    in_failures = False
+                    for line in output_lines:
+                        stripped = line.strip()
+                        if stripped == "failures:" and not in_failures:
+                            in_failures = True
+                            continue
+                        if in_failures:
+                            # Stop at "test result:" or a second "failures:" header
+                            if stripped.startswith("test result:") or stripped == "failures:":
+                                break
+                            if stripped:
+                                useful_lines.append(stripped)
+                    if useful_lines:
+                        for line in useful_lines[:15]:
+                            print(f"    {line}")
+                        if len(useful_lines) > 15:
+                            print(f"    ... ({len(useful_lines) - 15} more lines)")
+                    else:
+                        # Fallback: show up to 10 lines of raw output.
+                        for line in output_lines[:10]:
+                            print(f"    {line}")
+                        if len(output_lines) > 10:
+                            print(f"    ... ({len(output_lines) - 10} more lines)")
+
+    return total_failures
+
+
+def show_build_failure_logs(run_id: str, failed_jobs: list[dict]) -> None:
+    """Show build/compile errors from the logs of all failed jobs."""
+    if not failed_jobs:
+        return
+
+    print()
+    print("==========================================")
+    print("  BUILD / JOB FAILURES")
+    print("==========================================")
+
+    for job in failed_jobs:
+        job_id = str(job["databaseId"])
+        job_name = job["name"]
+        print()
+        print(f"  --- {job_name} ---")
+
+        # Try the per-job logs API first (works for completed jobs even when
+        # the run is still in progress).
+        log = gh(
+            "api", f"repos/{REPO}/actions/jobs/{job_id}/logs",
+            check=False, quiet=True,
+        )
+        if not log:
+            # Fallback to the run-level log command.
+            log = gh("run", "view", run_id, "-R", REPO, "--job", job_id, "--log",
+                      check=False, quiet=True)
+        if not log:
+            # Last resort: get check-run annotations, which are available
+            # even while the run is still in progress.
+            ann_json = gh(
+                "api", f"repos/{REPO}/check-runs/{job_id}/annotations",
+                check=False,
+            )
+            if ann_json:
+                try:
+                    annotations = json.loads(ann_json)
+                    if annotations:
+                        for ann in annotations:
+                            level = ann.get("annotation_level", "?")
+                            title = ann.get("title", "")
+                            msg = ann.get("message", "").strip()
+                            prefix = f"[{level}]"
+                            if title:
+                                prefix += f" {title}"
+                            print(f"    {prefix}: {msg}")
+                        continue
+                except json.JSONDecodeError:
+                    pass
+            print("    (no log available)")
+            continue
+
+        all_lines = log.splitlines()
+
+        # Extract lines that look like build errors.
+        # gh --log output format: "STEP_NAME\tTIMESTAMP TEXT" or plain text.
+        error_lines: list[str] = []
+        for line in all_lines:
+            # Strip the step-name prefix (tab-separated) for matching.
+            text = line.split("\t", 1)[-1] if "\t" in line else line
+            # Strip a leading GitHub Actions ISO-8601 timestamp so that
+            # prefix matches below see the actual message.
+            text = _TIMESTAMP_PREFIX_RE.sub("", text)
+            text_lower = text.lower()
+            if any((
+                "error[e" in text_lower,          # rustc error codes
+                "error:" in text_lower,            # generic compiler errors
+                "[error]" in text_lower,           # mdbook / env_logger
+                "cannot find" in text_lower,       # resolution errors
+                "aborting due to" in text_lower,   # rustc abort summary
+                "could not compile" in text_lower, # cargo summary
+                "fatal error" in text_lower,       # C/C++ fatal errors
+                "undefined reference" in text_lower,
+                "linker error" in text_lower,
+                text_lower.strip().startswith("error "),
+            )):
+                error_lines.append(line)
+
+        if error_lines:
+            # Show up to 80 error lines.
+            for line in error_lines[:80]:
+                print(f"    {line}")
+            if len(error_lines) > 80:
+                print(f"    ... ({len(error_lines) - 80} more error lines)")
+        else:
+            # Fallback: show last 50 lines of the log.
+            print(f"    (no error patterns found; showing last 50 lines)")
+            for line in all_lines[-50:]:
+                print(f"    {line}")
+
+
+def find_failed_tests(workdir: Path) -> list[Path]:
+    """Find all petri.failed marker files under workdir."""
+    return sorted(workdir.rglob("petri.failed"))
+
+
+def investigate_run(run_id: str) -> bool:
+    """Investigate a single CI run. Returns True if it had failed jobs."""
+    get_run_status(run_id)
+    failed_jobs = get_failed_jobs(run_id)
+
+    if not failed_jobs:
+        return False
+
+    all_artifacts = list_artifacts(run_id)
+    vmm_artifact_names = list_test_log_artifacts(all_artifacts)
+    junit_artifact_names = list_junit_artifacts(all_artifacts)
+
+    # Always show build/job failure logs when jobs failed.
+    show_build_failure_logs(run_id, failed_jobs)
+
+    if not vmm_artifact_names and not junit_artifact_names:
+        return True
+
+    # Set up work directory
+    tmpdir_base = Path(tempfile.gettempdir()) / "openvmm-ci-investigate"
+    workdir = tmpdir_base / run_id
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    # --- Unit test failures (JUnit XML) ---
+    junit_failure_count = 0
+    if junit_artifact_names:
+        print()
+        print("==========================================")
+        print("  UNIT TEST FAILURES (JUnit XML)")
+        print("==========================================")
+        junit_failure_count = show_junit_failures(run_id, junit_artifact_names, workdir)
+        if junit_failure_count == 0:
+            print("  No unit test failures found in JUnit XML artifacts.")
+        else:
+            print()
+            print(f"  Total unit test failures: {junit_failure_count}")
+
+    # --- VMM test failures (petri) ---
+    failed_markers: list[Path] = []
+    if vmm_artifact_names:
+        download_artifacts(run_id, vmm_artifact_names, workdir)
+
+        print()
+        print("==========================================")
+        print("  VMM TEST FAILURES (petri)")
+        print("==========================================")
+
+        failed_markers = find_failed_tests(workdir)
+
+        if not failed_markers:
+            print("  No petri.failed markers found.")
+            if junit_failure_count == 0:
+                print("  Tests may have passed, or failure occurred before test execution.")
+                return True
+        else:
+            print(f"  Found {len(failed_markers)} failed test(s):")
+            print()
+
+    for marker in failed_markers:
+        test_dir = marker.parent
+        # petri records the test's real name in petri.test at the start of the
+        # run; the directory name is a lossy encoding of it.
+        start_marker = test_dir / "petri.test"
+        try:
+            test_name = start_marker.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            test_name = ""
+        if not test_name:
+            test_name = test_dir.name
+
+        print("  ----------------------------------------")
+        print(f"  TEST: {test_name}")
+        print(f"  DIR:  {test_dir}")
+        # The failure marker holds the error petri recorded, if any.
+        try:
+            error = marker.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            error = ""
+        if error:
+            print(f"  ERROR: {error}")
+        print("  ----------------------------------------")
+
+        jsonl_file = test_dir / "petri.jsonl"
+        if jsonl_file.is_file():
+            print()
+            print("  ERROR/WARN entries from petri.jsonl:")
+            error_lines = extract_errors_from_jsonl(jsonl_file)
+            for line in error_lines:
+                print(line)
+        else:
+            print("  (no petri.jsonl found)")
+
+        print()
+
+    # Summary
+    print("==========================================")
+    print("  SUMMARY")
+    print("==========================================")
+    print(f"  Run ID:       {run_id}")
+    logview_url = log_viewer_url(run_id)
+    print(f"  Logview URL:  {logview_url}")
+    if junit_failure_count > 0:
+        print(f"  Unit test failures: {junit_failure_count}")
+    if failed_markers:
+        print(f"  VMM test failures:  {len(failed_markers)}")
+    if junit_failure_count == 0 and not failed_markers:
+        print("  No test failures found.")
+    print()
+    print(f"  For full logs, examine files in: {workdir}")
+    print("  Each test directory may contain:")
+    print("    petri.jsonl  - Structured JSON log (primary)")
+    print("    petri.log    - Plain text log")
+    print("    openhcl.log  - OpenHCL serial console (if test exercised OpenHCL)")
+    print("    hyperv.log   - Hyper-V event log (if test uses Hyper-V backend)")
+    print("    openvmm.log  - OpenVMM serial console (if test uses OpenVMM backend)")
+    print("    guest.log    - Guest OS serial output")
+    print("    uefi.log     - UEFI serial output")
+    print()
+    print(f"  To view in browser: {logview_url}")
+    return True
+
+
+def main() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0)
+
+    if len(sys.argv) > 2:
+        print(__doc__)
+        sys.exit(1)
+
+    if len(sys.argv) == 2:
+        run_ids = resolve_run_ids(sys.argv[1])
+    else:
+        run_ids = resolve_current_branch_runs()
+
+    any_failed = False
+    for i, run_id in enumerate(run_ids):
+        if len(run_ids) > 1:
+            print()
+            print("##########################################")
+            print(f"# RUN {i + 1} of {len(run_ids)}: {run_id}")
+            print("##########################################")
+        any_failed |= investigate_run(run_id)
+
+    sys.exit(1 if any_failed else 0)
+
+
+if __name__ == "__main__":
+    main()

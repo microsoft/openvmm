@@ -29,7 +29,20 @@ fn do_fuzz(input: InputKind) {
     // run some sanity checks on it
     let _s = format!("{}", s); // check display impl
     let _s = format!("{:?}", s); // check debug impl
-    let _b = s.as_bytes_without_nul(); // ensure this won't panic
+    let bytes = s.as_bytes(); // includes trailing NUL
+    let no_nul = s.as_bytes_without_nul(); // ensure this won't panic
+    debug_assert!(bytes.len() >= no_nul.len() + 2);
+
+    // ToOwned round-trip back to a Ucs2LeVec, then back to a slice.
+    let round_tripped: Ucs2LeVec = s.to_owned();
+    assert_eq!(round_tripped.as_ref(), s);
+
+    // into_inner exposes the raw backing Vec.
+    let raw = round_tripped.into_inner();
+    assert!(raw.ends_with(&[0, 0]));
 }
 
-fuzz_target!(|input: InputKind| do_fuzz(input));
+fuzz_target!(|input: InputKind| {
+    xtask_fuzz::init_tracing_if_repro();
+    do_fuzz(input)
+});

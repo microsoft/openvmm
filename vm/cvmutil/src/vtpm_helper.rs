@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use ms_tpm_20_ref::DynResult;
+use ms_tpm_20_ref::MsTpm20RefPlatform;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 ///! Helper to create and manage a TPM engine instance with in-memory NV state for testing.
 use tpm::tpm_helper::{self, TpmEngineHelper};
-use std::time::Instant;
-use std::sync::{Arc, Mutex};
-use ms_tpm_20_ref::MsTpm20RefPlatform;
-use ms_tpm_20_ref::DynResult;
 use tpm::tpm20proto::protocol::Tpm2bBuffer;
 struct TestPlatformCallbacks {
     blob: Vec<u8>,

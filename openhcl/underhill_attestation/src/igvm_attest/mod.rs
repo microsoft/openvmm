@@ -54,12 +54,13 @@ pub enum Error {
         latest_version: IgvmAttestResponseVersion,
     },
     #[error(
-        "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal})"
+        "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal}), skip hw unsealing recommendation ({skip_hw_unsealing_signal})"
     )]
     Attestation {
         igvm_error_code: u32,
         http_status_code: u32,
         retry_signal: bool,
+        skip_hw_unsealing_signal: bool,
     },
 }
 
@@ -71,6 +72,8 @@ pub enum ReportType {
     Snp,
     /// TDX report
     Tdx,
+    /// CCA report
+    Cca,
     /// Trusted VM report
     Tvm,
 }
@@ -82,6 +85,7 @@ impl ReportType {
             Self::Vbs => IgvmAttestReportType::VBS_VM_REPORT,
             Self::Snp => IgvmAttestReportType::SNP_VM_REPORT,
             Self::Tdx => IgvmAttestReportType::TDX_VM_REPORT,
+            Self::Cca => IgvmAttestReportType::CCA_VM_REPORT,
             Self::Tvm => IgvmAttestReportType::TVM_REPORT,
         }
     }
@@ -114,6 +118,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             TeeType::Snp => ReportType::Snp,
             TeeType::Tdx => ReportType::Tdx,
+            TeeType::Cca => ReportType::Cca,
             TeeType::Vbs => ReportType::Vbs,
         };
 
@@ -124,7 +129,7 @@ impl IgvmAttestRequestHelper {
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
-        let hash = crate::crypto::sha_256(runtime_claims.as_bytes());
+        let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
         let mut runtime_claims_hash = [0u8; tee_call::REPORT_DATA_SIZE];
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
@@ -150,6 +155,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             Some(TeeType::Snp) => ReportType::Snp,
             Some(TeeType::Tdx) => ReportType::Tdx,
+            Some(TeeType::Cca) => ReportType::Cca,
             Some(TeeType::Vbs) => ReportType::Vbs,
             None => ReportType::Tvm,
         };
@@ -167,7 +173,7 @@ impl IgvmAttestRequestHelper {
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
         let hash_type = IgvmAttestHashType::SHA_256;
-        let hash = crate::crypto::sha_256(runtime_claims.as_bytes());
+        let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
         let mut runtime_claims_hash = [0u8; tee_call::REPORT_DATA_SIZE];
         runtime_claims_hash[0..hash.len()].copy_from_slice(&hash);
 
@@ -247,6 +253,7 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
                 igvm_error_code: igvm_error_info.error_code,
                 http_status_code: igvm_error_info.http_status_code,
                 retry_signal: igvm_error_info.igvm_signal.retry(),
+                skip_hw_unsealing_signal: igvm_error_info.igvm_signal.skip_hw_unsealing(),
             })?
         }
     }
@@ -310,7 +317,12 @@ fn create_request(
     if include_extension {
         let capability_bitmap = IgvmCapabilityBitMap::new()
             .with_error_code(true)
-            .with_retry(true);
+            .with_retry(true)
+            .with_skip_hw_unsealing(true)
+            .with_use_rsa_aes_key_wrap_384(true)
+            // Signal the IGVM Agent to fetch the CoRIM launch endorsement.
+            // TDX only for now.
+            .with_corim_endorsement(matches!(report_type, &ReportType::Tdx));
         let ext = IgvmAttestRequestDataExt::new(capability_bitmap);
         buffer.extend_from_slice(ext.as_bytes());
     }
@@ -327,6 +339,7 @@ fn get_report_size(report_type: &ReportType) -> usize {
         ReportType::Snp => openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE,
         ReportType::Tdx => openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE,
         ReportType::Tvm => openhcl_attestation_protocol::igvm_attest::get::TVM_REPORT_SIZE,
+        ReportType::Cca => todo!(),
     }
 }
 
@@ -351,6 +364,8 @@ fn runtime_claims_to_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 
     #[test]
     fn test_create_request() {
@@ -458,6 +473,10 @@ mod tests {
             .expect("parse IgvmAttestRequestDataExt");
         assert!(ext.capability_bitmap.error_code());
         assert!(ext.capability_bitmap.retry());
+        assert!(ext.capability_bitmap.skip_hw_unsealing());
+        // CoRIM endorsement is requested for TDX only; an SNP request must not
+        // set the bit.
+        assert!(!ext.capability_bitmap.corim_endorsement());
 
         assert_eq!(
             buffer.len(),
@@ -467,6 +486,33 @@ mod tests {
             &buffer[header_size + expected_extension_size..],
             runtime_claims.as_slice()
         );
+    }
+
+    #[test]
+    fn test_create_request_version2_tdx_requests_corim() {
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
+
+        let runtime_claims = vec![4u8, 5, 6, 7];
+        let attestation_report =
+            vec![0u8; openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE];
+
+        let buffer = create_request(
+            IgvmAttestRequestVersion::VERSION_2,
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            &runtime_claims,
+            &attestation_report,
+            &ReportType::Tdx,
+            IgvmAttestHashType::SHA_256,
+        )
+        .expect("request generation");
+
+        let header_size = size_of::<IgvmAttestRequestBase>();
+        let (ext, _) = IgvmAttestRequestDataExt::read_from_prefix(&buffer[header_size..])
+            .expect("parse IgvmAttestRequestDataExt");
+        // TDX requests must signal the IGVM Agent to fetch the CoRIM endorsement.
+        assert!(ext.capability_bitmap.corim_endorsement());
     }
 
     #[test]
@@ -487,7 +533,7 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_no_time() {
-        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-version":"1.38","tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"signer"}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
@@ -496,9 +542,12 @@ mod tests {
             interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
+            tpm_version: AttestationTpmVersion::V138,
             tpm_persisted: false,
+            hardware_sealing_policy: HardwareSealingPolicy::Signer,
             filtered_vpci_devices_allowed: true,
             vm_unique_id: String::new(),
+            vmgs_provisioner: None,
         };
         let result = serde_json::to_string(&attestation_vm_config);
         assert!(result.is_ok());
@@ -509,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_with_time() {
-        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-version":"185","tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"hash"}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
@@ -518,9 +567,12 @@ mod tests {
             interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
+            tpm_version: AttestationTpmVersion::V185,
             tpm_persisted: false,
+            hardware_sealing_policy: HardwareSealingPolicy::Hash,
             filtered_vpci_devices_allowed: true,
             vm_unique_id: String::new(),
+            vmgs_provisioner: None,
         };
         let attestation_vm_config =
             attestation_vm_config_with_time(&attestation_vm_config, 1691103220);
@@ -702,7 +754,8 @@ mod tests {
             Error::Attestation {
                 igvm_error_code: 1103,
                 http_status_code: 403,
-                retry_signal: true
+                retry_signal: true,
+                skip_hw_unsealing_signal: false
             }
             .to_string()
         );
@@ -724,7 +777,56 @@ mod tests {
             Error::Attestation {
                 igvm_error_code: 1103,
                 http_status_code: 503,
-                retry_signal: false
+                retry_signal: false,
+                skip_hw_unsealing_signal: false
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_failed_response_with_skip_hw_unsealing_signal() {
+        // error_code: 1103 (0x44f), http_status_code: 400 (0x190),
+        // igvm_signal: retry=true, skip_hw_unsealing=true (0x03 = bits 0 and 1 set)
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x4f, 0x04, 0x00, 0x00, 0x90, 0x01,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::Attestation {
+                igvm_error_code: 1103,
+                http_status_code: 400,
+                retry_signal: true,
+                skip_hw_unsealing_signal: true
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_failed_response_with_skip_hw_unsealing_only() {
+        // error_code: 1103 (0x44f), http_status_code: 400 (0x190),
+        // igvm_signal: retry=false, skip_hw_unsealing=true (0x02 = bit 1 set)
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x4f, 0x04, 0x00, 0x00, 0x90, 0x01,
+            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::Attestation {
+                igvm_error_code: 1103,
+                http_status_code: 400,
+                retry_signal: false,
+                skip_hw_unsealing_signal: true
             }
             .to_string()
         );

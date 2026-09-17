@@ -10,13 +10,9 @@ rust-version.workspace = true
 
 [dependencies]
 ms-tpm-20-ref.workspace = true
-inspect.workspace = true
 getrandom.workspace = true
 tracing.workspace = true
-tracing_helpers.workspace = true
 tracing-subscriber.workspace = true
-tpm_lib.workspace = true
-tpm_resources.workspace = true
 zerocopy.workspace = true
 clap = { workspace = true, features = ["derive"] }
 sha2.workspace = true

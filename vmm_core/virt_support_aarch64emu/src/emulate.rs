@@ -9,6 +9,8 @@ use aarch64defs::FaultStatusCode;
 use aarch64defs::IssInstructionAbort;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hvdef::HV_PAGE_SIZE;
@@ -173,7 +175,29 @@ pub async fn emulate<T: EmulatorSupport>(
 ) -> Result<(), VpHaltReason> {
     emulate_core(support, intercept_state, emu_mem, dev)
         .await
-        .map_err(|e| dev.fatal_error(e.into()))
+        .map_err(|e| {
+            let pc = support.pc();
+            let sp = support.sp();
+            let cpsr = support.cpsr();
+            let gpa = support.physical_address();
+            let initial_translation = support.initial_gva_translation();
+            let int_pend = support.interruption_pending();
+            let gpa_mapped = gpa.map(|a| support.is_gpa_mapped(a, false));
+            tracing::warn!(
+                CVM_ALLOWED,
+                pc,
+                sp,
+                ?cpsr,
+                gpa,
+                ?initial_translation,
+                int_pend,
+                gpa_mapped,
+                "emulation failed"
+            );
+            let xs = (0..=30).map(|i| (i, support.x(i))).collect::<Vec<_>>();
+            tracing::warn!(CVM_CONFIDENTIAL, ?xs, "emulation failed");
+            dev.fatal_error(e.into())
+        })
 }
 
 async fn emulate_core<T: EmulatorSupport>(
@@ -453,7 +477,7 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
             Ok(g) => g,
             Err(e) => return Err(e),
         };
-        self.read_physical_memory(gpa, bytes).await
+        self.read_physical_memory(gpa, bytes, true).await
     }
 
     async fn read_memory(&mut self, gva: u64, bytes: &mut [u8]) -> Result<(), Self::Error> {
@@ -461,15 +485,23 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
             Ok(g) => g,
             Err(e) => return Err(e),
         };
-        self.read_physical_memory(gpa, bytes).await
+        self.read_physical_memory(gpa, bytes, false).await
     }
 
     async fn read_physical_memory(
         &mut self,
         gpa: u64,
         bytes: &mut [u8],
+        exec: bool,
     ) -> Result<(), Self::Error> {
-        self.check_vtl_access(gpa, TranslateMode::Read)?;
+        self.check_vtl_access(
+            gpa,
+            if exec {
+                TranslateMode::Execute
+            } else {
+                TranslateMode::Read
+            },
+        )?;
 
         if self.check_monitor_read(gpa, bytes) {
             Ok(())

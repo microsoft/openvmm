@@ -163,6 +163,7 @@ mod tests {
                                 .collect(),
                             qsize: 0,
                             max_io_queues: 0,
+                            allow_lazy_restore: None,
                         },
                     },
                 })
@@ -174,6 +175,7 @@ mod tests {
         IoQueueSavedState {
             cpu,
             iv: qid as u32,
+            unmapped: false,
             queue_data: QueuePairSavedState {
                 mem_len: 0,
                 base_pfn: 0,

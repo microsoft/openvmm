@@ -10,18 +10,136 @@ import re
 import json
 import subprocess
 import argparse
+import sys
+
+
+def get_upstream_repo():
+    """Get the upstream repo name (owner/repo) using gh CLI.
+    
+    If the current repo is a fork, returns the parent. Otherwise returns
+    the current repo (assuming it's the upstream itself).
+    """
+    try:
+        result = subprocess.check_output(
+            ['gh', 'repo', 'view', '--json', 'parent,nameWithOwner'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8')
+        data = json.loads(result)
+        # If this repo has a parent, use that as upstream
+        if data.get('parent'):
+            return data['parent']['owner']['login'] + '/' + data['parent']['name']
+        # Otherwise, this repo is the upstream
+        return data.get('nameWithOwner')
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+        return None
+
+
+def detect_upstream_remote(upstream_repo):
+    """Find which git remote points to the given upstream repo."""
+    if not upstream_repo:
+        return None
+    
+    # Match the upstream repo in remote URLs precisely, avoiding false
+    # positives from repos with similar prefixes (e.g. openvmm vs openvmm-fork).
+    # Handles both HTTPS (github.com/owner/repo) and SSH (github.com:owner/repo).
+    pattern = re.compile(
+        r'github\.com[:/]' + re.escape(upstream_repo) + r'(\.git)?\s*$'
+    )
+    
+    try:
+        remotes = subprocess.check_output(
+            ['git', 'remote', '-v'], stderr=subprocess.DEVNULL
+        ).decode('utf-8').splitlines()
+    except subprocess.CalledProcessError:
+        return None
+
+    matches = []
+    for line in remotes:
+        parts = line.split()
+        if len(parts) >= 2:
+            remote_name = parts[0]
+            remote_url = parts[1]
+            if pattern.search(remote_url):
+                matches.append(remote_name)
+
+    if not matches:
+        return None
+
+    # Prefer 'upstream' over other remote names for deterministic selection.
+    for preferred in ['upstream']:
+        if preferred in matches:
+            return preferred
+    return matches[0]
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--update', action='store_true',
                     help='Relabel the PRs that have been backported')
 parser.add_argument('--force-update-pr', action='append',
                     help='Force relabel specific PRs even if their backport PR title does not match')
+parser.add_argument('--remote', type=str, default=None,
+                    help='Git remote to use for release branches (auto-detected if not specified)')
+parser.add_argument('--no-fetch', action='store_true',
+                    help='Skip fetching from the remote before scanning')
 # Get the release name as the first non-flag argument.
 parser.add_argument('release', type=str,
-                    help='The release to scan for backports')
+                    help='The release to scan for backports (e.g. "1.7.2511" for release/1.7.2511, or "2505" for release/2505)')
 args = parser.parse_args()
 update = args.update
 release = args.release
 force_update_pr = args.force_update_pr or []
+
+# Catch common mistake of passing "release/X" instead of just "X".
+if release.startswith('release/'):
+    stripped = release[len('release/'):]
+    print(f'Error: Release should be just the version, not the branch name.', file=sys.stderr)
+    print(f'  Use: {stripped}', file=sys.stderr)
+    print(f'  Not: {release}', file=sys.stderr)
+    sys.exit(1)
+
+# Detect or use specified remote
+if args.remote:
+    remote = args.remote
+else:
+    upstream_repo = get_upstream_repo()
+    if upstream_repo:
+        print(f"Detected upstream repo: {upstream_repo}")
+    remote = detect_upstream_remote(upstream_repo)
+    if not remote:
+        print("Error: Could not detect upstream remote.", file=sys.stderr)
+        print("Please specify --remote explicitly.", file=sys.stderr)
+        sys.exit(1)
+    print(f"Using remote: {remote}")
+
+# Fetch from remote unless --no-fetch is specified
+if not args.no_fetch:
+    print(f"Fetching from {remote}...")
+    try:
+        subprocess.check_call(['git', 'fetch', remote])
+    except subprocess.CalledProcessError:
+        print(f"Error: Failed to fetch from {remote}.", file=sys.stderr)
+        sys.exit(1)
+
+# Verify the release branch exists on the remote.
+try:
+    subprocess.check_output(
+        ['git', 'rev-parse', '--verify', f'{remote}/release/{release}'],
+        stderr=subprocess.DEVNULL
+    )
+except subprocess.CalledProcessError:
+    print(f"Error: Release branch 'release/{release}' not found on remote '{remote}'.", file=sys.stderr)
+    # List available release branches to help the user.
+    try:
+        refs = subprocess.check_output(
+            ['git', 'branch', '-r', '--list', f'{remote}/release/*'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+        if refs:
+            branches = [r.strip().removeprefix(f'{remote}/release/') for r in refs.splitlines()]
+            print(f"Available releases: {', '.join(branches)}", file=sys.stderr)
+    except subprocess.CalledProcessError:
+        pass
+    sys.exit(1)
 
 # Get the list of PRs to backport by the backport_<release> label.
 prs = subprocess.check_output(
@@ -42,7 +160,7 @@ for pr, (title, url) in prs.items():
     title_for_regex = re.escape(re.sub(r' (\(#\d+\))+$', '', title))
     commits = subprocess.check_output(
         ['git', 'log',
-         f'origin/release/{release}',
+         f'{remote}/release/{release}',
          '--oneline',
          '-E',
          f'--grep=(#{pr}\\b)|(github.com/microsoft/openvmm/pull/{pr}\\b)|({title_for_regex})']

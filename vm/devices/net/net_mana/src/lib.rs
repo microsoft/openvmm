@@ -24,6 +24,7 @@ use gdma_defs::bnic::MANA_SHORT_PKT_FMT;
 use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaRxcompOob;
 use gdma_defs::bnic::ManaTxCompOob;
+use gdma_defs::bnic::ManaTxLongOob;
 use gdma_defs::bnic::ManaTxOob;
 use gdma_defs::bnic::ManaTxShortOob;
 use guestmem::GuestMemory;
@@ -49,6 +50,7 @@ use net_backend::MultiQueueSupport;
 use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
+use net_backend::RxBufferSegment;
 use net_backend::RxChecksumState;
 use net_backend::RxId;
 use net_backend::RxMetadata;
@@ -57,6 +59,7 @@ use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
+use net_backend::VlanMetadata;
 use pal_async::task::Spawn;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
@@ -68,6 +71,7 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
+use tracing::Instrument;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
@@ -297,8 +301,6 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
     async fn new_queue(
         &mut self,
         tx_config: &TxConfig,
-        pool: Box<dyn BufferAccess>,
-        initial_rx: &[RxId],
         arena: &mut ResourceArena,
         cpu: u32,
     ) -> anyhow::Result<(ManaQueue<T>, QueueResources)> {
@@ -353,9 +355,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             None
         };
 
-        let mut queue = ManaQueue {
-            guest_memory: pool.guest_memory().clone(),
-            pool,
+        let queue = ManaQueue {
             rx_bounce_buffer,
             tx_bounce_buffer,
             vport: Arc::downgrade(&self.vport),
@@ -378,13 +378,12 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             dropped_tx: VecDeque::new(),
             tx_max: tx_max as usize,
             force_tx_header_bounce: false,
+            rx_buffer_segments: Vec::new(),
             stats: QueueStats::default(),
             #[cfg(test)]
             test_configuration: self.test_configuration,
         };
         self.queue_tracker.0.fetch_add(1, Ordering::AcqRel);
-        queue.rx_avail(initial_rx);
-        queue.rx_wq.commit();
 
         let resources = QueueResources {
             _eq: eq,
@@ -397,7 +396,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
     async fn get_queues_inner(
         &mut self,
         arena: &mut ResourceArena,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
@@ -411,13 +410,11 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
 
         let mut queue_resources = Vec::new();
 
-        for config in config {
+        for _config in config {
             // Start the queue interrupt on CPU 0, which is already used by the
             // HWC so this is cheap. The actual interrupt will be allocated
             // later when `update_target_vp` is first called.
-            let (queue, resources) = self
-                .new_queue(&tx_config, config.pool, config.initial_rx, arena, 0)
-                .await?;
+            let (queue, resources) = self.new_queue(&tx_config, arena, 0).await?;
 
             queues.push(Box::new(queue));
             queue_resources.push(resources);
@@ -468,7 +465,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
@@ -496,6 +493,10 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                 default_rxobj: None,
                 indirection_table: None,
             })
+            .instrument(tracing::info_span!(
+                "clearing rx configuration",
+                vport_id = self.vport.id()
+            ))
             .await
         {
             tracing::warn!(
@@ -505,12 +506,25 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         }
 
         self.queues.clear();
-        self.vport.destroy(std::mem::take(&mut self.arena)).await;
+        self.vport
+            .destroy(std::mem::take(&mut self.arena))
+            .instrument(tracing::info_span!(
+                "destroying vport resources",
+                vport_id = self.vport.id()
+            ))
+            .await;
         // Wait for all outstanding queues. There can be a delay switching out
         // the queues when an endpoint is removed, and the queue has access to
         // the vport which is being stopped here.
         if self.queue_tracker.0.load(Ordering::Acquire) > 0 {
-            self.queue_tracker.1.wait().await;
+            self.queue_tracker
+                .1
+                .wait()
+                .instrument(tracing::info_span!(
+                    "waiting for outstanding queues to stop",
+                    vport_id = self.vport.id()
+                ))
+                .await;
         }
     }
 
@@ -525,6 +539,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
             udp: true,
             // Tbe bounce buffer path does not support TSO.
             tso: !self.bounce_buffer,
+            uso: false,
         }
     }
 
@@ -564,14 +579,11 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     }
 
     fn link_speed(&self) -> u64 {
-        // Hard code to 200Gbps until MANA supports querying this.
-        200 * 1000 * 1000 * 1000
+        self.vport.link_speed_bps()
     }
 }
 
 pub struct ManaQueue<T: DeviceBacking> {
-    pool: Box<dyn BufferAccess>,
-    guest_memory: GuestMemory,
     rx_bounce_buffer: Option<ContiguousBufferManager>,
     tx_bounce_buffer: ContiguousBufferManager,
 
@@ -602,6 +614,9 @@ pub struct ManaQueue<T: DeviceBacking> {
     tx_max: usize,
 
     force_tx_header_bounce: bool,
+
+    /// Scratch buffer for push_guest_addresses calls, reused across push_rqe invocations.
+    rx_buffer_segments: Vec<RxBufferSegment>,
 
     stats: QueueStats,
 
@@ -635,12 +650,14 @@ struct PostedTx {
 struct QueueStats {
     tx_events: Counter,
     tx_packets: Counter,
+    tx_vlan_packets: Counter,
     tx_errors: Counter,
     tx_dropped: Counter,
     tx_stuck: Counter,
 
     rx_events: Counter,
     rx_packets: Counter,
+    rx_vlan_packets: Counter,
     rx_errors: Counter,
 
     interrupts: Counter,
@@ -679,16 +696,16 @@ pub const MAX_RWQE_SIZE: u32 = 256;
 pub const MAX_SWQE_SIZE: u32 = 512;
 
 impl<T: DeviceBacking> ManaQueue<T> {
-    fn push_rqe(&mut self) -> bool {
+    fn push_rqe(&mut self, pool: &mut dyn BufferAccess) -> bool {
         // Make sure there is enough room for an entry of the maximum size. This
         // is conservative, but it simplifies the logic.
         if self.rx_wq.available() < MAX_RWQE_SIZE {
             return false;
         }
         if let Some(id) = self.avail_rx.pop_front() {
-            let rx = if let Some(pool) = &mut self.rx_bounce_buffer {
-                let size = self.pool.capacity(id);
-                let mut pool_tx = pool.start_allocation();
+            let rx = if let Some(bounce) = &mut self.rx_bounce_buffer {
+                let size = pool.capacity(id);
+                let mut pool_tx = bounce.start_allocation();
                 let Ok(buffer) = pool_tx.allocate(size) else {
                     self.avail_rx.push_front(id);
                     return false;
@@ -708,8 +725,11 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     bounced_len_with_padding: pool_tx.commit(),
                 }
             } else {
-                let sgl = self.pool.guest_addresses(id).iter().map(|seg| Sge {
-                    address: self.guest_memory.iova(seg.gpa).unwrap(),
+                self.rx_buffer_segments.clear();
+                pool.push_guest_addresses(id, &mut self.rx_buffer_segments);
+                let gm = pool.guest_memory();
+                let sgl = self.rx_buffer_segments.iter().map(|seg| Sge {
+                    address: gm.iova(seg.gpa).unwrap(),
                     mem_key: self.mem_key,
                     size: seg.len,
                 });
@@ -736,7 +756,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         &mut self,
         tracing_level: tracing::Level,
         cqe_params: CqeParams,
-        tx_oob: ManaTxCompOob,
+        tx_oob: &ManaTxCompOob,
         done_length: usize,
     ) {
         tracelimit::event_ratelimited!(
@@ -812,6 +832,27 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     short_vp_offset = tx_s_oob.short_vp_offset(),
                     "tx s_oob"
                 );
+
+                if tx_s_oob.pkt_fmt() == MANA_LONG_PKT_FMT {
+                    let l_oob_offset = wqe_offset + (header_size + s_oob_size) as u32;
+                    let l_oob_bytes = self.tx_wq.read(l_oob_offset, size_of::<ManaTxLongOob>());
+                    match ManaTxLongOob::read_from_prefix(&l_oob_bytes) {
+                        Ok((tx_l_oob, _)) => {
+                            tracelimit::event_ratelimited!(
+                                tracing_level,
+                                inject_vlan_pri_tag = tx_l_oob.inject_vlan_pri_tag(),
+                                vlan_id = tx_l_oob.vlan_id(),
+                                pcp = tx_l_oob.pcp(),
+                                dei = tx_l_oob.dei(),
+                                long_vp_offset = tx_l_oob.long_vp_offset(),
+                                "tx l_oob"
+                            );
+                        }
+                        Err(_) => {
+                            tracelimit::error_ratelimited!("failed to read tx l_oob");
+                        }
+                    }
+                }
             }
             Err(_) => {
                 tracelimit::error_ratelimited!("failed to read tx s_oob");
@@ -862,7 +903,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         }
     }
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
         if !self.tx_cq_armed || !self.rx_cq_armed {
             return Poll::Ready(());
         }
@@ -907,10 +948,10 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         }
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
+    fn rx_avail(&mut self, pool: &mut dyn BufferAccess, done: &[RxId]) {
         self.avail_rx.extend(done);
         let mut commit = false;
-        while self.posted_rx.len() < self.rx_max && self.push_rqe() {
+        while self.posted_rx.len() < self.rx_max && self.push_rqe(pool) {
             commit = true;
         }
         if commit {
@@ -918,7 +959,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         }
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         let mut i = 0;
         let mut commit = false;
         while i < packets.len() {
@@ -945,8 +990,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         } else {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
+                        let vlantag = rx_oob.flags.rx_vlantag_present().then(|| {
+                            VlanMetadata::new().with_vlan_id(rx_oob.flags.rx_vlan_id() as u16)
+                        });
                         let len = rx_oob.ppi[0].pkt_len.into();
-                        self.pool.write_header(
+                        pool.write_header(
                             rx.id,
                             &RxMetadata {
                                 offset: 0,
@@ -954,6 +1002,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
+                                vlan: vlantag,
                             },
                         );
                         if rx.bounced_len_with_padding > 0 {
@@ -963,9 +1012,12 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             self.rx_bounce_buffer.as_mut().unwrap().as_slice()
                                 [rx.bounce_offset as usize..][..len]
                                 .atomic_read(&mut data);
-                            self.pool.write_data(rx.id, &data);
+                            pool.write_data(rx.id, &data);
                         }
                         self.stats.rx_packets.increment();
+                        if vlantag.is_some() {
+                            self.stats.rx_vlan_packets.increment();
+                        }
                         packets[i] = rx.id;
                         i += 1;
                     }
@@ -975,6 +1027,8 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             vendor_err = rx_oob.cqe_hdr.vendor_err(),
                             rx_cq_id = self.rx_cq.id(),
                             rx_wq_id = self.rx_wq.id(),
+                            rx_vlantag_present = rx_oob.flags.rx_vlantag_present(),
+                            rx_vlan_id = rx_oob.flags.rx_vlan_id(),
                             "invalid rx cqe type"
                         );
                         self.trace_rx_wqe_from_offset(rx_oob.rx_wqe_offset);
@@ -990,7 +1044,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         .free(rx.bounced_len_with_padding);
                 }
                 // Replenish the rq, if possible.
-                commit |= self.push_rqe();
+                commit |= self.push_rqe(pool);
             } else {
                 if !self.rx_cq_armed {
                     self.rx_cq.arm();
@@ -1005,7 +1059,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         Ok(i)
     }
 
-    fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         let mut i = 0;
         let mut commit = false;
         while i < segments.len()
@@ -1017,7 +1075,10 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 unreachable!()
             };
 
-            if let Some(tx) = self.handle_tx(&segments[i..i + meta.segment_count as usize])? {
+            if let Some(tx) = self.handle_tx(
+                &segments[i..i + meta.segment_count as usize],
+                pool.guest_memory(),
+            )? {
                 commit = true;
                 self.posted_tx.push_back(tx);
             } else {
@@ -1032,45 +1093,16 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         Ok((false, i))
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         let mut i = 0;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
                 let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                match tx_oob.cqe_hdr.cqe_type() {
-                    CQE_TX_OKAY => {
-                        self.stats.tx_packets.increment();
-                    }
-                    CQE_TX_GDMA_ERR => {
-                        // Hardware hit an error with the packet coming from the Guest.
-                        // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
-                        self.stats.tx_errors.increment();
-                        self.stats.tx_stuck.increment();
-                        self.trace_tx(tracing::Level::ERROR, cqe.params, tx_oob, done.len());
-                        // Return a TryRestart error to indicate that the queue needs to be restarted.
-                        return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
-                    }
-                    CQE_TX_INVALID_OOB => {
-                        // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
-                        // This is somewhat common, usually due to encapsulation, and only affects the specific packet.
-                        self.stats.tx_errors.increment();
-                        self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
-                    }
-                    ty => {
-                        tracelimit::error_ratelimited!(
-                            ty,
-                            vendor_error = tx_oob.cqe_hdr.vendor_err(),
-                            "tx completion error"
-                        );
-                        self.stats.tx_errors.increment();
-                    }
-                }
-                let packet = self.posted_tx.pop_front().unwrap();
-                self.tx_wq.advance_head(packet.wqe_len);
-                if packet.bounced_len_with_padding > 0 {
-                    self.tx_bounce_buffer.free(packet.bounced_len_with_padding);
-                }
-                packet.id
+                self.handle_tx_cqe(&tx_oob, cqe.params, done.len())?
             } else if let Some(id) = self.dropped_tx.pop_front() {
                 self.stats.tx_dropped.increment();
                 id
@@ -1086,10 +1118,6 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
             i += 1;
         }
         Ok(i)
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        Some(self.pool.as_mut())
     }
 
     fn queue_stats(&self) -> Option<&dyn BackendQueueStats> {
@@ -1110,10 +1138,74 @@ impl BackendQueueStats for QueueStats {
     fn tx_packets(&self) -> Counter {
         self.tx_packets.clone()
     }
+    fn tx_vlan_packets(&self) -> Counter {
+        self.tx_vlan_packets.clone()
+    }
+    fn rx_vlan_packets(&self) -> Counter {
+        self.rx_vlan_packets.clone()
+    }
 }
 
 impl<T: DeviceBacking> ManaQueue<T> {
-    fn handle_tx(&mut self, segments: &[TxSegment]) -> anyhow::Result<Option<PostedTx>> {
+    /// Handle a single TX completion entry, or CQE. Advance the TX work queue
+    /// and free the bounce buffer slot for the corresponding posted TX.
+    ///
+    /// Returns the `TxId` of the completed packet on success, or
+    /// `TxError::TryRestart` if the queue must be torn down and rebuilt
+    /// due to a hardware-reported queue-disabling error.
+    /// Explicitly panics if a CQE is received with no matching posted TX.
+    fn handle_tx_cqe(
+        &mut self,
+        tx_oob: &ManaTxCompOob,
+        cqe_params: CqeParams,
+        done_len: usize,
+    ) -> Result<TxId, TxError> {
+        match tx_oob.cqe_hdr.cqe_type() {
+            CQE_TX_OKAY => {
+                self.stats.tx_packets.increment();
+            }
+            CQE_TX_GDMA_ERR => {
+                // Hardware hit an error with the packet coming from the Guest.
+                // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
+                self.stats.tx_errors.increment();
+                self.stats.tx_stuck.increment();
+                self.trace_tx(tracing::Level::ERROR, cqe_params, tx_oob, done_len);
+                // Return a TryRestart error to indicate that the queue needs to be restarted.
+                return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
+            }
+            CQE_TX_INVALID_OOB => {
+                // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
+                // This is somewhat common, usually due to encapsulation, and only affects the specific packet.
+                self.stats.tx_errors.increment();
+                self.trace_tx(tracing::Level::WARN, cqe_params, tx_oob, done_len);
+            }
+            ty => {
+                tracelimit::error_ratelimited!(
+                    ty,
+                    vendor_error = tx_oob.cqe_hdr.vendor_err(),
+                    "tx completion error"
+                );
+                self.stats.tx_errors.increment();
+            }
+        }
+        let Some(packet) = self.posted_tx.pop_front() else {
+            // A CQE arrived with no matching posted TX.
+            // We don't know how far to advance the tx_wq.
+            self.trace_tx(tracing::Level::ERROR, cqe_params, tx_oob, done_len);
+            panic!("TX CQE arrived with no matching posted TX");
+        };
+        self.tx_wq.advance_head(packet.wqe_len);
+        if packet.bounced_len_with_padding > 0 {
+            self.tx_bounce_buffer.free(packet.bounced_len_with_padding);
+        }
+        Ok(packet.id)
+    }
+
+    fn handle_tx(
+        &mut self,
+        segments: &[TxSegment],
+        guest_memory: &GuestMemory,
+    ) -> anyhow::Result<Option<PostedTx>> {
         let head = &segments[0];
         let TxSegmentType::Head(meta) = &head.ty else {
             unreachable!()
@@ -1132,10 +1224,17 @@ impl<T: DeviceBacking> ManaQueue<T> {
             .set_comp_tcp_csum(meta.flags.offload_tcp_checksum());
         oob.s_oob
             .set_comp_udp_csum(meta.flags.offload_udp_checksum());
-        if meta.flags.offload_tcp_checksum() {
+        if meta.flags.offload_tcp_checksum() || meta.flags.offload_udp_checksum() {
             oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
         }
-        let short_format = self.vp_offset <= 0xff;
+        if let Some(vlan) = &meta.vlan {
+            oob.l_oob.set_inject_vlan_pri_tag(true);
+            oob.l_oob.set_vlan_id(vlan.vlan_id());
+            oob.l_oob.set_pcp(vlan.priority());
+            oob.l_oob.set_dei(vlan.drop_eligible_indicator());
+            self.stats.tx_vlan_packets.increment();
+        }
+        let short_format = self.vp_offset <= 0xff && meta.vlan.is_none();
         if short_format {
             oob.s_oob.set_pkt_fmt(MANA_SHORT_PKT_FMT);
             oob.s_oob.set_short_vp_offset(self.vp_offset as u8);
@@ -1167,7 +1266,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             let mut next = buf.as_slice();
             for seg in segments {
                 let len = seg.len as usize;
-                self.guest_memory.read_to_atomic(seg.gpa, &next[..len])?;
+                guest_memory.read_to_atomic(seg.gpa, &next[..len])?;
                 next = &next[len..];
             }
             let buf = buf.reserve();
@@ -1180,17 +1279,18 @@ impl<T: DeviceBacking> ManaQueue<T> {
         } else {
             let (segments, segment_offset) = if meta.flags.offload_tcp_segmentation() {
                 // For LSO, GDMA requires that SGE0 should only contain the header.
-                let header_len = (meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16) as u32;
-                if header_len > PAGE_SIZE32 {
+                let header_len =
+                    u32::from(meta.l2_len) + u32::from(meta.l3_len) + u32::from(meta.l4_len);
+                let Some(header_len_u8) = u8::try_from(header_len).ok() else {
                     tracelimit::error_ratelimited!(
                         header_len,
-                        "Header larger than PAGE_SIZE unsupported"
+                        "Header larger than u8::MAX unsupported"
                     );
                     // Drop the packet
                     return Ok(None);
-                }
-                builder.set_client_oob_in_sgl(header_len as u8);
-                builder.set_gd_client_unit_data(meta.max_tcp_segment_size);
+                };
+                builder.set_client_oob_in_sgl(header_len_u8);
+                builder.set_gd_client_unit_data(meta.max_segment_size);
 
                 let (head_iova, used_segments, used_segments_len) =
                     if header_len > head.len || self.force_tx_header_bounce {
@@ -1212,7 +1312,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         let mut used_segments_len = 0;
                         for segment in segments {
                             let (this, rest) = data.split_at(data.len().min(segment.len as usize));
-                            self.guest_memory.read_to_atomic(segment.gpa, this)?;
+                            guest_memory.read_to_atomic(segment.gpa, this)?;
                             data = rest;
                             if this.len() < segment.len as usize {
                                 break;
@@ -1232,9 +1332,9 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         let ContiguousBufferInUse { gpa, .. } = copy.reserve();
                         (gpa, used_segments, used_segments_len)
                     } else if header_len < head.len {
-                        (self.guest_memory.iova(head.gpa).unwrap(), 0, 0)
+                        (guest_memory.iova(head.gpa).unwrap(), 0, 0)
                     } else {
-                        (self.guest_memory.iova(head.gpa).unwrap(), 1, header_len)
+                        (guest_memory.iova(head.gpa).unwrap(), 1, header_len)
                     };
 
                 // Drop the LSO packet if it only has a header segment.
@@ -1270,8 +1370,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 let mut segment_offset = segment_offset;
                 for tail in segments {
                     builder.push_sge(Sge {
-                        address: self
-                            .guest_memory
+                        address: guest_memory
                             .iova(tail.gpa.wrapping_add(segment_offset.into()))
                             .unwrap(),
                         mem_key: self.mem_key,
@@ -1282,7 +1381,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             } else {
                 let gpa0 = segments[0].gpa.wrapping_add(segment_offset.into());
                 let mut sge = Sge {
-                    address: self.guest_memory.iova(gpa0).unwrap(),
+                    address: guest_memory.iova(gpa0).unwrap(),
                     mem_key: self.mem_key,
                     size: segments[0].len.wrapping_sub(segment_offset),
                 };
@@ -1308,8 +1407,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                             // segment with the previous. The previous segment
                             // is not yet bounced, so bounce it now.
                             let mut copy = bounce_buffer.allocate(sge.size).unwrap();
-                            self.guest_memory
-                                .read_to_atomic(last_segment_gpa, copy.as_slice())?;
+                            guest_memory.read_to_atomic(last_segment_gpa, copy.as_slice())?;
                             let ContiguousBufferInUse { gpa, .. } = copy.reserve();
                             sge.address = gpa;
                             last_segment_bounced = true;
@@ -1317,8 +1415,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         if last_segment_bounced {
                             if let Some(mut copy) = bounce_buffer.try_extend(tail.len) {
                                 // Combine current segment with previous one using bounce buffer.
-                                self.guest_memory
-                                    .read_to_atomic(tail.gpa, copy.as_slice())?;
+                                guest_memory.read_to_atomic(tail.gpa, copy.as_slice())?;
                                 let ContiguousBufferInUse {
                                     len_with_padding, ..
                                 } = copy.reserve();
@@ -1343,7 +1440,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     }
 
                     sge = Sge {
-                        address: self.guest_memory.iova(tail.gpa).unwrap(),
+                        address: guest_memory.iova(tail.gpa).unwrap(),
                         mem_key: self.mem_key,
                         size: tail.len,
                     };
@@ -1492,6 +1589,15 @@ struct OutOfMemory;
 
 impl ContiguousBufferManager {
     pub fn new(dma_client: Arc<dyn DmaClient>, page_limit: u32) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            page_limit.is_power_of_two(),
+            anyhow::anyhow!("page_limit must be a power of two, {page_limit} is not.")
+        );
+        anyhow::ensure!(
+            PAGE_SIZE64 * Into::<u64>::into(page_limit) <= Into::<u64>::into(u32::MAX),
+            anyhow::anyhow!("{page_limit} will overflow the len field")
+        );
+
         let len = PAGE_SIZE32 * page_limit;
         let mem = dma_client.allocate_dma_buffer(len as usize)?;
         Ok(Self {
@@ -1524,5 +1630,35 @@ impl Inspect for ContiguousBufferManager {
         req.respond()
             .counter("split_headers", self.split_headers)
             .counter("failed_allocations", self.failed_allocations);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Result, anyhow, ensure};
+    use user_driver_emulated_mock::DeviceTestMemory;
+
+    #[test]
+    fn page_counts_powers_of_two_only() -> Result<()> {
+        for i in 1..35 {
+            let dtm = DeviceTestMemory::new(Into::<u64>::into(i) * 2, false, "test");
+            match ContiguousBufferManager::new(dtm.dma_client(), i) {
+                Ok(_) => {
+                    ensure!(
+                        i.is_power_of_two(),
+                        anyhow!("The CBM should only work for powers of 2")
+                    );
+                }
+                Err(_) => {
+                    ensure!(
+                        !i.is_power_of_two(),
+                        anyhow!("Powers of 2 should get CBMs, failed for {i} pages.")
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 }

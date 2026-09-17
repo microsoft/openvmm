@@ -6,7 +6,7 @@ name = "hypestv"
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
 diag_client.workspace = true
@@ -15,6 +15,7 @@ inspect.workspace = true
 kmsg.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+powershell_builder.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["wrap_help"] }

@@ -7,6 +7,7 @@
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
 use chipset_arc_mutex_device::services::PortIoInterceptServices;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use ide::DriveMedia;
@@ -23,20 +24,23 @@ use xtask_fuzz::fuzz_target;
 pub enum FuzzDriveMedia {
     HardDrive,
     OpticalDrive,
+    OpticalDriveEmpty,
 }
 
 impl FuzzDriveMedia {
     fn reify(self) -> DriveMedia {
-        // we don't  care about drive contents for fuzzing
         match self {
             FuzzDriveMedia::HardDrive => {
-                DriveMedia::hard_disk(disklayer_ram::ram_disk(0x100000 * 4, false).unwrap())
+                DriveMedia::hard_disk(disklayer_ram::ram_disk(64 * 512, false).unwrap())
             }
             FuzzDriveMedia::OpticalDrive => {
                 DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(
-                    SimpleScsiDvd::new(Some(disklayer_ram::ram_disk(0x100000 * 4, false).unwrap())),
+                    SimpleScsiDvd::new(Some(disklayer_ram::ram_disk(64 * 512, false).unwrap())),
                 ))))
             }
+            FuzzDriveMedia::OpticalDriveEmpty => DriveMedia::optical_disk(Arc::new(
+                AtapiScsiDisk::new(Arc::new(SimpleScsiDvd::new(None))),
+            )),
         }
     }
 }
@@ -104,10 +108,16 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
 
     // set a bus master base to avoid wasted cycles
     (ide_device.lock())
-        .pci_cfg_write(HeaderType00::BAR4.0, 0x1000)
+        .pci_cfg_write(
+            HeaderType00::BAR4.0,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x1000),
+        )
         .unwrap();
     (ide_device.lock())
-        .pci_cfg_write(HeaderType00::STATUS_COMMAND.0, 0x5)
+        .pci_cfg_write(
+            HeaderType00::STATUS_COMMAND.0,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x5),
+        )
         .unwrap();
 
     // remaining fuzzer input is used to drive device actions

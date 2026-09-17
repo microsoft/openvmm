@@ -7,17 +7,16 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-dev_snp_ohcl_tio_support = ["dep:sev_guest_device_tio"]
+dev_snp_ohcl_tio_support = ["dep:sev_guest_device_tio", "dep:tracing"]
 
-[dependencies]
-static_assertions.workspace = true
-zerocopy.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true, features = ["ioctl"] }
+static_assertions.workspace = true
 thiserror.workspace = true
+tracing = { workspace = true, optional = true }
 x86defs.workspace = true
+zerocopy.workspace = true
 sev_guest_device_tio = { workspace = true, optional = true }
-tracing.workspace = true
 
 [lints]
 workspace = true

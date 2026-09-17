@@ -61,25 +61,6 @@ impl CpuIo for MockCpu {
         todo!()
     }
 
-    fn signal_synic_event(
-        &self,
-        _vtl: hvdef::Vtl,
-        _connection_id: u32,
-        _flag: u16,
-    ) -> hvdef::HvResult<()> {
-        todo!()
-    }
-
-    fn post_synic_message(
-        &self,
-        _vtl: hvdef::Vtl,
-        _connection_id: u32,
-        _secure: bool,
-        _message: &[u8],
-    ) -> hvdef::HvResult<()> {
-        todo!()
-    }
-
     async fn read_mmio(&self, _vp: VpIndex, address: u64, _data: &mut [u8]) {
         panic!(
             "Attempt to read MMIO when test environment has no MMIO. address: {:x}",

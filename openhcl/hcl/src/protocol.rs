@@ -69,7 +69,9 @@ pub struct hcl_pfn_range_t {
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct hcl_cpu_context_x64 {
-    pub gps: [u64; 16],
+    // These are in the canonical order, _except_ it doesn't contain
+    // RSP--CR2 is stored where RSP would normally be.
+    pub gps_no_rsp: [u64; 16],
     pub fx_state: x86defs::xsave::Fxsave,
     pub reserved: [u8; 384],
 }
@@ -290,6 +292,24 @@ pub struct tdx_vp_context {
 
 const _: () = assert!(core::mem::offset_of!(tdx_vp_context, gpr_list) + 272 == 512);
 const _: () = assert!(size_of::<tdx_vp_context>() == 1024);
+
+#[repr(C)]
+pub struct snp_vp_context {
+    pub vmsa_tweak_bitmap: [u8; 64],
+    pub stimer0_config: u64,
+    pub stimer0_count: u64,
+    pub stimer0_programmed_ref_time: u64,
+    pub stimer0_flags: u32,
+    pub reserved: [u8; 932],
+}
+
+const _: () = assert!(size_of::<snp_vp_context>() == 1024);
+const _: () = assert!(core::mem::offset_of!(snp_vp_context, stimer0_config) == 64);
+const _: () = assert!(core::mem::offset_of!(snp_vp_context, stimer0_flags) == 88);
+
+pub const MSHV_VTL_SNP_STIMER0_CONFIG_VALID: u32 = 1 << 0;
+pub const MSHV_VTL_SNP_STIMER0_KERNEL_UPDATE: u32 = 1 << 1;
+pub const MSHV_VTL_SNP_STIMER0_EXPIRED: u32 = 1 << 2;
 
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]

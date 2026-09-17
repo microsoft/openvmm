@@ -34,6 +34,8 @@ use nvme_test::command_match::CommandMatchBuilder;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
+use pci_core::bus_range::AssignedBusRange;
+use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
@@ -222,10 +224,10 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        guest_mem,
-        msi_conn.target(),
+        &dma_target,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -241,7 +243,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     let cap: Cap = Cap::new().with_mqes_z(max_u16);
     device.set_mock_response_u64(Some((0, cap.into())));
 
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false, false).await;
     assert!(driver.is_ok());
 }
 
@@ -259,10 +261,10 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        guest_mem,
-        msi_conn.target(),
+        &dma_target,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -276,7 +278,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     // Setup mock response at offset 0
     let cap: Cap = Cap::new().with_mqes_z(0);
     device.set_mock_response_u64(Some((0, cap.into())));
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false, false).await;
 
     assert!(driver.is_err());
 }
@@ -315,10 +317,10 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let msi_conn = MsiConnection::new();
+    let dma_target = DmaTarget::new(AssignedBusRange::new(), 0, guest_mem.clone(), &msi_conn);
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        guest_mem.clone(),
-        msi_conn.target(),
+        &dma_target,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -335,12 +337,12 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
 
     if fail_at_driver_create {
         fail_alloc.store(true, Ordering::SeqCst);
-        let driver_result = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
+        let driver_result = NvmeDriver::new(&driver_source, CPU_COUNT, device, false, false).await;
         assert!(driver_result.is_err());
         return;
     }
 
-    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
@@ -462,7 +464,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
     let nvme = nvme_test::NvmeFaultController::new(
         &driver_source,
         guest_mem.clone(),
-        msi_conn.target(),
+        &msi_conn.target(),
         &mut ExternallyManagedMmioIntercepts,
         nvme_test::NvmeFaultControllerCaps {
             msix_count: MSIX_COUNT,
@@ -484,7 +486,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
         .await
         .unwrap();
     let device = NvmeTestEmulatedDevice::new(nvme, msi_conn, dma_client.clone());
-    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();

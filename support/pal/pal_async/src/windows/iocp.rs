@@ -47,8 +47,8 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
-use winapi::um::winbase::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
-use winapi::um::winbase::FILE_SKIP_SET_EVENT_ON_HANDLE;
+use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
+use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_SET_EVENT_ON_HANDLE;
 
 /// A single-threaded task pool backed by an IO completion port.
 pub type IocpPool = IoPool<IocpBackend>;
@@ -613,5 +613,10 @@ mod tests {
     #[test]
     fn overlapped_file_works() {
         IocpPool::run_with(executor_tests::windows::overlapped_file_tests)
+    }
+
+    #[test]
+    fn process_works() {
+        IocpPool::run_with(executor_tests::process_tests)
     }
 }

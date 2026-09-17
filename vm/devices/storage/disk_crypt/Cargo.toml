@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 disk_crypt_resources.workspace = true
 
-block_crypto.workspace = true
+crypto.workspace = true
 disk_backend.workspace = true
 guestmem.workspace = true
 inspect.workspace = true
@@ -22,6 +22,7 @@ thiserror.workspace = true
 [dev-dependencies]
 disklayer_ram.workspace = true
 pal_async.workspace = true
+storage_tests.workspace = true
 
 [lints]
 workspace = true

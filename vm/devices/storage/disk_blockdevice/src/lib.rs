@@ -12,9 +12,9 @@
 
 mod ioctl;
 mod nvme;
+pub mod resolver;
 
 use anyhow::Context;
-use async_trait::async_trait;
 use blocking::unblock;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -23,21 +23,17 @@ use disk_backend::pr::PersistentReservation;
 use disk_backend::pr::ReservationCapabilities;
 use disk_backend::pr::ReservationReport;
 use disk_backend::pr::ReservationType;
-use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedDisk;
 use fs_err::PathExt;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use io_uring::opcode;
 use io_uring::types;
-use io_uring::types::RwFlags;
-use mesh::MeshPayload;
 use nvme::check_nvme_status;
 use nvme_spec::nvm;
 use pal::unix::affinity;
-use pal_uring::Initiate;
-use pal_uring::IoInitiator;
+use pal_async::driver::Driver;
+use scsi_buffers::BounceBuffer;
 use scsi_buffers::BounceBufferTracker;
 use scsi_buffers::RequestBuffers;
 use std::fmt::Debug;
@@ -54,86 +50,46 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 use uevent::CallbackHandle;
 use uevent::UeventListener;
-use vm_resource::AsyncResolveResource;
-use vm_resource::ResourceId;
-use vm_resource::ResourceResolver;
-use vm_resource::kind::DiskHandleKind;
 
-pub struct BlockDeviceResolver {
-    uring: Arc<dyn Initiate>,
-    uevent_listener: Option<Arc<UeventListener>>,
-    bounce_buffer_tracker: Arc<BounceBufferTracker>,
-    always_bounce: bool,
-}
-
-impl BlockDeviceResolver {
-    pub fn new(
-        uring: Arc<dyn Initiate>,
-        uevent_listener: Option<Arc<UeventListener>>,
-        bounce_buffer_tracker: Arc<BounceBufferTracker>,
-        always_bounce: bool,
-    ) -> Self {
-        Self {
-            uring,
-            uevent_listener,
-            bounce_buffer_tracker,
-            always_bounce,
-        }
-    }
-}
-
-#[derive(MeshPayload)]
-pub struct OpenBlockDeviceConfig {
-    pub file: fs::File,
-}
-
-impl ResourceId<DiskHandleKind> for OpenBlockDeviceConfig {
-    const ID: &'static str = "block";
-}
-
-#[derive(Debug, Error)]
-pub enum ResolveDiskError {
-    #[error("failed to create new device")]
-    NewDevice(#[source] NewDeviceError),
-    #[error("invalid disk")]
-    InvalidDisk(#[source] disk_backend::InvalidDisk),
-}
-
-#[async_trait]
-impl AsyncResolveResource<DiskHandleKind, OpenBlockDeviceConfig> for BlockDeviceResolver {
-    type Output = ResolvedDisk;
-    type Error = ResolveDiskError;
-
-    async fn resolve(
-        &self,
-        _resolver: &ResourceResolver,
-        rsrc: OpenBlockDeviceConfig,
-        input: ResolveDiskParameters<'_>,
-    ) -> Result<Self::Output, Self::Error> {
-        let disk = BlockDevice::new(
-            rsrc.file,
-            input.read_only,
-            self.uring.clone(),
-            self.uevent_listener.as_deref(),
-            self.bounce_buffer_tracker.clone(),
-            self.always_bounce,
-        )
-        .await
-        .map_err(ResolveDiskError::NewDevice)?;
-        ResolvedDisk::new(disk).map_err(ResolveDiskError::InvalidDisk)
-    }
-}
-
-/// Opens a file for use with [`BlockDevice`] or [`OpenBlockDeviceConfig`].
-pub fn open_file_for_block(path: &Path, read_only: bool) -> std::io::Result<fs::File> {
+/// Opens a file for use with [`BlockDevice`] or
+/// [`disk_backend_resources::BlockDeviceDiskHandle`].
+pub fn open_file_for_block(
+    path: &Path,
+    read_only: bool,
+    direct: bool,
+) -> std::io::Result<fs::File> {
     use std::os::unix::prelude::*;
 
-    tracing::debug!(?path, read_only, "open_file_for_block");
-    fs::OpenOptions::new()
-        .read(true)
-        .write(!read_only)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
+    tracing::debug!(?path, read_only, direct, "open_file_for_block");
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true).write(!read_only);
+    if direct {
+        opts.custom_flags(libc::O_DIRECT);
+    }
+    opts.open(path)
+}
+
+/// A bounce buffer that may or may not be tracked by a
+/// [`BounceBufferTracker`].
+enum MaybeBounceBuffer<'a> {
+    Tracked(scsi_buffers::TrackedBounceBuffer<'a>),
+    Untracked(BounceBuffer),
+}
+
+impl MaybeBounceBuffer<'_> {
+    fn io_vecs(&self) -> &[scsi_buffers::IoBuffer<'_>] {
+        match self {
+            Self::Tracked(t) => t.buffer.io_vecs(),
+            Self::Untracked(b) => b.io_vecs(),
+        }
+    }
+
+    fn as_mut_bytes(&mut self) -> &mut [u8] {
+        match self {
+            Self::Tracked(t) => t.buffer.as_mut_bytes(),
+            Self::Untracked(b) => b.as_mut_bytes(),
+        }
+    }
 }
 
 /// A storvsp disk backed by a raw block device.
@@ -148,7 +104,7 @@ pub struct BlockDevice {
     optimal_unmap_sectors: u32,
     read_only: bool,
     #[inspect(skip)]
-    uring: Arc<dyn Initiate>,
+    driver: Box<dyn Driver>,
     #[inspect(flatten)]
     device_type: DeviceType,
     supports_pr: bool,
@@ -158,7 +114,7 @@ pub struct BlockDevice {
     resize_epoch: Arc<ResizeEpoch>,
     resized_acked: AtomicU64,
     #[inspect(skip)]
-    bounce_buffer_tracker: Arc<BounceBufferTracker>,
+    bounce_buffer_tracker: Option<Arc<BounceBufferTracker>>,
     always_bounce: bool,
 }
 
@@ -233,6 +189,8 @@ pub enum NewDeviceError {
     InvalidFileType,
     #[error("invalid disk size {0:#x}")]
     InvalidDiskSize(u64),
+    #[error("driver does not support io-uring")]
+    NoIoUring,
 }
 
 impl BlockDevice {
@@ -241,22 +199,23 @@ impl BlockDevice {
     /// # Arguments
     /// * `file` - The backing device opened for raw access.
     /// * `read_only` - Indicates whether the device is opened for read-only access.
-    /// * `uring` - The IO uring to use for issuing IOs.
+    /// * `driver` - The async driver to use for issuing IOs (must support io-uring).
     /// * `always_bounce` - Whether to always use bounce buffers for IOs, even for those that are aligned.
     pub async fn new(
         file: fs::File,
         read_only: bool,
-        uring: Arc<dyn Initiate>,
+        driver: impl Driver,
         uevent_listener: Option<&UeventListener>,
-        bounce_buffer_tracker: Arc<BounceBufferTracker>,
+        bounce_buffer_tracker: Option<Arc<BounceBufferTracker>>,
         always_bounce: bool,
     ) -> Result<BlockDevice, NewDeviceError> {
-        let initiator = uring.initiator();
-        assert!(initiator.probe(opcode::Read::CODE));
-        assert!(initiator.probe(opcode::Write::CODE));
-        assert!(initiator.probe(opcode::Readv::CODE));
-        assert!(initiator.probe(opcode::Writev::CODE));
-        assert!(initiator.probe(opcode::Fsync::CODE));
+        if !driver.io_uring_probe(opcode::Read::CODE) {
+            return Err(NewDeviceError::NoIoUring);
+        }
+        assert!(driver.io_uring_probe(opcode::Write::CODE));
+        assert!(driver.io_uring_probe(opcode::Readv::CODE));
+        assert!(driver.io_uring_probe(opcode::Writev::CODE));
+        assert!(driver.io_uring_probe(opcode::Fsync::CODE));
 
         let metadata = file.metadata().map_err(DiskError::Io)?;
 
@@ -286,7 +245,12 @@ impl BlockDevice {
             DeviceMetadata::from_block_device(&file, major, minor)
                 .map_err(NewDeviceError::DeviceMetadata)?
         } else if metadata.file_type().is_file() {
-            DeviceMetadata::from_file(&metadata).map_err(NewDeviceError::DeviceMetadata)?
+            // Discard on a file is serviced via `fallocate(PUNCH_HOLE)`, issued
+            // asynchronously through io-uring. Only offer it when the file is
+            // writable and the ring supports the FALLOCATE opcode (Linux 5.6+).
+            let allow_discard = !read_only && driver.io_uring_probe(opcode::Fallocate::CODE);
+            DeviceMetadata::from_file(&file, &metadata, allow_discard)
+                .map_err(NewDeviceError::DeviceMetadata)?
         } else {
             return Err(NewDeviceError::InvalidFileType);
         };
@@ -305,7 +269,7 @@ impl BlockDevice {
             sector_count: sector_count.into(),
             optimal_unmap_sectors: unmap_granularity,
             read_only,
-            uring,
+            driver: Box::new(driver),
             device_type: devmeta.device_type,
             supports_pr: devmeta.supports_pr,
             supports_fua: devmeta.fua,
@@ -319,8 +283,18 @@ impl BlockDevice {
         Ok(device)
     }
 
-    fn initiator(&self) -> &IoInitiator {
-        self.uring.initiator()
+    /// Use a box to avoid embedding a large `TrackedBounceBuffer` directly in
+    /// the calling future.
+    async fn acquire_bounce_buffer(&self, size: usize) -> Box<MaybeBounceBuffer<'_>> {
+        Box::new(if let Some(tracker) = &self.bounce_buffer_tracker {
+            MaybeBounceBuffer::Tracked(
+                tracker
+                    .acquire_bounce_buffers(size, affinity::get_cpu_number() as usize)
+                    .await,
+            )
+        } else {
+            MaybeBounceBuffer::Untracked(BounceBuffer::new(size))
+        })
     }
 
     fn handle_resize(&self) {
@@ -371,6 +345,36 @@ impl BlockDevice {
             }
         }
         DiskError::Io(err)
+    }
+}
+
+/// Probes whether the filesystem backing `file` supports hole punching via
+/// `fallocate(FALLOC_FL_PUNCH_HOLE)`, used to service guest discard/unmap.
+///
+/// This is non-destructive: it punches a one-byte hole at the end of the file
+/// with `FALLOC_FL_KEEP_SIZE`, so the file size and existing data are
+/// unchanged. Filesystems that support the operation return success;
+/// unsupported ones return `EOPNOTSUPP` (or `ENOSYS` on ancient kernels).
+fn probe_file_punch_hole(file: &fs::File, file_size: u64) -> bool {
+    // SAFETY: FFI call with a valid fd owned by `file`. Punching past the end
+    // of the file with `FALLOC_FL_KEEP_SIZE` touches no existing data.
+    let ret = unsafe {
+        libc::fallocate(
+            file.as_raw_fd(),
+            libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+            file_size as libc::off_t,
+            1,
+        )
+    };
+    if ret == 0 {
+        true
+    } else {
+        let err = std::io::Error::last_os_error();
+        tracing::debug!(
+            error = &err as &dyn std::error::Error,
+            "file does not support punch-hole discard; unmap will be a no-op"
+        );
+        false
     }
 }
 
@@ -453,16 +457,30 @@ impl DeviceMetadata {
         .validate()
     }
 
-    fn from_file(metadata: &fs::Metadata) -> anyhow::Result<Self> {
+    fn from_file(
+        file: &fs::File,
+        metadata: &fs::Metadata,
+        allow_discard: bool,
+    ) -> anyhow::Result<Self> {
         let logical_block_size = 512;
+        let physical_block_size = metadata.blksize() as u32;
+        // Advertise discard support only when the backing filesystem can
+        // actually punch holes. Use the filesystem block size as the optimal
+        // unmap granularity, since `fallocate(PUNCH_HOLE)` only deallocates
+        // whole blocks.
+        let discard_granularity = if allow_discard && probe_file_punch_hole(file, metadata.size()) {
+            physical_block_size
+        } else {
+            0
+        };
         Self {
             device_type: DeviceType::File {
                 sector_count: metadata.len() / logical_block_size as u64,
             },
             disk_size: metadata.size(),
             logical_block_size,
-            physical_block_size: metadata.blksize() as u32,
-            discard_granularity: 0,
+            physical_block_size,
+            discard_granularity,
             supports_pr: false,
             fua: false,
         }
@@ -554,49 +572,46 @@ impl DiskIo for BlockDevice {
 
         let mut bounce_buffer = None;
         let locked;
-        let should_bounce = self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
+        // Memory behind an emulated IOMMU cannot be locked for zero-copy IO, so
+        // fall back to bounce buffering in that case.
+        let should_bounce = self.always_bounce
+            || !buffers.is_aligned(self.sector_size() as usize)
+            || !buffers.guest_memory().supports_locking();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(true)?;
             locked.io_vecs()
         } else {
-            tracing::trace!("double buffering IO");
+            tracing::trace!("bounce buffering IO");
 
             bounce_buffer
-                .insert(
-                    self.bounce_buffer_tracker
-                        .acquire_bounce_buffers(buffers.len(), affinity::get_cpu_number() as usize)
-                        .await,
-                )
-                .buffer
+                .insert(self.acquire_bounce_buffer(buffers.len()).await)
                 .io_vecs()
         };
 
-        // SAFETY: the buffers for the IO are this stack, and they will be
-        // kept alive for the duration of the IO since we immediately call
-        // await on the IO.
-        let (r, _) = unsafe {
-            self.initiator().issue_io((), |_| {
+        // SAFETY: `io_vecs` and the underlying locked pages are locals
+        // in this `async fn`--they are part of the same state machine as
+        // the returned future and will not be freed before it completes
+        // or is dropped (which aborts).
+        let bytes_read = unsafe {
+            self.driver.io_uring_submit(
                 opcode::Readv::new(
                     types::Fd(self.file.as_raw_fd()),
                     io_vecs.as_ptr().cast(),
                     io_vecs.len() as u32,
                 )
                 .offset((sector * self.sector_size() as u64) as _)
-                .build()
-            })
+                .build(),
+            )
         }
-        .await;
-
-        let bytes_read = r.map_err(|err| self.map_io_error(err))?;
+        .await
+        .map_err(|err| self.map_io_error(err))?;
         tracing::trace!(bytes_read, "read_vectored");
         if bytes_read != io_size as i32 {
             return Err(DiskError::IllegalBlock);
         }
 
         if let Some(mut bounce_buffer) = bounce_buffer {
-            buffers
-                .writer()
-                .write(bounce_buffer.buffer.as_mut_bytes())?;
+            buffers.writer().write(bounce_buffer.as_mut_bytes())?;
         }
         Ok(())
     }
@@ -619,42 +634,39 @@ impl DiskIo for BlockDevice {
 
         let mut bounce_buffer;
         let locked;
-        let should_bounce = self.always_bounce || !buffers.is_aligned(self.sector_size() as usize);
+        // Memory behind an emulated IOMMU cannot be locked for zero-copy IO, so
+        // fall back to bounce buffering in that case.
+        let should_bounce = self.always_bounce
+            || !buffers.is_aligned(self.sector_size() as usize)
+            || !buffers.guest_memory().supports_locking();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(false)?;
             locked.io_vecs()
         } else {
-            tracing::trace!("double buffering IO");
-            bounce_buffer = self
-                .bounce_buffer_tracker
-                .acquire_bounce_buffers(buffers.len(), affinity::get_cpu_number() as usize)
-                .await;
-            buffers.reader().read(bounce_buffer.buffer.as_mut_bytes())?;
-            bounce_buffer.buffer.io_vecs()
+            tracing::trace!("bounce buffering IO");
+            bounce_buffer = self.acquire_bounce_buffer(buffers.len()).await;
+            buffers.reader().read(bounce_buffer.as_mut_bytes())?;
+            bounce_buffer.io_vecs()
         };
 
-        // Documented in Linux manual page: https://man7.org/linux/man-pages/man2/readv.2.html
-        // It's only defined in linux_gnu but not in linux_musl. So we have to define it.
-        const RWF_DSYNC: RwFlags = 0x00000002;
-
-        // SAFETY: the buffers for the IO are this stack, and they will be
-        // kept alive for the duration of the IO since we immediately call
-        // await on the IO.
-        let (r, _) = unsafe {
-            self.initiator().issue_io((), |_| {
+        // SAFETY: `io_vecs` and the underlying locked pages are locals
+        // in this `async fn`--they are part of the same state machine as
+        // the returned future and will not be freed before it completes
+        // or is dropped (which aborts).
+        let bytes_written = unsafe {
+            self.driver.io_uring_submit(
                 opcode::Writev::new(
                     types::Fd(self.file.as_raw_fd()),
                     io_vecs.as_ptr().cast::<libc::iovec>(),
                     io_vecs.len() as _,
                 )
                 .offset((sector * self.sector_size() as u64) as _)
-                .rw_flags(if fua { RWF_DSYNC } else { 0 })
-                .build()
-            })
+                .rw_flags(if fua { libc::RWF_DSYNC } else { 0 })
+                .build(),
+            )
         }
-        .await;
-
-        let bytes_written = r.map_err(|err| self.map_io_error(err))?;
+        .await
+        .map_err(|err| self.map_io_error(err))?;
         tracing::trace!(bytes_written, "write_vectored");
         if bytes_written != io_size as i32 {
             return Err(DiskError::IllegalBlock);
@@ -666,14 +678,11 @@ impl DiskIo for BlockDevice {
     async fn sync_cache(&self) -> Result<(), DiskError> {
         // SAFETY: No data buffers.
         unsafe {
-            self.initiator()
-                .issue_io((), |_| {
-                    opcode::Fsync::new(types::Fd(self.file.as_raw_fd())).build()
-                })
-                .await
-                .0
-                .map_err(|err| self.map_io_error(err))?;
+            self.driver
+                .io_uring_submit(opcode::Fsync::new(types::Fd(self.file.as_raw_fd())).build())
         }
+        .await
+        .map_err(|err| self.map_io_error(err))?;
         Ok(())
     }
 
@@ -694,23 +703,79 @@ impl DiskIo for BlockDevice {
         sector_count: u64,
         _block_level_only: bool,
     ) -> Result<(), DiskError> {
-        let file = self.file.clone();
+        // Reject out-of-range requests up front: `fallocate` silently succeeds
+        // past the end of the file, so the bounds cannot be inferred from its
+        // result (as they can for reads and writes).
+        if sector_offset
+            .checked_add(sector_count)
+            .is_none_or(|end| end > self.sector_count())
+        {
+            return Err(DiskError::IllegalBlock);
+        }
+
+        // When unmap is unsupported (e.g. a filesystem that cannot punch holes,
+        // or a block device that reports no discard granularity), report success
+        // and treat unmap as a no-op.
+        if self.optimal_unmap_sectors == 0 {
+            return Ok(());
+        }
+
         let file_offset = sector_offset << self.sector_shift;
         let length = sector_count << self.sector_shift;
-        tracing::debug!(file = ?file, file_offset, length, "unmap_async");
-        match unblock(move || ioctl::discard(&file, file_offset, length)).await {
-            Ok(()) => {}
-            Err(_) if sector_offset + sector_count > self.sector_count() => {
-                return Err(DiskError::IllegalBlock);
+
+        match self.device_type {
+            // Files can't service BLKDISCARD; punch a hole via io-uring instead,
+            // which deallocates the range and makes it read back as zero. Every
+            // error must be propagated: `unmap_behavior` reports
+            // `UnmapBehavior::Zeroes`, so the guest may skip zeroing this range
+            // itself. Swallowing a failure would leave stale, non-zero data
+            // while telling the guest it reads as zero.
+            DeviceType::File { .. } => {
+                // SAFETY: fallocate references no data buffers.
+                unsafe {
+                    self.driver.io_uring_submit(
+                        opcode::Fallocate::new(types::Fd(self.file.as_raw_fd()), length)
+                            .offset(file_offset)
+                            .mode(libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE)
+                            .build(),
+                    )
+                }
+                .await
+                .map_err(|err| self.map_io_error(err))?;
+                Ok(())
             }
-            Err(err) => return Err(self.map_io_error(err)),
+            // Block devices discard via the BLKDISCARD ioctl on a blocking thread.
+            _ => {
+                let file = self.file.clone();
+                match unblock(move || ioctl::discard(&file, file_offset, length)).await {
+                    Ok(()) => Ok(()),
+                    // The device advertised discard support but can't actually
+                    // service the ioctl; treat unmap as a best-effort no-op.
+                    Err(err)
+                        if matches!(
+                            err.raw_os_error(),
+                            Some(libc::ENOTTY | libc::EOPNOTSUPP | libc::ENOSYS)
+                        ) =>
+                    {
+                        tracing::debug!(
+                            error = &err as &dyn std::error::Error,
+                            "discard not supported; ignoring"
+                        );
+                        Ok(())
+                    }
+                    Err(err) => Err(self.map_io_error(err)),
+                }
+            }
         }
-        Ok(())
     }
 
     fn unmap_behavior(&self) -> UnmapBehavior {
         if self.optimal_unmap_sectors == 0 {
             UnmapBehavior::Ignored
+        } else if matches!(self.device_type, DeviceType::File { .. }) {
+            // `fallocate(PUNCH_HOLE)` deterministically zeroes the range: reads
+            // of a punched hole return zeroes.
+            UnmapBehavior::Zeroes
         } else {
             UnmapBehavior::Unspecified
         }
@@ -832,7 +897,9 @@ mod tests {
     use once_cell::sync::OnceCell;
     use pal_async::async_test;
     use pal_uring::IoUringPool;
+    use pal_uring::PoolClient;
     use scsi_buffers::OwnedRequestBuffers;
+    use test_with_tracing::test;
 
     fn is_buggy_kernel() -> bool {
         // 5.13 kernels seem to have a bug with io_uring where tests hang.
@@ -848,34 +915,75 @@ mod tests {
         output.contains("5.13")
     }
 
-    fn new_block_device() -> Result<BlockDevice, NewDeviceError> {
+    fn new_block_device_from(file: fs::File) -> Result<BlockDevice, NewDeviceError> {
         // TODO: switch to std::sync::OnceLock once `get_or_try_init` is stable
-        static POOL: OnceCell<Arc<IoInitiator>> = OnceCell::new();
+        static POOL: OnceCell<PoolClient> = OnceCell::new();
 
-        let initiator = POOL
+        let client = POOL
             .get_or_try_init(|| {
                 let pool = IoUringPool::new("test", 16)?;
-                let initiator = pool.client().initiator().clone();
+                let client = pool.client().clone();
                 std::thread::spawn(|| pool.run());
-                Ok(Arc::new(initiator))
+                Ok(client)
             })
             .map_err(|err| NewDeviceError::IoctlError(DiskError::Io(err)))?;
 
-        let bounce_buffer_tracker = Arc::new(BounceBufferTracker::new(
-            2048,
-            affinity::num_procs() as usize,
-        ));
-
-        let test_file = tempfile::tempfile().unwrap();
-        test_file.set_len(1024 * 64).unwrap();
         block_on(BlockDevice::new(
-            test_file.try_clone().unwrap(),
+            file,
             false,
-            initiator.clone(),
+            client.initiator().clone(),
             None,
-            bounce_buffer_tracker,
+            None,
             false,
         ))
+    }
+
+    fn new_block_device() -> Result<BlockDevice, NewDeviceError> {
+        let test_file = tempfile::tempfile().unwrap();
+        test_file.set_len(1024 * 64).unwrap();
+        new_block_device_from(test_file)
+    }
+
+    /// A loop device over a temporary file, detached when dropped.
+    ///
+    /// Attaching one requires `CAP_SYS_ADMIN`, which is why the test using this
+    /// is ignored by default.
+    struct LoopDevice {
+        path: String,
+        _backing: tempfile::NamedTempFile,
+    }
+
+    impl LoopDevice {
+        fn new(size: u64) -> Self {
+            let backing = tempfile::NamedTempFile::new().unwrap();
+            backing.as_file().set_len(size).unwrap();
+            let output = std::process::Command::new("losetup")
+                .arg("--find")
+                .arg("--show")
+                .arg(backing.path())
+                .output()
+                .expect("losetup should be installed");
+            assert!(
+                output.status.success(),
+                "losetup failed (needs root): {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Self {
+                path: String::from_utf8(output.stdout).unwrap().trim().to_owned(),
+                _backing: backing,
+            }
+        }
+    }
+
+    impl Drop for LoopDevice {
+        fn drop(&mut self) {
+            // Detach on the way out even if the test panicked, so that loop
+            // devices are not leaked.
+            let _ = std::process::Command::new("losetup")
+                .arg("-d")
+                .arg(&self.path)
+                .status();
+        }
     }
 
     macro_rules! get_block_device_or_skip {
@@ -898,6 +1006,45 @@ mod tests {
                 Err(err) => panic!("{}", err),
             }
         };
+    }
+
+    /// The shared sector-range conformance suite.
+    ///
+    /// This exercises the `DeviceType::File` path, where the kernel does not
+    /// enforce bounds and the backend's own checks are the only thing stopping
+    /// a write past the end from extending the file. See
+    /// [`sector_range_conformance_loop_device`] for the other path.
+    #[async_test]
+    async fn sector_range_conformance() {
+        let disk = disk_backend::Disk::new(get_block_device_or_skip!()).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    /// The same suite over a real block device.
+    ///
+    /// This is the case the tempfile path cannot cover. For a block device the
+    /// kernel enforces the bounds and this backend delegates to it, rather than
+    /// checking the range itself, so it is the delegation that is under test
+    /// here.
+    ///
+    /// Attaching a loop device needs `CAP_SYS_ADMIN`, so this is ignored by
+    /// default. To run it:
+    ///
+    /// ```text
+    /// sudo -E $(which cargo) nextest run -p disk_blockdevice \
+    ///     --run-ignored all -E 'test(loop_device)'
+    /// ```
+    #[async_test]
+    #[ignore = "needs root to attach a loop device"]
+    async fn sector_range_conformance_loop_device() {
+        let loop_device = LoopDevice::new(1024 * 1024);
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&loop_device.path)
+            .unwrap();
+        let disk = disk_backend::Disk::new(new_block_device_from(file).unwrap()).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
     }
 
     async fn run_async_disk_io(fua: bool) {
@@ -1000,5 +1147,51 @@ mod tests {
             Err(DiskError::IllegalBlock) => {}
             r => panic!("unexpected result: {:?}", r),
         }
+    }
+
+    #[async_test]
+    async fn test_unmap_file_punch_hole() {
+        let disk = get_block_device_or_skip!();
+
+        // A writable file-backed device should advertise discard support via
+        // punch-hole and report that unmapped ranges read back as zero.
+        if disk.optimal_unmap_sectors() == 0 {
+            println!("Test case skipped (filesystem does not support punch hole)");
+            return;
+        }
+        assert_eq!(disk.unmap_behavior(), UnmapBehavior::Zeroes);
+
+        let gm = GuestMemory::allocate(0x2000);
+        gm.write_at(0, &vec![0xcdu8; 0x2000]).unwrap();
+
+        // Write two pages of non-zero data.
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, 0x2000, false).buffer(&gm),
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        disk.sync_cache().await.unwrap();
+
+        // Unmap the first page and read both pages back.
+        disk.unmap(0, 0x1000 >> disk.sector_shift, false)
+            .await
+            .unwrap();
+
+        let read = OwnedRequestBuffers::linear(0, 0x2000, true);
+        disk.read_vectored(&read.buffer(&gm), 0).await.unwrap();
+
+        let mut buf = vec![0xffu8; 0x2000];
+        gm.read_at(0, &mut buf).unwrap();
+        // Punched range reads as zero; the untouched page keeps its data.
+        assert!(
+            buf[..0x1000].iter().all(|&b| b == 0),
+            "unmapped range not zeroed"
+        );
+        assert!(
+            buf[0x1000..].iter().all(|&b| b == 0xcd),
+            "second page corrupted"
+        );
     }
 }

@@ -2031,7 +2031,6 @@ fn create_sealed_key_blob_v2_with_real_data(
     sealed_data
 }
 
-
 // cargo test -p cvmutil test_srk_template_generation
 // cargo test -p cvmutil test_platform_unique_value
 #[cfg(test)]

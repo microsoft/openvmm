@@ -99,7 +99,7 @@ struct TioGuestRequestIoctl {
 /// Message type IDs for the `TIO_GUEST_REQUEST` ioctl.
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
 #[repr(u64)]
-#[allow(clippy::enum_variant_names)]
+#[expect(clippy::enum_variant_names)]
 pub enum TioGuestMessageId {
     /// `TIO_MSG_TDI_INFO_REQ`
     TdiInfoReq = 19,

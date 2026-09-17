@@ -9,6 +9,11 @@ to hold these release branches to the highest quality standards. The OpenVMM
 maintainers will gradually slow the rate of churn into these branches as we get
 closer to a close date.
 
+```admonish note title="See also"
+[Security Releases](security_releases.md) describes private reporting and
+coordinated disclosure for fixes that cannot be developed publicly.
+```
+
 > **Note:** Some older release branches use the format `release/<YYMM>` without
 > the major and minor version numbers (e.g., `release/2411`, `release/2505`).
 
@@ -42,6 +47,8 @@ We track the state of candidates for a given release by tagging the PRs with the
   * N.B.: A maintainer will _remove_ this tag if the fix is not accepted into the release.
 * `backported_<RELEASE>`: This PR (to `main`) has been cherry-picked to the release branch.
 
+The [`repo_support/relabel_backported.py`](https://github.com/microsoft/openvmm/blob/main/repo_support/relabel_backported.py) script can be used to automatically transition PRs from `backport_<RELEASE>` to `backported_<RELEASE>` once they have been cherry-picked to the release branch.
+
 #### Seeking Approval for Backport
 
 To seek approval to include a change in a release branch, follow these steps:
@@ -67,12 +74,13 @@ When creating a backport PR to a release branch:
   
 ## Existing Release Branches
 
-| Release          | Phase              | Notes                                                                |
-| ---------------- | ------------------ | -------------------------------------------------------------------- |
-| release/2411     | Out of service     |                                                                      |
-| release/2505     | Servicing          | Supports runtime servicing from release/2411.                        |
-| release/1.7.2511 | Ask Mode           | Supports runtime servicing from release/2411 and release/2505.       |
-| _tbd, in main_   | Active Development | Supports runtime servicing from release/2411 and release/2505.       |
+| Release          | Phase              | Notes                                                                                |
+| ---------------- | ------------------ | ------------------------------------------------------------------------------------ |
+| release/2411     | Out of service     |                                                                                      |
+| release/2505     | Out of service     | Supports runtime servicing from release/2411.                                        |
+| release/1.7.2511 | Servicing          | Supports runtime servicing from release/2411 and release/2505.                       |
+| release/1.8.2607 | Ask Mode           | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511.    |
+| _tbd, in main_   | Active Development | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511.    |
 
 ## Taking a Dependency on a Release
 

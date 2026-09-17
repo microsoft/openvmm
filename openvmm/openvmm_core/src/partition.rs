@@ -17,13 +17,12 @@ use guestmem::DoorbellRegistration;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
-use memory_range::MemoryRange;
 use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::sync::Arc;
 #[cfg(guest_arch = "aarch64")]
 use virt::Aarch64Partition as ArchPartition;
-use virt::PageVisibility;
+use virt::InitialPageImport;
 use virt::Partition;
 use virt::PartitionAccessState;
 use virt::PartitionCapabilities;
@@ -31,7 +30,6 @@ use virt::PartitionMemoryMap;
 use virt::PartitionMemoryMapper;
 use virt::Processor;
 use virt::StopVp;
-use virt::Synic;
 use virt::VpHaltReason;
 #[cfg(guest_arch = "x86_64")]
 use virt::X86Partition as ArchPartition;
@@ -56,7 +54,7 @@ use vmm_core::partition_unit::VmPartition;
 use vmm_core::partition_unit::VpRunner;
 
 /// A base partition, with methods needed at rutnime along with methods to initialize the vm.
-pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
+pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets a line set target to trigger local APIC LINTs.
     ///
     /// The line number is the VP index times 2, plus the LINT number (0 or 1).
@@ -71,6 +69,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
 
     /// Gets the [`PartitionMemoryMap`] interface for `vtl`.
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap>;
+
+    /// Gets the host-access interface, if the partition requires it.
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>>;
 
     /// Requests an MSI be delivered to `vtl`.
     #[cfg(guest_arch = "x86_64")]
@@ -91,7 +92,10 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
     ) -> Option<Arc<dyn DoorbellRegistration>>;
 
     /// Gets the [`SignalMsi`] interface for a particular VTL.
-    fn into_signal_msi(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
+
+    /// Gets the irqfd routing interface, if supported.
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>>;
 
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
@@ -105,6 +109,10 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
     /// Returns the reference time source.
     fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
+    /// Returns the partition's synic port access, or an error if the
+    /// backend cannot support synic in its current configuration.
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>>;
+
     /// Gets an interface to support downcasting to specific partition types.
     ///
     /// TODO: remove this.
@@ -117,8 +125,8 @@ pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
     fn restore(&self, state: VmSavedState) -> anyhow::Result<()>;
     fn reset(&self) -> anyhow::Result<()>;
     fn scrub_vtl(&self, vtl: Vtl) -> anyhow::Result<()>;
-    fn accept_initial_pages(&self, pages: Vec<(MemoryRange, PageVisibility)>)
-    -> anyhow::Result<()>;
+    fn accept_initial_pages(&self, pages: Vec<InitialPageImport>) -> anyhow::Result<()>;
+    fn guest_os_id(&self) -> u64;
 }
 
 impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
@@ -153,20 +161,31 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
         Ok(())
     }
 
-    fn accept_initial_pages(
-        &self,
-        pages: Vec<(MemoryRange, PageVisibility)>,
-    ) -> anyhow::Result<()> {
-        self.supports_initial_accept_pages()
-            .context("accept pages not supported")?
+    fn accept_initial_pages(&self, pages: Vec<InitialPageImport>) -> anyhow::Result<()> {
+        self.supports_initial_page_acceptance()
+            .context("initial page import finalization not supported")?
             .accept_initial_pages(&pages)?;
         Ok(())
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn guest_os_id(&self) -> u64 {
+        self.access_state(Vtl::Vtl0)
+            .hypercall()
+            .map_or(0, |msrs| msrs.guest_os_id)
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    fn guest_os_id(&self) -> u64 {
+        // TODO: implement guest OS ID for aarch64 once there is
+        // an equivalent to HV_X64_MSR_GUEST_OS_ID.
+        0
     }
 }
 
 impl<T> HvlitePartition for T
 where
-    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + Synic,
+    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + PartitionAccessState,
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
@@ -178,11 +197,19 @@ where
     }
 
     fn into_vm_partition(self: Arc<Self>) -> WrappedPartition {
-        WrappedPartition(self)
+        let initial_vp_state_source = Partition::initial_vp_state_source(self.as_ref());
+        WrappedPartition {
+            partition: self,
+            initial_vp_state_source,
+        }
     }
 
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap> {
         self.memory_mapper(vtl)
+    }
+
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>> {
+        PartitionMemoryMapper::host_access(self)
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -207,8 +234,12 @@ where
         self.doorbell_registration(minimum_vtl)
     }
 
-    fn into_signal_msi(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         self.as_signal_msi(minimum_vtl)
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Partition::irqfd(self)
     }
 
     fn supports_virtual_devices(&self) -> bool {
@@ -231,6 +262,10 @@ where
         self.reference_time_source()
     }
 
+    fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        self.synic()
+    }
+
     #[cfg(all(windows, feature = "virt_whp"))]
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -239,24 +274,33 @@ where
 
 /// Wrapper struct that implements [`VmPartition`].
 #[derive(InspectMut)]
-#[inspect(transparent)]
-pub struct WrappedPartition(Arc<dyn BasicPartitionStateAccess>);
+pub struct WrappedPartition {
+    #[inspect(flatten)]
+    partition: Arc<dyn BasicPartitionStateAccess>,
+    #[inspect(skip)]
+    initial_vp_state_source: virt::InitialVpStateSource,
+}
 
 #[async_trait]
 impl VmPartition for WrappedPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        self.initial_vp_state_source
+    }
+
     fn reset(&mut self) -> anyhow::Result<()> {
-        self.0.reset()
+        self.partition.reset()
     }
 
     fn scrub_vtl(&mut self, vtl: Vtl) -> anyhow::Result<()> {
-        self.0.scrub_vtl(vtl)
+        self.partition.scrub_vtl(vtl)
     }
 
-    fn accept_initial_pages(
-        &mut self,
-        pages: Vec<(MemoryRange, PageVisibility)>,
-    ) -> anyhow::Result<()> {
-        self.0.accept_initial_pages(pages)
+    fn accept_initial_pages(&mut self, pages: Vec<InitialPageImport>) -> anyhow::Result<()> {
+        self.partition.accept_initial_pages(pages)
+    }
+
+    fn guest_os_id(&self) -> u64 {
+        self.partition.guest_os_id()
     }
 }
 
@@ -264,11 +308,11 @@ impl SaveRestore for WrappedPartition {
     type SavedState = VmSavedState;
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        self.0.save().map_err(SaveError::Other)
+        self.partition.save().map_err(SaveError::Other)
     }
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-        self.0.restore(state).map_err(RestoreError::Other)
+        self.partition.restore(state).map_err(RestoreError::Other)
     }
 }
 
@@ -326,6 +370,14 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         self.0.flush_async_requests()
     }
 
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.0.reset()
+    }
+
+    fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.0.scrub(vtl)
+    }
+
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         self.0.access_state(vtl)
     }
@@ -371,7 +423,7 @@ pub trait HvliteVp {
     async fn run(
         &mut self,
         runner: VpRunner,
-        chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+        chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     );
 }
 
@@ -380,7 +432,7 @@ impl<T: Processor> HvliteVp for T {
     async fn run(
         &mut self,
         mut runner: VpRunner,
-        chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+        chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     ) {
         while let Err(RunCancelled { .. }) = runner.run(&mut WrappedVp(self), chipset).await {}
     }

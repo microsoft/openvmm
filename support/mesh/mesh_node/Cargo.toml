@@ -12,7 +12,7 @@ mesh_protobuf.workspace = true
 open_enum.workspace = true
 
 bitfield-struct.workspace = true
-futures-channel.workspace = true
+futures.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
@@ -22,8 +22,6 @@ zerocopy.workspace = true
 pal.workspace = true
 
 [dev-dependencies]
-futures.workspace = true
-
 pal_async.workspace = true
 test_with_tracing.workspace = true
 

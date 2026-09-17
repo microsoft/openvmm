@@ -1,0 +1,35 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vhost_user_backend"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+guestmem.workspace = true
+memory_range.workspace = true
+pal_async.workspace = true
+sparse_mmap.workspace = true
+pal_event.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracelimit.workspace = true
+unix_socket.workspace = true
+vhost_user_protocol.workspace = true
+virtio.workspace = true
+vmcore.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+inspect.workspace = true
+pal_async = { workspace = true, features = ["tests"] }
+parking_lot.workspace = true
+socket2 = { workspace = true, features = ["all"] }
+tempfile.workspace = true
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

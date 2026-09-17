@@ -6,7 +6,6 @@
 
 mod channel_bitmap;
 pub mod channels;
-pub mod event;
 pub mod hvsock;
 mod monitor;
 mod proxyintegration;
@@ -137,8 +136,11 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     channel_id_offset: u16,
     max_version: Option<MaxVersionInfo>,
     delay_max_version: bool,
+    max_restore_version: Option<MaxVersionInfo>,
     enable_mnf: bool,
     force_confidential_external_memory: bool,
+    support_gpa_pinning: bool,
+    force_gpa_pinning: bool,
     send_messages_while_stopped: bool,
     channel_unstick_delay: Option<Duration>,
     use_absolute_channel_order: bool,
@@ -308,8 +310,11 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             channel_id_offset: 0,
             max_version: None,
             delay_max_version: false,
+            max_restore_version: None,
             enable_mnf: false,
             force_confidential_external_memory: false,
+            support_gpa_pinning: false,
+            force_gpa_pinning: false,
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
             use_absolute_channel_order: false,
@@ -403,6 +408,16 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         self
     }
 
+    /// Tells the server to limit the protocol version accepted when restoring from saved state.
+    ///
+    /// This is configured separately from [`Self::max_version`] so that the version limit enforced
+    /// during restore can differ from the limit used for new connections. This allows a feature to
+    /// be available for rollback from a future version that has enabled it by default.
+    pub fn max_restore_version(mut self, max_restore_version: Option<MaxVersionInfo>) -> Self {
+        self.max_restore_version = max_restore_version;
+        self
+    }
+
     /// Enable MNF support in the server.
     ///
     /// N.B. Enabling this has no effect if the synic does not support mapping monitor pages.
@@ -415,6 +430,19 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
     /// only.
     pub fn force_confidential_external_memory(mut self, force: bool) -> Self {
         self.force_confidential_external_memory = force;
+        self
+    }
+
+    /// Indicates the current VM environment supports GPA pinning so the relevant feature flag can
+    /// be used.
+    pub fn support_gpa_pinning(mut self, support: bool) -> Self {
+        self.support_gpa_pinning = support;
+        self
+    }
+
+    /// Force all channels to use pinned GPA ranges. Used for testing purposes only.
+    pub fn force_gpa_pinning(mut self, force: bool) -> Self {
+        self.force_gpa_pinning = force;
         self
     }
 
@@ -510,6 +538,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             send: offer_send,
             use_event: self.synic.prefer_os_events(),
             force_confidential_external_memory: self.force_confidential_external_memory,
+            force_gpa_pinning: self.force_gpa_pinning,
         });
 
         let mut server = channels::Server::new(
@@ -517,6 +546,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             connection_id,
             self.channel_id_offset,
             self.use_absolute_channel_order,
+            self.support_gpa_pinning,
         );
 
         // If MNF is handled by this server and this is a paravisor for an isolated VM, the monitor
@@ -529,6 +559,11 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         if let Some(version) = self.max_version {
             server.set_compatibility_version(version, self.delay_max_version);
         }
+
+        if let Some(version) = self.max_restore_version {
+            server.set_restore_compatibility_version(version);
+        }
+
         let (relay_request_send, relay_response_recv) =
             if let Some(server_relay) = self.server_relay {
                 let r = server_relay.response_receive.boxed().fuse();
@@ -682,13 +717,6 @@ impl VmbusServer {
     fn get_child_event_port_id(channel_id: protocol::ChannelId, sint_index: u8, vtl: Vtl) -> u32 {
         EVENT_PORT_ID | (vtl as u32) << 22 | channel_id.0 << 8 | (sint_index as u32) << 4
     }
-}
-
-#[derive(mesh::MeshPayload)]
-pub struct RestoreInfo {
-    open_data: Option<OpenData>,
-    gpadls: Vec<(GpadlId, u16, Vec<u64>)>,
-    interrupt: Option<Interrupt>,
 }
 
 #[derive(Default)]
@@ -1670,8 +1698,12 @@ impl Notifier for ServerTaskInner {
     fn inspect(&self, version: Option<VersionInfo>, offer_id: OfferId, req: inspect::Request<'_>) {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
-        if let ChannelState::Open(state) = &channel.state {
-            let mem = self.get_gm_for_channel(version.expect("must be connected"), channel);
+        // Only inspect ring buffers if we have an active connection; during
+        // disconnect/reset, `version` may be None even if an individual channel
+        // is still in the Open state, and we must not panic during inspect
+        // (e.g., timeout diagnostics rely on inspect succeeding).
+        if let (ChannelState::Open(state), Some(version)) = (&channel.state, version) {
+            let mem = self.get_gm_for_channel(version, channel);
             inspect_rings(
                 &mut resp,
                 mem,
@@ -1835,9 +1867,8 @@ impl ServerTaskInner {
 
             (Some(guest_event_port), interrupt)
         } else {
-            // Use a dummy interrupt which does nothing, but make sure it has an event to avoid
-            // proxy_integration from trying to wrap it.
-            (None, Interrupt::null_event())
+            // Use a dummy interrupt which does nothing.
+            (None, Interrupt::null())
         };
 
         // Delete any previously reserved state.
@@ -2052,12 +2083,25 @@ pub struct VmbusServerControl {
     send: mesh::Sender<OfferRequest>,
     use_event: bool,
     force_confidential_external_memory: bool,
+    force_gpa_pinning: bool,
 }
 
 impl VmbusServerControl {
     /// Offers a channel to the vmbus server, where the flags and user_defined data are already set.
     /// This is used by the relay to forward the host's parameters.
-    pub async fn offer_core(&self, offer_info: OfferInfo) -> anyhow::Result<OfferResources> {
+    pub async fn offer_core(&self, mut offer_info: OfferInfo) -> anyhow::Result<OfferResources> {
+        if self.force_gpa_pinning {
+            tracing::warn!(
+                key = %offer_info.params.key(),
+                "forcing GPA pinning for channel"
+            );
+
+            offer_info
+                .params
+                .flags
+                .set_require_pinned_external_memory(true);
+        }
+
         let flags = offer_info.params.flags;
         self.send
             .call_failable(OfferRequest::Offer, offer_info)
@@ -2147,9 +2191,11 @@ fn gpadl_ring_size(gpadl: &AlignedGpadlView) -> usize {
 /// This allows us to lock a page in a `GuestMemory` that doesn't have a full mapping, but can
 /// create one for a subrange.
 fn lock_page_with_subrange(gm: &GuestMemory, offset: u64) -> anyhow::Result<guestmem::LockedPages> {
-    Ok(gm
-        .lockable_subrange(offset, PAGE_SIZE as u64)?
-        .lock_gpns(false, &[0])?)
+    Ok(gm.lockable_subrange(offset, PAGE_SIZE as u64)?.lock_gpns(
+        guestmem::AccessType::Write,
+        false,
+        &[0],
+    )?)
 }
 
 /// Helper to create a subrange before locking a single page from a gpn.

@@ -11,9 +11,13 @@
 pub mod test_helpers;
 
 pub mod bar_mapping;
+pub mod bus_cfg;
+pub mod bus_range;
 pub mod capabilities;
 pub mod cfg_space_emu;
 pub mod chipset_device_ext;
+pub mod dma;
+pub mod microsoft;
 pub mod msi;
 pub mod spec;
 

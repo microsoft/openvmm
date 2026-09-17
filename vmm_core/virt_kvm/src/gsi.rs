@@ -4,6 +4,7 @@
 //! Implements GSI routing management for KVM VMs.
 
 use crate::KvmPartitionInner;
+use anyhow::Context;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::os::unix::prelude::*;
@@ -11,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use virt::irqfd::IrqFdRoute;
 
 const NUM_GSIS: usize = 2048;
 
@@ -29,6 +31,7 @@ impl GsiRouting {
     }
 
     /// Claims a specific GSI.
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub fn claim(&mut self, gsi: u32) {
         let gsi = gsi as usize;
         assert_eq!(self.states[gsi], GsiState::Unallocated);
@@ -80,15 +83,16 @@ impl GsiRouting {
 
 impl KvmPartitionInner {
     /// Reserves a new route, optionally with an associated irqfd event.
-    #[expect(dead_code)]
-    pub(crate) fn new_route(self: &Arc<Self>, irqfd_event: Option<Event>) -> Option<GsiRoute> {
+    fn new_route(self: &Arc<Self>, irqfd_event: Option<Event>) -> Option<GsiRoute> {
         let gsi = self.gsi_routing.lock().alloc()?;
         Some(GsiRoute {
             partition: Arc::downgrade(self),
-            gsi,
-            irqfd_event,
-            enabled: false.into(),
-            enable_mutex: Mutex::new(()),
+            inner: GsiRouteInner {
+                gsi,
+                irqfd_event,
+                enabled: false.into(),
+                enable_mutex: Mutex::new(()),
+            },
         })
     }
 }
@@ -107,44 +111,42 @@ impl GsiState {
 }
 
 /// A GSI route.
-#[derive(Debug)]
-pub struct GsiRoute {
+struct GsiRoute {
     partition: Weak<KvmPartitionInner>,
+    inner: GsiRouteInner,
+}
+
+struct GsiRouteInner {
     gsi: u32,
     irqfd_event: Option<Event>,
     enabled: AtomicBool,
-    enable_mutex: Mutex<()>, // used to serialize enable/disable calls
+    enable_mutex: Mutex<()>, // serializes route updates and enable/disable calls
 }
 
 impl Drop for GsiRoute {
     fn drop(&mut self) {
-        self.disable();
-        self.set_entry(None);
         if let Some(partition) = self.partition.upgrade() {
-            partition.gsi_routing.lock().free(self.gsi);
+            self.inner.disable(&partition);
+            self.inner.set_entry(&partition, None);
+            partition.gsi_routing.lock().free(self.inner.gsi);
         }
     }
 }
 
-impl GsiRoute {
-    fn set_entry(&self, new_entry: Option<kvm::RoutingEntry>) -> Option<Arc<KvmPartitionInner>> {
-        let partition = self.partition.upgrade();
-        if let Some(partition) = &partition {
-            let mut routing = partition.gsi_routing.lock();
-            if routing.set(self.gsi, new_entry) {
-                routing.update_routes(&partition.kvm);
-            }
+impl GsiRouteInner {
+    fn set_entry(&self, partition: &KvmPartitionInner, new_entry: Option<kvm::RoutingEntry>) {
+        let mut routing = partition.gsi_routing.lock();
+        if routing.set(self.gsi, new_entry) {
+            routing.update_routes(&partition.kvm);
         }
-        partition
     }
 
     /// Enables the route and associated irqfd.
-    #[expect(dead_code)]
-    pub fn enable(&self, entry: kvm::RoutingEntry) {
-        let partition = self.set_entry(Some(entry));
+    pub fn enable(&self, partition: &KvmPartitionInner, entry: kvm::RoutingEntry) {
         let _lock = self.enable_mutex.lock();
+        self.set_entry(partition, Some(entry));
         if !self.enabled.load(Ordering::Relaxed) {
-            if let (Some(partition), Some(event)) = (&partition, &self.irqfd_event) {
+            if let Some(event) = &self.irqfd_event {
                 partition
                     .kvm
                     .irqfd(self.gsi, event.as_fd().as_raw_fd(), true)
@@ -157,49 +159,91 @@ impl GsiRoute {
     /// Disables the associated irqfd.
     ///
     /// This actually leaves the route configured, but it disables the irqfd and
-    /// clears the `enabled` bool so that `signal` won't.
-    pub fn disable(&self) {
+    /// clears the `enabled` flag.
+    pub fn disable(&self, partition: &KvmPartitionInner) {
         let _lock = self.enable_mutex.lock();
         if self.enabled.load(Ordering::Relaxed) {
             if let Some(irqfd_event) = &self.irqfd_event {
-                if let Some(partition) = self.partition.upgrade() {
-                    partition
-                        .kvm
-                        .irqfd(self.gsi, irqfd_event.as_fd().as_raw_fd(), false)
-                        .expect("should not fail");
-                }
+                partition
+                    .kvm
+                    .irqfd(self.gsi, irqfd_event.as_fd().as_raw_fd(), false)
+                    .expect("should not fail");
             }
             self.enabled.store(false, Ordering::Relaxed);
         }
     }
+}
 
-    /// Returns the configured irqfd event, if there is one.
-    #[expect(dead_code)]
-    pub fn irqfd_event(&self) -> Option<&Event> {
-        self.irqfd_event.as_ref()
+pub(crate) struct KvmIrqFdState {
+    pub(crate) partition: Arc<KvmPartitionInner>,
+}
+
+impl KvmIrqFdState {
+    pub fn new(partition: Arc<KvmPartitionInner>) -> Self {
+        Self { partition }
     }
 
-    /// Signals the interrupt if it is enabled.
-    #[allow(clippy::assertions_on_constants)]
-    #[expect(dead_code)]
-    pub fn signal(&self) {
-        // Use a relaxed atomic read to avoid extra synchronization in this
-        // path. It's up to callers to synchronize this with `enable`/`disable`
-        // if strict ordering is necessary.
-        if self.enabled.load(Ordering::Relaxed) {
-            if let Some(event) = &self.irqfd_event {
-                event.signal();
-            } else if let Some(partition) = self.partition.upgrade() {
-                // TODO: `gsi` must include certain flags on aarch64 to indicate
-                // the type of the interrupt: SPI or PPI handled by the in-kernel vGIC,
-                // or the user mode GIC emulator (where have to specify the target VP, too).
+    pub fn new_irqfd_route<T: MsiRouteBuilder>(
+        &self,
+        builder: T,
+    ) -> anyhow::Result<KvmIrqFdRoute<T>> {
+        let event = Event::new();
+        let route = self
+            .partition
+            .new_route(Some(event.clone()))
+            .context("no free GSIs available for irqfd")?;
+        Ok(KvmIrqFdRoute {
+            builder,
+            route,
+            event,
+        })
+    }
+}
 
-                assert!(cfg!(guest_arch = "x86_64"));
-                partition
-                    .kvm
-                    .irq_line(self.gsi, true)
-                    .expect("interrupt delivery failure");
+/// A registered irqfd route backed by a KVM [`GsiRoute`].
+///
+/// Cleanup (disable irqfd, clear route, free GSI) is handled by
+/// [`GsiRoute::drop`].
+pub(crate) struct KvmIrqFdRoute<T> {
+    builder: T,
+    route: GsiRoute,
+    event: Event,
+}
+
+pub(crate) trait MsiRouteBuilder: Send + Sync {
+    fn routing_entry(
+        &self,
+        partition: &KvmPartitionInner,
+        address: u64,
+        data: u32,
+        devid: Option<u32>,
+    ) -> Option<kvm::RoutingEntry>;
+}
+
+impl<T: MsiRouteBuilder> IrqFdRoute for KvmIrqFdRoute<T> {
+    fn event(&self) -> &Event {
+        &self.event
+    }
+
+    fn enable(&self, address: u64, data: u32, devid: Option<u32>) {
+        if let Some(partition) = self.route.partition.upgrade() {
+            if let Some(entry) = self.builder.routing_entry(&partition, address, data, devid) {
+                self.route.inner.enable(&partition, entry);
+            } else {
+                tracelimit::warn_ratelimited!(
+                    address,
+                    data,
+                    "failed to build irqfd interrupt route"
+                );
+                self.route.inner.disable(&partition);
+                self.route.inner.set_entry(&partition, None);
             }
+        }
+    }
+
+    fn disable(&self) {
+        if let Some(partition) = self.route.partition.upgrade() {
+            self.route.inner.disable(&partition);
         }
     }
 }

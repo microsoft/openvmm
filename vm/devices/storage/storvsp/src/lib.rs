@@ -1,6 +1,46 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! VMBus SCSI controller emulator (StorVSP).
+//!
+//! StorVSP implements the Hyper-V synthetic SCSI protocol — a VMBus-based
+//! transport that carries SCSI CDBs between the guest's `storvsc` driver and
+//! the VMM. This is not a standard SCSI transport (like iSCSI or SAS); it's a
+//! Hyper-V-specific wire format defined in [`storvsp_protocol`].
+//!
+//! # Architecture
+//!
+//! The crate uses a multi-worker model. The primary VMBus channel handles
+//! protocol version negotiation (Win6 through Blue); sub-channels process I/O
+//! in parallel. Each worker owns a VMBus ring and processes packets
+//! concurrently via `FuturesUnordered`.
+//!
+//! StorVSP handles the transport (ring buffer management, GPADL setup, packet
+//! framing, sub-channel lifecycle) and a few SCSI control commands directly
+//! (`REPORT_LUNS`, `INQUIRY` for absent targets). All actual I/O is delegated
+//! to [`AsyncScsiDisk`] implementations — StorVSP
+//! never interprets SCSI data CDBs itself.
+//!
+//! For the channel/sub-channel model, CPU affinity, and performance
+//! characteristics, see the
+//! [StorVSP Channels & Subchannels](https://openvmm.dev/reference/devices/vmbus/storvsp_channels.html)
+//! page in the OpenVMM Guide.
+//!
+//! # Key types
+//!
+//! - [`StorageDevice`] — the VMBus device. Implements `VmbusDevice` and
+//!   `SaveRestoreVmbusDevice`.
+//! - [`ScsiController`] — manages attached disks by [`ScsiPath`]. Supports
+//!   runtime attach/remove.
+//! - [`ScsiControllerDisk`] — wraps `Arc<dyn AsyncScsiDisk>`.
+//!
+//! # Performance
+//!
+//! Poll-mode optimization: when pending I/O count exceeds
+//! `poll_mode_queue_depth`, the worker switches from interrupt-driven to
+//! busy-poll for new requests, reducing guest exit frequency. Future storage
+//! for SCSI request processing is pooled to avoid allocation on the hot path.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
@@ -366,9 +406,6 @@ enum PacketData {
     ResetLun,
 }
 
-#[derive(Debug)]
-pub struct RangeError;
-
 fn parse_packet<T: RingMem>(
     packet: &IncomingPacket<'_, T>,
     pool: &mut Vec<Arc<ScsiRequestAndRange>>,
@@ -576,8 +613,8 @@ impl ScsiCommandQueue {
                     .controller
                     .disks
                     .read()
-                    .iter()
-                    .flat_map(|(path, _)| {
+                    .keys()
+                    .flat_map(|path| {
                         // Use the original path ID and not the forced one to
                         // match Hyper-V storvsp behavior.
                         if request.path_id == path.path && request.target_id == path.target {
@@ -2323,7 +2360,7 @@ mod tests {
     }
 
     #[async_test]
-    pub async fn test_async_disk(driver: DefaultDriver) {
+    async fn test_async_disk(driver: DefaultDriver) {
         let device = disklayer_ram::ram_disk(64 * 1024, false).unwrap();
         let controller = ScsiController::new();
         let disk = ScsiControllerDisk::new(Arc::new(scsidisk::SimpleScsiDisk::new(

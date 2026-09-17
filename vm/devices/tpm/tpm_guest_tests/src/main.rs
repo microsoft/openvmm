@@ -25,15 +25,19 @@ use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineHelper;
 use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
 
+use report::ATTESTATION_REPORT_OFFSET;
 use report::IGVM_ATTEST_REQUEST_VERSION_1;
 use report::IGVM_ATTESTATION_SIGNATURE;
 use report::IGVM_ATTESTATION_VERSION;
+use report::IGVM_REPORT_TYPE_SNP_VM_REPORT;
 use report::IGVM_REQUEST_BASE_SIZE;
 use report::IGVM_REQUEST_DATA_OFFSET;
 use report::IGVM_REQUEST_DATA_SIZE;
 use report::IGVM_REQUEST_TYPE_AK_CERT;
 use report::IgvmAttestRequestData;
 use report::IgvmAttestRequestHeader;
+use report::SNP_ID_KEY_DIGEST_OFFSET;
+use report::SNP_ID_KEY_DIGEST_SIZE;
 use tpm::Tpm;
 
 const NV_INDEX_AK_CERT: u32 = tpm_protocol::TPM_NV_INDEX_AIK_CERT;
@@ -41,10 +45,10 @@ const NV_INDEX_ATTESTATION_REPORT: u32 = tpm_protocol::TPM_NV_INDEX_ATTESTATION_
 const NV_INDEX_GUEST_INPUT: u32 = tpm_protocol::TPM_NV_INDEX_GUEST_ATTESTATION_INPUT;
 
 const MAX_NV_READ_SIZE: usize = 4096;
-const MAX_ATTESTATION_READ_SIZE: usize = 2600;
+const MAX_ATTESTATION_READ_SIZE: usize = 2900;
 const GUEST_INPUT_SIZE: u16 = 64;
 const GUEST_INPUT_AUTH: u64 = 0;
-const AK_CERT_RETRY_DELAY_MS: u64 = 200;
+const AK_CERT_RETRY_DELAY_MS: u64 = 1000;
 
 #[derive(Debug, Default)]
 struct Config {
@@ -54,6 +58,27 @@ struct Config {
     report: bool,
     user_data: Option<Vec<u8>>,
     show_runtime_claims: bool,
+    nv_define: Option<NvDefineConfig>,
+    nv_write: Option<NvWriteConfig>,
+    nv_read: Option<NvReadConfig>,
+}
+
+#[derive(Debug)]
+struct NvDefineConfig {
+    index: u32,
+    size: u16,
+}
+
+#[derive(Debug)]
+struct NvWriteConfig {
+    index: u32,
+    data: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct NvReadConfig {
+    index: u32,
+    expected: Option<Vec<u8>>,
 }
 
 #[derive(Parser, Debug)]
@@ -77,6 +102,15 @@ enum Command {
     /// Write guest input and read the attestation report
     #[command(name = "report")]
     Report(ReportArgs),
+    /// Define an NV index with a given size
+    #[command(name = "nv_define")]
+    NvDefine(NvDefineArgs),
+    /// Write data to an NV index
+    #[command(name = "nv_write")]
+    NvWrite(NvWriteArgs),
+    /// Read data from an NV index
+    #[command(name = "nv_read")]
+    NvRead(NvReadArgs),
 }
 
 #[derive(Args, Debug, Default)]
@@ -107,6 +141,45 @@ struct ReportArgs {
     /// Decode and pretty-print runtime claims from attestation report
     #[arg(long)]
     show_runtime_claims: bool,
+}
+
+#[derive(Args, Debug)]
+struct NvDefineArgs {
+    /// NV index handle (hex, e.g. 0x1500016)
+    #[arg(long, value_name = "HEX", value_parser = parse_nv_index)]
+    index: u32,
+
+    /// Size of the NV index in bytes
+    #[arg(long, value_name = "BYTES")]
+    size: u16,
+}
+
+#[derive(Args, Debug)]
+struct NvWriteArgs {
+    /// NV index handle (hex, e.g. 0x1500016)
+    #[arg(long, value_name = "HEX", value_parser = parse_nv_index)]
+    index: u32,
+
+    /// Data to write (hex)
+    #[arg(long, value_name = "HEX")]
+    data_hex: String,
+}
+
+#[derive(Args, Debug)]
+struct NvReadArgs {
+    /// NV index handle (hex, e.g. 0x1500016)
+    #[arg(long, value_name = "HEX", value_parser = parse_nv_index)]
+    index: u32,
+
+    /// Expected data contents (hex); if provided, verifies the read result
+    #[arg(long, value_name = "HEX")]
+    expected_data_hex: Option<String>,
+}
+
+fn parse_nv_index(s: &str) -> Result<u32, String> {
+    let trimmed = s.trim();
+    let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+    u32::from_str_radix(hex, 16).map_err(|e| format!("invalid NV index: {e}"))
 }
 
 fn main() {
@@ -147,9 +220,22 @@ fn run(config: &Config) -> Result<(), Box<dyn Error>> {
     if config.report {
         let payload = build_guest_input_payload(config.user_data.as_deref())?;
         let att_report = handle_report(&mut helper, &payload)?;
+        print_snp_id_key_digest(&att_report)?;
         if config.show_runtime_claims {
             print_runtime_claims(&att_report)?;
         }
+    }
+
+    if let Some(nv_def) = &config.nv_define {
+        handle_nv_define(&mut helper, nv_def.index, nv_def.size)?;
+    }
+
+    if let Some(nv_wr) = &config.nv_write {
+        handle_nv_write(&mut helper, nv_wr.index, &nv_wr.data)?;
+    }
+
+    if let Some(nv_rd) = &config.nv_read {
+        handle_nv_read(&mut helper, nv_rd.index, nv_rd.expected.as_deref())?;
     }
 
     Ok(())
@@ -249,6 +335,31 @@ fn config_from_cli(cli: Cli) -> Result<Config, String> {
                 config.user_data = Some(bytes);
             }
         }
+        Command::NvDefine(args) => {
+            config.nv_define = Some(NvDefineConfig {
+                index: args.index,
+                size: args.size,
+            });
+        }
+        Command::NvWrite(args) => {
+            let data = parse_hex_bytes(&args.data_hex).map_err(|e| format!("--data-hex: {e}"))?;
+            config.nv_write = Some(NvWriteConfig {
+                index: args.index,
+                data,
+            });
+        }
+        Command::NvRead(args) => {
+            let expected = args
+                .expected_data_hex
+                .as_deref()
+                .map(parse_hex_bytes)
+                .transpose()
+                .map_err(|e| format!("--expected-data-hex: {e}"))?;
+            config.nv_read = Some(NvReadConfig {
+                index: args.index,
+                expected,
+            });
+        }
     }
 
     Ok(config)
@@ -286,6 +397,74 @@ fn handle_report<E: TpmEngine>(
     Ok(att_report)
 }
 
+fn handle_nv_define<E: TpmEngine>(
+    helper: &mut TpmEngineHelper<E>,
+    nv_index: u32,
+    size: u16,
+) -> Result<(), Box<dyn Error>> {
+    // Best-effort probe: if `nv_read_public` succeeds the index already exists
+    // and must be undefined first. Any read error (including the TPM "handle
+    // not found" response for an undefined index, whose exact code varies by
+    // TPM backend) is treated as "not defined" and we fall through to define
+    // it; a genuine TPM failure would then surface from `nv_define_space`.
+    if helper.nv_read_public(nv_index).is_ok() {
+        println!("NV index {nv_index:#x} already defined, undefining first…");
+        helper
+            .nv_undefine_space(TPM20_RH_OWNER, nv_index)
+            .map_err(|e| -> Box<dyn Error> { Box::new(e) })?;
+    }
+
+    println!("Defining NV index {nv_index:#x} with {size} bytes…");
+    helper
+        .nv_define_space(TPM20_RH_OWNER, 0, nv_index, size)
+        .map_err(|e| -> Box<dyn Error> { Box::new(e) })?;
+
+    println!("NV index {nv_index:#x} defined successfully ({size} bytes).");
+    Ok(())
+}
+
+fn handle_nv_write<E: TpmEngine>(
+    helper: &mut TpmEngineHelper<E>,
+    nv_index: u32,
+    data: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    println!("Writing {} bytes to NV index {nv_index:#x}…", data.len());
+    helper.nv_write(TPM20_RH_OWNER, None, nv_index, data)?;
+    println!(
+        "NV write to {nv_index:#x} succeeded ({} bytes).",
+        data.len()
+    );
+    Ok(())
+}
+
+fn handle_nv_read<E: TpmEngine>(
+    helper: &mut TpmEngineHelper<E>,
+    nv_index: u32,
+    expected: Option<&[u8]>,
+) -> Result<(), Box<dyn Error>> {
+    println!("Reading NV index {nv_index:#x}…");
+    let data = read_nv_index(helper, nv_index)?;
+    print_nv_summary("NV read", &data);
+
+    if let Some(expected) = expected {
+        if data == expected {
+            println!(
+                "NV index {nv_index:#x} matches expected value ({} bytes).",
+                data.len()
+            );
+        } else {
+            return Err(format!(
+                "NV index {nv_index:#x} contents did not match expected value (got {} bytes, expected {} bytes)",
+                data.len(),
+                expected.len()
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
 fn print_runtime_claims(attestation_report: &[u8]) -> Result<(), Box<dyn Error>> {
     match runtime_claims_json(attestation_report)? {
         Some(json) => {
@@ -295,6 +474,56 @@ fn print_runtime_claims(attestation_report: &[u8]) -> Result<(), Box<dyn Error>>
         }
         None => println!("Runtime claims: <empty>"),
     }
+
+    Ok(())
+}
+
+/// If the attestation report is an SNP report, print its `id_key_digest` field
+/// as hex (line prefix `SNP ID key digest:`).
+///
+/// `id_key_digest` is the SHA-384 of the ID public key that signed the ID block
+/// provided at `SNP_LAUNCH_FINISH`. It is non-zero only when the VM launched
+/// with `id_block_en = 1`, so a consumer can use it to confirm an ID block was
+/// accepted. The report type is read from the report itself, so no
+/// platform-specific input is needed; non-SNP reports print nothing.
+fn print_snp_id_key_digest(attestation_report: &[u8]) -> Result<(), Box<dyn Error>> {
+    let request_data_end = IGVM_REQUEST_DATA_OFFSET + IGVM_REQUEST_DATA_SIZE;
+    if request_data_end > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attestation report truncated before request data",
+        )
+        .into());
+    }
+
+    let (request_data, _) = IgvmAttestRequestData::read_from_prefix(
+        &attestation_report[IGVM_REQUEST_DATA_OFFSET..request_data_end],
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to read attestation request data",
+        )
+    })?;
+
+    if request_data.report_type != IGVM_REPORT_TYPE_SNP_VM_REPORT {
+        // Not an SNP report; `id_key_digest` is meaningless here.
+        return Ok(());
+    }
+
+    let start = ATTESTATION_REPORT_OFFSET + SNP_ID_KEY_DIGEST_OFFSET;
+    let end = start + SNP_ID_KEY_DIGEST_SIZE;
+    if end > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attestation report truncated before SNP id_key_digest",
+        )
+        .into());
+    }
+
+    let digest = &attestation_report[start..end];
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    println!("SNP ID key digest: {hex}");
 
     Ok(())
 }

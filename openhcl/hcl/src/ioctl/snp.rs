@@ -24,13 +24,27 @@ use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
+use x86defs::snp::SevAvicPage;
 use x86defs::snp::SevRmpAdjust;
 use x86defs::snp::SevVmsa;
 
 /// Runner backing for SNP partitions.
 pub struct Snp<'a> {
     vmsa: VtlArray<&'a UnsafeCell<SevVmsa>, 2>,
+    avic_pages: VtlArray<&'a UnsafeCell<SevAvicPage>, 2>,
+}
+
+/// A synthetic timer count write handled by the kernel.
+pub struct SnpStimer0Update {
+    /// The new synthetic timer count.
+    pub count: u64,
+    /// The reference time when the count was programmed.
+    pub programmed_ref_time: u64,
+    /// Whether the kernel timer expired before returning to user mode.
+    pub expired: bool,
 }
 
 /// Error returned by failing SNP operations.
@@ -168,11 +182,21 @@ impl MshvVtl {
 impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
-        let super::BackingState::Snp { vmsa } = &vp.backing else {
+        let super::BackingState::Snp {
+            vtl0_apic_page,
+            vtl1_apic_page,
+            vmsa,
+        } = &vp.backing
+        else {
             return Err(NoRunner::MismatchedIsolation);
         };
 
+        // SAFETY: The mapping is held for the appropriate lifetime, and the
+        // APIC page is never accessed as any other type, or by any other location.
+        let vtl1_apic_page = unsafe { &*vtl1_apic_page.base().cast() };
+
         Ok(Self {
+            avic_pages: [vtl0_apic_page.as_ref(), vtl1_apic_page].into(),
             vmsa: vmsa.each_ref().map(|mp| mp.as_ref()),
         })
     }
@@ -202,6 +226,59 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
 }
 
 impl<'a> ProcessorRunner<'a, Snp<'a>> {
+    fn snp_context_ptr(&self) -> *mut crate::protocol::snp_vp_context {
+        // This is an SNP partition, so the architecture context union is
+        // interpreted as an SNP context.
+        // SAFETY: `self.run` points to a mapped run page for this VP.
+        unsafe { (&raw mut (*self.run.get()).context).cast() }
+    }
+
+    /// Publishes the current STIMER0 configuration to the kernel.
+    pub fn set_stimer0_config(&mut self, config: Option<u64>) {
+        // SAFETY: The kernel does not access these fields while the run ioctl
+        // is not active. The flags remain atomic for the timer callback.
+        unsafe {
+            let context = self.snp_context_ptr();
+            let flags = &*((&raw mut (*context).stimer0_flags).cast::<AtomicU32>());
+            if let Some(config) = config {
+                (&raw mut (*context).stimer0_config).write(config);
+                flags.fetch_or(
+                    crate::protocol::MSHV_VTL_SNP_STIMER0_CONFIG_VALID,
+                    Ordering::Release,
+                );
+            } else {
+                flags.fetch_and(
+                    !crate::protocol::MSHV_VTL_SNP_STIMER0_CONFIG_VALID,
+                    Ordering::Release,
+                );
+            }
+        }
+    }
+
+    /// Takes a synthetic timer count write handled by the kernel.
+    pub fn take_stimer0_update(&mut self) -> Option<SnpStimer0Update> {
+        // SAFETY: The kernel cancels its timer before returning from the run
+        // ioctl and publishes state before setting KERNEL_UPDATE.
+        unsafe {
+            let context = self.snp_context_ptr();
+            let flags = &*((&raw mut (*context).stimer0_flags).cast::<AtomicU32>());
+            let value = flags.fetch_and(
+                !(crate::protocol::MSHV_VTL_SNP_STIMER0_KERNEL_UPDATE
+                    | crate::protocol::MSHV_VTL_SNP_STIMER0_EXPIRED),
+                Ordering::AcqRel,
+            );
+            if value & crate::protocol::MSHV_VTL_SNP_STIMER0_KERNEL_UPDATE == 0 {
+                return None;
+            }
+
+            Some(SnpStimer0Update {
+                count: (&raw const (*context).stimer0_count).read(),
+                programmed_ref_time: (&raw const (*context).stimer0_programmed_ref_time).read(),
+                expired: value & crate::protocol::MSHV_VTL_SNP_STIMER0_EXPIRED != 0,
+            })
+        }
+    }
+
     /// Gets a reference to the VMSA and backing state of a VTL
     pub fn vmsa(&self, vtl: GuestVtl) -> VmsaWrapper<'_, &SevVmsa> {
         // SAFETY: the VMSA will not be concurrently accessed by the processor
@@ -233,5 +310,51 @@ impl<'a> ProcessorRunner<'a, Snp<'a>> {
                 VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
             })
             .into_inner()
+    }
+
+    /// Gets a PFN of the VTL0 secure AVIC page.
+    /// TODO: Maybe there is a better way other than passing `cpu_index` here.
+    pub fn secure_avic_vtl0_pfn(&self, cpu_index: u32) -> u64 {
+        self.hcl.secure_avic_vtl0_pfn(cpu_index)
+    }
+
+    /// Gets a reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page(&self, vtl: GuestVtl) -> &SevAvicPage {
+        // SAFETY: the APIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        unsafe { &*self.state.avic_pages[vtl].get() }
+    }
+
+    /// Gets a mutable reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page_mut(&mut self, vtl: GuestVtl) -> &mut SevAvicPage {
+        // SAFETY: the AVIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        unsafe { &mut *self.state.avic_pages[vtl].get() }
+    }
+
+    /// Gets a mutable reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page_vmsa_mut(
+        &mut self,
+        vtl: GuestVtl,
+    ) -> (&mut SevAvicPage, VmsaWrapper<'_, &mut SevVmsa>) {
+        // SAFETY: the AVIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        let avic_page = unsafe { &mut *self.state.avic_pages[vtl].get() };
+        let vmsa = self.vmsa_mut(vtl);
+
+        (avic_page, vmsa)
+    }
+
+    /// Gets a mutable reference to the secure AVIC page and the proxy_irr_exit field
+    pub fn secure_avic_page_proxy_irr_exit_vtl0_mut(
+        &mut self,
+    ) -> (&mut SevAvicPage, &mut [u32; 8]) {
+        // SAFETY: the AVIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        let avic_page = unsafe { &mut *self.state.avic_pages[GuestVtl::Vtl0].get() };
+        // SAFETY: The `proxy_irr_exit` field of the run page will not be concurrently updated.
+        let proxy_irr_vtl0 = unsafe { &mut (*self.run.get()).proxy_irr_exit };
+
+        (avic_page, proxy_irr_vtl0)
     }
 }

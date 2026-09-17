@@ -266,7 +266,7 @@ fn run(options: &Options, env: impl IntoIterator<Item = (String, String)>) -> an
         }
     }
 
-    log::info!("running {:?}", &command);
+    log::info!("running {:?}", command);
 
     let child = command.spawn().context("underhill failed to start")?;
 
@@ -436,8 +436,8 @@ fn do_main() -> anyhow::Result<()> {
     log::info!(
         "Initial process: crate_name={}, crate_revision={}, crate_branch={}",
         env!("CARGO_PKG_NAME"),
-        option_env!("VERGEN_GIT_SHA").unwrap_or("UNKNOWN_REVISION"),
-        option_env!("VERGEN_GIT_BRANCH").unwrap_or("UNKNOWN_BRANCH"),
+        option_env!("BUILD_GIT_SHA").unwrap_or("UNKNOWN_REVISION"),
+        option_env!("BUILD_GIT_BRANCH").unwrap_or("UNKNOWN_BRANCH"),
     );
 
     let stat_files = [

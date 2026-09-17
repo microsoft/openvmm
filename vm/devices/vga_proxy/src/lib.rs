@@ -13,6 +13,8 @@ use chipset_device::io::deferred::DeferredRead;
 use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
@@ -106,7 +108,7 @@ impl ChipsetDevice for VgaProxyDevice {
 }
 
 impl PciConfigSpace for VgaProxyDevice {
-    fn pci_cfg_read(&mut self, offset: u16, _value: &mut u32) -> IoResult {
+    fn pci_cfg_read(&mut self, offset: u16, _value: ByteEnabledDwordRead<'_>) -> IoResult {
         tracing::trace!(?offset, "VGA proxy read");
         let (read, token) = defer_read();
 
@@ -123,13 +125,20 @@ impl PciConfigSpace for VgaProxyDevice {
         IoResult::Defer(token)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         tracing::trace!(?offset, ?value, "VGA proxy write");
         let (write, token) = defer_write();
 
         let fut = {
             let proxy = self.pci_cfg_proxy.clone();
-            async move { proxy.vga_proxy_pci_write(offset, value).await }
+            async move {
+                let new_value = if value.is_full() {
+                    value.extract()
+                } else {
+                    value.merge(proxy.vga_proxy_pci_read(offset).await)
+                };
+                proxy.vga_proxy_pci_write(offset, new_value).await
+            }
         };
 
         self.pending_actions

@@ -27,6 +27,19 @@ impl ResourceId<DiskHandleKind> for FileDiskHandle {
     const ID: &'static str = "file";
 }
 
+/// Block-device-backed disk handle (Linux).
+///
+/// Uses `io_uring` for async I/O.
+#[derive(MeshPayload)]
+pub struct BlockDeviceDiskHandle {
+    /// The file handle for the block device or regular file.
+    pub file: std::fs::File,
+}
+
+impl ResourceId<DiskHandleKind> for BlockDeviceDiskHandle {
+    const ID: &'static str = "block";
+}
+
 /// Disk handle for a disk that emulates persistent reservation support.
 #[derive(MeshPayload)]
 pub struct DiskWithReservationsHandle(pub Resource<DiskHandleKind>);

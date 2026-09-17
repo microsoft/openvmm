@@ -3,24 +3,33 @@
 
 //! Virtual PCI device module
 
+use crate::bus::VpciBusEject;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use closeable_mutex::CloseableMutex;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::FailableRpc;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::spec::cfg_space;
 use pci_core::spec::hwid::HardwareIds;
 use ring::OutgoingPacketType;
 use std::fmt::Debug;
+use std::future::poll_fn;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 use task_control::Cancelled;
 use task_control::StopTask;
 use thiserror::Error;
@@ -224,6 +233,8 @@ enum PacketError {
     InvalidBars(#[source] InvalidBars),
     #[error("invalid slot {0:?}")]
     InvalidSlot(SlotNumber),
+    #[error("unexpected eject completion")]
+    UnexpectedEjectComplete,
     #[error("msi resource count {0} too high")]
     TooManyMsis(u32),
     #[error("failed to register interrupt")]
@@ -244,6 +255,9 @@ enum PacketData {
     },
     FdoD0Exit,
     QueryRelations,
+    EjectComplete {
+        slot: SlotNumber,
+    },
     DeviceRequest {
         slot: SlotNumber,
         request: DeviceRequest,
@@ -460,6 +474,12 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::FDO_D0_EXIT => PacketData::FdoD0Exit,
         protocol::MessageType::QUERY_BUS_RELATIONS => PacketData::QueryRelations,
+        protocol::MessageType::EJECT_COMPLETE => {
+            let msg = protocol::PdoMessage::read_from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("eject complete"))?
+                .0;
+            PacketData::EjectComplete { slot: msg.slot }
+        }
         protocol::MessageType::QUERY_PROTOCOL_VERSION => {
             let msg = protocol::QueryProtocolVersion::read_from_prefix(buf)
                 .map_err(|_| PacketError::PacketTooSmall("query_version"))?
@@ -524,6 +544,8 @@ enum WorkerError {
     InvalidPacketType,
     #[error("packet handling error")]
     Packet(#[from] PacketError),
+    #[error("eject control channel closed")]
+    EjectControl(#[source] mesh::RecvError),
 }
 
 impl<T: RingMem> Connection<T> {
@@ -584,11 +606,12 @@ impl<T: RingMem> Connection<T> {
 pub struct VpciChannelState<T: RingMem = GpadlRingMem> {
     conn: Connection<T>,
     state: ProtocolState,
+    eject_recv: mesh::Receiver<FailableRpc<(), ()>>,
 }
 
 impl<T: RingMem> InspectMut for VpciChannelState<T> {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        let Self { conn, state } = &self;
+        let Self { conn, state, .. } = &self;
         let mut resp = req.respond();
         let state = match state {
             ProtocolState::Init => "initializing",
@@ -615,13 +638,16 @@ struct ReadyState {
     send_device: bool,
     send_completion: Option<u64>,
     vpci_version: protocol::ProtocolVersion,
+    pending_eject: Option<FailableRpc<(), ()>>,
 }
 
 impl<T: RingMem> VpciChannelState<T> {
     async fn run(&mut self, dev: &mut VpciChannel) -> Result<(), WorkerError> {
         loop {
             match &mut self.state {
-                ProtocolState::Ready(state) => break state.run(&mut self.conn, dev).await,
+                ProtocolState::Ready(state) => {
+                    break state.run(&mut self.conn, &mut self.eject_recv, dev).await;
+                }
                 ProtocolState::Init => {
                     self.conn.wait_for_completion_space().await?;
 
@@ -658,6 +684,7 @@ impl<T: RingMem> VpciChannelState<T> {
                                 vpci_version: version,
                                 send_device: false,
                                 send_completion: None,
+                                pending_eject: None,
                             });
                         }
                     } else {
@@ -706,12 +733,20 @@ impl ReadyState {
                 device_count: 1,
                 device: [],
             };
+            let (flags, numa_node) = if let Some(vnode) = dev.vnode {
+                (
+                    protocol::DeviceDescription2Flags::new().with_numa_affinity_specified(true),
+                    vnode,
+                )
+            } else {
+                (protocol::DeviceDescription2Flags::new(), 0)
+            };
             let device = protocol::DeviceDescription2 {
                 pnp_id,
                 slot: SlotNumber::new(),
                 serial_num: dev.serial_num,
-                flags: 0,
-                numa_node: 0,
+                flags,
+                numa_node,
                 rsvd: 0,
             };
 
@@ -724,6 +759,7 @@ impl ReadyState {
     async fn run(
         &mut self,
         conn: &mut Connection<impl RingMem>,
+        eject_recv: &mut mesh::Receiver<FailableRpc<(), ()>>,
         dev: &mut VpciChannel,
     ) -> Result<(), WorkerError> {
         loop {
@@ -743,13 +779,53 @@ impl ReadyState {
                 .instrument(tracing::trace_span!("vpci_wait_for_completion_space", instance_id = ?dev.instance_id))
                 .await?;
 
-            let (packet, transaction_id) = {
-                let (mut queue, _) = conn.queue.split();
-                let packet = queue.read().await.map_err(WorkerError::Queue)?;
-                let IncomingPacket::Data(data) = packet.as_ref() else {
-                    return Err(WorkerError::InvalidPacketType);
+            enum Event {
+                Packet(Result<(Result<PacketData, PacketError>, Option<u64>), WorkerError>),
+                Eject(Result<FailableRpc<(), ()>, mesh::RecvError>),
+            }
+
+            let event = {
+                let packet = async {
+                    let (mut queue, _) = conn.queue.split();
+                    let packet = queue.read().await.map_err(WorkerError::Queue)?;
+                    let IncomingPacket::Data(data) = packet.as_ref() else {
+                        return Err(WorkerError::InvalidPacketType);
+                    };
+                    Ok((parse_packet(data), data.transaction_id()))
                 };
-                (parse_packet(data), data.transaction_id())
+                let mut packet = pin!(packet);
+                let mut eject = pin!(eject_recv.recv());
+                poll_fn(|cx| {
+                    if let Poll::Ready(request) = eject.as_mut().poll(cx) {
+                        return Poll::Ready(Event::Eject(request));
+                    }
+                    if let Poll::Ready(packet) = packet.as_mut().poll(cx) {
+                        return Poll::Ready(Event::Packet(packet));
+                    }
+                    Poll::Pending
+                })
+                .await
+            };
+
+            let (packet, transaction_id) = match event {
+                Event::Packet(packet) => packet?,
+                Event::Eject(Ok(request)) => {
+                    if self.pending_eject.is_some() {
+                        request.fail(anyhow::anyhow!("VPCI device eject already in progress"));
+                        continue;
+                    }
+                    conn.send_packet(
+                        &protocol::PdoMessage {
+                            message_type: protocol::MessageType::EJECT,
+                            slot: SlotNumber::new(),
+                        },
+                        &(),
+                    )
+                    .await?;
+                    self.pending_eject = Some(request);
+                    continue;
+                }
+                Event::Eject(Err(error)) => return Err(WorkerError::EjectControl(error)),
             };
 
             let r = match packet {
@@ -811,6 +887,15 @@ impl ReadyState {
                 // buffer packet.
                 conn.send_completion(transaction_id, &(), &[])?;
             }
+            PacketData::EjectComplete { slot } => {
+                if slot != SlotNumber::new() {
+                    return Err(PacketError::InvalidSlot(slot).into());
+                }
+                self.pending_eject
+                    .take()
+                    .ok_or(PacketError::UnexpectedEjectComplete)?
+                    .complete(Ok(()));
+            }
             PacketData::DeviceRequest { slot, request } => {
                 if u32::from(slot) != 0 {
                     // FUTURE: support a bus with multiple devices.
@@ -822,6 +907,7 @@ impl ReadyState {
                         reply_type,
                     } => {
                         dev.set_bars(&resources.mmio_ranges)
+                            .await
                             .map_err(PacketError::InvalidBars)?;
 
                         let mut tr = Vec::<u8>::new();
@@ -895,8 +981,8 @@ impl ReadyState {
                     DeviceRequest::DevicePowerChange { target_state } => {
                         let mut status = protocol::Status::SUCCESS;
                         match target_state {
-                            protocol::DevicePowerState::D0 => dev.set_power(true),
-                            protocol::DevicePowerState::D3 => dev.set_power(false),
+                            protocol::DevicePowerState::D0 => dev.set_power(true).await,
+                            protocol::DevicePowerState::D3 => dev.set_power(false).await,
                             _ => status = protocol::Status::BAD_DATA,
                         }
                         conn.send_completion(transaction_id, &status, &[])?;
@@ -1004,10 +1090,11 @@ impl VpciChannel {
             let mut device = self.device.lock();
             let mut buf = 0;
             [0, 1, 2, 3, 4, 5].map(|i| {
+                let value = ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf);
                 device
                     .supports_pci()
                     .unwrap()
-                    .pci_cfg_read(cfg_space::HeaderType00::BAR0.0 + 4 * i, &mut buf)
+                    .pci_cfg_read(cfg_space::HeaderType00::BAR0.0 + 4 * i, value)
                     .now_or_never()
                     .map(|_| buf)
                     .unwrap_or(0)
@@ -1024,7 +1111,7 @@ impl VpciChannel {
         resources
     }
 
-    fn set_bars(&mut self, resources: &[MmioResource; 6]) -> Result<(), InvalidBars> {
+    async fn set_bars(&mut self, resources: &[MmioResource; 6]) -> Result<(), InvalidBars> {
         let mut bars = [0; 6];
         let mut high64 = false;
         for (i, resource) in resources.iter().enumerate() {
@@ -1061,49 +1148,76 @@ impl VpciChannel {
             }
         }
         tracing::debug!(?bars, "setting bars");
+
         {
-            let mut device = self.device.lock();
             for (i, bar) in bars.into_iter().enumerate() {
-                {
-                    device
-                        .supports_pci()
-                        .unwrap()
-                        .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar)
-                        .unwrap();
-                };
+                let bar = ByteEnabledDwordWrite::with_all_bytes_enabled(bar);
+                let result = self
+                    .device
+                    .lock()
+                    .supports_pci()
+                    .unwrap()
+                    .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
+                match result {
+                    IoResult::Ok => (),
+                    IoResult::Defer(token) => token
+                        .write_future()
+                        .await
+                        .expect("deferred BAR write failed"),
+                    IoResult::Err(err) => {
+                        tracing::error!(
+                        ?err,
+                        instance_id = %self.instance_id,
+                        index = i,
+                        "failed to write bar");
+                        panic!("failed to write bar");
+                    }
+                }
             }
         }
         self.bars_set = true;
         Ok(())
     }
 
-    fn set_power(&mut self, on: bool) {
-        let mut device = self.device.lock();
-        let mut command = {
-            let mut value = 0;
-            device
-                .supports_pci()
-                .unwrap()
-                .pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, &mut value)
-                .now_or_never()
-                .map(|_| value)
-                .unwrap_or(0)
+    async fn set_power(&mut self, on: bool) {
+        let result = {
+            let mut device = self.device.lock();
+            let pci = device.supports_pci().unwrap();
+            let mut command = {
+                let mut value_u32 = 0;
+                let value =
+                    ByteEnabledDwordRead::new(&mut value_u32, PciConfigByteEnable::LOW_WORD);
+                pci.pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, value)
+                    .now_or_never()
+                    .map(|_| value_u32)
+                    .unwrap_or(0)
+            };
+            let mmio = cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32;
+            if on {
+                command |= mmio;
+            } else {
+                command &= !mmio;
+            }
+            let command = ByteEnabledDwordWrite::new(command, PciConfigByteEnable::LOW_WORD);
+            pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
         };
-        let mmio = cfg_space::Command::new()
-            .with_mmio_enabled(true)
-            .into_bits() as u32;
-        if on {
-            command |= mmio;
-        } else {
-            command &= !mmio;
+        match result {
+            IoResult::Ok => (),
+            IoResult::Defer(token) => token
+                .write_future()
+                .await
+                .expect("deferred power state change failed"),
+            IoResult::Err(err) => {
+                tracing::error!(
+                    ?err,
+                    instance_id = %self.instance_id,
+                    "failed to change power state"
+                );
+                panic!("failed to change power state");
+            }
         }
-        {
-            device
-                .supports_pci()
-                .unwrap()
-                .pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
-                .unwrap();
-        };
 
         // TODO: set power cap, too, on devices that support it.
     }
@@ -1167,7 +1281,7 @@ impl VpciChannel {
     /// Release all resources associated with the device (not the bus).
     async fn release_all(&mut self) {
         // Power off the device.
-        self.set_power(false);
+        self.set_power(false).await;
 
         // Unmap all interrupts.
         for MsiAddressData { address, data } in self.interrupts.drain(..) {
@@ -1175,7 +1289,7 @@ impl VpciChannel {
         }
 
         // Clear the BARs.
-        self.set_bars(&[MmioResource::default(); 6]).unwrap();
+        self.set_bars(&[MmioResource::default(); 6]).await.unwrap();
         self.bars_set = false;
     }
 }
@@ -1196,6 +1310,8 @@ pub struct VpciChannel {
     hardware_ids: HardwareIds,
     #[inspect(hex, iter_by_index)]
     bar_masks: [u32; 6],
+    /// NUMA node affinity reported to the guest in `DeviceDescription2`.
+    vnode: Option<u16>,
 
     // The underlying device.
     #[inspect(skip)]
@@ -1205,6 +1321,8 @@ pub struct VpciChannel {
     bars_set: bool,
     #[inspect(iter_by_index)]
     interrupts: Vec<MsiAddressData>,
+    #[inspect(skip)]
+    eject: VpciBusEject,
 }
 
 /// Virtual PCI Config Space
@@ -1294,6 +1412,13 @@ impl VpciConfigSpaceOffset {
         let v = self.0.load(Ordering::Relaxed);
         (v != Self::INVALID).then_some(v)
     }
+
+    /// Sets the config space base address. Used in tests to simulate the
+    /// address negotiated during channel protocol.
+    #[cfg(test)]
+    pub(crate) fn set(&self, addr: u64) {
+        self.0.store(addr, Ordering::Relaxed);
+    }
 }
 
 impl VpciChannel {
@@ -1303,6 +1428,7 @@ impl VpciChannel {
         instance_id: Guid,
         config_space: VpciConfigSpace,
         msi_mapper: VpciInterruptMapper,
+        vnode: Option<u16>,
     ) -> Result<Self, NotPciDevice> {
         let (hardware_ids, bar_masks);
         {
@@ -1319,10 +1445,16 @@ impl VpciChannel {
             serial_num: instance_id.data1, // Use FIOV precedent of serial number from first block of GUID
             hardware_ids,
             bar_masks,
+            vnode,
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
+            eject: VpciBusEject::default(),
         })
+    }
+
+    pub(crate) fn eject_control(&self) -> VpciBusEject {
+        self.eject.clone()
     }
 }
 
@@ -1355,10 +1487,12 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
                 queue: Queue::new(channel)?,
             },
             state: ProtocolState::Init,
+            eject_recv: self.eject.connect(),
         })
     }
 
     async fn close(&mut self) {
+        self.eject.disconnect();
         self.release_all().await;
 
         // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
@@ -1398,6 +1532,7 @@ mod tests {
     use super::VpciChannel;
     use super::VpciChannelState;
     use super::VpciConfigSpace;
+    use crate::bus::VpciBusEject;
     use crate::test_helpers::TestVpciInterruptController;
     use chipset_arc_mutex_device::services::MmioInterceptServices;
     use chipset_arc_mutex_device::test_chipset::TestChipset;
@@ -1406,6 +1541,8 @@ mod tests {
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::mmio::RegisterMmioIntercept;
+    use chipset_device::pci::ByteEnabledDwordRead;
+    use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigSpace;
     use closeable_mutex::CloseableMutex;
     use device_emulators::ReadWriteRequestType;
@@ -1421,6 +1558,7 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
+    use pal_async::task::Spawn;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1456,6 +1594,20 @@ mod tests {
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
 
+    // Helper to complete deferred write tokens if needed.
+    async fn complete_write(result: IoResult) {
+        match result {
+            IoResult::Ok => (),
+            IoResult::Err(_err) => {
+                panic!("complete_write received IoResult::Err during test");
+            }
+            IoResult::Defer(token) => token
+                .write_future()
+                .await
+                .expect("deferred write should complete successfully"),
+        }
+    }
+
     enum ReadPacketInfo {
         None,
         NewTransaction,
@@ -1467,6 +1619,7 @@ mod tests {
         host_queue: Queue<FlatRingMem>,
         transaction_id: AtomicU64,
         protocol_version: protocol::ProtocolVersion,
+        eject: VpciBusEject,
     }
 
     fn connected_device(
@@ -1493,18 +1646,22 @@ mod tests {
             serial_num: 0x1234,
             hardware_ids,
             bar_masks,
+            vnode: None,
             device,
             bars_set: false,
             interrupts: Vec::new(),
+            eject: VpciBusEject::default(),
         };
+        let eject = state.eject_control();
         let mut worker = VpciChannelState {
             conn: Connection { queue: host },
             state: ProtocolState::Init,
+            eject_recv: eject.connect(),
         };
         driver
             .spawn("worker", async move { worker.run(&mut state).await })
             .detach();
-        MockVpciGuestDevice::new(guest, 0, hardware_ids)
+        MockVpciGuestDevice::new(guest, 0, hardware_ids, eject)
     }
 
     #[derive(Debug, Error)]
@@ -1523,12 +1680,18 @@ mod tests {
     }
 
     impl MockVpciGuestDevice {
-        fn new(queue: Queue<FlatRingMem>, _index: usize, config: HardwareIds) -> Self {
+        fn new(
+            queue: Queue<FlatRingMem>,
+            _index: usize,
+            config: HardwareIds,
+            eject: VpciBusEject,
+        ) -> Self {
             Self {
                 config,
                 host_queue: queue,
                 transaction_id: AtomicU64::new(1),
                 protocol_version: protocol::ProtocolVersion::VB,
+                eject,
             }
         }
 
@@ -1657,7 +1820,7 @@ mod tests {
             assert_eq!(device.pnp_id.sub_vendor_id, self.config.type0_sub_vendor_id);
             assert_eq!(device.pnp_id.sub_system_id, self.config.type0_sub_system_id);
             assert_eq!(device.slot, SlotNumber::new());
-            assert_eq!(device.flags, 0,);
+            assert_eq!(device.flags, protocol::DeviceDescription2Flags::new());
             assert_eq!(device.numa_node, 0);
             assert_eq!(device.rsvd, 0);
         }
@@ -1820,12 +1983,12 @@ mod tests {
     }
 
     impl PciConfigSpace for NullDevice {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-            self.config_space.read_u32(offset, value)
+        fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+            self.config_space.read_byte_enabled(offset, value)
         }
 
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-            self.config_space.write_u32(offset, value)
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+            self.config_space.write_byte_enabled(offset, value)
         }
     }
 
@@ -1844,11 +2007,65 @@ mod tests {
         };
 
         let pci = Arc::new(CloseableMutex::new(NullDevice {
-            config_space: ConfigSpaceType0Emulator::new(pci_config, Vec::new(), DeviceBars::new()),
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
         }));
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         let base_address = 0x140000000;
         guest_driver.start_device(base_address).await;
+    }
+
+    #[async_test]
+    async fn eject_waits_for_guest_completion(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let pci_config = HardwareIds {
+            vendor_id: 0x123,
+            device_id: 0x789,
+            revision_id: 1,
+            prog_if: ProgrammingInterface::NONE,
+            base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+            sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+            type0_sub_vendor_id: 0x456,
+            type0_sub_system_id: 0x1,
+        };
+        let pci = Arc::new(CloseableMutex::new(NullDevice {
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
+        }));
+        let mut guest_driver = connected_device(&driver, pci, msi_controller);
+        guest_driver.start_device(0x140000000).await;
+
+        let eject = guest_driver.eject.clone();
+        let eject_task = driver.spawn("eject", async move { eject.eject().await });
+        let mut packet_info = ReadPacketInfo::None;
+        let request: protocol::PdoMessage =
+            guest_driver.read_packet(&mut packet_info).await.unwrap();
+        assert!(matches!(packet_info, ReadPacketInfo::NewTransaction));
+        assert_eq!(request.message_type, protocol::MessageType::EJECT);
+        assert_eq!(request.slot, SlotNumber::new());
+
+        let error = guest_driver.eject.eject().await.unwrap_err();
+        assert!(format!("{error:#}").contains("VPCI device eject already in progress"));
+
+        guest_driver
+            .write_packet(
+                None,
+                &protocol::PdoMessage {
+                    message_type: protocol::MessageType::EJECT_COMPLETE,
+                    slot: SlotNumber::new(),
+                },
+            )
+            .await
+            .unwrap();
+        eject_task.await.unwrap();
     }
 
     #[async_test]
@@ -1865,7 +2082,12 @@ mod tests {
             type0_sub_system_id: 0x1,
         };
         let pci = Arc::new(CloseableMutex::new(NullDevice {
-            config_space: ConfigSpaceType0Emulator::new(pci_config, Vec::new(), DeviceBars::new()),
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
         }));
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         guest_driver.protocol_version = protocol::ProtocolVersion(0x00020000);
@@ -1887,7 +2109,7 @@ mod tests {
             type0_sub_system_id: 0x1,
         };
         let (_msix, msix_capability) =
-            pci_core::capabilities::msix::MsixEmulator::new(0, 64, msi_conn.target());
+            pci_core::capabilities::msix::MsixEmulator::new(0, 64, &msi_conn.target());
 
         let msi_controller = TestVpciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
@@ -1896,6 +2118,7 @@ mod tests {
             config_space: ConfigSpaceType0Emulator::new(
                 pci_config,
                 vec![Box::new(msix_capability)],
+                Vec::new(),
                 DeviceBars::new(),
             ),
         }));
@@ -1922,6 +2145,7 @@ mod tests {
             config_space: ConfigSpaceType0Emulator::new(
                 pci_config,
                 Vec::new(),
+                Vec::new(),
                 DeviceBars::new().bar0(0x1000, BarMemoryKind::Dummy),
             ),
         }));
@@ -1929,46 +2153,125 @@ mod tests {
 
         let base_address = 0x80000000;
         guest_driver.start_device(base_address).await;
-        let mut pci = pci.lock();
         for i in 0..6 {
-            pci.pci_cfg_write(0x10 + 4 * i, 0xffffffff).unwrap();
+            let result = pci.lock().pci_cfg_write(
+                0x10 + 4 * i,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+            );
+            complete_write(result).await;
         }
 
         let mut value = 0;
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0xfffff004);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
+        assert_eq!(value & 0xfffffff0, 0xfffff000);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0xffffffff);
-        pci.pci_cfg_read(0x18, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x18,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x1c, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x1c,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x20, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x20,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x24, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x24,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
 
-        pci.pci_cfg_write(0x14, 0x20).unwrap();
-        pci.pci_cfg_write(0x10, 0x0).unwrap();
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0x4);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x14, ByteEnabledDwordWrite::with_all_bytes_enabled(0x20)),
+        )
+        .await;
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0x0)),
+        )
+        .await;
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
+        assert_eq!(value & 0xfffffff0, 0);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0x20);
 
-        pci.pci_cfg_write(
-            0x4,
-            pci_core::spec::cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+        complete_write(
+            pci.lock().pci_cfg_write(
+                0x4,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    pci_core::spec::cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                ),
+            ),
         )
-        .unwrap();
+        .await;
 
         // Writes to BAR address are not allowed once MMIO is enabled.
-        pci.pci_cfg_write(0x14, 0xffffffff).unwrap();
-        pci.pci_cfg_write(0x10, 0xffffffff).unwrap();
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0x4);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        complete_write(pci.lock().pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+        ))
+        .await;
+        complete_write(pci.lock().pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+        ))
+        .await;
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
+        assert_eq!(value & 0xfffffff0, 0);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0x20);
     }
 
@@ -1991,6 +2294,7 @@ mod tests {
                         type0_sub_system_id: 0x1,
                     },
                     Vec::new(),
+                    Vec::new(),
                     DeviceBars::new()
                         .bar0(
                             0x1000,
@@ -2005,28 +2309,28 @@ mod tests {
             }
         }
 
-        fn read_bar_u32(&self, bar: u8, offset: u16) -> u32 {
+        fn read_bar_u32(&self, bar: u8, offset: u64) -> u32 {
             if bar == 0 && offset == 0 {
                 1
             } else if bar == 0 && offset == 4 {
                 2
             } else if bar == 2 && offset == 0 {
                 3
-            } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
+            } else if bar == 2 && offset == HV_PAGE_SIZE {
                 4
             } else {
                 panic!("Unexpected address {}/{:#x}", bar, offset);
             }
         }
 
-        fn write_bar_u32(&mut self, bar: u8, offset: u16, val: u32) {
+        fn write_bar_u32(&mut self, bar: u8, offset: u64, val: u32) {
             if bar == 0 && offset == 0 {
                 assert_eq!(val, 1);
             } else if bar == 0 && offset == 4 {
                 assert_eq!(val, 2);
             } else if bar == 2 && offset == 0 {
                 assert_eq!(val, 3);
-            } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
+            } else if bar == 2 && offset == HV_PAGE_SIZE {
                 assert_eq!(val, 4);
             } else {
                 panic!("Unexpected address {}/{:#x}", bar, offset);
@@ -2083,11 +2387,11 @@ mod tests {
     }
 
     impl PciConfigSpace for TestDevice {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-            self.config_space.read_u32(offset, value)
+        fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+            self.config_space.read_byte_enabled(offset, value)
         }
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-            self.config_space.write_u32(offset, value)
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+            self.config_space.write_byte_enabled(offset, value)
         }
     }
 
@@ -2119,29 +2423,48 @@ mod tests {
         };
 
         let bar_address1 = 0x2000000000;
-        pci.lock()
-            .pci_cfg_write(0x14, u32::try_from(bar_address1 >> 32).unwrap())
-            .unwrap();
-        pci.lock()
-            .pci_cfg_write(0x10, u32::try_from(bar_address1 & 0xffffffff).unwrap())
-            .unwrap();
+        complete_write(pci.lock().pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address1 >> 32).unwrap(),
+            ),
+        ))
+        .await;
+        complete_write(pci.lock().pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address1 & 0xffffffff).unwrap(),
+            ),
+        ))
+        .await;
 
         let bar_address2: u64 = 0x4000;
-        pci.lock()
-            .pci_cfg_write(0x1c, u32::try_from(bar_address2 >> 32).unwrap())
-            .unwrap();
-        pci.lock()
-            .pci_cfg_write(0x18, u32::try_from(bar_address2 & 0xffffffff).unwrap())
-            .unwrap();
+        complete_write(pci.lock().pci_cfg_write(
+            0x1c,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address2 >> 32).unwrap(),
+            ),
+        ))
+        .await;
+        complete_write(pci.lock().pci_cfg_write(
+            0x18,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address2 & 0xffffffff).unwrap(),
+            ),
+        ))
+        .await;
 
-        pci.lock()
-            .pci_cfg_write(
+        complete_write(
+            pci.lock().pci_cfg_write(
                 0x4,
-                pci_core::spec::cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32,
-            )
-            .unwrap();
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    pci_core::spec::cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                ),
+            ),
+        )
+        .await;
 
         assert_eq!(read_u32(bar_address1), 1);
         assert_eq!(read_u32(bar_address1 + 4), 2);
@@ -2215,7 +2538,12 @@ mod tests {
         };
 
         let pci = Arc::new(CloseableMutex::new(NullDevice {
-            config_space: ConfigSpaceType0Emulator::new(pci_config, Vec::new(), DeviceBars::new()),
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
         }));
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         let base_address = 0x1000000;

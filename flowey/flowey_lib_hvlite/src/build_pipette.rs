@@ -3,8 +3,8 @@
 
 //! Build `pipette` binaries
 
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
@@ -20,7 +20,8 @@ pub enum PipetteOutput {
         #[serde(rename = "pipette.exe")]
         exe: PathBuf,
         #[serde(rename = "pipette.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
 }
 

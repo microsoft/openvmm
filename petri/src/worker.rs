@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::OpenHclServicingFlags;
+use anyhow::Context;
 use get_resources::ged::GuestServicingFlags;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -23,14 +24,16 @@ impl Worker {
     pub(crate) async fn launch(
         host: &WorkerHost,
         cfg: Config,
+        shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
 
         let params = VmWorkerParameters {
-            hypervisor: None,
+            hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
             cfg,
             saved_state: None,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -45,12 +48,42 @@ impl Worker {
         ))
     }
 
+    pub(crate) async fn pause(&self) -> Result<bool, RpcError> {
+        self.rpc.call(VmRpc::Pause, ()).await
+    }
+
     pub(crate) async fn resume(&self) -> Result<bool, RpcError> {
         self.rpc.call(VmRpc::Resume, ()).await
     }
 
+    pub(crate) async fn save(&self) -> anyhow::Result<mesh::payload::message::ProtobufMessage> {
+        let msg = self.rpc.call_failable(VmRpc::Save, ()).await?;
+        Ok(msg)
+    }
+
     pub(crate) async fn reset(&self) -> anyhow::Result<()> {
         self.rpc.call(VmRpc::Reset, ()).await??;
+        Ok(())
+    }
+
+    pub(crate) async fn dump_state(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let tmp_file = tempfile::NamedTempFile::new_in(parent)
+            .context("failed to create temp file for dump")?;
+        self.rpc
+            .call_failable(VmRpc::DumpState, tmp_file.as_file().try_clone()?)
+            .await
+            .context("failed to dump state")?;
+        tmp_file.persist(path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to rename temp file to {}: {}",
+                path.display(),
+                e.error
+            )
+        })?;
         Ok(())
     }
 
@@ -90,8 +123,26 @@ impl Worker {
         Ok(())
     }
 
-    pub(crate) async fn inspect_all(&self) -> inspect::Node {
-        let mut inspection = inspect::inspect("", &self.handle);
+    pub(crate) async fn add_pcie_device(
+        &self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::RemovePcieDevice, port_name)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn inspect(&self, path: &str) -> inspect::Node {
+        let mut inspection = inspect::inspect(path, &self.handle);
         inspection.resolve().await;
         inspection.results()
     }

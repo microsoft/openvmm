@@ -3,8 +3,8 @@
 
 //! Build `guest_test_uefi` images and binaries
 
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonProfile;
+use crate::common::CommonArch;
+use crate::common::CommonProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 use std::collections::BTreeMap;

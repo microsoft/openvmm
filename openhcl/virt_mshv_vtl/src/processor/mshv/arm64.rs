@@ -108,7 +108,9 @@ impl BackingPrivate for HypervisorBackedArm64 {
     type Shared = HypervisorBackedArm64Shared;
 
     fn shared(shared: &BackingShared) -> &Self::Shared {
-        let BackingShared::Hypervisor(shared) = shared;
+        let BackingShared::Hypervisor(shared) = shared else {
+            unreachable!()
+        };
         shared
     }
 
@@ -187,7 +189,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
                     &mut this.backing.stats.unaccepted_gpa
                 }
                 HvMessageType::HvMessageTypeHypercallIntercept => {
-                    this.handle_hypercall_exit(dev)?;
+                    this.handle_hypercall_exit()?;
                     &mut this.backing.stats.hypercall
                 }
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
@@ -330,7 +332,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         self.deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
-    fn handle_hypercall_exit(&mut self, bus: &impl CpuIo) -> Result<(), VpHaltReason> {
+    fn handle_hypercall_exit(&mut self) -> Result<(), VpHaltReason> {
         let message = self
             .runner
             .exit_message()
@@ -344,7 +346,6 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         let handler = UhHypercallHandler {
             vp: self,
-            bus,
             trusted: false,
             intercepted_vtl,
         };
@@ -399,7 +400,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
                     if let Some(connection_id) =
                         self.partition.monitor_page.write_bit(bit_offset + bit)
                     {
-                        signal_mnf(dev, connection_id);
+                        signal_mnf(&self.partition.synic_ports, connection_id);
                     }
                 }
                 return Ok(());
@@ -678,7 +679,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         //
         // For VTL 0, the alias map guards for read and write permissions, so only check VTL execute
         // permissions. Because VTL 2 will not restrict execute exclusively, only VTL 1 execute
-        // permissions need to be checked and therefore only check permissions if VTL 1 is allowed.
+        // permissions need to be checked and therefore only check permissions once VTL 1
+        // protections are enabled. However on non-isolated partitions we don't intercept
+        // VTL 1 enablement, so we just check if VTL 1 is supported at all.
         //
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
@@ -692,6 +695,14 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             // Should always be called after translate gva with the tlb lock flag
             // or with an initial translation.
             debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
+
+            // An intercept can report a gpa that is unmapped or even outside the
+            // partition's address space, and the hypervisor fails the whole
+            // hypercall for those rather than reporting a per-page result. Only
+            // mapped lower VTL RAM can carry VTL protections anyway.
+            if !self.vp.partition.is_gpa_lower_vtl_ram(gpa) {
+                return Ok(());
+            }
 
             let cpsr: Cpsr64 = self
                 .vp
@@ -800,7 +811,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedArm64> {
+impl UhHypercallHandler<'_, '_, HypervisorBackedArm64> {
     const MSHV_DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [
@@ -812,9 +823,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedArm64> {
     );
 }
 
-impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
-    for UhHypercallHandler<'_, '_, T, HypervisorBackedArm64>
-{
+impl hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_, '_, HypervisorBackedArm64> {
     fn retarget_interrupt(
         &mut self,
         device_id: u64,

@@ -12,7 +12,6 @@ vmcore.workspace = true
 inspect = { workspace = true, features = ["defer"] }
 mesh.workspace = true
 pal_async.workspace = true
-test_with_tracing.workspace = true
 
 anyhow.workspace = true
 event-listener.workspace = true
@@ -21,6 +20,9 @@ futures-concurrency.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

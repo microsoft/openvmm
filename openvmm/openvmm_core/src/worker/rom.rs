@@ -44,7 +44,7 @@ impl RomBuilder {
 
     /// Constructs a ROM from the specified data.
     fn build_from_slice(self, data: &[u8]) -> std::io::Result<Rom> {
-        let backing = sparse_mmap::alloc_shared_memory(data.len())?;
+        let backing = sparse_mmap::alloc_shared_memory(data.len(), "rom")?;
         let mapping = sparse_mmap::SparseMapping::new(data.len())?;
         mapping.map_file(0, data.len(), &backing, 0, true)?;
         mapping.write_at(0, data).unwrap();

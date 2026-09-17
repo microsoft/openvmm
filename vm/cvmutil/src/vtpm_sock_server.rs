@@ -6,9 +6,9 @@
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream};
-use std::thread;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use crate::vtpm_helper::create_tpm_engine_helper;
 use tpm::tpm_helper::TpmEngineHelper;
@@ -21,14 +21,18 @@ fn setup_signal_handler() -> Arc<AtomicBool> {
     ctrlc::set_handler(move || {
         tracing::info!("Received Ctrl+C signal, shutting down TPM socket server...");
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl+C handler");
+    })
+    .expect("Error setting Ctrl+C handler");
 
     running
 }
 
 /// Start a TPM socket server using vTPM blob as backing state
 pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
-    tracing::info!("Starting TPM socket server using vTPM blob: {}", vtpm_blob_path);
+    tracing::info!(
+        "Starting TPM socket server using vTPM blob: {}",
+        vtpm_blob_path
+    );
     tracing::info!("Binding to address: {}", bind_addr);
 
     // Setup signal handler for graceful shutdown
@@ -41,21 +45,29 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
     tracing::info!("Data port: {}, Control port: {}", data_port, ctrl_port);
 
     // Load the vTPM blob
-    let vtpm_blob_content = fs::read(vtpm_blob_path)
-        .expect("failed to read vtpm blob file");
-    
+    let vtpm_blob_content = fs::read(vtpm_blob_path).expect("failed to read vtpm blob file");
+
     // Create TPM engine helper
     let (mut vtpm_engine_helper, mut nv_blob_accessor) = create_tpm_engine_helper();
 
     // Restore TPM state from blob
-    tracing::info!("Restoring TPM state from blob ({} bytes)", vtpm_blob_content.len());
-    let result = vtpm_engine_helper.tpm_engine.reset(Some(&vtpm_blob_content));
+    tracing::info!(
+        "Restoring TPM state from blob ({} bytes)",
+        vtpm_blob_content.len()
+    );
+    let result = vtpm_engine_helper
+        .tpm_engine
+        .reset(Some(&vtpm_blob_content));
     assert!(result.is_ok(), "Failed to restore TPM state: {:?}", result);
-    
-     // Initialize the TPM engine (this does StartupType::Clear + SelfTest)
+
+    // Initialize the TPM engine (this does StartupType::Clear + SelfTest)
     let result = vtpm_engine_helper.initialize_tpm_engine();
-    assert!(result.is_ok(), "Failed to initialize TPM engine: {:?}", result);
-    
+    assert!(
+        result.is_ok(),
+        "Failed to initialize TPM engine: {:?}",
+        result
+    );
+
     tracing::info!("TPM engine initialized successfully");
 
     // Wrap TPM engine in Arc<Mutex> for thread safety
@@ -68,19 +80,25 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
 
     let data_listener = TcpListener::bind(&data_addr)
         .expect(&format!("Failed to bind to data address: {}", data_addr));
-    
+
     let ctrl_listener = TcpListener::bind(&ctrl_addr)
         .expect(&format!("Failed to bind to control address: {}", ctrl_addr));
-    
+
     // Set non-blocking mode for graceful shutdown
-    data_listener.set_nonblocking(true)
+    data_listener
+        .set_nonblocking(true)
         .expect("Failed to set data listener to non-blocking");
-    ctrl_listener.set_nonblocking(true)
+    ctrl_listener
+        .set_nonblocking(true)
         .expect("Failed to set control listener to non-blocking");
 
     tracing::info!("TPM socket server listening on data port: {}", data_addr);
     tracing::info!("TPM socket server listening on control port: {}", ctrl_addr);
-    tracing::info!("Use with: export TPM2TOOLS_TCTI=\"mssim:host={},port={}\"", host, data_port);
+    tracing::info!(
+        "Use with: export TPM2TOOLS_TCTI=\"mssim:host={},port={}\"",
+        host,
+        data_port
+    );
     tracing::info!("Press Ctrl+C to stop the server");
 
     // Start control socket handler in a separate thread
@@ -94,16 +112,23 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
     while running.load(Ordering::SeqCst) {
         match data_listener.accept() {
             Ok((stream, _)) => {
-                let peer_addr = stream.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
+                let peer_addr = stream
+                    .peer_addr()
+                    .unwrap_or_else(|_| "unknown".parse().unwrap());
                 tracing::info!("New data connection from: {}", peer_addr);
-                
+
                 let tpm_engine_clone = Arc::clone(&tpm_engine);
                 let nv_accessor_clone = Arc::clone(&nv_accessor);
                 let client_running = running.clone();
-                
+
                 // Handle each connection in a separate thread
                 thread::spawn(move || {
-                    handle_tpm_data_client(stream, tpm_engine_clone, nv_accessor_clone, client_running);
+                    handle_tpm_data_client(
+                        stream,
+                        tpm_engine_clone,
+                        nv_accessor_clone,
+                        client_running,
+                    );
                 });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -134,11 +159,15 @@ fn parse_bind_address(bind_addr: &str) -> (String, u16) {
     if let Some(colon_pos) = bind_addr.rfind(':') {
         let host = bind_addr[..colon_pos].to_string();
         let port_str = &bind_addr[colon_pos + 1..];
-        let port = port_str.parse::<u16>()
+        let port = port_str
+            .parse::<u16>()
             .expect(&format!("Invalid port number: {}", port_str));
         (host, port)
     } else {
-        panic!("Invalid bind address format. Expected host:port, got: {}", bind_addr);
+        panic!(
+            "Invalid bind address format. Expected host:port, got: {}",
+            bind_addr
+        );
     }
 }
 
@@ -155,7 +184,7 @@ fn handle_control_socket(
             Ok((stream, _)) => {
                 let tpm_engine_clone = Arc::clone(&tpm_engine);
                 let client_running = running.clone();
-                
+
                 thread::spawn(move || {
                     handle_control_client(stream, tpm_engine_clone, client_running);
                 });
@@ -182,14 +211,17 @@ fn handle_control_client(
     tpm_engine: Arc<Mutex<TpmEngineHelper>>,
     running: Arc<AtomicBool>,
 ) {
-    let peer_addr = stream.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
+    let peer_addr = stream
+        .peer_addr()
+        .unwrap_or_else(|_| "unknown".parse().unwrap());
     tracing::debug!("Control client connected from: {}", peer_addr);
 
     let mut reader = BufReader::new(&stream);
     let mut writer = BufWriter::new(&stream);
 
     // Set read timeout for graceful shutdown
-    stream.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
         .unwrap_or_else(|e| tracing::warn!("Failed to set read timeout: {}", e));
 
     while running.load(Ordering::SeqCst) {
@@ -226,24 +258,26 @@ fn handle_control_client(
 /// Control command types for Microsoft TPM Simulator
 #[derive(Debug)]
 enum ControlCommand {
-    SessionEnd,           // 0x00
-    Stop,                 // 0x01  
-    Reset,                // 0x02
-    Restart,              // 0x03
-    PowerOn,              // 0x04
-    PowerOff,             // 0x05
-    GetTestResult,        // 0x06
-    GetCapability,        // 0x07
-    NvOn,                 // 0x0B - MS_SIM_NV_ON
-    NvOff,                // 0x0C - MS_SIM_NV_OFF
-    HashStart,            // 0x0D
-    HashData,             // 0x0E
-    HashEnd,              // 0x0F
+    SessionEnd,    // 0x00
+    Stop,          // 0x01
+    Reset,         // 0x02
+    Restart,       // 0x03
+    PowerOn,       // 0x04
+    PowerOff,      // 0x05
+    GetTestResult, // 0x06
+    GetCapability, // 0x07
+    NvOn,          // 0x0B - MS_SIM_NV_ON
+    NvOff,         // 0x0C - MS_SIM_NV_OFF
+    HashStart,     // 0x0D
+    HashData,      // 0x0E
+    HashEnd,       // 0x0F
     Unknown(Vec<u8>),
 }
 
 /// Read a control command from the client
-fn read_control_command(reader: &mut BufReader<&TcpStream>) -> Result<ControlCommand, std::io::Error> {
+fn read_control_command(
+    reader: &mut BufReader<&TcpStream>,
+) -> Result<ControlCommand, std::io::Error> {
     use std::io::Read;
 
     // Control commands are 4 bytes (big endian)
@@ -263,8 +297,8 @@ fn read_control_command(reader: &mut BufReader<&TcpStream>) -> Result<ControlCom
         0x00000005 => Ok(ControlCommand::PowerOff),
         0x00000006 => Ok(ControlCommand::GetTestResult),
         0x00000007 => Ok(ControlCommand::GetCapability),
-        0x0000000B => Ok(ControlCommand::NvOn),      // MS_SIM_NV_ON
-        0x0000000C => Ok(ControlCommand::NvOff),     // MS_SIM_NV_OFF
+        0x0000000B => Ok(ControlCommand::NvOn), // MS_SIM_NV_ON
+        0x0000000C => Ok(ControlCommand::NvOff), // MS_SIM_NV_OFF
         0x0000000D => Ok(ControlCommand::HashStart),
         0x0000000E => Ok(ControlCommand::HashData),
         0x0000000F => Ok(ControlCommand::HashEnd),
@@ -273,10 +307,7 @@ fn read_control_command(reader: &mut BufReader<&TcpStream>) -> Result<ControlCom
 }
 
 /// Process a control command
-fn process_control_command(
-    engine: &mut TpmEngineHelper,
-    command: &ControlCommand,
-) -> Vec<u8> {
+fn process_control_command(engine: &mut TpmEngineHelper, command: &ControlCommand) -> Vec<u8> {
     match command {
         ControlCommand::SessionEnd => {
             tracing::debug!("TPM Session End requested");
@@ -297,10 +328,10 @@ fn process_control_command(
         }
         ControlCommand::PowerOn => {
             tracing::info!("TPM Power On requested");
-            
+
             // Perform TPM power-on sequence if needed
             // This might involve calling engine methods to simulate power-on
-            
+
             vec![0x00, 0x00, 0x00, 0x00] // Success
         }
         ControlCommand::PowerOff => {
@@ -319,11 +350,11 @@ fn process_control_command(
         }
         ControlCommand::NvOn => {
             tracing::info!("MS_SIM_NV_ON (TPM NV Enable) requested");
-            
+
             // This is the command that was failing
             // Enable NV storage in the TPM
             // The ms-tpm-20-ref might have specific methods for this
-            
+
             // For now, acknowledge success
             vec![0x00, 0x00, 0x00, 0x00] // Success
         }
@@ -344,16 +375,23 @@ fn process_control_command(
             vec![0x00, 0x00, 0x00, 0x00] // Success
         }
         ControlCommand::Unknown(data) => {
-            tracing::warn!("Unknown control command: {:02x?} ({})", data, u32::from_be_bytes([data[0], data[1], data[2], data[3]]));
+            tracing::warn!(
+                "Unknown control command: {:02x?} ({})",
+                data,
+                u32::from_be_bytes([data[0], data[1], data[2], data[3]])
+            );
             vec![0x00, 0x00, 0x00, 0x01] // Error response
         }
     }
 }
 
 /// Write a control response to the client
-fn write_control_response(writer: &mut BufWriter<&TcpStream>, response: &[u8]) -> Result<(), std::io::Error> {
+fn write_control_response(
+    writer: &mut BufWriter<&TcpStream>,
+    response: &[u8],
+) -> Result<(), std::io::Error> {
     use std::io::Write;
-    
+
     writer.write_all(response)?;
     writer.flush()?;
     Ok(())
@@ -367,12 +405,12 @@ const ABSOLUTE_MAX_CMD: usize = 8192; // hard safety ceiling beyond which we ref
 #[repr(u32)]
 enum IfaceCmd {
     SignalHashStart = 5,
-    SignalHashData  = 6,
-    SignalHashEnd   = 7,
-    SendCommand     = 8,
+    SignalHashData = 6,
+    SignalHashEnd = 7,
+    SendCommand = 8,
     RemoteHandshake = 15,
-    SessionEnd      = 20,
-    Stop            = 21,
+    SessionEnd = 20,
+    Stop = 21,
 }
 
 fn handle_tpm_data_client(
@@ -382,14 +420,17 @@ fn handle_tpm_data_client(
     running: Arc<AtomicBool>,
 ) {
     use std::io::Write;
-    let peer_addr = stream.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
+    let peer_addr = stream
+        .peer_addr()
+        .unwrap_or_else(|_| "unknown".parse().unwrap());
     tracing::info!("TPM data client connected from: {}", peer_addr);
 
     let mut reader = BufReader::new(&stream);
     let mut writer = BufWriter::new(&stream);
 
     // Set read timeout for graceful shutdown
-    stream.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
         .unwrap_or_else(|e| tracing::warn!("Failed to set read timeout: {}", e));
 
     let max_cmd = INTERNAL_MAX_CMD; // internal engine limit
@@ -419,7 +460,7 @@ fn handle_tpm_data_client(
             }
             x if x == IfaceCmd::SendCommand as u32 => {
                 // locality
-                let mut loc = [0u8;1];
+                let mut loc = [0u8; 1];
                 use std::io::Read;
                 reader.read_exact(&mut loc);
                 let locality = loc[0];
@@ -428,24 +469,34 @@ fn handle_tpm_data_client(
                     tracing::warn!("TPM command too short {}", cmd_buf.len());
                 }
                 if cmd_buf.len() >= 6 {
-                    let tpm_declared = u32::from_be_bytes([cmd_buf[2],cmd_buf[3],cmd_buf[4],cmd_buf[5]]) as usize;
+                    let tpm_declared =
+                        u32::from_be_bytes([cmd_buf[2], cmd_buf[3], cmd_buf[4], cmd_buf[5]])
+                            as usize;
                     if tpm_declared != cmd_buf.len() {
-                        tracing::warn!("TPM header size {} != envelope {}", tpm_declared, cmd_buf.len());
+                        tracing::warn!(
+                            "TPM header size {} != envelope {}",
+                            tpm_declared,
+                            cmd_buf.len()
+                        );
                     }
                 }
 
                 let resp = {
                     let mut engine = tpm_engine.lock().unwrap();
-                    process_tpm_command(&mut engine, &cmd_buf)
-                        .unwrap_or_else(|e| { 
-                            tracing::error!("Exec error: {}", e); 
-                            // Minimal TPM error skeleton if desired; for now empty.
-                            vec![0u8; 0] 
-                        })
+                    process_tpm_command(&mut engine, &cmd_buf).unwrap_or_else(|e| {
+                        tracing::error!("Exec error: {}", e);
+                        // Minimal TPM error skeleton if desired; for now empty.
+                        vec![0u8; 0]
+                    })
                 };
 
                 write_var_bytes(&mut writer, &resp);
-                tracing::info!("SendCommand locality={} in={} out={}", locality, cmd_buf.len(), resp.len());
+                tracing::info!(
+                    "SendCommand locality={} in={} out={}",
+                    locality,
+                    cmd_buf.len(),
+                    resp.len()
+                );
             }
             x if x == IfaceCmd::SignalHashStart as u32 => {
                 // no payload
@@ -496,7 +547,7 @@ fn handle_tpm_data_client(
 
 fn read_u32(reader: &mut BufReader<&TcpStream>) -> std::io::Result<u32> {
     use std::io::Read;
-    let mut b = [0u8;4];
+    let mut b = [0u8; 4];
     reader.read_exact(&mut b)?;
     Ok(u32::from_be_bytes(b))
 }
@@ -509,8 +560,10 @@ fn write_u32(writer: &mut BufWriter<&TcpStream>, v: u32) -> std::io::Result<()> 
 fn read_var_bytes(reader: &mut BufReader<&TcpStream>, max: usize) -> std::io::Result<Vec<u8>> {
     let len = read_u32(reader)? as usize;
     if len > max {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-                 format!("VarBytes length {} > max {}", len, max)));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("VarBytes length {} > max {}", len, max),
+        ));
     }
     let mut buf = vec![0u8; len];
     use std::io::Read;
@@ -530,49 +583,51 @@ fn process_tpm_command(
     command: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     tracing::debug!("Processing TPM command: {} bytes", command.len());
-    
+
     // Check command size - TPM commands should fit in the page size
-    if command.len() > 4096 {  // TPM_PAGE_SIZE
+    if command.len() > 4096 {
+        // TPM_PAGE_SIZE
         return Err("Command too large for TPM buffer".into());
     }
-    
+
     // Create a command buffer similar to how the TPM device does it
-    let mut command_buffer = [0u8; 4096];  // Same size as TPM_PAGE_SIZE
-    
+    let mut command_buffer = [0u8; 4096]; // Same size as TPM_PAGE_SIZE
+
     // Copy the command into the buffer
     command_buffer[..command.len()].copy_from_slice(command);
-    
+
     tracing::trace!("Executing TPM command with engine...");
     tracing::trace!("Command (hex): {:02x?}", &command_buffer[..command.len()]);
-    
+
     // Submit the command to the TPM engine
-    let result = vtpm_engine_helper.tpm_engine.execute_command(
-        &mut command_buffer,
-        &mut vtpm_engine_helper.reply_buffer,
-    );
+    let result = vtpm_engine_helper
+        .tpm_engine
+        .execute_command(&mut command_buffer, &mut vtpm_engine_helper.reply_buffer);
 
     match result {
         Ok(response_size) => {
-            tracing::debug!("TPM command executed successfully, response size: {}", response_size);
-            
+            tracing::debug!(
+                "TPM command executed successfully, response size: {}",
+                response_size
+            );
+
             if response_size == 0 {
                 return Err("TPM returned zero-length response".into());
             }
 
-             if response_size < 10 {
+            if response_size < 10 {
                 return Err("TPM returned fatal response".into());
             }
-            
+
             // response code are in bytes 6-9 of the response
-            let response_code = u32::from_be_bytes(
-                vtpm_engine_helper.reply_buffer[6..10].try_into().unwrap(),
-            );
+            let response_code =
+                u32::from_be_bytes(vtpm_engine_helper.reply_buffer[6..10].try_into().unwrap());
             tracing::debug!("TPM response code: 0x{:08x}", response_code);
 
             if response_size > 4096 {
                 return Err(format!("TPM response too large: {}", response_size).into());
             }
-            
+
             // Copy the response from the helper's reply buffer
             Ok(vtpm_engine_helper.reply_buffer[..response_size].to_vec())
         }

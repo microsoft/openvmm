@@ -13,6 +13,7 @@ use crate::protocol::IdeCommand;
 use crate::protocol::Status;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryError;
 use guestmem::ranges::PagedRange;
 use ide_resources::IdePath;
 use inspect::Inspect;
@@ -360,7 +361,12 @@ impl AtapiDrive {
         }
     }
 
-    pub fn dma_transfer(&mut self, guest_memory: &GuestMemory, gpa: u64, len: usize) {
+    pub fn dma_transfer(
+        &mut self,
+        guest_memory: &GuestMemory,
+        gpa: u64,
+        len: usize,
+    ) -> Result<(), GuestMemoryError> {
         let buffer = self.state.buffer.as_ref().unwrap();
         assert!(len <= buffer.len() as usize);
         let dma_type = *buffer.dma_type.as_ref().unwrap();
@@ -373,16 +379,14 @@ impl AtapiDrive {
         );
         let range = buffer.range();
         let buffer_ptr = &self.command_buffer.buffer[range][..len];
-        let r = match dma_type {
+        // Perform the memory access first. If the guest pointed the DMA engine
+        // at inaccessible memory, propagate the error without advancing the
+        // buffer so the caller can raise the bus master DMA error, just as real
+        // hardware would on a failed bus access.
+        match dma_type {
             DmaType::Write => guest_memory.write_from_atomic(gpa, buffer_ptr),
             DmaType::Read => guest_memory.read_to_atomic(gpa, buffer_ptr),
-        };
-        if let Err(err) = r {
-            tracelimit::error_ratelimited!(
-                error = &err as &dyn std::error::Error,
-                "dma transfer failed"
-            );
-        }
+        }?;
         if self.state.buffer.as_mut().unwrap().advance(len as u32) {
             match dma_type {
                 DmaType::Write => self.read_data_port_buffer_complete(),
@@ -394,6 +398,7 @@ impl AtapiDrive {
                 self.request_interrupt(true);
             }
         }
+        Ok(())
     }
 
     pub fn dma_advance_buffer(&mut self, len: usize) {

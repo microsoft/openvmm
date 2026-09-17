@@ -117,11 +117,16 @@ pub mod hwid {
             NONE = 0x00,
 
             // Mass Storage Controller (Class code: 0x01)
+            MASS_STORAGE_CONTROLLER_SCSI = 0x00,
             MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY = 0x08,
 
             // Network Controller (Class code: 0x02)
             // Other values: 0x01 - 0x08, 0x80
             NETWORK_CONTROLLER_ETHERNET = 0x00,
+
+            // Simple Communication Controller (Class code: 0x07)
+            // Other values: 0x00 - 0x07
+            SIMPLE_COMMUNICATION_CONTROLLER_OTHER = 0x80,
 
             // Bridge (Class code: 0x06)
             // Other values: 0x02 - 0x0A
@@ -262,6 +267,24 @@ pub mod cfg_space {
 
     pub const HEADER_TYPE_00_SIZE: u16 = 0x40;
 
+    /// The BIST / Header Type / Latency Timer / Cache Line Size DWORD
+    /// at config space offset 0x0C.
+    ///
+    /// | Bits 31-24 | Bits 23-16  | Bits 15-8       | Bits 7-0         |
+    /// |------------|-------------|-----------------|------------------|
+    /// | BIST       | Header Type | Latency Timer   | Cache Line Size  |
+    #[bitfield(u32)]
+    pub struct BistHeader {
+        pub cache_line_size: u8,
+        pub latency_timer: u8,
+        /// Header layout type (0 = standard, 1 = PCI-to-PCI bridge).
+        #[bits(7)]
+        pub header_type: u8,
+        /// When set, the device is part of a multi-function package.
+        pub multi_function: bool,
+        pub bist: u8,
+    }
+
     open_enum::open_enum! {
         /// Offsets into the type 01h configuration space header.
         ///
@@ -306,6 +329,13 @@ pub mod cfg_space {
     }
 
     pub const HEADER_TYPE_01_SIZE: u16 = 0x40;
+
+    /// The low 4 bits of the memory base/limit registers are reserved.
+    pub const MEMORY_BASE_LIMIT_ADDRESS_MASK: u16 = 0xFFF0;
+
+    /// The low bit of the prefetchable memory base/limit registers indicates
+    /// whether the range is 64-bit or 32-bit.
+    pub const PREFETCH_MEMORY_BASE_LIMIT_64BIT: u16 = 0x1;
 
     /// BAR in-band encoding bits.
     ///
@@ -408,10 +438,78 @@ pub mod caps {
         /// variants on an as-needed basis!
         pub enum CapabilityId: u8 {
             #![expect(missing_docs)] // self explanatory variants
-            MSI             = 0x05,
-            VENDOR_SPECIFIC = 0x09,
-            PCI_EXPRESS     = 0x10,
-            MSIX            = 0x11,
+            POWER_MANAGEMENT = 0x01,
+            MSI              = 0x05,
+            VENDOR_SPECIFIC  = 0x09,
+            PCI_EXPRESS      = 0x10,
+            MSIX             = 0x11,
+            ADVANCED_FEATURES = 0x13,
+        }
+    }
+
+    open_enum::open_enum! {
+
+        /// PCIe Extended Capability IDs (offsets 0x100+ in config space).
+        ///
+        /// Sources: PCI Express Base Specification
+        ///
+        /// NOTE: this is a non-exhaustive list, so don't be afraid to add new
+        /// variants on an as-needed basis!
+        pub enum ExtendedCapabilityId: u16 {
+            #![expect(missing_docs)] // self explanatory variants
+            ACS   = 0x0D,
+            ARI   = 0x0E,
+            SRIOV = 0x10,
+            REBAR = 0x15,
+            DVSEC = 0x23,
+            SIOV  = 0x38,
+        }
+    }
+
+    /// Starting offset of the PCIe extended capability region in config space.
+    pub const EXT_CAP_START: u16 = 0x100;
+    /// Ending offset (exclusive) of the PCIe extended capability region in config space.
+    pub const EXT_CAP_END: u16 = 0x1000;
+    /// Ending offset (exclusive) of the common config header region.
+    pub const COMMON_HEADER_END: u16 = 0x40;
+
+    /// Conventional PCI Advanced Features capability.
+    #[expect(missing_docs)]
+    pub mod advanced_features {
+        use bitfield_struct::bitfield;
+
+        open_enum::open_enum! {
+            pub enum CapabilityRegister: u16 {
+                HEADER = 0x00,
+                CONTROL_STATUS = 0x04,
+            }
+        }
+
+        #[bitfield(u32)]
+        pub struct Header {
+            #[bits(8)]
+            pub capability_id: u8,
+            #[bits(8)]
+            pub next_pointer: u8,
+            #[bits(8)]
+            pub length: u8,
+            #[bits(8)]
+            pub capabilities: u8,
+        }
+
+        #[bitfield(u8)]
+        pub struct Capabilities {
+            pub transactions_pending: bool,
+            pub function_level_reset: bool,
+            #[bits(6)]
+            _reserved: u8,
+        }
+
+        #[bitfield(u8)]
+        pub struct Control {
+            pub initiate_function_level_reset: bool,
+            #[bits(7)]
+            _reserved: u8,
         }
     }
 
@@ -465,7 +563,7 @@ pub mod caps {
 
         open_enum::open_enum! {
             /// Offsets into a single MSI-X Table Entry
-            pub enum MsixTableEntryIdx: u16 {
+            pub enum MsixTableEntryIdx: u64 {
                 MSG_ADDR_LO = 0x00,
                 MSG_ADDR_HI = 0x04,
                 MSG_DATA    = 0x08,
@@ -484,77 +582,98 @@ pub mod caps {
         use zerocopy::IntoBytes;
         use zerocopy::KnownLayout;
 
-        /// PCIe Link Speed encoding values for use in Link Capabilities and other registers.
-        ///
-        /// Values are defined in PCIe Base Specification for the Max Link Speed field
-        /// in Link Capabilities Register and similar fields.
-        #[derive(Debug)]
-        #[repr(u32)]
-        pub enum LinkSpeed {
-            /// 2.5 GT/s link speed
-            Speed2_5GtS = 0b0001,
-            /// 5.0 GT/s link speed
-            Speed5_0GtS = 0b0010,
-            /// 8.0 GT/s link speed
-            Speed8_0GtS = 0b0011,
-            /// 16.0 GT/s link speed
-            Speed16_0GtS = 0b0100,
-            /// 32.0 GT/s link speed
-            Speed32_0GtS = 0b0101,
-            /// 64.0 GT/s link speed
-            Speed64_0GtS = 0b0110,
-            // All other encodings are reserved
+        open_enum::open_enum! {
+            /// PCIe Link Speed encoding values for use in Link Capabilities and other registers.
+            ///
+            /// Values are defined in PCIe Base Specification for the Max Link Speed field
+            /// in Link Capabilities Register and similar fields.
+            #[derive(Inspect)]
+            #[inspect(debug)]
+            pub enum LinkSpeed: u32 {
+                #![allow(non_upper_case_globals)]
+                /// 2.5 GT/s link speed
+                Speed2_5GtS = 0b0001,
+                /// 5.0 GT/s link speed
+                Speed5_0GtS = 0b0010,
+                /// 8.0 GT/s link speed
+                Speed8_0GtS = 0b0011,
+                /// 16.0 GT/s link speed
+                Speed16_0GtS = 0b0100,
+                /// 32.0 GT/s link speed
+                Speed32_0GtS = 0b0101,
+                /// 64.0 GT/s link speed
+                Speed64_0GtS = 0b0110,
+            }
         }
 
         impl LinkSpeed {
             pub const fn from_bits(bits: u32) -> Self {
-                match bits {
-                    0b0001 => LinkSpeed::Speed2_5GtS,
-                    0b0010 => LinkSpeed::Speed5_0GtS,
-                    0b0011 => LinkSpeed::Speed8_0GtS,
-                    0b0100 => LinkSpeed::Speed16_0GtS,
-                    0b0101 => LinkSpeed::Speed32_0GtS,
-                    0b0110 => LinkSpeed::Speed64_0GtS,
-                    _ => unreachable!(),
-                }
+                Self(bits)
             }
 
             pub const fn into_bits(self) -> u32 {
-                self as u32
+                self.0
             }
         }
 
-        /// PCIe Supported Link Speeds Vector encoding values for use in Link Capabilities 2 register.
-        ///
-        /// Values are defined in PCIe Base Specification for the Supported Link Speeds Vector field
-        /// in Link Capabilities 2 Register. Each bit represents support for a specific generation.
-        #[derive(Debug)]
-        #[repr(u32)]
-        pub enum SupportedLinkSpeedsVector {
-            /// Support up to Gen 1 (2.5 GT/s)
-            UpToGen1 = 0b0000001,
-            /// Support up to Gen 2 (5.0 GT/s)
-            UpToGen2 = 0b0000011,
-            /// Support up to Gen 3 (8.0 GT/s)
-            UpToGen3 = 0b0000111,
-            /// Support up to Gen 4 (16.0 GT/s)
-            UpToGen4 = 0b0001111,
-            /// Support up to Gen 5 (32.0 GT/s)
-            UpToGen5 = 0b0011111,
-            /// Support up to Gen 6 (64.0 GT/s)
-            UpToGen6 = 0b0111111,
-            // All other encodings are reserved
+        open_enum::open_enum! {
+            /// PCIe Supported Link Speeds Vector encoding values for use in Link Capabilities 2 register.
+            ///
+            /// Values are defined in PCIe Base Specification for the Supported Link Speeds Vector field
+            /// in Link Capabilities 2 Register. Each bit represents support for a specific generation.
+            #[derive(Inspect)]
+            #[inspect(debug)]
+            pub enum SupportedLinkSpeedsVector: u32 {
+                #![allow(non_upper_case_globals)]
+                /// Support up to Gen 1 (2.5 GT/s)
+                UpToGen1 = 0b0000001,
+                /// Support up to Gen 2 (5.0 GT/s)
+                UpToGen2 = 0b0000011,
+                /// Support up to Gen 3 (8.0 GT/s)
+                UpToGen3 = 0b0000111,
+                /// Support up to Gen 4 (16.0 GT/s)
+                UpToGen4 = 0b0001111,
+                /// Support up to Gen 5 (32.0 GT/s)
+                UpToGen5 = 0b0011111,
+                /// Support up to Gen 6 (64.0 GT/s)
+                UpToGen6 = 0b0111111,
+            }
         }
 
         impl SupportedLinkSpeedsVector {
             pub const fn from_bits(bits: u32) -> Self {
+                Self(bits)
+            }
+
+            pub const fn into_bits(self) -> u32 {
+                self.0
+            }
+        }
+
+        /// PCIe max TLP prefix values for use in Device Capabilities 2.
+        ///
+        /// Values are defined in PCIe Base Specification for the Max End-End TLP Prefixes
+        /// field in Device Capabilities 2 Register and similar fields.
+        #[derive(Copy, Clone, Debug)]
+        #[repr(u32)]
+        pub enum MaxEndEndTlpPrefixes {
+            /// 1 End-End TLP Prefix / OHC-E1
+            One = 0b01,
+            /// 2 End-End TLP Prefixes / OHC-E2
+            Two = 0b10,
+            /// 3 End-End TLP Prefixes / OHC-E4
+            Three = 0b11,
+            /// 4 End-End TLP Prefixes / OHC-E4
+            Four = 0b00,
+        }
+
+        impl MaxEndEndTlpPrefixes {
+            pub(crate) const fn from_bits(bits: u32) -> Self {
                 match bits {
-                    0b0000001 => SupportedLinkSpeedsVector::UpToGen1,
-                    0b0000011 => SupportedLinkSpeedsVector::UpToGen2,
-                    0b0000111 => SupportedLinkSpeedsVector::UpToGen3,
-                    0b0001111 => SupportedLinkSpeedsVector::UpToGen4,
-                    0b0011111 => SupportedLinkSpeedsVector::UpToGen5,
-                    0b0111111 => SupportedLinkSpeedsVector::UpToGen6,
+                    0b01 => MaxEndEndTlpPrefixes::One,
+                    0b10 => MaxEndEndTlpPrefixes::Two,
+                    0b11 => MaxEndEndTlpPrefixes::Three,
+                    0b00 => MaxEndEndTlpPrefixes::Four,
                     _ => unreachable!(),
                 }
             }
@@ -564,40 +683,34 @@ pub mod caps {
             }
         }
 
-        /// PCIe Link Width encoding values for use in Link Capabilities and other registers.
-        ///
-        /// Values are defined in PCIe Base Specification for the Max Link Width field
-        /// in Link Capabilities Register and similar fields.
-        #[derive(Debug)]
-        #[repr(u32)]
-        pub enum LinkWidth {
-            /// x1 link width
-            X1 = 0b000001,
-            /// x2 link width
-            X2 = 0b000010,
-            /// x4 link width
-            X4 = 0b000100,
-            /// x8 link width
-            X8 = 0b001000,
-            /// x16 link width
-            X16 = 0b010000,
-            // All other encodings are reserved
+        open_enum::open_enum! {
+            /// PCIe Link Width encoding values for use in Link Capabilities and other registers.
+            ///
+            /// Values are defined in PCIe Base Specification for the Max Link Width field
+            /// in Link Capabilities Register and similar fields.
+            #[derive(Inspect)]
+            #[inspect(debug)]
+            pub enum LinkWidth: u32 {
+                /// x1 link width
+                X1 = 0b000001,
+                /// x2 link width
+                X2 = 0b000010,
+                /// x4 link width
+                X4 = 0b000100,
+                /// x8 link width
+                X8 = 0b001000,
+                /// x16 link width
+                X16 = 0b010000,
+            }
         }
 
         impl LinkWidth {
             pub const fn from_bits(bits: u32) -> Self {
-                match bits {
-                    0b000001 => LinkWidth::X1,
-                    0b000010 => LinkWidth::X2,
-                    0b000100 => LinkWidth::X4,
-                    0b001000 => LinkWidth::X8,
-                    0b010000 => LinkWidth::X16,
-                    _ => unreachable!(),
-                }
+                Self(bits)
             }
 
             pub const fn into_bits(self) -> u32 {
-                self as u32
+                self.0
             }
         }
 
@@ -657,28 +770,25 @@ pub mod caps {
             pub flit_mode_supported: bool,
         }
 
-        #[derive(Debug)]
-        #[repr(u16)]
-        pub enum DevicePortType {
-            Endpoint = 0b0000,
-            RootPort = 0b0100,
-            UpstreamSwitchPort = 0b0101,
-            DownstreamSwitchPort = 0b0110,
+        open_enum::open_enum! {
+            #[derive(Inspect)]
+            #[inspect(debug)]
+            pub enum DevicePortType: u16 {
+                #![allow(non_upper_case_globals)]
+                Endpoint = 0b0000,
+                RootPort = 0b0100,
+                UpstreamSwitchPort = 0b0101,
+                DownstreamSwitchPort = 0b0110,
+            }
         }
 
         impl DevicePortType {
             const fn from_bits(bits: u16) -> Self {
-                match bits {
-                    0b0000 => DevicePortType::Endpoint,
-                    0b0100 => DevicePortType::RootPort,
-                    0b0101 => DevicePortType::UpstreamSwitchPort,
-                    0b0110 => DevicePortType::DownstreamSwitchPort,
-                    _ => unreachable!(),
-                }
+                Self(bits)
             }
 
             const fn into_bits(self) -> u16 {
-                self as u16
+                self.0
             }
         }
 
@@ -749,9 +859,9 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkCapabilities {
             #[bits(4)]
-            pub max_link_speed: u32,
+            pub max_link_speed: LinkSpeed,
             #[bits(6)]
-            pub max_link_width: u32,
+            pub max_link_width: LinkWidth,
             #[bits(2)]
             pub aspm_support: u32,
             #[bits(3)]
@@ -798,9 +908,9 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkStatus {
             #[bits(4)]
-            pub current_link_speed: u16,
+            pub current_link_speed: LinkSpeed,
             #[bits(6)]
-            pub negotiated_link_width: u16,
+            pub negotiated_link_width: LinkWidth,
             #[bits(1)]
             _reserved: u16,
             pub link_training: bool,
@@ -934,7 +1044,7 @@ pub mod caps {
             pub extended_fmt_field_supported: bool,
             pub end_end_tlp_prefix_supported: bool,
             #[bits(2)]
-            pub max_end_end_tlp_prefixes: u32,
+            pub max_end_end_tlp_prefixes: MaxEndEndTlpPrefixes,
             #[bits(2)]
             pub emergency_power_reduction_supported: u32,
             pub emergency_power_reduction_init_required: bool,
@@ -981,7 +1091,7 @@ pub mod caps {
             #[bits(1)]
             _reserved: u32,
             #[bits(7)]
-            pub supported_link_speeds_vector: u32,
+            pub supported_link_speeds_vector: SupportedLinkSpeedsVector,
             pub crosslink_supported: bool,
             #[bits(7)]
             pub lower_skp_os_generation_supported_speeds_vector: u32,
@@ -999,7 +1109,7 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkControl2 {
             #[bits(4)]
-            pub target_link_speed: u16,
+            pub target_link_speed: LinkSpeed,
             pub enter_compliance: bool,
             pub hardware_autonomous_speed_disable: bool,
             #[bits(1)]
@@ -1059,5 +1169,201 @@ pub mod caps {
             #[bits(16)]
             _reserved: u16,
         }
+    }
+
+    /// Access Control Services (ACS) extended capability
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod acs {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        /// Default ACS capability mask: SV, TB, RR, CR, UF, DT (no egress control vector).
+        pub const DEFAULT_ACS_CAP_MASK: u16 = 0x005f;
+
+        open_enum::open_enum! {
+            /// Offsets into the ACS Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16                | Bits 15-0               |
+            /// |-----------|---------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version    | Extended Capability ID  |
+            /// | Ext + 0x4 | ACS Control Register      | ACS Capability Register |
+            /// | Ext + 0x8 | Egress Control Vector (DWORD 0, if required)        |
+            /// | Ext + 0xC | Egress Control Vector (additional DWORDs, optional) |
+            pub enum AcsExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPS_CONTROL = 0x04,
+                EGRESS_CONTROL_VECTOR = 0x08,
+            }
+        }
+
+        /// Access Control Services Capability register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct AcsCapabilities {
+            pub source_validation: bool,
+            pub translation_blocking: bool,
+            pub p2p_request_redirect: bool,
+            pub p2p_completion_redirect: bool,
+            pub upstream_forwarding: bool,
+            pub p2p_egress_control: bool,
+            pub direct_translated_p2p: bool,
+            #[bits(9)]
+            _reserved: u16,
+        }
+
+        /// Access Control Services Control register.
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct AcsControl {
+            pub source_validation_enable: bool,
+            pub translation_blocking_enable: bool,
+            pub p2p_request_redirect_enable: bool,
+            pub p2p_completion_redirect_enable: bool,
+            pub upstream_forwarding_enable: bool,
+            pub p2p_egress_control_enable: bool,
+            pub direct_translated_p2p_enable: bool,
+            #[bits(9)]
+            _reserved: u16,
+        }
+    }
+
+    /// Designated Vendor-Specific Extended Capability (DVSEC)
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod dvsec {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        open_enum::open_enum! {
+            /// Offsets into the DVSEC Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16               | Bits 15-0               |
+            /// |-----------|--------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version   | Extended Capability ID  |
+            /// | Ext + 0x4 | DVSEC Length + Revision  | DVSEC Vendor ID         |
+            /// | Ext + 0x8 | Reserved                 | DVSEC ID                |
+            pub enum DvsecExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                DVSEC_HEADER1 = 0x04,
+                DVSEC_HEADER2 = 0x08,
+            }
+        }
+
+        /// DVSEC Header 1 register.
+        ///
+        /// Software should qualify the DVSEC Vendor ID before interpreting the
+        /// DVSEC Revision field.
+        ///
+        /// | Bits 31-20   | Bits 19-16      | Bits 15-0        |
+        /// |--------------|-----------------|------------------|
+        /// | DVSEC Length | DVSEC Revision  | DVSEC Vendor ID  |
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DvsecHeader1 {
+            pub dvsec_vendor_id: u16,
+            #[bits(4)]
+            pub dvsec_revision: u8,
+            #[bits(12)]
+            pub dvsec_length: u16,
+        }
+
+        /// DVSEC Header 2 register.
+        ///
+        /// Software should qualify the DVSEC Vendor ID before interpreting the
+        /// DVSEC ID field.
+        ///
+        /// | Bits 15-0 |
+        /// |-----------|
+        /// | DVSEC ID  |
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DvsecHeader2 {
+            pub dvsec_id: u16,
+        }
+    }
+
+    /// SR-IOV Extended Capability
+    ///
+    /// Source: PCI Express Base Specification, "Single Root I/O Virtualization"
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod sriov {
+        open_enum::open_enum! {
+            /// Offsets into the SR-IOV Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16              | Bits 15-0               |
+            /// |-----------|-------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version  | Extended Capability ID  |
+            /// | Ext + 0x4 | SR-IOV Capabilities                               |
+            /// | Ext + 0x8 | SR-IOV Status           | SR-IOV Control          |
+            /// | Ext + 0xC | Total VFs               | Initial VFs             |
+            /// | Ext + 0x10| Function Dep Link       | Num VFs                 |
+            /// | Ext + 0x14| VF Stride               | First VF Offset         |
+            /// | Ext + 0x18| VF Device ID            | Reserved                |
+            /// | Ext + 0x1C| Supported Page Sizes                              |
+            /// | Ext + 0x20| System Page Size                                  |
+            /// | Ext + 0x24| VF BAR0                                           |
+            /// | Ext + 0x28| VF BAR1                                           |
+            /// | Ext + 0x2C| VF BAR2                                           |
+            /// | Ext + 0x30| VF BAR3                                           |
+            /// | Ext + 0x34| VF BAR4                                           |
+            /// | Ext + 0x38| VF BAR5                                           |
+            /// | Ext + 0x3C| VF Migration State Array Offset                   |
+            pub enum SriovExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPS = 0x04,
+                /// SR-IOV Control (bits 15:0) and SR-IOV Status (bits 31:16).
+                CONTROL_STATUS = 0x08,
+                INITIAL_TOTAL_VFS = 0x0C,
+                VF_OFFSET_STRIDE = 0x14,
+                VF_BAR0 = 0x24,
+            }
+        }
+
+        /// ARI Capable Hierarchy bit within the 16-bit SR-IOV Control register
+        /// (at [`SriovExtendedCapabilityHeader::CONTROL_STATUS`]).
+        ///
+        /// Source: PCI Express Base Specification §9.4.3.3.5. Present only in
+        /// the lowest-numbered PF of a device; Read Only Zero in other PFs.
+        /// When Set, it hints that ARI has been enabled in the Root Port or
+        /// Switch Downstream Port immediately above the device, allowing VFs to
+        /// be assigned Function Numbers greater than 7 to conserve Bus Numbers.
+        pub const SRIOV_CONTROL_ARI_CAPABLE_HIERARCHY: u16 = 1 << 4;
+    }
+
+    /// Source: PCI Express Base Specification §7.8.8, "ARI Extended Capability"
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod ari {
+        open_enum::open_enum! {
+            /// Offsets into the ARI Extended Capability structure.
+            ///
+            /// | Offset    | Bits 31-16              | Bits 15-0               |
+            /// |-----------|-------------------------|-------------------------|
+            /// | Ext + 0x0 | Next Cap Ptr + Version  | Extended Capability ID  |
+            /// | Ext + 0x4 | ARI Control             | ARI Capability          |
+            ///
+            /// The ARI Capability register (bits 15:0 at Ext + 0x4) holds the
+            /// Next Function Number in bits 15:8; see
+            /// [`ARI_CAPABILITY_NEXT_FUNCTION_SHIFT`].
+            pub enum AriExtendedCapabilityHeader: u16 {
+                HEADER = 0x00,
+                CAPABILITY_CONTROL = 0x04,
+            }
+        }
+
+        /// Bit shift of the Next Function Number field within the ARI
+        /// Capability register (bits 15:8 of the 16-bit register at
+        /// [`AriExtendedCapabilityHeader::CAPABILITY_CONTROL`]).
+        ///
+        /// Source: PCI Express Base Specification §7.8.8.2. Function 0 is the
+        /// head of a linked list of Function Numbers; a value of 0 terminates
+        /// the list. Function Numbers may be sparse and non-sequential.
+        pub const ARI_CAPABILITY_NEXT_FUNCTION_SHIFT: u32 = 8;
     }
 }

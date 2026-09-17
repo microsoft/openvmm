@@ -43,22 +43,19 @@ impl SimpleFlowNode for Node {
             output,
         } = request;
 
-        let repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-        let logview_new_build =
+        let logview_build =
             ctx.reqv(|v| crate::_jobs::build_test_results_website::Request { path: v });
 
         let consolidated_html = ctx.emit_rust_stepv("generate consolidated gh pages html", |ctx| {
             let rendered_guide = rendered_guide.claim(ctx);
             let rustdoc_windows = rustdoc_windows.claim(ctx);
             let rustdoc_linux = rustdoc_linux.claim(ctx);
-            let repo = repo.claim(ctx);
-            let logview_new_build = logview_new_build.claim(ctx);
+            let logview_build = logview_build.claim(ctx);
             |rt| {
                 let rendered_guide = rt.read(rendered_guide);
                 let rustdoc_windows = rt.read(rustdoc_windows);
                 let rustdoc_linux = rt.read(rustdoc_linux);
-                let repo = rt.read(repo);
-                let logview_new_build = rt.read(logview_new_build);
+                let logview_build = rt.read(logview_build);
 
                 let consolidated_html = std::env::current_dir()?.join("out").absolute()?;
                 fs_err::create_dir(&consolidated_html)?;
@@ -87,15 +84,9 @@ impl SimpleFlowNode for Node {
                     consolidated_html.join("rustdoc/linux"),
                 )?;
 
-                // Old logviewer. Keeping this around while the new one is stabilized.
-                flowey_lib_common::_util::copy_dir_all(
-                    repo.join("petri/logview"),
-                    consolidated_html.join("test-results-old"),
-                )?;
-
                 // New logviewer (built in CI).
                 flowey_lib_common::_util::copy_dir_all(
-                    logview_new_build,
+                    logview_build,
                     consolidated_html.join("test-results"),
                 )?;
 
@@ -108,16 +99,24 @@ impl SimpleFlowNode for Node {
         });
 
         let consolidated_html = if matches!(ctx.backend(), FlowBackend::Github) {
+            // actions/upload-pages-artifact v4.0.0
             let did_upload = ctx
-                .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v3")
+                .emit_gh_step(
+                    "Upload pages artifact",
+                    "actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
+                )
                 .with(
                     "path",
                     consolidated_html.map(ctx, |x| x.display().to_string()),
                 )
                 .finish(ctx);
 
+            // actions/deploy-pages v4.0.5
             let did_deploy = ctx
-                .emit_gh_step("Deploy to GitHub Pages", "actions/deploy-pages@v4")
+                .emit_gh_step(
+                    "Deploy to GitHub Pages",
+                    "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+                )
                 .requires_permission(GhPermission::IdToken, GhPermissionValue::Write)
                 .requires_permission(GhPermission::Pages, GhPermissionValue::Write)
                 .run_after(did_upload)
@@ -128,7 +127,7 @@ impl SimpleFlowNode for Node {
             consolidated_html
         };
 
-        consolidated_html.write_into(ctx, output, |p| GhPagesOutput { gh_pages: p });
+        consolidated_html.write_into_with(ctx, output, |p| GhPagesOutput { gh_pages: p });
         Ok(())
     }
 }

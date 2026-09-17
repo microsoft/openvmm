@@ -253,6 +253,7 @@ fn populate_and_filter() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -366,6 +367,7 @@ fn subleaf() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -420,6 +422,7 @@ fn invlpgb() {
             cpuid_pages: pages.as_slice().as_bytes(),
             access_vsm: false,
             vtom: 0x80000000,
+            secure_avic: false,
         }
         .build(),
         Err(CpuidResultsError::InvlpgbUnavailable)
@@ -455,6 +458,7 @@ fn extended_address_space_sizes() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -478,6 +482,7 @@ fn hypervisor_present() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -506,6 +511,7 @@ fn validate_required_snp() {
                 cpuid_pages: pages.as_slice().as_bytes().as_bytes(),
                 access_vsm: false,
                 vtom: 0x80000000,
+                secure_avic: false,
             }.build(),
             Err(CpuidResultsError::MissingRequiredResult(err_leaf, err_subleaf)) if (err_leaf == leaf && err_subleaf == subleaf)
         ));
@@ -543,6 +549,7 @@ fn zeros_unsupported_leaf() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -578,6 +585,7 @@ fn tsc_aux() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -1129,6 +1137,7 @@ fn real_values() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
+        secure_avic: false,
     }
     .build()
     .unwrap();

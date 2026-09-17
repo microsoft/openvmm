@@ -69,6 +69,8 @@ impl RangeKey for u64 {
 ///
 /// For example: `0x40-0x4f,0x63,?` would filter addresses 0x40 through 0x4f, address
 /// 0x63, and any unknown addresses.
+///
+/// The string "all" is a special case that will match everything.
 #[derive(Debug)]
 pub struct AddressFilter<T> {
     unknown: bool,
@@ -166,31 +168,34 @@ impl<T: RangeKey> FromStr for AddressFilter<T> {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut v = Vec::new();
         let mut unknown = false;
-        for range in s.split(',') {
-            if range == "?" {
-                unknown = true;
-            } else if s == "all" {
-                unknown = true;
-                v.push((T::ZERO, T::MAX));
-            } else {
-                let (start, end) = if let Some((start, end)) = range.split_once('-') {
-                    let start = parse_value(start)?;
-                    let end = parse_value(end)?;
-                    if end < start {
-                        return Err(InvalidRangeSet::EndBeforeStart);
-                    }
-                    (start, end)
+
+        if s == "all" {
+            unknown = true;
+            v.push((T::ZERO, T::MAX));
+        } else {
+            for range in s.split(',') {
+                if range == "?" {
+                    unknown = true;
                 } else {
-                    let start = parse_value(range)?;
-                    (start, start)
-                };
-                v.push((start, end));
+                    let (start, end) = if let Some((start, end)) = range.split_once('-') {
+                        let start = parse_value(start)?;
+                        let end = parse_value(end)?;
+                        if end < start {
+                            return Err(InvalidRangeSet::EndBeforeStart);
+                        }
+                        (start, end)
+                    } else {
+                        let start = parse_value(range)?;
+                        (start, start)
+                    };
+                    v.push((start, end));
+                }
             }
-        }
-        v.sort();
-        for ((_, end1), (start2, _)) in v.iter().zip(v.iter().skip(1)) {
-            if end1 >= start2 {
-                return Err(InvalidRangeSet::Overlapping);
+            v.sort();
+            for ((_, end1), (start2, _)) in v.iter().zip(v.iter().skip(1)) {
+                if end1 >= start2 {
+                    return Err(InvalidRangeSet::Overlapping);
+                }
             }
         }
         Ok(Self { ranges: v, unknown })
@@ -211,5 +216,95 @@ impl<T: RangeKey> InspectMut for AddressFilter<T> {
             },
             Err(req) => req.value(self.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_all() {
+        let filter: AddressFilter<u32> = "all".parse().unwrap();
+        assert!(filter.unknown);
+        assert_eq!(filter.ranges, vec![(0, u32::MAX)]);
+        assert_eq!(filter.to_string(), "all");
+        assert!(filter.filtered(&0, true));
+        assert!(filter.filtered(&0x1000, true));
+        assert!(filter.filtered(&u32::MAX, true));
+        assert!(filter.filtered(&0, false));
+    }
+
+    #[test]
+    fn parse_unknown_only() {
+        let filter: AddressFilter<u32> = "?".parse().unwrap();
+        assert!(filter.unknown);
+        assert!(filter.ranges.is_empty());
+        assert!(!filter.filtered(&0x40, true));
+        assert!(filter.filtered(&0x40, false));
+    }
+
+    #[test]
+    fn parse_single_address() {
+        let filter: AddressFilter<u32> = "0x63".parse().unwrap();
+        assert!(!filter.unknown);
+        assert_eq!(filter.ranges, vec![(0x63, 0x63)]);
+        assert!(filter.filtered(&0x63, true));
+        assert!(!filter.filtered(&0x64, true));
+    }
+
+    #[test]
+    fn parse_range() {
+        let filter: AddressFilter<u32> = "0x40-0x4f".parse().unwrap();
+        assert!(filter.filtered(&0x40, true));
+        assert!(filter.filtered(&0x45, true));
+        assert!(filter.filtered(&0x4f, true));
+        assert!(!filter.filtered(&0x3f, true));
+        assert!(!filter.filtered(&0x50, true));
+    }
+
+    #[test]
+    fn parse_compound() {
+        let filter: AddressFilter<u32> = "0x40-0x4f,0x63,?".parse().unwrap();
+        assert!(filter.unknown);
+        assert_eq!(filter.ranges, vec![(0x40, 0x4f), (0x63, 0x63)]);
+        assert!(filter.filtered(&0x45, true));
+        assert!(filter.filtered(&0x63, true));
+        assert!(!filter.filtered(&0x50, true));
+        assert!(filter.filtered(&0x99, false));
+        let reparsed: AddressFilter<u32> = filter.to_string().parse().unwrap();
+        assert_eq!(filter.ranges, reparsed.ranges);
+        assert_eq!(filter.unknown, reparsed.unknown);
+    }
+
+    #[test]
+    fn parse_rejects_end_before_start() {
+        let result: Result<AddressFilter<u32>, _> = "0x4f-0x40".parse();
+        assert!(matches!(result, Err(InvalidRangeSet::EndBeforeStart)));
+    }
+
+    #[test]
+    fn parse_rejects_overlapping() {
+        let result: Result<AddressFilter<u32>, _> = "0x40-0x4f,0x45-0x50".parse();
+        assert!(matches!(result, Err(InvalidRangeSet::Overlapping)));
+    }
+
+    #[test]
+    fn parse_rejects_missing_prefix() {
+        let result: Result<AddressFilter<u32>, _> = "40".parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_rejects_nested_all() {
+        let result: Result<AddressFilter<u32>, _> = "0x40-0x4f,all".parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_filter_matches_nothing() {
+        let filter = AddressFilter::<u32>::new(false);
+        assert!(!filter.filtered(&0, true));
+        assert!(!filter.filtered(&0, false));
     }
 }

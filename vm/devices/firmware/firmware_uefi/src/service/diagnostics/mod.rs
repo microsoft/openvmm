@@ -15,14 +15,13 @@
 //! internal implementation details should be in submodules.
 
 use crate::UefiDevice;
+use firmware_uefi_resources::LogLevel;
 use gpa::Gpa;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use log::Log;
-use mesh::payload::Protobuf;
 use processor::ProcessingError;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
-use uefi_specs::hyperv::debug_level::DEBUG_INFO;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 
 mod accumulator;
@@ -102,52 +101,6 @@ fn emit_log_unrestricted(log: &Log) {
             log_message = log.message_trimmed(),
             "EFI log entry"
         )
-    }
-}
-
-/// Log level configuration - encapsulates a u32 mask where u32::MAX means log everything
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Protobuf)]
-#[mesh(transparent)]
-pub struct LogLevel(u32);
-
-impl LogLevel {
-    /// Create default log level configuration (ERROR and WARN only)
-    pub const fn make_default() -> Self {
-        Self(DEBUG_ERROR | DEBUG_WARN)
-    }
-
-    /// Create info log level configuration (ERROR, WARN, and INFO)
-    pub const fn make_info() -> Self {
-        Self(DEBUG_ERROR | DEBUG_WARN | DEBUG_INFO)
-    }
-
-    /// Create full log level configuration (all levels)
-    pub const fn make_full() -> Self {
-        Self(u32::MAX)
-    }
-
-    /// Checks if a raw debug level should be logged based on this log level configuration
-    pub fn should_log(self, raw_debug_level: u32) -> bool {
-        if self.0 == u32::MAX {
-            true // Log everything
-        } else {
-            (raw_debug_level & self.0) != 0
-        }
-    }
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        Self::make_default()
-    }
-}
-
-impl Inspect for LogLevel {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let human_readable = log::debug_level_to_string(self.0);
-        req.respond()
-            .field("raw_value", self.0)
-            .field("debug_levels", human_readable.as_ref());
     }
 }
 

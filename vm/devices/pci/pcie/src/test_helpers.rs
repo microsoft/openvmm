@@ -4,6 +4,8 @@
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use pci_bus::GenericPciBusDevice;
 use std::fmt::Debug;
 
@@ -63,8 +65,8 @@ impl ControlMmioIntercept for TestPcieControlMmioIntercept {
 
 pub struct TestPcieEndpoint<R, W>
 where
-    R: Fn(u16, &mut u32) -> Option<IoResult> + 'static + Send,
-    W: FnMut(u16, u32) -> Option<IoResult> + 'static + Send,
+    R: Fn(u16, ByteEnabledDwordRead<'_>) -> Option<IoResult> + 'static + Send,
+    W: FnMut(u16, ByteEnabledDwordWrite) -> Option<IoResult> + 'static + Send,
 {
     cfg_read_closure: R,
     cfg_write_closure: W,
@@ -72,8 +74,8 @@ where
 
 impl<R, W> TestPcieEndpoint<R, W>
 where
-    R: Fn(u16, &mut u32) -> Option<IoResult> + 'static + Send,
-    W: FnMut(u16, u32) -> Option<IoResult> + 'static + Send,
+    R: Fn(u16, ByteEnabledDwordRead<'_>) -> Option<IoResult> + 'static + Send,
+    W: FnMut(u16, ByteEnabledDwordWrite) -> Option<IoResult> + 'static + Send,
 {
     pub fn new(cfg_read_closure: R, cfg_write_closure: W) -> Self {
         Self {
@@ -85,22 +87,22 @@ where
 
 impl<R, W> GenericPciBusDevice for TestPcieEndpoint<R, W>
 where
-    R: Fn(u16, &mut u32) -> Option<IoResult> + 'static + Send,
-    W: FnMut(u16, u32) -> Option<IoResult> + 'static + Send,
+    R: Fn(u16, ByteEnabledDwordRead<'_>) -> Option<IoResult> + 'static + Send,
+    W: FnMut(u16, ByteEnabledDwordWrite) -> Option<IoResult> + 'static + Send,
 {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
         (self.cfg_read_closure)(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
         (self.cfg_write_closure)(offset, value)
     }
 }
 
 impl<R, W> Debug for TestPcieEndpoint<R, W>
 where
-    R: Fn(u16, &mut u32) -> Option<IoResult> + 'static + Send,
-    W: FnMut(u16, u32) -> Option<IoResult> + 'static + Send,
+    R: Fn(u16, ByteEnabledDwordRead<'_>) -> Option<IoResult> + 'static + Send,
+    W: FnMut(u16, ByteEnabledDwordWrite) -> Option<IoResult> + 'static + Send,
 {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(fmt, "TestPcieEndpoint")

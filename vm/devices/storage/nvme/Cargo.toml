@@ -41,6 +41,7 @@ unicycle.workspace = true
 zerocopy = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]
+disklayer_ram.workspace = true
 user_driver.workspace = true
 
 [lints]

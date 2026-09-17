@@ -12,8 +12,7 @@ use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
-use vmm_test_macros::openvmm_test_no_agent;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 #[derive(Debug)]
 struct ExpectedNvmeDeviceProperties {
@@ -194,7 +193,7 @@ async fn nvme_relay_explicit_private_pool(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
             expected_props: Some(ExpectedNvmeDeviceProperties {
                 save_restore_supported: true,
                 qsize: 256, // private pool should allow contiguous allocations.
@@ -219,11 +218,8 @@ async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 16,
-                ..Default::default()
-            }),
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            processor_topology: Some(ProcessorTopology::heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
@@ -250,11 +246,8 @@ async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 16,
-                ..Default::default()
-            }),
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            processor_topology: Some(ProcessorTopology::heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(256 * 1024 * 1024),
             }),
@@ -284,11 +277,8 @@ async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
     nvme_relay_test_core(
         config,
         NvmeRelayTestParams {
-            openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 32,
-                ..Default::default()
-            }),
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            processor_topology: Some(ProcessorTopology::very_heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(500 * 1024 * 1024),
             }),
@@ -317,11 +307,8 @@ async fn nvme_relay_32vp_768mb_very_heavy(
             ..Default::default()
         }),
         NvmeRelayTestParams {
-            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 32,
-                ..Default::default()
-            }),
+            openhcl_cmdline: "OPENHCL_DISABLE_NVME_KEEP_ALIVE=0 OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
+            processor_topology: Some(ProcessorTopology::very_heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
@@ -337,7 +324,7 @@ async fn nvme_relay_32vp_768mb_very_heavy(
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
 /// OpenVMM.
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
 async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let vm = config
         .modify_backend(|b| {
@@ -353,15 +340,110 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
     Ok(())
 }
 
-/// Boot OpenHCL, and validate that we did not see any numa errors from the
-/// kernel parsing the bootloader provided device tree.
+/// Boot OpenHCL with VTL2 RAM split across three NUMA nodes.
 ///
-/// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
-/// should also validate that the kernel gets two different numa nodes.
-#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none))]
+/// 512 MiB does not divide evenly across three nodes on a 32 KiB boundary.
+/// This verifies that the bootloader rounds each allocation to the lower-VTL
+/// permission bitmap granularity.
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
+async fn vtl2_ram_32k_aligned_across_three_numa_nodes<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    const ALIGNMENT_GRANULARITY: u64 = 32 * 1024;
+    const VTL2_RAM_SIZE: u64 = 512 * 1024 * 1024;
+
+    let mut vm = config
+        .with_expect_no_boot_event()
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 3,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        })
+        .with_memory(MemoryConfig {
+            numa_mem_sizes: Some(vec![
+                2 * 1024 * 1024 * 1024,
+                2 * 1024 * 1024 * 1024,
+                2 * 1024 * 1024 * 1024,
+            ]),
+            ..Default::default()
+        })
+        .with_vtl2_base_address_type(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(VTL2_RAM_SIZE),
+        })
+        .run_without_agent()
+        .await?;
+
+    vm.wait_for_vtl2_ready().await?;
+
+    let vtl2_ranges = vm
+        .inspect_openhcl(
+            "vm/runtime_params/parsed_openhcl_boot/vtl2_memory",
+            None,
+            None,
+        )
+        .await?;
+    let vtl2_ranges: serde_json::Value = serde_json::from_str(&format!("{}", vtl2_ranges.json()))?;
+    let vtl2_ranges = vtl2_ranges
+        .as_object()
+        .context("VTL2 memory ranges are not an object")?;
+    let expected_ram_per_node = (VTL2_RAM_SIZE / 3).next_multiple_of(ALIGNMENT_GRANULARITY);
+    let mut ram_per_node = [0; 3];
+
+    for entry in vtl2_ranges.values() {
+        let vnode = entry
+            .get("vnode")
+            .and_then(serde_json::Value::as_u64)
+            .context("VTL2 memory vnode is not an integer")?;
+        let vnode = usize::try_from(vnode).context("VTL2 memory vnode does not fit in usize")?;
+        let node_ram = ram_per_node
+            .get_mut(vnode)
+            .with_context(|| format!("unexpected VTL2 memory vnode {vnode}"))?;
+        let range = entry
+            .get("range")
+            .and_then(serde_json::Value::as_str)
+            .context("VTL2 memory range is not a string")?;
+        let (start, end) = range
+            .split_once('-')
+            .context("VTL2 memory range is not start-end")?;
+        let parse_address = |address: &str| -> Result<u64, anyhow::Error> {
+            let address = address
+                .strip_prefix("0x")
+                .context("VTL2 memory address does not start with 0x")?;
+            Ok(u64::from_str_radix(address, 16)?)
+        };
+        let start = parse_address(start)?;
+        let end = parse_address(end)?;
+
+        anyhow::ensure!(start < end, "VTL2 RAM range {range} is empty or reversed");
+        anyhow::ensure!(
+            start.is_multiple_of(ALIGNMENT_GRANULARITY)
+                && end.is_multiple_of(ALIGNMENT_GRANULARITY),
+            "VTL2 RAM range {range} is not aligned to {ALIGNMENT_GRANULARITY:#x}"
+        );
+        *node_ram += end - start;
+    }
+
+    for (vnode, node_ram) in ram_per_node.into_iter().enumerate() {
+        anyhow::ensure!(
+            node_ram >= expected_ram_per_node,
+            "VTL2 RAM on vnode {vnode} is {node_ram:#x}, expected at least {expected_ram_per_node:#x}"
+        );
+    }
+
+    Ok(())
+}
+
+/// Boot OpenHCL with a multi-NUMA topology and validate that the kernel
+/// correctly parses the device tree with memory on multiple NUMA nodes.
+/// Checks the absence of NUMA errors and confirms the kernel brought up
+/// multiple NUMA nodes with memory (not memoryless).
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
 async fn no_numa_errors<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
+    // Use Vtl2Allocate so OpenHCL self-allocates from the multi-vnode
+    // partition memory map, giving both nodes actual memory.
+    // Explicitly set per-node memory sizes (2GB per node).
     let vm = config
         .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
         .with_expect_no_boot_event()
@@ -370,16 +452,28 @@ async fn no_numa_errors<T: PetriVmmBackend>(
             vps_per_socket: Some(1),
             ..Default::default()
         })
+        .with_memory(MemoryConfig {
+            numa_mem_sizes: Some(vec![2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]),
+            ..Default::default()
+        })
+        .with_vtl2_base_address_type(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(512 * 1024 * 1024), // 512MB — large enough to allocate from both nodes
+        })
         .run_without_agent()
         .await?;
 
     const BAD_PROP: &str = "OF: NUMA: bad property in memory node";
     const NO_NUMA: &str = "NUMA: No NUMA configuration found";
     const FAKING_NODE: &str = "Faking a node at";
+    const MEMORYLESS: &str = "as memoryless";
+    // The kernel prints "Brought up N nodes, M CPUs" during SMP init.
+    const BROUGHT_UP: &str = "Brought up ";
 
     let mut kmsg = vm.kmsg().await?;
+    let mut numa_node_count: Option<u32> = None;
+    let mut found_memoryless = false;
 
-    // Search kmsg and make sure we didn't see any errors from the kernel
+    // Search kmsg for NUMA errors, memoryless nodes, and the node count.
     while let Some(data) = kmsg.next().await {
         let data = data.context("reading kmsg")?;
         let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
@@ -393,7 +487,97 @@ async fn no_numa_errors<T: PetriVmmBackend>(
         if raw.contains(FAKING_NODE) {
             anyhow::bail!("found faking a node in kmsg");
         }
+        if raw.contains(MEMORYLESS) {
+            found_memoryless = true;
+        }
+        // Parse "Brought up N nodes, M CPUs" to get the NUMA node count.
+        if let Some(idx) = raw.find(BROUGHT_UP) {
+            let rest = &raw[idx + BROUGHT_UP.len()..];
+            if let Some(n_str) = rest.split_whitespace().next() {
+                if let Ok(n) = n_str.parse::<u32>() {
+                    numa_node_count = Some(n);
+                }
+            }
+        }
     }
+
+    let count = numa_node_count.context("did not find 'Brought up N nodes' in kmsg")?;
+    assert!(
+        count >= 2,
+        "expected kernel to bring up at least 2 NUMA nodes, but found: {count}"
+    );
+    assert!(
+        !found_memoryless,
+        "found memoryless NUMA node — all nodes should have memory"
+    );
+
+    Ok(())
+}
+
+/// Boot OpenHCL with a multi-NUMA topology and force the private pool to be
+/// split across NUMA nodes via `OPENHCL_VTL2_GPA_POOL_NUMA=split`. Validates
+/// that the pool was actually allocated on multiple NUMA nodes.
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
+async fn numa_private_pool_split<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    // 2 NUMA nodes (vps_per_socket=2, 4 VPs → 2 sockets → 2 nodes).
+    // Force NUMA split via command line flag — the pool will be split
+    // across both nodes instead of trying node 0 first.
+    // Use Vtl2Allocate so OpenHCL self-allocates from the multi-vnode
+    // partition memory map, which is required for the pool to see
+    // memory on multiple nodes.
+    // Explicitly set per-node memory sizes (2GB per node).
+    let mut vm = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 4,
+            vps_per_socket: Some(2),
+            ..Default::default()
+        })
+        .with_memory(MemoryConfig {
+            numa_mem_sizes: Some(vec![2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]),
+            ..Default::default()
+        })
+        .with_openhcl_command_line("OPENHCL_VTL2_GPA_POOL_NUMA=split")
+        .with_vtl2_base_address_type(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(512 * 1024 * 1024), // 512MB — large enough to allocate from both nodes
+        })
+        .with_expect_no_boot_event()
+        .run_without_agent()
+        .await?;
+
+    vm.wait_for_vtl2_ready().await?;
+
+    // Inspect the private pool ranges to verify the pool was split across
+    // multiple NUMA nodes.
+    let pool_ranges = vm
+        .inspect_openhcl(
+            "vm/runtime_params/parsed_openhcl_boot/private_pool_ranges",
+            None,
+            None,
+        )
+        .await?;
+    let pool_ranges: serde_json::Value = serde_json::from_str(&format!("{}", pool_ranges.json()))?;
+    tracing::info!(pool_ranges = %pool_ranges, "private pool ranges");
+
+    let ranges = pool_ranges
+        .as_object()
+        .context("pool_ranges is not an object")?;
+    assert!(
+        !ranges.is_empty(),
+        "expected at least one private pool range"
+    );
+
+    // Collect unique vnodes across all pool ranges.
+    let vnodes: std::collections::BTreeSet<u64> = ranges
+        .values()
+        .map(|entry| entry["vnode"].as_u64().expect("vnode field"))
+        .collect();
+
+    assert!(
+        vnodes.len() >= 2,
+        "expected pool ranges on at least 2 NUMA nodes, but found vnodes: {vnodes:?}"
+    );
 
     Ok(())
 }

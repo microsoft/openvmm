@@ -15,6 +15,7 @@ use pal_event::Event;
 use sparse_mmap::AsMappableRef;
 use std::any::Any;
 use std::fmt::Debug;
+use std::future::Future;
 use std::io;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -347,6 +348,98 @@ unsafe impl GuestMemoryAccess for AlignedHeapMemory {
 
 impl LinearGuestMemory for AlignedHeapMemory {}
 
+/// A shareable region of guest memory backed by a file (Unix) or
+/// section handle (Windows).
+///
+/// The backing file must already contain committed data for the region —
+/// the consumer will map it directly, without any guestmem-managed lazy
+/// commitment or fault handling. All bytes in the range must be accessible
+/// without triggering SIGSEGV or SIGBUS due to missing backing. Normal OS
+/// demand paging and minor faults on first access are still expected; this
+/// requirement is specifically incompatible with bitmap-gated access or
+/// lazy fault-in schemes.
+pub struct ShareableRegion {
+    /// Guest physical address of this region.
+    pub guest_address: u64,
+    /// Size in bytes.
+    pub size: u64,
+    /// Backing file/handle, shared via `Arc` to avoid OS-level `dup()`.
+    pub file: Arc<sparse_mmap::Mappable>,
+    /// Offset into `file` where this region starts.
+    pub file_offset: u64,
+}
+
+/// Error type for [`ProvideShareableRegions::get_regions`].
+pub type ShareableRegionError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Opaque control object for accessing the shareable backing of guest
+/// memory. Not all `GuestMemory` instances support this — those backed
+/// by private memory or heap allocations return `None`.
+///
+/// # Contract
+///
+/// * The regions returned by [`get_regions`](Self::get_regions) must have
+///   fully committed backing — the consumer will map them directly,
+///   without guestmem-managed fault handling.
+/// * The set of regions is currently static for the lifetime of the VM.
+///   Hotplug and hot-remove of shareable regions are not yet supported;
+///   once they are, additional methods will be added here to notify
+///   consumers of changes.
+pub struct GuestMemorySharing {
+    inner: Box<dyn DynProvideShareableRegions>,
+}
+
+impl GuestMemorySharing {
+    /// Construct from a trait implementation. Called by `GuestMemoryAccess`
+    /// implementations (e.g., `VaMapper` in membacking).
+    pub fn new(inner: impl ProvideShareableRegions + 'static) -> Self {
+        Self {
+            inner: Box::new(inner),
+        }
+    }
+
+    /// Return the current set of shareable backing regions.
+    pub async fn get_regions(&self) -> Result<Vec<ShareableRegion>, ShareableRegionError> {
+        self.inner.get_regions().await
+    }
+}
+
+/// Trait for providing shareable region information.
+///
+/// Implementors must return regions whose backing files have fully
+/// committed data — consumers will map them directly without
+/// guestmem-managed fault handling. The region set is currently static;
+/// dynamic updates (hotplug / hot-remove) are not yet supported.
+///
+/// This trait must be public so that crates like `membacking` can
+/// implement it, but callers should interact with
+/// [`GuestMemorySharing`]'s methods rather than this trait directly.
+pub trait ProvideShareableRegions: Send + Sync {
+    /// Return the current set of shareable backing regions.
+    fn get_regions(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ShareableRegion>, ShareableRegionError>> + Send + '_;
+}
+
+/// Dyn-compatible version of [`ProvideShareableRegions`].
+trait DynProvideShareableRegions: Send + Sync {
+    fn get_regions(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Vec<ShareableRegion>, ShareableRegionError>> + Send + '_>,
+    >;
+}
+
+impl<T: ProvideShareableRegions> DynProvideShareableRegions for T {
+    fn get_regions(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Vec<ShareableRegion>, ShareableRegionError>> + Send + '_>,
+    > {
+        Box::pin(ProvideShareableRegions::get_regions(self))
+    }
+}
+
 /// A trait for a guest memory backing.
 ///
 /// Guest memory may be backed by a virtual memory mapping, in which case this
@@ -536,6 +629,32 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     fn unlock_gpns(&self, gpns: &[u64]) {
         let _ = gpns;
     }
+
+    /// Return a sharing control object if this memory backing supports
+    /// file-based sharing (e.g., memfd on Linux, section on Windows).
+    ///
+    /// Returns `None` for private memory, heap-backed test memory, or
+    /// other non-shareable backings.
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        None
+    }
+
+    /// Returns whether this backing supports locking pages via
+    /// [`lock_gpns`](Self::lock_gpns).
+    ///
+    /// Locking requires a stable host mapping (see
+    /// [`mapping`](Self::mapping)), so the default returns whether a mapping
+    /// is present. Backings that translate each access on demand (e.g., memory
+    /// behind an emulated IOMMU) have no mapping and thus report `false`.
+    /// Callers that use locking as a zero-copy fast path should check this and
+    /// fall back to a copying path when it returns `false`.
+    ///
+    /// This is authoritative: when it returns `false`, the corresponding
+    /// [`GuestMemory`] locking APIs fail without invoking
+    /// [`lock_gpns`](Self::lock_gpns).
+    fn supports_locking(&self) -> bool {
+        self.mapping().is_some()
+    }
 }
 
 trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
@@ -586,6 +705,8 @@ trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
     fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError>;
 
     fn unlock_gpns(&self, gpns: &[u64]);
+
+    fn sharing(&self) -> Option<GuestMemorySharing>;
 }
 
 impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
@@ -651,6 +772,10 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
 
     fn unlock_gpns(&self, gpns: &[u64]) {
         self.unlock_gpns(gpns)
+    }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        self.sharing()
     }
 }
 
@@ -753,6 +878,10 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Arc<T> {
 
     fn base_iova(&self) -> Option<u64> {
         self.as_ref().base_iova()
+    }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        self.as_ref().sharing()
     }
 }
 
@@ -1040,6 +1169,15 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for MultiRegionGuestMemoryAccess
             region.unlock_gpns(&[offset_in_region / PAGE_SIZE64]);
         }
     }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        // FUTURE: multi-region setups could aggregate shareable regions from
+        // their sub-regions. For now, sharing is only supported for
+        // single-region guest memory (the common case). If a VM uses
+        // MultiRegionGuestMemoryAccess with vhost-user, this will return
+        // None and the vhost-user backend will fail to initialize.
+        None
+    }
 }
 
 /// A wrapper around a `GuestMemoryAccess` that provides methods for safely
@@ -1058,6 +1196,9 @@ struct GuestMemoryInner<T: ?Sized = dyn DynGuestMemoryAccess> {
     regions: Vec<MemoryRegion>,
     debug_name: Arc<str>,
     allocated: bool,
+    /// Cached result of [`GuestMemoryAccess::supports_locking`], since it is
+    /// queried on hot zero-copy paths and never changes for a given backing.
+    supports_locking: bool,
     imp: T,
 }
 
@@ -1081,10 +1222,15 @@ struct MemoryRegion {
     base_iova: Option<u64>,
 }
 
-/// The access type. The values correspond to bitmap indexes.
+/// The type of access that guest memory will be used for.
+///
+/// The discriminants correspond to bitmap indexes (read = 0, write = 1) and
+/// must not be reordered.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum AccessType {
+pub enum AccessType {
+    /// Read access.
     Read = 0,
+    /// Write access.
     Write = 1,
 }
 
@@ -1145,7 +1291,9 @@ impl MemoryRegion {
         let _ = access_type;
 
         #[cfg(feature = "bitmap")]
-        if let Some(bitmaps) = &self.bitmaps {
+        if len == 0 {
+            return Ok(());
+        } else if let Some(bitmaps) = &self.bitmaps {
             let SendPtrU8(bitmap) = bitmaps[access_type as usize];
             let start = offset / PAGE_SIZE64;
             let end = (offset + len - 1) / PAGE_SIZE64;
@@ -1169,6 +1317,7 @@ impl MemoryRegion {
                 }
             }
         }
+
         Ok(())
     }
 }
@@ -1190,6 +1339,12 @@ unsafe impl GuestMemoryAccess for Empty {
 
     fn max_address(&self) -> u64 {
         0
+    }
+
+    fn supports_locking(&self) -> bool {
+        // This implementation trivially supports locking since there are no
+        // pages to lock.
+        true
     }
 }
 
@@ -1242,6 +1397,7 @@ impl GuestMemory {
 
     fn new_inner(debug_name: Arc<str>, imp: impl GuestMemoryAccess, allocated: bool) -> Self {
         let regions = vec![MemoryRegion::new(&imp)];
+        let supports_locking = imp.supports_locking();
         Self {
             inner: Arc::new(GuestMemoryInner {
                 imp,
@@ -1253,6 +1409,7 @@ impl GuestMemory {
                 },
                 regions,
                 allocated,
+                supports_locking,
             }),
         }
     }
@@ -1323,6 +1480,11 @@ impl GuestMemory {
         };
 
         imps.resize_with(region_count, || None);
+        // Locking is only supported if every backing region supports it.
+        let supports_locking = imps
+            .iter()
+            .flatten()
+            .all(GuestMemoryAccess::supports_locking);
         let imp = MultiRegionGuestMemoryAccess { imps, region_def };
 
         let inner = GuestMemoryInner {
@@ -1331,6 +1493,7 @@ impl GuestMemory {
             regions,
             imp,
             allocated: false,
+            supports_locking,
         };
 
         Ok(Self {
@@ -1475,6 +1638,24 @@ impl GuestMemory {
     pub fn iova(&self, gpa: u64) -> Option<u64> {
         let (region, offset, _) = self.inner.region(gpa, 1).ok()?;
         Some(region.base_iova? + offset)
+    }
+
+    /// Returns a sharing object if this memory supports
+    /// file-based sharing. See [`GuestMemorySharing`].
+    pub fn sharing(&self) -> Option<GuestMemorySharing> {
+        self.inner.imp.sharing()
+    }
+
+    /// Returns whether this memory supports locking pages via
+    /// [`lock_gpns`](Self::lock_gpns) and [`lock_range`](Self::lock_range).
+    ///
+    /// Memory behind an emulated IOMMU has no stable host mapping and cannot
+    /// be locked; zero-copy callers should check this and fall back to a
+    /// copying path when it returns `false`. This is authoritative: when it
+    /// returns `false`, [`lock_gpns`](Self::lock_gpns) and
+    /// [`lock_range`](Self::lock_range) fail with a `NotLockable` error.
+    pub fn supports_locking(&self) -> bool {
+        self.inner.supports_locking
     }
 
     /// Gets a pointer to the VA range for `gpa..gpa+len`.
@@ -1711,35 +1892,6 @@ impl GuestMemory {
         )
     }
 
-    /// Probes whether a write to guest memory at address `gpa` would succeed.
-    fn probe_write_inner(&self, gpa: u64) -> Result<(), GuestMemoryBackingError> {
-        self.run_on_mapping(
-            AccessType::Write,
-            gpa,
-            1,
-            (),
-            |(), dest| {
-                // SAFETY: dest is guaranteed to point to a reserved VA range.
-                // We perform a volatile read followed by write of the same value
-                // to check write accessibility without modifying the actual data.
-                unsafe {
-                    let value = trycopy::try_read_volatile(dest)?;
-                    trycopy::try_write_volatile(dest, &value)
-                }
-            },
-            |()| {
-                // Fallback: use compare_exchange_fallback to probe write access
-                let mut current = 0u8;
-                self.inner.imp.compare_exchange_fallback(
-                    gpa,
-                    std::slice::from_mut(&mut current),
-                    &[0u8],
-                )?;
-                Ok(())
-            },
-        )
-    }
-
     /// Writes an object to guest memory at address `gpa`.
     ///
     /// If the object is 1, 2, 4, or 8 bytes and the address is naturally
@@ -1877,6 +2029,7 @@ impl GuestMemory {
 
     fn probe_page_for_lock(
         &self,
+        access: AccessType,
         with_kernel_access: bool,
         gpa: u64,
     ) -> Result<*const AtomicU8, GuestMemoryBackingError> {
@@ -1888,25 +2041,92 @@ impl GuestMemory {
         if with_kernel_access {
             self.inner.imp.expose_va(gpa, 1)?;
         }
-        // FUTURE: check the correct bitmap for the access type, which needs to
-        // be passed in.
-        self.read_plain_inner::<u8>(gpa)?;
+        // Fault the page in for the access the caller will perform through the
+        // returned pointer. A write lock must fault for *write* so that a
+        // read-only-until-write backing (e.g. Windows soft large pages, which
+        // map guest RAM read-only until the first write raises it to
+        // read-write) is made writable before the caller writes; otherwise the
+        // write would hit a read-only page and access-violate. A read-only lock
+        // only faults for read, so it neither forces writability (which
+        // genuinely read-only memory would reject) nor needlessly promotes soft
+        // large pages.
+        match access {
+            AccessType::Read => {
+                self.read_plain_inner::<u8>(gpa)?;
+            }
+            AccessType::Write => {
+                self.probe_mapped_page_writable(gpa)?;
+            }
+        }
         // SAFETY: the read_at call includes a check that ensures that
         // `gpa` is in the VA range.
         let page = unsafe { ptr.as_ptr().add(offset as usize) };
         Ok(page.cast())
     }
 
+    /// Faults a single **mapped** guest page in for write without changing its
+    /// contents, so that a read-only-until-write backing (e.g. Windows soft
+    /// large pages) is raised to read-write before a write lock hands out a
+    /// pointer to it.
+    ///
+    /// This is a helper for the locking path and requires the page to be backed
+    /// by a host mapping. It works by performing a no-op compare-exchange
+    /// against the mapping: on a read-only page the locked read-modify-write
+    /// triggers the write fault handler (raising the window to read-write), and
+    /// once writable the exchange leaves the value unchanged (writing back the
+    /// same value on a match and nothing on a mismatch).
+    ///
+    /// It deliberately does **not** fall back to
+    /// [`GuestMemoryAccess::compare_exchange_fallback`]: the write-probe is
+    /// meaningless without a mapping (there is nothing to fault in), and not all
+    /// backings implement that fallback. Callers must only reach this after
+    /// confirming the page is mapped, as the lock path does via
+    /// [`GuestMemory::supports_locking`]. A non-mapping backing therefore fails
+    /// with a clear error rather than silently taking an unsupported path.
+    fn probe_mapped_page_writable(&self, gpa: u64) -> Result<(), GuestMemoryBackingError> {
+        self.run_on_mapping(
+            AccessType::Write,
+            gpa,
+            1,
+            (),
+            |(), dest| {
+                // SAFETY: dest points to a reserved VA range of at least one byte.
+                unsafe { trycopy::try_compare_exchange::<u8>(dest.cast(), 0, 0).map(|_| ()) }
+            },
+            |()| {
+                // Only reachable without a mapping (or if a backing's
+                // `page_fault` requests the fallback). The write-probe only
+                // makes sense for mapping-based backings, so fail clearly here
+                // instead of invoking `compare_exchange_fallback`, which many
+                // backings do not implement.
+                Err(GuestMemoryBackingError::other(gpa, NotLockable))
+            },
+        )
+    }
+
+    /// Locks the specified guest pages (by GPN), returning handles that expose
+    /// their host VA for zero-copy access.
+    ///
+    /// `access` selects whether the pages will be read from or written to: a
+    /// write lock faults each page in for write so that a
+    /// read-only-until-write backing (e.g. Windows soft large pages) is raised
+    /// to read-write before the caller writes through the returned pointer,
+    /// while a read-only lock (e.g. read-only DMA) only faults for read.
     pub fn lock_gpns(
         &self,
+        access: AccessType,
         with_kernel_access: bool,
         gpns: &[u64],
     ) -> Result<LockedPages, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
+            if !self.inner.supports_locking {
+                let gpa = gpns.first().map_or(0, |&gpn| gpn.wrapping_mul(PAGE_SIZE64));
+                return Err(GuestMemoryBackingError::other(gpa, NotLockable));
+            }
             let mut pages = Vec::with_capacity(gpns.len());
             for &gpn in gpns {
                 let gpa = gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?;
-                let page = self.probe_page_for_lock(with_kernel_access, gpa)?;
+                let page = self.probe_page_for_lock(access, with_kernel_access, gpa)?;
                 pages.push(PagePtr(page));
             }
             let store_gpns = self.inner.imp.lock_gpns(gpns)?;
@@ -1926,20 +2146,6 @@ impl GuestMemory {
                 )?;
             }
             Ok(())
-        })
-    }
-
-    /// Check if a given PagedRange is readable or not.
-    pub fn probe_gpn_readable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
-        self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
-            self.read_plain_inner(addr)
-        })
-    }
-
-    /// Check if a given PagedRange is writable or not.
-    pub fn probe_gpn_writable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
-        self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
-            self.probe_write_inner(addr)
         })
     }
 
@@ -2081,22 +2287,32 @@ impl GuestMemory {
         })
     }
 
-    /// Locks the guest pages spanned by the specified `PagedRange` for the `'static` lifetime.
+    /// Locks the guest pages spanned by the specified `PagedRange`.
     ///
     /// # Arguments
+    /// * 'access' - Whether the locked pages will be read from or written to.
+    ///   A write lock faults each page in for write so that a
+    ///   read-only-until-write backing (e.g. Windows soft large pages) is
+    ///   raised to read-write before the caller writes through the returned
+    ///   VA; a read-only lock (e.g. read-only DMA) only faults for read.
     /// * 'paged_range' - The guest memory range to lock.
     /// * 'locked_range' - Receives a list of VA ranges to which each contiguous physical sub-range in `paged_range`
     ///   has been mapped. Must be initially empty.
-    pub fn lock_range<T: LockedRange>(
-        &self,
+    pub fn lock_range<'a, T: LockedRange<'a>>(
+        &'a self,
+        access: AccessType,
         paged_range: PagedRange<'_>,
         mut locked_range: T,
-    ) -> Result<LockedRangeImpl<T>, GuestMemoryError> {
+    ) -> Result<LockedRangeImpl<'a, T>, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
             let gpns = paged_range.gpns();
+            if !self.inner.supports_locking {
+                let gpa = gpns.first().map_or(0, |&gpn| gpn.wrapping_mul(PAGE_SIZE64));
+                return Err(GuestMemoryBackingError::other(gpa, NotLockable));
+            }
             for &gpn in gpns {
                 let gpa = gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?;
-                self.probe_page_for_lock(true, gpa)?;
+                self.probe_page_for_lock(access, true, gpa)?;
             }
             for range in paged_range.ranges() {
                 let range = range.map_err(GuestMemoryBackingError::gpn)?;
@@ -2106,7 +2322,7 @@ impl GuestMemory {
             }
             let store_gpns = self.inner.imp.lock_gpns(paged_range.gpns())?;
             Ok(LockedRangeImpl {
-                mem: self.inner.clone(),
+                mem: &self.inner,
                 gpns: store_gpns.then(|| paged_range.gpns().to_vec().into_boxed_slice()),
                 inner: locked_range,
             })
@@ -2170,7 +2386,6 @@ impl GuestMemoryInner {
     }
 }
 
-#[derive(Clone)]
 pub struct LockedPages {
     pages: Box<[PagePtr]>,
     gpns: Option<Box<[u64]>>,
@@ -2226,24 +2441,28 @@ impl<'a> AsRef<[&'a Page]> for &'a LockedPages {
 /// to which the guest pages are mapped.
 /// The range may only partially span the first and last page and must fully span all
 /// intermediate pages.
-pub trait LockedRange {
+pub trait LockedRange<'a> {
     /// Adds a sub-range to this range.
-    fn push_sub_range(&mut self, sub_range: &[AtomicU8]);
+    fn push_sub_range(&mut self, sub_range: &'a [AtomicU8]);
 }
 
-pub struct LockedRangeImpl<T: LockedRange> {
-    mem: Arc<GuestMemoryInner>,
+pub struct LockedRangeImpl<'a, T: LockedRange<'a>> {
+    mem: &'a GuestMemoryInner,
     gpns: Option<Box<[u64]>>,
     inner: T,
 }
 
-impl<T: LockedRange> LockedRangeImpl<T> {
+impl<'a, T: LockedRange<'a>> LockedRangeImpl<'a, T> {
     pub fn get(&self) -> &T {
         &self.inner
     }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
 }
 
-impl<T: LockedRange> Drop for LockedRangeImpl<T> {
+impl<'a, T: LockedRange<'a>> Drop for LockedRangeImpl<'a, T> {
     fn drop(&mut self) {
         if let Some(gpns) = &self.gpns {
             self.mem.imp.unlock_gpns(gpns);
@@ -2505,7 +2724,7 @@ mod tests {
     use crate::PAGE_SIZE64;
     use crate::PageFaultAction;
     use crate::PageFaultError;
-    use crate::ranges::PagedRange;
+
     use sparse_mmap::SparseMapping;
     use std::ptr::NonNull;
     use std::sync::Arc;
@@ -2719,105 +2938,31 @@ mod tests {
         gm.read_plain::<u16>(PAGE_SIZE64 * 3 - 1).unwrap_err();
         gm.read_plain::<u8>(PAGE_SIZE64 * 3 - 1).unwrap();
         gm.write_plain::<u8>(PAGE_SIZE64 * 3 - 1, &0).unwrap_err();
+    }
 
-        // Test probe_gpn_writable_range with FaultingMapping
-        // FaultingMapping layout:
-        // - Page 0 (address 0 to PAGE_SIZE): unmapped, fails on access
-        // - Page 1 (address PAGE_SIZE to 2*PAGE_SIZE): writable
-        // - Pages 2-3 (address 2*PAGE_SIZE to 4*PAGE_SIZE): read-only
-        // - Page 4 and beyond: unmapped, fails on access
+    #[cfg(feature = "bitmap")]
+    #[test]
+    fn test_zero_length_access_at_offset_zero() {
+        // Regression test for a fuzzing-reported subtract-with-overflow panic
+        // in `check_access`: a zero-length access at offset 0 underflowed while
+        // computing the index of the last accessed page (`offset + len - 1`).
+        // A zero-length access touches no pages and so must succeed without
+        // consulting the bitmap, even when the page is marked inaccessible.
+        let len = PAGE_SIZE * 4;
+        let mapping = SparseMapping::new(len).unwrap();
+        mapping.alloc(0, len).unwrap();
+        let bitmap = vec![0b0000]; // every page marked inaccessible
+        let mapping = Arc::new(GuestMemoryMapping {
+            mapping,
+            bitmap: Some(bitmap),
+        });
+        let gm = GuestMemory::new("test", mapping);
 
-        // Test 1: Probe unmapped page - should fail
-        let gpns = vec![0];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        assert!(gm.probe_gpn_writable_range(&range).is_err());
-
-        // Test 2: Probe writable page - should succeed
-        let gpns = vec![1];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        gm.probe_gpn_writable_range(&range).unwrap();
-
-        // Test 3: Probe read-only pages - should fail
-        let gpns = vec![2, 3];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_writable_range(&range).is_err());
-
-        // Test 4: Probe mixed access (writable + read-only) - should fail
-        let gpns = vec![1, 2];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_writable_range(&range).is_err());
-
-        // Test 5: Compare readable vs writable on read-only pages
-        let gpns = vec![2];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap(); // Should succeed
-        assert!(gm.probe_gpn_writable_range(&range).is_err()); // Should fail
-
-        // Test 6: Partial page range
-        let gpns = vec![1];
-        let range = PagedRange::new(100, 500, &gpns).unwrap();
-        gm.probe_gpn_writable_range(&range).unwrap();
-
-        // Test 7: Empty range - should succeed
-        let range = PagedRange::empty();
-        gm.probe_gpn_writable_range(&range).unwrap();
-
-        // Test probe_gpn_readable_range with FaultingMapping
-
-        // Test 8: Probe unmapped page for read - should fail
-        let gpns = vec![5];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err());
-
-        // Test 9: Probe writable page for read - should succeed
-        let gpns = vec![1];
-        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 10: Probe mixed access (writable + read-only) for read - should succeed
-        let gpns = vec![1, 2];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap(); // Both pages are readable
-
-        // Test 11: Probe mixed access (unmapped + writable) for read - should fail
-        let gpns = vec![5, 1];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err()); // Page 5 is unmapped
-
-        // Test 12: Probe mixed access (unmapped + read-only) for read - should fail
-        let gpns = vec![5, 2];
-        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err()); // Page 5 is unmapped
-
-        // Test 13: Partial page range for read on read-only pages
-        let gpns = vec![2];
-        let range = PagedRange::new(100, 500, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 14: Partial page range for read on writable pages
-        let gpns = vec![1];
-        let range = PagedRange::new(200, 1000, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 15: Empty range for read - should succeed
-        let range = PagedRange::empty();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 16: Single byte read on read-only page
-        let gpns = vec![2];
-        let range = PagedRange::new(0, 1, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap();
-
-        // Test 17: Single byte read on unmapped page
-        let gpns = vec![5];
-        let range = PagedRange::new(0, 1, &gpns).unwrap();
-        assert!(gm.probe_gpn_readable_range(&range).is_err());
-
-        // Test 18: Cross-boundary range on writable + read-only
-        let gpns = vec![1, 2, 3];
-        let range = PagedRange::new(PAGE_SIZE / 2, PAGE_SIZE * 2, &gpns).unwrap();
-        gm.probe_gpn_readable_range(&range).unwrap(); // All readable
-        assert!(gm.probe_gpn_writable_range(&range).is_err()); // Pages 2-3 not writable
+        // Zero-sized plain accesses reach `check_access` with offset 0 and
+        // len 0; these previously panicked with "attempt to subtract with
+        // overflow".
+        gm.read_plain::<()>(0).unwrap();
+        gm.write_plain::<()>(0, &()).unwrap();
     }
 
     #[test]
@@ -2834,5 +2979,75 @@ mod tests {
         drop(gm2);
         assert_eq!(gm.inner_buf_mut().unwrap(), &pattern);
         gm.into_inner_buf().unwrap();
+    }
+
+    /// A backing whose locking support can be toggled, used to exercise
+    /// [`GuestMemory::supports_locking`] aggregation. Backed by a real mapping
+    /// so it can participate in single- and multi-region construction.
+    struct ToggleLockMapping {
+        mapping: SparseMapping,
+        lockable: bool,
+    }
+
+    impl ToggleLockMapping {
+        fn new(size: usize, lockable: bool) -> Self {
+            let mapping = SparseMapping::new(size).unwrap();
+            mapping.alloc(0, size).unwrap();
+            Self { mapping, lockable }
+        }
+    }
+
+    // SAFETY: the mapping is valid for the full range reported by `max_address`.
+    unsafe impl crate::GuestMemoryAccess for ToggleLockMapping {
+        fn mapping(&self) -> Option<NonNull<u8>> {
+            NonNull::new(self.mapping.as_ptr().cast())
+        }
+
+        fn max_address(&self) -> u64 {
+            self.mapping.len() as u64
+        }
+
+        fn supports_locking(&self) -> bool {
+            self.lockable
+        }
+    }
+
+    #[test]
+    fn test_supports_locking() {
+        // A mapping-backed backing supports locking by default.
+        let gm = GuestMemory::allocate(0x10000);
+        assert!(gm.supports_locking());
+
+        // A backing that reports no locking support (e.g. on-demand
+        // translation behind an emulated IOMMU) does not support locking, and
+        // `supports_locking` is authoritative: locking fails without touching
+        // the backing's `lock_gpns`.
+        let gm = GuestMemory::new("nolock", ToggleLockMapping::new(SIZE_1MB, false));
+        assert!(!gm.supports_locking());
+        assert!(gm.lock_gpns(crate::AccessType::Write, false, &[0]).is_err());
+
+        // Multi-region: locking is supported only when every present backing
+        // supports it.
+        let gm = GuestMemory::new_multi_region(
+            "multi-lockable",
+            SIZE_1MB as u64,
+            vec![
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+            ],
+        )
+        .unwrap();
+        assert!(gm.supports_locking());
+
+        let gm = GuestMemory::new_multi_region(
+            "multi-mixed",
+            SIZE_1MB as u64,
+            vec![
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, false)),
+            ],
+        )
+        .unwrap();
+        assert!(!gm.supports_locking());
     }
 }

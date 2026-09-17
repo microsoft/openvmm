@@ -1,4 +1,17 @@
 #!/bin/sh
 
 script_dir="$(dirname "$0")"
-MUSL_ARCH=x86_64 MUSL_SYSROOT="$X86_64_SYSROOT" exec "${REALGCC:-x86_64-linux-gnu-gcc}" "$@" -specs "$script_dir/musl-gcc.specs"
+
+# Determine the GCC binary to use.
+# - REALGCC env var takes precedence (explicit override)
+# - x86_64-linux-gnu-gcc (Ubuntu/Fedora cross-prefix)
+# - gcc (Azure Linux / native x86_64 hosts where gcc has no prefix)
+if [ -z "$REALGCC" ]; then
+    if command -v x86_64-linux-gnu-gcc >/dev/null 2>&1; then
+        REALGCC=x86_64-linux-gnu-gcc
+    else
+        REALGCC=gcc
+    fi
+fi
+
+MUSL_ARCH=x86_64 MUSL_SYSROOT="$X86_64_SYSROOT" exec "$REALGCC" "$@" -specs "$script_dir/musl-gcc.specs"

@@ -152,6 +152,12 @@ where
 
         Ok(())
     }
+
+    fn max_nv_index_size(&self) -> u16 {
+        // The guest cannot query which reference implementation backs the vTPM,
+        // so assume the largest so reads are never truncated.
+        tpm_lib::TPM_V185_MAX_NV_INDEX_SIZE
+    }
 }
 
 #[cfg(unix)]
@@ -333,15 +339,14 @@ mod windows {
         pub const TBS_COMMAND_PRIORITY_NORMAL: u32 = 100;
 
         /// Allow non-snake / camel case naming that matches the Windows SDK for FFI correctness.
-        #[allow(non_snake_case)]
+        #[expect(non_snake_case)]
         #[repr(C)]
         pub union TBS_CONTEXT_PARAMS2_FLAGS {
             pub asUINT32: u32, // bit 0: requestRaw, bit 1: includeTpm12, bit 2: includeTpm20
         }
 
         #[repr(C)]
-        #[allow(non_camel_case_types)]
-        #[allow(non_snake_case)]
+        #[expect(non_snake_case)]
         pub struct TBS_CONTEXT_PARAMS2 {
             pub version: u32, // must be TPM_VERSION_20 for PARAMS2
             pub Anonymous: TBS_CONTEXT_PARAMS2_FLAGS,

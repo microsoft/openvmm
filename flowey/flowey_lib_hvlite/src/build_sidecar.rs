@@ -3,14 +3,16 @@
 
 //! Build `sidecar` binaries
 
+use crate::common::CommonArch;
 use crate::run_cargo_build::BuildProfile;
-use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct SidecarOutput {
+    #[serde(rename = "sidecar")]
     pub bin: PathBuf,
+    #[serde(rename = "sidecar.dbg")]
     pub dbg: PathBuf,
 }
 
@@ -81,9 +83,17 @@ impl FlowNode for Node {
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
-                    [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
-                        .into_iter()
-                        .collect(),
+                    [
+                        ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
+                        // Forbid cc-rs and CMake from compiling anything
+                        ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                        (
+                            "CMAKE".to_string(),
+                            "cmake-is-forbidden-during-openvmm-hcl-build".to_string(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
                 )),
                 pre_build_deps: Vec::new(),
                 output: v,

@@ -291,3 +291,17 @@ impl pr::PersistentReservation for DiskWithReservations {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::DiskWithReservations;
+    use disk_backend::Disk;
+    use pal_async::async_test;
+
+    #[async_test]
+    async fn sector_range_conformance() {
+        let inner = disklayer_ram::ram_disk(1024 * 1024, false).unwrap();
+        let disk = Disk::new(DiskWithReservations::new(inner)).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+}

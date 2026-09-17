@@ -8,7 +8,7 @@
 
 pub mod resolver;
 
-use block_crypto::XtsAes256;
+use crypto::xts_aes_256::XtsAes256;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -34,7 +34,7 @@ pub struct CryptDisk {
 pub enum NewDiskError {
     /// An error occurred during cryptographic operations.
     #[error("crypto error")]
-    Crypto(#[source] block_crypto::Error),
+    Crypto(#[source] crypto::xts_aes_256::XtsAes256Error),
     /// The key size is invalid.
     #[error("invalid key size for cipher")]
     InvalidKeySize,
@@ -111,7 +111,7 @@ impl DiskIo for CryptDisk {
         let mut writer = buffers.writer();
         for i in 0..buffers.len() >> self.inner.sector_shift() {
             reader.read(&mut buf)?;
-            ctx.cipher((sector + i as u64).into(), &mut buf)
+            ctx.cipher(sector + i as u64, &mut buf)
                 .map_err(crypto_error)?;
             writer.write(&buf)?;
         }
@@ -143,7 +143,7 @@ impl DiskIo for CryptDisk {
         while offset < buffers.len() {
             let this_buf = &mut buf[offset..][..sector_size];
             reader.read(this_buf)?;
-            ctx.cipher(tweak.into(), this_buf).map_err(crypto_error)?;
+            ctx.cipher(tweak, this_buf).map_err(crypto_error)?;
             offset += sector_size;
             tweak += 1;
         }
@@ -187,7 +187,7 @@ impl DiskIo for CryptDisk {
     }
 }
 
-fn crypto_error(err: block_crypto::Error) -> DiskError {
+fn crypto_error(err: crypto::xts_aes_256::XtsAes256Error) -> DiskError {
     DiskError::Io(std::io::Error::other(err))
 }
 
@@ -198,6 +198,24 @@ mod tests {
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
+
+    const CONFORMANCE_DISK_SIZE: u64 = 1024 * 1024;
+
+    #[async_test]
+    async fn sector_range_conformance() {
+        // XTS requires the two halves of the key to differ; a uniform key is
+        // rejected by the crypto backend at cipher init, which would make every
+        // write fail for a reason unrelated to the sector range.
+        let mut key = [0; 64];
+        key[..32].fill(0xab);
+        key[32..].fill(0xcd);
+        let inner = disklayer_ram::ram_disk(CONFORMANCE_DISK_SIZE, false).unwrap();
+        let disk = Disk::new(
+            CryptDisk::new(disk_crypt_resources::Cipher::XtsAes256, &key, inner).unwrap(),
+        )
+        .unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
 
     #[async_test]
     async fn test_basic_read_write() {

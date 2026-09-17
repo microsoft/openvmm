@@ -3,9 +3,8 @@
 
 //! Build `openvmm_hcl` binaries (NOT IGVM FILES!)
 
-use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeMap;
@@ -14,7 +13,9 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum OpenvmmHclFeature {
     Gdb,
+    MiSecure,
     Tpm,
+    ProductPolicy,
     LocalOnlyCustom(String),
 }
 
@@ -56,9 +57,13 @@ impl MaxTraceLevel {
 
 #[derive(Serialize, Deserialize)]
 pub struct OpenvmmHclOutput {
+    #[serde(rename = "openvmm_hcl")]
     pub bin: PathBuf,
+    #[serde(rename = "openvmm_hcl.dbg")]
     pub dbg: Option<PathBuf>,
 }
+
+impl Artifact for OpenvmmHclOutput {}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OpenvmmHclBuildParams {
@@ -116,32 +121,42 @@ impl FlowNode for Node {
 
             let target = target.as_triple();
 
-            let arch = CommonArch::from_triple(&target).ok_or_else(|| {
-                anyhow::anyhow!("cannot build openvmm_hcl on {}", target.architecture)
-            })?;
+            let arch = CommonArch::from_triple(&target)
+                .with_context(|| format!("cannot build openvmm_hcl on {}", target.architecture))?;
 
-            let openhcl_deps_path =
-                ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                    arch: match arch {
-                        CommonArch::X86_64 => OpenvmmSysrootArch::X64,
-                        CommonArch::Aarch64 => OpenvmmSysrootArch::Aarch64,
-                    },
-                    path: v,
-                });
+            let openhcl_deps_path = ctx
+                .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request { arch, path: v });
 
             // required due to ambient dependencies in openvmm_hcl's source code
-            pre_build_deps.push(openhcl_deps_path.clone().into_side_effect());
+            pre_build_deps.push(openhcl_deps_path.into_side_effect());
 
             let mut features = features
                 .into_iter()
                 .map(|f| match f {
                     OpenvmmHclFeature::Gdb => "gdb".into(),
+                    OpenvmmHclFeature::MiSecure => "mi-secure".into(),
                     OpenvmmHclFeature::Tpm => "tpm".into(),
+                    OpenvmmHclFeature::ProductPolicy => "product_policy".into(),
                     OpenvmmHclFeature::LocalOnlyCustom(s) => s,
                 })
                 .collect::<Vec<String>>();
 
             features.extend(max_trace_level.features());
+
+            // Forbid cc-rs and CMake from compiling anything for the openvmm_hcl build.
+            // Every C library it links comes prebuilt out of the openvmm-deps
+            // sdk sysroot, so a build script reaching for either is a bug.
+            let extra_env = Some(ReadVar::from_static(
+                [
+                    ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                    (
+                        "CMAKE".to_string(),
+                        "cmake-is-forbidden-during-openvmm-hcl-build".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ));
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm_hcl".into(),
@@ -159,7 +174,7 @@ impl FlowNode for Node {
                 features: CargoFeatureSet::Specific(features),
                 target,
                 no_split_dbg_info,
-                extra_env: None,
+                extra_env,
                 pre_build_deps,
                 output: v,
             });

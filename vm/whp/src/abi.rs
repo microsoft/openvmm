@@ -189,6 +189,8 @@ pub const WHvPartitionPropertyCodeExceptionExitBitmap: WHV_PARTITION_PROPERTY_CO
     WHV_PARTITION_PROPERTY_CODE(0x00000002);
 pub const WHvPartitionPropertyCodeSeparateSecurityDomain: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00000003);
+pub const WHvPartitionPropertyCodeNestedVirtualization: WHV_PARTITION_PROPERTY_CODE =
+    WHV_PARTITION_PROPERTY_CODE(0x00000004);
 #[cfg(target_arch = "x86_64")]
 pub const WHvPartitionPropertyCodeX64MsrExitBitmap: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00000005);
@@ -284,7 +286,7 @@ pub struct WHV_RUN_VP_EXIT_CONTEXT {
     pub Reserved: u32,
     #[cfg(target_arch = "x86_64")]
     pub VpContext: WHV_VP_EXIT_CONTEXT,
-    #[cfg(all(target_arch = "aarch64", feature = "unstable_whp"))]
+    #[cfg(target_arch = "aarch64")]
     pub Reserved1: u64,
     pub u: WHV_RUN_VP_EXIT_CONTEXT_u,
 }
@@ -601,6 +603,12 @@ pub const WHvTranslateGvaFlagPrivilegeExempt: WHV_TRANSLATE_GVA_FLAGS =
     WHV_TRANSLATE_GVA_FLAGS(0x00000008);
 pub const WHvTranslateGvaFlagSetPageTableBits: WHV_TRANSLATE_GVA_FLAGS =
     WHV_TRANSLATE_GVA_FLAGS(0x00000010);
+#[cfg(target_arch = "x86_64")]
+pub const WHvTranslateGvaFlagEnforceSmap: WHV_TRANSLATE_GVA_FLAGS =
+    WHV_TRANSLATE_GVA_FLAGS(0x00000100);
+#[cfg(target_arch = "x86_64")]
+pub const WHvTranslateGvaFlagOverrideSmap: WHV_TRANSLATE_GVA_FLAGS =
+    WHV_TRANSLATE_GVA_FLAGS(0x00000200);
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -1011,6 +1019,17 @@ pub const WHvVirtualProcessorStateTypeInterruptControllerState2: WHV_VIRTUAL_PRO
     WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001000);
 pub const WHvVirtualProcessorStateTypeXsaveState: WHV_VIRTUAL_PROCESSOR_STATE_TYPE =
     WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001001);
+/// Nested-virtualization state (x86-64 only). Carries the L2 VMCS/VMCB
+/// plus pending-event-ex registers that the hypervisor exposes only when the
+/// partition was created with `WHvPartitionPropertyCodeNestedVirtualization`.
+pub const WHvVirtualProcessorStateTypeNestedState: WHV_VIRTUAL_PROCESSOR_STATE_TYPE =
+    WHV_VIRTUAL_PROCESSOR_STATE_TYPE(0x00001002);
+
+/// Size in bytes of `WHV_X64_NESTED_STATE` — a union of
+/// `WHV_X64_VMX_NESTED_STATE` and `WHV_X64_SVM_NESTED_STATE`, each containing a
+/// page-aligned 4 KiB VMCS/VMCB region. The Windows SDK header enforces this
+/// with `C_ASSERT(sizeof(WHV_X64_NESTED_STATE) == (2 * 4096))`.
+pub const WHV_X64_NESTED_STATE_SIZE: usize = 2 * 4096;
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone)]
@@ -1042,4 +1061,18 @@ pub struct WHV_ARM64_IC_PARAMETERS {
     pub EmulationMode: WHV_ARM64_IC_EMULATION_MODE,
     pub Reserved: u32,
     pub GicV3Parameters: WHV_ARM64_IC_GIC_V3_PARAMETERS,
+}
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone)]
+pub struct WHV_PARTITION_COUNTER_SET(u32);
+
+pub const WHvPartitionCounterSetMemory: WHV_PARTITION_COUNTER_SET = WHV_PARTITION_COUNTER_SET(0);
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct WHV_PARTITION_MEMORY_COUNTERS {
+    pub Mapped4KPageCount: u64,
+    pub Mapped2MPageCount: u64,
+    pub Mapped1GPageCount: u64,
 }

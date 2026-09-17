@@ -19,6 +19,7 @@ use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::HardwareConfigFaultConfig;
 use nvme_resources::fault::IoQueueFaultBehavior;
 use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_resources::fault::NamespaceChange;
@@ -28,11 +29,13 @@ use nvme_resources::fault::PciFaultConfig;
 use nvme_test::command_match::CommandMatchBuilder;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
+use petri::MemoryConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVm;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
@@ -40,17 +43,14 @@ use petri::vtl2_settings::ControllerType;
 use petri::vtl2_settings::Vtl2LunBuilder;
 use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use petri::vtl2_settings::Vtl2StorageControllerBuilder;
-#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
-#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64;
-#[allow(unused_imports)]
+#[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64;
-#[allow(unused_imports)]
+#[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_X64;
-#[allow(unused_imports)]
+#[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
-#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use pipette_client::PipetteClient;
 use pipette_client::process::Child;
@@ -148,7 +148,40 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
-        config.with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512"),
+        config.with_openhcl_command_line(
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+        ),
+        igvm_file,
+        flags,
+        DEFAULT_SERVICING_COUNT,
+    )
+    .await
+}
+
+/// Test servicing an OpenHCL VM with a multi-NUMA pool split.
+/// The pool is split across NUMA nodes via `OPENHCL_VTL2_GPA_POOL_NUMA=split`,
+/// and pool ranges must be preserved identically across the service boundary.
+#[openvmm_test(openhcl_linux_direct_x64[LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_numa_private_pool<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> anyhow::Result<()> {
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    openhcl_servicing_core(
+        config
+            .with_processor_topology(ProcessorTopology {
+                vp_count: 4,
+                vps_per_socket: Some(2),
+                ..Default::default()
+            })
+            .with_memory(MemoryConfig {
+                numa_mem_sizes: Some(vec![2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]),
+                ..Default::default()
+            })
+            .with_openhcl_command_line(
+                "OPENHCL_VTL2_GPA_POOL_NUMA=split OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            ),
         igvm_file,
         flags,
         DEFAULT_SERVICING_COUNT,
@@ -166,7 +199,9 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
         config
-            .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
+            .with_openhcl_command_line(
+                "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            )
             .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
             .with_vmbus_redirect(true), // Need this to attach the NVMe device
         igvm_file,
@@ -176,8 +211,133 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     .await
 }
 
+/// Test servicing with sidecar and per-CPU override for outstanding IO.
+/// Uses 24 VPs across 2 NUMA nodes with sidecar enabled. Delays IO
+/// completions, then saves while IO is in-flight. On restore, the CPUs
+/// with delayed IO should appear in cpus_with_outstanding_io, triggering
+/// the per-CPU sidecar override: those CPUs are started by the kernel,
+/// the remaining VPs go through sidecar's parallel startup.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_sidecar_with_outstanding_io_very_heavy(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    use petri::ApicMode;
+
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+    let mut fault_start_updater = CellUpdater::new(false);
+    let cell = fault_start_updater.cell();
+
+    // Delay IO completions (10s) so IO is still in-flight during save.
+    // With max_io_queues=2, exactly 2 NVMe IO queues are created, each
+    // bound to a specific CPU. Those 2 CPUs appear in cpus_with_outstanding_io
+    // while the remaining 22 VPs stay sidecar-eligible.
+    let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
+        IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+            CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+            IoQueueFaultBehavior::Delay(Duration::from_secs(10)),
+        ),
+    );
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 4 * 1024 * 1024; // 4 MiB
+    let vp_count: u32 = 24;
+
+    // Use 2 NUMA nodes (vps_per_socket=12). Sidecar requires >1 VP per
+    // node to activate.
+    let (mut vm, agent) = create_keepalive_test_config_custom(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+        ProcessorTopology {
+            vp_count,
+            vps_per_socket: Some(12),
+            enable_smt: Some(false),
+            apic_mode: Some(ApicMode::X2apicSupported),
+        },
+        Default::default(),
+        &["OPENHCL_SIDECAR=log"],
+        3, // msix_count: 1 admin + 2 IO
+        2, // max_io_queues
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    // Find the disk path.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // Start delayed IO — this creates outstanding IO on the issuing CPUs.
+    fault_start_updater.set(true).await;
+    let _io_child = large_read_from_disk(&agent, disk_path).await?;
+
+    // Wait briefly so the IO reaches the NVMe controller and gets delayed.
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Save while IO is in-flight. The CPUs with delayed IO will appear
+    // in cpus_with_outstanding_io in the persisted state.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save should complete within 60 seconds")
+        .expect("VM save failed");
+
+    // Restore exercises per-CPU sidecar override: CPUs with outstanding IO
+    // are started by the kernel, remaining VPs go through sidecar.
+    vm.restore_openhcl().await?;
+
+    // Verify the per-CPU override fired by checking openhcl_boot logs.
+    let boot_logs = vm
+        .inspect_openhcl("vm/runtime_params/bootshim_logs", Some(2), None)
+        .await?;
+    let boot_logs_str = format!("{}", boot_logs.json());
+    assert!(
+        boot_logs_str.contains("excluding CPUs"),
+        "per-CPU sidecar override did not fire on restore; \
+         cpus_with_outstanding_io was likely empty. Boot logs: {}",
+        boot_logs_str
+    );
+
+    // Disable faults and verify guest is functional after restore.
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    // Verify all VPs came online after restore.
+    let sh = agent.unix_shell();
+    let online = cmd!(sh, "cat /sys/devices/system/cpu/online")
+        .read()
+        .await?;
+    assert_eq!(
+        online.trim(),
+        format!("0-{}", vp_count - 1),
+        "not all VPs came online after restore"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 #[vmm_test(
-    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64],
+    unstable(
+        reason = "The 78 MiB release layout is not downgrade-compatible with the 70 MiB release baseline",
+        openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64]
+    ),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, LATEST_RELEASE_STANDARD_AARCH64]
@@ -258,6 +418,7 @@ async fn servicing_shutdown_ic(
                             device: SimpleScsiDiskHandle {
                                 disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                     len: Some(256 * 1024),
+                                    sector_size: None,
                                 })
                                 .into_resource(),
                                 read_only: false,
@@ -281,7 +442,11 @@ async fn servicing_shutdown_ic(
     // Make sure the disk showed up.
     cmd!(sh, "ls /dev/sda").run().await?;
 
-    let shutdown_ic = vm.backend().wait_for_enlightened_shutdown_ready().await?;
+    let shutdown_ic = vm
+        .backend()
+        .wait_for_enlightened_shutdown_ready()
+        .await?
+        .expect("shutdown IC should be configured");
     vm.restart_openhcl(igvm_file, flags).await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");
@@ -330,7 +495,7 @@ async fn servicing_keepalive_with_namespace_update(
                 ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -408,7 +573,7 @@ async fn _servicing_keepalive_with_missed_get_log_page(
                 ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -531,7 +696,7 @@ async fn servicing_test_keepalive_disable_through_inspect(
     // which includes NVMe regions and restore verification will fail ("unrestored allocations found"),
     // since NVMe KA is off and we don't save anything).
     flags.enable_mana_keepalive = false;
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -670,7 +835,7 @@ async fn servicing_keepalive_with_io_queue_full(
     let scsi_controller_guid = Guid::new_random();
     let disk_size = 100 * 1024 * 1024; // 100 MiB
 
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -739,7 +904,7 @@ async fn servicing_keepalive_with_unresponsive_io(
     );
 
     let scsi_controller_guid = Guid::new_random();
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -795,6 +960,582 @@ async fn servicing_keepalive_with_unresponsive_io(
     Ok(())
 }
 
+/// Verifies that `create_io_queue` works correctly after keepalive restore
+/// when IO is directed to a CPU that had no IO queue at save time.
+///
+/// Uses a 4-CPU VM so that some CPUs are unlikely to have IO queues from
+/// boot-time activity. After boot, inspect is used to find a CPU that has
+/// no IO issuer — this makes the test deterministic. After keepalive restore
+/// (with a phantom AER from a namespace change), IO is directed to that CPU
+/// via a cpuset cgroup (the minimal linux direct initrd has no `taskset`), which
+/// forces the NVMe driver's `create_io_queue` path — including CREATE_IO_CQ
+/// and CREATE_IO_SQ admin commands sent to the kept-alive controller. A
+/// second servicing cycle validates that the new queue state is fully
+/// consistent.
+///
+/// NOTE: This test validates driver-side correctness only. The emulated
+/// controller handles interrupts via in-process signals, so it cannot catch
+/// host-side interrupt routing issues that only manifest with real SR-IOV
+/// devices.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_create_io_queue_on_new_cpu(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+    let mut fault_start_updater = CellUpdater::new(false);
+    let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
+
+    // No admin queue faults — we want create_io_queue admin commands to
+    // succeed normally. The namespace fault injects a phantom AER during
+    // the keepalive window, matching the production scenario.
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv));
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
+    let vp_count = 4;
+
+    let (mut vm, agent) = create_keepalive_test_config_custom_vps(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+        vp_count,
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
+    let target_cpu = (0u32..vp_count)
+        .find(|cpu| !cpus_with_issuers.contains(cpu))
+        .unwrap_or_else(|| {
+            panic!(
+                "all {vp_count} CPUs already have IO issuers after boot — \
+             test cannot exercise create_io_queue. Consider increasing vp_count."
+            )
+        });
+    tracing::info!(
+        target_cpu,
+        existing_issuers = ?cpus_with_issuers,
+        "selected target CPU with no IO issuer"
+    );
+
+    // Resolve the disk path before save. The device might appear as /dev/sda
+    // or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // ── First servicing cycle: phantom AER + create_io_queue ──
+    // Save, inject a namespace change (phantom AER), then restore.
+    fault_start_updater.set(true).await;
+    vm.save_openhcl(igvm_file.clone(), flags).await?;
+    ns_change_send
+        .call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID)
+        .await?;
+    vm.restore_openhcl().await?;
+    fault_start_updater.set(false).await;
+
+    // This should trigger creation of a new io queue.
+    run_cpu_pinned_io(&agent, disk_path, target_cpu).await?;
+
+    let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
+    assert!(
+        cpus_with_issuers.contains(&target_cpu),
+        "target CPU should have an IO issuer on CPU {target_cpu} after pinning IO. CPUs with issuers: {cpus_with_issuers:?}"
+    );
+    agent.ping().await?;
+
+    // ── Second servicing cycle: verify queue state consistency ──
+    // If the newly created queue has inconsistent state, this save/restore
+    // will expose it.
+    vm.save_openhcl(igvm_file.clone(), flags).await?;
+    vm.restore_openhcl().await?;
+    agent.ping().await?;
+
+    // Issue IO again on the same CPU to confirm the queue survived the
+    // second servicing cycle.
+    run_cpu_pinned_io(&agent, disk_path, target_cpu).await?;
+
+    agent.ping().await?;
+
+    Ok(())
+}
+
+/// Verifies that save works correctly when a create_io_queue command
+/// is stuck. The `DriverWorkerTask` run loop should still be able to process
+/// save commands when the stuck create_io_queue command completes, even when
+/// that happens after save has been issued.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_slow_create_io_queue(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(10);
+    const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+    const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(30);
+
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
+                    .build(),
+                AdminQueueFaultBehavior::Delay(QUEUE_CREATION_DELAY),
+            ),
+        );
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
+    let vp_count = 4;
+
+    let (mut vm, agent) = create_keepalive_test_config_custom_vps(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+        vp_count,
+    )
+    .await?;
+    agent.ping().await?;
+
+    let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
+    let target_cpu = (0u32..vp_count)
+        .find(|cpu| !cpus_with_issuers.contains(cpu))
+        .unwrap_or_else(|| {
+            panic!(
+                "all {vp_count} CPUs already have IO issuers after boot — \
+             test cannot exercise create_io_queue. Consider increasing vp_count."
+            )
+        });
+    tracing::info!(
+        target_cpu,
+        existing_issuers = ?cpus_with_issuers,
+        "selected target CPU with no IO issuer"
+    );
+
+    // Resolve the disk path before save. The device might appear as /dev/sda
+    // or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // DEV NOTE: `run_cpu_pinned_io` only needs to be run for a duration that
+    // guarantees the create_io_queue command getting stuck. Ideally this should
+    // be event driven instead of time driven, but the infrastructure for that
+    // is not in place yet.
+    // Even though the dd command will timeout, the run loop will be stuck until
+    // the create_io_queue command completes.
+    fault_start_updater.set(true).await;
+    let io_result = CancelContext::new()
+        .with_timeout(TRIGGER_CREATE_IO_QUEUE_TIMEOUT)
+        .until_cancelled(run_cpu_pinned_io(&agent, disk_path, target_cpu))
+        .await;
+
+    assert!(
+        io_result.is_err(),
+        "IO command should have timed out. This likely means the create_io_queue command did not get injected correctly."
+    );
+
+    CancelContext::new()
+        .with_timeout(TOTAL_SAVE_TIMEOUT)
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within the given timeout, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
+        .expect("Save failed");
+
+    fault_start_updater.set(false).await;
+    vm.restore_openhcl().await?;
+    agent.ping().await?;
+    Ok(())
+}
+
+/// Verifies that save works correctly when a create_io_queue command
+/// is still in flight and inspect is called on the device. Previously we saw
+/// inspect calls inadvertently throwing away create_io_issuer futures and then
+/// save being serviced with CREATE_IO_COMPLETION_QUEUE commands still pending.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_slow_create_io_queue_with_inspect(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(60);
+    const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+    const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(15);
+
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
+                    .build(),
+                AdminQueueFaultBehavior::Delay(QUEUE_CREATION_DELAY),
+            ),
+        );
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
+    let vp_count = 4;
+
+    let (mut vm, agent) = create_keepalive_test_config_custom_vps(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+        vp_count,
+    )
+    .await?;
+    agent.ping().await?;
+
+    let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
+    let target_cpu = (0u32..vp_count)
+        .find(|cpu| !cpus_with_issuers.contains(cpu))
+        .unwrap_or_else(|| {
+            panic!(
+                "all {vp_count} CPUs already have IO issuers after boot — \
+             test cannot exercise create_io_queue. Consider increasing vp_count."
+            )
+        });
+    tracing::info!(
+        target_cpu,
+        existing_issuers = ?cpus_with_issuers,
+        "selected target CPU with no IO issuer"
+    );
+
+    // Resolve the disk path before save. The device might appear as /dev/sda
+    // or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // DEV NOTE: `run_cpu_pinned_io` only needs to be run for a duration that
+    // guarantees the create_io_queue command getting stuck. Ideally this should
+    // be event driven instead of time driven, but the infrastructure for that
+    // is not in place yet.
+    // Even though the dd command will timeout, the run loop will be stuck until
+    // the create_io_queue command completes.
+    fault_start_updater.set(true).await;
+    let io_result = CancelContext::new()
+        .with_timeout(TRIGGER_CREATE_IO_QUEUE_TIMEOUT)
+        .until_cancelled(run_cpu_pinned_io(&agent, disk_path, target_cpu))
+        .await;
+
+    assert!(
+        io_result.is_err(),
+        "IO command should have timed out. This likely means the create_io_queue command did not get injected correctly."
+    );
+
+    // In previous versions invoking inspect would cause the DriverWorkerTask to
+    // just drop the stuck create io queue command and service the save with
+    // pending admin commands (not good)
+    let nvme_device_inspect = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    tracing::info!(nvme_device_inspect = ?nvme_device_inspect, "nvme device inspected");
+
+    let entries = match &nvme_device_inspect {
+        inspect::Node::Dir(entries) => entries,
+        _ => panic!(
+            "expected dir for 'vm/nvme/devices' but found {}",
+            nvme_device_inspect.json()
+        ),
+    };
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected exactly 1 NVMe device under 'vm/nvme/devices', found {}",
+        entries.len()
+    );
+    let nvme_device_name = entries[0].name.clone();
+
+    CancelContext::new()
+        .with_timeout(TOTAL_SAVE_TIMEOUT)
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within the given timeout, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
+        .expect("Save failed");
+
+    fault_start_updater.set(false).await;
+
+    vm.restore_openhcl().await?;
+    agent.ping().await?;
+
+    let vm_inspect = vm
+        .inspect_openhcl(
+            &format!("vm/nvme/devices/{nvme_device_name}/driver/driver/admin/commands/commands"),
+            None,
+            None,
+        )
+        .await?;
+
+    tracing::info!("vm inspected {}", vm_inspect.json());
+    let entries = match &vm_inspect {
+        inspect::Node::Dir(entries) => entries,
+        _ => {
+            panic!(
+                "expected list of pending commands but found {}",
+                vm_inspect.json()
+            );
+        }
+    };
+    assert_eq!(entries.len(), 1, "expected only 1 entry, the AER command");
+
+    Ok(())
+}
+
+/// Boots a frontpage OpenHCL VM with two VTL2 NVMe -> VTL0 SCSI relays: one
+/// controller forced into fused keepalive mode (VendorID=0x1414/DeviceID=0xb111)
+/// and one normal controller. Verifies the fused device eagerly pre-creates its
+/// IO queues at init while the normal device creates them lazily, then services
+/// the VM with NVMe keepalive. Re-verifies that the fused device is still fused
+/// and the normal device is still non-fused after the service boundary.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn nvme_fused_keepalive_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    const VP_COUNT: u32 = 4;
+    const MSIX_COUNT: u16 = 10;
+    const MAX_IO_QUEUES: u16 = 10;
+
+    const FUSED_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    const NORMAL_INSTANCE: Guid = guid::guid!("00000000-c05b-0000-0000-000000000001");
+    const FUSED_NSID: u32 = KEEPALIVE_VTL2_NSID;
+    const NORMAL_NSID: u32 = KEEPALIVE_VTL2_NSID + 1;
+    const FUSED_LUN: u32 = VTL0_NVME_LUN;
+    const NORMAL_LUN: u32 = VTL0_NVME_LUN + 1;
+
+    let eager_count = (VP_COUNT as usize).min(MAX_IO_QUEUES as usize);
+
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+
+    let run_vm = async || -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
+        let mut fused_updater = CellUpdater::new(false);
+        // Spoof the vendor and device ID for a device that requires fused keepalive
+        let fused_fault = FaultConfiguration::new(fused_updater.cell()).with_hardware_config_fault(
+            HardwareConfigFaultConfig::new()
+                .with_vendor_id(0x1414)
+                .with_device_id(0xb111),
+        );
+
+        let mut normal_updater = CellUpdater::new(false);
+        let normal_fault = FaultConfiguration::new(normal_updater.cell());
+
+        let nvme_device = |instance_id, nsid, fault_config| VpciDeviceConfig {
+            vtl: DeviceVtl::Vtl2,
+            instance_id,
+            resource: NvmeFaultControllerHandle {
+                subsystem_id: Guid::new_random(),
+                msix_count: MSIX_COUNT,
+                max_io_queues: MAX_IO_QUEUES,
+                namespaces: vec![NamespaceDefinition {
+                    nsid,
+                    read_only: false,
+                    disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                        len: Some(DEFAULT_DISK_SIZE),
+                        sector_size: None,
+                    })
+                    .into_resource(),
+                }],
+                fault_config,
+                enable_tdisp_tests: false,
+            }
+            .into_resource(),
+            vnode: None,
+        };
+
+        let scsi_instance = Guid::new_random();
+
+        config
+            .with_vmbus_redirect(true)
+            .with_openhcl_command_line(
+                "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+            )
+            .with_processor_topology(ProcessorTopology {
+                vp_count: VP_COUNT,
+                ..Default::default()
+            })
+            .modify_backend(move |b| {
+                b.with_custom_config(move |c| {
+                    c.vpci_devices
+                        .push(nvme_device(FUSED_INSTANCE, FUSED_NSID, fused_fault));
+                    c.vpci_devices
+                        .push(nvme_device(NORMAL_INSTANCE, NORMAL_NSID, normal_fault));
+                })
+            })
+            .add_vtl2_storage_controller(
+                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                    .with_instance_id(scsi_instance)
+                    .add_lun(
+                        Vtl2LunBuilder::disk()
+                            .with_location(FUSED_LUN)
+                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                ControllerType::Nvme,
+                                FUSED_INSTANCE,
+                                FUSED_NSID,
+                            )),
+                    )
+                    .add_lun(
+                        Vtl2LunBuilder::disk()
+                            .with_location(NORMAL_LUN)
+                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                ControllerType::Nvme,
+                                NORMAL_INSTANCE,
+                                NORMAL_NSID,
+                            )),
+                    )
+                    .build(),
+            )
+            .run_without_agent()
+            .await
+    };
+
+    // Returns, per VTL2 NVMe device, its fused flag and the `unmapped` state of
+    // each IO queue ordered by queue index.
+    let inspect_devices =
+        async |vm: &PetriVm<OpenVmmPetriBackend>| -> Result<Vec<(bool, Vec<bool>)>, anyhow::Error> {
+            let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+            let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
+            let devices = devices
+                .as_object()
+                .expect("inspect path 'vm/nvme/devices' did not yield a JSON object");
+
+            devices
+                .values()
+                .map(|device| {
+                    let driver = &device["driver"]["driver"];
+                    let fused = driver["fused_keepalive_device"]
+                        .as_bool()
+                        .expect("'driver.driver.fused_keepalive_device' is not a JSON bool");
+                    let io = driver["io"]
+                        .as_object()
+                        .expect("'driver.driver.io' is not a JSON object");
+                    let mut entries = io
+                        .iter()
+                        .map(|(key, value)| {
+                            let index = key.parse::<u32>()?;
+                            let unmapped = value["unmapped"].as_bool().ok_or_else(|| {
+                                anyhow::anyhow!("io queue '{key}' missing bool 'unmapped' field")
+                            })?;
+                            anyhow::Ok((index, unmapped))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    entries.sort_by_key(|(index, _)| *index);
+                    Ok((
+                        fused,
+                        entries.into_iter().map(|(_, unmapped)| unmapped).collect(),
+                    ))
+                })
+                .collect()
+        };
+
+    // Asserts exactly one fused and one non-fused device are present, returning
+    // their IO-queue `unmapped` vectors as `(fused_io, normal_io)`. `phase` is
+    // used only to make failures clear about whether they occurred before or
+    // after servicing.
+    let split_fused = |devices: &[(bool, Vec<bool>)], phase: &str| -> (Vec<bool>, Vec<bool>) {
+        assert_eq!(devices.len(), 2, "[{phase}] expected two VTL2 NVMe devices");
+        let (_, fused_io) = devices
+            .iter()
+            .find(|(fused, _)| *fused)
+            .unwrap_or_else(|| panic!("[{phase}] expected one device in fused keepalive mode"));
+        let (_, normal_io) = devices
+            .iter()
+            .find(|(fused, _)| !*fused)
+            .unwrap_or_else(|| panic!("[{phase}] expected one device in normal (non-fused) mode"));
+        (fused_io.clone(), normal_io.clone())
+    };
+
+    let mut vm = run_vm().await?;
+
+    // Before servicing: the fused device eagerly pre-creates its full set of
+    // unmapped IO queues while the normal device creates them lazily.
+    let (fused_io, normal_io) = split_fused(&inspect_devices(&vm).await?, "pre-servicing");
+    assert_eq!(
+        fused_io.len(),
+        eager_count,
+        "[pre-servicing] fused keepalive device should have min(max_io_queues, vp_count) = \
+         {eager_count} IO queues, but found {}",
+        fused_io.len()
+    );
+    assert!(
+        fused_io.iter().filter(|&&unmapped| unmapped).count() >= 1,
+        "[pre-servicing] fused keepalive device should have eagerly pre-created unmapped IO \
+         queues, but all {} queues were mapped",
+        fused_io.len()
+    );
+    assert!(
+        !normal_io.is_empty(),
+        "[pre-servicing] the normal NVMe driver should have at least one IO queue"
+    );
+    assert_eq!(
+        normal_io.iter().filter(|&&unmapped| unmapped).count(),
+        0,
+        "[pre-servicing] a normal (non-fused) device must never have unmapped IO queues"
+    );
+    assert!(
+        normal_io.len() < eager_count,
+        "[pre-servicing] a normal device creates IO queues lazily, so it should have fewer than \
+         the fused eager count ({eager_count}), but found {}",
+        normal_io.len()
+    );
+
+    // Exercise servicing with NVMe keepalive enabled.
+    vm.restart_openhcl(igvm_file, flags).await?;
+
+    // After servicing: the fused flag is recomputed on the restore path, so the
+    // fused device must still be fused and the normal device must still be
+    // non-fused. The `split_fused` call fails if either determination changed.
+    let (_fused_io, normal_io) = split_fused(&inspect_devices(&vm).await?, "post-servicing");
+    assert_eq!(
+        normal_io.iter().filter(|&&unmapped| unmapped).count(),
+        0,
+        "[post-servicing] a normal (non-fused) device must never have unmapped IO queues"
+    );
+
+    Ok(())
+}
+
 async fn apply_fault_with_keepalive(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
@@ -804,7 +1545,7 @@ async fn apply_fault_with_keepalive(
 ) -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -827,13 +1568,14 @@ async fn apply_fault_with_keepalive(
 
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
-    fault_start_updater.set(false).await;
+    // Ensure the agent is responsive after the restart before returning.
     agent.ping().await?;
 
+    fault_start_updater.set(false).await;
     Ok(vm)
 }
 
-async fn create_keepalive_test_config(
+async fn create_keepalive_test_config_default(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
     vtl0_nvme_lun: u32,
@@ -844,7 +1586,9 @@ async fn create_keepalive_test_config(
 
     config
         .with_vmbus_redirect(true)
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
+        .with_openhcl_command_line(
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+        )
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 // Add a fault controller to test the nvme controller functionality
@@ -860,6 +1604,7 @@ async fn create_keepalive_test_config(
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(disk_size),
+                                sector_size: None,
                             })
                             .into_resource(),
                         }],
@@ -867,6 +1612,7 @@ async fn create_keepalive_test_config(
                         enable_tdisp_tests: false,
                     }
                     .into_resource(),
+                    vnode: None,
                 })
             })
         })
@@ -885,6 +1631,134 @@ async fn create_keepalive_test_config(
                 )
                 .build(),
         )
+        .run()
+        .await
+}
+
+/// Creates a keepalive test config with a custom number of VPs with 1 VP per
+/// socket, each on its own NUMA node. All memory is assigned to node 0;
+/// remaining nodes are memoryless. It also creates an appropriate number of
+/// scsi sub-channels to ensure IO can be issued on all VPs.
+async fn create_keepalive_test_config_custom_vps(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    fault_configuration: FaultConfiguration,
+    vtl0_nvme_lun: u32,
+    scsi_instance: Guid,
+    disk_size: u64,
+    vp_count: u32,
+) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
+    // Configure one NUMA node per VP (1 VP per socket) so VTL2 Linux
+    // distributes storvsc sub-channel interrupts across CPUs, which IO-pinning
+    // tests rely on. All memory goes to node 0 to ensure there is enough
+    // contiguous memory for VTL2. The remaining nodes are memoryless CPU-only
+    // nodes.
+    let mut numa_sizes = vec![0u64; vp_count as usize];
+    numa_sizes[0] = MemoryConfig::default().startup_bytes;
+    create_keepalive_test_config_custom(
+        config,
+        fault_configuration,
+        vtl0_nvme_lun,
+        scsi_instance,
+        disk_size,
+        ProcessorTopology {
+            vp_count,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        },
+        MemoryConfig {
+            numa_mem_sizes: Some(numa_sizes),
+            ..Default::default()
+        },
+        &[],
+        10,
+        10,
+    )
+    .await
+}
+
+/// Creates a keepalive test config with full control over topology, NVMe queue
+/// counts, and extra OpenHCL command line arguments.
+async fn create_keepalive_test_config_custom(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    fault_configuration: FaultConfiguration,
+    vtl0_nvme_lun: u32,
+    scsi_instance: Guid,
+    disk_size: u64,
+    topology: ProcessorTopology,
+    memory: MemoryConfig,
+    extra_cmdlines: &[&str],
+    msix_count: u16,
+    max_io_queues: u16,
+) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+
+    let vp_count = topology.vp_count;
+    let mut builder = config.with_vmbus_redirect(true).with_openhcl_command_line(
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=0",
+    );
+
+    for cmdline in extra_cmdlines {
+        builder = builder.with_openhcl_command_line(cmdline);
+    }
+
+    builder
+        .with_processor_topology(topology)
+        .with_memory(memory)
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: NVME_INSTANCE,
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count,
+                        max_io_queues,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: KEEPALIVE_VTL2_NSID,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(disk_size),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                        }],
+                        fault_config: fault_configuration,
+                        enable_tdisp_tests: false,
+                    }
+                    .into_resource(),
+                    vnode: None,
+                })
+            })
+        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_nvme_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            KEEPALIVE_VTL2_NSID,
+                        )),
+                )
+                .build(),
+        )
+        .with_custom_vtl2_settings(move |v| {
+            if v.fixed.is_none() {
+                v.fixed = Some(Default::default());
+            }
+
+            // Configure SCSI so there are as many total channels as vCPUs to
+            // allow IO on all CPUs. The scsi_sub_channels counts beyond the first
+            // channel which is always present. so vp_count - 1 yields a total
+            // of vp_count channels.
+            assert!(
+                vp_count >= 1,
+                "vp_count must be at least 1 when configuring SCSI sub-channels"
+            );
+            v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
+        })
         .run()
         .await
 }
@@ -1023,4 +1897,77 @@ async fn large_read_from_disk(
         .stderr(Stdio::null());
     let io_child = io_cmd.spawn().await?;
     Ok(io_child)
+}
+
+// Runs IO using dd that is pinned to a specific target CPU using cpuset
+// cgroups.
+// DEV NOTE: This approach fails when there is more than 1 processor assigned
+// per socket. The failure itself is seen as an off-by-one error when observing
+// which CPU gets the pinned IO.
+async fn run_cpu_pinned_io(
+    agent: &PipetteClient,
+    disk_path: &str,
+    target_cpu: u32,
+) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+
+    // Mount sysfs and cgroup2, then create a cpuset cgroup to pin IO to
+    // the target CPU. The minimal Alpine initrd has neither `taskset` nor
+    // sysfs mounted, so we set this up manually.
+    let setup_cpuset = format!(
+        "mount -t sysfs none /sys 2>/dev/null || true; \
+         mkdir -p /sys/fs/cgroup; \
+         mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true; \
+         echo '+cpuset' > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; \
+         mkdir -p /sys/fs/cgroup/pin{target_cpu}; \
+         echo {target_cpu} > /sys/fs/cgroup/pin{target_cpu}/cpuset.cpus; \
+         echo 0 > /sys/fs/cgroup/pin{target_cpu}/cpuset.mems"
+    );
+    cmd!(sh, "sh -c {setup_cpuset}").run().await?;
+
+    // Force IO on the target CPU. This CPU has no IO queue, so the NVMe
+    // driver will call create_io_queue() to create one via admin commands.
+    // The dd command must complete successfully — a hang here means the admin
+    // command didn't complete (the exact production failure scenario).
+    let pinned_dd = format!(
+        "echo $$ > /sys/fs/cgroup/pin{target_cpu}/cgroup.procs; \
+         dd if={disk_path} of=/dev/null bs=4k count=256 iflag=direct status=none"
+    );
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(cmd!(sh, "sh -c {pinned_dd}").run())
+        .await
+        .expect("IO on target CPU did not complete within 60 seconds after keepalive restore. create_io_queue may be stuck.")
+        .expect("dd command failed");
+
+    Ok(())
+}
+
+// Uses inspect to find and return the CPU indices (per-CPU map keys) that have
+// IO issuers in the NVMe driver. Proto queues are not reported in the returned
+// value.
+async fn find_cpus_with_io_issuers(
+    vm: &PetriVm<OpenVmmPetriBackend>,
+) -> Result<Vec<u32>, anyhow::Error> {
+    // Query inspect to find which CPUs have IO issuers after boot.
+    // Only CPUs with initialized issuers appear in the per_cpu map (unset
+    // OnceLock entries are absent). This makes the test deterministic —
+    // we guarantee we target a CPU that triggers create_io_queue().
+    let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
+    let device = devices
+        .as_object()
+        .expect("inspect path 'vm/nvme/devices' did not yield a JSON object; NVMe inspect schema may have changed")
+        .values()
+        .next()
+        .expect("no NVMe devices found under inspect path 'vm/nvme/devices'; device list is empty");
+    let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
+    let per_cpu_map = per_cpu
+        .as_object()
+        .expect("inspect field 'driver.driver.io_issuers.per_cpu' is not a JSON object; NVMe inspect schema may have changed");
+    let cpu_indices = per_cpu_map
+        .keys()
+        .map(|key| key.parse::<u32>())
+        .collect::<Result<Vec<u32>, _>>()?;
+    Ok(cpu_indices)
 }

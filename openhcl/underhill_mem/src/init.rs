@@ -9,6 +9,7 @@ use crate::mapping::GuestMemoryMapping;
 use crate::mapping::GuestMemoryView;
 use crate::mapping::GuestMemoryViewReadType;
 use crate::mapping::GuestPartitionMemoryView;
+use crate::parallelize_mem_op;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
 use futures::future::try_join_all;
@@ -104,6 +105,10 @@ pub struct BootInit<'a> {
 }
 
 pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
+    const DEFAULT_REGISTRATION_GRANULARITY: u64 = 1 << 30;
+    const SNP_PUD_REGISTRATION_GRANULARITY: u64 = 1 << 30;
+    const SNP_PMD_REGISTRATION_GRANULARITY: u64 = 1 << 21;
+
     let mut validated_ranges = Vec::new();
 
     let acceptor = if params.isolation.is_isolated() {
@@ -111,6 +116,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     } else {
         None
     };
+
+    let vp_count = params.processor_topology.vp_count();
 
     let hardware_isolated = params.isolation.is_hardware_isolated();
 
@@ -135,16 +142,17 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             // VTL2 only permissions. Provide VTL0 access here.
             tracing::debug!("Applying VTL0 protections");
             if hardware_isolated {
-                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
-                {
-                    acceptor.apply_initial_lower_vtl_protections(range)?;
-                }
+                let accepted_ram: Vec<_> =
+                    memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
+                        .collect();
+                parallelize_mem_op(&accepted_ram, vp_count, |range| {
+                    acceptor.apply_initial_lower_vtl_protections(range)
+                })?;
             }
 
             // Accept the memory that was not accepted by the boot loader.
             // FUTURE: do this lazily.
-            let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
-            let accept_subrange = move |subrange| {
+            let accept_subrange = move |subrange| -> Result<(), std::convert::Infallible> {
                 acceptor.accept_lower_vtl_pages(subrange).unwrap();
                 if hardware_isolated {
                     // For VBS-isolated VMs, the VTL protections are set as
@@ -153,42 +161,16 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                         .apply_initial_lower_vtl_protections(subrange)
                         .unwrap();
                 }
+                Ok(())
             };
             tracing::debug!("Accepting VTL0 memory");
-            std::thread::scope(|scope| {
-                for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
-                    validated_ranges.push(source_range);
 
-                    // Chunks must be 2mb aligned
-                    let two_mb = 2 * 1024 * 1024;
-                    let mut range = source_range.aligned_subrange(two_mb);
-                    if !range.is_empty() {
-                        let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
-                        let chunk_count = range.len().div_ceil(chunk_size);
+            let source_ranges =
+                memory_range::subtract_ranges(ram, accepted_ranges).collect::<Vec<_>>();
+            validated_ranges.extend_from_slice(&source_ranges);
 
-                        for _ in 0..chunk_count {
-                            let subrange;
-                            (subrange, range) = if range.len() >= chunk_size {
-                                range.split_at_offset(chunk_size)
-                            } else {
-                                (range, MemoryRange::EMPTY)
-                            };
-                            scope.spawn(move || accept_subrange(subrange));
-                        }
-                        assert!(range.is_empty());
-                    }
-
-                    // Now accept whatever wasn't aligned on the edges
-                    scope.spawn(move || {
-                        for unaligned_subrange in memory_range::subtract_ranges(
-                            [source_range],
-                            [source_range.aligned_subrange(two_mb)],
-                        ) {
-                            accept_subrange(unaligned_subrange);
-                        }
-                    });
-                }
-            });
+            parallelize_mem_op(&source_ranges, vp_count, accept_subrange)
+                .expect("accepting VTL0 memory should not fail");
         }
     }
 
@@ -226,9 +208,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         // Create the encrypted mapping with just the lower VTL memory.
         //
-        // Do not register this mapping with the kernel. It will not be safe for
-        // use with syscalls that expect virtual addresses to be in
-        // kernel-registered RAM.
+        // Do not register this mapping object with the kernel. SNP registration
+        // is associated with the separate VTL0 mapping below after every lower
+        // VTL mapping has been established.
 
         tracing::debug!("Building valid encrypted memory view");
         let encrypted_memory_view = {
@@ -255,14 +237,20 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // TODO GUEST VSM: with lazy acceptance, it should instead be initialized to no
         // access.
         tracing::debug!("Building VTL0 memory map");
-        let vtl0_mapping = Arc::new({
+        let vtl0_mapping = {
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
-            GuestMemoryMapping::builder(0)
-                .dma_base_address(None)
+            let mut builder = GuestMemoryMapping::builder(0);
+            builder.dma_base_address(None);
+            if params.isolation == IsolationType::Snp {
+                // Configure the registrar now, but do not register until all
+                // aliases have been mapped.
+                builder.for_kernel_access(SNP_PMD_REGISTRATION_GRANULARITY);
+            }
+            builder
                 .use_permissions_bitmaps(if use_vtl1 { Some(true) } else { None })
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
-        });
+        };
 
         // Create the shared mapping with the complete memory map, to include
         // the shared pool. This memory is not private to VTL2 and is expected
@@ -290,9 +278,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 // accessors, or something.
                 0
             }
-            IsolationType::Snp => {
-                // SNP has two mappings for each shared page: one below and one
-                // above VTOM. So, unlike for TDX, for SNP we could choose to
+            IsolationType::Snp | IsolationType::Cca => {
+                // SNP and CCA have two mappings for each shared page: one below
+                // and one above VTOM. So, unlike for TDX, we could choose to
                 // register memory twice, allowing the kernel to operate on
                 // either shared or encrypted memory. But, for consistency with
                 // TDX, just register the shared mapping.
@@ -358,6 +346,19 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .context("failed to map shared memory")?
         });
 
+        if params.isolation == IsolationType::Snp {
+            // Register complete 1 GB VTL0 ranges first, then complete 2 MB
+            // ranges. Leave any remaining sub-2 MB edges unregistered.
+            let _span = tracing::info_span!("register_vtl0_memory", CVM_ALLOWED).entered();
+            vtl0_mapping
+                .register_all_aligned_memory(SNP_PUD_REGISTRATION_GRANULARITY, true)
+                .context("failed to eagerly register SNP VTL0 memory")?;
+            vtl0_mapping
+                .register_all_aligned_memory(SNP_PMD_REGISTRATION_GRANULARITY, true)
+                .context("failed to register aligned SNP VTL0 memory")?;
+        }
+        let vtl0_mapping = Arc::new(vtl0_mapping);
+
         let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
             encrypted_memory_view.partition_valid_memory().clone(),
             valid_shared_memory.clone(),
@@ -365,6 +366,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             vtl0_mapping.clone(),
             params.mem_layout.clone(),
             acceptor.as_ref().unwrap().clone(),
+            params.processor_topology.vp_count(),
         )) as Arc<dyn ProtectIsolatedMemory>;
 
         tracing::debug!("Creating VTL0 guest memory");
@@ -432,11 +434,10 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 tracing::info_span!("zeroing lower vtl memory for SNP", CVM_ALLOWED).entered();
 
             tracing::debug!("zeroing lower vtl memory for SNP");
-            for range in validated_ranges {
-                vtl0_gm
-                    .fill_at(range.start(), 0, range.len() as usize)
-                    .expect("private memory should be valid at this stage");
-            }
+            parallelize_mem_op(&validated_ranges, vp_count, |range| {
+                vtl0_gm.fill_at(range.start(), 0, range.len() as usize)
+            })
+            .expect("private memory should be valid at this stage");
         }
 
         // Untrusted devices can only access shared memory, but they can do so
@@ -537,7 +538,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
             Arc::new(
                 GuestMemoryMapping::builder(base_address)
-                    .for_kernel_access(true)
+                    .for_kernel_access(DEFAULT_REGISTRATION_GRANULARITY)
                     .dma_base_address(Some(base_address))
                     .ignore_registration_failure(params.boot_init.is_none())
                     .build_without_bitmap(&gpa_fd, params.mem_layout)
@@ -581,7 +582,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 let _span = tracing::info_span!("map_vtl1_memory", CVM_ALLOWED).entered();
                 Some(Arc::new(
                     GuestMemoryMapping::builder(0)
-                        .for_kernel_access(true)
+                        .for_kernel_access(DEFAULT_REGISTRATION_GRANULARITY)
                         .dma_base_address(Some(0))
                         .ignore_registration_failure(params.boot_init.is_none())
                         .build_without_bitmap(&gpa_fd, params.mem_layout)

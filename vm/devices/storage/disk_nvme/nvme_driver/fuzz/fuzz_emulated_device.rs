@@ -7,8 +7,6 @@
 //! responses in this routine.
 use std::sync::Arc;
 
-use crate::arbitrary_data;
-
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
@@ -53,17 +51,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> Dev
         self.device.dma_client()
     }
 
-    /// Arbitrarily decide to passthrough or return arbitrary value.
+    /// Pass through to the real device. Returning fuzzed values here can
+    /// cause NvmeDriver::new() to hang waiting for the controller to reach
+    /// ready state (see https://github.com/microsoft/openvmm/issues/3022).
     fn max_interrupt_count(&self) -> u32 {
-        // Case: Fuzz response
-        if let Ok(true) = arbitrary_data::<bool>() {
-            // Return an abritrary u32
-            if let Ok(num) = arbitrary_data::<u32>() {
-                return num;
-            }
-        }
-
-        // Case: Passthrough
         self.device.max_interrupt_count()
     }
 

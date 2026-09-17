@@ -5,6 +5,7 @@
 
 use self::vtl2_config::RuntimeParameters;
 use crate::loader::vtl0_config::LinuxInfo;
+use crate::worker::ChipsetMmioRanges;
 use crate::worker::FirmwareType;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
@@ -25,6 +26,7 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
+use vmotherboard::options::VmChipsetCapabilities;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
@@ -75,11 +77,9 @@ pub enum Error {
     Finalize(#[source] vtl0_config::Error),
     #[error("invalid acpi table: too short")]
     InvalidAcpiTableLength,
-    #[error("invalid acpi table: unknown header signature {0:?}")]
-    InvalidAcpiTableSignature([u8; 4]),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("acpi tables require at least two mmio ranges")]
-    UnsupportedMmio,
+    #[cfg(guest_arch = "aarch64")]
+    #[error("expected GICv3 topology")]
+    ExpectedGicV3,
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -104,12 +104,14 @@ pub fn load(
     processor_topology: &ProcessorTopology,
     vtl0_memory_map: &[(MemoryRangeWithNode, MemoryMapEntryType)],
     runtime_params: &RuntimeParameters,
+    chipset_capabilities: VmChipsetCapabilities,
     load_kind: LoadKind,
     vtl0_info: vtl0_config::MeasuredVtl0Info,
     platform_config: &DevicePlatformSettings,
     config: Config,
     caps: &virt::PartitionCapabilities,
     isolated: bool,
+    chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<VpContext, Error> {
     let context = match load_kind {
         LoadKind::None => {
@@ -128,9 +130,11 @@ pub fn load(
                 processor_topology,
                 vtl0_memory_map,
                 runtime_params,
+                chipset_capabilities,
                 platform_config,
                 caps,
                 isolated,
+                chipset_mmio,
             )?;
             uefi_info.vp_context.clone()
         }
@@ -181,6 +185,8 @@ pub fn load(
                 mem_layout,
                 processor_topology,
                 platform_config,
+                chipset_capabilities,
+                chipset_mmio,
                 kernel_range: *kernel_range,
                 kernel_entrypoint: *kernel_entrypoint,
                 initrd: *initrd,
@@ -228,6 +234,8 @@ struct LoadLinuxParams<'a> {
     mem_layout: &'a MemoryLayout,
     processor_topology: &'a ProcessorTopology,
     platform_config: &'a DevicePlatformSettings,
+    chipset_capabilities: VmChipsetCapabilities,
+    chipset_mmio: &'a ChipsetMmioRanges,
     /// The region of memory used by the kernel.
     kernel_range: MemoryRange,
     /// The entrypoint of the kernel.
@@ -241,86 +249,79 @@ struct LoadLinuxParams<'a> {
 /// Load Linux into VTL0.
 #[cfg(guest_arch = "x86_64")]
 fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
-    const GDT_BASE: u64 = 0x1000;
-    const CR3_BASE: u64 = 0x4000;
-    const ZERO_PAGE_BASE: u64 = 0x2000;
-    const CMDLINE_BASE: u64 = 0x3000;
-    const ACPI_BASE: u64 = 0xe0000;
-
     let LoadLinuxParams {
         gm,
         mem_layout,
         processor_topology,
         platform_config,
+        chipset_capabilities,
+        chipset_mmio,
         kernel_range,
         kernel_entrypoint,
         initrd,
         command_line,
     } = params;
 
-    let cmdline_config = loader::linux::CommandLineConfig {
-        address: CMDLINE_BASE,
-        cmdline: &command_line,
-    };
-
     let acpi_builder = AcpiTablesBuilder {
         processor_topology,
         mem_layout,
         cache_topology: None,
         pcie_host_bridges: &vec![],
-        with_ioapic: true, // underhill always runs with ioapic
-        with_pic: false,
-        with_pit: false,
-        with_psp: platform_config.general.psp_enabled,
-        pm_base: crate::worker::PM_BASE,
-        acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+        slit_info: None,
+        generic_initiators: &[],
+        arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+            with_ioapic: true, // openhcl always runs with ioapic
+            with_pic: chipset_capabilities.with_pic,
+            with_pit: chipset_capabilities.with_pit,
+            with_psp: platform_config.general.psp_enabled,
+            pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
+            acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
+            iommu: None,
+        },
     };
 
-    if mem_layout.mmio().len() < 2 {
-        return Err(Error::UnsupportedMmio);
-    }
-
-    let acpi_tables = acpi_builder.build_acpi_tables(ACPI_BASE, |mem_layout, dsdt| {
-        dsdt.add_apic();
-
-        // Add serial ports if enabled.
-        if platform_config.general.com1_enabled {
-            dsdt.add_uart(
-                b"\\_SB.UAR1",
-                b"COM1",
-                1,
-                ComPort::Com1.io_port(),
-                ComPort::Com1.irq().into(),
-            );
-        }
-
-        if platform_config.general.com2_enabled {
-            dsdt.add_uart(
-                b"\\_SB.UAR2",
-                b"COM2",
-                2,
-                ComPort::Com2.io_port(),
-                ComPort::Com2.irq().into(),
-            );
-        }
-
-        dsdt.add_mmio_module(mem_layout.mmio()[0], mem_layout.mmio()[1]);
-        // TODO: change this once PCI is running in underhill
-        dsdt.add_vmbus(false);
-        dsdt.add_rtc();
-    });
-    let acpi_len = acpi_tables.tables.len() + 0x1000;
-
-    let acpi_config = loader::linux::AcpiConfig {
-        rdsp_address: ACPI_BASE,
-        rdsp: &acpi_tables.rdsp,
-        tables_address: ACPI_BASE + 0x1000,
-        tables: &acpi_tables.tables,
+    // Synthesize SMBIOS tables from the host-provided platform settings so the
+    // guest kernel's DMI scan finds them. Type 0 (BIOS) has no host-provided
+    // source, so default identity strings are used; Type 1 (System) is
+    // populated from `DevicePlatformSettings`.
+    //
+    // The host forwards the same identity to the UEFI firmware, but it omits any
+    // empty field and lets the firmware substitute its own default. There is no
+    // firmware behind the direct-boot path, so to avoid a guest seeing a blank
+    // `sys_vendor`/`product_name`, empty manufacturer and product strings fall
+    // back to OpenHCL defaults (mirroring the OpenVMM direct-boot loader). The
+    // remaining identity fields are passed through as-is; the SMBIOS builder
+    // truncates any interior NUL and treats an empty string as "no string".
+    let smbios = &platform_config.smbios;
+    let manufacturer = if smbios.system_manufacturer.is_empty() {
+        "OpenHCL"
+    } else {
+        &smbios.system_manufacturer
     };
-
-    let register_config = loader::linux::RegisterConfig {
-        gdt_address: GDT_BASE,
-        page_table_address: CR3_BASE,
+    let product_name = if smbios.system_product_name.is_empty() {
+        "OpenHCL Virtual Machine"
+    } else {
+        &smbios.system_product_name
+    };
+    let smbios_tables = loader::smbios::SmbiosTables {
+        bios: loader::smbios::SmbiosBiosInfo {
+            vendor: "OpenHCL",
+            version: "OpenHCL Direct",
+            release_date: "06/19/2026",
+            major: 0,
+            minor: 0,
+        },
+        system: loader::smbios::SmbiosSystemInfo {
+            manufacturer,
+            product_name,
+            version: &smbios.system_version,
+            serial_number: &smbios.serial_number,
+            sku_number: &smbios.system_sku_number,
+            family: &smbios.system_family,
+            // The Type 1 UUID uses the same VM BIOS GUID as the UEFI path; its
+            // raw bytes go in directly with no byte-order swap.
+            uuid: platform_config.general.bios_guid.into(),
+        },
     };
 
     let mut loader = vm_loader::Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);
@@ -346,13 +347,6 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         None
     };
 
-    let zero_page_config = loader::linux::ZeroPageConfig {
-        address: ZERO_PAGE_BASE,
-        mem_layout,
-        acpi_base_address: ACPI_BASE,
-        acpi_len,
-    };
-
     tracing::trace!(?initrd_info);
 
     // Accept the kernel range to detect overlaps.
@@ -373,15 +367,54 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         },
         initrd: initrd_info,
         dtb: None,
+        bzimage_setup_header: None,
     };
 
-    loader::linux::load_config(
+    // The loader owns the sub-1 MB layout; we supply only the command line, a
+    // builder that produces the ACPI tables at the loader's chosen address, and
+    // the SMBIOS identity forwarded by the host.
+    loader::linux::load_config_x86(
         &mut loader,
         &load_info,
-        cmdline_config,
-        zero_page_config,
-        acpi_config,
-        register_config,
+        &command_line,
+        mem_layout,
+        |gpa| {
+            let acpi_tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
+                dsdt.add_apic();
+
+                // Add serial ports if enabled.
+                if platform_config.general.com1_enabled {
+                    dsdt.add_uart(
+                        b"\\_SB.UAR1",
+                        b"COM1",
+                        1,
+                        ComPort::Com1.io_port(),
+                        ComPort::Com1.irq().into(),
+                    );
+                }
+
+                if platform_config.general.com2_enabled {
+                    dsdt.add_uart(
+                        b"\\_SB.UAR2",
+                        b"COM2",
+                        2,
+                        ComPort::Com2.io_port(),
+                        ComPort::Com2.irq().into(),
+                    );
+                }
+
+                dsdt.add_mmio_module(chipset_mmio.low, chipset_mmio.high);
+                // TODO: change this once PCI is running in underhill
+                dsdt.add_vmbus(false, None);
+                dsdt.add_rtc();
+            });
+            loader::linux::AcpiTables {
+                rsdp: acpi_tables.rsdp,
+                tables: acpi_tables.tables,
+            }
+        },
+        Some(smbios_tables),
+        None,
     )
     .map_err(Error::LinuxLoader)?;
 
@@ -409,9 +442,11 @@ pub fn write_uefi_config(
     processor_topology: &ProcessorTopology,
     vtl0_memory_map: &[(MemoryRangeWithNode, MemoryMapEntryType)],
     igvm_parameters: &RuntimeParameters,
+    chipset_capabilities: VmChipsetCapabilities,
     platform_config: &DevicePlatformSettings,
     caps: &virt::PartitionCapabilities,
     isolated: bool,
+    chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), Error> {
     use guest_emulation_transport::api::platform_settings::UefiConsoleMode;
 
@@ -429,6 +464,9 @@ pub fn write_uefi_config(
     let mut build_madt = true;
     let mut build_srat = true;
 
+    #[cfg(not(guest_arch = "x86_64"))]
+    let _ = chipset_capabilities;
+
     // ACPI tables that come from the DevicePlatformSettings
     // We can only trust these tables from the host if this is not an isolated VM
     if !isolated {
@@ -437,20 +475,11 @@ pub fn write_uefi_config(
                 .map_err(|_| Error::InvalidAcpiTableLength)? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 .0;
             match &header.signature {
-                b"APIC" => {
-                    build_madt = false;
-                    cfg.add_raw(config::BlobStructureType::Madt, table)
-                }
-                b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
-                b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
-                b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
-                b"SRAT" => {
-                    build_srat = false;
-                    cfg.add_raw(config::BlobStructureType::Srat, table)
-                }
-                b"SSDT" => cfg.add_raw(config::BlobStructureType::Ssdt, table),
-                _ => return Err(Error::InvalidAcpiTableSignature(header.signature)),
+                b"APIC" => build_madt = false,
+                b"SRAT" => build_srat = false,
+                _ => {}
             };
+            cfg.add_raw(config::BlobStructureType::AcpiTable, table);
         }
     }
 
@@ -462,23 +491,40 @@ pub fn write_uefi_config(
             mem_layout,
             cache_topology: None,
             pcie_host_bridges: &vec![],
-            with_ioapic: cfg!(guest_arch = "x86_64"), // OpenHCL always runs with ioapic on x64
-            with_pic: false,                          // uefi never runs with pic or pit
-            with_pit: false,
-            with_psp: platform_config.general.psp_enabled,
-            pm_base: crate::worker::PM_BASE,
-            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+            slit_info: None,
+            generic_initiators: &[],
+            #[cfg(guest_arch = "x86_64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                with_ioapic: true,
+                with_pic: chipset_capabilities.with_pic,
+                with_pit: chipset_capabilities.with_pit,
+                with_psp: platform_config.general.psp_enabled,
+                pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
+                acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
+                iommu: None,
+            },
+            #[cfg(guest_arch = "aarch64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
+                // Not used for MADT/SRAT generation; only matters for FADT.
+                hypervisor_vendor_identity: 0,
+                virt_timer_ppi: processor_topology.virt_timer_ppi(),
+                smmu: Vec::new(),
+            },
         };
 
         // Build the ACPI tables as specified.
         if build_madt {
-            let madt = acpi_builder.build_madt();
-            cfg.add_raw(config::BlobStructureType::Madt, &madt);
+            cfg.add_raw(
+                config::BlobStructureType::AcpiTable,
+                &acpi_builder.build_madt(),
+            );
         }
 
         if build_srat {
-            let srat = acpi_builder.build_srat();
-            cfg.add_raw(config::BlobStructureType::Srat, &srat);
+            cfg.add_raw(
+                config::BlobStructureType::AcpiTable,
+                &acpi_builder.build_srat(),
+            );
         }
     }
 
@@ -498,8 +544,7 @@ pub fn write_uefi_config(
         )
         .add_raw(
             config::BlobStructureType::MmioRanges,
-            mem_layout
-                .mmio()
+            [chipset_mmio.low, chipset_mmio.high]
                 .iter()
                 .map(|range| config::Mmio {
                     mmio_page_number_start: range.start() / HV_PAGE_SIZE,
@@ -520,12 +565,12 @@ pub fn write_uefi_config(
         });
 
         if let Some(slit) = igvm_parameters.slit() {
-            cfg.add_raw(config::BlobStructureType::Slit, slit);
+            cfg.add_raw(config::BlobStructureType::AcpiTable, slit);
         }
 
         // TODO: reconstruct this instead of getting it from the host.
         if let Some(pptt) = igvm_parameters.pptt() {
-            cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+            cfg.add_raw(config::BlobStructureType::AcpiTable, pptt);
         }
     }
 
@@ -536,19 +581,19 @@ pub fn write_uefi_config(
     .add(&config::BiosGuid(platform_config.general.bios_guid))
     .add_cstring(
         config::BlobStructureType::SmbiosSystemSerialNumber,
-        &platform_config.smbios.serial_number,
+        platform_config.smbios.serial_number.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosBaseSerialNumber,
-        &platform_config.smbios.base_board_serial_number,
+        platform_config.smbios.base_board_serial_number.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosChassisSerialNumber,
-        &platform_config.smbios.chassis_serial_number,
+        platform_config.smbios.chassis_serial_number.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosChassisAssetTag,
-        &platform_config.smbios.chassis_asset_tag,
+        platform_config.smbios.chassis_asset_tag.as_bytes(),
     );
 
     cfg.add(&config::NvdimmCount {
@@ -562,31 +607,34 @@ pub fn write_uefi_config(
 
     cfg.add_cstring(
         config::BlobStructureType::SmbiosSystemManufacturer,
-        &platform_config.smbios.system_manufacturer,
+        platform_config.smbios.system_manufacturer.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosSystemProductName,
-        &platform_config.smbios.system_product_name,
+        platform_config.smbios.system_product_name.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosSystemVersion,
-        &platform_config.smbios.system_version,
+        platform_config.smbios.system_version.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosSystemSkuNumber,
-        &platform_config.smbios.system_sku_number,
+        platform_config.smbios.system_sku_number.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosSystemFamily,
-        &platform_config.smbios.system_family,
+        platform_config.smbios.system_family.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosBiosLockString,
-        &platform_config.smbios.bios_lock_string,
+        platform_config.smbios.bios_lock_string.as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosMemoryDeviceSerialNumber,
-        &platform_config.smbios.memory_device_serial_number,
+        platform_config
+            .smbios
+            .memory_device_serial_number
+            .as_bytes(),
     )
     .add_cstring(
         config::BlobStructureType::SmbiosProcessorManufacturer,
@@ -659,7 +707,7 @@ pub fn write_uefi_config(
 
         flags.set_cxl_memory_enabled(platform_config.general.cxl_memory_enabled);
         flags.set_default_boot_always_attempt(platform_config.general.default_boot_always_attempt);
-        flags.set_hv_sint_enabled(platform_config.general.hv_sint_enabled);
+        flags.set_force_dma_bounce_enabled(platform_config.general.force_dma_bounce_enabled);
 
         // Some settings do not depend on host config
 
@@ -674,9 +722,18 @@ pub fn write_uefi_config(
 
     #[cfg(guest_arch = "aarch64")]
     {
+        use vm_topology::processor::arch::GicVersion;
+
+        let GicVersion::V3 {
+            redistributors_base,
+        } = processor_topology.gic_version()
+        else {
+            return Err(Error::ExpectedGicV3);
+        };
+
         cfg.add(&config::Gic {
             gic_distributor_base: processor_topology.gic_distributor_base(),
-            gic_redistributors_base: processor_topology.gic_redistributors_base(),
+            gic_redistributors_base: redistributors_base,
         });
     }
 

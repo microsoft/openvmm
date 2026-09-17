@@ -14,6 +14,7 @@ use mesh::rpc::Rpc;
 use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;
+use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
 
 #[derive(MeshPayload)]
@@ -34,6 +35,22 @@ pub enum VmRpc {
     /// Updates the command line parameters that will be passed to the boot shim
     /// on the *next* VM load. This will replace the existing command line parameters.
     UpdateCliParams(FailableRpc<String, ()>),
+    /// Hot-add a PCIe device to a named port at runtime.
+    /// Tuple is (port_name, device_resource).
+    AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
+    /// Hot-remove a PCIe device from a named port at runtime.
+    RemovePcieDevice(FailableRpc<String, ()>),
+    /// Hot-add a VPCI device to VTL0 at runtime with the supplied instance ID.
+    AddVpciDevice(FailableRpc<(Guid, Resource<PciDeviceHandleKind>), ()>),
+    /// Hot-remove a dynamically added VPCI device by instance ID.
+    RemoveVpciDevice(FailableRpc<Guid, ()>),
+    /// Dump VM state (VP registers + memory) to a `.vmrs` file.
+    ///
+    /// The worker pauses the VM internally, collects state, and restores
+    /// the prior running state afterward. The caller provides an open file
+    /// handle to write to (typically a temporary file that gets renamed
+    /// into place on success).
+    DumpState(FailableRpc<File, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]
@@ -67,6 +84,11 @@ impl fmt::Debug for VmRpc {
             VmRpc::ReadMemory(_) => "ReadMemory",
             VmRpc::WriteMemory(_) => "WriteMemory",
             VmRpc::UpdateCliParams(_) => "UpdateCliParams",
+            VmRpc::AddPcieDevice(_) => "AddPcieDevice",
+            VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",
+            VmRpc::AddVpciDevice(_) => "AddVpciDevice",
+            VmRpc::RemoveVpciDevice(_) => "RemoveVpciDevice",
+            VmRpc::DumpState(_) => "DumpState",
         };
         f.pad(s)
     }

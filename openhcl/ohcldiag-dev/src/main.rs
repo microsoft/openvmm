@@ -24,7 +24,6 @@ use pal_async::driver::Driver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::timer::PolledTimer;
-use std::convert::Infallible;
 use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::io::IsTerminal;
@@ -331,7 +330,13 @@ pub struct VmArg {
     )]
     #[cfg_attr(
         windows,
-        doc = "* NAME_OR_PATH - Either a Hyper-V VM name, or a path as in vsock:PATH>"
+        doc = "* hyperv-id:GUID - A Hyper-V VM ID (with or without braces)
+
+    "
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "* NAME_OR_PATH - Either a Hyper-V VM name, or a path as in vsock:PATH"
     )]
     #[cfg_attr(not(windows), doc = "* PATH - A path as in vsock:PATH")]
     #[clap(name = "VM")]
@@ -342,27 +347,48 @@ pub struct VmArg {
 enum VmId {
     #[cfg(windows)]
     HyperV(String),
+    #[cfg(windows)]
+    HyperVId(guid::Guid),
     HybridVsock(PathBuf),
 }
 
 impl FromStr for VmId {
-    type Err = Infallible;
+    type Err = ParseVmIdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(s) = s.strip_prefix("vsock:") {
             Ok(Self::HybridVsock(Path::new(s).to_owned()))
         } else {
             #[cfg(windows)]
-            if let Some(s) = s.strip_prefix("hyperv:") {
-                return Ok(Self::HyperV(s.to_owned()));
-            } else if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
-                return Ok(Self::HyperV(s.to_owned()));
+            {
+                if let Some(rest) = s.strip_prefix("hyperv-id:") {
+                    let guid = rest
+                        .parse::<guid::Guid>()
+                        .map_err(|_| ParseVmIdError::InvalidGuid(rest.to_owned()))?;
+                    return Ok(Self::HyperVId(guid));
+                }
+
+                if let Some(name) = s.strip_prefix("hyperv:") {
+                    return Ok(Self::HyperV(name.to_owned()));
+                }
+
+                if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
+                    return Ok(Self::HyperV(s.to_owned()));
+                }
             }
             // Default to hybrid vsock since this is what OpenVMM supports for
             // Underhill.
             Ok(Self::HybridVsock(Path::new(s).to_owned()))
         }
     }
+}
+
+/// Error parsing a [`VmId`].
+#[derive(Debug, Error)]
+enum ParseVmIdError {
+    #[cfg(windows)]
+    #[error("invalid VM ID GUID '{0}' (expected a GUID, with or without braces)")]
+    InvalidGuid(String),
 }
 
 #[derive(Clone)]
@@ -475,6 +501,8 @@ fn new_client(driver: impl Driver + Spawn + Clone, input: &VmArg) -> anyhow::Res
     let client = match &input.id {
         #[cfg(windows)]
         VmId::HyperV(name) => DiagClient::from_hyperv_name(driver, name)?,
+        #[cfg(windows)]
+        VmId::HyperVId(guid) => DiagClient::from_hyperv_id(driver, *guid),
         VmId::HybridVsock(path) => DiagClient::from_hybrid_vsock(driver, path),
     };
     Ok(client)
@@ -521,7 +549,7 @@ pub fn main() -> anyhow::Result<()> {
                 let mut stdin = process.stdin.take().unwrap();
                 let mut stdout = process.stdout.take().unwrap();
 
-                term::set_raw_console(true).expect("failed to set raw console mode");
+                crossterm::terminal::enable_raw_mode().expect("failed to set raw console mode");
                 std::thread::spawn({
                     move || {
                         let _ = std::io::copy(&mut std::io::stdin(), &mut stdin);
@@ -655,15 +683,15 @@ pub fn main() -> anyhow::Result<()> {
                     use diag_client::hyperv::ComPortAccessInfo;
                     use futures::AsyncBufReadExt;
 
-                    let vm_name = match &vm.id {
-                        VmId::HyperV(name) => name,
-                        _ => anyhow::bail!("--serial is only supported for Hyper-V VMs"),
-                    };
-
                     let port_access_info = if let Some(pipe_path) = pipe_path.as_ref() {
                         ComPortAccessInfo::PortPipePath(pipe_path)
                     } else {
-                        ComPortAccessInfo::NameAndPortNumber(vm_name, 3)
+                        match &vm.id {
+                            VmId::HyperV(name) => ComPortAccessInfo::NameAndPortNumber(name, 3),
+                            #[cfg(windows)]
+                            VmId::HyperVId(guid) => ComPortAccessInfo::IdAndPortNumber(*guid, 3),
+                            _ => anyhow::bail!("--serial is only supported for Hyper-V VMs"),
+                        }
                     };
 
                     let pipe =
@@ -762,6 +790,12 @@ pub fn main() -> anyhow::Result<()> {
                             diag_client::hyperv::connect_vsock(&driver, vm_id, port).await?;
                         PolledSocket::new(&driver, socket2::Socket::from(stream))?
                     }
+                    #[cfg(windows)]
+                    VmId::HyperVId(vm_id) => {
+                        let stream =
+                            diag_client::hyperv::connect_vsock(&driver, vm_id, port).await?;
+                        PolledSocket::new(&driver, socket2::Socket::from(stream))?
+                    }
                 };
 
                 let vsock = Arc::new(vsock.into_inner());
@@ -818,7 +852,7 @@ pub fn main() -> anyhow::Result<()> {
                     .into_iter()
                     .enumerate()
                     .map(|(i, i_stream)| {
-                        new_output.set_file_name(format!("{}-{}", &file_stem, i));
+                        new_output.set_file_name(format!("{}-{}", file_stem, i));
                         new_output.set_extension(extension);
                         let mut out = AllowStdIo::new(fs_err::File::create(&new_output)?);
                         Ok(async move { futures::io::copy(i_stream, &mut out).await })
@@ -903,6 +937,13 @@ pub fn main() -> anyhow::Result<()> {
                             let vm_id = diag_client::hyperv::vm_id_from_name(name)?;
                             let stream =
                                 diag_client::hyperv::connect_vsock(&driver, vm_id, vsock_port)
+                                    .await?;
+                            PolledSocket::new(&driver, socket2::Socket::from(stream))?
+                        }
+                        #[cfg(windows)]
+                        VmId::HyperVId(ref vm_id) => {
+                            let stream =
+                                diag_client::hyperv::connect_vsock(&driver, *vm_id, vsock_port)
                                     .await?;
                             PolledSocket::new(&driver, socket2::Socket::from(stream))?
                         }
@@ -1084,4 +1125,57 @@ async fn capture_packets(
         }
     }
     println!("All done.");
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::VmId;
+
+    #[test]
+    fn bare_guid_is_treated_as_name() {
+        // Fleet VM names are GUID-shaped; a bare value must be a name, not an ID.
+        let id: VmId = "1965676a-8dd3-4b46-9439-40c6a30e5b1a".parse().unwrap();
+        assert!(matches!(id, VmId::HyperV(name) if name == "1965676a-8dd3-4b46-9439-40c6a30e5b1a"));
+    }
+
+    #[test]
+    fn hyperv_prefix_is_a_name() {
+        let id: VmId = "hyperv:my-vm".parse().unwrap();
+        assert!(matches!(id, VmId::HyperV(name) if name == "my-vm"));
+    }
+
+    #[test]
+    fn hyperv_prefix_with_guid_is_still_a_name() {
+        let id: VmId = "hyperv:1965676a-8dd3-4b46-9439-40c6a30e5b1a"
+            .parse()
+            .unwrap();
+        assert!(matches!(id, VmId::HyperV(name) if name == "1965676a-8dd3-4b46-9439-40c6a30e5b1a"));
+    }
+
+    #[test]
+    fn hyperv_id_prefix_parses_guid() {
+        let id: VmId = "hyperv-id:1965676a-8dd3-4b46-9439-40c6a30e5b1a"
+            .parse()
+            .unwrap();
+        assert!(matches!(id, VmId::HyperVId(_)));
+    }
+
+    #[test]
+    fn hyperv_id_prefix_parses_braced_guid() {
+        let id: VmId = "hyperv-id:{1965676a-8dd3-4b46-9439-40c6a30e5b1a}"
+            .parse()
+            .unwrap();
+        assert!(matches!(id, VmId::HyperVId(_)));
+    }
+
+    #[test]
+    fn hyperv_id_prefix_with_invalid_guid_errors() {
+        assert!("hyperv-id:not-a-guid".parse::<VmId>().is_err());
+    }
+
+    #[test]
+    fn vsock_prefix_is_hybrid_vsock() {
+        let id: VmId = "vsock:/tmp/vm.sock".parse().unwrap();
+        assert!(matches!(id, VmId::HybridVsock(_)));
+    }
 }

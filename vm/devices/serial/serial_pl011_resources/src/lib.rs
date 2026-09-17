@@ -20,6 +20,10 @@ pub struct SerialPl011DeviceHandle {
     pub irq: u32,
     /// The IO backend.
     pub io: Resource<SerialBackendHandle>,
+    /// If true, insert a debugger-mode relay between the emulator and the
+    /// backend that keeps the backend drained, dropping bytes instead of
+    /// applying backpressure. Intended for WinDbg / KD-over-serial.
+    pub debugger_mode: bool,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for SerialPl011DeviceHandle {

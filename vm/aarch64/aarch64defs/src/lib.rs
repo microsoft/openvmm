@@ -8,9 +8,11 @@
 #![no_std]
 
 pub mod gic;
+pub mod rsi;
 pub mod smccc;
 
 use bitfield_struct::bitfield;
+use core::fmt::Display;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -59,8 +61,17 @@ pub struct Cpsr64 {
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EsrEl2 {
-    #[bits(25)]
-    pub iss: u32,
+    #[bits(6)]
+    pub lower_iss: u8,
+    pub wnr: bool,
+    #[bits(9)]
+    pub mid_iss: u16,
+    #[bits(5)]
+    pub b_srt: u8,
+    pub a: bool,
+    pub b: bool,
+    pub c: bool,
+    pub d: bool,
     pub il: bool,
     #[bits(6)]
     pub ec: u8,
@@ -68,6 +79,38 @@ pub struct EsrEl2 {
     pub iss2: u8,
     #[bits(27)]
     _rsvd: u32,
+}
+
+impl EsrEl2 {
+    pub fn is_write(&self) -> bool {
+        // The WNR bit is set for writes, not reads.
+        self.wnr()
+    }
+
+    pub fn is_read(&self) -> bool {
+        // The WNR bit is set for writes, not reads.
+        !self.wnr()
+    }
+
+    pub fn iss(&self) -> u32 {
+        u32::from(self.lower_iss())
+            | ((self.wnr() as u32) << 6)
+            | (u32::from(self.mid_iss()) << 7)
+            | (u32::from(self.b_srt()) << 16)
+            | ((self.a() as u32) << 21)
+            | ((self.b() as u32) << 22)
+            | ((self.c() as u32) << 23)
+            | ((self.d() as u32) << 24)
+    }
+
+    pub fn srt(&self) -> Option<u8> {
+        // The SRT field is only valid for data aborts.
+        if (ExceptionClass::DATA_ABORT_LOWER.0..ExceptionClass::DATA_ABORT.0).contains(&self.ec()) {
+            Some(self.b_srt())
+        } else {
+            None
+        }
+    }
 }
 
 /// aarch64 SCTRL_EL1
@@ -136,6 +179,19 @@ pub struct SctlrEl1 {
     pub nmi: bool,
     pub spintmask: bool,
     pub tidcp: bool,
+}
+
+/// aarch64 HPFAR_EL2
+#[bitfield(u64)]
+#[derive(PartialEq, Eq)]
+pub struct HpfarEl2 {
+    #[bits(4)]
+    pub res0: u8,
+    #[bits(44)]
+    pub fipa: u64,
+    #[bits(15)]
+    pub res1: u32,
+    pub ns: bool,
 }
 
 open_enum! {
@@ -222,9 +278,17 @@ pub struct IssDataAbort {
 impl From<IssDataAbort> for EsrEl2 {
     fn from(abort_code: IssDataAbort) -> Self {
         let val: u32 = abort_code.into();
+        let iss = val & 0x07ff_ffff;
         EsrEl2::new()
             .with_ec(ExceptionClass::DATA_ABORT.0)
-            .with_iss(val & 0x07ffffff)
+            .with_lower_iss((iss & 0x3f) as u8)
+            .with_wnr(((iss >> 6) & 1) != 0)
+            .with_mid_iss(((iss >> 7) & 0x1ff) as u16)
+            .with_b_srt(((iss >> 16) & 0x1F) as u8)
+            .with_a(((iss >> 21) & 0x1) != 0)
+            .with_b(((iss >> 22) & 0x1) != 0)
+            .with_c(((iss >> 23) & 0x1) != 0)
+            .with_d(((iss >> 24) & 0x1) != 0)
             .with_iss2((val >> 27) as u8)
     }
 }
@@ -271,7 +335,7 @@ open_enum! {
         /// Valid only for instruction fault.
         GRANULE_PROTECTION_FAULT_LEVEL2 = 0b100110,
         /// Valid only for instruction fault.
-        GRANULE_PROTECTION_FAULT_LEVE3 = 0b100111,
+        GRANULE_PROTECTION_FAULT_LEVEL3 = 0b100111,
         ADDRESS_SIZE_FAULT_LEVEL_NEG1 = 0b101001,
         TRANSLATION_FAULT_LEVEL_NEG1 = 0b101011,
         TLB_CONFLICT_ABORT = 0b110000,
@@ -315,9 +379,18 @@ pub struct IssInstructionAbort {
 impl From<IssInstructionAbort> for EsrEl2 {
     fn from(instruction_code: IssInstructionAbort) -> Self {
         let val: u32 = instruction_code.into();
+        let iss = val & 0x07ff_ffff;
+
         EsrEl2::new()
             .with_ec(ExceptionClass::INSTRUCTION_ABORT.0)
-            .with_iss(val & 0x07ffffff)
+            .with_lower_iss((iss & 0x3f) as u8)
+            .with_wnr(((iss >> 6) & 1) != 0)
+            .with_mid_iss(((iss >> 7) & 0x1ff) as u16)
+            .with_b_srt(((iss >> 16) & 0x1F) as u8)
+            .with_a(((iss >> 21) & 0x1) != 0)
+            .with_b(((iss >> 22) & 0x1) != 0)
+            .with_c(((iss >> 23) & 0x1) != 0)
+            .with_d(((iss >> 24) & 0x1) != 0)
             .with_iss2((val >> 27) as u8)
     }
 }
@@ -409,9 +482,11 @@ open_enum! {
         IFSR32_EL2 = SystemRegEncoding::make(3, 4, 5, 0, 1),
 
         VPIDR_EL2 = SystemRegEncoding::make(3, 4, 0, 0, 0),
+        MPIDR_EL1 = SystemRegEncoding::make(3, 0, 0, 0, 5),
         ARM64_REVIDR_EL1 = SystemRegEncoding::make(3, 0, 0, 0, 6),
         CTR_EL0 = SystemRegEncoding::make(3, 3, 0, 0, 1),
         ARM64_VMPIDR_EL2 = SystemRegEncoding::make(3, 4, 0, 0, 5),
+        ID_AA64PFR0_EL1 = SystemRegEncoding::make(3, 0, 0, 4, 0),
         ID_AA64PFR1_EL1 = SystemRegEncoding::make(3, 0, 0, 4, 1),
         ID_AA64DFR0_EL1 = SystemRegEncoding::make(3, 0, 0, 5, 0),
         ID_AA64DFR1_EL1 = SystemRegEncoding::make(3, 0, 0, 5, 1),
@@ -478,6 +553,8 @@ open_enum! {
 
         PAR_EL1 = SystemRegEncoding::make(3, 0, 7, 4, 0),
         CNTFRQ_EL0 = SystemRegEncoding::make(3, 3, 14, 0, 0),
+        CNTPCT_EL0 = SystemRegEncoding::make(3, 3, 14, 0, 1),
+        CNTVCT_EL0 = SystemRegEncoding::make(3, 3, 14, 0, 2),
         CNTP_CTL_EL0 = SystemRegEncoding::make(3, 3, 14, 2, 1),
         CNTP_CVAL_EL0 = SystemRegEncoding::make(3, 3, 14, 2, 2),
         CNTV_CTL_EL0 = SystemRegEncoding::make(3, 3, 14, 3, 1),
@@ -670,6 +747,20 @@ open_enum! {
 }
 
 impl IntermPhysAddrSize {
+    pub const fn from_ipa_bit_length(bits: u8) -> Option<Self> {
+        Some(match bits {
+            32 => Self::IPA_32_BITS_4_GB,
+            36 => Self::IPA_36_BITS_64_GB,
+            40 => Self::IPA_40_BITS_1_TB,
+            42 => Self::IPA_42_BITS_4_TB,
+            44 => Self::IPA_44_BITS_16_TB,
+            48 => Self::IPA_48_BITS_256_TB,
+            52 => Self::IPA_52_BITS_4_PB,
+            56 => Self::IPA_56_BITS_64_PB,
+            _ => return None,
+        })
+    }
+
     const fn into_bits(self) -> u64 {
         self.0
     }
@@ -677,6 +768,80 @@ impl IntermPhysAddrSize {
     const fn from_bits(bits: u64) -> Self {
         Self(bits)
     }
+}
+
+open_enum! {
+    /// `ID_AA64PFR0_EL1.GIC`.
+    pub enum GicCpuInterface: u8 {
+        NONE = 0,
+        GICV3_OR_GICV4 = 1,
+    }
+}
+
+impl GicCpuInterface {
+    const fn into_bits(self) -> u64 {
+        self.0 as u64
+    }
+
+    const fn from_bits(bits: u64) -> Self {
+        Self(bits as u8)
+    }
+}
+
+/// The fields of `ID_AA64PFR0_EL1` used by virtual CPU policy.
+#[bitfield(u64)]
+pub struct ProcessorFeatures0El1 {
+    #[bits(8)]
+    _el0_el1: u8,
+    #[bits(4)]
+    pub el2: u8,
+    #[bits(4)]
+    pub el3: u8,
+    #[bits(8)]
+    _fp_simd: u8,
+    #[bits(4)]
+    pub gic: GicCpuInterface,
+    #[bits(4)]
+    _ras: u8,
+    #[bits(4)]
+    pub sve: u8,
+    #[bits(28)]
+    _rest: u32,
+}
+
+/// The fields of `ID_AA64PFR1_EL1` used by virtual CPU policy.
+#[bitfield(u64)]
+pub struct ProcessorFeatures1El1 {
+    #[bits(24)]
+    _lower: u32,
+    #[bits(4)]
+    pub sme: u8,
+    #[bits(36)]
+    _rest: u64,
+}
+
+/// The fields of `ID_AA64DFR0_EL1` used by virtual CPU policy.
+#[bitfield(u64)]
+pub struct DebugFeatures0El1 {
+    #[bits(8)]
+    _lower: u8,
+    #[bits(4)]
+    pub pmu_ver: u8,
+    #[bits(52)]
+    _rest: u64,
+}
+
+/// The fields of `ID_AA64MMFR2_EL1` used by virtual CPU policy.
+#[bitfield(u64)]
+pub struct MmFeatures2El1 {
+    #[bits(4)]
+    pub cnp: u8,
+    #[bits(20)]
+    _middle: u32,
+    #[bits(4)]
+    pub nv: u8,
+    #[bits(36)]
+    _rest: u64,
 }
 
 /// aarch64 TCR_EL1 register
@@ -839,6 +1004,10 @@ pub const GIC_REDISTRIBUTOR_FRAME_SIZE: u64 = 0x1_0000;
 pub const GIC_SGI_FRAME_SIZE: u64 = 0x1_0000;
 pub const GIC_REDISTRIBUTOR_SIZE: u64 = GIC_REDISTRIBUTOR_FRAME_SIZE + GIC_SGI_FRAME_SIZE;
 
+// GICv2 sizes.
+pub const GIC_V2_DISTRIBUTOR_SIZE: u64 = 0x1000;
+pub const GIC_V2_CPU_INTERFACE_SIZE: u64 = 0x2000;
+
 open_enum! {
     pub enum SystemReset2Code: u32 {
         WARM_RESET = 0,
@@ -849,5 +1018,130 @@ open_enum! {
     pub enum SystemOff2Code: u32 {
         DEFAULT = 0,
         HIBERNATE_OFF = 1,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct Vendor(pub u32);
+
+impl Vendor {
+    pub const ARM: Self = Self(0x0010);
+
+    pub fn is_arm_compatible(&self) -> bool {
+        *self == Self::ARM
+    }
+
+    // Intel and Amd compatible checkers are still implemented and return false.
+    // By this, some generic code do NOT diverge on AArch64.
+    pub fn is_intel_compatible(&self) -> bool {
+        false
+    }
+
+    // Likewise
+    pub fn is_amd_compatible(&self) -> bool {
+        false
+    }
+}
+
+impl Display for Vendor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.is_arm_compatible() {
+            f.pad("Arm")
+        } else {
+            write!(f, "{:#x}", self.0)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum InstructionAbortReason {
+    AddressSizeFaultLevel0,
+    AddressSizeFaultLevel1,
+    AddressSizeFaultLevel2,
+    AddressSizeFaultLevel3,
+    TranslationFaultLevel0,
+    TranslationFaultLevel1,
+    TranslationFaultLevel2,
+    TranslationFaultLevel3,
+    AccessFlagFaultLevel0,
+    AccessFlagFaultLevel1,
+    AccessFlagFaultLevel2,
+    AccessFlagFaultLevel3,
+    PermissionFaultLevel0,
+    PermissionFaultLevel1,
+    PermissionFaultLevel2,
+    PermissionFaultLevel3,
+    SynchronousExternalAbort,
+    SyncTagCheckFault,
+    SynchronousExternalAbortOnTableWalkLevelNeg1,
+    SynchronousExternalAbortOnTableWalkLevel0,
+    SynchronousExternalAbortOnTableWalkLevel1,
+    SynchronousExternalAbortOnTableWalkLevel2,
+    SynchronousExternalAbortOnTableWalkLevel3,
+    EccParity,
+    EccParityOnTableWalkLevelNeg1,
+    EccParityOnTableWalkLevel0,
+    EccParityOnTableWalkLevel1,
+    EccParityOnTableWalkLevel2,
+    EccParityOnTableWalkLevel3,
+    GranuleProtectionFaultLevelNeg1,
+    GranuleProtectionFaultLevel0,
+    GranuleProtectionFaultLevel1,
+    GranuleProtectionFaultLevel2,
+    GranuleProtectionFaultLevel3,
+    AddressSizeFaultLevelNeg1,
+    TranslationFaultLevelNeg1,
+    TlbConflictAbort,
+    UnsupportedHardwareUpdateFault,
+    Unknown,
+}
+
+impl From<FaultStatusCode> for InstructionAbortReason {
+    fn from(value: FaultStatusCode) -> Self {
+        match value {
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL0 => Self::AddressSizeFaultLevel0,
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL1 => Self::AddressSizeFaultLevel1,
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL2 => Self::AddressSizeFaultLevel2,
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL3 => Self::AddressSizeFaultLevel3,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL0 => Self::TranslationFaultLevel0,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL1 => Self::TranslationFaultLevel1,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL2 => Self::TranslationFaultLevel2,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL3 => Self::TranslationFaultLevel3,
+            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL0 => Self::AccessFlagFaultLevel0,
+            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL1 => Self::AccessFlagFaultLevel1,
+            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL2 => Self::AccessFlagFaultLevel2,
+            FaultStatusCode::ACCESS_FLAG_FAULT_LEVEL3 => Self::AccessFlagFaultLevel3,
+            FaultStatusCode::PERMISSION_FAULT_LEVEL0 => Self::PermissionFaultLevel0,
+            FaultStatusCode::PERMISSION_FAULT_LEVEL1 => Self::PermissionFaultLevel1,
+            FaultStatusCode::PERMISSION_FAULT_LEVEL2 => Self::PermissionFaultLevel2,
+            FaultStatusCode::PERMISSION_FAULT_LEVEL3 => Self::PermissionFaultLevel3,
+            FaultStatusCode::SYNCHRONOUS_EXTERNAL_ABORT => Self::SynchronousExternalAbort,
+            FaultStatusCode::SYNC_TAG_CHECK_FAULT => Self::SyncTagCheckFault,
+            FaultStatusCode::SEA_TTW_LEVEL_NEG1 => {
+                Self::SynchronousExternalAbortOnTableWalkLevelNeg1
+            }
+            FaultStatusCode::SEA_TTW_LEVEL0 => Self::SynchronousExternalAbortOnTableWalkLevel0,
+            FaultStatusCode::SEA_TTW_LEVEL1 => Self::SynchronousExternalAbortOnTableWalkLevel1,
+            FaultStatusCode::SEA_TTW_LEVEL2 => Self::SynchronousExternalAbortOnTableWalkLevel2,
+            FaultStatusCode::SEA_TTW_LEVEL3 => Self::SynchronousExternalAbortOnTableWalkLevel3,
+            FaultStatusCode::ECC_PARITY => Self::EccParity,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL_NEG1 => Self::EccParityOnTableWalkLevelNeg1,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL0 => Self::EccParityOnTableWalkLevel0,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL1 => Self::EccParityOnTableWalkLevel1,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL2 => Self::EccParityOnTableWalkLevel2,
+            FaultStatusCode::ECC_PARITY_TTW_LEVEL3 => Self::EccParityOnTableWalkLevel3,
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL_NEG => {
+                Self::GranuleProtectionFaultLevelNeg1
+            }
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL0 => Self::GranuleProtectionFaultLevel0,
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL1 => Self::GranuleProtectionFaultLevel1,
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL2 => Self::GranuleProtectionFaultLevel2,
+            FaultStatusCode::GRANULE_PROTECTION_FAULT_LEVEL3 => Self::GranuleProtectionFaultLevel3,
+            FaultStatusCode::ADDRESS_SIZE_FAULT_LEVEL_NEG1 => Self::AddressSizeFaultLevelNeg1,
+            FaultStatusCode::TRANSLATION_FAULT_LEVEL_NEG1 => Self::TranslationFaultLevelNeg1,
+            FaultStatusCode::TLB_CONFLICT_ABORT => Self::TlbConflictAbort,
+            FaultStatusCode::UNSUPPORTED_HW_UPDATE_FAULT => Self::UnsupportedHardwareUpdateFault,
+            _ => Self::Unknown,
+        }
     }
 }

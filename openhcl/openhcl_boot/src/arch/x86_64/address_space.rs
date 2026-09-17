@@ -22,26 +22,25 @@ use memory_range::MemoryRange;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use zerocopy::FromBytes;
-use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-const X64_PTE_PRESENT: u64 = 1;
-const X64_PTE_READ_WRITE: u64 = 1 << 1;
-const X64_PTE_ACCESSED: u64 = 1 << 5;
+pub const X64_PTE_PRESENT: u64 = 1;
+pub const X64_PTE_READ_WRITE: u64 = 1 << 1;
+pub const X64_PTE_ACCESSED: u64 = 1 << 5;
 const X64_PTE_DIRTY: u64 = 1 << 6;
 const X64_PTE_LARGE_PAGE: u64 = 1 << 7;
-const X64_PTE_CONFIDENTIAL: u64 = 1 << 51;
+pub const X64_PTE_CONFIDENTIAL: u64 = 1 << 51;
 
-const PAGE_TABLE_ENTRY_COUNT: usize = 512;
+pub const PAGE_TABLE_ENTRY_COUNT: usize = 512;
 
-const X64_PAGE_SHIFT: u64 = 12;
-const X64_PTE_BITS: u64 = 9;
+pub const X64_PAGE_SHIFT: u64 = 12;
+pub const X64_PTE_BITS: u64 = 9;
 
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, IntoBytes, KnownLayout, FromBytes)]
 #[repr(transparent)]
-struct PageTableEntry {
-    entry: u64,
+pub struct PageTableEntry {
+    entry: AtomicU64,
 }
 #[derive(Debug, Copy, Clone)]
 pub enum PageTableEntryType {
@@ -49,21 +48,12 @@ pub enum PageTableEntryType {
 }
 
 impl PageTableEntry {
-    fn atomic_pte<'a>(&self) -> &'a AtomicU64 {
-        // SAFETY: Casting a u64 to an atomic u64 via pointer is safe. All accesses to the u64 are
-        // consistently performed using this method.
-        unsafe {
-            let ptr = &self.entry as *const u64;
-            &*ptr.cast()
-        }
-    }
-
     fn write_pte(&mut self, val: u64) {
-        self.atomic_pte().store(val, Ordering::SeqCst);
+        self.entry.store(val, Ordering::SeqCst);
     }
 
     fn read_pte(&self) -> u64 {
-        self.atomic_pte().load(Ordering::Relaxed)
+        self.entry.load(Ordering::Relaxed)
     }
 
     /// Set an AMD64 PDE to either represent a leaf 2MB page or PDE.
@@ -91,7 +81,7 @@ impl PageTableEntry {
     }
 
     pub fn is_large_page(&self) -> bool {
-        self.entry & X64_PTE_LARGE_PAGE == X64_PTE_LARGE_PAGE
+        self.read_pte() & X64_PTE_LARGE_PAGE == X64_PTE_LARGE_PAGE
     }
 
     pub fn get_addr(&self) -> u64 {
@@ -126,8 +116,8 @@ impl PageTableEntry {
 }
 
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-struct PageTable {
+#[derive(Debug, IntoBytes, KnownLayout, FromBytes)]
+pub struct PageTable {
     entries: [PageTableEntry; PAGE_TABLE_ENTRY_COUNT],
 }
 

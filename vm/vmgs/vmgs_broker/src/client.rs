@@ -53,7 +53,7 @@ pub struct VmgsClient {
 
 impl VmgsClient {
     /// Get allocated and valid bytes from File Control Block for file_id.
-    #[instrument(skip_all, fields(file_id))]
+    #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn get_file_info(&self, file_id: FileId) -> Result<VmgsFileInfo, VmgsClientError> {
         let res = self
             .control
@@ -64,7 +64,7 @@ impl VmgsClient {
     }
 
     /// Reads the specified `file_id`.
-    #[instrument(skip_all, fields(file_id))]
+    #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn read_file(&self, file_id: FileId) -> Result<Vec<u8>, VmgsClientError> {
         let res = self
             .control
@@ -78,7 +78,7 @@ impl VmgsClient {
     ///
     /// NOTE: It is an error to overwrite a previously encrypted FileId with
     /// plaintext data.
-    #[instrument(skip_all, fields(file_id))]
+    #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn write_file(&self, file_id: FileId, buf: Vec<u8>) -> Result<(), VmgsClientError> {
         self.control
             .call_failable(VmgsBrokerRpc::WriteFile, (file_id.into(), buf))
@@ -87,11 +87,21 @@ impl VmgsClient {
         Ok(())
     }
 
-    /// If VMGS has been configured with encryption, encrypt + write `bug` to
+    /// Deletes the specified `file_id`.
+    #[instrument(skip_all, fields(file_id = %file_id))]
+    pub async fn delete_file(&self, file_id: FileId) -> Result<(), VmgsClientError> {
+        self.control
+            .call_failable(VmgsBrokerRpc::DeleteFile, file_id.into())
+            .await?;
+
+        Ok(())
+    }
+
+    /// If VMGS has been configured with encryption, encrypt + write `buf` to
     /// the specified `file_id`. Otherwise, perform a regular plaintext write
     /// instead.
-    #[cfg(with_encryption)]
-    #[instrument(skip_all, fields(file_id))]
+    #[cfg(feature = "encryption")]
+    #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn write_file_encrypted(
         &self,
         file_id: FileId,

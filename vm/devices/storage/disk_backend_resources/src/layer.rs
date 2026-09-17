@@ -18,6 +18,9 @@ pub struct RamDiskLayerHandle {
     /// The size of the layer. If `None`, the layer will be the same size as the
     /// lower disk.
     pub len: Option<u64>,
+    /// The sector size in bytes. If `None`, uses the lower layer's sector
+    /// size, or 512 if there is no lower layer.
+    pub sector_size: Option<u32>,
 }
 
 impl ResourceId<DiskLayerHandleKind> for RamDiskLayerHandle {
@@ -70,4 +73,17 @@ pub struct SqliteAutoCacheDiskLayerHandle {
 
 impl ResourceId<DiskLayerHandleKind> for SqliteAutoCacheDiskLayerHandle {
     const ID: &'static str = "sqlite-autocache";
+}
+
+/// Handle for a VHDX disk layer.
+#[derive(MeshPayload)]
+pub struct VhdxDiskLayerHandle {
+    /// The open file handle for the VHDX file.
+    pub file: std::fs::File,
+    /// Whether to open the VHDX as read-only.
+    pub read_only: bool,
+}
+
+impl ResourceId<DiskLayerHandleKind> for VhdxDiskLayerHandle {
+    const ID: &'static str = "vhdx";
 }

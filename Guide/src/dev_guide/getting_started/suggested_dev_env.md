@@ -160,21 +160,21 @@ As the repo is hosted on GitHub, you might find convenient to use the
 VSCode extension. That allows working through the PR feedback and
 issues without leaving the comfort of VSCode.
 
-### (Possibly Useful) Enabling 'house-rules' formatting on-save
+### (Possibly Useful) Enabling 'lints' formatting on-save
 
 Aside from using `rustfmt`, the OpenVMM project also relies on a handful of
-extra formatting "house rules". e.g: enfocing the presence of copyright headers,
+extra formatting custom lints. e.g: enforcing the presence of copyright headers,
 enforcing single-trailing newlines, etc...
 
-CI will fail if files are not formatted with `cargo xtask fmt house-rules`.
+CI will fail if files are not formatted with `cargo xtask fmt --pass lints`.
 
-In general, there are 3 ways to fix "house rules" related lints:
+In general, there are 3 ways to fix our custom lints:
 
 1. Manually fixing issues in response to automated feedback
-2. Invoking `cargo xtask fmt house-rules --fix` to fix the whole project
-3. Invoking `cargo xtask fmt house-rules --fix [FILE]` to fix a given file
+2. Invoking `cargo xtask fmt --pass lints --fix` to fix the whole project
+3. Invoking `cargo xtask fmt --pass lints --fix --only-diffed` to fix only changes with a git diff
 
-If you would prefer having "house-rules" enfoced whenever you save a file in
+If you would prefer having lints enforced whenever you save a file in
 VSCode, you can install the
 [RunOnSave](https://marketplace.visualstudio.com/items?itemName=emeraldwalk.RunOnSave)
 extension, and add the following configuration to `.vscode/settings.json`:
@@ -190,7 +190,7 @@ extension, and add the following configuration to `.vscode/settings.json`:
             {
                 "match": ".*",
                 "isAsync": true,
-                "cmd": "$(cat ./target/xtask-path) --run-on-save fmt house-rules --fix ${file}"
+                "cmd": "$(cat ./target/xtask-path) --run-on-save fmt --pass lints --fix --only-diffed"
             }
         ]
     },

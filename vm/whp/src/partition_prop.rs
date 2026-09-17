@@ -17,6 +17,7 @@ pub trait AssociatedType {
 macro_rules! pp {
     ($($(#[$attr:meta])* ($internal_name:ident, $code:ident, $ty:ty),)*) => {
         $(
+            #[expect(clippy::allow_attributes)]
             #[allow(dead_code)]
             $(#[$attr])*
             pub struct $internal_name;
@@ -35,6 +36,7 @@ pp! {
     #[cfg(target_arch = "x86_64")]
     (ExceptionExitBitmap, WHvPartitionPropertyCodeExceptionExitBitmap, u64),
     (SeparateSecurityDomain, WHvPartitionPropertyCodeSeparateSecurityDomain, BOOL),
+    (NestedVirtualization, WHvPartitionPropertyCodeNestedVirtualization, BOOL),
     #[cfg(target_arch = "x86_64")]
     (X64MsrExitBitmap, WHvPartitionPropertyCodeX64MsrExitBitmap, abi::WHV_X64_MSR_EXIT_BITMAP),
     (PrimaryNumaNode, WHvPartitionPropertyCodePrimaryNumaNode, u16),

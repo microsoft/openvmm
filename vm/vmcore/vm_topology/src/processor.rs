@@ -91,6 +91,15 @@ pub enum InvalidTopology {
     /// VpInfo indices must be linear and start at 0
     #[error("vp indices don't start at 0 or don't count up")]
     InvalidVpIndices,
+    /// A PPI INTID is not in the valid range (16..32).
+    #[error("PPI INTID {0} is not in the valid range 16..32")]
+    InvalidPpiIntid(u32),
+    /// The GIC interrupt count is invalid.
+    #[error("gic_nr_irqs {0} must be 64..=992 and a multiple of 32")]
+    InvalidGicNrIrqs(u32),
+    /// GICv2 supports at most 8 CPUs.
+    #[error("GICv2 supports at most 8 CPUs, but {0} were requested")]
+    TooManyCpusForGicV2(u32),
     /// Failed to query the topology information from Device Tree.
     #[error("failed to query memory topology from device tree")]
     StdIoError(#[source] std::io::Error),
@@ -117,6 +126,48 @@ impl<T: ArchTopology> TopologyBuilder<T> {
         self
     }
 }
+
+impl<T: ArchTopology> ProcessorTopology<T> {
+    /// Computes the socket, core, and thread coordinates of a VP from the
+    /// configured topology.
+    ///
+    /// This describes the regular topology the VM was asked for. It is
+    /// deliberately independent of any architectural CPU identity, since those
+    /// identities are free to encode an offset, reserved holes, or a packing
+    /// that carries no topology at all.
+    ///
+    /// The result is only meaningful if `vps_per_socket` and `smt_enabled`
+    /// actually describe the VPs in this topology. That holds by construction
+    /// for [`TopologyBuilder::build`], which generates VPs from those same
+    /// values, but [`TopologyBuilder::build_with_vp_info`] takes the VP list
+    /// from its caller and keeps the declared values unchecked. A caller that
+    /// supplies VPs laid out some other way gets coordinates describing the
+    /// layout it declared, not the one it passed in.
+    ///
+    /// Irregular topologies cannot be represented at all: `vps_per_socket` is a
+    /// single value, so sockets of differing sizes, or siblings that are not
+    /// adjacent in VP index order, have nowhere to live. Supporting those would
+    /// require storing per-VP coordinates rather than deriving them here.
+    pub(crate) fn logical_topology(&self, vp_index: VpIndex) -> VpTopologyInfo {
+        let index = vp_index.index();
+        let in_socket = index % self.vps_per_socket;
+        let (core, thread) = if self.smt_enabled {
+            (in_socket / THREADS_PER_CORE, in_socket % THREADS_PER_CORE)
+        } else {
+            (in_socket, 0)
+        };
+        VpTopologyInfo {
+            socket: index / self.vps_per_socket,
+            core,
+            thread,
+        }
+    }
+}
+
+/// The number of threads per core when SMT is enabled.
+///
+/// The topology API models SMT as a boolean, so two is the only possibility.
+pub(crate) const THREADS_PER_CORE: u32 = 2;
 
 impl<
     #[cfg(feature = "inspect")] T: ArchTopology + inspect::Inspect,
@@ -158,17 +209,48 @@ impl<
         self.smt_enabled
     }
 
-    /// Returns the number of VPs per socket.
+    /// Returns the configured number of VPs per socket.
     ///
-    /// This will always be a power of 2. The number of VPs actually populated
-    /// in a socket may be smaller than this.
+    /// This is the logical socket size before power-of-two rounding. Use
+    /// this for NUMA VP assignment and other logical topology queries.
+    pub fn vps_per_socket(&self) -> u32 {
+        self.vps_per_socket
+    }
+
+    /// Returns the number of VPs per socket, rounded up to a power of 2.
+    ///
+    /// This is the APIC-ID-space reservation per socket. The number of VPs
+    /// actually populated in a socket may be smaller than this.
     pub fn reserved_vps_per_socket(&self) -> u32 {
         self.vps_per_socket.next_power_of_two()
     }
 
     /// Computes the processor topology information for a VP.
+    ///
+    /// This reports the topology the VM was configured with, which is only as
+    /// accurate as that configuration. It is not recovered from the VP's
+    /// architectural identity, and callers should not treat it as a
+    /// measurement of the underlying hardware.
     pub fn vp_topology(&self, vp_index: VpIndex) -> VpTopologyInfo {
         T::vp_topology(self, &self.vp_arch(vp_index))
+    }
+
+    /// Sets the virtual NUMA node for each VP.
+    ///
+    /// `vnodes` must have exactly `vp_count()` entries, where `vnodes[i]` is
+    /// the vnode for VP index `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `vnodes.len() != vp_count()`.
+    pub fn set_vnodes(&mut self, vnodes: &[u32])
+    where
+        T::ArchVpInfo: AsMut<VpInfo>,
+    {
+        assert_eq!(vnodes.len(), self.vps.len());
+        for (vp, &vnode) in self.vps.iter_mut().zip(vnodes) {
+            vp.as_mut().vnode = vnode;
+        }
     }
 }
 

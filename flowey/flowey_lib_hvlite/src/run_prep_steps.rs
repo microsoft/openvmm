@@ -11,6 +11,8 @@ flowey_request! {
     pub struct Request {
         /// Path to prep_steps bin to use
         pub prep_steps: ReadVar<PrepStepsOutput>,
+        /// Arguments to pass to prep_steps (e.g. "standard" or "no-vmbus")
+        pub args: Vec<String>,
         /// Environment variables to set when running prep_steps
         pub env: ReadVar<BTreeMap<String, String>>,
         /// Completion indicator
@@ -28,6 +30,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             prep_steps,
+            args,
             env,
             done,
         } = request;
@@ -40,44 +43,41 @@ impl SimpleFlowNode for Node {
                 let prep_steps = rt.read(prep_steps);
                 let env = rt.read(env);
 
-                #[cfg(windows)]
-                if !matches!(rt.backend(), FlowBackend::Local) {
-                    // Shutdown and remove any running VMs that might be using the disk
-                    // generated during a previous test run. (CI only)
-                    let vms = powershell_builder::PowerShellBuilder::new()
-                        .cmdlet("Get-VM")
-                        .finish()
-                        .build()
-                        .output()?;
-                    log::info!(
-                        "removing any existing VMs: {}",
-                        String::from_utf8_lossy(&vms.stdout)
+                let binary_path = match &prep_steps {
+                    PrepStepsOutput::WindowsBin { exe, .. } => exe,
+                    PrepStepsOutput::LinuxBin { bin, .. } => {
+                        bin.make_executable()?;
+                        bin
+                    }
+                };
+
+                // When running a Windows exe from WSL2, environment variables don't
+                // automatically propagate. We need to set WSLENV to tell WSL which
+                // env vars to share with Windows processes.
+                let is_windows_exe_via_wsl = flowey_lib_common::_util::running_in_wsl(rt)
+                    && matches!(prep_steps, PrepStepsOutput::WindowsBin { .. });
+
+                let mut env = env;
+                if is_windows_exe_via_wsl {
+                    // Inherit the existing WSLENV value if any and append any
+                    // new vars to add. No /p flag needed since paths are
+                    // already converted to Windows format.
+                    let old_wslenv = std::env::var("WSLENV");
+                    let new_wslenv = env.keys().cloned().collect::<Vec<_>>().join(":");
+                    env.insert(
+                        "WSLENV".into(),
+                        format!(
+                            "{}{}",
+                            old_wslenv.map(|s| s + ":").unwrap_or_default(),
+                            new_wslenv
+                        ),
                     );
-
-                    powershell_builder::PowerShellBuilder::new()
-                        .cmdlet("Get-VM")
-                        .pipeline()
-                        .cmdlet("Stop-VM")
-                        .flag("TurnOff")
-                        .finish()
-                        .build()
-                        .output()?;
-
-                    powershell_builder::PowerShellBuilder::new()
-                        .cmdlet("Get-VM")
-                        .pipeline()
-                        .cmdlet("Remove-VM")
-                        .flag("Force")
-                        .finish()
-                        .build()
-                        .output()?;
                 }
 
-                let binary_path = match prep_steps {
-                    PrepStepsOutput::WindowsBin { exe, .. } => exe,
-                    PrepStepsOutput::LinuxBin { bin, .. } => bin,
-                };
-                flowey::shell_cmd!(rt, "{binary_path}").envs(env).run()?;
+                flowey::shell_cmd!(rt, "{binary_path}")
+                    .args(&args)
+                    .envs(env)
+                    .run()?;
 
                 Ok(())
             }

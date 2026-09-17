@@ -47,6 +47,7 @@ mod tests {
     use crate::SerializedMessage;
     use alloc::string::ToString;
 
+    #[expect(clippy::allow_attributes)]
     mod items {
         // Crates used by generated code. Reference them explicitly to ensure that
         // automated tools do not remove them.

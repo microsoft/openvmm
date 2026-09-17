@@ -38,6 +38,11 @@ mod state {
         pub get_backed_adjust_gpa_range: Option<<crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange as SaveRestore>::SavedState>,
         #[mesh(3)]
         pub netvsp_state: Vec<crate::emuplat::netvsp::SavedState>,
+        /// Persisted network adapter index assignments (e.g., MAC-to-index mapping)
+        /// used to restore and continue adapter index allocation.
+        #[mesh(4)]
+        pub network_adapter_index:
+            Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
     }
 
     #[derive(Protobuf)]
@@ -46,6 +51,17 @@ mod state {
         /// NVMe manager (worker) saved state.
         #[mesh(1)]
         pub nvme_state: crate::nvme_manager::save_restore::NvmeManagerSavedState,
+    }
+
+    /// Servicing state for hibernation.
+    #[derive(Protobuf)]
+    #[mesh(package = "underhill")]
+    pub struct HibernateSavedState {
+        /// The hibernate token pinned for this VM, carried across servicing so
+        /// it is not re-read from VMGS (where it was already consumed) on
+        /// restore.
+        #[mesh(1)]
+        pub token: u64,
     }
 
     /// Servicing state needed to create the LoadedVm object.
@@ -77,6 +93,9 @@ mod state {
         /// Intercept the host-provided shutdown IC device.
         #[mesh(7)]
         pub overlay_shutdown_device: bool,
+        /// Hibernation servicing state.
+        #[mesh(8)]
+        pub hibernate: Option<HibernateSavedState>,
         /// NVMe saved state.
         #[mesh(10000)]
         pub nvme_state: Option<NvmeSavedState>,
@@ -204,6 +223,7 @@ pub mod transposed {
             disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         )>,
         pub overlay_shutdown_device: Option<bool>,
+        pub hibernate: Option<Option<HibernateSavedState>>,
         pub nvme_state: Option<Option<NvmeSavedState>>,
         pub dma_manager_state: Option<Option<OpenhclDmaManagerState>>,
         pub vmbus_client: Option<Option<vmbus_client::SavedState>>,
@@ -216,6 +236,8 @@ pub mod transposed {
         pub rtc_local_clock: Option<<crate::emuplat::local_clock::UnderhillLocalClock as SaveRestore>::SavedState>,
         pub get_backed_adjust_gpa_range: Option<Option<<crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange as SaveRestore>::SavedState>>,
         pub netvsp_state: Option<Vec<crate::emuplat::netvsp::SavedState>>,
+        pub network_adapter_index:
+            Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
     }
 
     impl From<Option<ServicingInitState>> for OptionServicingInitState {
@@ -230,10 +252,12 @@ pub mod transposed {
                             rtc_local_clock,
                             get_backed_adjust_gpa_range,
                             netvsp_state,
+                            network_adapter_index,
                         },
                     flush_logs_result,
                     vmgs,
                     overlay_shutdown_device,
+                    hibernate,
                     nvme_state,
                     mana_state,
                     dma_manager_state,
@@ -247,10 +271,12 @@ pub mod transposed {
                         rtc_local_clock: Some(rtc_local_clock),
                         get_backed_adjust_gpa_range: Some(get_backed_adjust_gpa_range),
                         netvsp_state: Some(netvsp_state),
+                        network_adapter_index,
                     },
                     flush_logs_result: Some(flush_logs_result),
                     vmgs,
                     overlay_shutdown_device: Some(overlay_shutdown_device),
+                    hibernate: Some(hibernate),
                     nvme_state: Some(nvme_state),
                     mana_state,
                     dma_manager_state: Some(dma_manager_state),

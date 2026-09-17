@@ -69,6 +69,10 @@ pub struct PrTrigger {
     pub branches_ignore: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub types: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths_ignore: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,11 +86,17 @@ pub struct CiTrigger {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags_ignore: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths_ignore: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Cron {
     pub cron: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -123,6 +133,7 @@ pub enum PermissionValue {
 #[serde(rename_all = "kebab-case")]
 pub enum Permissions {
     Actions,
+    ArtifactMetadata,
     Attestations,
     Checks,
     Contents,
@@ -259,6 +270,8 @@ pub struct Job {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_minutes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<Concurrency>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_on: Option<Runner>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

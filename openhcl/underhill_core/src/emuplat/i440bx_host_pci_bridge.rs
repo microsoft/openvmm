@@ -247,6 +247,31 @@ impl AdjustGpaRange for ArcMutexGetBackedAdjustGpaRange {
     }
 }
 
+/// Platform resolver for [`AdjustGpaRangeHandleKind`] in Underhill.
+pub struct AdjustGpaRangeResolver(pub std::sync::Arc<parking_lot::Mutex<GetBackedAdjustGpaRange>>);
+
+impl
+    vm_resource::ResolveResource<
+        chipset_resources::i440bx_host_pci_bridge::AdjustGpaRangeHandleKind,
+        vm_resource::PlatformResource,
+    > for AdjustGpaRangeResolver
+{
+    type Output = chipset_resources::i440bx_host_pci_bridge::ResolvedAdjustGpaRange;
+    type Error = std::convert::Infallible;
+
+    fn resolve(
+        &self,
+        _resource: vm_resource::PlatformResource,
+        _input: (),
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(
+            chipset_resources::i440bx_host_pci_bridge::ResolvedAdjustGpaRange(Box::new(
+                ArcMutexGetBackedAdjustGpaRange(self.0.clone()),
+            )),
+        )
+    }
+}
+
 enum BiosMemoryRangeKind {
     None,
     SystemBios,

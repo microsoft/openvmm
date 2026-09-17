@@ -28,7 +28,7 @@ flowey_request! {
         /// Optionally provide the nextest bin to use
         pub nextest_bin: Option<ReadVar<PathBuf>>,
         /// Target for the tests to run on
-        pub target: Option<ReadVar<target_lexicon::Triple>>,
+        pub target: Option<target_lexicon::Triple>,
         /// Additional env vars set when executing the tests.
         pub extra_env: ReadVar<BTreeMap<String, String>>,
         /// Wait for specified side-effects to resolve before building / running
@@ -59,22 +59,9 @@ impl SimpleFlowNode for Node {
             nextest_bin,
             target,
             extra_env,
-            mut pre_run_deps,
+            pre_run_deps,
             results,
         } = request;
-
-        if !matches!(ctx.backend(), FlowBackend::Local)
-            && matches!(ctx.platform(), FlowPlatform::Linux(_))
-        {
-            pre_run_deps.push({
-                ctx.emit_rust_step("ensure /dev/kvm is accessible", |_| {
-                    |rt| {
-                        flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/kvm").run()?;
-                        Ok(())
-                    }
-                })
-            });
-        }
 
         let nextest_archive = nextest_archive_file.map(ctx, |x| x.archive_file);
 

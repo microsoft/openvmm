@@ -48,6 +48,12 @@ impl Drop for HclVpciBusControl {
     }
 }
 
+impl std::fmt::Display for HclVpciBusControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.bus_instance_id)
+    }
+}
+
 #[async_trait]
 impl VpciBusControl for HclVpciBusControl {
     async fn offer_device(&self) -> anyhow::Result<()> {

@@ -11,10 +11,12 @@ cvm_tracing.workspace = true
 watchdog_vmgs_format.workspace = true
 
 vmcore.workspace = true
+vm_resource.workspace = true
 
 inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+parking_lot.workspace = true
 
 async-trait.workspace = true
 bitfield-struct.workspace = true

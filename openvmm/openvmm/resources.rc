@@ -1,0 +1,31 @@
+// Windows Version Resource for openvmm.exe
+// Values are provided via build.rs using the following macros:
+// - OPENVMM_VERSION (e.g., 1,2,3,4)
+// - OPENVMM_VERSION_STR (e.g., "1.2.3.4")
+
+1 VERSIONINFO
+FILEVERSION    OPENVMM_VERSION
+PRODUCTVERSION OPENVMM_VERSION
+FILEOS 0x10004
+FILETYPE 0x1
+{
+BLOCK "StringFileInfo"
+{
+	BLOCK "040904B0"
+	{
+		VALUE "CompanyName", "Microsoft Corporation"
+		VALUE "FileDescription", "OpenVMM Virtual Machine Monitor"
+		VALUE "FileVersion", OPENVMM_VERSION_STR
+		VALUE "InternalName", "openvmm.exe"
+		VALUE "LegalCopyright", "(C) Microsoft Corporation. All rights reserved."
+		VALUE "OriginalFilename", "openvmm.exe"
+		VALUE "ProductName", "OpenVMM"
+		VALUE "ProductVersion", OPENVMM_VERSION_STR
+	}
+}
+
+BLOCK "VarFileInfo"
+{
+	VALUE "Translation", 0x0409 0x04B0
+}
+}

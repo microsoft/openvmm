@@ -111,8 +111,8 @@ impl LockedIoVecs {
     }
 }
 
-impl LockedRange for LockedIoVecs {
-    fn push_sub_range(&mut self, sub_range: &[AtomicU8]) {
+impl<'a> LockedRange<'a> for LockedIoVecs {
+    fn push_sub_range(&mut self, sub_range: &'a [AtomicU8]) {
         self.0.push(sub_range.into());
     }
 }
@@ -156,10 +156,23 @@ enum GuestMemAction {
         gpa: u64,
     },
     LockGpns {
+        write: bool,
         gpns: Vec<u64>,
     },
     ProbeGpns {
         gpns: Vec<u64>,
+    },
+    ProbeGpaReadable {
+        gpa: u64,
+    },
+    ProbeGpaWritable {
+        gpa: u64,
+    },
+    FillRange {
+        offset: usize,
+        len: usize,
+        gpns: Vec<u64>,
+        val: u8,
     },
     ZeroRange {
         offset: usize,
@@ -187,6 +200,7 @@ enum GuestMemAction {
         data: Vec<u8>,
     },
     LockRange {
+        write: bool,
         offset: usize,
         len: usize,
         gpns: Vec<u64>,
@@ -241,11 +255,33 @@ fn do_fuzz(input: FuzzCase) {
                 _ = gm.compare_exchange(gpa, current, new)
             }
             GuestMemAction::Iova { gpa } => _ = gm.iova(gpa),
-            GuestMemAction::LockGpns { gpns } => {
-                _ = gm.lock_gpns(true, &gpns);
+            GuestMemAction::LockGpns { write, gpns } => {
+                let access = if write {
+                    guestmem::AccessType::Write
+                } else {
+                    guestmem::AccessType::Read
+                };
+                _ = gm.lock_gpns(access, true, &gpns);
             }
             GuestMemAction::ProbeGpns { gpns } => {
                 _ = gm.probe_gpns(&gpns);
+            }
+            GuestMemAction::ProbeGpaReadable { gpa } => {
+                _ = gm.probe_gpa_readable(gpa);
+            }
+            GuestMemAction::ProbeGpaWritable { gpa } => {
+                _ = gm.probe_gpa_writable(gpa);
+            }
+            GuestMemAction::FillRange {
+                offset,
+                len,
+                gpns,
+                val,
+            } => {
+                let len = len % MAX_SIZE;
+                if let Some(range) = PagedRange::new(offset, len, &gpns) {
+                    _ = gm.fill_range(&range, val);
+                }
             }
             GuestMemAction::ZeroRange { offset, len, gpns } => {
                 let len = len % MAX_SIZE;
@@ -283,10 +319,20 @@ fn do_fuzz(input: FuzzCase) {
                     _ = gm.write_range_from_atomic(&range, &data_atomic);
                 }
             }
-            GuestMemAction::LockRange { offset, len, gpns } => {
+            GuestMemAction::LockRange {
+                write,
+                offset,
+                len,
+                gpns,
+            } => {
                 if let Some(range) = PagedRange::new(offset, len, &gpns) {
                     let locked_range = LockedIoVecs::new();
-                    _ = gm.lock_range(range, locked_range);
+                    let access = if write {
+                        guestmem::AccessType::Write
+                    } else {
+                        guestmem::AccessType::Read
+                    };
+                    _ = gm.lock_range(access, range, locked_range);
                 }
             }
         }

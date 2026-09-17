@@ -1,6 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! SRB (SCSI Request Block) types for the Hyper-V SCSI protocol.
+//!
+//! [`SrbStatus`] reports command-level completion status (success, error,
+//! aborted, etc.). [`SrbStatusAndFlags`] packs the status with additional
+//! flags (autosense valid, queue frozen, etc.) into a single byte.
+
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use zerocopy::FromBytes;

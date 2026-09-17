@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 paste.workspace = true
+serde = { workspace = true, features = ["std", "derive"] }
 
 [lints]
 workspace = true

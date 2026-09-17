@@ -54,7 +54,14 @@ fn main() -> Result<(), Error> {
         let mut listener = PolledSocket::new(&driver, TcpListener::bind("127.0.0.1:5900")?)?;
         let (socket, _addr) = listener.accept().await?;
         let socket = PolledSocket::new(&driver, socket.into())?;
-        let mut server = vnc::Server::new("test framebuffer".into(), socket, fb, IgnoreInput);
+        let mut server = vnc::Server::new(
+            "test framebuffer".into(),
+            socket,
+            fb,
+            IgnoreInput,
+            None,
+            None,
+        );
         server.run().await
     })
 }

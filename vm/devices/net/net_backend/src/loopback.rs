@@ -18,6 +18,7 @@ use crate::TxError;
 use crate::TxId;
 use crate::TxSegment;
 use crate::linearize;
+use crate::next_packet;
 use crate::packet_count;
 use async_trait::async_trait;
 use inspect::InspectMut;
@@ -46,14 +47,13 @@ impl Endpoint for LoopbackEndpoint {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
-        queues.extend(config.into_iter().map(|config| {
+        queues.extend(config.into_iter().map(|_config| {
             Box::new(LoopbackQueue {
-                pool: config.pool,
-                rx_avail: config.initial_rx.to_vec().into(),
+                rx_avail: VecDeque::new(),
                 rx_done: VecDeque::new(),
             }) as _
         }));
@@ -77,13 +77,12 @@ impl Endpoint for LoopbackEndpoint {
 #[derive(InspectMut)]
 #[inspect(skip)]
 pub struct LoopbackQueue {
-    pub(crate) pool: Box<dyn BufferAccess>,
     pub(crate) rx_avail: VecDeque<RxId>,
     pub(crate) rx_done: VecDeque<RxId>,
 }
 
 impl Queue for LoopbackQueue {
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, _cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
         if self.rx_done.is_empty() {
             Poll::Pending
         } else {
@@ -91,12 +90,16 @@ impl Queue for LoopbackQueue {
         }
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
+    fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, done: &[RxId]) {
         tracing::debug!(count = done.len(), "rx_avail");
         self.rx_avail.extend(done);
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         let n = packets.len().min(self.rx_done.len());
         for (d, s) in packets.iter_mut().zip(self.rx_done.drain(..n)) {
             *d = s;
@@ -104,19 +107,26 @@ impl Queue for LoopbackQueue {
         Ok(n)
     }
 
-    fn tx_avail(&mut self, mut segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        mut segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         tracing::debug!(count = packet_count(segments), "tx_avail");
         let mut sent = 0;
         while !segments.is_empty() && !self.rx_avail.is_empty() {
+            let (meta, _, _) = next_packet(segments);
+            let vlan = meta.vlan;
             let before = segments.len();
-            let packet = linearize(self.pool.as_ref(), &mut segments)?;
+            let packet = linearize(pool, &mut segments)?;
             sent += before - segments.len();
             let rx_id = self.rx_avail.pop_front().unwrap();
-            self.pool.write_packet(
+            pool.write_packet(
                 rx_id,
                 &RxMetadata {
                     offset: 0,
                     len: packet.len(),
+                    vlan,
                     ..Default::default()
                 },
                 &packet,
@@ -126,11 +136,11 @@ impl Queue for LoopbackQueue {
         Ok((true, sent))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        _done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         Ok(0)
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        Some(self.pool.as_mut())
     }
 }

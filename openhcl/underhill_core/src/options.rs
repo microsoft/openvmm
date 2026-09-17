@@ -68,6 +68,7 @@ pub enum GuestStateEncryptionPolicyCli {
     None,
     GspById,
     GspKey,
+    HardwareSealing,
 }
 
 impl FromStr for GuestStateEncryptionPolicyCli {
@@ -79,7 +80,48 @@ impl FromStr for GuestStateEncryptionPolicyCli {
             "NONE" | "1" => Ok(GuestStateEncryptionPolicyCli::None),
             "GSP_BY_ID" | "2" => Ok(GuestStateEncryptionPolicyCli::GspById),
             "GSP_KEY" | "3" => Ok(GuestStateEncryptionPolicyCli::GspKey),
+            "HARDWARE_SEALING" | "4" => Ok(GuestStateEncryptionPolicyCli::HardwareSealing),
             _ => Err(anyhow::anyhow!("Invalid encryption policy: {}", s)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, MeshPayload)]
+pub enum HardwareSealingPolicyCli {
+    None,
+    Hash,
+    Signer,
+}
+
+impl FromStr for HardwareSealingPolicyCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<HardwareSealingPolicyCli, anyhow::Error> {
+        match s {
+            "NONE" | "0" => Ok(HardwareSealingPolicyCli::None),
+            "HASH" | "1" => Ok(HardwareSealingPolicyCli::Hash),
+            "SIGNER" | "2" => Ok(HardwareSealingPolicyCli::Signer),
+            _ => Err(anyhow::anyhow!("Invalid hardware sealing policy: {}", s)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, MeshPayload)]
+pub enum EfiDiagnosticsLogLevelCli {
+    Default,
+    Info,
+    Full,
+}
+
+impl FromStr for EfiDiagnosticsLogLevelCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<EfiDiagnosticsLogLevelCli, anyhow::Error> {
+        match s {
+            "DEFAULT" | "0" => Ok(EfiDiagnosticsLogLevelCli::Default),
+            "INFO" | "1" => Ok(EfiDiagnosticsLogLevelCli::Info),
+            "FULL" | "2" => Ok(EfiDiagnosticsLogLevelCli::Full),
+            _ => Err(anyhow::anyhow!("Invalid EFI diagnostics log level: {}", s)),
         }
     }
 }
@@ -88,6 +130,7 @@ impl FromStr for GuestStateEncryptionPolicyCli {
 pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
+    EnabledHostAndPrivatePoolNotPresent,
     Disabled,
 }
 
@@ -97,6 +140,7 @@ impl FromStr for KeepAliveConfig {
     fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
         match s.to_lowercase().as_str() {
             "host,privatepool" | "enabled" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
+            "host,noprivatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolNotPresent),
             "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
             "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
             x if x == "disabled" || x.starts_with("disabled,") => Ok(KeepAliveConfig::Disabled),
@@ -110,11 +154,12 @@ impl KeepAliveConfig {
         matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
     }
 
-    /// Returns the string representation matching the inspect rename attributes.
+    /// Returns a canonical string representation accepted by the parser.
     pub fn as_str(&self) -> &'static str {
         match self {
             KeepAliveConfig::EnabledHostAndPrivatePoolPresent => "enabled",
             KeepAliveConfig::DisabledHostAndPrivatePoolPresent => "nohost,privatepool",
+            KeepAliveConfig::EnabledHostAndPrivatePoolNotPresent => "host,noprivatepool",
             KeepAliveConfig::Disabled => "disabled",
         }
     }
@@ -156,6 +201,11 @@ pub struct Options {
     ///
     /// N.B.: Not all vmbus devices support this feature, so enabling it may cause failures.
     pub vmbus_force_confidential_external_memory: bool,
+
+    /// (OPENHCL_VMBUS_FORCE_GPA_PINNING=1)
+    /// Force all vmbus channels to use pinned GPA ranges if the guest supports that feature. Used
+    /// for testing purposes only.
+    pub vmbus_force_gpa_pinning: bool,
 
     /// (OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS=\<number\>) (default: 100)
     /// Delay before unsticking a vmbus channel after it has been opened, in milliseconds. Set to
@@ -204,10 +254,6 @@ pub struct Options {
     /// Use the user-mode VFIO NVMe driver instead of the Linux driver.
     pub nvme_vfio: bool,
 
-    /// (OPENHCL_MCR_DEVICE=1)
-    /// MCR Device Enable
-    pub mcr: bool, // TODO MCR: support closed-source ENV vars
-
     /// (OPENHCL_HIDE_ISOLATION=1)
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
@@ -226,6 +272,7 @@ pub struct Options {
     /// Configure NVMe keep alive behavior when servicing.
     /// Options are:
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "host,noprivatepool" - The host supports keepalive, but a private pool is not present. Keepalive is disabled.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
     ///  - "disabled, X, X" - Keepalive is disabled due to manual
@@ -236,6 +283,7 @@ pub struct Options {
     /// Configure MANA keep alive behavior when servicing.
     /// Options are:
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "host,noprivatepool" - The host supports keepalive, but a private pool is not present. Keepalive is disabled.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
     ///  - "disabled, X, X" - TODO: This needs to be implemented for mana.
@@ -267,6 +315,26 @@ pub struct Options {
     /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
     /// Specify which guest state encryption policy to use.
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_HARDWARE_SEALING_POLICY=\<HardwareSealingPolicyCli\>)
+    /// Specify which hardware sealing policy to use. Overrides the value in
+    /// DPS when set. Used by hosts that cannot yet plumb the sealing policy
+    /// through the WMI `GuestStateEncryptionPolicy` property.
+    pub hardware_sealing_policy: Option<HardwareSealingPolicyCli>,
+
+    /// (HCL_EFI_DIAGNOSTICS_LOG_LEVEL=\<EfiDiagnosticsLogLevelCli\>)
+    /// Specify the EFI diagnostics log level filter (DEFAULT, INFO, or FULL).
+    /// Overrides the value in DPS when set.
+    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+
+    /// (HCL_EFI_DIAGNOSTICS_RATE_LIMIT=\<number\>)
+    /// Override the per-period rate limit applied to EFI diagnostics log
+    /// entries forwarded to host tracing.
+    ///
+    /// - Not set: use the built-in defaults.
+    /// - `0`: disable rate limiting entirely (emit every entry).
+    /// - `n > 0`: use `n` as the per-period limit.
+    pub efi_diagnostics_rate_limit: Option<u32>,
 
     /// (HCL_STRICT_ENCRYPTION_POLICY=1) Strict guest state encryption policy.
     pub strict_encryption_policy: Option<bool>,
@@ -388,6 +456,7 @@ impl Options {
             read_legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
         let vmbus_force_confidential_external_memory =
             parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
+        let vmbus_force_gpa_pinning = parse_env_bool("OPENHCL_VMBUS_FORCE_GPA_PINNING");
         let vmbus_channel_unstick_delay_ms =
             parse_legacy_env_number("OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS")?;
         let cmdline_append = read_legacy_openhcl_env("OPENHCL_CMDLINE_APPEND")
@@ -399,7 +468,6 @@ impl Options {
         let vtl0_starts_paused = parse_legacy_env_bool("OPENHCL_VTL0_STARTS_PAUSED");
         let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
         let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
-        let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
@@ -463,6 +531,23 @@ impl Options {
                     })
                     .ok()
             });
+        let hardware_sealing_policy = read_env("HCL_HARDWARE_SEALING_POLICY").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<HardwareSealingPolicyCli>()
+                .map_err(|e| tracing::warn!("failed to parse HCL_HARDWARE_SEALING_POLICY: {:#}", e))
+                .ok()
+        });
+        let efi_diagnostics_log_level = read_env("HCL_EFI_DIAGNOSTICS_LOG_LEVEL").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<EfiDiagnosticsLogLevelCli>()
+                .map_err(|e| {
+                    tracing::warn!("failed to parse HCL_EFI_DIAGNOSTICS_LOG_LEVEL: {:#}", e)
+                })
+                .ok()
+        });
+        let efi_diagnostics_rate_limit = parse_env_number("HCL_EFI_DIAGNOSTICS_RATE_LIMIT")?
+            .map(|x| u32::try_from(x).context("HCL_EFI_DIAGNOSTICS_RATE_LIMIT out of range"))
+            .transpose()?;
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
@@ -510,6 +595,7 @@ impl Options {
             vmbus_max_version,
             vmbus_enable_mnf,
             vmbus_force_confidential_external_memory,
+            vmbus_force_gpa_pinning,
             vmbus_channel_unstick_delay_ms: vmbus_channel_unstick_delay_ms.unwrap_or(100),
             cmdline_append,
             vnc_port: vnc_port.unwrap_or(3),
@@ -520,7 +606,6 @@ impl Options {
             serial_wait_for_rts,
             force_load_vtl0_image,
             nvme_vfio,
-            mcr,
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,
@@ -532,6 +617,9 @@ impl Options {
             default_boot_always_attempt,
             guest_state_lifetime,
             guest_state_encryption_policy,
+            hardware_sealing_policy,
+            efi_diagnostics_log_level,
+            efi_diagnostics_rate_limit,
             strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,

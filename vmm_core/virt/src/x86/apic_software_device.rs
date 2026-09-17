@@ -260,13 +260,21 @@ impl InterruptTable {
 }
 
 impl SignalMsi for ApicSoftwareDevice {
-    fn signal_msi(&self, _rid: u32, address: u64, _data: u32) {
+    fn signal_msi(&self, _devid: Option<u32>, address: u64, _data: u32) {
         let mut table = self.table.lock();
         let table = &mut *table;
         let index = InterruptTable::interrupt_index_from_address(address);
         if let Some(interrupt) = table.entries.get(index) {
             let target = interrupt.msi_params();
-            self.target.signal_msi(0, target.address, target.data)
+            self.target.signal_msi(None, target.address, target.data)
+        } else {
+            // A dropped MSI might leave the guest waiting forever for a device
+            // notification, so make it visible.
+            tracelimit::warn_ratelimited!(
+                address,
+                index,
+                "dropping MSI for unregistered interrupt"
+            );
         }
     }
 }

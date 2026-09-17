@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-guestmem.workspace = true
 net_backend.workspace = true
 mesh.workspace = true
 inspect.workspace = true

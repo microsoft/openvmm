@@ -136,6 +136,7 @@ macro_rules! io_region {
 
 pub mod interrupt;
 pub mod io;
+pub mod isa_dma;
 pub mod mmio;
 pub mod pci;
 pub mod pio;

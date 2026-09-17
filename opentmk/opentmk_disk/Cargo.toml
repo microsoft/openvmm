@@ -1,0 +1,21 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "opentmk_disk"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+opentmk_protocol.workspace = true
+
+anyhow.workspace = true
+disk_vhd1.workspace = true
+fatfs = { workspace = true, features = ["std", "alloc"] }
+fscommon.workspace = true
+gptman.workspace = true
+guid.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

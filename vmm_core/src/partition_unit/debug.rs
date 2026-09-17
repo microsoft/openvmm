@@ -55,6 +55,7 @@ impl DebuggerState {
             notify.send(match reason {
                 HaltReason::PowerOff | HaltReason::Hibernate => DebugStopReason::PowerOff,
                 HaltReason::Reset => DebugStopReason::Reset,
+                HaltReason::Watchdog => DebugStopReason::Watchdog,
                 HaltReason::TripleFault { vp, .. } => DebugStopReason::TripleFault { vp: *vp },
                 HaltReason::DebugBreak { .. } => DebugStopReason::Break,
                 HaltReason::SingleStep { vp } => DebugStopReason::SingleStep { vp: *vp },

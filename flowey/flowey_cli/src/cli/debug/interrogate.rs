@@ -40,6 +40,10 @@ pub struct Interrogate {
     /// Apply a request onto the node (as JSON)
     #[clap(long)]
     req: Vec<String>,
+
+    /// Apply a config onto the node (as JSON)
+    #[clap(long)]
+    config: Vec<String>,
 }
 
 impl Interrogate {
@@ -48,9 +52,15 @@ impl Interrogate {
             node_handle,
             flow_backend,
             req,
+            config,
         } = self;
 
         let raw_json_reqs: Vec<Box<[u8]>> = req
+            .into_iter()
+            .map(|v| v.as_bytes().to_vec().into())
+            .collect();
+
+        let raw_json_configs: Vec<Box<[u8]>> = config
             .into_iter()
             .map(|v| v.as_bytes().to_vec().into())
             .collect();
@@ -78,7 +88,7 @@ impl Interrogate {
         node.imports(&mut dep_registration);
 
         let mut ctx = flowey_core::node::new_node_ctx(&mut ctx_backend);
-        node.emit(raw_json_reqs.clone(), &mut ctx)?;
+        node.emit(raw_json_configs, raw_json_reqs.clone(), &mut ctx)?;
 
         Ok(())
     }
@@ -221,6 +231,26 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
             }
             Err(e) => {
                 log::error!("error serializing inter-node request: {:#}", e)
+            }
+        }
+    }
+
+    fn on_config(&mut self, node_handle: NodeHandle, config: anyhow::Result<Box<[u8]>>) {
+        match config {
+            Ok(data) => {
+                let data = match String::from_utf8(data.into()) {
+                    Ok(data) => data,
+                    Err(e) => e
+                        .into_bytes()
+                        .iter()
+                        .map(|b| format!("(raw) {:02x}", b))
+                        .collect::<Vec<_>>()
+                        .join(""),
+                };
+                println!("[config] {} <-- {}", node_handle.modpath(), data)
+            }
+            Err(e) => {
+                log::error!("error serializing inter-node config: {:#}", e)
             }
         }
     }

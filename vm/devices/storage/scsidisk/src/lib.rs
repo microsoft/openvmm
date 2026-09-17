@@ -1,6 +1,31 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! SCSI CDB parser and disk/DVD emulation.
+//!
+//! This crate translates SCSI commands (CDBs) into [`DiskIo`](disk_backend::DiskIo)
+//! calls. It's used by `storvsp` for hard drives and by `ide` (via ATAPI)
+//! for optical drives. It doesn't implement the SCSI transport — that's the
+//! frontend's job.
+//!
+//! # Key types
+//!
+//! - [`SimpleScsiDisk`] — hard drive emulation. Implements
+//!   [`AsyncScsiDisk`], holds a
+//!   [`Disk`], and parses SCSI CDB opcodes. Handles
+//!   READ/WRITE (6/10/12/16), READ_CAPACITY, INQUIRY, MODE_SENSE, UNMAP,
+//!   WRITE_SAME, SYNCHRONIZE_CACHE, and PERSISTENT_RESERVE.
+//! - [`SimpleScsiDvd`](scsidvd::SimpleScsiDvd) — optical drive emulation.
+//!   Manages media state (`Loaded` / `Unloaded`), handles MMC optical commands
+//!   (GET_EVENT_STATUS, GET_CONFIGURATION, READ_TOC, START_STOP_UNIT for eject).
+//!
+//! # Capacity change detection
+//!
+//! On every SCSI command, `SimpleScsiDisk` checks the current sector count
+//! against the last-known value. If the disk resized, it returns
+//! UNIT_ATTENTION with CAPACITY_DATA_CHANGED. The guest retries and re-reads
+//! capacity.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
@@ -316,24 +341,26 @@ impl SimpleScsiDisk {
         request: &Request,
     ) -> Result<usize, ScsiError> {
         let is_mode_select_10 = request.scsiop() == ScsiOp::MODE_SELECT10;
-        let request_length;
-        let header_size;
-        let is_spbit_set;
-        if is_mode_select_10 {
+
+        let (request_length, header_size, is_spbit_set) = if is_mode_select_10 {
             let cdb = scsi::ModeSelect10::read_from_prefix(&request.cdb[..])
                 .unwrap()
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            request_length = cdb.parameter_list_length.get() as usize;
-            header_size = MODE_PARAMETER_HEADER10_SIZE;
-            is_spbit_set = cdb.flags.spbit();
+            (
+                cdb.parameter_list_length.get() as usize,
+                MODE_PARAMETER_HEADER10_SIZE,
+                cdb.flags.spbit(),
+            )
         } else {
             let cdb = scsi::ModeSelect::read_from_prefix(&request.cdb[..])
                 .unwrap()
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            request_length = cdb.parameter_list_length as usize;
-            header_size = MODE_PARAMETER_HEADER_SIZE;
-            is_spbit_set = cdb.flags.spbit();
-        }
+            (
+                cdb.parameter_list_length as usize,
+                MODE_PARAMETER_HEADER_SIZE,
+                cdb.flags.spbit(),
+            )
+        };
 
         if request_length == 0 {
             return Ok(0);
@@ -440,27 +467,28 @@ impl SimpleScsiDisk {
         }
 
         let is_mode_sense_10 = request.scsiop() == ScsiOp::MODE_SENSE10;
-        let page_code;
-        let page_control;
-        let allocation_length;
-        let header_size;
-        if is_mode_sense_10 {
+
+        let (allocation_length, page_code, page_control, header_size) = if is_mode_sense_10 {
             let cdb = scsi::ModeSense10::read_from_prefix(&request.cdb[..])
                 .unwrap()
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            allocation_length = cdb.allocation_length.get() as usize;
-            page_code = cdb.flags2.page_code();
-            page_control = cdb.flags2.pc() << 6;
-            header_size = MODE_PARAMETER_HEADER10_SIZE;
+            (
+                cdb.allocation_length.get() as usize,
+                cdb.flags2.page_code(),
+                cdb.flags2.pc() << 6,
+                MODE_PARAMETER_HEADER10_SIZE,
+            )
         } else {
             let cdb = scsi::ModeSense::read_from_prefix(&request.cdb[..])
                 .unwrap()
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            allocation_length = cdb.allocation_length as usize;
-            page_code = cdb.flags2.page_code();
-            page_control = cdb.flags2.pc() << 6;
-            header_size = MODE_PARAMETER_HEADER_SIZE;
-        }
+            (
+                cdb.allocation_length as usize,
+                cdb.flags2.page_code(),
+                cdb.flags2.pc() << 6,
+                MODE_PARAMETER_HEADER_SIZE,
+            )
+        };
 
         // It is valid to not supply a buffer, just complete immediately.
         if allocation_length == 0 {

@@ -824,12 +824,11 @@ impl Response<'_> {
                 new_path_start,
                 new_depth,
             } => {
-                children.push(InternalEntry {
+                let entry = children.push_mut(InternalEntry {
                     name: name.to_owned(),
                     node: InternalNode::Unevaluated,
                     sensitivity,
                 });
-                let entry = children.last_mut().unwrap();
                 Some(
                     RequestParams {
                         path_start: new_path_start,
@@ -1013,12 +1012,11 @@ assert_eq!(
     /// no need (or ability--requests must have nodes) to propagate the request.
     fn request(&mut self) -> Option<Request<'_>> {
         let children = &mut **self.children.as_mut()?;
-        children.push(InternalEntry {
+        let entry = children.push_mut(InternalEntry {
             name: String::new(),
             node: InternalNode::Unevaluated,
             sensitivity: SensitivityLevel::Unspecified,
         });
-        let entry = children.last_mut().unwrap();
         Some(self.params.request(&mut entry.node))
     }
 

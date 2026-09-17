@@ -5,9 +5,13 @@
 
 use firmware_pcat::PcatEvent;
 use firmware_pcat::PcatLogger;
-use firmware_uefi::platform::logger::UefiEvent;
-use firmware_uefi::platform::logger::UefiLogger;
+use firmware_uefi_resources::ResolvedUefiLogger;
+use firmware_uefi_resources::UefiLoggerHandleKind;
+use firmware_uefi_resources::platform::UefiEvent;
+use firmware_uefi_resources::platform::UefiLogger;
 use get_resources::ged::FirmwareEvent;
+use vm_resource::PlatformResource;
+use vm_resource::ResolveResource;
 
 /// Forwards UEFI and PCAT events to via the provided [`mesh::Sender`].
 #[derive(Debug)]
@@ -45,5 +49,31 @@ impl PcatLogger for MeshLogger {
             PcatEvent::BootAttempt => FirmwareEvent::BootAttempt,
         };
         self.send(event);
+    }
+}
+
+// TODO: PCAT resolving
+pub struct MeshLoggerResolver {
+    sender: Option<mesh::Sender<FirmwareEvent>>,
+}
+
+impl MeshLoggerResolver {
+    pub fn new(sender: Option<mesh::Sender<FirmwareEvent>>) -> Self {
+        Self { sender }
+    }
+}
+
+impl ResolveResource<UefiLoggerHandleKind, PlatformResource> for MeshLoggerResolver {
+    type Output = ResolvedUefiLogger;
+    type Error = std::convert::Infallible;
+
+    fn resolve(
+        &self,
+        _resource: PlatformResource,
+        _input: (),
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(ResolvedUefiLogger(Box::new(MeshLogger::new(
+            self.sender.clone(),
+        ))))
     }
 }

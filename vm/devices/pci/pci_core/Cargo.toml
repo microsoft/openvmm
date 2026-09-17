@@ -9,8 +9,10 @@ rust-version.workspace = true
 [dependencies]
 chipset_device.workspace = true
 guestmem.workspace = true
+pal_event.workspace = true
 vmcore.workspace = true
 
+anyhow.workspace = true
 bitfield-struct.workspace = true
 inspect.workspace = true
 mesh.workspace = true

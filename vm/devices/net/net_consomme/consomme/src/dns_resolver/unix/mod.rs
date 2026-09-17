@@ -27,12 +27,13 @@ impl DnsBackend for UnixDnsResolverBackend {
     ///
     /// Each query spawns a blocking task that uses the appropriate resolver
     /// functions for the target platform.
-    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>) {
+    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>, query_id: u64) {
         let flow = request.flow.clone();
         let query = request.dns_query.to_vec();
 
         blocking::unblock(move || {
             handle_dns_query(DnsRequestInternal {
+                query_id,
                 flow,
                 query,
                 response_sender,

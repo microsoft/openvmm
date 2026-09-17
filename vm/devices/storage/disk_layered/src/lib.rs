@@ -20,6 +20,30 @@
 //! which would be needed for caches that are smaller than the disk. These
 //! require potentially complicated cache management policies and are probably
 //! best implemented in a separate disk implementation.
+//!
+//! # Layer types
+//!
+//! Each layer implements [`LayerIo`], which is similar to [`DiskIo`]
+//! but adds per-sector presence tracking via [`SectorMarker`]. Two concrete
+//! layer implementations exist:
+//!
+//! - **`RamDiskLayer`** (`disklayer_ram`) — ephemeral, in-memory.
+//! - **`SqliteDiskLayer`** (`disklayer_sqlite`) — persistent, file-backed
+//!   (dev/test only).
+//!
+//! A full [`Disk`] can appear at the bottom of the stack
+//! as a fully-present layer via `DiskLayer::from_disk`, which wraps it in
+//! `DiskAsLayer` — a layer that marks all sectors as present on every read.
+//!
+//! # Construction and validation
+//!
+//! [`LayeredDisk::new`] validates the layer stack at construction time:
+//!
+//! - All layers must have matching sector sizes.
+//! - Write-through layers must be contiguous from the top.
+//! - The last layer must not be write-through.
+//! - Layers used as read caches must support [`WriteNoOverwrite`].
+//! - If the disk is writable, all layers in the write path must be writable.
 
 #![forbid(unsafe_code)]
 
@@ -480,6 +504,20 @@ impl<T: LayerIo> LayerAttach for T {
 }
 
 /// Metadata and IO for disk layers.
+///
+/// # Sector range validation
+///
+/// Layers are subject to the same requirements as [`DiskIo`]: an
+/// implementation must not panic for any sector value, and must return
+/// [`DiskError::IllegalBlock`] for requests outside the layer. Callers do not
+/// pre-validate the range.
+///
+/// Layers also inherit the representability guarantee that [`Disk`] provides to
+/// [`DiskIo`] implementations: the end byte offset of any request is at most
+/// [`i64::MAX`]. This holds because [`LayeredDisk`] never increases the sector
+/// number of a request (it only clamps the end down to the layer's visible
+/// sector count) and never changes the sector size, and because a [`Disk`] used
+/// as a layer re-enters through [`Disk`]'s own entry points.
 pub trait LayerIo: 'static + Send + Sync + Inspect {
     /// Returns the layer type name as a string.
     ///
@@ -669,7 +707,7 @@ impl DiskIo for LayeredDisk {
                     // Restrict the range to the visible sector count of the
                     // layer; sectors beyond this are logically zero.
                     let end = range.end_sector().min(layer.visible_sector_count);
-                    if range.start_sector() == end {
+                    if range.start_sector() >= end {
                         break 'done;
                     }
                     end
@@ -1075,6 +1113,41 @@ mod tests {
                 entry.insert(data);
             }
             Ok(())
+        }
+    }
+
+    #[async_test]
+    async fn test_read_beyond_parent_size() {
+        let parent = Arc::new(TestLayer::new(100));
+        parent
+            .sectors
+            .lock()
+            .insert(99, Data(vec![0x5a; 512].into()));
+        let child = Arc::new(TestLayer::new(200));
+        child
+            .sectors
+            .lock()
+            .insert(151, Data(vec![0xa5; 512].into()));
+        let layers = [child, parent]
+            .into_iter()
+            .map(|layer| LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                read_cache: false,
+                write_through: false,
+            })
+            .collect();
+        let disk = LayeredDisk::new(false, layers).await.unwrap();
+        let mut mem = GuestMemory::allocate(1024);
+        let buffers = OwnedRequestBuffers::linear(0, 1024, true);
+
+        for (sector, expected) in [(99, [0x5a, 0]), (100, [0, 0]), (150, [0, 0xa5])] {
+            mem.inner_buf_mut().unwrap().fill(0xff);
+            disk.read_vectored(&buffers.buffer(&mem), sector)
+                .await
+                .unwrap();
+            let data = mem.inner_buf_mut().unwrap();
+            assert_eq!(&data[..512], &[expected[0]; 512]);
+            assert_eq!(&data[512..1024], &[expected[1]; 512]);
         }
     }
 

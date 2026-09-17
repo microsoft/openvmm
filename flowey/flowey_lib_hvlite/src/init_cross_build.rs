@@ -75,6 +75,11 @@ impl FlowNode for Node {
                                         FlowPlatformLinuxDistro::Ubuntu => {
                                             Some("gcc-x86-64-linux-gnu")
                                         }
+                                        FlowPlatformLinuxDistro::AzureLinux => {
+                                            // Azure Linux doesn't have an x86_64 cross-gcc;
+                                            // the native `gcc` package is used on x86_64 hosts.
+                                            match_arch!(host_arch, FlowArch::X86_64, Some("gcc"))
+                                        }
                                         FlowPlatformLinuxDistro::Arch => {
                                             match_arch!(host_arch, FlowArch::X86_64, Some("gcc"))
                                         }
@@ -91,7 +96,8 @@ impl FlowNode for Node {
                                 FlowPlatform::Linux(linux_distribution) => {
                                     let pkg = match linux_distribution {
                                         FlowPlatformLinuxDistro::Fedora
-                                        | FlowPlatformLinuxDistro::Ubuntu => {
+                                        | FlowPlatformLinuxDistro::Ubuntu
+                                        | FlowPlatformLinuxDistro::AzureLinux => {
                                             Some("gcc-aarch64-linux-gnu")
                                         }
                                         FlowPlatformLinuxDistro::Arch => match_arch!(
@@ -148,13 +154,44 @@ impl FlowNode for Node {
                             );
                         }
                     }
-                    // Cross compiling for Windows relies on the appropriate
-                    // Visual Studio Build Tools components being installed.
-                    // The necessary libraries can be accessed from WSL,
-                    // allowing for compilation of Windows applications from Linux.
-                    // For now, just silently continue regardless.
+                    // Cross compiling for Windows with the MSVC toolchain
+                    // relies on the appropriate Visual Studio Build Tools
+                    // components being installed. The necessary libraries can
+                    // be accessed from WSL, allowing for compilation of Windows
+                    // applications from Linux. For now, just silently continue
+                    // regardless.
                     // TODO: Detect (and potentially install) these dependencies
-                    (FlowPlatform::Linux(_), target_lexicon::OperatingSystem::Windows) => {}
+                    //
+                    // Cross compiling for Windows with the GNU (mingw-w64)
+                    // toolchain works on a native (non-WSL) Linux host without
+                    // the Windows SDK, and is used to build Windows *guest*
+                    // payloads (e.g. pipette). Install the mingw-w64 cross gcc,
+                    // which rustc auto-detects as the linker
+                    // (`x86_64-w64-mingw32-gcc`).
+                    (
+                        FlowPlatform::Linux(linux_distribution),
+                        target_lexicon::OperatingSystem::Windows,
+                    ) => {
+                        if matches!(target.environment, target_lexicon::Environment::Gnu)
+                            && matches!(target.architecture, Architecture::X86_64)
+                        {
+                            let pkg = match linux_distribution {
+                                FlowPlatformLinuxDistro::Ubuntu => {
+                                    Some("gcc-mingw-w64-x86-64-win32")
+                                }
+                                FlowPlatformLinuxDistro::Fedora => Some("mingw64-gcc"),
+                                _ => None,
+                            };
+                            if let Some(pkg) = pkg {
+                                pre_build_deps.push(ctx.reqv(|v| {
+                                    flowey_lib_common::install_dist_pkg::Request::Install {
+                                        package_names: vec![pkg.into()],
+                                        done: v,
+                                    }
+                                }));
+                            }
+                        }
+                    }
                     (FlowPlatform::Windows, target_lexicon::OperatingSystem::Windows) => {}
                     (_, target_lexicon::OperatingSystem::None_) => {}
                     (_, target_lexicon::OperatingSystem::Uefi) => {}

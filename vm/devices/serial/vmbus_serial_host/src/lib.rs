@@ -126,7 +126,11 @@ impl SimpleVmbusDevice for Serial {
             interface_name,
             interface_id: protocol::UART_INTERFACE_TYPE,
             instance_id,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }
@@ -410,7 +414,7 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
     ) -> Result<(), Error> {
         match notification {
             HostNotifications::RX_CLEAR_BUFFER => {
-                todo!("clear rx buffer unimplemented")
+                self.state.rx_bytes.clear();
             }
             HostNotifications::TX_DATA_AVAILABLE => {
                 let message = protocol::TxDataAvailableMessage::read_from_prefix(buf)

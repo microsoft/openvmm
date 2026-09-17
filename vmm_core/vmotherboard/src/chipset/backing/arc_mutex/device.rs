@@ -7,6 +7,7 @@
 use super::services::ArcMutexChipsetServices;
 use crate::BusIdPci;
 use crate::BusIdPcieDownstreamPort;
+use crate::BusIdPcieEnumerator;
 use crate::VmmChipsetDevice;
 use arc_cyclic_builder::ArcCyclicBuilder;
 use arc_cyclic_builder::ArcCyclicBuilderExt;
@@ -25,6 +26,8 @@ pub(crate) enum AddDeviceErrorKind {
 
     #[error("no pci bus address provided")]
     NoPciBusAddress,
+    #[error("no pci bus specified; call on_pci_bus(...) when adding this PCI device")]
+    NoPciBusSpecified,
     #[error("error finalizing device")]
     Finalize(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
@@ -73,6 +76,7 @@ pub struct ArcMutexChipsetDeviceBuilder<'a, 'b, T> {
     pci_addr: Option<(u8, u8, u8)>,
     pci_bus_id: Option<BusIdPci>,
     pcie_port: Option<BusIdPcieDownstreamPort>,
+    pcie_rciep: Option<(BusIdPcieEnumerator, u8)>,
     external_pci: bool,
 }
 
@@ -100,6 +104,7 @@ where
             pci_addr: None,
             pci_bus_id: None,
             pcie_port: None,
+            pcie_rciep: None,
             external_pci: false,
         }
     }
@@ -126,6 +131,17 @@ where
     /// For PCIe devices: place the device on the specified downstream port
     pub fn on_pcie_port(mut self, id: BusIdPcieDownstreamPort) -> Self {
         self.pcie_port = Some(id);
+        self
+    }
+
+    /// For PCIe devices: place the device as a Root Complex Integrated
+    /// Endpoint (RCiEP) on the start bus of the specified root complex.
+    ///
+    /// RCiEPs are Type 0 PCI functions that sit directly on the start bus
+    /// alongside root ports, without a downstream port above them (e.g., an
+    /// AMD IOMMU). `devfn` is `device << 3 | function`.
+    pub fn on_pcie_root_complex(mut self, enumerator_id: BusIdPcieEnumerator, devfn: u8) -> Self {
+        self.pcie_rciep = Some((enumerator_id, devfn));
         self
     }
 
@@ -165,15 +181,23 @@ where
 
         if !self.external_pci {
             if let Some(dev) = typed_dev.supports_pci() {
-                if self.pci_bus_id.is_some() && self.pcie_port.is_some() {
+                let bus_options = [
+                    self.pci_bus_id.is_some(),
+                    self.pcie_port.is_some(),
+                    self.pcie_rciep.is_some(),
+                ];
+                if bus_options.iter().filter(|&&v| v).count() > 1 {
                     panic!(
-                        "wiring error: invoked both `on_pci_bus` and `on_pcie_port` for `{}`",
+                        "wiring error: invoked multiple bus placement methods for `{}`",
                         self.dev_name
                     );
                 }
 
                 if let Some(bus_id_port) = self.pcie_port {
                     self.services.register_static_pcie(bus_id_port);
+                } else if let Some((enumerator_id, devfn)) = self.pcie_rciep {
+                    self.services
+                        .register_static_pcie_rciep(enumerator_id, devfn);
                 } else {
                     // static pci registration
                     let bdf = match (self.pci_addr, dev.suggested_bdf()) {
@@ -191,7 +215,8 @@ where
                             );
                             override_bdf
                         }
-                        (None, Some(bdf)) | (Some(bdf), None) => bdf,
+                        (Some(override_bdf), None) => override_bdf,
+                        (None, Some(suggested_bdf)) => suggested_bdf,
                         (None, None) => {
                             return Err(
                                 AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name)
@@ -199,12 +224,12 @@ where
                         }
                     };
 
-                    let bus_id = match self.pci_bus_id.take() {
-                        Some(bus_id) => bus_id,
-                        None => panic!(
-                            "wiring error: did not invoke `on_pci_bus` for `{}`",
-                            self.dev_name
-                        ),
+                    let bus_id = if let Some(bus_id) = self.pci_bus_id.take() {
+                        bus_id
+                    } else {
+                        return Err(
+                            AddDeviceErrorKind::NoPciBusSpecified.with_dev_name(self.dev_name)
+                        );
                     };
 
                     self.services.register_static_pci(bus_id, bdf);

@@ -174,7 +174,7 @@ impl Namespace {
                     .map_err(map_disk_error)?;
             }
             nvm::NvmOpcode::FLUSH => {
-                tracing::debug!(nsid = self.nsid, "flush");
+                tracing::trace!(nsid = self.nsid, "flush");
                 if !self.disk.is_read_only() {
                     self.disk.sync_cache().await.map_err(map_disk_error)?;
                 }
@@ -189,7 +189,7 @@ impl Namespace {
                 let prp =
                     PrpRange::parse(&self.mem, size_of_val(dsm_ranges.as_ref()), command.dptr)?;
                 prp.read(&self.mem, dsm_ranges.as_mut_bytes())?;
-                tracing::debug!(nsid = self.nsid, ?cdw11, ?dsm_ranges, "dsm");
+                tracing::trace!(nsid = self.nsid, ?cdw11, ?dsm_ranges, "dsm");
                 if cdw11.ad() {
                     for range in dsm_ranges.as_ref() {
                         self.disk

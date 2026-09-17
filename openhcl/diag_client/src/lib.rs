@@ -38,6 +38,8 @@ pub mod hyperv {
     use pal_async::driver::Driver;
     use pal_async::socket::PolledSocket;
     use pal_async::timer::PolledTimer;
+    use powershell_builder::PowerShellBuilder;
+    use powershell_builder::RawVal;
     use std::fs::File;
     use std::io::Write;
     use std::process::Command;
@@ -50,6 +52,8 @@ pub mod hyperv {
     pub enum ComPortAccessInfo<'a> {
         /// Access by number
         NameAndPortNumber(&'a str, u32),
+        /// Access by VM ID and port number
+        IdAndPortNumber(Guid, u32),
         /// Access through a named pipe
         PortPipePath(&'a str),
     }
@@ -68,7 +72,7 @@ pub mod hyperv {
                 .trim();
             Ok(stdout
                 .parse()
-                .with_context(|| format!("failed to parse VM ID '{}'", &stdout))?)
+                .with_context(|| format!("failed to parse VM ID '{}'", stdout))?)
         } else {
             anyhow::bail!(
                 "{}",
@@ -109,6 +113,33 @@ pub mod hyperv {
         Ok(socket.convert().into_inner())
     }
 
+    fn query_vm_com_port(port: ComPortAccessInfo<'_>) -> anyhow::Result<String> {
+        let (vm_arg_name, vm_arg_value, num) = match port {
+            ComPortAccessInfo::NameAndPortNumber(vm, num) => ("VMName", vm.to_owned(), num),
+            ComPortAccessInfo::IdAndPortNumber(id, num) => ("VMId", id.to_string(), num),
+            ComPortAccessInfo::PortPipePath(path) => return Ok(path.to_owned()),
+        };
+
+        let output = PowerShellBuilder::new()
+            .cmdlet("Get-VMComPort")
+            .arg(vm_arg_name, vm_arg_value)
+            .arg("Number", num)
+            .arg("ErrorAction", RawVal::new("Stop"))
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "Path")
+            .finish()
+            .build()
+            .output()
+            .context("failed to query VM com port")?;
+
+        if !output.status.success() {
+            let _ = std::io::stderr().write_all(&output.stderr);
+            anyhow::bail!("failed to query VM com port: exit status {}", output.status);
+        }
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
     /// Opens a serial port on a Hyper-V VM.
     ///
     /// If the VM is not running, it will periodically try to connect to the
@@ -121,27 +152,7 @@ pub mod hyperv {
         driver: &(impl Driver + ?Sized),
         port: ComPortAccessInfo<'_>,
     ) -> anyhow::Result<File> {
-        let path = match port {
-            ComPortAccessInfo::NameAndPortNumber(vm, num) => {
-                let output = Command::new("powershell.exe")
-                    .arg("-NoProfile")
-                    .arg(format!(
-                        r#"$x = Get-VMComPort "{vm}" -Number {num} -ErrorAction Stop; $x.Path"#,
-                    ))
-                    .output()
-                    .context("failed to query VM com port")?;
-
-                if !output.status.success() {
-                    let _ = std::io::stderr().write_all(&output.stderr);
-                    anyhow::bail!(
-                        "failed to query VM com port: exit status {}",
-                        output.status.code().unwrap()
-                    );
-                }
-                &String::from_utf8(output.stdout)?
-            }
-            ComPortAccessInfo::PortPipePath(path) => path,
-        };
+        let path = query_vm_com_port(port)?;
 
         let path = path.trim();
         if path.is_empty() {

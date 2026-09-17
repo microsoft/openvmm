@@ -12,9 +12,6 @@
 //! of Unix sockets.
 
 #![cfg(unix)]
-// UNSAFETY: Calls to libc send/recvmsg fns and the work to prepare their inputs
-// and handle their outputs (mem::zeroed, transmutes, from_raw_fds).
-#![expect(unsafe_code)]
 
 #[cfg(target_os = "linux")]
 mod memfd;
@@ -59,7 +56,6 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::io;
 use std::io::IoSlice;
-use std::io::IoSliceMut;
 use std::os::unix::prelude::*;
 use std::pin::pin;
 use std::sync::Arc;
@@ -112,6 +108,37 @@ pub struct UnixNode {
 
     // meaningful drop
     _drop_send: OneshotSender<()>,
+}
+
+/// Error returned when creating a mesh invitation fails.
+#[derive(Debug, Error)]
+#[error("mesh node shut down before invitation could be created")]
+pub struct InviteError;
+
+/// A Clone + Send handle for creating mesh invitations.
+///
+/// Extracted from a [`UnixNode`] via [`UnixNode::inviter()`]. This delegates
+/// invitation requests to the node's leader task via the existing
+/// `LeaderRequest::Invite` channel.
+///
+/// This allows creating invitations from any async task without holding a
+/// reference to the node.
+#[derive(Clone)]
+pub(crate) struct UnixMeshInviter {
+    to_leader: mesh_channel::Sender<LeaderRequest>,
+}
+
+impl UnixMeshInviter {
+    /// Create a mesh invitation for a new node to join.
+    ///
+    /// The returned [`Invitation`] can be sent to another process to allow
+    /// it to join the mesh.
+    pub(crate) async fn invite(&self, port: Port) -> Result<Invitation, InviteError> {
+        let (invitation_send, mut invitation_recv) = channel();
+        self.to_leader
+            .send(LeaderRequest::Invite(port, invitation_send));
+        invitation_recv.recv().await.map_err(|_| InviteError)
+    }
 }
 
 #[derive(Debug, Protobuf)]
@@ -428,10 +455,10 @@ impl SendEvent for PacketSender {
         // N.B. This can lead to out of order messages. The event protocol is
         //      responsible for handling this condition.
         if !USE_SEQPACKET
-            || try_send(
-                self.socket.socket.lock().get(),
+            || unix_socket::send_with_fds(
+                self.socket.socket.lock().get().as_fd(),
                 &[IoSlice::new(&packet)],
-                &fds,
+                fds.iter().map(|OsResource::Fd(fd)| fd.as_fd()),
             )
             .is_err()
         {
@@ -624,8 +651,9 @@ async fn run_receive(
 ) -> Result<(), ReceiveError> {
     let mut buf = vec![0; MAX_PACKET_SIZE];
     let mut fds = Vec::new();
+    let mut receiver = unix_socket::ScmReceiver::new(protocol::MAX_FDS_PER_MESSAGE);
     loop {
-        let len = socket.recv(&mut buf, &mut fds).await?;
+        let len = socket.recv(&mut buf, &mut fds, &mut receiver).await?;
         if len == 0 {
             break;
         }
@@ -886,19 +914,26 @@ impl UnixNode {
     /// Invites another process to join the mesh, with `port` bridged with the
     /// original port.
     #[instrument(skip_all, fields(local_id = ?self.local_node.id()))]
-    pub async fn invite(&self, port: Port) -> io::Result<Invitation> {
+    pub async fn invite(&self, port: Port) -> Result<Invitation, InviteError> {
         let (invitation_send, mut invitation_recv) = channel();
         self.to_leader
             .send(LeaderRequest::Invite(port, invitation_send));
-        let invitation = invitation_recv
-            .recv()
-            .await
-            .map_err(|_| ErrorKind::ConnectionReset)?;
+        let invitation = invitation_recv.recv().await.map_err(|_| InviteError)?;
         tracing::debug!(
             invite_id = ?invitation.address.local_addr.node,
             "received invitation",
         );
         Ok(invitation)
+    }
+
+    /// Extract a [`UnixMeshInviter`] handle. Cheap — clones an Arc.
+    ///
+    /// The inviter can be used from any task to create mesh invitations
+    /// without holding a reference to this node.
+    pub(crate) fn inviter(&self) -> UnixMeshInviter {
+        UnixMeshInviter {
+            to_leader: (*self.to_leader).clone(),
+        }
     }
 
     /// Joins an existing mesh via an invitation, briding `port` with the
@@ -1016,43 +1051,6 @@ struct UnixSocket {
     socket: Mutex<PolledSocket<Socket>>,
 }
 
-#[repr(C)]
-struct CmsgScmRights {
-    hdr: libc::cmsghdr,
-    fds: [RawFd; 64],
-}
-
-// TODO: replace this copy+paste of IoSlice::advance_slices with std's
-// implementation once stabilized.
-fn advance_slices(bufs: &mut &mut [IoSlice<'_>], n: usize) {
-    // Number of buffers to remove.
-    let mut remove = 0;
-    // Total length of all the to be removed buffers.
-    let mut accumulated_len = 0;
-    for buf in bufs.iter() {
-        if accumulated_len + buf.len() > n {
-            break;
-        } else {
-            accumulated_len += buf.len();
-            remove += 1;
-        }
-    }
-
-    *bufs = &mut std::mem::take(bufs)[remove..];
-    if !bufs.is_empty() {
-        let buf = bufs[0];
-        // SAFETY: this transmute extends the lifetime, which is necessary
-        // because IoSlice<'a> does not have a method to get the inner slice
-        // with lifetime 'a, even though this is perfectly safe and is necessary
-        // to implement this function.
-        bufs[0] = unsafe {
-            std::mem::transmute::<IoSlice<'_>, IoSlice<'_>>(IoSlice::new(
-                &buf[n - accumulated_len..],
-            ))
-        };
-    }
-}
-
 impl UnixSocket {
     fn new(driver: &dyn SpawnDriver, fd: Socket) -> Self {
         let socket = PolledSocket::new(driver, fd).unwrap();
@@ -1077,11 +1075,29 @@ impl UnixSocket {
         iov: &mut [IoSlice<'_>],
         fds: &[OsResource],
     ) -> Result<usize, io::Error> {
+        // Bound the fd count to what the receiver can hold. Without this,
+        // attaching more than `MAX_FDS_PER_MESSAGE` descriptors would
+        // deterministically trip `MSG_CTRUNC` on the receiver and tear down the
+        // connection; reject it locally with a clear error instead.
+        if fds.len() > protocol::MAX_FDS_PER_MESSAGE {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "too many file descriptors ({}, max {})",
+                    fds.len(),
+                    protocol::MAX_FDS_PER_MESSAGE
+                ),
+            ));
+        }
         let n = poll_fn(|cx| {
             self.socket
                 .lock()
                 .poll_io(cx, InterestSlot::Write, PollEvents::OUT, |socket| {
-                    try_send(socket.get(), iov, fds)
+                    unix_socket::send_with_fds(
+                        socket.get().as_fd(),
+                        iov,
+                        fds.iter().map(|OsResource::Fd(fd)| fd.as_fd()),
+                    )
                 })
         })
         .await?;
@@ -1095,25 +1111,30 @@ impl UnixSocket {
     ) -> Result<(), io::Error> {
         while !iov.is_empty() || !fds.is_empty() {
             let n = self.send_raw(iov, fds).await?;
-            advance_slices(&mut iov, n);
+            IoSlice::advance_slices(&mut iov, n);
             fds = &[];
         }
         Ok(())
     }
 
-    async fn recv(&self, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::Result<usize> {
+    async fn recv(
+        &self,
+        buf: &mut [u8],
+        fds: &mut Vec<OsResource>,
+        receiver: &mut unix_socket::ScmReceiver,
+    ) -> io::Result<usize> {
         if USE_SEQPACKET {
-            self.recv_raw(buf, fds).await
+            self.recv_raw(buf, fds, receiver).await
         } else {
             let mut len = [0; 4];
-            if !self.recv_all_raw(&mut len, fds).await? {
+            if !self.recv_all_raw(&mut len, fds, receiver).await? {
                 return Ok(0);
             }
             let len = u32::from_le_bytes(len) as usize;
             let buf = buf
                 .get_mut(..len)
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::EMSGSIZE))?;
-            if !self.recv_all_raw(buf, fds).await? {
+            if !self.recv_all_raw(buf, fds, receiver).await? {
                 return Err(ErrorKind::UnexpectedEof.into());
             }
             Ok(len)
@@ -1124,10 +1145,11 @@ impl UnixSocket {
         &self,
         buf: &mut [u8],
         fds: &mut Vec<OsResource>,
+        receiver: &mut unix_socket::ScmReceiver,
     ) -> Result<bool, io::Error> {
         let mut read = 0;
         while read < buf.len() {
-            let n = self.recv_raw(&mut buf[read..], fds).await?;
+            let n = self.recv_raw(&mut buf[read..], fds, receiver).await?;
             if n == 0 {
                 if read != 0 {
                     return Err(ErrorKind::UnexpectedEof.into());
@@ -1144,145 +1166,22 @@ impl UnixSocket {
         &self,
         buf: &mut [u8],
         fds: &mut Vec<OsResource>,
+        receiver: &mut unix_socket::ScmReceiver,
     ) -> Result<usize, io::Error> {
         let n = poll_fn(|cx| {
             self.socket
                 .lock()
                 .poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
-                    try_recv(socket.get(), buf, fds)
+                    receiver.recv(socket.get().as_fd(), buf)
                 })
         })
         .await?;
+        fds.extend(receiver.drain().map(OsResource::Fd));
         Ok(n)
     }
 
     async fn close_write(&self) -> io::Result<()> {
         self.socket.lock().get().shutdown(std::net::Shutdown::Write)
-    }
-}
-
-/// Sends a packet, including the specified file descriptors. May fail with
-/// ErrorKind::WouldBlock.
-// x86_64-unknown-linux-musl targets have a different type defn for
-// `libc::cmsghdr`, hence why these lints are being suppressed.
-#[allow(clippy::needless_update, clippy::useless_conversion)]
-fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Result<usize> {
-    let mut cmsg = CmsgScmRights {
-        hdr: libc::cmsghdr {
-            cmsg_level: libc::SOL_SOCKET,
-            cmsg_type: libc::SCM_RIGHTS,
-            cmsg_len: (size_of::<libc::cmsghdr>() + size_of_val(fds))
-                .try_into()
-                .unwrap(),
-
-            ..{
-                // SAFETY: type has no invariants
-                unsafe { std::mem::zeroed() }
-            }
-        },
-        fds: [0; 64],
-    };
-    for (fdi, fdo) in fds.iter().zip(cmsg.fds.iter_mut()) {
-        *fdo = match fdi {
-            OsResource::Fd(fd) => fd.as_raw_fd(),
-        }
-    }
-
-    // SAFETY: type has no invariants
-    let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
-    hdr.msg_iov = msg.as_ptr() as *mut libc::iovec;
-    hdr.msg_iovlen = msg.len().try_into().unwrap();
-    hdr.msg_control = if fds.is_empty() {
-        std::ptr::null_mut()
-    } else {
-        std::ptr::from_mut(&mut cmsg).cast::<libc::c_void>()
-    };
-    hdr.msg_controllen = if fds.is_empty() { 0 } else { cmsg.hdr.cmsg_len };
-    // SAFETY: calling with appropriately initialized buffers.
-    let n = unsafe { libc::sendmsg(socket.as_raw_fd(), &hdr, 0) };
-    if n < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(n as usize)
-}
-
-/// Receives the next packet. Returns the number of bytes read and any file
-/// descriptors that were associated with the packet. May fail with
-/// ErrorKind::WouldBlock.
-fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::Result<usize> {
-    assert!(!buf.is_empty());
-    let mut iov = IoSliceMut::new(buf);
-    // SAFETY: type has no invariants
-    let mut cmsg: CmsgScmRights = unsafe { std::mem::zeroed() };
-    // SAFETY: type has no invariants
-    let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
-    hdr.msg_iov = std::ptr::from_mut(&mut iov).cast::<libc::iovec>();
-    hdr.msg_iovlen = 1;
-    hdr.msg_control = std::ptr::from_mut(&mut cmsg).cast::<libc::c_void>();
-    hdr.msg_controllen = size_of_val(&cmsg) as _;
-
-    // On Linux, automatically set O_CLOEXEC on incoming fds.
-    #[cfg(target_os = "linux")]
-    let flags = libc::MSG_CMSG_CLOEXEC;
-    #[cfg(not(target_os = "linux"))]
-    let flags = 0;
-
-    // SAFETY: calling with properly initialized buffers.
-    let n = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut hdr, flags) };
-    if n < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if n == 0 {
-        assert_eq!(hdr.msg_controllen, 0);
-        return Ok(0);
-    }
-
-    let fd_count = if hdr.msg_controllen > 0 {
-        if cmsg.hdr.cmsg_level != libc::SOL_SOCKET || cmsg.hdr.cmsg_type != libc::SCM_RIGHTS {
-            // BUGBUG: need to loop: possible to leak fds
-            return Err(ErrorKind::InvalidData.into());
-        }
-        #[allow(clippy::unnecessary_cast)] // cmsg_len is u32 on musl and usize on gnu.
-        {
-            (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>()
-        }
-    } else {
-        0
-    };
-
-    let start = fds.len();
-    fds.extend(cmsg.fds[..fd_count].iter().map(|x| {
-        // SAFETY: according to the contract with the kernel, this
-        // fd is now owned by the process.
-        OsResource::Fd(unsafe { OwnedFd::from_raw_fd(*x) })
-    }));
-
-    // Set O_CLOEXEC on all received fds on platforms that don't support
-    // MSG_CMSG_CLOEXEC (set above).
-    if !cfg!(target_os = "linux") {
-        for OsResource::Fd(fd) in &fds[start..] {
-            set_cloexec(fd);
-        }
-    }
-
-    // Check for truncation only after taking ownership of the fds.
-    if hdr.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
-        return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
-    }
-    Ok(n as usize)
-}
-
-fn set_cloexec(fd: impl AsFd) {
-    // SAFETY: using fcntl as documented.
-    unsafe {
-        let flags = libc::fcntl(fd.as_fd().as_raw_fd(), libc::F_GETFD);
-        assert!(flags >= 0);
-        let r = libc::fcntl(
-            fd.as_fd().as_raw_fd(),
-            libc::F_SETFD,
-            flags | libc::FD_CLOEXEC,
-        );
-        assert!(r >= 0);
     }
 }
 

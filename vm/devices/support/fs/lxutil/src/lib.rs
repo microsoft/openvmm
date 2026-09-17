@@ -704,6 +704,7 @@ pub struct LxVolumeOptions {
     sandbox_disallowed_extensions: Vec<OsString>,
     symlink_root: String,
     override_xattrs: HashMap<String, Vec<u8>>,
+    readonly: bool,
 }
 
 impl LxVolumeOptions {
@@ -724,6 +725,7 @@ impl LxVolumeOptions {
             sandbox_disallowed_extensions: Vec::new(),
             symlink_root: "".to_string(),
             override_xattrs: HashMap::new(),
+            readonly: false,
         }
     }
 
@@ -897,6 +899,13 @@ impl LxVolumeOptions {
                         tracing::warn!("'sandbox_disallowed_extensions' option requires value");
                     }
                 }
+                "ro" => {
+                    if value.is_none() {
+                        options.readonly(true);
+                    } else {
+                        tracing::warn!(value, "'ro' option does not support value");
+                    }
+                }
                 _ => tracing::warn!(option = %next, keyword, "Unrecognized mount option"),
             }
         }
@@ -1020,6 +1029,21 @@ impl LxVolumeOptions {
         val_data.extend_from_slice(val);
         self.override_xattrs.insert(name.to_string(), val_data);
         self
+    }
+
+    /// Enable or disable readonly mode for the volume.
+    ///
+    /// This flag is not enforced by `LxVolume` itself. It is intended to be
+    /// read by higher-level layers (e.g., virtio-fs) via [`is_readonly`](Self::is_readonly)
+    /// to reject write operations with `EROFS`.
+    pub fn readonly(&mut self, readonly: bool) -> &mut Self {
+        self.readonly = readonly;
+        self
+    }
+
+    /// Returns whether the volume is configured as readonly.
+    pub fn is_readonly(&self) -> bool {
+        self.readonly
     }
 }
 
@@ -1221,6 +1245,46 @@ mod tests {
         let file = env.volume.open("testfile", lx::O_NOACCESS, None).unwrap();
         assert_eq!(file.pwrite(b"Hello", 0, 0).unwrap_err().value(), lx::EBADF);
         assert_eq!(file.pread(&mut buffer, 0).unwrap_err().value(), lx::EBADF);
+    }
+
+    #[test]
+    fn append_truncate() {
+        // A file opened with O_APPEND must still support ftruncate, matching Linux behavior. On
+        // Windows, O_APPEND strips FILE_WRITE_DATA to enforce append-only writes, which previously
+        // caused the truncate to fail with EACCES.
+        let env = TestEnv::new();
+        let file = env
+            .volume
+            .open(
+                "testfile",
+                lx::O_WRONLY | lx::O_APPEND | lx::O_CREAT | lx::O_EXCL,
+                Some(LxCreateOptions::new(0o666, 0, 0)),
+            )
+            .unwrap();
+
+        assert_eq!(file.pwrite(b"hello", 0, 0).unwrap(), 5);
+        assert_eq!(file.fstat().unwrap().file_size, 5);
+
+        // ftruncate on an O_APPEND descriptor should succeed.
+        file.truncate(1, 0).unwrap();
+        assert_eq!(file.fstat().unwrap().file_size, 1);
+
+        file.truncate(0, 0).unwrap();
+        assert_eq!(file.fstat().unwrap().file_size, 0);
+    }
+
+    #[test]
+    fn readonly_truncate() {
+        // ftruncate on a descriptor that was not opened for writing must fail, matching Linux.
+        // This guards against the Windows truncate path reopening the file with write access and
+        // succeeding on a read-only descriptor.
+        let env = TestEnv::new();
+        env.create_file("testfile", "hello");
+
+        let file = env.volume.open("testfile", lx::O_RDONLY, None).unwrap();
+        assert_eq!(file.truncate(1, 0).unwrap_err().value(), lx::EINVAL);
+        // The file must be unchanged.
+        assert_eq!(file.fstat().unwrap().file_size, 5);
     }
 
     #[test]

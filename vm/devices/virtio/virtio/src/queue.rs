@@ -4,14 +4,22 @@
 //! Core virtio queue implementation, without any notification mechanisms, async
 //! support, or other transport-specific details.
 
+mod packed;
+mod split;
+use crate::VirtioQueueCallbackWork;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
-use crate::spec::u16_le;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use inspect::Inspect;
+use packed::PackedQueueCompleteWork;
+pub use packed::PackedQueueCompletionContext;
+use packed::PackedQueueGetWork;
 use spec::DescriptorFlags;
+use spec::PackedDescriptor;
 use spec::SplitDescriptor;
-use std::sync::atomic;
+use split::SplitQueueCompleteWork;
+use split::SplitQueueGetWork;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -31,6 +39,66 @@ pub(crate) fn read_descriptor<T: IntoBytes + FromBytes + Immutable + KnownLayout
         .map_err(QueueError::Memory)
 }
 
+/// In-flight (consumed-but-not-completed) buffers for a split queue: the
+/// difference of the free-running avail/used head counters.
+///
+/// Errors with [`QueueError::InvalidSavedState`] if that exceeds the queue size
+/// (a corrupt/malicious state — restore is a host trust boundary).
+fn split_in_flight(avail: u16, used: u16, queue_size: u16) -> Result<u16, QueueError> {
+    let in_flight = avail.wrapping_sub(used);
+    if in_flight > queue_size {
+        return Err(QueueError::InvalidSavedState {
+            avail_index: avail,
+            used_index: used,
+            queue_size,
+        });
+    }
+    Ok(in_flight)
+}
+
+/// In-flight (consumed-but-not-completed) descriptors for a packed queue, from
+/// its saved cursors (ring index in bits 0..14, lap/wrap bit in bit 15).
+/// Projecting each cursor onto a doubled ring `[0, 2 * queue_size)` turns the
+/// span from `used` to `avail` into a modular distance; the lap bit tells an
+/// empty ring from a full one.
+///
+/// Errors with [`QueueError::InvalidSavedState`] if the cursors imply more than a
+/// full ring in flight (a corrupt/malicious state — restore is a trust boundary).
+fn packed_in_flight(avail: u16, used: u16, queue_size: u16) -> Result<u16, QueueError> {
+    if avail & 0x7fff >= queue_size || used & 0x7fff >= queue_size {
+        return Err(QueueError::InvalidSavedState {
+            avail_index: avail,
+            used_index: used,
+            queue_size,
+        });
+    }
+    let ring = queue_size as i32;
+    let position = |cursor: u16| (cursor & 0x7FFF) as i32 + i32::from(cursor & 0x8000 != 0) * ring;
+    let in_flight = (position(avail) - position(used)).rem_euclid(2 * ring);
+    if in_flight > ring {
+        return Err(QueueError::InvalidSavedState {
+            avail_index: avail,
+            used_index: used,
+            queue_size,
+        });
+    }
+    Ok(in_flight as u16)
+}
+
+/// Saved progress state for a single virtio queue.
+///
+/// For split queues: `avail_index` and `used_index` are plain ring indices.
+/// For packed queues: bit 15 of each carries the wrap counter
+/// (`index | (wrap_counter << 15)`), matching the vhost-user wire format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, mesh::payload::Protobuf)]
+#[mesh(package = "virtio.queue")]
+pub struct QueueState {
+    #[mesh(1)]
+    pub avail_index: u16,
+    #[mesh(2)]
+    pub used_index: u16,
+}
+
 #[derive(Debug, Error)]
 pub enum QueueError {
     #[error("error accessing queue memory")]
@@ -41,115 +109,377 @@ pub enum QueueError {
     TooLong,
     #[error("Invalid queue size {0}. Must be a power of 2.")]
     InvalidQueueSize(u16),
+    #[error(
+        "guest oversubscribed queue size {queue_size}: {in_flight} already in flight, \
+         {requested} more requested"
+    )]
+    TooManyInFlightDescriptors {
+        in_flight: u16,
+        requested: u16,
+        queue_size: u16,
+    },
+    #[error(
+        "corrupt queue saved state: avail index {avail_index:#x}, used index {used_index:#x}, \
+         queue size {queue_size}"
+    )]
+    InvalidSavedState {
+        avail_index: u16,
+        used_index: u16,
+        queue_size: u16,
+    },
 }
 
-pub struct QueueDescriptor {
+struct QueueDescriptor {
     address: u64,
     length: u32,
     flags: DescriptorFlags,
+    buffer_id: Option<u16>,
     next: Option<u16>,
 }
 
-pub enum QueueCompletionContext {
-    Split(SplitQueueCompletionContext),
+enum QueueCompletionContext {
+    Split,
+    Packed(PackedQueueCompletionContext),
 }
 
-pub struct QueueWork {
+/// The minimal state required to publish a completion to the used ring.
+///
+/// This is everything `complete_descriptor` needs — notably *not* the payload
+/// buffer descriptors, which are only used while the device is reading/writing
+/// guest memory. Devices that must buffer completions (e.g. in-order
+/// publication) can hold a `QueueCompletion` instead of a full
+/// `VirtioQueueCallbackWork` to avoid retaining the payload.
+pub struct QueueCompletion {
     context: QueueCompletionContext,
-    pub payload: Vec<VirtioQueuePayload>,
+    descriptor_index: u16,
 }
 
-impl QueueWork {
+impl QueueCompletion {
     pub fn descriptor_index(&self) -> u16 {
+        self.descriptor_index
+    }
+
+    fn in_flight_cost(&self) -> u16 {
         match &self.context {
-            QueueCompletionContext::Split(context) => context.descriptor_index,
+            QueueCompletionContext::Split => 1,
+            QueueCompletionContext::Packed(context) => context.descriptor_count(),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(tag = "type")]
 enum QueueGetWorkInner {
-    Split(SplitQueueGetWork),
+    Split(#[inspect(flatten)] SplitQueueGetWork),
+    Packed(#[inspect(flatten)] PackedQueueGetWork),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(tag = "type")]
 enum QueueCompleteWorkInner {
-    Split(SplitQueueCompleteWork),
+    Split(#[inspect(flatten)] SplitQueueCompleteWork),
+    Packed(#[inspect(flatten)] PackedQueueCompleteWork),
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default, inspect::Inspect)]
 pub struct QueueParams {
     pub size: u16,
     pub enable: bool,
+    #[inspect(hex)]
     pub desc_addr: u64,
+    #[inspect(hex)]
     pub avail_addr: u64,
+    #[inspect(hex)]
     pub used_addr: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub(crate) struct QueueCoreGetWork {
     queue_desc: GuestMemory,
     queue_size: u16,
     features: VirtioDeviceFeatures,
     mem: GuestMemory,
+    #[inspect(flatten)]
     inner: QueueGetWorkInner,
+    /// Whether kick notification is currently armed.
+    armed: bool,
+    /// Whether a fatal error has retired the fetch side of the queue.
+    ///
+    /// Every [`QueueError`] raised while fetching work means the guest violated
+    /// the queue protocol, and the offending chain is rejected *without* being
+    /// consumed — the available index does not move. Re-reading the ring would
+    /// therefore hit the same descriptors and raise the same error forever, so a
+    /// caller that logs the error and keeps polling would spin without making
+    /// progress. Latch the failure instead: report it once, then report the
+    /// queue as permanently empty.
+    ///
+    /// This only retires fetching. Descriptors already consumed can still be
+    /// completed.
+    failed: bool,
+    /// Consumed-but-not-completed ring capacity, in the format's native unit:
+    /// buffers (heads) for split, descriptors (slots) for packed — the two forms
+    /// of the virtio "Queue Size" limit (spec §2.7.1 vs §2.8.1).
+    /// [`try_peek_work`](Self::try_peek_work) rejects work that would push this
+    /// past the queue size, so it stays in `0..=queue_size`.
+    in_flight: u16,
 }
 
 impl QueueCoreGetWork {
+    pub fn avail_index(&self) -> u16 {
+        match &self.inner {
+            QueueGetWorkInner::Split(split) => split.last_avail_index(),
+            QueueGetWorkInner::Packed(packed) => packed.avail_state(),
+        }
+    }
+
     pub fn new(
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
+        initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
-        // Queue size must be a power of 2
-        if !params.size.is_power_of_two() {
+        // Both ring layouts cap queue size at 2^15 (spec §2.7.1, §2.8.1).
+        if params.size == 0 || params.size > 1 << 15 {
+            return Err(QueueError::InvalidQueueSize(params.size));
+        }
+        let initial_avail = initial_state.map(|s| s.avail_index);
+        // Split queues require power-of-2 sizes (virtio spec §2.7.1).
+        // Packed queues do not (§2.8.10.1).
+        if !features.ring_packed() && !params.size.is_power_of_two() {
             return Err(QueueError::InvalidQueueSize(params.size));
         }
         let queue_desc = mem
             .subrange(params.desc_addr, descriptor_offset(params.size), true)
             .map_err(QueueError::Memory)?;
-        let inner = QueueGetWorkInner::Split(SplitQueueGetWork::new(
-            features.clone(),
-            mem.clone(),
-            params,
-        )?);
+        let inner = if features.ring_packed() {
+            let (index, wrap) = match initial_avail {
+                Some(v) => (v & 0x7FFF, (v >> 15) != 0),
+                None => (0, true),
+            };
+            QueueGetWorkInner::Packed(PackedQueueGetWork::new(
+                features,
+                mem.clone(),
+                params,
+                index,
+                wrap,
+            )?)
+        } else {
+            let index = initial_avail.unwrap_or(0);
+            QueueGetWorkInner::Split(SplitQueueGetWork::new(
+                features,
+                mem.clone(),
+                params,
+                index,
+            )?)
+        };
+        // Seed from the restored cursors in the matching unit (heads for split,
+        // descriptors for packed) so the running count stays consistent; a fresh
+        // queue is zero. Both reject a state implying more than a full ring
+        // in flight, since restore is a host trust boundary.
+        let in_flight = match initial_state {
+            None => 0,
+            Some(state) if features.ring_packed() => {
+                packed_in_flight(state.avail_index, state.used_index, params.size)?
+            }
+            Some(state) => split_in_flight(state.avail_index, state.used_index, params.size)?,
+        };
         Ok(Self {
             queue_desc,
             queue_size: params.size,
             features,
             mem,
             inner,
+            armed: false,
+            failed: false,
+            in_flight,
         })
     }
 
-    pub fn try_next_work(&mut self) -> Result<Option<QueueWork>, QueueError> {
+    /// Whether a fatal error has retired the fetch side of this queue. Once
+    /// set, no further work will ever be returned. See [`Self::failed`].
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+
+    pub fn try_next_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+        match self.try_peek_work() {
+            Ok(Some(work)) => {
+                self.advance(work.completion());
+                Ok(Some(work))
+            }
+            r => r,
+        }
+    }
+
+    /// Like [`try_next_work`](Self::try_next_work), but does not advance
+    /// the available index. The caller must call [`advance`](Self::advance) to
+    /// consume the peeked descriptor and move to the next one. Calling this
+    /// again without advancing will return the same descriptor, but note that
+    /// the guest may have modified the descriptor memory in the meantime.
+    ///
+    /// Returns `Ok(None)` forever once the queue has failed, so that the error
+    /// is reported exactly once.
+    pub fn try_peek_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+        if self.failed {
+            return Ok(None);
+        }
+        let r = self.try_peek_work_inner();
+        if r.is_err() {
+            self.failed = true;
+        }
+        r
+    }
+
+    fn try_peek_work_inner(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         let index = match &mut self.inner {
             QueueGetWorkInner::Split(split) => split.is_available()?,
+            QueueGetWorkInner::Packed(packed) => packed.is_available()?,
         };
-        let Some(index) = index else {
-            return Ok(None);
+        let Some(index) = index else { return Ok(None) };
+        self.suppress_if_armed();
+        let work = self.work_from_index(index)?;
+
+        // Reject a guest that oversubscribes the ring: the whole chain must fit
+        // in the remaining capacity, not just "we aren't already full" (spec caps
+        // in flight at the queue size — §2.7.1/§2.8.1). A compliant guest,
+        // bounded by ring space, never trips this; a misbehaving one (split
+        // reusing avail slots, or packed re-stamping wrap flags early) is caught
+        // before it can grow host tracking or overlap in-flight descriptors.
+        let requested = work.completion().in_flight_cost();
+        if requested > self.queue_size - self.in_flight {
+            return Err(QueueError::TooManyInFlightDescriptors {
+                in_flight: self.in_flight,
+                requested,
+                queue_size: self.queue_size,
+            });
+        }
+
+        Ok(Some(work))
+    }
+
+    /// Arms kick notification so the guest will send a doorbell when new work
+    /// is available. Returns `true` if armed successfully (caller should
+    /// sleep), or `false` if new data arrived during arming (caller should
+    /// retry by calling [`try_next_work`](Self::try_next_work) again).
+    ///
+    /// If already armed, this is a no-op and returns `true`.
+    pub fn arm_for_kick(&mut self) -> bool {
+        if self.armed {
+            return true;
+        }
+        let r = match &mut self.inner {
+            QueueGetWorkInner::Split(split) => split.arm_kick(),
+            QueueGetWorkInner::Packed(packed) => packed.arm_kick(),
         };
-        let QueueGetWorkInner::Split(split) = &mut self.inner;
-        // Fetch descriptor index from given available index.
-        let descriptor_index = split.get_available_descriptor_index(index)?;
-        let payload = self
-            .reader(descriptor_index)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(QueueWork {
-            context: QueueCompletionContext::Split(SplitQueueCompletionContext {
-                descriptor_index,
-            }),
-            payload,
-        }))
+        match r {
+            Ok(true) => {
+                self.armed = true;
+                true
+            }
+            Ok(false) => false,
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to arm kick"
+                );
+                // On error, behave as if armed to avoid a busy loop in callers
+                // that treat `false` as "retry immediately".
+                self.armed = true;
+                true
+            }
+        }
+    }
+
+    /// If kicks are armed, suppress them. Called automatically when work is
+    /// found so the guest doesn't send unnecessary doorbells while draining.
+    fn suppress_if_armed(&mut self) {
+        if self.armed {
+            self.armed = false;
+            let r = match &self.inner {
+                QueueGetWorkInner::Split(split) => split.suppress_kicks(),
+                QueueGetWorkInner::Packed(packed) => packed.suppress_kicks(),
+            };
+
+            if let Err(err) = r {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to suppress kicks"
+                );
+            }
+        }
+    }
+
+    /// Advances the available index after a successful
+    /// [`try_peek_work`](Self::try_peek_work) call.
+    pub fn advance(&mut self, completion: &QueueCompletion) {
+        let cost = completion.in_flight_cost();
+        match &mut self.inner {
+            QueueGetWorkInner::Split(split) => split.advance(),
+            QueueGetWorkInner::Packed(packed) => {
+                let QueueCompletionContext::Packed(ctx) = &completion.context else {
+                    unreachable!();
+                };
+                packed.advance(ctx.descriptor_count());
+            }
+        }
+        // The chain-fits bound in [`try_peek_work`] keeps this within the queue
+        // size; `checked_add` only guards against corrupt accounting.
+        self.in_flight = self
+            .in_flight
+            .checked_add(cost)
+            .expect("in-flight count overflowed");
+    }
+
+    /// Releases the ring capacity held by a consumed work item.
+    pub fn work_completed(&mut self, completion: &QueueCompletion) {
+        self.in_flight = self
+            .in_flight
+            .checked_sub(completion.in_flight_cost())
+            .expect("completed more than was consumed");
+    }
+
+    fn work_from_index(&mut self, index: u16) -> Result<VirtioQueueCallbackWork, QueueError> {
+        if let QueueGetWorkInner::Split(split) = &mut self.inner {
+            let descriptor_index = split.get_available_descriptor_index(index)?;
+            let payload = self
+                .reader(descriptor_index)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(VirtioQueueCallbackWork::from_parts(
+                QueueCompletion {
+                    descriptor_index,
+                    context: QueueCompletionContext::Split,
+                },
+                payload,
+            ))
+        } else {
+            let (payload, last_primary_desc_index) = {
+                let mut reader = self.reader(index);
+                (
+                    (&mut reader).collect::<Result<Vec<_>, _>>()?,
+                    reader.last_primary_desc_index(),
+                )
+            };
+            let last = self.descriptor(&self.queue_desc, last_primary_desc_index, None)?;
+            let count = if last_primary_desc_index >= index {
+                last_primary_desc_index - index + 1
+            } else {
+                // Wrapped around the end of the queue.
+                self.queue_size - index + last_primary_desc_index + 1
+            };
+            let completion_context = PackedQueueCompletionContext::new(&last, count);
+            Ok(VirtioQueueCallbackWork::from_parts(
+                QueueCompletion {
+                    context: QueueCompletionContext::Packed(completion_context),
+                    descriptor_index: index,
+                },
+                payload,
+            ))
+        }
     }
 
     fn reader(&mut self, descriptor_index: u16) -> DescriptorReader<'_> {
         DescriptorReader {
-            chain: DescriptorChain::new(
-                self,
-                self.features.bank0().ring_indirect_desc(),
-                descriptor_index,
-            ),
+            chain: DescriptorChain::new(self, self.features.ring_indirect_desc(), descriptor_index),
         }
     }
 
@@ -157,6 +487,7 @@ impl QueueCoreGetWork {
         &self,
         desc_queue: &GuestMemory,
         index: u16,
+        active_indirect_len: Option<u16>,
     ) -> Result<QueueDescriptor, QueueError> {
         let descriptor = match self.inner {
             QueueGetWorkInner::Split(_) => {
@@ -165,8 +496,40 @@ impl QueueCoreGetWork {
                     address: descriptor.address.get(),
                     length: descriptor.length.get(),
                     flags: descriptor.flags(),
+                    buffer_id: None,
                     next: if descriptor.flags().next() {
                         Some(descriptor.next.get())
+                    } else {
+                        None
+                    },
+                }
+            }
+            QueueGetWorkInner::Packed(_) => {
+                let descriptor: PackedDescriptor = read_descriptor(desc_queue, index)?;
+                QueueDescriptor {
+                    address: descriptor.address.get(),
+                    length: descriptor.length.get(),
+                    flags: descriptor.flags(),
+                    buffer_id: Some(descriptor.buffer_id.get()),
+                    next: if let Some(active_indirect_len) = active_indirect_len {
+                        // Packed descriptors consume all of the indirect
+                        // descriptors based on the buffer length, regardless
+                        // of the NEXT flag.
+                        let next = index.wrapping_add(1);
+                        if next < active_indirect_len {
+                            Some(next)
+                        } else {
+                            None
+                        }
+                    } else if descriptor.flags().next() {
+                        // Packed ring descriptors are sequential and wrap
+                        // at queue_size.
+                        let next = index.wrapping_add(1);
+                        if next >= self.queue_size {
+                            Some(0)
+                        } else {
+                            Some(next)
+                        }
                     } else {
                         None
                     },
@@ -181,8 +544,9 @@ impl QueueCoreGetWork {
     }
 }
 
-#[derive(Debug)]
-pub struct QueueCoreCompleteWork {
+#[derive(Debug, Inspect)]
+pub(crate) struct QueueCoreCompleteWork {
+    #[inspect(flatten)]
     inner: QueueCompleteWorkInner,
 }
 
@@ -191,23 +555,56 @@ impl QueueCoreCompleteWork {
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
+        initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
-        let inner = QueueCompleteWorkInner::Split(SplitQueueCompleteWork::new(
-            features.clone(),
-            mem.clone(),
-            params,
-        )?);
+        let initial_used = initial_state.map(|s| s.used_index);
+        let inner = if features.ring_packed() {
+            let (index, wrap) = match initial_used {
+                Some(v) => (v & 0x7FFF, (v >> 15) != 0),
+                None => (0, true),
+            };
+            QueueCompleteWorkInner::Packed(PackedQueueCompleteWork::new(
+                features,
+                mem.clone(),
+                params,
+                index,
+                wrap,
+            )?)
+        } else {
+            let index = initial_used.unwrap_or(0);
+            QueueCompleteWorkInner::Split(SplitQueueCompleteWork::new(
+                features,
+                mem.clone(),
+                params,
+                index,
+            )?)
+        };
         Ok(Self { inner })
+    }
+
+    pub fn used_index(&self) -> u16 {
+        match &self.inner {
+            QueueCompleteWorkInner::Split(split) => split.last_used_index(),
+            QueueCompleteWorkInner::Packed(packed) => packed.used_state(),
+        }
     }
 
     pub fn complete_descriptor(
         &mut self,
-        work: &QueueWork,
+        completion: &QueueCompletion,
         bytes_written: u32,
     ) -> Result<bool, QueueError> {
-        let QueueCompleteWorkInner::Split(inner) = &mut self.inner;
-        let QueueCompletionContext::Split(context) = &work.context;
-        inner.complete_descriptor(context, bytes_written)
+        match &mut self.inner {
+            QueueCompleteWorkInner::Split(split) => {
+                split.complete_descriptor(completion.descriptor_index, bytes_written)
+            }
+            QueueCompleteWorkInner::Packed(packed) => {
+                let QueueCompletionContext::Packed(context) = &completion.context else {
+                    panic!("mismatched queue completion context for packed queue");
+                };
+                packed.complete_descriptor(context, bytes_written)
+            }
+        }
     }
 }
 
@@ -215,238 +612,21 @@ pub(crate) fn new_queue(
     features: VirtioDeviceFeatures,
     mem: GuestMemory,
     params: QueueParams,
+    initial_state: Option<QueueState>,
 ) -> Result<(QueueCoreGetWork, QueueCoreCompleteWork), QueueError> {
-    let get_work = QueueCoreGetWork::new(features.clone(), mem.clone(), params)?;
-    let complete_work = QueueCoreCompleteWork::new(features.clone(), mem.clone(), params)?;
+    let get_work = QueueCoreGetWork::new(features, mem.clone(), params, initial_state)?;
+    let complete_work = QueueCoreCompleteWork::new(features, mem.clone(), params, initial_state)?;
     Ok((get_work, complete_work))
 }
 
-pub struct SplitQueueCompletionContext {
-    pub descriptor_index: u16,
-}
-
-#[derive(Debug)]
-pub(crate) struct SplitQueueGetWork {
-    queue_avail: GuestMemory,
-    queue_used: GuestMemory,
-    queue_size: u16,
-    last_avail_index: u16,
-    use_ring_event_index: bool,
-}
-
-impl SplitQueueGetWork {
-    pub fn new(
-        features: VirtioDeviceFeatures,
-        mem: GuestMemory,
-        params: QueueParams,
-    ) -> Result<Self, QueueError> {
-        let queue_avail = mem
-            .subrange(
-                params.avail_addr,
-                spec::AVAIL_OFFSET_RING
-                    + spec::AVAIL_ELEMENT_SIZE * params.size as u64
-                    + size_of::<u16>() as u64,
-                true,
-            )
-            .map_err(QueueError::Memory)?;
-
-        let queue_used = mem
-            .subrange(
-                params.used_addr,
-                spec::USED_OFFSET_RING
-                    + spec::USED_ELEMENT_SIZE * params.size as u64
-                    + size_of::<u16>() as u64,
-                true,
-            )
-            .map_err(QueueError::Memory)?;
-        Ok(Self {
-            queue_avail,
-            queue_used,
-            queue_size: params.size,
-            last_avail_index: 0,
-            use_ring_event_index: features.bank0().ring_event_idx(),
-        })
-    }
-
-    fn set_used_flags(&self, flags: spec::UsedFlags) -> Result<(), QueueError> {
-        self.queue_used
-            .write_plain::<u16_le>(0, &u16::from(flags).into())
-            .map_err(QueueError::Memory)
-    }
-
-    fn get_available_index(&self) -> Result<u16, QueueError> {
-        Ok(self
-            .queue_avail
-            .read_plain::<u16_le>(spec::AVAIL_OFFSET_IDX)
-            .map_err(QueueError::Memory)?
-            .get())
-    }
-
-    pub fn is_available(&mut self) -> Result<Option<u16>, QueueError> {
-        let mut avail_index = Self::get_available_index(self)?;
-        if avail_index == self.last_avail_index {
-            if self.use_ring_event_index {
-                self.set_available_event(avail_index)?;
-            } else {
-                self.set_used_flags(spec::UsedFlags::new())?;
-            }
-            // Ensure the available event/used flags are visible before checking
-            // the available index again.
-            atomic::fence(atomic::Ordering::SeqCst);
-            avail_index = Self::get_available_index(self)?;
-            if avail_index == self.last_avail_index {
-                return Ok(None);
-            }
-        }
-
-        if self.use_ring_event_index {
-            self.set_available_event(self.last_avail_index)?;
-        } else {
-            self.set_used_flags(spec::UsedFlags::new().with_no_notify(true))?;
-        }
-        let next_avail_index = self.last_avail_index;
-        self.last_avail_index = self.last_avail_index.wrapping_add(1);
-        // Ensure available index read is ordered before subsequent descriptor
-        // reads.
-        atomic::fence(atomic::Ordering::Acquire);
-        Ok(Some(next_avail_index % self.queue_size))
-    }
-
-    pub fn get_available_descriptor_index(&self, wrapped_index: u16) -> Result<u16, QueueError> {
-        Ok(self
-            .queue_avail
-            .read_plain::<u16_le>(
-                spec::AVAIL_OFFSET_RING + spec::AVAIL_ELEMENT_SIZE * wrapped_index as u64,
-            )
-            .map_err(QueueError::Memory)?
-            .get())
-    }
-
-    fn set_available_event(&self, index: u16) -> Result<(), QueueError> {
-        let addr = spec::USED_OFFSET_RING + spec::USED_ELEMENT_SIZE * (self.queue_size as u64);
-        self.queue_used
-            .write_plain::<u16_le>(addr, &index.into())
-            .map_err(QueueError::Memory)
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct SplitQueueCompleteWork {
-    queue_avail: GuestMemory,
-    queue_used: GuestMemory,
-    queue_size: u16,
-    last_used_index: u16,
-    use_ring_event_index: bool,
-}
-
-impl SplitQueueCompleteWork {
-    pub fn new(
-        features: VirtioDeviceFeatures,
-        mem: GuestMemory,
-        params: QueueParams,
-    ) -> Result<Self, QueueError> {
-        let queue_avail = mem
-            .subrange(
-                params.avail_addr,
-                spec::AVAIL_OFFSET_RING
-                    + spec::AVAIL_ELEMENT_SIZE * params.size as u64
-                    + size_of::<u16>() as u64,
-                true,
-            )
-            .map_err(QueueError::Memory)?;
-        let queue_used = mem
-            .subrange(
-                params.used_addr,
-                spec::USED_OFFSET_RING
-                    + spec::USED_ELEMENT_SIZE * params.size as u64
-                    + size_of::<u16>() as u64,
-                true,
-            )
-            .map_err(QueueError::Memory)?;
-        Ok(Self {
-            queue_avail,
-            queue_used,
-            queue_size: params.size,
-            last_used_index: 0,
-            use_ring_event_index: features.bank0().ring_event_idx(),
-        })
-    }
-
-    pub fn complete_descriptor(
-        &mut self,
-        context: &SplitQueueCompletionContext,
-        bytes_written: u32,
-    ) -> Result<bool, QueueError> {
-        self.set_used_descriptor(
-            self.last_used_index,
-            context.descriptor_index,
-            bytes_written,
-        )?;
-        let last_used_index = self.last_used_index;
-        self.last_used_index = self.last_used_index.wrapping_add(1);
-
-        // Ensure used element writes are ordered before used index write.
-        atomic::fence(atomic::Ordering::Release);
-        self.set_used_index(self.last_used_index)?;
-
-        // Ensure the used index write is visible before reading the field that
-        // determines whether to signal.
-        atomic::fence(atomic::Ordering::SeqCst);
-        let send_signal = if self.use_ring_event_index {
-            last_used_index == self.get_used_event()?
-        } else {
-            !self.get_available_flags()?.no_interrupt()
-        };
-
-        Ok(send_signal)
-    }
-
-    fn get_available_flags(&self) -> Result<spec::AvailableFlags, QueueError> {
-        Ok(self
-            .queue_avail
-            .read_plain::<u16_le>(spec::AVAIL_OFFSET_FLAGS)
-            .map_err(QueueError::Memory)?
-            .get()
-            .into())
-    }
-
-    fn get_used_event(&self) -> Result<u16, QueueError> {
-        let addr = spec::AVAIL_OFFSET_RING + spec::AVAIL_ELEMENT_SIZE * self.queue_size as u64;
-        Ok(self
-            .queue_avail
-            .read_plain::<u16_le>(addr)
-            .map_err(QueueError::Memory)?
-            .get())
-    }
-
-    fn set_used_descriptor(
-        &self,
-        queue_last_used_index: u16,
-        descriptor_index: u16,
-        bytes_written: u32,
-    ) -> Result<(), QueueError> {
-        let wrapped_index = (queue_last_used_index % self.queue_size) as u64;
-        let addr = spec::USED_OFFSET_RING + spec::USED_ELEMENT_SIZE * wrapped_index;
-        self.queue_used
-            .write_plain(
-                addr,
-                &spec::UsedElement {
-                    id: (descriptor_index as u32).into(),
-                    len: bytes_written.into(),
-                },
-            )
-            .map_err(QueueError::Memory)
-    }
-
-    fn set_used_index(&self, index: u16) -> Result<(), QueueError> {
-        self.queue_used
-            .write_plain::<u16_le>(spec::USED_OFFSET_IDX, &index.into())
-            .map_err(QueueError::Memory)
-    }
-}
-
-pub struct DescriptorReader<'a> {
+struct DescriptorReader<'a> {
     chain: DescriptorChain<'a>,
+}
+
+impl DescriptorReader<'_> {
+    pub fn last_primary_desc_index(&self) -> u16 {
+        self.chain.last_primary_desc_index()
+    }
 }
 
 pub struct VirtioQueuePayload {
@@ -469,28 +649,30 @@ impl Iterator for DescriptorReader<'_> {
     }
 }
 
-pub struct DescriptorChain<'a> {
+struct DescriptorChain<'a> {
     queue: &'a QueueCoreGetWork,
+    /// Maximum chain length — always the original ring queue size (spec §2.7.5.3.1).
     queue_size: u16,
     indirect_support: bool,
     indirect_queue: Option<GuestMemory>,
+    /// Entry count of the active indirect table, if any.
+    indirect_table_len: Option<u16>,
     descriptor_index: Option<u16>,
+    last_primary_desc_index: u16,
     num_read: u16,
-    max_desc_chain: u16,
 }
 
 impl<'a> DescriptorChain<'a> {
-    const MAX_DESC_CHAIN: u16 = 128;
-
     fn new(queue: &'a QueueCoreGetWork, indirect_support: bool, descriptor_index: u16) -> Self {
         Self {
             queue,
             queue_size: queue.size(),
             indirect_support,
             indirect_queue: None,
+            indirect_table_len: None,
             descriptor_index: Some(descriptor_index),
+            last_primary_desc_index: descriptor_index,
             num_read: 0,
-            max_desc_chain: std::cmp::min(queue.size(), Self::MAX_DESC_CHAIN),
         }
     }
 
@@ -503,8 +685,12 @@ impl<'a> DescriptorChain<'a> {
                 .as_ref()
                 .unwrap_or(&self.queue.queue_desc),
             descriptor_index,
+            self.indirect_table_len,
         )?;
         let descriptor = if !self.indirect_support || !descriptor.flags.indirect() {
+            if self.indirect_queue.is_none() {
+                self.last_primary_desc_index = descriptor_index;
+            }
             descriptor
         } else {
             if self.indirect_queue.is_some() {
@@ -517,22 +703,25 @@ impl<'a> DescriptorChain<'a> {
                     .map_err(QueueError::Memory)?,
             );
             self.descriptor_index = Some(0);
-            self.queue_size = std::cmp::min(
-                (descriptor.length / size_of::<SplitDescriptor>() as u32) as u16,
-                self.queue_size,
-            );
-            self.max_desc_chain = std::cmp::min(self.queue_size, Self::MAX_DESC_CHAIN);
-            self.queue.descriptor(indirect_queue, 0)?
+            let indirect_len = (descriptor.length / size_of::<SplitDescriptor>() as u32) as u16;
+            self.indirect_table_len = Some(indirect_len);
+            self.queue
+                .descriptor(indirect_queue, 0, Some(indirect_len))?
         };
 
         self.num_read += 1;
-        self.descriptor_index = descriptor.next.map(|next| next % self.queue_size);
-        // Limit the descriptor chain length to avoid running out of memory.
-        // This may be due to a cycle in the descriptor chain.
-        if self.descriptor_index.is_some() && self.num_read == self.max_desc_chain {
+        self.descriptor_index = descriptor.next;
+        // A descriptor chain must not exceed the queue size (virtio spec
+        // §2.7.5.3.1). Reject chains that hit this limit—this also catches
+        // cycles in the descriptor ring.
+        if self.descriptor_index.is_some() && self.num_read == self.queue_size {
             return Err(QueueError::TooLong);
         }
         Ok(Some(descriptor))
+    }
+
+    pub fn last_primary_desc_index(&self) -> u16 {
+        self.last_primary_desc_index
     }
 }
 
@@ -541,5 +730,67 @@ impl Iterator for DescriptorChain<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_descriptor().transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QueueError;
+    use super::packed_in_flight;
+
+    /// Encodes a packed cursor as it is stored in `QueueState`:
+    /// `index | (wrap_counter << 15)`.
+    fn cursor(index: u16, wrap: bool) -> u16 {
+        index | (u16::from(wrap) << 15)
+    }
+
+    #[test]
+    fn packed_in_flight_decode() {
+        let qs = 8;
+
+        // Empty ring: cursors equal, same wrap.
+        assert_eq!(
+            packed_in_flight(cursor(2, false), cursor(2, false), qs).unwrap(),
+            0
+        );
+        assert_eq!(
+            packed_in_flight(cursor(5, true), cursor(5, true), qs).unwrap(),
+            0
+        );
+
+        // Partial, same wrap: avail ahead of used within the same lap.
+        assert_eq!(
+            packed_in_flight(cursor(5, false), cursor(2, false), qs).unwrap(),
+            3
+        );
+
+        // Full ring: cursors equal index, opposite wrap.
+        assert_eq!(
+            packed_in_flight(cursor(3, true), cursor(3, false), qs).unwrap(),
+            8
+        );
+        assert_eq!(
+            packed_in_flight(cursor(0, false), cursor(0, true), qs).unwrap(),
+            8
+        );
+
+        // Avail has wrapped past the end while used trails in the prior lap.
+        // used at 6, avail at 1 (next lap) → slots 6, 7, 0 in flight.
+        assert_eq!(
+            packed_in_flight(cursor(1, true), cursor(6, false), qs).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn packed_in_flight_rejects_corrupt_state() {
+        // Same wrap but avail index behind used index implies more than a full
+        // ring in flight — an impossible, corrupt saved state. It must be
+        // rejected with an error rather than panicking, since the restore path
+        // is a host trust boundary.
+        assert!(matches!(
+            packed_in_flight(cursor(1, false), cursor(6, false), 8),
+            Err(QueueError::InvalidSavedState { queue_size: 8, .. })
+        ));
     }
 }

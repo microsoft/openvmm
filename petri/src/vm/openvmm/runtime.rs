@@ -6,6 +6,7 @@
 use super::PetriVmResourcesOpenVmm;
 use crate::OpenHclServicingFlags;
 use crate::PetriHaltReason;
+use crate::PetriHaltReasonDetail;
 use crate::PetriVmFramebufferAccess;
 use crate::PetriVmInspector;
 use crate::PetriVmRuntime;
@@ -29,12 +30,18 @@ use mesh_process::Mesh;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use pal_async::socket::PolledSocket;
 use petri_artifacts_core::ResolvedArtifact;
+#[cfg(target_os = "linux")]
+use pipette_client::PIPETTE_PORT;
 use pipette_client::PipetteClient;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
+#[cfg(target_os = "linux")]
+use vmsocket::VmAddress;
+#[cfg(target_os = "linux")]
+use vmsocket::VmSocket;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// A running VM that tests can interact with.
@@ -68,7 +75,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Ok(())
     }
 
-    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReasonDetail> {
         let halt_reason = if let Some(already) = self.halt.already_received.take() {
             already.map_err(anyhow::Error::from)
         } else {
@@ -81,7 +88,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
 
         tracing::info!(?halt_reason, "Got halt reason");
 
-        let halt_reason = match halt_reason {
+        let reason = match halt_reason {
             HaltReason::PowerOff => PetriHaltReason::PowerOff,
             HaltReason::Reset => PetriHaltReason::Reset,
             HaltReason::Hibernate => PetriHaltReason::Hibernate,
@@ -89,11 +96,14 @@ impl PetriVmRuntime for PetriVmOpenVmm {
             _ => PetriHaltReason::Other,
         };
 
-        if allow_reset && halt_reason == PetriHaltReason::Reset {
+        if allow_reset && reason == PetriHaltReason::Reset {
             self.reset().await?
         }
 
-        Ok(halt_reason)
+        Ok(PetriHaltReasonDetail {
+            reason,
+            detail: format!("{halt_reason:?}"),
+        })
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
@@ -109,8 +119,18 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         })
     }
 
-    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        Self::wait_for_boot_event(self).await
+    async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>> {
+        // The event arrives on a channel, so cancelling the wait can't discard
+        // one that has already been delivered.
+        CancelContext::new()
+            .with_timeout(timeout.unwrap_or(Duration::MAX))
+            .until_cancelled(Self::wait_for_boot_event(self))
+            .await
+            .ok()
+            .transpose()
     }
 
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
@@ -177,6 +197,18 @@ impl PetriVmRuntime for PetriVmOpenVmm {
     ) -> anyhow::Result<()> {
         todo!("openvmm set vmbus drive")
     }
+
+    async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        Self::add_pcie_device(self, port_name, resource).await
+    }
+
+    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        Self::remove_pcie_device(self, port_name).await
+    }
 }
 
 pub(super) struct PetriVmInner {
@@ -184,6 +216,14 @@ pub(super) struct PetriVmInner {
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
     pub(super) framebuffer_view: Option<View>,
+    /// Whether CIDATA has already been mounted inside the guest.
+    /// Used to skip re-mounting after save/restore (where guest state is
+    /// preserved) while still mounting after a full reset/reboot.
+    pub(super) cidata_mounted: bool,
+    /// Resolved TCP pipette port for no-vmbus Windows guests. Set once
+    /// during startup and reused across reconnections (e.g. after reset).
+    pub(super) tcp_pipette_port: Option<u16>,
+    pub(super) pid: i32,
 }
 
 struct PetriVmHaltReceiver {
@@ -224,6 +264,11 @@ impl PetriVmOpenVmm {
             .context("VM is not configured with OpenHCL")
     }
 
+    /// Get the PID of the openvmm child process.
+    pub fn pid(&self) -> i32 {
+        self.inner.pid
+    }
+
     petri_vm_fn!(
         /// Waits for an event emitted by the firmware about its boot status, and
         /// returns that status.
@@ -231,8 +276,9 @@ impl PetriVmOpenVmm {
     );
     petri_vm_fn!(
         /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
-        /// that will be closed when it is no longer ready.
-        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>>
+        /// that will be closed when it is no longer ready. Returns `None` if
+        /// the shutdown IC is not configured.
+        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<Option<mesh::OneshotReceiver<()>>>
     );
     petri_vm_fn!(
         /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
@@ -264,9 +310,29 @@ impl PetriVmOpenVmm {
             command_line: &str
         ) -> anyhow::Result<()>
     );
+
+    petri_vm_fn!(
+        /// Hot-add a PCIe device to a named port at runtime.
+        pub async fn add_pcie_device(
+            &mut self,
+            port_name: String,
+            resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Hot-remove a PCIe device from a named port at runtime.
+        pub async fn remove_pcie_device(
+            &mut self,
+            port_name: String
+        ) -> anyhow::Result<()>
+    );
     petri_vm_fn!(
         /// Resets the hardware state of the VM, simulating a power cycle.
         pub async fn reset(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Dumps the VM's processor and memory state to a `.vmrs` file at `path`.
+        pub async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()>
     );
     petri_vm_fn!(
         /// Wait for a connection from a pipette agent
@@ -277,8 +343,25 @@ impl PetriVmOpenVmm {
         pub async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>
     );
 
-    petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
-    petri_vm_fn!(pub(crate) async fn verify_save_restore(&mut self) -> anyhow::Result<()>);
+    petri_vm_fn!(
+        /// Pause the VM. Call [`resume`](Self::resume) to continue execution.
+        pub async fn pause(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Save the VM's device and processor state, returning the serialized
+        /// bytes. The VM should be paused before calling this.
+        pub async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>
+    );
+    petri_vm_fn!(
+        /// Resume a paused VM.
+        pub async fn resume(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Perform a pulse save/restore cycle: pause the VM, save all state,
+        /// reset, restore, and resume. Useful for verifying that device state
+        /// survives a save/restore round-trip.
+        pub async fn verify_save_restore(&mut self) -> anyhow::Result<()>
+    );
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
 
     /// Wrap the provided future in a race with the worker process's halt
@@ -363,20 +446,24 @@ impl PetriVmInner {
 
     async fn wait_for_enlightened_shutdown_ready(
         &mut self,
-    ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
-        let recv = self
-            .resources
-            .shutdown_ic_send
+    ) -> anyhow::Result<Option<mesh::OneshotReceiver<()>>> {
+        let Some(send) = self.resources.shutdown_ic_send.as_ref() else {
+            return Ok(None);
+        };
+        let recv = send
             .call(ShutdownRpc::WaitReady, ())
-            .await?;
-
-        Ok(recv)
+            .await
+            .context("waiting for shutdown IC to be ready")?;
+        Ok(Some(recv))
     }
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
-        let shutdown_result = self
+        let send = self
             .resources
             .shutdown_ic_send
+            .as_ref()
+            .context("shutdown IC not configured")?;
+        let shutdown_result = send
             .call(
                 ShutdownRpc::Shutdown,
                 hyperv_ic_resources::shutdown::ShutdownParams {
@@ -385,6 +472,9 @@ impl PetriVmInner {
                             hyperv_ic_resources::shutdown::ShutdownType::PowerOff
                         }
                         ShutdownKind::Reboot => hyperv_ic_resources::shutdown::ShutdownType::Reboot,
+                        ShutdownKind::Hibernate => {
+                            hyperv_ic_resources::shutdown::ShutdownType::Hibernate
+                        }
                     },
                     force: false,
                 },
@@ -404,9 +494,12 @@ impl PetriVmInner {
         &mut self,
     ) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>> {
         tracing::info!("Waiting for KVP IC");
-        let (send, _) = self
+        let send = self
             .resources
             .kvp_ic_send
+            .as_ref()
+            .context("KVP IC not configured")?;
+        let (send, _) = send
             .call_failable(hyperv_ic_resources::kvp::KvpConnectRpc::WaitForGuest, ())
             .await
             .context("failed to connect to KVP IC")?;
@@ -435,6 +528,20 @@ impl PetriVmInner {
         self.worker.update_command_line(command_line).await
     }
 
+    async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.worker.add_pcie_device(port_name, resource).await
+    }
+
+    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        self.worker.remove_pcie_device(port_name).await
+    }
+    async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()> {
+        self.worker.dump_state(path).await
+    }
     async fn restore_openhcl(&self) -> anyhow::Result<()> {
         let ged_send = self
             .resources
@@ -465,7 +572,15 @@ impl PetriVmInner {
     async fn reset(&mut self) -> anyhow::Result<()> {
         tracing::info!("Resetting VM");
         self.worker.reset().await?;
-        // On linux direct pipette won't auto start, start it over serial
+        // Discard any firmware events from the boot that was abandoned, so
+        // that they aren't mistaken for the results of the new boot.
+        while self.resources.firmware_event_recv.try_recv().is_ok() {}
+        // Guest state is lost on reset, so CIDATA needs to be remounted.
+        self.cidata_mounted = false;
+        // On linux direct, pipette won't auto-start unless it is the init
+        // process. When it isn't, restart it over serial. (When pipette runs
+        // as PID 1 via rdinit=/pipette, linux_direct_serial_agent is None, so
+        // this block is skipped and pipette restarts automatically on reboot.)
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
 
@@ -477,6 +592,21 @@ impl PetriVmInner {
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+        #[cfg(target_os = "linux")]
+        if let Some(guest_cid) = self.resources.properties.vhost_vsock_guest_cid {
+            assert!(
+                !set_high_vtl,
+                "kernel vhost-vsock pipette transport does not support VTL2"
+            );
+            return self.wait_for_agent_vhost_vsock(guest_cid).await;
+        }
+
+        // Use TCP transport if configured (Windows no-vmbus guests).
+        if let Some(port) = self.tcp_pipette_port {
+            assert!(!set_high_vtl, "TCP pipette transport does not support VTL2");
+            return self.wait_for_agent_tcp(port).await;
+        }
+
         let listener = if set_high_vtl {
             self.resources
                 .vtl2_pipette_listener
@@ -487,20 +617,169 @@ impl PetriVmInner {
         };
 
         tracing::info!(set_high_vtl, "listening for pipette connection");
-        let (conn, _) = listener
-            .accept()
-            .await
-            .context("failed to accept pipette connection")?;
-        tracing::info!(set_high_vtl, "handshaking with pipette");
-        let client = PipetteClient::new(
-            &self.resources.driver,
-            PolledSocket::new(&self.resources.driver, conn)?,
-            &self.resources.output_dir,
-        )
-        .await
-        .context("failed to connect to pipette");
+        let client = loop {
+            let (conn, _) = listener
+                .accept()
+                .await
+                .context("failed to accept pipette connection")?;
+            tracing::info!(set_high_vtl, "handshaking with pipette");
+            let socket = PolledSocket::new(&self.resources.driver, conn)?;
+            match PipetteClient::new(&self.resources.driver, socket, &self.resources.output_dir)
+                .await
+            {
+                Ok(client) => break client,
+                Err(e) => {
+                    // During save/restore cycles, stale connections from
+                    // previous hvsock relay sessions can accumulate in the
+                    // listener backlog. These are already-closed sockets
+                    // that fail during the mesh handshake. Drain them and
+                    // retry until we get a live connection.
+                    tracing::warn!(
+                        error = e.as_ref() as &dyn std::error::Error,
+                        "pipette connection not live, retrying"
+                    );
+                }
+            }
+        };
         tracing::info!(set_high_vtl, "completed pipette handshake");
-        client
+
+        // When pipette runs as PID 1 init and a CIDATA agent disk is
+        // attached, mount it so test files are available at /cidata.
+        // Skip if already mounted (e.g. reconnecting after save/restore
+        // where guest state is preserved).
+        if !set_high_vtl
+            && self.resources.properties.uses_pipette_as_init
+            && self.resources.properties.has_agent_disk
+            && !self.cidata_mounted
+        {
+            tracing::info!("mounting CIDATA agent disk via pipette");
+            client
+                .unix_shell()
+                .cmd("mkdir")
+                .arg("-p")
+                .arg("/cidata")
+                .run()
+                .await
+                .context("failed to create /cidata mount point")?;
+            client
+                .unix_shell()
+                .cmd("mount")
+                .arg("LABEL=cidata")
+                .arg("/cidata")
+                .run()
+                .await
+                .context("failed to mount CIDATA disk")?;
+            self.cidata_mounted = true;
+        }
+
+        Ok(client)
+    }
+
+    /// Connect to pipette directly through the host's AF_VSOCK namespace.
+    #[cfg(target_os = "linux")]
+    async fn wait_for_agent_vhost_vsock(
+        &mut self,
+        guest_cid: u32,
+    ) -> anyhow::Result<PipetteClient> {
+        tracing::info!(
+            guest_cid,
+            port = PIPETTE_PORT,
+            "connecting to pipette via kernel vhost-vsock"
+        );
+        let socket = loop {
+            let connect = async {
+                let socket = VmSocket::new().context("failed to create AF_VSOCK socket")?;
+                socket
+                    .set_connect_timeout(Duration::from_secs(5))
+                    .context("failed to set AF_VSOCK connect timeout")?;
+                let mut socket = PolledSocket::new(&self.resources.driver, socket)
+                    .context("failed to create polled AF_VSOCK socket")?
+                    .convert();
+                socket
+                    .connect(&VmAddress::vsock(guest_cid, PIPETTE_PORT).into())
+                    .await
+                    .context("failed to connect to guest AF_VSOCK listener")?;
+                Ok::<_, anyhow::Error>(socket)
+            };
+
+            match connect.await {
+                Ok(socket) => break socket,
+                Err(error) => {
+                    tracing::trace!(
+                        error = error.as_ref() as &dyn std::error::Error,
+                        "AF_VSOCK connect failed, guest not ready yet"
+                    );
+                }
+            }
+
+            pal_async::timer::PolledTimer::new(&self.resources.driver)
+                .sleep(Duration::from_secs(1))
+                .await;
+        };
+        tracing::info!("AF_VSOCK connected, handshaking with pipette");
+        let client = PipetteClient::new(&self.resources.driver, socket, &self.resources.output_dir)
+            .await
+            .context("pipette AF_VSOCK handshake failed")?;
+        tracing::info!("completed pipette AF_VSOCK handshake");
+        Ok(client)
+    }
+
+    /// Connect to pipette via TCP through consomme port forwarding.
+    ///
+    /// The guest pipette agent listens on `0.0.0.0:{port}` and consomme
+    /// forwards connections from `localhost:{port}` on the host into the
+    /// guest. We retry until the guest's network stack and pipette are up.
+    async fn wait_for_agent_tcp(&mut self, port: u16) -> anyhow::Result<PipetteClient> {
+        tracing::info!(port, "connecting to pipette via TCP");
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+        let client = loop {
+            match PolledSocket::connect_tcp(&self.resources.driver, addr).await {
+                Ok(socket) => {
+                    socket
+                        .get()
+                        .set_nodelay(true)
+                        .context("failed to set TCP_NODELAY")?;
+                    tracing::info!("TCP connected, handshaking with pipette");
+                    match PipetteClient::new(
+                        &self.resources.driver,
+                        socket,
+                        &self.resources.output_dir,
+                    )
+                    .await
+                    {
+                        Ok(client) => break client,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = e.as_ref() as &dyn std::error::Error,
+                                "pipette TCP connection failed, retrying"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::trace!(
+                        error = &e as &dyn std::error::Error,
+                        "TCP connect failed, guest not ready yet"
+                    );
+                }
+            }
+            // Wait before retrying — guest network stack may not be up yet.
+            pal_async::timer::PolledTimer::new(&self.resources.driver)
+                .sleep(Duration::from_secs(1))
+                .await;
+        };
+        tracing::info!("completed pipette TCP handshake");
+        Ok(client)
+    }
+
+    async fn pause(&self) -> anyhow::Result<()> {
+        self.worker.pause().await?;
+        Ok(())
+    }
+
+    async fn save_state(&self) -> anyhow::Result<Vec<u8>> {
+        let state_msg = self.worker.save().await?;
+        Ok(mesh::payload::encode(state_msg))
     }
 
     async fn resume(&self) -> anyhow::Result<()> {
@@ -547,8 +826,8 @@ pub struct OpenVmmInspector {
 
 #[async_trait]
 impl PetriVmInspector for OpenVmmInspector {
-    async fn inspect_all(&self) -> anyhow::Result<inspect::Node> {
-        Ok(self.worker.inspect_all().await)
+    async fn inspect(&self, path: &str) -> anyhow::Result<inspect::Node> {
+        Ok(self.worker.inspect(path).await)
     }
 }
 

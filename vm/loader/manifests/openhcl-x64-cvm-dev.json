@@ -9,13 +9,14 @@
                     "shared_gpa_boundary_bits": 46,
                     "policy": 196639,
                     "enable_debug": true,
-                    "injection_type": "normal"
+                    "injection_type": "normal",
+                    "secure_avic": "enabled"
                 }
             },
             "image": {
                 "openhcl": {
                     "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
-                    "memory_page_count": 163840,
+                    "memory_page_count": 262144,
                     "memory_page_base": 32768,
                     "uefi": true
                 }

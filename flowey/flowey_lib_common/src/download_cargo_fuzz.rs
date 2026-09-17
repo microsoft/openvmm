@@ -6,19 +6,26 @@
 use crate::cache::CacheHit;
 use flowey::node::prelude::*;
 
+flowey_config! {
+    /// Config for the download_cargo_fuzz node.
+    pub struct Config {
+        /// Version of `cargo fuzz` to install (e.g: "0.12.0")
+        pub version: Option<String>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Version of `cargo fuzz` to install (e.g: "0.12.0")
-        Version(String),
         /// Install `cargo-fuzz` as a `cargo` extension (invoked via `cargo fuzz`).
         InstallWithCargo(WriteVar<SideEffect>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cache::Node>();
@@ -26,18 +33,22 @@ impl FlowNode for Node {
         ctx.import::<crate::install_rust::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut install_with_cargo = Vec::new();
 
         for req in requests {
             match req {
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::InstallWithCargo(v) => install_with_cargo.push(v),
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        let version = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
         let install_with_cargo = install_with_cargo;
 
         // -- end of req processing -- //

@@ -9,6 +9,7 @@ use super::powershell;
 use crate::CommandError;
 use crate::OpenHclServicingFlags;
 use crate::PetriHaltReason;
+use crate::PetriHaltReasonDetail;
 use crate::PetriLogFile;
 use crate::PetriLogSource;
 use crate::PetriVmFramebufferAccess;
@@ -26,8 +27,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
+use std::time::Instant;
 use tempfile::TempDir;
-use tracing::Level;
 
 /// A Hyper-V VM
 pub struct HyperVVM {
@@ -54,34 +55,32 @@ pub struct HyperVVM {
 impl HyperVVM {
     /// Create a new Hyper-V VM
     pub async fn new(
-        name: &str,
-        generation: powershell::HyperVGeneration,
-        guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
-        memory: u64,
-        vmgs_path: Option<&Path>,
+        mut args: powershell::HyperVNewCustomVMArgs,
         logger: PetriLogSource,
         driver: DefaultDriver,
     ) -> anyhow::Result<Self> {
         let log_file = logger.log_file("hyperv")?;
         let create_time = Timestamp::now();
-        let name = name.to_owned();
+        let name = args.name.clone();
         let temp_dir = tempfile::tempdir()?;
         let ps_mod = temp_dir.path().join("hyperv.psm1");
         {
             let mut ps_mod_file = std::fs::File::create_new(&ps_mod)?;
             ps_mod_file
                 .write_all(include_bytes!("hyperv.psm1"))
-                .context("failed to write hyperv helpers powershell module")?;
+                .context("failed to write hyperv powershell module")?;
+
+            let mut utilities_mod_file =
+                std::fs::File::create_new(temp_dir.path().join("utilities.psm1"))?;
+            utilities_mod_file
+                .write_all(include_bytes!("utilities.psm1"))
+                .context("failed to write hyperv utilities powershell module")?;
         }
 
         // Used to ignore `hvc restart` error on CVMs
-        let is_isolated = {
-            use powershell::HyperVGuestStateIsolationType as IsolationType;
-            matches!(
-                guest_state_isolation_type,
-                IsolationType::Snp | IsolationType::Tdx | IsolationType::Vbs
-            )
-        };
+        let is_isolated = args
+            .guest_state_isolation_type
+            .is_some_and(|x| x.isolated());
 
         // Delete the VM if it already exists
         let cleanup = async |vmid: &Guid| -> anyhow::Result<()> {
@@ -104,22 +103,12 @@ impl HyperVVM {
             }
         }
 
-        let vmid = powershell::run_new_vm(powershell::HyperVNewVMArgs {
-            name: &name,
-            generation: Some(generation),
-            guest_state_isolation_type: Some(guest_state_isolation_type),
-            memory_startup_bytes: Some(memory),
-            path: None,
-            vhd_path: None,
-            source_guest_state_path: vmgs_path,
-        })
-        .await?;
+        args.make_compatible().await?;
+        let vmid = powershell::run_new_customvm(&ps_mod, args).await?;
 
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
 
-        // Instantiate this now so that its drop runs if there's a failure
-        // below.
-        let this = Self {
+        Ok(Self {
             vmid,
             name,
             create_time,
@@ -132,39 +121,7 @@ impl HyperVVM {
             destroyed: false,
             last_start_time: None,
             last_log_flushed: None,
-        };
-
-        // Remove the default network adapter
-        powershell::run_remove_vm_network_adapter(&vmid)
-            .await
-            .context("remove default network adapter")?;
-
-        // Remove the default SCSI controller
-        powershell::run_remove_vm_scsi_controller(&vmid, 0)
-            .await
-            .context("remove default SCSI controller")?;
-
-        // Disable dynamic memory
-        powershell::run_set_vm_memory(
-            &vmid,
-            &powershell::HyperVSetVMMemoryArgs {
-                dynamic_memory_enabled: Some(false),
-                ..Default::default()
-            },
-        )
-        .await?;
-
-        // Disable secure boot for generation 2 VMs
-        if generation == powershell::HyperVGeneration::Two {
-            powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
-                vmid: &vmid,
-                secure_boot_enabled: Some(false),
-                secure_boot_template: None,
-            })
-            .await?;
-        }
-
-        Ok(this)
+        })
     }
 
     /// Get the name of the VM
@@ -180,7 +137,7 @@ impl HyperVVM {
     /// Get Hyper-V logs and write them to the log file
     pub async fn flush_logs(&mut self) -> anyhow::Result<()> {
         let start_time = self.last_log_flushed.as_ref().unwrap_or(&self.create_time);
-        for event in powershell::hyperv_event_logs(Some(&self.vmid), start_time).await? {
+        for event in powershell::hyperv_event_logs(Some(&self.vmid), start_time).await {
             self.log_winevent(&event);
             if self.last_log_flushed.is_none_or(|t| t < event.time_created) {
                 // add 1ms to avoid duplicate log entries
@@ -192,19 +149,7 @@ impl HyperVVM {
     }
 
     fn log_winevent(&self, event: &powershell::WinEvent) {
-        self.log_file.write_entry_fmt(
-            Some(event.time_created),
-            match event.level {
-                1 | 2 => Level::ERROR,
-                3 => Level::WARN,
-                5 => Level::TRACE,
-                _ => Level::INFO,
-            },
-            format_args!(
-                "[{}] {}: ({}, {}) {}",
-                event.time_created, event.provider_name, event.level, event.id, event.message,
-            ),
-        );
+        event.write_to(&self.log_file);
 
         const HYPERV_CRASHDUMP_PROVIDER: &str = "Microsoft-Windows-Hyper-V-CrashDump";
         const CRASH_DUMP_WRITTEN_EVENT_ID: u32 = 40001;
@@ -232,9 +177,13 @@ impl HyperVVM {
     }
 
     /// Waits for an event emitted by the firmware about its boot status, and
-    /// returns that status.
-    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.wait_for_off_or_internal(Self::boot_event).await
+    /// returns that status. Returns `None` if `timeout` elapsed first.
+    pub async fn wait_for_boot_event(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Option<FirmwareEvent>> {
+        self.poll_until_off_or_timeout(timeout, Self::boot_event)
+            .await
     }
 
     async fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
@@ -410,25 +359,38 @@ impl HyperVVM {
     }
 
     /// Issue a hard reset to the VM
-    pub async fn reset(&self) -> anyhow::Result<()> {
-        hvc::hvc_reset(&self.vmid).await.context("hvc_reset")
+    pub async fn reset(&mut self) -> anyhow::Result<()> {
+        hvc::hvc_reset(&self.vmid).await.context("hvc_reset")?;
+        // `hvc reset` only returns once the reset has been logged, so any
+        // event from here on belongs to the new boot. Advancing the window is
+        // required for correctness: otherwise the boot event from the boot
+        // being abandoned is still reported, and `boot_event` fails with "Got
+        // more than one boot event" as soon as the new boot logs its own.
+        self.last_start_time = Some(Timestamp::now());
+        Ok(())
     }
 
-    /// Enable serial output and return the named pipe path
-    pub async fn set_vm_com_port(&mut self, port: u8) -> anyhow::Result<String> {
-        let pipe_path = format!(r#"\\.\pipe\{}-{}"#, self.vmid, port);
-        powershell::run_set_vm_com_port(&self.vmid, port, Path::new(&pipe_path)).await?;
-        Ok(pipe_path)
+    /// return the named pipe path for the serial port.
+    ///
+    /// this is computed by New-CustomVM
+    pub fn get_vm_com_port_path(&self, port: u8) -> String {
+        format!(r#"\\.\pipe\{}-{}"#, self.vmid, port)
     }
 
     /// Wait for the VM to stop
-    pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
-        // Allow CVMs some time for the VM to be off after reset.
-        const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(15);
+    pub async fn wait_for_halt(
+        &mut self,
+        _allow_reset: bool,
+    ) -> anyhow::Result<PetriHaltReasonDetail> {
+        // Allow CVMs some time for the VM to be off after reset. Loaded SNP
+        // hosts can take ~30s to re-validate guest memory and restart the VM
+        // after a guest-initiated reset, so keep this generous to avoid
+        // spuriously failing CVM reboot tests on slow hosts.
+        const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(60);
 
         let (halt_reason, timestamp) = self.wait_for_off_or_internal(Self::halt_event).await?;
 
-        if halt_reason == PetriHaltReason::Reset {
+        if halt_reason.reason == PetriHaltReason::Reset {
             // add 1ms to avoid getting the same event again
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
 
@@ -459,19 +421,25 @@ impl HyperVVM {
         Ok(halt_reason)
     }
 
-    async fn halt_event(&self) -> anyhow::Result<Option<(PetriHaltReason, Timestamp)>> {
+    async fn halt_event(&self) -> anyhow::Result<Option<(PetriHaltReasonDetail, Timestamp)>> {
         let events = powershell::hyperv_halt_events(
             &self.vmid,
             self.last_start_time.as_ref().unwrap_or(&self.create_time),
         )
         .await?;
 
-        if events.len() > 1 {
-            anyhow::bail!("Got more than one halt event");
-        }
-        let event = events.first();
+        let detail = events
+            .iter()
+            .map(|e| {
+                powershell::winevent_name(e.id)
+                    .map(|n| n.to_string())
+                    .unwrap_or(e.id.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
 
-        event
+        let reasons = events
+            .into_iter()
             .map(|e| {
                 Ok((
                     match e.id {
@@ -489,13 +457,24 @@ impl HyperVVM {
                             PetriHaltReason::TripleFault
                         }
                         powershell::MSVM_STOP_CRITICAL_SUCCESS
-                        | powershell::MSVM_VMMS_VM_TERMINATE_ERROR => PetriHaltReason::Other,
+                        | powershell::MSVM_VMMS_VM_TERMINATE_ERROR
+                        | powershell::MSVM_GUEST_CRASH_REPORT
+                        | powershell::MSVM_START_VTL0_REQUEST_ERROR => PetriHaltReason::Other,
                         id => anyhow::bail!("Unexpected event id: {id}"),
                     },
                     e.time_created,
                 ))
             })
-            .transpose()
+            .collect::<anyhow::Result<Vec<(PetriHaltReason, Timestamp)>>>()?;
+
+        Ok(if reasons.len() > 1 {
+            Some((
+                PetriHaltReason::Other.with_detail(detail),
+                reasons.last().unwrap().1,
+            ))
+        } else {
+            reasons.first().map(|r| (r.0.with_detail(detail), r.1))
+        })
     }
 
     /// Wait for the VM shutdown ic
@@ -523,6 +502,24 @@ impl HyperVVM {
         &mut self,
         f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
     ) -> anyhow::Result<T> {
+        let output = self.poll_until_off_or_timeout(None, f).await?;
+        Ok(output.expect("polling only gives up early when a timeout is set"))
+    }
+
+    /// Poll `f` until it produces a value, failing if the VM turns off first
+    /// and giving up once `timeout` has elapsed.
+    ///
+    /// A poll of `f` is always run to completion before the timeout is
+    /// considered, since a single poll can take longer than the timeout when
+    /// the host is loaded (`f` typically shells out to PowerShell). Cancelling
+    /// one would throw away the answer it was about to produce.
+    async fn poll_until_off_or_timeout<T>(
+        &mut self,
+        timeout: Option<Duration>,
+        f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
+    ) -> anyhow::Result<Option<T>> {
+        let start = Instant::now();
+
         // flush the logs every time we start waiting for something in case
         // they don't get flushed when the VM is destroyed.
         // TODO: run this periodically in a task.
@@ -538,7 +535,11 @@ impl HyperVVM {
         let mut timer = PolledTimer::new(&self.driver);
         loop {
             if let Some(output) = f(self).await? {
-                return Ok(output);
+                return Ok(Some(output));
+            }
+
+            if timeout.is_some_and(|timeout| start.elapsed() >= timeout) {
+                return Ok(None);
             }
 
             let off = self.state().await? == VmState::Off;
@@ -679,15 +680,8 @@ impl PetriVmFramebufferAccess for HyperVFramebufferAccess {
         // and temp bin file still exists.
         self.temp_dir.upgrade().context("VM no longer exists")?;
         if hvc::hvc_state(&self.vmid).await? == VmState::Running {
-            Ok(Some(
-                powershell::run_get_vm_screenshot(
-                    &self.vmid,
-                    image,
-                    &self.ps_mod,
-                    &self.temp_bin_path,
-                )
-                .await?,
-            ))
+            powershell::run_get_vm_screenshot(&self.vmid, image, &self.ps_mod, &self.temp_bin_path)
+                .await
         } else {
             Ok(None)
         }

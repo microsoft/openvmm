@@ -7,6 +7,7 @@ mod deferred;
 pub mod register;
 
 pub mod aarch64;
+pub mod cca;
 pub mod snp;
 pub mod tdx;
 pub mod x64;
@@ -15,6 +16,8 @@ use self::deferred::DeferredActionSlots;
 use self::ioctls::*;
 use crate::GuestVtl;
 use crate::ioctl::deferred::DeferredAction;
+use crate::ioctl::register::GetRegError;
+use crate::ioctl::register::SetRegError;
 use crate::mapped_page::MappedPage;
 use crate::protocol;
 use crate::protocol::EnterModes;
@@ -72,9 +75,10 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 use user_driver::DmaClient;
 use user_driver::memory::MemoryBlock;
+use x86defs::snp::SevAvicPage;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
-use x86defs::vmx::ApicPage;
+use x86defs::vmx::VmxApicPage;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -104,8 +108,8 @@ pub enum Error {
     MmapVp(#[source] io::Error, Option<Vtl>),
     #[error("failed to set the poll file")]
     SetPollFile(#[source] nix::Error),
-    #[error("failed to check hcl capabilities")]
-    CheckExtensions(#[source] nix::Error),
+    #[error("failed to check hcl capabilities {0}")]
+    CheckExtensions(u32, #[source] nix::Error),
     #[error("failed to mmap the register page")]
     MmapRegPage(#[source] io::Error),
     #[error("failed to create vtl")]
@@ -129,6 +133,11 @@ pub enum Error {
     MapRedirectedDeviceInterrupt(#[source] nix::Error),
     #[error("failed to restore partition time")]
     RestorePartitionTime(#[source] nix::Error),
+    // TODO: added for CCA for now. could separate into own enum
+    #[error("failed to set registers using set_vp_registers hypercall")]
+    SetRegisters(#[source] SetRegError),
+    #[error("Invalid register value")]
+    InvalidRegisterValue,
 }
 
 /// Error for IOCTL errors specifically.
@@ -203,32 +212,10 @@ pub enum ApplyVtlProtectionsError {
         permissions: x86defs::tdx::TdgMemPageGpaAttr,
         vtl: HvInputVtl,
     },
+    #[error("cca failed when protecting pages {range} with permissions for vtl {vtl:?}")]
+    Cca { range: MemoryRange, vtl: HvInputVtl },
     #[error("no valid protections for vtl {0:?}")]
     InvalidVtl(Vtl),
-}
-
-/// Error setting guest VSM configuration.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum SetGuestVsmConfigError {
-    #[error("hypervisor failed to configure guest vsm to {enable_guest_vsm}")]
-    Hypervisor {
-        enable_guest_vsm: bool,
-        #[source]
-        hv_error: HvError,
-    },
-}
-
-/// Error getting the VP idnex from an APIC ID.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum GetVpIndexFromApicIdError {
-    #[error("hypervisor failed when querying vp index for {apic_id}")]
-    Hypervisor {
-        #[source]
-        hv_error: HvError,
-        apic_id: u32,
-    },
 }
 
 /// Error setting VSM partition configuration.
@@ -329,8 +316,7 @@ enum HvcallRepInput<'a, T> {
 }
 
 pub(crate) mod ioctls {
-    #![allow(non_camel_case_types)]
-
+    use super::cca;
     use crate::protocol;
     use hvdef::hypercall::HvRegisterAssoc;
     use nix::ioctl_none;
@@ -361,6 +347,12 @@ pub(crate) mod ioctls {
     const MSHV_TLBSYNC: u16 = 0x37;
     const MSHV_KICKCPUS: u16 = 0x38;
     const MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT: u16 = 0x39;
+    const MSHV_VTL_SECURE_AVIC_VTL0_PFN: u16 = 0x40;
+    const MSHV_VTL_REALM_CONFIG: u16 = 0x41;
+    const MSHV_VTL_RSI_SYSREG_READ: u16 = 0x42;
+    const MSHV_VTL_RSI_SYSREG_WRITE: u16 = 0x43;
+    const MSHV_VTL_RSI_SET_MEM_PERM: u16 = 0x44;
+    const MSHV_VTL_RSI_GET_IPA_STATE: u16 = 0x45;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -556,6 +548,13 @@ pub(crate) mod ioctls {
         u64
     );
 
+    ioctl_readwrite!(
+        hcl_read_secure_avic_vtl0_pfn,
+        MSHV_IOCTL,
+        MSHV_VTL_SECURE_AVIC_VTL0_PFN,
+        u64
+    );
+
     pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
@@ -570,6 +569,52 @@ pub(crate) mod ioctls {
     );
 
     ioctl_read!(mshv_create_vtl, MSHV_IOCTL, MSHV_CREATE_VTL, u8);
+
+    // CCA: Gets the RSI Realm Config value from the kernel
+    ioctl_read!(
+        hcl_realm_config,
+        MSHV_IOCTL,
+        MSHV_VTL_REALM_CONFIG,
+        cca::mshv_realm_config
+    );
+
+    // CCA: Write the value of a system register
+    ioctl_write_ptr!(
+        hcl_rsi_sysreg_write,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_SYSREG_WRITE,
+        cca::mshv_rsi_sysreg_rw
+    );
+
+    // CCA: Read the value of a system register
+    ioctl_readwrite!(
+        hcl_rsi_sysreg_read,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_SYSREG_READ,
+        cca::mshv_rsi_sysreg_rw
+    );
+
+    // CCA: Get the RIPAS state of an ipa
+    ioctl_readwrite!(
+        hcl_rsi_ipa_state_read,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_GET_IPA_STATE,
+        cca::mshv_rsi_get_ipa_state
+    );
+
+    // CCA: Assign the address described by `mshv_rsi_set_mem_perm`
+    // to a plane.
+    // Note: This is a simplification of the memory access configuration.
+    // The kernel driver does some stuff under the hood, making two RSI calls
+    // as part of this ioctl: RSI_MEM_SET_PERM_VALUE and RSI_MEM_SET_PERM_INDEX.
+    // Will need to decide how to design this interface and who maps the
+    // memory of a plane to the RSI calls needed to set it up.
+    ioctl_write_ptr!(
+        hcl_rsi_set_mem_perm,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_SET_MEM_PERM,
+        cca::mshv_rsi_set_mem_perm
+    );
 
     #[repr(C)]
     pub struct mshv_invlpgb {
@@ -667,7 +712,8 @@ impl Mshv {
     fn check_extension(&self, cap: u32) -> Result<bool, Error> {
         // SAFETY: calling IOCTL as documented, with no special requirements.
         let supported = unsafe {
-            hcl_check_extension(self.file.as_raw_fd(), &cap).map_err(Error::CheckExtensions)?
+            hcl_check_extension(self.file.as_raw_fd(), &cap)
+                .map_err(|e| Error::CheckExtensions(cap, e))?
         };
         Ok(supported != 0)
     }
@@ -1351,6 +1397,8 @@ pub enum IsolationType {
     Snp,
     /// Intel TDX.
     Tdx,
+    /// ARM CCA.
+    Cca,
 }
 
 impl IsolationType {
@@ -1361,7 +1409,7 @@ impl IsolationType {
 
     /// Returns whether the isolation type is hardware-backed.
     pub fn is_hardware_isolated(&self) -> bool {
-        matches!(self, Self::Snp | Self::Tdx)
+        matches!(self, Self::Snp | Self::Tdx | Self::Cca)
     }
 }
 
@@ -1394,10 +1442,16 @@ enum BackingState {
     },
     Snp {
         vmsa: VtlArray<MappedPage<SevVmsa>, 2>,
+        vtl0_apic_page: MappedPage<SevAvicPage>,
+        /// VTL1 runs with the alternate interrupt injection.
+        vtl1_apic_page: MemoryBlock,
     },
     Tdx {
-        vtl0_apic_page: MappedPage<ApicPage>,
+        vtl0_apic_page: MappedPage<VmxApicPage>,
         vtl1_apic_page: MemoryBlock,
+    },
+    Cca {
+        plane_run: MemoryBlock,
     },
 }
 
@@ -1424,10 +1478,11 @@ impl HclVp {
         // This is only used on CVMs. Skip it otherwise, since run page accesses
         // will fault on VPs that are still in the sidecar kernel.
         if isolation_type.is_hardware_isolated() {
-            // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
-            // so we know we have exclusive access.
-            let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
-            proxy_irr_blocked.fill(!0);
+            // SAFETY: The run page is not accessed by any other VPs/kernel at this point
+            // (`HclVp` creation), so we know we have exclusive access.
+            unsafe {
+                (*run.as_ptr()).proxy_irr_blocked.fill(!0);
+            }
         }
 
         let backing = match isolation_type {
@@ -1454,18 +1509,39 @@ impl HclVp {
                 },
             },
             IsolationType::Snp => {
+                // SAFETY: The run page is not accessed by any other VPs/kernel at this point
+                // (`HclVp` creation), so we know we have exclusive access.
+                unsafe {
+                    let context: &mut protocol::snp_vp_context =
+                        &mut *(&raw mut (*run.as_ptr()).context).cast();
+                    context
+                        .vmsa_tweak_bitmap
+                        .copy_from_slice(&hcl.snp_register_bitmap);
+                }
                 let vmsa_vtl0 = MappedPage::new(fd, HCL_VMSA_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?;
                 let vmsa_vtl1 = MappedPage::new(fd, HCL_VMSA_GUEST_VSM_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl1)))?;
                 BackingState::Snp {
                     vmsa: [vmsa_vtl0, vmsa_vtl1].into(),
+                    vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
+                        .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
+                    vtl1_apic_page: private_dma_client
+                        .ok_or(Error::MissingPrivateMemory)?
+                        .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+                        .map_err(Error::AllocVp)?,
                 }
             }
             IsolationType::Tdx => BackingState::Tdx {
                 vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
                 vtl1_apic_page: private_dma_client
+                    .ok_or(Error::MissingPrivateMemory)?
+                    .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+                    .map_err(Error::AllocVp)?,
+            },
+            IsolationType::Cca => BackingState::Cca {
+                plane_run: private_dma_client
                     .ok_or(Error::MissingPrivateMemory)?
                     .allocate_dma_buffer(HV_PAGE_SIZE as usize)
                     .map_err(Error::AllocVp)?,
@@ -1730,10 +1806,22 @@ impl Hcl {
         //
         // FUTURE: the kernel driver should probably tell us this, especially
         // since the kernel ABI is different for different isolation types.
-        let supported_isolation = if cfg!(guest_arch = "x86_64") {
+        let validate_isolation = |supported_isolation| {
+            if isolation != supported_isolation {
+                Err(Error::MismatchedIsolation {
+                    supported: supported_isolation,
+                    requested: isolation,
+                })
+            } else {
+                Ok(())
+            }
+        };
+
+        #[cfg(guest_arch = "x86_64")]
+        {
             // xtask-fmt allow-target-arch cpu-intrinsic
             #[cfg(target_arch = "x86_64")]
-            {
+            let supported_isolation = {
                 let result = safe_intrinsics::cpuid(
                     hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
                     0,
@@ -1745,28 +1833,30 @@ impl Hcl {
                     3 => IsolationType::Tdx,
                     ty => panic!("unknown isolation type {ty:#x}"),
                 }
-            }
+            };
             // xtask-fmt allow-target-arch cpu-intrinsic
             #[cfg(not(target_arch = "x86_64"))]
-            {
-                unreachable!()
-            }
-        } else {
-            IsolationType::None
-        };
+            let supported_isolation = unreachable!();
 
-        if isolation != supported_isolation {
-            return Err(Error::MismatchedIsolation {
-                supported: supported_isolation,
-                requested: isolation,
-            });
+            validate_isolation(supported_isolation)?;
         }
 
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
+        // This capability is TDX-only. On non-TDX guests treat EOPNOTSUPP as
+        // "not supported" rather than failing; on TDX propagate the error.
         let supports_lower_vtl_timer_virt =
-            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+            match mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT) {
+                Ok(supported) => supported,
+                Err(Error::CheckExtensions(_, nix::errno::Errno::EOPNOTSUPP))
+                    if isolation != IsolationType::Tdx =>
+                {
+                    false
+                }
+                Err(err) => return Err(err),
+            };
+
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
@@ -1775,6 +1865,31 @@ impl Hcl {
         );
 
         let vtl_fd = mshv_fd.create_vtl()?;
+
+        #[cfg(guest_arch = "aarch64")]
+        {
+            let supported_isolation = match isolation {
+                IsolationType::Cca => {
+                    // Realm-visible ID registers can be sanitized, so use the
+                    // HCL/RMM path to validate that CCA is actually available.
+                    if vtl_fd.get_realm_config().is_ok() {
+                        IsolationType::Cca
+                    } else {
+                        IsolationType::None
+                    }
+                }
+                _ => IsolationType::None,
+            };
+
+            validate_isolation(supported_isolation)?;
+        }
+
+        #[cfg(not(any(guest_arch = "x86_64", guest_arch = "aarch64")))]
+        {
+            let supported_isolation = IsolationType::None;
+
+            validate_isolation(supported_isolation)?;
+        }
 
         // Open the hypercall pseudo-device
         let mshv_hvcall = MshvHvcall::new()?;
@@ -1862,6 +1977,11 @@ impl Hcl {
     /// Returns the base CPU that manages the given sidecar VP.
     pub fn sidecar_base_cpu(&self, vp_index: u32) -> Option<u32> {
         Some(self.sidecar.as_ref()?.base_cpu(vp_index))
+    }
+
+    /// Returns whether sidecar support is enabled for this partition.
+    pub fn sidecar_enabled(&self) -> bool {
+        self.sidecar.is_some()
     }
 
     /// Create a VP runner for the given partition.
@@ -2349,6 +2469,27 @@ impl Hcl {
         vp_pfn
     }
 
+    /// Gets the PFN for the VTL 0 secure AVIC.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the Secure AVIC VTL 0 page was not mapped (i.e., Secure AVIC
+    /// is not enabled). Callers must ensure Secure AVIC is enabled before
+    /// calling this method.
+    pub fn secure_avic_vtl0_pfn(&self, cpu_index: u32) -> u64 {
+        let mut savic_pfn = cpu_index as u64; // input vp, output pfn
+
+        // SAFETY: The ioctl requires no prerequisites other than the Secure AVIC VTL 0
+        // should be mapped. This ioctl should never fail as long as the VTL 0
+        // Secure AVIC was mapped.
+        unsafe {
+            hcl_read_secure_avic_vtl0_pfn(self.mshv_vtl.file.as_raw_fd(), &mut savic_pfn)
+                .expect("should always succeed");
+        }
+
+        savic_pfn
+    }
+
     /// Returns the isolation type for the partition.
     pub fn isolation(&self) -> IsolationType {
         self.isolation
@@ -2366,6 +2507,30 @@ impl Hcl {
         }
 
         value
+    }
+
+    /// Attempts to opt this TD into hardware-bound seal keys by setting
+    /// `TD_CTLS.ENABLE_HW_SEAL_KEYS` via `TDG.VM.WR`.
+    ///
+    /// Returns `Ok(true)` if the bit is set after the operation (the
+    /// `TDG.MR.KEY.GET` TDCALL is available), `Ok(false)` if the TDX module
+    /// does not support sealing, or an error if the write itself was rejected.
+    ///
+    /// Only valid on TDX-isolated partitions.
+    pub fn tdx_enable_hw_seal_keys(&self) -> Result<bool, x86defs::tdx::TdCallResult> {
+        self.mshv_vtl.tdx_enable_hw_seal_keys()
+    }
+
+    /// Reads the global-scope `TDX_FEATURES0` metadata field via `TDG.SYS.RD`,
+    /// enumerating optional TDX module features (including hardware-bound
+    /// sealing support).
+    ///
+    /// Returns an error if the module does not support `TDG.SYS.RD` or rejects
+    /// the field. Only valid on TDX-isolated partitions.
+    pub fn tdx_read_features0(
+        &self,
+    ) -> Result<x86defs::tdx::TdxFeatures0, x86defs::tdx::TdCallResult> {
+        self.mshv_vtl.tdx_read_features0()
     }
 
     /// Invokes the HvCallRetargetDeviceInterrupt hypercall.

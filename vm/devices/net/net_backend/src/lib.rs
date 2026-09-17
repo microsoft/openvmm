@@ -1,8 +1,36 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This module defines a trait and implementations thereof for network
-//! backends.
+//! Network backend traits and infrastructure.
+//!
+//! This crate defines the abstraction boundary between network
+//! **frontends** (guest-facing devices) and network **backends**
+//! (host-side packet I/O). The key types are:
+//!
+//! * [`Endpoint`] — a backend factory. One per NIC, responsible for
+//!   creating [`Queue`] objects when the frontend activates the device.
+//!
+//! * [`Queue`] — a single TX/RX data path. Backends implement this to
+//!   send and receive packets. A device may have multiple queues (RSS).
+//!
+//! * [`BufferAccess`] — owned by the frontend, provides access to
+//!   guest memory receive buffers. Passed by `&mut` reference to every
+//!   [`Queue`] method that needs it, so the frontend retains exclusive
+//!   ownership and no internal locking is required.
+//!
+//! ## Lifecycle
+//!
+//! 1. The frontend creates a [`BufferAccess`] implementation and one
+//!    [`QueueConfig`] per desired queue (containing just a driver).
+//! 2. It calls [`Endpoint::get_queues`], which returns boxed [`Queue`]
+//!    objects.
+//! 3. The frontend posts initial receive buffers by calling
+//!    [`Queue::rx_avail`] with its [`BufferAccess`].
+//! 4. The main loop polls [`Queue::poll_ready`] for backend events,
+//!    then calls [`Queue::rx_poll`] / [`Queue::tx_avail`] /
+//!    [`Queue::tx_poll`] to exchange packets—always passing
+//!    `&mut dyn BufferAccess`.
+//! 5. On shutdown, queues are dropped and [`Endpoint::stop`] is called.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
@@ -33,26 +61,33 @@ use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
 
-/// Per-queue configuration.
-pub struct QueueConfig<'a> {
-    pub pool: Box<dyn BufferAccess>,
-    pub initial_rx: &'a [RxId],
+/// Per-queue configuration passed to [`Endpoint::get_queues`].
+///
+/// Contains only an async driver handle. Receive buffers are posted
+/// separately via [`Queue::rx_avail`] after queue creation.
+pub struct QueueConfig {
     pub driver: Box<dyn Driver>,
 }
 
-/// A network endpoint.
+/// A network endpoint — the backend side of a NIC.
+///
+/// An endpoint is a factory for [`Queue`] objects. It represents a
+/// connection to some packet transport (TAP device, hardware NIC,
+/// user-space network stack, etc.) and can create one or more queues
+/// for parallel TX/RX processing.
+///
+/// Frontends (e.g. `virtio_net`, `netvsp`, `gdma`) own the endpoint
+/// and call [`get_queues`](Endpoint::get_queues) when the guest
+/// activates the NIC.
 #[async_trait]
 pub trait Endpoint: Send + Sync + InspectMut {
     /// Returns an informational endpoint type.
     fn endpoint_type(&self) -> &'static str;
 
     /// Initializes the queues associated with the endpoint.
-    ///
-    /// `initial_rx` contains the initial set of receives buffers that are
-    /// available.
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()>;
@@ -62,10 +97,10 @@ pub trait Endpoint: Send + Sync + InspectMut {
     /// All queues returned via `get_queues` must have been dropped.
     async fn stop(&mut self);
 
-    /// Specifies whether packets are always completed in order.
-    fn is_ordered(&self) -> bool {
-        false
-    }
+    /// Whether the endpoint completes buffers in the order they were made
+    /// available (RX buffers returned from `rx_poll`, and TX packets completed,
+    /// in available-ring order).
+    fn is_ordered(&self) -> bool;
 
     /// Specifies the supported set of transmit offloads.
     fn tx_offload_support(&self) -> TxOffloadSupport {
@@ -130,6 +165,8 @@ pub struct TxOffloadSupport {
     pub udp: bool,
     /// TCP segmentation offload.
     pub tso: bool,
+    /// UDP segmentation offload (USO).
+    pub uso: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -151,9 +188,30 @@ pub trait BackendQueueStats {
     fn tx_errors(&self) -> Counter;
     fn rx_packets(&self) -> Counter;
     fn tx_packets(&self) -> Counter;
+    fn tx_vlan_packets(&self) -> Counter {
+        Counter::new()
+    }
+    fn rx_vlan_packets(&self) -> Counter {
+        Counter::new()
+    }
 }
 
-/// A trait for sending and receiving network packets.
+/// A single TX/RX data path for sending and receiving network packets.
+///
+/// Created by [`Endpoint::get_queues`] and driven by the frontend in
+/// a poll loop. Every method that touches receive buffers takes
+/// `pool: &mut dyn BufferAccess` so the frontend retains ownership
+/// of guest memory state.
+///
+/// Typical poll loop:
+/// ```text
+/// loop {
+///     poll_ready(cx, pool)  // wait for backend events
+///     rx_poll(pool, ..)     // drain completed receives
+///     tx_avail(pool, ..)    // post guest TX packets
+///     tx_poll(pool, ..)     // drain TX completions
+/// }
+/// ```
 #[async_trait]
 pub trait Queue: Send + InspectMut {
     /// Updates the queue's target VP.
@@ -162,24 +220,30 @@ pub trait Queue: Send + InspectMut {
     }
 
     /// Polls the queue for readiness.
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()>;
+    fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()>;
 
     /// Makes receive buffers available for use by the device.
-    fn rx_avail(&mut self, done: &[RxId]);
+    fn rx_avail(&mut self, pool: &mut dyn BufferAccess, done: &[RxId]);
 
     /// Polls the device for receives.
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize>;
+    fn rx_poll(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize>;
 
     /// Posts transmits to the device.
     ///
     /// Returns `Ok(false)` if the segments will complete asynchronously.
-    fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)>;
+    fn tx_avail(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)>;
 
     /// Polls the device for transmit completions.
-    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError>;
-
-    /// Get the buffer access.
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
+    fn tx_poll(&mut self, pool: &mut dyn BufferAccess, done: &mut [TxId])
+    -> Result<usize, TxError>;
 
     /// Get queue statistics
     fn queue_stats(&self) -> Option<&dyn BackendQueueStats> {
@@ -187,16 +251,28 @@ pub trait Queue: Send + InspectMut {
     }
 }
 
-/// A trait for providing access to guest memory buffers.
-pub trait BufferAccess: 'static + Send {
+/// Frontend-owned access to guest receive buffers.
+///
+/// Each frontend implements this trait to map [`RxId`] values to
+/// guest memory regions. The backend writes received packet data
+/// and metadata through these methods.
+///
+/// The frontend owns the `BufferAccess` and passes `&mut` references
+/// to [`Queue`] methods. This means no `Arc`/`Mutex` is needed
+/// between the frontend and backend for buffer access—the borrow
+/// checker enforces exclusive access statically.
+pub trait BufferAccess {
     /// The associated guest memory accessor.
     fn guest_memory(&self) -> &GuestMemory;
 
     /// Writes data to the specified buffer.
     fn write_data(&mut self, id: RxId, data: &[u8]);
 
-    /// The guest addresses of the specified buffer.
-    fn guest_addresses(&mut self, id: RxId) -> &[RxBufferSegment];
+    /// Appends the guest address segments for the specified buffer to `buf`.
+    ///
+    /// Callers must clear `buf` before calling if they do not want segments
+    /// from a previous call to be retained.
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>);
 
     /// The capacity of the specified buffer in bytes.
     fn capacity(&self, id: RxId) -> u32;
@@ -209,6 +285,51 @@ pub trait BufferAccess: 'static + Send {
         self.write_data(id, data);
         self.write_header(id, metadata);
     }
+
+    /// Writes the packet header and a payload composed of multiple
+    /// discontiguous segments, in order, as a single logical packet.
+    ///
+    /// This allows callers to hand off a frame whose bytes are not contiguous
+    /// in memory (for example, an Ethernet/IP/TCP header followed by payload
+    /// that wraps a ring buffer) without first linearizing it into a scratch
+    /// buffer.
+    ///
+    /// The default implementation copies the segments into a temporary
+    /// contiguous buffer and forwards to [`BufferAccess::write_packet`].
+    /// Backends that write directly into guest memory should override this to
+    /// write each segment at its running offset and avoid the copy.
+    fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
+        if let [segment] = segments {
+            self.write_packet(id, metadata, segment);
+            return;
+        }
+        let total = segments.iter().map(|s| s.len()).sum();
+        let mut data = Vec::with_capacity(total);
+        for segment in segments {
+            data.extend_from_slice(segment);
+        }
+        self.write_packet(id, metadata, &data);
+    }
+}
+
+pub const ETHERNET_HEADER_LEN: u32 = 14;
+pub const ETHERNET_VLAN_HEADER_LEN: u32 = 18;
+
+pub const IPV4_MIN_HEADER_LEN: u16 = 20;
+pub const IPV6_MIN_HEADER_LEN: u16 = 40;
+
+#[bitfield(u16)]
+pub struct VlanMetadata {
+    /// Priority for 802.1Q.
+    #[bits(3)]
+    pub priority: u8,
+    /// In pretty much every circumstance this is false. When
+    /// it is used, setting DEI will inform switches/routing infra
+    /// that this can be dropped before higher priority traffic.
+    pub drop_eligible_indicator: bool,
+    /// The 802.1Q ID for this transmission.
+    #[bits(12)]
+    pub vlan_id: u16,
 }
 
 /// A receive buffer ID.
@@ -238,6 +359,10 @@ pub struct RxMetadata {
     pub l4_checksum: RxChecksumState,
     /// The L4 protocol.
     pub l4_protocol: L4Protocol,
+    /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
+    /// is populated. Only applies when traffic is being received over an L2 connection,
+    /// so L3-only or above traffic will not use this option.
+    pub vlan: Option<VlanMetadata>,
 }
 
 impl Default for RxMetadata {
@@ -248,16 +373,9 @@ impl Default for RxMetadata {
             ip_checksum: RxChecksumState::Unknown,
             l4_checksum: RxChecksumState::Unknown,
             l4_protocol: L4Protocol::Unknown,
+            vlan: None,
         }
     }
-}
-
-/// The "L3" protocol: the IP layer.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum L3Protocol {
-    Unknown,
-    Ipv4,
-    Ipv6,
 }
 
 /// The "L4" protocol: the TCP/UDP layer.
@@ -326,9 +444,17 @@ pub struct TxMetadata {
     /// The length of the TCP header. Only guaranteed to be set if various
     /// offload flags are set.
     pub l4_len: u8,
-    /// The maximum TCP segment size, used for segmentation. Only guaranteed to
-    /// be set if [`TxFlags::offload_tcp_segmentation`] is set.
-    pub max_tcp_segment_size: u16,
+    /// The offset into the buffer where the L4 header begins (TCP or UDP). Only
+    /// expected to be set if offload (checksum and/or segmentation) flags are set.
+    pub transport_header_offset: u16,
+    /// The maximum segment size, used for segmentation offload (TSO or USO).
+    /// Only guaranteed to be set if [`TxFlags::offload_tcp_segmentation`] or
+    /// [`TxFlags::offload_udp_segmentation`] is set.
+    pub max_segment_size: u16,
+    /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
+    /// is populated. Only applies when traffic is being sent over an L2 connection,
+    /// so L3-only or above traffic will not use this option.
+    pub vlan: Option<VlanMetadata>,
 }
 
 /// Flags affecting transmit behavior.
@@ -356,7 +482,10 @@ pub struct TxFlags {
     pub is_ipv4: bool,
     /// If true, the packet is IPv6. Mutually exclusive with `is_ipv4`.
     pub is_ipv6: bool,
-    #[bits(2)]
+    /// Offload UDP segmentation (USO), allowing UDP packets larger than the
+    /// MTU. `l2_len`, `l3_len`, and `max_segment_size` must be set.
+    pub offload_udp_segmentation: bool,
+    #[bits(1)]
     _reserved: u8,
 }
 
@@ -370,7 +499,9 @@ impl Default for TxMetadata {
             l2_len: 0,
             l3_len: 0,
             l4_len: 0,
-            max_tcp_segment_size: 0,
+            transport_header_offset: 0,
+            max_segment_size: 0,
+            vlan: None,
         }
     }
 }
@@ -444,10 +575,20 @@ enum DisconnectableEndpointUpdate {
 
 pub struct DisconnectableEndpointControl {
     send_update: mesh::Sender<DisconnectableEndpointUpdate>,
+    is_ordered: Option<bool>,
 }
 
 impl DisconnectableEndpointControl {
     pub fn connect(&mut self, endpoint: Box<dyn Endpoint>) -> anyhow::Result<()> {
+        let new_is_ordered = endpoint.is_ordered();
+        if let Some(is_ordered) = self.is_ordered {
+            anyhow::ensure!(
+                !is_ordered || new_is_ordered,
+                "network endpoint cannot be reattached as unordered after being ordered"
+            );
+        } else {
+            self.is_ordered = Some(new_is_ordered);
+        }
         self.send_update
             .send(DisconnectableEndpointUpdate::EndpointConnected(endpoint));
         Ok(())
@@ -491,6 +632,7 @@ impl DisconnectableEndpoint {
         let (endpoint_tx, endpoint_rx) = mesh::channel();
         let control = DisconnectableEndpointControl {
             send_update: endpoint_tx,
+            is_ordered: None,
         };
         (
             Self {
@@ -527,7 +669,7 @@ impl Endpoint for DisconnectableEndpoint {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
@@ -608,8 +750,18 @@ impl Endpoint for DisconnectableEndpoint {
                 let old_endpoint = self.endpoint.take();
                 assert!(old_endpoint.is_none());
                 self.endpoint = Some(endpoint);
+                let new_is_ordered = self.current().is_ordered();
+                let is_ordered = if let Some(prev) = &self.cached_state {
+                    assert!(
+                        !prev.is_ordered || new_is_ordered,
+                        "network endpoint reattached as unordered after being ordered"
+                    );
+                    prev.is_ordered
+                } else {
+                    new_is_ordered
+                };
                 self.cached_state = Some(DisconnectableEndpointCachedState {
-                    is_ordered: self.current().is_ordered(),
+                    is_ordered,
                     tx_offload_support: self.current().tx_offload_support(),
                     multiqueue_support: self.current().multiqueue_support(),
                     tx_fast_completions: self.current().tx_fast_completions(),
@@ -637,5 +789,64 @@ impl Endpoint for DisconnectableEndpoint {
             .as_ref()
             .expect("Endpoint needs connected at least once before use")
             .link_speed
+    }
+}
+
+#[cfg(test)]
+mod disconnectable_endpoint_tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[derive(InspectMut)]
+    struct TestEndpoint {
+        is_ordered: bool,
+    }
+
+    #[async_trait]
+    impl Endpoint for TestEndpoint {
+        fn endpoint_type(&self) -> &'static str {
+            "test"
+        }
+
+        async fn get_queues(
+            &mut self,
+            _config: Vec<QueueConfig>,
+            _rss: Option<&RssConfig<'_>>,
+            _queues: &mut Vec<Box<dyn Queue>>,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn stop(&mut self) {
+            unreachable!()
+        }
+
+        fn is_ordered(&self) -> bool {
+            self.is_ordered
+        }
+    }
+
+    #[test]
+    fn connect_pins_endpoint_ordering() {
+        let (_endpoint, mut control) = DisconnectableEndpoint::new();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: true }))
+            .unwrap();
+
+        let err = control
+            .connect(Box::new(TestEndpoint { is_ordered: false }))
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "network endpoint cannot be reattached as unordered after being ordered"
+        );
+
+        let (_endpoint, mut control) = DisconnectableEndpoint::new();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: false }))
+            .unwrap();
+        control
+            .connect(Box::new(TestEndpoint { is_ordered: true }))
+            .unwrap();
     }
 }

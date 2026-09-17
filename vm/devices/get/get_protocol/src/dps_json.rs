@@ -121,7 +121,7 @@ pub enum GuestStateEncryptionPolicy {
     /// Prefer (or require, if strict) GspById.
     ///
     /// This prevents a VM from being created as or migrated to GspKey even
-    /// if it is available. Exisiting GspKey encryption will be used unless
+    /// if it is available. Existing GspKey encryption will be used unless
     /// strict encryption policy is enabled. Fails if the data cannot be
     /// encrypted.
     GspById,
@@ -131,8 +131,9 @@ pub enum GuestStateEncryptionPolicy {
     /// be used if GspKey is unavailable unless strict encryption policy is
     /// enabled. Fails if the data cannot be encrypted.
     GspKey,
-    /// Use hardware sealing
-    // TODO: update this doc comment once hardware sealing is implemented
+    /// Use hardware sealing exclusively.
+    ///
+    /// Expected to be set only when `no_persistent_secrets` is true on CVMs.
     HardwareSealing,
 }
 
@@ -149,13 +150,46 @@ open_enum! {
     }
 }
 
+/// Hardware sealing policy
+///
+/// Selects how the hardware-derived key used to seal the VMGS DEK is computed
+/// (e.g. whether the OpenHCL measurement is mixed into the derivation).
+///
+/// On CVMs the policy governs the hardware-sealing-based VMGS DEK backup by
+/// default. When [`GuestStateEncryptionPolicy::HardwareSealing`] is selected
+/// (stateless mode, i.e. `no_persistent_secrets` is true), the same policy
+/// governs the exclusive hardware sealing that becomes the sole source of the
+/// VMGS DEK.
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, Default)]
+pub enum HardwareSealingPolicy {
+    /// No hardware sealing
+    #[default]
+    None,
+    /// Hash-based hardware sealing
+    Hash,
+    /// Signer-based hardware sealing
+    Signer,
+}
+
+/// Version of the Microsoft TPM reference implementation to expose to the
+/// guest.
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+pub enum GetTpmVersion {
+    /// TPM reference implementation version 1.38
+    V138,
+    /// TPM reference implementation version 1.85
+    V185,
+}
+
 /// Management VTL Feature Flags
 #[bitfield(u64)]
 #[derive(Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct ManagementVtlFeatures {
     pub strict_encryption_policy: bool,
-    pub _reserved1: bool,
+    /// The host supports the `LOAD_FIRMWARE` host request (VTL0 firmware
+    /// overload). Bit 1 (`0x00000002`).
+    pub load_firmware_supported: bool,
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
@@ -166,7 +200,7 @@ pub struct ManagementVtlFeatures {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct HclDevicePlatformSettingsV2Static {
-    //UEFI flags
+    // UEFI flags
     pub legacy_memory_map: bool,
     pub pause_after_boot_failure: bool,
     pub pxe_ip_v6: bool,
@@ -220,7 +254,11 @@ pub struct HclDevicePlatformSettingsV2Static {
     #[serde(default)]
     pub management_vtl_features: ManagementVtlFeatures,
     #[serde(default)]
-    pub hv_sint_enabled: bool,
+    pub force_dma_bounce_enabled: bool,
+    #[serde(default)]
+    pub hardware_sealing_policy_id: HardwareSealingPolicy,
+    #[serde(default)]
+    pub tpm_version: Option<GetTpmVersion>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

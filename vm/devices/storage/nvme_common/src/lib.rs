@@ -1,8 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Common routines for interoperating between [`nvme_spec`] and
-//! [`disk_backend`] types.
+//! Conversion routines between [`nvme_spec`] and [`disk_backend`] types,
+//! primarily for persistent reservation mapping between NVMe and SCSI PR
+//! models.
 
 #![forbid(unsafe_code)]
 

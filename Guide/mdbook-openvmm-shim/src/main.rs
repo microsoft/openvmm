@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 use std::ffi::OsString;
 
 // certain plugins (e.g: mdbook-admonish) also "helpfully" update book.toml as

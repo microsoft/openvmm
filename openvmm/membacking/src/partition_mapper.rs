@@ -43,6 +43,10 @@ impl PartitionMapper {
         offset: u64,
         pin_mappings: bool,
     ) -> Self {
+        assert!(
+            mapper.is_eager(),
+            "partition mapper requires an eager VaMapper"
+        );
         Self {
             partition: Arc::downgrade(partition),
             mapper,
@@ -64,10 +68,6 @@ impl PartitionMapper {
         let Some(partition) = self.partition.upgrade() else {
             return Ok(());
         };
-
-        // Wait for the range to be mapped so that any second level faults can
-        // be satisfied by the kernel/hypervisor without VMM interaction.
-        let _ = self.mapper.ensure_mapped(range).await;
 
         let addr = range.start().checked_add(self.offset).unwrap();
         let size = range.len() as usize;
@@ -140,14 +140,6 @@ impl PartitionMapper {
                 .unmap_range(range.start().checked_add(self.offset).unwrap(), range.len())
                 .expect("unmap cannot fail");
         }
-    }
-
-    /// Notifies the partition that a new mapping has been mapped into a
-    /// previously mapped region.
-    pub async fn notify_new_mapping(&mut self, range: MemoryRange) {
-        // Ensure the VA range has been mapped for this mapping so that the
-        // kernel can update the hypervisor's SLAT on page fault.
-        let _ = self.mapper.ensure_mapped(range).await;
     }
 }
 

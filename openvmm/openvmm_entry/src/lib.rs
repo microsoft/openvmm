@@ -5,16 +5,19 @@
 //! for the worker process.
 
 #![expect(missing_docs)]
-#![cfg_attr(not(test), forbid(unsafe_code))]
+#![forbid(unsafe_code)]
 
 mod cli_args;
 mod crash_dump;
 mod kvp;
 mod meshworker;
+mod pidfile;
+mod repl;
 mod serial_io;
 mod storage_builder;
 mod tracing_init;
 mod ttrpc;
+mod vm_controller;
 
 // `pub` so that the missing_docs warning fires for options without
 // documentation.
@@ -25,19 +28,19 @@ use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
 use anyhow::bail;
 use chipset_resources::battery::HostBatteryUpdate;
-use clap::CommandFactory;
-use clap::FromArgMatches;
-use clap::Parser;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
+use cli_args::IgvmPersonalityCli;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
+use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
+use cxl_spec::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -49,61 +52,48 @@ use framebuffer::FRAMEBUFFER_SIZE;
 use framebuffer::FramebufferAccess;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
-use futures::AsyncWriteExt;
-use futures::FutureExt;
 use futures::StreamExt;
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
-use futures_concurrency::stream::Merge;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
-use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
-use inspect::InspectionBuilder;
-use io::Read;
-use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::CellUpdater;
-use mesh::error::RemoteError;
-use mesh::rpc::Rpc;
-use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh_worker::WorkerEvent;
-use mesh_worker::WorkerHandle;
 use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
-use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::NumaDistance;
+use openvmm_defs::config::NumaNode;
+use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieMmioRangeConfig;
+use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::RootComplexCxlConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
-use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
@@ -111,15 +101,12 @@ use pal_async::DefaultPool;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::timer::PolledTimer;
-use scsidisk_resources::SimpleScsiDiskHandle;
-use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::future::pending;
 use std::io;
 #[cfg(unix)]
 use std::io::IsTerminal;
@@ -127,17 +114,13 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::path::Path;
 use std::path::PathBuf;
-use std::pin::pin;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use std::time::Instant;
 use storvsp_resources::ScsiControllerRequest;
-use storvsp_resources::ScsiDeviceAndPath;
-use storvsp_resources::ScsiPath;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
-use tracing_helpers::AnyhowValueExt;
+use tpm_resources::TpmVersion;
 use uidevices_resources::SynthKeyboardHandle;
 use uidevices_resources::SynthMouseHandle;
 use uidevices_resources::SynthVideoHandle;
@@ -170,8 +153,9 @@ pub fn openvmm_main() {
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
-    let exit_code = match do_main() {
-        Ok(_) => 0,
+    let mut pidfile_guard: Option<pidfile::Pidfile> = None;
+    let exit_code = match do_main(&mut pidfile_guard) {
+        Ok(code) => code,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
             1
@@ -183,6 +167,10 @@ pub fn openvmm_main() {
     if let Some(orig_termios) = orig_termios {
         term::set_termios(orig_termios);
     }
+
+    // Clean up the pidfile before terminating, since
+    // pal::process::terminate skips destructors.
+    drop(pidfile_guard);
 
     // Terminate the process immediately without graceful shutdown of DLLs or
     // C++ destructors or anything like that. This is all unnecessary and saves
@@ -196,173 +184,20 @@ pub fn openvmm_main() {
 #[derive(Default)]
 struct VmResources {
     console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
+    /// Keeps the dedicated serial reactor alive while serial I/O objects exist.
+    serial_driver: Option<DefaultDriver>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
+    consomme_rpc: Option<mesh::Sender<net_backend_resources::consomme::ConsommeRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+    /// Receives dirty rectangles from the synthetic video device for the VNC worker.
+    dirty_rect_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
     #[cfg(windows)]
     switch_ports: Vec<vmswitch::kernel::SwitchPort>,
-}
-
-impl VmResources {
-    /// Modify the cached VTL2 settings and send them to OpenHCL via the GED.
-    ///
-    /// This follows the same pattern as petri's `modify_vtl2_settings`: the cache
-    /// is modified locally, then the entire settings are sent to OpenHCL.
-    async fn modify_vtl2_settings(
-        &mut self,
-        f: impl FnOnce(&mut vtl2_settings_proto::Vtl2Settings),
-    ) -> anyhow::Result<()> {
-        let mut settings_copy = self
-            .vtl2_settings
-            .clone()
-            .context("vtl2 settings not configured")?;
-
-        f(&mut settings_copy);
-
-        let ged_rpc = self.ged_rpc.as_ref().context("no GED configured")?;
-
-        ged_rpc
-            .call_failable(
-                get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
-                prost::Message::encode_to_vec(&settings_copy),
-            )
-            .await?;
-
-        // Settings successfully applied, update our cache
-        self.vtl2_settings = Some(settings_copy);
-        Ok(())
-    }
-
-    /// Add a VTL0 SCSI LUN backed by a VTL2 storage device.
-    ///
-    /// This modifies the VTL2 settings to add a new LUN to the specified SCSI controller,
-    /// backed by the given VTL2 device (NVMe namespace or SCSI disk).
-    async fn add_vtl0_scsi_disk(
-        &mut self,
-        controller_guid: Guid,
-        lun: u32,
-        device_type: vtl2_settings_proto::physical_device::DeviceType,
-        device_path: Guid,
-        sub_device_path: u32,
-    ) -> anyhow::Result<()> {
-        let mut not_found = false;
-        self.modify_vtl2_settings(|settings| {
-            let dynamic = settings.dynamic.get_or_insert_with(Default::default);
-
-            // Find the SCSI controller, bail out if not found (we can't create new controllers at runtime)
-            let scsi_controller = dynamic.storage_controllers.iter_mut().find(|c| {
-                c.instance_id == controller_guid.to_string()
-                    && c.protocol
-                        == vtl2_settings_proto::storage_controller::StorageProtocol::Scsi as i32
-            });
-
-            let Some(scsi_controller) = scsi_controller else {
-                not_found = true;
-                return;
-            };
-
-            // Add the LUN backed by the VTL2 storage device. If the LUN exists already, UH will reject the settings
-            scsi_controller.luns.push(vtl2_settings_proto::Lun {
-                location: lun,
-                device_id: Guid::new_random().to_string(),
-                vendor_id: "OpenVMM".to_string(),
-                product_id: "Disk".to_string(),
-                product_revision_level: "1.0".to_string(),
-                serial_number: "0".to_string(),
-                model_number: "1".to_string(),
-                physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
-                    r#type: vtl2_settings_proto::physical_devices::BackingType::Single.into(),
-                    device: Some(vtl2_settings_proto::PhysicalDevice {
-                        device_type: device_type.into(),
-                        device_path: device_path.to_string(),
-                        sub_device_path,
-                    }),
-                    devices: Vec::new(),
-                }),
-                is_dvd: false,
-                ..Default::default()
-            });
-        })
-        .await?;
-
-        if not_found {
-            anyhow::bail!("SCSI controller {} not found", controller_guid);
-        }
-        Ok(())
-    }
-
-    /// Remove a VTL0 SCSI LUN.
-    ///
-    /// This modifies the VTL2 settings to remove a LUN from the specified SCSI controller.
-    async fn remove_vtl0_scsi_disk(
-        &mut self,
-        controller_guid: Guid,
-        lun: u32,
-    ) -> anyhow::Result<()> {
-        self.modify_vtl2_settings(|settings| {
-            let dynamic = settings.dynamic.as_mut();
-            if let Some(dynamic) = dynamic {
-                // Find the SCSI controller
-                if let Some(scsi_controller) = dynamic.storage_controllers.iter_mut().find(|c| {
-                    c.instance_id == controller_guid.to_string()
-                        && c.protocol
-                            == vtl2_settings_proto::storage_controller::StorageProtocol::Scsi as i32
-                }) {
-                    // Remove the LUN
-                    scsi_controller.luns.retain(|l| l.location != lun);
-                }
-            }
-        })
-        .await
-    }
-
-    /// Find and remove a VTL0 SCSI LUN backed by a specific NVMe namespace.
-    ///
-    /// Returns the LUN number that was removed, or None if no matching LUN was found.
-    async fn remove_vtl0_scsi_disk_by_nvme_nsid(
-        &mut self,
-        controller_guid: Guid,
-        nvme_controller_guid: Guid,
-        nsid: u32,
-    ) -> anyhow::Result<Option<u32>> {
-        let mut removed_lun = None;
-        self.modify_vtl2_settings(|settings| {
-            let dynamic = settings.dynamic.as_mut();
-            if let Some(dynamic) = dynamic {
-                // Find the SCSI controller
-                if let Some(scsi_controller) = dynamic.storage_controllers.iter_mut().find(|c| {
-                    c.instance_id == controller_guid.to_string()
-                        && c.protocol
-                            == vtl2_settings_proto::storage_controller::StorageProtocol::Scsi as i32
-                }) {
-                    // Find and remove the LUN backed by this NVMe namespace
-                    let nvme_controller_str = nvme_controller_guid.to_string();
-                    scsi_controller.luns.retain(|l| {
-                        let dominated_by_nsid = l.physical_devices.as_ref().is_some_and(|pd| {
-                            pd.device.as_ref().is_some_and(|d| {
-                                d.device_type
-                                    == vtl2_settings_proto::physical_device::DeviceType::Nvme as i32
-                                    && d.device_path == nvme_controller_str
-                                    && d.sub_device_path == nsid
-                            })
-                        });
-                        if dominated_by_nsid {
-                            removed_lun = Some(l.location);
-                            false // Remove this LUN
-                        } else {
-                            true // Keep this LUN
-                        }
-                    });
-                }
-            }
-        })
-        .await?;
-        Ok(removed_lun)
-    }
 }
 
 struct ConsoleState<'a> {
@@ -379,11 +214,103 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
         .iter()
         .map(|switch_cli| PcieSwitchConfig {
             name: switch_cli.name.clone(),
-            num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
-            hotplug: switch_cli.hotplug,
+            ports: (0..switch_cli.num_downstream_ports)
+                .map(|i| PciePortConfig {
+                    name: format!("{}-downstream-{}", switch_cli.name, i),
+                    devfn: None,
+                    hotplug: switch_cli.hotplug,
+                    acs_capabilities_supported: switch_cli.acs_capabilities_supported,
+                    cxl: false,
+                    pasid: switch_cli.pasid,
+                })
+                .collect(),
         })
         .collect()
+}
+
+fn base_chipset_type(opt: &Options) -> BaseChipsetType {
+    if opt.igvm.is_some() {
+        match opt.igvm_personality {
+            None => BaseChipsetType::HclHost,
+            Some(IgvmPersonalityCli::Uefi) => BaseChipsetType::HypervGen2Uefi,
+            Some(IgvmPersonalityCli::LinuxDirect)
+                if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) =>
+            {
+                BaseChipsetType::EnlightenedLinuxDirect
+            }
+            Some(IgvmPersonalityCli::LinuxDirect) if opt.hv => {
+                BaseChipsetType::HyperVGen2LinuxDirect
+            }
+            Some(IgvmPersonalityCli::LinuxDirect) => BaseChipsetType::UnenlightenedLinuxDirect,
+        }
+    } else if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
+        BaseChipsetType::EnlightenedLinuxDirect
+    } else if opt.pcat {
+        BaseChipsetType::HypervGen1
+    } else if opt.uefi {
+        BaseChipsetType::HypervGen2Uefi
+    } else if opt.hv {
+        BaseChipsetType::HyperVGen2LinuxDirect
+    } else {
+        BaseChipsetType::UnenlightenedLinuxDirect
+    }
+}
+
+/// Build the loader's [`SmbiosConfig`](openvmm_defs::config::SmbiosConfig) from
+/// the parsed `--smbios` arguments.
+///
+/// Multiple `--smbios` arguments are merged (erroring on a field set twice).
+/// String overrides left unset fall through to the loader's default identity.
+/// The system UUID defaults to the all-zero GUID unless overridden with
+/// `uuid=GUID`; `uuid=random` requests a freshly generated per-VM GUID.
+fn smbios_config_from_cli(
+    args: &[cli_args::SmbiosCli],
+) -> anyhow::Result<openvmm_defs::config::SmbiosConfig> {
+    let mut merged = cli_args::SmbiosCli::default();
+    for arg in args {
+        merged.merge(arg.clone())?;
+    }
+    let cli_args::SmbiosCli {
+        bios:
+            cli_args::SmbiosBiosCli {
+                vendor: bios_vendor,
+                version: bios_version,
+                release_date: bios_release_date,
+                release: bios_release,
+            },
+        system:
+            cli_args::SmbiosSystemCli {
+                manufacturer: system_manufacturer,
+                product_name: system_product,
+                version: system_version,
+                serial_number: system_serial,
+                sku_number: system_sku,
+                family: system_family,
+                uuid: system_uuid,
+            },
+    } = merged;
+    Ok(openvmm_defs::config::SmbiosConfig {
+        bios: openvmm_defs::config::SmbiosBiosOverrides {
+            vendor: bios_vendor,
+            version: bios_version,
+            release_date: bios_release_date,
+            release: bios_release.map(|r| (r.0, r.1)),
+        },
+        system: openvmm_defs::config::SmbiosSystemOverrides {
+            manufacturer: system_manufacturer,
+            product_name: system_product,
+            version: system_version,
+            serial_number: system_serial,
+            sku_number: system_sku,
+            family: system_family,
+            uuid: match system_uuid {
+                None => Guid::ZERO,
+                Some(cli_args::SmbiosUuid::Random) => Guid::new_random(),
+                Some(cli_args::SmbiosUuid::Fixed(guid)) => guid,
+            },
+        },
+    })
 }
 
 async fn vm_config_from_command_line(
@@ -391,9 +318,10 @@ async fn vm_config_from_command_line(
     mesh: &VmmMesh,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
+    opt.validate_isolation_options()?;
+    opt.validate_igvm_options()?;
+
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
-    // Ensure the serial driver stays alive with no tasks.
-    serial_driver.spawn("leak", pending::<()>()).detach();
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2
@@ -480,9 +408,18 @@ async fn vm_config_from_command_line(
 
     let mut vmbus_devices = Vec::new();
 
+    let com_debugger_mode = [
+        opt.com1.as_ref().is_some_and(|c| c.debugger_mode),
+        opt.com2.as_ref().is_some_and(|c| c.debugger_mode),
+        opt.com3.as_ref().is_some_and(|c| c.debugger_mode),
+        opt.com4.as_ref().is_some_and(|c| c.debugger_mode),
+    ];
+
     let serial0_cfg = setup_serial(
         "com1",
-        opt.com1.clone().unwrap_or(SerialConfigCli::Console),
+        opt.com1
+            .clone()
+            .map_or(SerialConfigCli::Console, |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS0"
         } else {
@@ -491,7 +428,9 @@ async fn vm_config_from_command_line(
     )?;
     let serial1_cfg = setup_serial(
         "com2",
-        opt.com2.clone().unwrap_or(SerialConfigCli::None),
+        opt.com2
+            .clone()
+            .map_or(SerialConfigCli::None, |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS1"
         } else {
@@ -500,7 +439,9 @@ async fn vm_config_from_command_line(
     )?;
     let serial2_cfg = setup_serial(
         "com3",
-        opt.com3.clone().unwrap_or(SerialConfigCli::None),
+        opt.com3
+            .clone()
+            .map_or(SerialConfigCli::None, |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS2"
         } else {
@@ -509,7 +450,9 @@ async fn vm_config_from_command_line(
     )?;
     let serial3_cfg = setup_serial(
         "com4",
-        opt.com4.clone().unwrap_or(SerialConfigCli::None),
+        opt.com4
+            .clone()
+            .map_or(SerialConfigCli::None, |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS3"
         } else {
@@ -563,6 +506,12 @@ async fn vm_config_from_command_line(
         "debugcon",
     )?;
 
+    let virtio_console_backend = if let Some(serial_cfg) = opt.virtio_console.clone() {
+        setup_serial("virtio-console", serial_cfg, "hvc0")?
+    } else {
+        None
+    };
+
     let mut resources = VmResources::default();
     let mut console_str = "";
     if let Some(ConsoleState { device, input }) = console_state.into_inner() {
@@ -573,6 +522,20 @@ async fn vm_config_from_command_line(
     if opt.shared_memory {
         tracing::warn!("--shared-memory/-M flag has no effect and will be removed");
     }
+    if opt.deprecated_prefetch {
+        tracing::warn!("--prefetch is deprecated; use --memory prefetch=on");
+    }
+    if opt.deprecated_private_memory {
+        tracing::warn!("--private-memory is deprecated; use --memory shared=off");
+    }
+    if opt.deprecated_thp {
+        tracing::warn!("--thp is deprecated; use --memory shared=off,thp=on");
+    }
+    if opt.deprecated_memory_backing_file.is_some() {
+        tracing::warn!("--memory-backing-file is deprecated; use --memory file=<path>");
+    }
+
+    opt.validate_memory_options()?;
 
     const MAX_PROCESSOR_COUNT: u32 = 1024;
 
@@ -593,6 +556,38 @@ async fn vm_config_from_command_line(
     let with_get = opt.get || (opt.vtl2 && !opt.no_get);
 
     let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
+
+    // Register named controllers first, so that --disk on=<name>
+    // references can be resolved.
+    for ctrl in &opt.nvme_pci {
+        let transport = match &ctrl.transport {
+            cli_args::NvmeControllerTransport::Pcie(port) => {
+                storage_builder::NvmeControllerTransport::Pcie(port.clone())
+            }
+            cli_args::NvmeControllerTransport::Vpci(guid) => {
+                let guid = guid.unwrap_or_else(|| storage_builder::deterministic_guid(&ctrl.id));
+                storage_builder::NvmeControllerTransport::Vpci(guid)
+            }
+        };
+        storage.add_nvme_controller(ctrl.id.clone(), ctrl.vtl, transport, None)?;
+    }
+
+    for ctrl in &opt.vmbus_scsi {
+        let instance_id = storage_builder::deterministic_guid(&ctrl.id);
+        storage.add_scsi_controller(ctrl.id.clone(), ctrl.vtl, instance_id, ctrl.sub_channels)?;
+    }
+
+    for ctrl in &opt.openhcl_controller {
+        let controller_type = match ctrl.controller_type {
+            cli_args::OpenhclControllerType::Scsi => storage_builder::OpenhclControllerType::Scsi,
+            cli_args::OpenhclControllerType::Nvme => storage_builder::OpenhclControllerType::Nvme,
+        };
+        let instance_id = ctrl
+            .guid
+            .unwrap_or_else(|| storage_builder::deterministic_guid(&ctrl.id));
+        storage.add_openhcl_controller(ctrl.id.clone(), controller_type, instance_id)?;
+    }
+
     for &cli_args::DiskCli {
         vtl,
         ref kind,
@@ -600,20 +595,58 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        ref controller,
+        nsid,
+        lun,
+        ref relay,
     } in &opt.disk
     {
-        if pcie_port.is_some() {
-            anyhow::bail!("`--disk` is incompatible with PCIe");
+        if controller.is_none() && underhill.is_none() && relay.is_none() {
+            tracing::warn!(
+                "--disk without `on` is deprecated; \
+                 use --vmbus-scsi and --disk on=<name> instead"
+            );
         }
 
-        storage.add(
-            vtl,
-            underhill,
-            storage_builder::DiskLocation::Scsi(None),
-            kind,
-            is_dvd,
-            read_only,
-        )?;
+        let relay_target = relay
+            .as_ref()
+            .map(|(name, loc)| storage_builder::RelayTarget {
+                controller: name.clone(),
+                location: *loc,
+            });
+
+        let target = if let Some(name) = controller {
+            if pcie_port.is_some() {
+                anyhow::bail!("`on` is incompatible with `pcie_port` on `--disk`");
+            }
+            storage_builder::DiskLocation::Named {
+                controller: name.clone(),
+                nsid,
+                lun,
+            }
+        } else if pcie_port.is_some() {
+            anyhow::bail!("`--disk` is incompatible with `pcie_port` without `controller`");
+        } else {
+            if opt.no_vmbus {
+                anyhow::bail!(
+                    "`--disk` without `on=` attaches to the default VMBus SCSI controller and \
+                     cannot be used with `--no-vmbus`; use `on=<name>` to attach to a named controller"
+                );
+            }
+            storage_builder::DiskLocation::Scsi(None)
+        };
+
+        storage
+            .add(
+                vtl,
+                underhill,
+                relay_target,
+                target,
+                kind,
+                is_dvd,
+                read_only,
+            )
+            .await?;
     }
 
     for &cli_args::IdeDiskCli {
@@ -624,14 +657,39 @@ async fn vm_config_from_command_line(
         is_dvd,
     } in &opt.ide
     {
-        storage.add(
-            DeviceVtl::Vtl0,
-            None,
-            storage_builder::DiskLocation::Ide(channel, device),
-            kind,
-            is_dvd,
-            read_only,
-        )?;
+        storage
+            .add(
+                DeviceVtl::Vtl0,
+                None,
+                None,
+                storage_builder::DiskLocation::Ide(channel, device),
+                kind,
+                is_dvd,
+                read_only,
+            )
+            .await?;
+    }
+
+    if !opt.nvme.is_empty() {
+        tracing::warn!("--nvme is deprecated; use --nvme-pci and --disk on=<name> instead");
+
+        // Pre-register implicit PCIe controllers for unique port names.
+        let mut registered_ports = std::collections::BTreeSet::new();
+        for disk in &opt.nvme {
+            if let Some(port) = &disk.pcie_port {
+                if registered_ports.insert(port.clone()) {
+                    storage.add_nvme_controller(
+                        port.clone(),
+                        DeviceVtl::Vtl0,
+                        storage_builder::NvmeControllerTransport::Pcie(port.clone()),
+                        None,
+                    ).with_context(|| format!(
+                        "legacy --nvme flag conflicts with an explicit controller named '{port}'; \
+                         use --nvme-pci and --disk on=<name> instead"
+                    ))?;
+                }
+            }
+        }
     }
 
     for &cli_args::DiskCli {
@@ -641,45 +699,83 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        controller: _,
+        nsid: _,
+        lun: _,
+        relay: _,
     } in &opt.nvme
     {
-        storage.add(
-            vtl,
-            underhill,
-            storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
-            kind,
-            is_dvd,
-            read_only,
-        )?;
+        let target = if let Some(port) = pcie_port {
+            storage_builder::DiskLocation::Named {
+                controller: port.clone(),
+                nsid: None,
+                lun: None,
+            }
+        } else {
+            storage_builder::DiskLocation::Nvme(None)
+        };
+        storage
+            .add(vtl, underhill, None, target, kind, is_dvd, read_only)
+            .await?;
     }
 
-    let floppy_disks: Vec<_> = opt
-        .floppy
-        .iter()
-        .map(|disk| -> anyhow::Result<_> {
-            let &cli_args::FloppyDiskCli {
-                ref kind,
+    for &cli_args::DiskCli {
+        vtl,
+        ref kind,
+        read_only,
+        is_dvd,
+        ref underhill,
+        ref pcie_port,
+        controller: _,
+        nsid: _,
+        lun: _,
+        relay: _,
+    } in &opt.virtio_blk
+    {
+        if underhill.is_some() {
+            anyhow::bail!("underhill not supported with virtio-blk");
+        }
+        storage
+            .add(
+                vtl,
+                None,
+                None,
+                storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
+                kind,
+                is_dvd,
                 read_only,
-            } = disk;
-            Ok(FloppyDiskConfig {
-                disk_type: disk_open(kind, read_only)?,
-                read_only,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            )
+            .await?;
+    }
 
-    let mut mana_nics = [(); 3].map(|()| None);
+    let mut floppy_disks = Vec::new();
+    for disk in &opt.floppy {
+        let &cli_args::FloppyDiskCli {
+            ref kind,
+            read_only,
+        } = disk;
+        floppy_disks.push(FloppyDiskConfig {
+            disk_type: disk_open(kind, read_only).await?,
+            read_only,
+        });
+    }
+
+    let mut vpci_mana_nics = [(); 3].map(|()| None);
+    let mut pcie_mana_nics = BTreeMap::<String, GdmaDeviceHandle>::new();
     let mut underhill_nics = Vec::new();
     let mut vpci_devices = Vec::new();
 
     let mut nic_index = 0;
     for cli_cfg in &opt.net {
+        if cli_cfg.pcie_port.is_some() {
+            anyhow::bail!("`--net` does not support PCIe");
+        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         if cli_cfg.underhill {
             if !opt.no_alias_map {
                 anyhow::bail!("must specify --no-alias-map to offer NICs to VTL2");
             }
-            let mana = mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
+            let mana = vpci_mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
                 let vpci_instance_id = Guid::new_random();
                 underhill_nics.push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: vpci_instance_id.to_string(),
@@ -701,30 +797,18 @@ async fn vm_config_from_command_line(
         let nic_config = parse_endpoint(
             &NicConfigCli {
                 vtl: DeviceVtl::Vtl0,
-                endpoint: EndpointConfigCli::Consomme { cidr: None },
+                endpoint: EndpointConfigCli::Consomme {
+                    cidr: None,
+                    host_fwd: Vec::new(),
+                },
                 max_queues: None,
                 underhill: false,
+                pcie_port: None,
             },
             &mut nic_index,
             &mut resources,
         )?;
         vmbus_devices.push(nic_config.into_netvsp_handle());
-    }
-
-    if opt.mcr {
-        tracing::info!("Instantiating MCR controller");
-
-        // Arbitrary but constant instance ID to be consistent across boots.
-        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
-
-        vpci_devices.push(VpciDeviceConfig {
-            vtl: DeviceVtl::Vtl0,
-            instance_id: MCR_INSTANCE_ID,
-            resource: mcr_resources::McrControllerHandle {
-                instance_id: MCR_INSTANCE_ID,
-            }
-            .into_resource(),
-        });
     }
 
     // Build initial PCIe devices list from CLI options. Storage devices
@@ -733,7 +817,7 @@ async fn vm_config_from_command_line(
     for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
         tracing::info!(
             port_name = %cli_cfg.port_name,
-            socket_path = ?cli_cfg.socket_path,
+            socket_addr = ?cli_cfg.socket_addr,
             "instantiating PCIe remote device"
         );
 
@@ -749,7 +833,7 @@ async fn vm_config_from_command_line(
             port_name: cli_cfg.port_name.clone(),
             resource: pcie_remote_resources::PcieRemoteHandle {
                 instance_id,
-                socket_path: cli_cfg.socket_path.clone(),
+                socket_addr: cli_cfg.socket_addr.clone(),
                 hu: cli_cfg.hu,
                 controller: cli_cfg.controller,
             }
@@ -773,9 +857,9 @@ async fn vm_config_from_command_line(
         };
 
         let switch_id = if switch_id == "default" {
-            DEFAULT_SWITCH
+            None
         } else {
-            switch_id
+            Some(switch_id.as_str())
         };
         let (port_id, port) = new_switch_port(switch_id)?;
         resources.switch_ports.push(port);
@@ -789,111 +873,317 @@ async fn vm_config_from_command_line(
 
     for vport in &opt.mana {
         let vport = parse_endpoint(vport, &mut nic_index, &mut resources)?;
-        mana_nics[vport.vtl as usize]
-            .get_or_insert_with(|| (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() }))
-            .1
-            .vports
-            .push(VportDefinition {
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            });
+        let vport_array = match (vport.vtl as usize, vport.pcie_port) {
+            (vtl, None) => {
+                &mut vpci_mana_nics[vtl]
+                    .get_or_insert_with(|| {
+                        (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() })
+                    })
+                    .1
+                    .vports
+            }
+            (0, Some(pcie_port)) => {
+                &mut pcie_mana_nics
+                    .entry(pcie_port)
+                    .or_insert(GdmaDeviceHandle { vports: Vec::new() })
+                    .vports
+            }
+            _ => anyhow::bail!("PCIe NICs only supported to VTL0"),
+        };
+        vport_array.push(VportDefinition {
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        });
     }
 
-    vpci_devices.extend(mana_nics.into_iter().enumerate().filter_map(|(vtl, nic)| {
-        nic.map(|(instance_id, handle)| VpciDeviceConfig {
-            vtl: match vtl {
-                0 => DeviceVtl::Vtl0,
-                1 => DeviceVtl::Vtl1,
-                2 => DeviceVtl::Vtl2,
-                _ => unreachable!(),
-            },
-            instance_id,
-            resource: handle.into_resource(),
-        })
-    }));
+    vpci_devices.extend(
+        vpci_mana_nics
+            .into_iter()
+            .enumerate()
+            .filter_map(|(vtl, nic)| {
+                nic.map(|(instance_id, handle)| VpciDeviceConfig {
+                    vtl: match vtl {
+                        0 => DeviceVtl::Vtl0,
+                        1 => DeviceVtl::Vtl1,
+                        2 => DeviceVtl::Vtl2,
+                        _ => unreachable!(),
+                    },
+                    instance_id,
+                    resource: handle.into_resource(),
+                    vnode: None,
+                })
+            }),
+    );
 
-    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
-    // mmio gap for VTL2.
-    let use_vtl2_gap = opt.vtl2
-        && !matches!(
-            opt.igvm_vtl2_relocation_type,
-            Vtl2BaseAddressType::Vtl2Allocate { .. },
-        );
+    pcie_devices.extend(
+        pcie_mana_nics
+            .into_iter()
+            .map(|(pcie_port, handle)| PcieDeviceConfig {
+                port_name: pcie_port,
+                resource: handle.into_resource(),
+            }),
+    );
+
+    for cxl_test in &opt.cxl_test {
+        pcie_devices.push(PcieDeviceConfig {
+            port_name: cxl_test.pcie_port.clone(),
+            resource: CxlTestDeviceHandle {
+                hdm_size_bytes: cxl_test.hdm_size,
+            }
+            .into_resource(),
+        });
+    }
 
     #[cfg(guest_arch = "aarch64")]
     let arch = MachineArch::Aarch64;
     #[cfg(guest_arch = "x86_64")]
     let arch = MachineArch::X86_64;
 
-    let mmio_gaps: Vec<MemoryRange> = match (use_vtl2_gap, arch) {
-        (true, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
-        (true, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
-        (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
-        (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
+    #[cfg(guest_arch = "x86_64")]
+    anyhow::ensure!(
+        opt.amd_iommu.is_empty() || opt.intel_vtd.is_empty(),
+        "--amd-iommu and --intel-vtd cannot both be used in the same VM"
+    );
+
+    #[cfg(guest_arch = "x86_64")]
+    let mut amd_iommu_names: std::collections::HashSet<&str> =
+        opt.amd_iommu.iter().map(|s| s.as_str()).collect();
+    #[cfg(guest_arch = "x86_64")]
+    let mut vtd_names: std::collections::HashSet<&str> =
+        opt.intel_vtd.iter().map(|s| s.as_str()).collect();
+
+    // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
+    // entries up front. Entries are removed as they are matched to a root
+    // complex below; any left over refer to unknown root complexes.
+    #[cfg(guest_arch = "aarch64")]
+    let mut smmu_names: std::collections::HashMap<&str, &cli_args::SmmuCli> = {
+        let mut map = std::collections::HashMap::new();
+        for s in &opt.smmu {
+            if map.insert(s.rc_name.as_str(), s).is_some() {
+                anyhow::bail!(
+                    "--smmu specified multiple times for root complex '{}'",
+                    s.rc_name
+                );
+            }
+        }
+        map
     };
-
-    let mut pci_ecam_gaps = Vec::new();
-    let mut pci_mmio_gaps = Vec::new();
-
-    let mut low_mmio_start = mmio_gaps.first().context("expected mmio gap")?.start();
-    let mut high_mmio_end = mmio_gaps.last().context("expected second mmio gap")?.end();
-    let mut ecam_end = DEFAULT_PCIE_ECAM_BASE;
 
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
-        let ports = opt
+        let ports: Vec<PciePortConfig> = opt
             .pcie_root_port
             .iter()
             .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
-            .map(|port_cli| PcieRootPortConfig {
+            .map(|port_cli| PciePortConfig {
                 name: port_cli.name.clone(),
+                devfn: port_cli.devfn,
                 hotplug: port_cli.hotplug,
+                acs_capabilities_supported: port_cli.acs_capabilities_supported,
+                cxl: port_cli.cxl,
+                pasid: port_cli.pasid,
             })
             .collect();
 
         const ONE_MB: u64 = 1024 * 1024;
+        // Keep all PCI windows 1MB-granular to match layout and downstream placement rules.
         let low_mmio_size = (rc_cli.low_mmio as u64).next_multiple_of(ONE_MB);
         let high_mmio_size = rc_cli
             .high_mmio
             .checked_next_multiple_of(ONE_MB)
             .context("high mmio rounding error")?;
-        let ecam_size = (((rc_cli.end_bus - rc_cli.start_bus) as u64) + 1) * 256 * 4096;
 
-        low_mmio_start = low_mmio_start
-            .checked_sub(low_mmio_size)
-            .context("pci low mmio underflow")?;
-        high_mmio_end = high_mmio_end
-            .checked_add(high_mmio_size)
-            .context("pci high mmio overflow")?;
-        ecam_end = ecam_end
-            .checked_add(ecam_size)
-            .context("pci ecam overflow")?;
+        // Count CXL-capable ports under the root bus. If the root bus has CXL root ports, it needs CHBCR.
+        let cxl_port_count = ports.iter().filter(|port| port.cxl).count() as u64;
 
-        let ecam_range = MemoryRange::new(ecam_end - ecam_size..ecam_end);
-        let low_mmio = MemoryRange::new(low_mmio_start..low_mmio_start + low_mmio_size);
-        let high_mmio = MemoryRange::new(high_mmio_end - high_mmio_size..high_mmio_end);
-
-        pci_ecam_gaps.push(ecam_range);
-        pci_mmio_gaps.push(low_mmio);
-        pci_mmio_gaps.push(high_mmio);
-
+        let cxl = if cxl_port_count != 0 {
+            Some(RootComplexCxlConfig {
+                hdm_size: rc_cli.hdm,
+                hdm_window_restrictions: rc_cli.hdm_window_restrictions.bits(),
+            })
+        } else {
+            None
+        };
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
             name: rc_cli.name.clone(),
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
-            ecam_range,
-            low_mmio,
-            high_mmio,
+            low_mmio: if let Some(base) = rc_cli.low_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
+                        .context("invalid low MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: low_mmio_size,
+                }
+            },
+            high_mmio: if let Some(base) = rc_cli.high_mmio_base {
+                PcieMmioRangeConfig::Fixed(
+                    memory_range::MemoryRange::try_new(base..base.wrapping_add(high_mmio_size))
+                        .context("invalid high MMIO range")?,
+                )
+            } else {
+                PcieMmioRangeConfig::Dynamic {
+                    size: high_mmio_size,
+                }
+            },
+            cxl,
             ports,
+            #[cfg(guest_arch = "aarch64")]
+            iommu: smmu_names.remove(rc_cli.name.as_str()).map(|s| {
+                openvmm_defs::config::PcieIommuConfig::Smmu {
+                    accel: s.accel,
+                    oas: match s.oas {
+                        cli_args::SmmuOasCli::Auto => openvmm_defs::config::SmmuOas::Auto,
+                        cli_args::SmmuOasCli::Fixed(bits) => {
+                            openvmm_defs::config::SmmuOas::Fixed(bits)
+                        }
+                    },
+                }
+            }),
+            #[cfg(guest_arch = "x86_64")]
+            iommu: if amd_iommu_names.remove(rc_cli.name.as_str()) {
+                Some(openvmm_defs::config::PcieIommuConfig::AmdVi)
+            } else if vtd_names.remove(rc_cli.name.as_str()) {
+                Some(openvmm_defs::config::PcieIommuConfig::IntelVtd)
+            } else {
+                None
+            },
+            vnode: rc_cli.vnode,
+            preserve_bars: rc_cli.preserve_bars,
         });
     }
 
-    pci_ecam_gaps.sort();
-    pci_mmio_gaps.sort();
+    #[cfg(guest_arch = "aarch64")]
+    if let Some(name) = smmu_names.into_keys().next() {
+        anyhow::bail!("--smmu refers to unknown root complex '{name}'");
+    }
+    #[cfg(guest_arch = "x86_64")]
+    if let Some(name) = amd_iommu_names.into_iter().next() {
+        anyhow::bail!("--amd-iommu refers to unknown root complex '{name}'");
+    }
+    #[cfg(guest_arch = "x86_64")]
+    if let Some(name) = vtd_names.into_iter().next() {
+        anyhow::bail!("--intel-vtd refers to unknown root complex '{name}'");
+    }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
+    let pcie_generic_initiators = opt
+        .pcie_generic_initiator
+        .iter()
+        .map(|gi| openvmm_defs::config::PcieGenericInitiatorConfig {
+            port_name: gi.port_name.clone(),
+            node: gi.node,
+        })
+        .collect();
+    #[cfg(target_os = "linux")]
+    let vfio_pcie_devices: Vec<PcieDeviceConfig> = {
+        use std::collections::HashMap;
+        use vm_resource::IntoResource;
+
+        // Process --iommu flags: open /dev/iommu for each declared context.
+        let mut iommu_map: HashMap<String, std::fs::File> = HashMap::new();
+        for iommu_cli in &opt.iommu {
+            anyhow::ensure!(
+                !iommu_map.contains_key(&iommu_cli.id),
+                "duplicate --iommu id={}",
+                iommu_cli.id
+            );
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/iommu")
+                .context("failed to open /dev/iommu (is iommufd available?)")?;
+            iommu_map.insert(iommu_cli.id.clone(), file);
+        }
+
+        opt.vfio
+            .iter()
+            .map(|cli_cfg| {
+                let sysfs_path = Path::new("/sys/bus/pci/devices").join(&cli_cfg.pci_id);
+
+                if let Some(iommu_id) = &cli_cfg.iommu {
+                    // cdev + iommufd path
+                    let iommufd = iommu_map.get(iommu_id).with_context(|| {
+                        format!(
+                            "--vfio device {} references iommu={iommu_id}, \
+                             but no --iommu id={iommu_id} was specified",
+                            cli_cfg.pci_id
+                        )
+                    })?;
+                    // Clone the iommufd fd so the per-iommu manager can own it.
+                    // The first device for a given iommu ID uses the cloned fd
+                    // to create the IoasManager; subsequent devices reuse the
+                    // existing manager and the cloned fd is dropped.
+                    let iommufd = iommufd.try_clone().with_context(|| {
+                        format!("failed to dup iommufd fd for iommu={iommu_id}")
+                    })?;
+
+                    // Open the cdev device node.
+                    let vfio_dev_dir = sysfs_path.join("vfio-dev");
+                    let entry = std::fs::read_dir(&vfio_dev_dir)
+                        .with_context(|| {
+                            format!(
+                                "failed to read {}: is {} bound to vfio-pci?",
+                                vfio_dev_dir.display(),
+                                cli_cfg.pci_id
+                            )
+                        })?
+                        .next()
+                        .context("no vfio-dev entry found")?
+                        .context("failed to read vfio-dev entry")?;
+                    let dev_path = Path::new("/dev/vfio/devices").join(entry.file_name());
+                    let cdev = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&dev_path)
+                        .with_context(|| format!("failed to open {}", dev_path.display()))?;
+
+                    Ok(PcieDeviceConfig {
+                        port_name: cli_cfg.port_name.clone(),
+                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: cli_cfg.pci_id.clone(),
+                            cdev,
+                            iommufd,
+                            iommu_id: iommu_id.clone(),
+                            bar_addresses: cli_cfg.bar_addresses,
+                        }
+                        .into_resource(),
+                    })
+                } else {
+                    // Legacy group/container path
+                    let iommu_group_link = std::fs::read_link(sysfs_path.join("iommu_group"))
+                        .with_context(|| {
+                            format!("failed to read IOMMU group for {}", cli_cfg.pci_id)
+                        })?;
+                    let group_id: u64 = iommu_group_link
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .context("invalid iommu_group symlink")?
+                        .parse()
+                        .context("failed to parse IOMMU group ID")?;
+                    let group = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(format!("/dev/vfio/{group_id}"))
+                        .with_context(|| format!("failed to open /dev/vfio/{group_id}"))?;
+
+                    Ok(PcieDeviceConfig {
+                        port_name: cli_cfg.port_name.clone(),
+                        resource: vfio_assigned_device_resources::VfioDeviceHandle {
+                            pci_id: cli_cfg.pci_id.clone(),
+                            group,
+                            bar_addresses: cli_cfg.bar_addresses,
+                        }
+                        .into_resource(),
+                    })
+                }
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+    };
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
@@ -919,8 +1209,8 @@ async fn vm_config_from_command_line(
         None
     };
 
-    let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc || opt.pcat {
-        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE)?;
+    let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc.vnc || opt.pcat {
+        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "vram")?;
         let (fb, fba) =
             framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, 0).context("creating framebuffer")?;
         resources.framebuffer_access = Some(fba);
@@ -939,20 +1229,7 @@ async fn vm_config_from_command_line(
 
     let has_com3 = serial2_cfg.is_some();
 
-    let mut chipset = VmManifestBuilder::new(
-        if opt.igvm.is_some() {
-            BaseChipsetType::HclHost
-        } else if opt.pcat {
-            BaseChipsetType::HypervGen1
-        } else if opt.uefi {
-            BaseChipsetType::HypervGen2Uefi
-        } else if opt.hv {
-            BaseChipsetType::HyperVGen2LinuxDirect
-        } else {
-            BaseChipsetType::UnenlightenedLinuxDirect
-        },
-        arch,
-    );
+    let mut chipset = VmManifestBuilder::new(base_chipset_type(opt), arch);
 
     if framebuffer.is_some() {
         chipset = chipset.with_framebuffer();
@@ -963,10 +1240,14 @@ async fn vm_config_from_command_line(
     if any_serial_configured {
         chipset = chipset.with_serial([serial0_cfg, serial1_cfg, serial2_cfg, serial3_cfg]);
     }
+    chipset = chipset.with_serial_debugger_mode(com_debugger_mode);
     if opt.battery {
         let (tx, rx) = mesh::channel();
         tx.send(HostBatteryUpdate::default_present());
         chipset = chipset.with_battery(rx);
+    }
+    if opt.no_vmbus {
+        chipset = chipset.without_vmbus();
     }
     if let Some(cfg) = &opt.debugcon {
         chipset = chipset.with_debugcon(
@@ -975,32 +1256,117 @@ async fn vm_config_from_command_line(
         );
     }
 
-    // TODO: load from VMGS file if it exists
-    let bios_guid = Guid::new_random();
+    let (base_template, custom_uefi_json) = {
+        #[cfg(guest_arch = "aarch64")]
+        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
+        #[cfg(guest_arch = "x86_64")]
+        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
+        let base_template = opt.secure_boot_template.map(|template| match template {
+            SecureBootTemplateCli::Windows => secure_boot_templates::microsoft_windows(),
+            SecureBootTemplateCli::UefiCa => secure_boot_templates::microsoft_uefi_ca(),
+        });
 
+        // TODO: fallback to VMGS read if no command line flag was given
+
+        let custom_uefi_json = match &opt.custom_uefi_json {
+            Some(file) => Some(
+                fs_err::read(file)
+                    .context("opening custom uefi json file")?
+                    .into(),
+            ),
+            None => None,
+        };
+
+        (base_template, custom_uefi_json)
+    };
+
+    if (opt.uefi && opt.igvm.is_none() && !opt.pcat)
+        || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi))
+    {
+        let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
+            EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
+            EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
+            EfiDiagnosticsLogLevelCli::Full => firmware_uefi_resources::LogLevel::make_full(),
+        };
+        let nvram_storage = if opt.vmgs.is_some() {
+            VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
+        } else {
+            EphemeralNonVolatileStoreHandle.into_resource()
+        };
+        chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
+            arch,
+            base_template,
+            custom_uefi_json,
+            opt.secure_boot,
+            log_level,
+            None,
+            nvram_storage,
+            None,
+        ));
+    }
+
+    // Build the SMBIOS config once, up front, so that UEFI and Linux direct
+    // boot share a single source for the VM's BIOS GUID / system UUID. The TPM
+    // also keys off this GUID.
+    let smbios = Box::new(smbios_config_from_cli(&opt.smbios)?);
+    let bios_guid = smbios.system.uuid;
+
+    // Capture the SMBIOS config for the OpenHCL/GED path before `smbios` is
+    // potentially moved into a non-VTL2 LoadMode below. The GED forwards only
+    // the system identity to the paravisor and fails closed on BIOS overrides
+    // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
+    let ged_smbios = (*smbios).clone();
+
+    let layout_config = chipset.layout_config();
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
+        pci_chipset_devices,
+        isa_dma_controller,
+        capabilities,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
 
-    if let Some(path) = &opt.igvm {
+    if opt.restore_snapshot.is_some() {
+        // Snapshot restore: skip firmware loading entirely. Device state and
+        // memory come from the snapshot directory.
+        load_mode = LoadMode::None;
+        with_hv = true;
+    } else if let Some(path) = &opt.igvm {
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
         let cmdline = opt.cmdline.join(" ");
-        with_hv = true;
+        with_hv = match opt.igvm_personality {
+            None | Some(IgvmPersonalityCli::Uefi) => true,
+            Some(IgvmPersonalityCli::LinuxDirect) => opt.hv,
+        };
 
         load_mode = LoadMode::Igvm {
             file,
             cmdline,
-            vtl2_base_address: opt.igvm_vtl2_relocation_type,
+            vtl2_base_address: if opt.vtl2 {
+                opt.igvm_vtl2_relocation_type
+            } else {
+                Vtl2BaseAddressType::File
+            },
             com_serial: has_com3.then(|| SerialInformation {
                 io_port: ComPort::Com3.io_port(),
                 irq: ComPort::Com3.irq().into(),
             }),
         };
+
+        // An IGVM launch carries no SMBIOS field of its own; the identity is
+        // only delivered over the GET/GED channel, which is absent here. Reject
+        // overrides that would otherwise be silently dropped.
+        let smbios_requested = !opt.smbios.is_empty();
+        let smbios_delivered_via_get = with_get && with_hv;
+        if smbios_requested && !smbios_delivered_via_get {
+            anyhow::bail!(
+                "--smbios is not supported for IGVM launches without an OpenHCL GET channel"
+            );
+        }
     } else if opt.pcat {
         // Emit a nice error early instead of complaining about missing firmware.
         if arch != MachineArch::X86_64 {
@@ -1015,11 +1381,17 @@ async fn vm_config_from_command_line(
                 .pcat_boot_order
                 .map(|x| x.0)
                 .unwrap_or(DEFAULT_PCAT_BOOT_ORDER),
+            hibernation_enabled: opt.hibernation,
+            smbios,
         };
     } else if opt.uefi {
         use openvmm_defs::config::UefiConsoleMode;
 
-        with_hv = true;
+        if opt.no_hv && cfg!(guest_arch = "x86_64") {
+            anyhow::bail!("--no-hv is not supported on x86_64");
+        }
+
+        with_hv = !opt.no_hv;
 
         let firmware = fs_err::File::open(
             (opt.uefi_firmware.0)
@@ -1035,7 +1407,7 @@ async fn vm_config_from_command_line(
             enable_debugging: opt.uefi_debug,
             enable_memory_protections: opt.uefi_enable_memory_protections,
             disable_frontpage: opt.disable_frontpage,
-            enable_tpm: opt.tpm,
+            enable_tpm: opt.tpm.is_some(),
             enable_battery: opt.battery,
             enable_serial: any_serial_configured,
             enable_vpci_boot: false,
@@ -1046,20 +1418,25 @@ async fn vm_config_from_command_line(
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
-            bios_guid,
+            smbios,
+            enable_vmbus: !opt.no_vmbus,
+            force_dma_bounce: opt.uefi_force_dma_bounce,
+            enable_hv: !opt.no_hv,
+            hibernation_enabled: opt.hibernation,
         };
     } else {
         // Linux Direct
         let mut cmdline = "panic=-1 debug".to_string();
 
         with_hv = opt.hv;
-        if with_hv {
+        if with_hv && opt.pcie_root_complex.is_empty() {
             cmdline += " pci=off";
         }
 
         if !console_str.is_empty() {
             let _ = write!(&mut cmdline, " console={}", console_str);
         }
+
         if opt.gfx {
             cmdline += " console=tty";
         }
@@ -1079,30 +1456,32 @@ async fn vm_config_from_command_line(
             .transpose()
             .context("failed to open initrd")?;
 
-        let custom_dsdt = match &opt.custom_dsdt {
-            Some(path) => {
-                let mut v = Vec::new();
-                fs_err::File::open(path)
-                    .context("failed to open custom dsdt")?
-                    .read_to_end(&mut v)
-                    .context("failed to read custom dsdt")?;
-                Some(v)
-            }
-            None => None,
-        };
-
         load_mode = LoadMode::Linux {
             kernel: kernel.into(),
             initrd: initrd.map(Into::into),
             cmdline,
-            custom_dsdt,
             enable_serial: any_serial_configured,
+            isolation: if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
+                openvmm_defs::config::LinuxIsolationConfig::Snp {
+                    restricted_injection: opt.snp_restricted_injection,
+                }
+            } else {
+                openvmm_defs::config::LinuxIsolationConfig::None
+            },
+            boot_mode: if opt.device_tree {
+                openvmm_defs::config::LinuxDirectBootMode::DeviceTree
+            } else {
+                openvmm_defs::config::LinuxDirectBootMode::Acpi
+            },
+            smbios,
         };
     }
 
     let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
         let disk = VmgsDisk {
-            disk: disk_open(kind, false).context("failed to open vmgs disk")?,
+            disk: disk_open(kind, false)
+                .await
+                .context("failed to open vmgs disk")?,
             encryption_policy: if opt.test_gsp_by_id {
                 GuestStateEncryptionPolicy::GspById(true)
             } else {
@@ -1119,11 +1498,12 @@ async fn vm_config_from_command_line(
     });
 
     if with_get && with_hv {
+        let has_vtl0_nvme = storage.has_vtl0_nvme();
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
             dynamic: Some(vtl2_settings_proto::Vtl2SettingsDynamic {
-                storage_controllers: storage.build_underhill(opt.vmbus_redirect),
+                storage_controllers: storage.build_openhcl_settings(opt.vmbus_redirect),
                 nic_devices: underhill_nics,
             }),
             namespace_settings: Vec::default(),
@@ -1169,7 +1549,7 @@ async fn vm_config_from_command_line(
                         use get_resources::ged::UefiConsoleMode;
 
                         get_resources::ged::GuestFirmwareConfig::Uefi {
-                            enable_vpci_boot: storage.has_vtl0_nvme(),
+                            enable_vpci_boot: has_vtl0_nvme,
                             firmware_debug: opt.uefi_debug,
                             disable_frontpage: opt.disable_frontpage,
                             console_mode: match opt.uefi_console_mode.unwrap_or(UefiConsoleModeCli::Default) {
@@ -1191,7 +1571,10 @@ async fn vm_config_from_command_line(
                         .vtl2_gfx
                         .then(|| SharedFramebufferHandle.into_resource()),
                     guest_request_recv,
-                    enable_tpm: opt.tpm,
+                    tpm_version: opt.tpm.map(|v| match v {
+                        TpmVersionCli::V138 => get_resources::ged::GedTpmVersion::V138,
+                        TpmVersionCli::V185 => get_resources::ged::GedTpmVersion::V185,
+                    }),
                     firmware_event_send: None,
                     secure_boot_enabled: opt.secure_boot,
                     secure_boot_template: match opt.secure_boot_template {
@@ -1206,6 +1589,7 @@ async fn vm_config_from_command_line(
                         },
                     },
                     enable_battery: opt.battery,
+                    enable_hibernation: opt.hibernation,
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
@@ -1216,24 +1600,32 @@ async fn vm_config_from_command_line(
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
-                    hv_sint_enabled: false,
+                    force_dma_bounce_enabled: opt.uefi_force_dma_bounce,
+                    smbios: ged_smbios,
                 }
                 .into_resource(),
             ),
         ]);
     }
 
-    if opt.tpm && !opt.vtl2 {
+    if let Some(tpm_version) = opt.tpm
+        && !opt.vtl2
+    {
         let register_layout = if cfg!(guest_arch = "x86_64") {
             TpmRegisterLayout::IoPort
         } else {
             TpmRegisterLayout::Mmio
         };
 
+        let tpm_version = match tpm_version {
+            TpmVersionCli::V138 => TpmVersion::V138,
+            TpmVersionCli::V185 => TpmVersion::V185,
+        };
+
         let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
             (
                 VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
+                VmgsFileHandle::new(tpm_version.to_nvram_vmgs_file_id(), true).into_resource(),
             )
         } else {
             (
@@ -1246,6 +1638,7 @@ async fn vm_config_from_command_line(
             name: "tpm".to_string(),
             resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
+                    version: tpm_version,
                     ppi_store,
                     nvram_store,
                     nvram_size: None,
@@ -1264,46 +1657,6 @@ async fn vm_config_from_command_line(
         });
     }
 
-    let custom_uefi_vars = {
-        use firmware_uefi_custom_vars::CustomVars;
-
-        // load base vars from specified template, or use an empty set of base
-        // vars if none was specified.
-        let base_vars = match opt.secure_boot_template {
-            Some(template) => match (arch, template) {
-                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::x64::microsoft_windows()
-                }
-                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                }
-                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
-                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                }
-            },
-            None => CustomVars::default(),
-        };
-
-        // TODO: fallback to VMGS read if no command line flag was given
-
-        let custom_uefi_json_data = match &opt.custom_uefi_json {
-            Some(file) => Some(fs_err::read(file).context("opening custom uefi json file")?),
-            None => None,
-        };
-
-        // obtain the final custom uefi vars by applying the delta onto the base vars
-        match custom_uefi_json_data {
-            Some(data) => {
-                let delta = hyperv_uefi_custom_vars_json::load_delta_from_json(&data)?;
-                base_vars.apply_delta(delta)?
-            }
-            None => base_vars,
-        }
-    };
-
     let vga_firmware = if opt.pcat {
         Some(openvmm_pcat_locator::find_svga_bios(
             opt.vga_firmware.as_deref(),
@@ -1313,11 +1666,16 @@ async fn vm_config_from_command_line(
     };
 
     if opt.gfx {
+        // Channel for the video device to report dirty rectangles to the VNC worker.
+        let (dirt_send, dirt_recv) = mesh::channel();
+        resources.dirty_rect_recv = Some(dirt_recv);
+
         vmbus_devices.extend([
             (
                 DeviceVtl::Vtl0,
                 SynthVideoHandle {
                     framebuffer: SharedFramebufferHandle.into_resource(),
+                    dirt_send: Some(dirt_send),
                 }
                 .into_resource(),
             ),
@@ -1357,8 +1715,8 @@ async fn vm_config_from_command_line(
         }
     };
 
-    let vtl0_vsock_listener = vsock_listener(opt.vsock_path.as_deref())?;
-    let vtl2_vsock_listener = vsock_listener(opt.vtl2_vsock_path.as_deref())?;
+    let vtl0_vsock_listener = vsock_listener(opt.vmbus_vsock_path.as_deref())?;
+    let vtl2_vsock_listener = vsock_listener(opt.vmbus_vtl2_vsock_path.as_deref())?;
 
     if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
@@ -1372,6 +1730,13 @@ async fn vm_config_from_command_line(
             // TODO: allow this to be configured from the command line
             gic_config: None,
             pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
+            gic_msi: match opt.gic_msi {
+                cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
+                cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
+                cli_args::GicMsiCli::V2m => {
+                    openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
+                }
+            },
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1382,24 +1747,27 @@ async fn vm_config_from_command_line(
         });
 
     let with_isolation = if let Some(isolation) = &opt.isolation {
-        // TODO: For now, isolation is only supported with VTL2.
-        if !opt.vtl2 {
-            anyhow::bail!("isolation is only currently supported with vtl2");
-        }
-
-        // TODO: Alias map support is not yet implement with isolation.
-        if !opt.no_alias_map {
-            anyhow::bail!("alias map not supported with isolation");
-        }
-
         match isolation {
-            cli_args::IsolationCli::Vbs => Some(openvmm_defs::config::IsolationType::Vbs),
+            cli_args::IsolationCli::Vbs => {
+                // TODO: For now, VBS isolation is only supported with VTL2.
+                if !opt.vtl2 {
+                    anyhow::bail!("VBS isolation is only currently supported with vtl2");
+                }
+
+                // TODO: Alias map support is not yet implemented with isolation.
+                if !opt.no_alias_map {
+                    anyhow::bail!("alias map not supported with isolation");
+                }
+
+                Some(openvmm_defs::config::IsolationType::Vbs)
+            }
+            cli_args::IsolationCli::Snp => Some(openvmm_defs::config::IsolationType::Snp),
         }
     } else {
         None
     };
 
-    if with_hv {
+    if with_hv && !opt.no_vmbus {
         let (shutdown_send, shutdown_recv) = mesh::channel();
         resources.shutdown_ic = Some(shutdown_send);
         let (kvp_send, kvp_recv) = mesh::channel();
@@ -1448,6 +1816,7 @@ async fn vm_config_from_command_line(
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
+                vnode: None,
             });
         }
     };
@@ -1457,60 +1826,198 @@ async fn vm_config_from_command_line(
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::net::VirtioNetHandle {
-                max_queues: vport.max_queues,
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            }
-            .into_resource(),
-        );
+        let resource = virtio_resources::net::VirtioNetHandle {
+            max_queues: vport.max_queues,
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &cli_cfg.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
     for args in &opt.virtio_fs {
-        add_virtio_device(
-            opt.virtio_fs_bus,
-            virtio_resources::fs::VirtioFsHandle {
-                tag: args.tag.clone(),
-                fs: virtio_resources::fs::VirtioFsBackend::HostFs {
-                    root_path: args.path.clone(),
-                    mount_options: args.options.clone(),
-                },
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::fs::VirtioFsHandle {
+            tag: args.tag.clone(),
+            fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+                root_path: args.path.clone(),
+                mount_options: args.options.clone(),
+            },
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_fs_bus, resource);
+        }
     }
 
     for args in &opt.virtio_fs_shmem {
-        add_virtio_device(
-            opt.virtio_fs_bus,
-            virtio_resources::fs::VirtioFsHandle {
-                tag: args.tag.clone(),
-                fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
-                    root_path: args.path.clone(),
-                },
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::fs::VirtioFsHandle {
+            tag: args.tag.clone(),
+            fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
+                root_path: args.path.clone(),
+            },
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_fs_bus, resource);
+        }
     }
 
     for args in &opt.virtio_9p {
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::p9::VirtioPlan9Handle {
+            tag: args.tag.clone(),
+            root_path: args.path.clone(),
+            debug: opt.virtio_9p_debug,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    if let Some(pmem_args) = &opt.virtio_pmem {
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::pmem::VirtioPmemHandle {
+            path: pmem_args.path.clone(),
+        }
+        .into_resource();
+        if let Some(pcie_port) = &pmem_args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    if opt.virtio_rng {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::rng::VirtioRngHandle.into_resource();
+        if let Some(pcie_port) = &opt.virtio_rng_pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_rng_bus, resource);
+        }
+    }
+
+    if let Some(backend) = virtio_console_backend {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
+        if let Some(pcie_port) = &opt.virtio_console_pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    // Handle --vhost-user arguments.
+    #[cfg(target_os = "linux")]
+    for vhost_cli in &opt.vhost_user {
+        let stream =
+            unix_socket::UnixStream::connect(&vhost_cli.socket_path).with_context(|| {
+                format!(
+                    "failed to connect to vhost-user socket: {}",
+                    vhost_cli.socket_path
+                )
+            })?;
+
+        use crate::cli_args::VhostUserDeviceTypeCli;
+        let resource: Resource<VirtioDeviceHandle> = match vhost_cli.device_type {
+            VhostUserDeviceTypeCli::Fs {
+                ref tag,
+                num_queues,
+                queue_size,
+            } => virtio_resources::vhost_user::VhostUserFsHandle {
+                socket: stream.into(),
+                tag: tag.clone(),
+                num_queues,
+                queue_size,
+            }
+            .into_resource(),
+            VhostUserDeviceTypeCli::Blk {
+                num_queues,
+                queue_size,
+            } => virtio_resources::vhost_user::VhostUserBlkHandle {
+                socket: stream.into(),
+                num_queues,
+                queue_size,
+            }
+            .into_resource(),
+            VhostUserDeviceTypeCli::Other {
+                device_id,
+                ref queue_sizes,
+            } => virtio_resources::vhost_user::VhostUserGenericHandle {
+                socket: stream.into(),
+                device_id,
+                queue_sizes: queue_sizes.clone(),
+            }
+            .into_resource(),
+        };
+        if let Some(pcie_port) = &vhost_cli.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    let virtio_vsock_bus = opt.virtio_vsock_bus.unwrap_or(VirtioBusCli::Auto);
+
+    if let Some(vsock_path) = &opt.virtio_vsock_path {
+        let listener = vsock_listener(Some(vsock_path))?.unwrap();
         add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::p9::VirtioPlan9Handle {
-                tag: args.tag.clone(),
-                root_path: args.path.clone(),
-                debug: opt.virtio_9p_debug,
+            virtio_vsock_bus,
+            virtio_resources::vsock::VirtioVsockHandle {
+                // The guest CID does not matter since the UDS relay does not use it. It just needs
+                // to be some non-reserved value for the guest to use.
+                guest_cid: 0x3,
+                base_path: vsock_path.clone(),
+                listener,
             }
             .into_resource(),
         );
     }
 
-    if let Some(path) = &opt.virtio_pmem {
+    #[cfg(target_os = "linux")]
+    if let Some(guest_cid) = opt.virtio_vsock_vhost_cid {
+        let vhost = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/vhost-vsock")
+            .context("failed to open /dev/vhost-vsock")?
+            .into();
         add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::pmem::VirtioPmemHandle { path: path.clone() }.into_resource(),
+            virtio_vsock_bus,
+            virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource(),
         );
     }
 
@@ -1519,16 +2026,84 @@ async fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         pcie_root_complexes,
+        pcie_ecam_below_4gb: opt.pcie_ecam_below_4gb,
+        #[cfg(target_os = "linux")]
+        pcie_devices: {
+            let mut devs = pcie_devices;
+            devs.extend(vfio_pcie_devices);
+            devs
+        },
+        #[cfg(not(target_os = "linux"))]
         pcie_devices,
         pcie_switches,
+        pcie_generic_initiators,
         vpci_devices,
         ide_disks: Vec::new(),
-        memory: MemoryConfig {
-            mem_size: opt.memory,
-            mmio_gaps,
-            pci_ecam_gaps,
-            pci_mmio_gaps,
-            prefetch_memory: opt.prefetch,
+        numa: {
+            if let Some(ref nodes) = opt.numa {
+                // --numa mode: each --numa flag defines a node.
+                NumaTopology {
+                    nodes: nodes
+                        .iter()
+                        .map(|n| {
+                            let vps = match &n.vps {
+                                Some(vps) if vps.0.is_empty() => VpAssignment::Empty,
+                                Some(vps) => {
+                                    VpAssignment::Explicit(vps.expand_below(opt.processors)?)
+                                }
+                                None => VpAssignment::FromTopology,
+                            };
+                            Ok(NumaNode {
+                                mem: Some(MemoryConfig {
+                                    mem_size: n
+                                        .memory
+                                        .size
+                                        .expect("NUMA memory size was validated")
+                                        .0,
+                                    prefetch_memory: n.memory.prefetch,
+                                    private_memory: n.memory.shared == Some(false),
+                                    transparent_hugepages: n
+                                        .memory
+                                        .transparent_hugepages
+                                        .unwrap_or(!n.memory.hugepages),
+                                    hugepages: n.memory.hugepages,
+                                    hugepage_size: n.memory.hugepage_size.map(|m| m.0),
+                                    host_numa_node: n.host_numa_node,
+                                }),
+                                vps,
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                    distances: opt
+                        .numa_distance
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|d| NumaDistance {
+                            src: d.src,
+                            dst: d.dst,
+                            distance: d.distance,
+                        })
+                        .collect(),
+                }
+            } else {
+                // Single-node default from --memory.
+                NumaTopology {
+                    nodes: vec![NumaNode {
+                        mem: Some(MemoryConfig {
+                            mem_size: opt.memory_size(),
+                            prefetch_memory: opt.prefetch_memory(),
+                            private_memory: opt.private_memory(),
+                            transparent_hugepages: opt.transparent_hugepages(),
+                            hugepages: opt.memory.hugepages,
+                            hugepage_size: opt.memory.hugepage_size.map(|m| m.0),
+                            host_numa_node: None,
+                        }),
+                        vps: VpAssignment::FromTopology,
+                    }],
+                    distances: vec![],
+                }
+            }
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
@@ -1554,8 +2129,7 @@ async fn vm_config_from_command_line(
                 },
             }),
             with_isolation,
-            user_mode_hv_enlightenments: opt.no_enlightenments,
-            user_mode_apic: opt.user_mode_apic,
+            nested_virt: opt.nested_virt,
         },
         #[cfg(windows)]
         kernel_vmnics,
@@ -1564,9 +2138,9 @@ async fn vm_config_from_command_line(
         vga_firmware,
         vtl2_gfx: opt.vtl2_gfx,
         virtio_devices,
-        vmbus: with_hv.then_some(VmbusConfig {
+        vmbus: (with_hv && !opt.no_vmbus).then_some(VmbusConfig {
             vsock_listener: vtl0_vsock_listener,
-            vsock_path: opt.vsock_path.clone(),
+            vsock_path: opt.vmbus_vsock_path.clone(),
             vtl2_redirect: opt.vmbus_redirect,
             vmbus_max_version: opt.vmbus_max_version,
             #[cfg(windows)]
@@ -1574,36 +2148,81 @@ async fn vm_config_from_command_line(
         }),
         vtl2_vmbus: (with_hv && opt.vtl2).then_some(VmbusConfig {
             vsock_listener: vtl2_vsock_listener,
-            vsock_path: opt.vtl2_vsock_path.clone(),
+            vsock_path: opt.vmbus_vtl2_vsock_path.clone(),
             ..Default::default()
         }),
         vmbus_devices,
         chipset_devices,
+        pci_chipset_devices,
+        isa_dma_controller,
+        chipset_capabilities: capabilities,
+        layout: layout_config,
         #[cfg(windows)]
         vpci_resources,
         vmgs,
-        secure_boot_enabled: opt.secure_boot,
-        custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,
-        generation_id_recv: None,
         rtc_delta_milliseconds: 0,
-        automatic_guest_reset: !opt.halt_on_reset,
-        efi_diagnostics_log_level: {
-            match opt.efi_diagnostics_log_level.unwrap_or_default() {
-                EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
-                EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
-                EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
-            }
-        },
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
+    resources.serial_driver = Some(serial_driver);
+    validate_snp_config(&cfg)?;
     Ok((cfg, resources))
 }
 
+fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
+    if cfg.hypervisor.with_isolation != Some(openvmm_defs::config::IsolationType::Snp) {
+        return Ok(());
+    }
+
+    if !matches!(
+        cfg.load_mode,
+        LoadMode::Linux { .. } | LoadMode::Igvm { .. }
+    ) {
+        anyhow::bail!("SNP isolation currently only supports Linux direct or IGVM boot");
+    }
+    if cfg.hypervisor.with_vtl2.is_some() {
+        anyhow::bail!("SNP isolation currently does not support VTL2");
+    }
+    if cfg.vmbus.is_some() || cfg.vtl2_vmbus.is_some() || !cfg.vmbus_devices.is_empty() {
+        anyhow::bail!("SNP isolation currently does not support VMBus devices");
+    }
+
+    let only_supported_chipset_devices = cfg.chipset_devices.iter().all(|device| {
+        matches!(
+            device.resource.id(),
+            "serial_16550"
+                | "pic"
+                | "pit"
+                | "generic-ioapic"
+                | "hyperv_power_management"
+                | "missing-dev"
+        )
+    });
+    let only_virtio_pcie_devices = cfg
+        .pcie_devices
+        .iter()
+        .all(|device| device.resource.id() == "virtio");
+    if !cfg.floppy_disks.is_empty()
+        || !cfg.ide_disks.is_empty()
+        || !cfg.virtio_devices.is_empty()
+        || !only_virtio_pcie_devices
+        || !cfg.vpci_devices.is_empty()
+        || !only_supported_chipset_devices
+        || !cfg.pci_chipset_devices.is_empty()
+    {
+        anyhow::bail!("SNP isolation currently only supports virtio devices");
+    }
+    if cfg.framebuffer.is_some() || cfg.vga_firmware.is_some() || cfg.debugger_rpc.is_some() {
+        anyhow::bail!("SNP isolation currently does not support this VM configuration");
+    }
+
+    Ok(())
+}
+
 /// Gets the terminal to use for externally launched console windows.
-fn openvmm_terminal_app() -> Option<PathBuf> {
+pub(crate) fn openvmm_terminal_app() -> Option<PathBuf> {
     std::env::var_os("OPENVMM_TERM")
         .or_else(|| std::env::var_os("HVLITE_TERM"))
         .map(Into::into)
@@ -1624,17 +2243,17 @@ fn cleanup_socket(path: &Path) {
 }
 
 #[cfg(windows)]
-const DEFAULT_SWITCH: &str = "C08CB7B8-9B3C-408E-8E30-5E16A3AEB444";
-
-#[cfg(windows)]
 fn new_switch_port(
-    switch_id: &str,
+    switch_id: Option<&str>,
 ) -> anyhow::Result<(
     openvmm_defs::config::SwitchPortId,
     vmswitch::kernel::SwitchPort,
 )> {
     let id = vmswitch::kernel::SwitchPortId {
-        switch: switch_id.parse().context("invalid switch id")?,
+        switch: match switch_id {
+            Some(s) => s.parse().context("invalid switch id")?,
+            None => vmswitch::hcn::DEFAULT_SWITCH,
+        },
         port: Guid::new_random(),
     };
     let _ = vmswitch::hcn::Network::open(&id.switch)
@@ -1656,14 +2275,46 @@ fn parse_endpoint(
 ) -> anyhow::Result<NicConfig> {
     let _ = resources;
     let endpoint = match &cli_cfg.endpoint {
-        EndpointConfigCli::Consomme { cidr } => {
-            net_backend_resources::consomme::ConsommeHandle { cidr: cidr.clone() }.into_resource()
+        EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            let ports = host_fwd
+                .iter()
+                .map(|fwd| {
+                    use net_backend_resources::consomme::HostPortProtocol;
+                    net_backend_resources::consomme::HostPortConfig {
+                        protocol: match fwd.protocol {
+                            cli_args::HostPortProtocolCli::Tcp => HostPortProtocol::Tcp,
+                            cli_args::HostPortProtocolCli::Udp => HostPortProtocol::Udp,
+                        },
+                        host_address: fwd
+                            .host_address
+                            .map(net_backend_resources::consomme::HostIpAddress::from),
+                        host_port: net_backend_resources::consomme::HostPort::Fixed(fwd.host_port),
+                        guest_port: fwd.guest_port,
+                    }
+                })
+                .collect();
+            // Only wire the bind/unbind RPC channel to the first consomme
+            // endpoint. Additional consomme NICs work normally but cannot be
+            // targeted by runtime bind/unbind commands.
+            let recv = if resources.consomme_rpc.is_none() {
+                let (send, recv) = mesh::channel();
+                resources.consomme_rpc = Some(send);
+                Some(recv)
+            } else {
+                None
+            };
+            net_backend_resources::consomme::ConsommeHandle {
+                cidr: cidr.clone(),
+                ports,
+                recv,
+            }
+            .into_resource()
         }
         EndpointConfigCli::None => net_backend_resources::null::NullHandle.into_resource(),
         EndpointConfigCli::Dio { id } => {
             #[cfg(windows)]
             {
-                let (port_id, port) = new_switch_port(id.as_deref().unwrap_or(DEFAULT_SWITCH))?;
+                let (port_id, port) = new_switch_port(id.as_deref())?;
                 resources.switch_ports.push(port);
                 net_backend_resources::dio::WindowsDirectIoHandle {
                     switch_port_id: net_backend_resources::dio::SwitchPortId {
@@ -1681,7 +2332,18 @@ fn parse_endpoint(
             }
         }
         EndpointConfigCli::Tap { name } => {
-            net_backend_resources::tap::TapHandle { name: name.clone() }.into_resource()
+            #[cfg(target_os = "linux")]
+            {
+                let fd = net_tap::tap::open_tap(name)
+                    .with_context(|| format!("failed to open TAP device '{name}'"))?;
+                net_backend_resources::tap::TapHandle { fd }.into_resource()
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = name;
+                bail!("TAP backend is only supported on Linux")
+            }
         }
     };
 
@@ -1703,6 +2365,7 @@ fn parse_endpoint(
         endpoint,
         mac_address: mac_address.into(),
         max_queues: cli_cfg.max_queues,
+        pcie_port: cli_cfg.pcie_port.clone(),
     })
 }
 
@@ -1713,6 +2376,7 @@ struct NicConfig {
     mac_address: MacAddress,
     endpoint: Resource<NetEndpointHandleKind>,
     max_queues: Option<u16>,
+    pcie_port: Option<String>,
 }
 
 impl NicConfig {
@@ -1735,9 +2399,12 @@ enum LayerOrDisk {
     Disk(Resource<DiskHandleKind>),
 }
 
-fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource<DiskHandleKind>> {
+async fn disk_open(
+    disk_cli: &DiskCliKind,
+    read_only: bool,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
     let mut layers = Vec::new();
-    disk_open_inner(disk_cli, read_only, &mut layers)?;
+    disk_open_inner(disk_cli, read_only, &mut layers).await?;
     if layers.len() == 1 && matches!(layers[0], LayerOrDisk::Disk(_)) {
         let LayerOrDisk::Disk(disk) = layers.pop().unwrap() else {
             unreachable!()
@@ -1760,144 +2427,230 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
     }
 }
 
-fn disk_open_inner(
-    disk_cli: &DiskCliKind,
+fn disk_open_inner<'a>(
+    disk_cli: &'a DiskCliKind,
     read_only: bool,
-    layers: &mut Vec<LayerOrDisk>,
-) -> anyhow::Result<()> {
-    fn layer<T: IntoResource<DiskLayerHandleKind>>(layer: T) -> LayerOrDisk {
-        LayerOrDisk::Layer(layer.into_resource().into())
-    }
-    fn disk<T: IntoResource<DiskHandleKind>>(disk: T) -> LayerOrDisk {
-        LayerOrDisk::Disk(disk.into_resource())
-    }
-    match disk_cli {
-        &DiskCliKind::Memory(len) => {
-            layers.push(layer(RamDiskLayerHandle { len: Some(len) }));
+    layers: &'a mut Vec<LayerOrDisk>,
+) -> futures::future::BoxFuture<'a, anyhow::Result<()>> {
+    Box::pin(async move {
+        fn layer<T: IntoResource<DiskLayerHandleKind>>(layer: T) -> LayerOrDisk {
+            LayerOrDisk::Layer(layer.into_resource().into())
         }
-        DiskCliKind::File {
-            path,
-            create_with_len,
-        } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
-            create_disk_type(path, *size)
-                .with_context(|| format!("failed to create {}", path.display()))?
-        } else {
-            open_disk_type(path, read_only)
-                .with_context(|| format!("failed to open {}", path.display()))?
-        })),
-        DiskCliKind::Blob { kind, url } => {
-            layers.push(disk(disk_backend_resources::BlobDiskHandle {
-                url: url.to_owned(),
-                format: match kind {
-                    cli_args::BlobKind::Flat => disk_backend_resources::BlobDiskFormat::Flat,
-                    cli_args::BlobKind::Vhd1 => disk_backend_resources::BlobDiskFormat::FixedVhd1,
-                },
-            }))
+        fn disk<T: IntoResource<DiskHandleKind>>(disk: T) -> LayerOrDisk {
+            LayerOrDisk::Disk(disk.into_resource())
         }
-        DiskCliKind::MemoryDiff(inner) => {
-            layers.push(layer(RamDiskLayerHandle { len: None }));
-            disk_open_inner(inner, true, layers)?;
-        }
-        DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
-            disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
-        )),
-        DiskCliKind::DelayDiskWrapper {
-            delay_ms,
-            disk: inner,
-        } => layers.push(disk(DelayDiskHandle {
-            delay: CellUpdater::new(Duration::from_millis(*delay_ms)).cell(),
-            disk: disk_open(inner, read_only)?,
-        })),
-        DiskCliKind::Crypt {
-            disk: inner,
-            cipher,
-            key_file,
-        } => layers.push(disk(disk_crypt_resources::DiskCryptHandle {
-            disk: disk_open(inner, read_only)?,
-            cipher: match cipher {
-                cli_args::DiskCipher::XtsAes256 => disk_crypt_resources::Cipher::XtsAes256,
-            },
-            key: fs_err::read(key_file).context("failed to read key file")?,
-        })),
-        DiskCliKind::Sqlite {
-            path,
-            create_with_len,
-        } => {
-            // FUTURE: this code should be responsible for opening
-            // file-handle(s) itself, and passing them into sqlite via a custom
-            // vfs. For now though - simply check if the file exists or not, and
-            // perform early validation of filesystem-level create options.
-            match (create_with_len.is_some(), path.exists()) {
-                (true, true) => anyhow::bail!(
-                    "cannot create new sqlite disk at {} - file already exists",
-                    path.display()
-                ),
-                (false, false) => anyhow::bail!(
-                    "cannot open sqlite disk at {} - file not found",
-                    path.display()
-                ),
-                _ => {}
+        match disk_cli {
+            &DiskCliKind::Memory(len) => {
+                layers.push(layer(RamDiskLayerHandle {
+                    len: Some(len),
+                    sector_size: None,
+                }));
             }
-
-            layers.push(layer(SqliteDiskLayerHandle {
-                dbhd_path: path.display().to_string(),
-                format_dbhd: create_with_len.map(|len| {
-                    disk_backend_resources::layer::SqliteDiskLayerFormatParams {
-                        logically_read_only: false,
-                        len: Some(len),
-                    }
-                }),
-            }));
-        }
-        DiskCliKind::SqliteDiff { path, create, disk } => {
-            // FUTURE: this code should be responsible for opening
-            // file-handle(s) itself, and passing them into sqlite via a custom
-            // vfs. For now though - simply check if the file exists or not, and
-            // perform early validation of filesystem-level create options.
-            match (create, path.exists()) {
-                (true, true) => anyhow::bail!(
-                    "cannot create new sqlite disk at {} - file already exists",
-                    path.display()
-                ),
-                (false, false) => anyhow::bail!(
-                    "cannot open sqlite disk at {} - file not found",
-                    path.display()
-                ),
-                _ => {}
-            }
-
-            layers.push(layer(SqliteDiskLayerHandle {
-                dbhd_path: path.display().to_string(),
-                format_dbhd: create.then_some(
-                    disk_backend_resources::layer::SqliteDiskLayerFormatParams {
-                        logically_read_only: false,
-                        len: None,
+            DiskCliKind::File {
+                path,
+                create_with_len,
+                direct,
+            } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
+                create_disk_type(
+                    path,
+                    *size,
+                    OpenDiskOptions {
+                        read_only: false,
+                        direct: *direct,
                     },
-                ),
-            }));
-            disk_open_inner(disk, true, layers)?;
-        }
-        DiskCliKind::AutoCacheSqlite {
-            cache_path,
-            key,
-            disk,
-        } => {
-            layers.push(LayerOrDisk::Layer(DiskLayerDescription {
-                read_cache: true,
-                write_through: false,
-                layer: SqliteAutoCacheDiskLayerHandle {
-                    cache_path: cache_path.clone(),
-                    cache_key: key.clone(),
+                )
+                .with_context(|| format!("failed to create {}", path.display()))?
+            } else {
+                open_disk_type(
+                    path,
+                    OpenDiskOptions {
+                        read_only,
+                        direct: *direct,
+                    },
+                )
+                .await
+                .with_context(|| format!("failed to open {}", path.display()))?
+            })),
+            DiskCliKind::Blob { kind, url } => {
+                layers.push(disk(disk_backend_resources::BlobDiskHandle {
+                    url: url.to_owned(),
+                    format: match kind {
+                        cli_args::BlobKind::Flat => disk_backend_resources::BlobDiskFormat::Flat,
+                        cli_args::BlobKind::Vhd1 => {
+                            disk_backend_resources::BlobDiskFormat::FixedVhd1
+                        }
+                    },
+                }))
+            }
+            DiskCliKind::MemoryDiff(inner) => {
+                layers.push(layer(RamDiskLayerHandle {
+                    len: None,
+                    sector_size: None,
+                }));
+                disk_open_inner(inner, true, layers).await?;
+            }
+            DiskCliKind::PersistentReservationsWrapper(inner) => {
+                layers.push(disk(disk_backend_resources::DiskWithReservationsHandle(
+                    disk_open(inner, read_only).await?,
+                )))
+            }
+            DiskCliKind::DelayDiskWrapper {
+                delay_ms,
+                disk: inner,
+            } => layers.push(disk(DelayDiskHandle {
+                delay: CellUpdater::new(Duration::from_millis(*delay_ms)).cell(),
+                disk: disk_open(inner, read_only).await?,
+            })),
+            DiskCliKind::Crypt {
+                disk: inner,
+                cipher,
+                key_file,
+            } => layers.push(disk(disk_crypt_resources::DiskCryptHandle {
+                disk: disk_open(inner, read_only).await?,
+                cipher: match cipher {
+                    cli_args::DiskCipher::XtsAes256 => disk_crypt_resources::Cipher::XtsAes256,
+                },
+                key: fs_err::read(key_file).context("failed to read key file")?,
+            })),
+            DiskCliKind::Sqlite {
+                path,
+                create_with_len,
+            } => {
+                // FUTURE: this code should be responsible for opening
+                // file-handle(s) itself, and passing them into sqlite via a custom
+                // vfs. For now though - simply check if the file exists or not, and
+                // perform early validation of filesystem-level create options.
+                match (create_with_len.is_some(), path.exists()) {
+                    (true, true) => anyhow::bail!(
+                        "cannot create new sqlite disk at {} - file already exists",
+                        path.display()
+                    ),
+                    (false, false) => anyhow::bail!(
+                        "cannot open sqlite disk at {} - file not found",
+                        path.display()
+                    ),
+                    _ => {}
                 }
-                .into_resource(),
-            }));
-            disk_open_inner(disk, read_only, layers)?;
+
+                layers.push(layer(SqliteDiskLayerHandle {
+                    dbhd_path: path.display().to_string(),
+                    format_dbhd: create_with_len.map(|len| {
+                        disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                            logically_read_only: false,
+                            len: Some(len),
+                        }
+                    }),
+                }));
+            }
+            DiskCliKind::SqliteDiff { path, create, disk } => {
+                // FUTURE: this code should be responsible for opening
+                // file-handle(s) itself, and passing them into sqlite via a custom
+                // vfs. For now though - simply check if the file exists or not, and
+                // perform early validation of filesystem-level create options.
+                match (create, path.exists()) {
+                    (true, true) => anyhow::bail!(
+                        "cannot create new sqlite disk at {} - file already exists",
+                        path.display()
+                    ),
+                    (false, false) => anyhow::bail!(
+                        "cannot open sqlite disk at {} - file not found",
+                        path.display()
+                    ),
+                    _ => {}
+                }
+
+                layers.push(layer(SqliteDiskLayerHandle {
+                    dbhd_path: path.display().to_string(),
+                    format_dbhd: create.then_some(
+                        disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                            logically_read_only: false,
+                            len: None,
+                        },
+                    ),
+                }));
+                disk_open_inner(disk, true, layers).await?;
+            }
+            DiskCliKind::AutoCacheSqlite {
+                cache_path,
+                key,
+                disk,
+            } => {
+                layers.push(LayerOrDisk::Layer(DiskLayerDescription {
+                    read_cache: true,
+                    write_through: false,
+                    layer: SqliteAutoCacheDiskLayerHandle {
+                        cache_path: cache_path.clone(),
+                        cache_key: key.clone(),
+                    }
+                    .into_resource(),
+                }));
+                disk_open_inner(disk, read_only, layers).await?;
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
-fn do_main() -> anyhow::Result<()> {
+/// Get the system page size.
+pub(crate) fn system_page_size() -> u32 {
+    sparse_mmap::SparseMapping::page_size() as u32
+}
+
+/// The guest architecture string, derived from the compile-time `guest_arch` cfg.
+pub(crate) const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
+    "x86_64"
+} else {
+    "aarch64"
+};
+
+/// Open a snapshot directory and validate it against the current VM config.
+/// Returns the shared memory fd (from memory.bin) and the saved device state.
+fn prepare_snapshot_restore(
+    snapshot_dir: &Path,
+    opt: &Options,
+) -> anyhow::Result<(
+    openvmm_defs::worker::SharedMemoryFd,
+    mesh::payload::message::ProtobufMessage,
+)> {
+    let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(snapshot_dir)?;
+
+    // Validate manifest against current VM config.
+    openvmm_helpers::snapshot::validate_manifest(
+        &manifest,
+        GUEST_ARCH,
+        opt.memory_size(),
+        opt.processors,
+        system_page_size(),
+    )?;
+
+    // Open memory.bin (existing file, no create, no resize).
+    let memory_file = fs_err::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(snapshot_dir.join("memory.bin"))?;
+
+    // Validate file size matches expected memory size.
+    let file_size = memory_file.metadata()?.len();
+    if file_size != manifest.memory_size_bytes {
+        anyhow::bail!(
+            "memory.bin size ({file_size} bytes) doesn't match manifest ({} bytes)",
+            manifest.memory_size_bytes,
+        );
+    }
+
+    let shared_memory_fd =
+        openvmm_helpers::shared_memory::file_to_shared_memory_fd(memory_file.into())?;
+
+    // Reconstruct ProtobufMessage from the saved state bytes.
+    // The save side wrote mesh::payload::encode(ProtobufMessage), so we decode
+    // back to ProtobufMessage.
+    let state_msg: mesh::payload::message::ProtobufMessage = mesh::payload::decode(&state_bytes)
+        .context("failed to decode saved state from snapshot")?;
+
+    Ok((shared_memory_fd, state_msg))
+}
+
+fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -1908,365 +2661,70 @@ fn do_main() -> anyhow::Result<()> {
     // not return). Any worker host setup errors are return and bubbled up.
     meshworker::run_vmm_mesh_host()?;
 
-    let opt = Options::parse();
+    let opt = cli_args::parse_options();
     if let Some(path) = &opt.write_saved_state_proto {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
             .context("failed to write protobuf descriptors")?;
-        return Ok(());
+        return Ok(0);
+    }
+
+    if let Some(ref path) = opt.pidfile {
+        *pidfile_guard = Some(pidfile::Pidfile::new(path).context("failed to create pidfile")?);
     }
 
     if let Some(path) = opt.relay_console_path {
         let console_title = opt.relay_console_title.unwrap_or_default();
-        return console_relay::relay_console(&path, console_title.as_str());
+        return console_relay::relay_console(&path, console_title.as_str()).map(|()| 0);
     }
 
     #[cfg(any(feature = "grpc", feature = "ttrpc"))]
-    if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
-        return block_on(async {
-            let _ = std::fs::remove_file(path);
-            let listener =
-                unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
+    {
+        let rpc = opt
+            .rpc
+            .as_ref()
+            .map(|rpc| {
+                let transport = match rpc.transport {
+                    cli_args::RpcTransportCli::Auto => ttrpc::RpcTransport::Auto,
+                    cli_args::RpcTransportCli::Ttrpc => ttrpc::RpcTransport::Ttrpc,
+                    cli_args::RpcTransportCli::Grpc => ttrpc::RpcTransport::Grpc,
+                };
+                (rpc.path.as_path(), transport)
+            })
+            .or_else(|| {
+                opt.ttrpc
+                    .as_deref()
+                    .map(|p| (p, ttrpc::RpcTransport::Ttrpc))
+            })
+            .or_else(|| opt.grpc.as_deref().map(|p| (p, ttrpc::RpcTransport::Grpc)));
 
-            let transport = if opt.ttrpc.is_some() {
-                ttrpc::RpcTransport::Ttrpc
-            } else {
-                ttrpc::RpcTransport::Grpc
-            };
+        if let Some((path, transport)) = rpc {
+            return block_on(async {
+                let _ = std::fs::remove_file(path);
+                let listener =
+                    unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
 
-            // This is a local launch
-            let mut handle =
-                mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
-                    listener,
-                    transport,
-                })
-                .await?;
+                // This is a local launch
+                let mut handle =
+                    mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
+                        listener,
+                        transport,
+                    })
+                    .await?;
 
-            tracing::info!(%transport, path = %path.display(), "listening");
+                tracing::info!(%transport, path = %path.display(), "listening");
 
-            // Signal the the parent process that the server is ready.
-            pal::close_stdout().context("failed to close stdout")?;
+                // Signal the parent process that the server is ready.
+                pal::close_stdout().context("failed to close stdout")?;
 
-            handle.join().await?;
+                handle.join().await?;
 
-            Ok(())
-        });
-    }
-
-    DefaultPool::run_with(async |driver| {
-        let mesh = VmmMesh::new(&driver, opt.single_process)?;
-        let result = run_control(&driver, &mesh, opt).await;
-        mesh.shutdown().await;
-        result
-    })
-}
-
-fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
-    let (radix, prefix_len) = if s.starts_with("0x") || s.starts_with("0X") {
-        (16, 2)
-    } else if s.starts_with("0o") || s.starts_with("0O") {
-        (8, 2)
-    } else if s.starts_with("0b") || s.starts_with("0B") {
-        (2, 2)
-    } else {
-        (10, 0)
-    };
-
-    u64::from_str_radix(&s[prefix_len..], radix).map_err(|e| format!("{e}"))
-}
-
-#[derive(Parser)]
-#[clap(
-    name = "openvmm",
-    disable_help_flag = true,
-    disable_version_flag = true,
-    no_binary_name = true,
-    help_template("{subcommands}")
-)]
-enum InteractiveCommand {
-    /// Restart the VM worker (experimental).
-    ///
-    /// This restarts the VM worker while preserving state.
-    #[clap(visible_alias = "R")]
-    Restart,
-
-    /// Inject an NMI.
-    #[clap(visible_alias = "n")]
-    Nmi,
-
-    /// Pause the VM.
-    #[clap(visible_alias = "p")]
-    Pause,
-
-    /// Resume the VM.
-    #[clap(visible_alias = "r")]
-    Resume,
-
-    /// Do a pulsed save restore (pause, save, reset, restore, resume) to the VM.
-    #[clap(visible_alias = "psr")]
-    PulseSaveRestore,
-
-    /// Schedule a pulsed save restore (pause, save, reset, restore, resume) to the VM.
-    #[clap(visible_alias = "spsr")]
-    SchedulePulseSaveRestore {
-        /// The interval between pulse save restore operations in seconds.
-        /// None or 0 means any previous scheduled pulse save restores will be cleared.
-        interval: Option<u64>,
-    },
-
-    /// Hot add a disk to the VTL0 guest.
-    #[clap(visible_alias = "d")]
-    AddDisk {
-        #[clap(long = "ro")]
-        read_only: bool,
-        #[clap(long = "dvd")]
-        is_dvd: bool,
-        #[clap(long, default_value_t)]
-        target: u8,
-        #[clap(long, default_value_t)]
-        path: u8,
-        #[clap(long, default_value_t)]
-        lun: u8,
-        #[clap(long)]
-        ram: Option<u64>,
-        file_path: Option<PathBuf>,
-    },
-
-    /// Hot remove a disk from the VTL0 guest.
-    #[clap(visible_alias = "D")]
-    RmDisk {
-        #[clap(long)]
-        target: u8,
-        #[clap(long)]
-        path: u8,
-        #[clap(long)]
-        lun: u8,
-    },
-
-    /// Manage VTL2 settings (storage controllers, NICs exposed to VTL0).
-    #[clap(subcommand)]
-    Vtl2Settings(Vtl2SettingsCommand),
-
-    /// Hot add an NVMe namespace to VTL2, and optionally to VTL0.
-    AddNvmeNs {
-        #[clap(long = "ro")]
-        read_only: bool,
-        /// The namespace ID.
-        #[clap(long)]
-        nsid: u32,
-        /// Create a RAM-backed namespace of the specified size in bytes.
-        #[clap(long)]
-        ram: Option<u64>,
-        /// Path to a file to use as the backing store.
-        file_path: Option<PathBuf>,
-        /// Also expose this namespace to VTL0 via VTL2 settings as a SCSI disk
-        /// with the specified LUN number.
-        #[clap(long)]
-        vtl0_lun: Option<u32>,
-    },
-
-    /// Hot remove an NVMe namespace from VTL2.
-    RmNvmeNs {
-        /// The namespace ID to remove.
-        #[clap(long)]
-        nsid: u32,
-        /// Also remove the VTL0 SCSI disk backed by this namespace.
-        #[clap(long)]
-        vtl0: bool,
-    },
-
-    /// Inspect program state.
-    #[clap(visible_alias = "x")]
-    Inspect {
-        /// Enumerate state recursively.
-        #[clap(short, long)]
-        recursive: bool,
-        /// The recursive depth limit.
-        #[clap(short, long, requires("recursive"))]
-        limit: Option<usize>,
-        /// Target the paravisor.
-        #[clap(short = 'v', long)]
-        paravisor: bool,
-        /// The element path to inspect.
-        element: Option<String>,
-        /// Update the path with a new value.
-        #[clap(short, long, conflicts_with("recursive"))]
-        update: Option<String>,
-    },
-
-    /// Restart the VNC worker.
-    #[clap(visible_alias = "V")]
-    RestartVnc,
-
-    /// Start an hvsocket terminal window.
-    #[clap(visible_alias = "v")]
-    Hvsock {
-        /// the terminal emulator to run (defaults to conhost.exe or xterm)
-        #[clap(short, long)]
-        term: Option<PathBuf>,
-        /// the vsock port to connect to
-        port: u32,
-    },
-
-    /// Quit the program.
-    #[clap(visible_alias = "q")]
-    Quit,
-
-    /// Write input to the VM console.
-    ///
-    /// This will write each input parameter to the console's associated serial
-    /// port, separated by spaces.
-    #[clap(visible_alias = "i")]
-    Input { data: Vec<String> },
-
-    /// Switch to input mode.
-    ///
-    /// Once in input mode, Ctrl-Q returns to command mode.
-    #[clap(visible_alias = "I")]
-    InputMode,
-
-    /// Reset the VM.
-    Reset,
-
-    /// Send a request to the VM to shut it down.
-    Shutdown {
-        /// Reboot the VM instead of powering it off.
-        #[clap(long, short = 'r')]
-        reboot: bool,
-        /// Hibernate the VM instead of powering it off.
-        #[clap(long, short = 'h', conflicts_with = "reboot")]
-        hibernate: bool,
-        /// Tell the guest to force the power state transition.
-        #[clap(long, short = 'f')]
-        force: bool,
-    },
-
-    /// Clears the current halt condition, resuming the VPs if the VM is
-    /// running.
-    #[clap(visible_alias = "ch")]
-    ClearHalt,
-
-    /// Update the image in VTL2.
-    ServiceVtl2 {
-        /// Just restart the user-mode paravisor process, not the full
-        /// firmware.
-        #[clap(long, short = 'u')]
-        user_mode_only: bool,
-        /// The path to the new IGVM file. If missing, use the originally
-        /// configured path.
-        #[clap(long, conflicts_with("user_mode_only"))]
-        igvm: Option<PathBuf>,
-        /// Enable keepalive when servicing VTL2 devices.
-        /// Default is `true`.
-        #[clap(long, short = 'n', default_missing_value = "true")]
-        nvme_keepalive: bool,
-        /// Enable keepalive when servicing VTL2 devices.
-        /// Default is `false`.
-        #[clap(long)]
-        mana_keepalive: bool,
-    },
-
-    /// Read guest memory
-    ReadMemory {
-        /// Guest physical address to start at.
-        #[clap(value_parser=maybe_with_radix_u64)]
-        gpa: u64,
-        /// How many bytes to dump.
-        #[clap(value_parser=maybe_with_radix_u64)]
-        size: u64,
-        /// File to save the data to. If omitted,
-        /// the data will be presented as a hex dump.
-        #[clap(long, short = 'f')]
-        file: Option<PathBuf>,
-    },
-
-    /// Write guest memory
-    WriteMemory {
-        /// Guest physical address to start at
-        #[clap(value_parser=maybe_with_radix_u64)]
-        gpa: u64,
-        /// Hex string encoding data, with no `0x` radix.
-        /// If omitted, the source file must be specified.
-        hex: Option<String>,
-        /// File to write the data from.
-        #[clap(long, short = 'f')]
-        file: Option<PathBuf>,
-    },
-
-    /// Inject an artificial panic into OpenVMM
-    Panic,
-
-    /// Use KVP to interact with the guest.
-    Kvp(kvp::KvpCommand),
-}
-
-/// Subcommands for managing VTL2 settings.
-#[derive(clap::Subcommand)]
-enum Vtl2SettingsCommand {
-    /// Show the current VTL2 settings.
-    Show,
-
-    /// Add a SCSI disk to VTL0 backed by a VTL2 storage device.
-    ///
-    /// The backing device can be either a VTL2 NVMe namespace or a VTL2 SCSI disk.
-    AddScsiDisk {
-        /// The VTL0 SCSI controller instance ID (GUID). Defaults to the standard
-        /// OpenVMM VTL0 SCSI instance.
-        #[clap(long)]
-        controller: Option<String>,
-        /// The SCSI LUN to expose to VTL0.
-        #[clap(long)]
-        lun: u32,
-        /// The backing VTL2 NVMe namespace ID.
-        #[clap(
-            long,
-            conflicts_with = "backing_scsi_lun",
-            required_unless_present = "backing_scsi_lun"
-        )]
-        backing_nvme_nsid: Option<u32>,
-        /// The backing VTL2 SCSI LUN.
-        #[clap(
-            long,
-            conflicts_with = "backing_nvme_nsid",
-            required_unless_present = "backing_nvme_nsid"
-        )]
-        backing_scsi_lun: Option<u32>,
-    },
-
-    /// Remove a SCSI disk from VTL0.
-    RmScsiDisk {
-        /// The SCSI controller instance ID (GUID). Defaults to the standard
-        /// OpenVMM VTL0 SCSI instance.
-        #[clap(long)]
-        controller: Option<String>,
-        /// The SCSI LUN to remove.
-        #[clap(long)]
-        lun: u32,
-    },
-}
-
-struct CommandParser {
-    app: clap::Command,
-}
-
-impl CommandParser {
-    fn new() -> Self {
-        // Update the help template for each subcommand.
-        let mut app = InteractiveCommand::command();
-        for sc in app.get_subcommands_mut() {
-            *sc = sc
-                .clone()
-                .help_template("{about-with-newline}\n{usage-heading}\n    {usage}\n\n{all-args}");
+                Ok(0)
+            });
         }
-        Self { app }
     }
 
-    fn parse(&mut self, line: &str) -> clap::error::Result<InteractiveCommand> {
-        let args = shell_words::split(line)
-            .map_err(|err| self.app.error(clap::error::ErrorKind::ValueValidation, err))?;
-        let matches = self.app.try_get_matches_from_mut(args)?;
-        InteractiveCommand::from_arg_matches(&matches).map_err(|err| err.format(&mut self.app))
-    }
+    DefaultPool::run_with(async |driver| run_control(&driver, opt).await)
 }
 
 fn new_hvsock_service_id(port: u32) -> Guid {
@@ -2278,13 +2736,77 @@ fn new_hvsock_service_id(port: u32) -> Guid {
     }
 }
 
-async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> anyhow::Result<()> {
+async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<i32> {
+    let mut mesh = Some(VmmMesh::new(&driver, opt.single_process)?);
+    let result = run_control_inner(driver, &mut mesh, opt).await;
+    // If setup failed before the mesh was handed to the controller, shut it
+    // down so the child host process exits cleanly without noisy logs.
+    if let Some(mesh) = mesh {
+        mesh.shutdown().await;
+    }
+    result
+}
+
+async fn run_control_inner(
+    driver: &DefaultDriver,
+    mesh_slot: &mut Option<VmmMesh>,
+    opt: Options,
+) -> anyhow::Result<i32> {
+    let mesh = mesh_slot.as_ref().unwrap();
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
     let mut vnc_worker = None;
-    if opt.gfx || opt.vnc {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", opt.vnc_port))
-            .with_context(|| format!("binding to VNC port {}", opt.vnc_port))?;
+    if opt.gfx || opt.vnc.vnc {
+        // Parse the listen address. Try as a full SocketAddr (host:port) first;
+        // fall back to a bare IP, using the configured port.
+        let addr: std::net::SocketAddr = if let Ok(sa) =
+            opt.vnc.vnc_listen.parse::<std::net::SocketAddr>()
+        {
+            sa
+        } else {
+            let ip: std::net::IpAddr = opt.vnc.vnc_listen.parse().with_context(|| {
+                format!(
+                    "invalid VNC listen address: {} (expected IP address or socket address like [::1]:5900)",
+                    opt.vnc.vnc_listen
+                )
+            })?;
+            std::net::SocketAddr::new(ip, opt.vnc.vnc_port)
+        };
+
+        let socket = socket2::Socket::new(
+            if addr.is_ipv6() {
+                socket2::Domain::IPV6
+            } else {
+                socket2::Domain::IPV4
+            },
+            socket2::Type::STREAM,
+            None,
+        )
+        .with_context(|| format!("creating VNC socket for {}", addr))?;
+
+        if addr.is_ipv6() {
+            if let Err(e) = socket.set_only_v6(false) {
+                tracing::warn!(
+                    error = %e,
+                    "failed to enable dual-stack on IPv6 VNC socket, IPv4 clients may not be able to connect"
+                );
+            }
+        }
+        socket.set_reuse_address(true)?;
+        socket
+            .bind(&addr.into())
+            .with_context(|| format!("binding VNC socket to {}", addr))?;
+        socket
+            .listen(128)
+            .with_context(|| format!("listening on VNC socket {}", addr))?;
+        let listener: TcpListener = socket.into();
+
+        if !addr.ip().is_loopback() {
+            tracing::warn!(
+                address = %addr,
+                "VNC server listening on non-localhost address without authentication"
+            );
+        }
 
         let input_send = vm_config.input.sender();
         let framebuffer = resources
@@ -2305,6 +2827,9 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         listener,
                         framebuffer,
                         input_send,
+                        dirty_recv: resources.dirty_rect_recv.take(),
+                        max_clients: opt.vnc.vnc_max_clients,
+                        evict_oldest: opt.vnc.vnc_evict_oldest,
                     },
                 )
                 .await?,
@@ -2349,13 +2874,33 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     // spin up the VM
     let (vm_rpc, rpc_recv) = mesh::channel();
     let (notify_send, notify_recv) = mesh::channel();
-    let mut vm_worker = {
+    let vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
+        let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
+            let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
+            (Some(fd), Some(state_msg))
+        } else {
+            let shared_memory = opt
+                .memory_backing_file()
+                .map(|path| {
+                    openvmm_helpers::shared_memory::open_memory_backing_file(
+                        path,
+                        opt.memory_size(),
+                    )
+                })
+                .transpose()?;
+            (shared_memory, None)
+        };
+
         let params = VmWorkerParameters {
-            hypervisor: opt.hypervisor,
+            hypervisor: match &opt.hypervisor {
+                Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
+                None => openvmm_helpers::hypervisor::choose_hypervisor()?,
+            },
             cfg: vm_config,
-            saved_state: None,
+            saved_state,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -2364,6 +2909,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             .await
             .context("failed to launch vm worker")?
     };
+
+    if opt.restore_snapshot.is_some() {
+        tracing::info!("restoring VM from snapshot");
+    }
 
     if !opt.paused {
         vm_rpc.call(VmRpc::Resume, ()).await?;
@@ -2382,1057 +2931,75 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         },
     ));
 
-    let mut diag_inspector = DiagInspector::new(driver.clone(), paravisor_diag.clone());
-
-    let (console_command_send, console_command_recv) = mesh::channel();
-    let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
-
-    let mut console_in = resources.console_in.take();
-    thread::Builder::new()
-        .name("stdio-thread".to_string())
-        .spawn(move || {
-            // install panic hook to restore cooked terminal (linux)
-            #[cfg(unix)]
-            if io::stderr().is_terminal() {
-                term::revert_terminal_on_panic()
-            }
-
-            let mut rl = rustyline::Editor::<
-                interactive_console::OpenvmmRustylineEditor,
-                rustyline::history::FileHistory,
-            >::with_config(
-                rustyline::Config::builder()
-                    .completion_type(rustyline::CompletionType::List)
-                    .build(),
-            )
-            .unwrap();
-
-            rl.set_helper(Some(interactive_console::OpenvmmRustylineEditor {
-                openvmm_inspect_req: Arc::new(inspect_completion_engine_send),
-            }));
-
-            let history_file = {
-                const HISTORY_FILE: &str = ".openvmm_history";
-
-                // using a `None` to kick off the `.or()` chain in order to make
-                // it a bit easier to visually inspect the fallback chain.
-                let history_folder = None
-                    .or_else(dirs::state_dir)
-                    .or_else(dirs::data_local_dir)
-                    .map(|path| path.join("openvmm"));
-
-                if let Some(history_folder) = history_folder {
-                    if let Err(err) = std::fs::create_dir_all(&history_folder) {
-                        tracing::warn!(
-                            error = &err as &dyn std::error::Error,
-                            "could not create directory: {}",
-                            history_folder.display()
-                        )
-                    }
-
-                    Some(history_folder.join(HISTORY_FILE))
-                } else {
-                    None
-                }
-            };
-
-            if let Some(history_file) = &history_file {
-                tracing::info!("restoring history from {}", history_file.display());
-                if rl.load_history(history_file).is_err() {
-                    tracing::info!("could not find existing {}", history_file.display());
-                }
-            }
-
-            // Enable Ctrl-Backspace to delete the current word.
-            rl.bind_sequence(
-                rustyline::KeyEvent::new('\x08', rustyline::Modifiers::CTRL),
-                rustyline::Cmd::Kill(rustyline::Movement::BackwardWord(1, rustyline::Word::Emacs)),
-            );
-
-            let mut parser = CommandParser::new();
-
-            let mut stdin = io::stdin();
-            loop {
-                // Raw console text until Ctrl-Q.
-                term::set_raw_console(true).expect("failed to set raw console mode");
-
-                if let Some(input) = console_in.as_mut() {
-                    let mut buf = [0; 32];
-                    loop {
-                        let n = stdin.read(&mut buf).unwrap();
-                        let mut b = &buf[..n];
-                        let stop = if let Some(ctrlq) = b.iter().position(|x| *x == 0x11) {
-                            b = &b[..ctrlq];
-                            true
-                        } else {
-                            false
-                        };
-                        block_on(input.as_mut().write_all(b)).expect("BUGBUG");
-                        if stop {
-                            break;
-                        }
-                    }
-                }
-
-                term::set_raw_console(false).expect("failed to set raw console mode");
-
-                loop {
-                    let line = rl.readline("openvmm> ");
-                    if line.is_err() {
-                        break;
-                    }
-                    let line = line.unwrap();
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Err(err) = rl.add_history_entry(&line) {
-                        tracing::warn!(
-                            err = &err as &dyn std::error::Error,
-                            "error adding to .openvmm_history"
-                        )
-                    }
-
-                    match parser.parse(trimmed) {
-                        Ok(cmd) => match cmd {
-                            InteractiveCommand::Input { data } => {
-                                let mut data = data.join(" ");
-                                data.push('\n');
-                                if let Some(input) = console_in.as_mut() {
-                                    block_on(input.write_all(data.as_bytes())).expect("BUGBUG");
-                                }
-                            }
-                            InteractiveCommand::InputMode => break,
-                            cmd => {
-                                // Send the command to the main thread for processing.
-                                let (processing_done_send, processing_done_recv) =
-                                    mesh::oneshot::<()>();
-                                console_command_send.send((cmd, processing_done_send));
-                                let _ = block_on(processing_done_recv);
-                            }
-                        },
-                        Err(err) => {
-                            err.print().unwrap();
-                        }
-                    }
-
-                    if let Some(history_file) = &history_file {
-                        rl.append_history(history_file).unwrap();
-                    }
-                }
-            }
-        })
-        .unwrap();
-
-    let mut state_change_task = None::<Task<Result<StateChange, RpcError>>>;
-    let mut pulse_save_restore_interval: Option<Duration> = None;
-    let mut pending_shutdown = None;
-
-    enum StateChange {
-        Pause(bool),
-        Resume(bool),
-        Reset(Result<(), RemoteError>),
-        PulseSaveRestore(Result<(), PulseSaveRestoreError>),
-        ServiceVtl2(anyhow::Result<Duration>),
-    }
-
-    enum Event {
-        Command((InteractiveCommand, mesh::OneshotSender<()>)),
-        InspectRequestFromCompletionEngine(
-            (InspectTarget, String, mesh::OneshotSender<inspect::Node>),
-        ),
-        Quit,
-        Halt(vmm_core_defs::HaltReason),
-        PulseSaveRestore,
-        Worker(WorkerEvent),
-        VncWorker(WorkerEvent),
-        StateChange(Result<StateChange, RpcError>),
-        ShutdownResult(Result<hyperv_ic_resources::shutdown::ShutdownResult, RpcError>),
-    }
-
-    let mut console_command_recv = console_command_recv
-        .map(Event::Command)
-        .chain(futures::stream::repeat_with(|| Event::Quit));
-
-    let mut notify_recv = notify_recv.map(Event::Halt);
-
-    let mut inspect_completion_engine_recv =
-        inspect_completion_engine_recv.map(Event::InspectRequestFromCompletionEngine);
-
-    let mut quit = false;
-    loop {
-        let event = {
-            let pulse_save_restore = pin!(async {
-                match pulse_save_restore_interval {
-                    Some(wait) => {
-                        PolledTimer::new(driver).sleep(wait).await;
-                        Event::PulseSaveRestore
-                    }
-                    None => pending().await,
-                }
-            });
-
-            let vm = (&mut vm_worker).map(Event::Worker);
-            let vnc = futures::stream::iter(vnc_worker.as_mut())
-                .flatten()
-                .map(Event::VncWorker);
-            let change = futures::stream::iter(state_change_task.as_mut().map(|x| x.into_stream()))
-                .flatten()
-                .map(Event::StateChange);
-            let shutdown = pin!(async {
-                if let Some(s) = &mut pending_shutdown {
-                    Event::ShutdownResult(s.await)
-                } else {
-                    pending().await
-                }
-            });
-
-            (
-                &mut console_command_recv,
-                &mut inspect_completion_engine_recv,
-                &mut notify_recv,
-                pulse_save_restore.into_stream(),
-                vm,
-                vnc,
-                change,
-                shutdown.into_stream(),
-            )
-                .merge()
-                .next()
-                .await
-                .unwrap()
-        };
-
-        let (cmd, _processing_done_send) = match event {
-            Event::Command(message) => message,
-            Event::InspectRequestFromCompletionEngine((vtl, path, res)) => {
-                let mut inspection =
-                    InspectionBuilder::new(&path)
-                        .depth(Some(1))
-                        .inspect(inspect_obj(
-                            vtl,
-                            mesh,
-                            &vm_worker,
-                            vnc_worker.as_ref(),
-                            gdb_worker.as_ref(),
-                            &mut diag_inspector,
-                        ));
-                let _ = CancelContext::new()
-                    .with_timeout(Duration::from_secs(1))
-                    .until_cancelled(inspection.resolve())
-                    .await;
-
-                let node = inspection.results();
-                res.send(node);
-                continue;
-            }
-            Event::Quit => break,
-            Event::Halt(reason) => {
-                tracing::info!(?reason, "guest halted");
-                continue;
-            }
-            Event::PulseSaveRestore => {
-                vm_rpc.call(VmRpc::PulseSaveRestore, ()).await??;
-                continue;
-            }
-            Event::Worker(event) => {
-                match event {
-                    WorkerEvent::Stopped => {
-                        if quit {
-                            tracing::info!("vm stopped");
-                        } else {
-                            tracing::error!("vm worker unexpectedly stopped");
-                        }
-                        break;
-                    }
-                    WorkerEvent::Failed(err) => {
-                        tracing::error!(error = &err as &dyn std::error::Error, "vm worker failed");
-                        break;
-                    }
-                    WorkerEvent::RestartFailed(err) => {
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "vm worker restart failed"
-                        );
-                    }
-                    WorkerEvent::Started => {
-                        tracing::info!("vm worker restarted");
-                    }
-                }
-                continue;
-            }
-            Event::VncWorker(event) => {
-                match event {
-                    WorkerEvent::Stopped => tracing::error!("vnc unexpectedly stopped"),
-                    WorkerEvent::Failed(err) => {
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "vnc worker failed"
-                        );
-                    }
-                    WorkerEvent::RestartFailed(err) => {
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "vnc worker restart failed"
-                        );
-                    }
-                    WorkerEvent::Started => {
-                        tracing::info!("vnc worker restarted");
-                    }
-                }
-                continue;
-            }
-            Event::StateChange(r) => {
-                match r {
-                    Ok(sc) => match sc {
-                        StateChange::Pause(success) => {
-                            if success {
-                                tracing::info!("pause complete");
-                            } else {
-                                tracing::warn!("already paused");
-                            }
-                        }
-                        StateChange::Resume(success) => {
-                            if success {
-                                tracing::info!("resumed complete");
-                            } else {
-                                tracing::warn!("already running");
-                            }
-                        }
-                        StateChange::Reset(r) => match r {
-                            Ok(()) => tracing::info!("reset complete"),
-                            Err(err) => tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "reset failed"
-                            ),
-                        },
-                        StateChange::PulseSaveRestore(r) => match r {
-                            Ok(()) => tracing::info!("pulse save/restore complete"),
-                            Err(err) => tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "pulse save/restore failed"
-                            ),
-                        },
-                        StateChange::ServiceVtl2(r) => match r {
-                            Ok(dur) => {
-                                tracing::info!(
-                                    duration = dur.as_millis() as i64,
-                                    "vtl2 servicing complete"
-                                )
-                            }
-                            Err(err) => tracing::error!(
-                                error = err.as_ref() as &dyn std::error::Error,
-                                "vtl2 servicing failed"
-                            ),
-                        },
-                    },
-                    Err(err) => {
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "communication failure during state change"
-                        );
-                    }
-                }
-                state_change_task = None;
-                continue;
-            }
-            Event::ShutdownResult(r) => {
-                match r {
-                    Ok(r) => match r {
-                        hyperv_ic_resources::shutdown::ShutdownResult::Ok => {
-                            tracing::info!("shutdown initiated");
-                        }
-                        hyperv_ic_resources::shutdown::ShutdownResult::NotReady => {
-                            tracing::error!("shutdown ic not ready");
-                        }
-                        hyperv_ic_resources::shutdown::ShutdownResult::AlreadyInProgress => {
-                            tracing::error!("shutdown already in progress");
-                        }
-                        hyperv_ic_resources::shutdown::ShutdownResult::Failed(hr) => {
-                            tracing::error!("shutdown failed with error code {hr:#x}");
-                        }
-                    },
-                    Err(err) => {
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "communication failure during shutdown"
-                        );
-                    }
-                }
-                pending_shutdown = None;
-                continue;
-            }
-        };
-
-        fn inspect_obj<'a>(
-            target: InspectTarget,
-            mesh: &'a VmmMesh,
-            vm_worker: &'a WorkerHandle,
-            vnc_worker: Option<&'a WorkerHandle>,
-            gdb_worker: Option<&'a WorkerHandle>,
-            diag_inspector: &'a mut DiagInspector,
-        ) -> impl 'a + InspectMut {
-            inspect::adhoc_mut(move |req| match target {
-                InspectTarget::Host => {
-                    let mut resp = req.respond();
-                    resp.field("mesh", mesh)
-                        .field("vm", vm_worker)
-                        .field("vnc", vnc_worker)
-                        .field("gdb", gdb_worker);
-                }
-                InspectTarget::Paravisor => {
-                    diag_inspector.inspect_mut(req);
-                }
-            })
-        }
-
-        fn state_change<U: 'static + Send>(
-            driver: impl Spawn,
-            vm_rpc: &mesh::Sender<VmRpc>,
-            state_change_task: &mut Option<Task<Result<StateChange, RpcError>>>,
-            f: impl FnOnce(Rpc<(), U>) -> VmRpc,
-            g: impl FnOnce(U) -> StateChange + 'static + Send,
-        ) {
-            if state_change_task.is_some() {
-                tracing::error!("state change already in progress");
-            } else {
-                let rpc = vm_rpc.call(f, ());
-                *state_change_task =
-                    Some(driver.spawn("state-change", async move { Ok(g(rpc.await?)) }));
-            }
-        }
-
-        match cmd {
-            InteractiveCommand::Panic => {
-                panic!("injected panic")
-            }
-            InteractiveCommand::Restart => {
-                // create a new host process
-                let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
-
-                vm_worker.restart(&vm_host);
-            }
-            InteractiveCommand::Pause => {
-                state_change(
-                    driver,
-                    &vm_rpc,
-                    &mut state_change_task,
-                    VmRpc::Pause,
-                    StateChange::Pause,
-                );
-            }
-            InteractiveCommand::Resume => {
-                state_change(
-                    driver,
-                    &vm_rpc,
-                    &mut state_change_task,
-                    VmRpc::Resume,
-                    StateChange::Resume,
-                );
-            }
-            InteractiveCommand::Reset => {
-                state_change(
-                    driver,
-                    &vm_rpc,
-                    &mut state_change_task,
-                    VmRpc::Reset,
-                    StateChange::Reset,
-                );
-            }
-            InteractiveCommand::PulseSaveRestore => {
-                state_change(
-                    driver,
-                    &vm_rpc,
-                    &mut state_change_task,
-                    VmRpc::PulseSaveRestore,
-                    StateChange::PulseSaveRestore,
-                );
-            }
-            InteractiveCommand::SchedulePulseSaveRestore { interval } => {
-                pulse_save_restore_interval = match interval {
-                    Some(seconds) if seconds != 0 => Some(Duration::from_secs(seconds)),
-                    _ => {
-                        // Treat None and 0 seconds as do not perform scheduled pulse save restores anymore.
-                        None
-                    }
-                }
-            }
-            InteractiveCommand::Shutdown {
-                reboot,
-                hibernate,
-                force,
-            } => {
-                if pending_shutdown.is_some() {
-                    println!("shutdown already in progress");
-                } else if let Some(ic) = &resources.shutdown_ic {
-                    let params = hyperv_ic_resources::shutdown::ShutdownParams {
-                        shutdown_type: if hibernate {
-                            hyperv_ic_resources::shutdown::ShutdownType::Hibernate
-                        } else if reboot {
-                            hyperv_ic_resources::shutdown::ShutdownType::Reboot
-                        } else {
-                            hyperv_ic_resources::shutdown::ShutdownType::PowerOff
-                        },
-                        force,
-                    };
-                    pending_shutdown =
-                        Some(ic.call(hyperv_ic_resources::shutdown::ShutdownRpc::Shutdown, params));
-                } else {
-                    println!("no shutdown ic configured");
-                }
-            }
-            InteractiveCommand::Nmi => {
-                let _ = vm_rpc.call(VmRpc::Nmi, 0).await;
-            }
-            InteractiveCommand::ClearHalt => {
-                vm_rpc.call(VmRpc::ClearHalt, ()).await.ok();
-            }
-            InteractiveCommand::AddDisk {
-                read_only,
-                target,
-                path,
-                lun,
-                ram,
-                file_path,
-                is_dvd,
-            } => {
-                let action = async {
-                    let scsi = resources.scsi_rpc.as_ref().context("no scsi controller")?;
-                    let disk_type = match ram {
-                        None => {
-                            let path = file_path.context("no filename passed")?;
-                            open_disk_type(path.as_ref(), read_only)
-                                .with_context(|| format!("failed to open {}", path.display()))?
-                        }
-                        Some(size) => {
-                            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size) },
-                            ))
-                        }
-                    };
-
-                    let device = if is_dvd {
-                        SimpleScsiDvdHandle {
-                            media: Some(disk_type),
-                            requests: None,
-                        }
-                        .into_resource()
-                    } else {
-                        SimpleScsiDiskHandle {
-                            disk: disk_type,
-                            read_only,
-                            parameters: Default::default(),
-                        }
-                        .into_resource()
-                    };
-
-                    let cfg = ScsiDeviceAndPath {
-                        path: ScsiPath { path, target, lun },
-                        device,
-                    };
-
-                    scsi.call_failable(ScsiControllerRequest::AddDevice, cfg)
-                        .await?;
-
-                    anyhow::Result::<_>::Ok(())
-                };
-
-                if let Err(error) = action.await {
-                    tracing::error!(error = error.as_error(), "error adding disk")
-                }
-            }
-            InteractiveCommand::RmDisk { target, path, lun } => {
-                let action = async {
-                    let scsi = resources.scsi_rpc.as_ref().context("no scsi controller")?;
-                    scsi.call_failable(
-                        ScsiControllerRequest::RemoveDevice,
-                        ScsiPath { target, path, lun },
-                    )
-                    .await?;
-                    anyhow::Ok(())
-                };
-
-                if let Err(error) = action.await {
-                    tracing::error!(error = error.as_error(), "error removing disk")
-                }
-            }
-            InteractiveCommand::Vtl2Settings(cmd) => {
-                if resources.vtl2_settings.is_none() {
-                    eprintln!("error: no VTL2 settings (not running with VTL2?)");
-                    continue;
-                }
-                let action = async {
-                    match cmd {
-                        Vtl2SettingsCommand::Show => {
-                            let settings = resources.vtl2_settings.as_ref().unwrap();
-                            println!("{:#?}", settings);
-                        }
-                        Vtl2SettingsCommand::AddScsiDisk {
-                            controller,
-                            lun,
-                            backing_nvme_nsid,
-                            backing_scsi_lun,
-                        } => {
-                            // Determine the backing device type and path
-                            let (device_type, device_path, sub_device_path) = match (
-                                backing_nvme_nsid,
-                                backing_scsi_lun,
-                            ) {
-                                (Some(nsid), None) => (
-                                    vtl2_settings_proto::physical_device::DeviceType::Nvme,
-                                    storage_builder::NVME_VTL2_INSTANCE_ID,
-                                    nsid,
-                                ),
-                                (None, Some(scsi_lun)) => (
-                                    vtl2_settings_proto::physical_device::DeviceType::Vscsi,
-                                    storage_builder::SCSI_VTL2_INSTANCE_ID,
-                                    scsi_lun,
-                                ),
-                                (Some(_), Some(_)) => {
-                                    anyhow::bail!(
-                                        "can't specify both --backing-nvme-nsid and --backing-scsi-lun"
-                                    );
-                                }
-                                (None, None) => {
-                                    anyhow::bail!(
-                                        "must specify either --backing-nvme-nsid or --backing-scsi-lun"
-                                    );
-                                }
-                            };
-
-                            // Default to the standard OpenVMM VTL0 SCSI instance
-                            let controller_guid = controller
-                                .map(|s| s.parse())
-                                .transpose()
-                                .context("invalid controller GUID")?
-                                .unwrap_or(storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE);
-
-                            resources
-                                .add_vtl0_scsi_disk(
-                                    controller_guid,
-                                    lun,
-                                    device_type,
-                                    device_path,
-                                    sub_device_path,
-                                )
-                                .await?;
-
-                            let backing_desc = if backing_nvme_nsid.is_some() {
-                                format!("nvme_nsid={}", sub_device_path)
-                            } else {
-                                format!("scsi_lun={}", sub_device_path)
-                            };
-                            println!(
-                                "Added VTL0 SCSI disk: controller={}, lun={}, backing={}",
-                                controller_guid, lun, backing_desc
-                            );
-                        }
-                        Vtl2SettingsCommand::RmScsiDisk { controller, lun } => {
-                            // Default to the standard OpenVMM VTL0 SCSI instance
-                            let controller_guid = controller
-                                .map(|s| s.parse())
-                                .transpose()
-                                .context("invalid controller GUID")?
-                                .unwrap_or(storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE);
-
-                            resources
-                                .remove_vtl0_scsi_disk(controller_guid, lun)
-                                .await?;
-
-                            println!(
-                                "Removed VTL0 SCSI disk: controller={}, lun={}",
-                                controller_guid, lun
-                            );
-                        }
-                    }
-                    anyhow::Ok(())
-                };
-
-                if let Err(error) = action.await {
-                    eprintln!("error: {}", error);
-                }
-            }
-            InteractiveCommand::AddNvmeNs {
-                read_only,
-                nsid,
-                ram,
-                file_path,
-                vtl0_lun,
-            } => {
-                if resources.vtl2_settings.is_none() {
-                    eprintln!("error: add-nvme-ns requires --vtl2 mode");
-                    continue;
-                }
-                let action = async {
-                    let nvme = resources
-                        .nvme_vtl2_rpc
-                        .as_ref()
-                        .context("no vtl2 nvme controller")?;
-                    let disk_type = match (ram, file_path) {
-                        (None, Some(path)) => open_disk_type(path.as_ref(), read_only)
-                            .with_context(|| format!("failed to open {}", path.display()))?,
-                        (Some(size), None) => {
-                            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size) },
-                            ))
-                        }
-                        (None, None) => {
-                            anyhow::bail!("must specify either file path or --ram");
-                        }
-                        (Some(_), Some(_)) => {
-                            anyhow::bail!("cannot specify both file path and --ram");
-                        }
-                    };
-
-                    let ns = NamespaceDefinition {
-                        nsid,
-                        read_only,
-                        disk: disk_type,
-                    };
-
-                    nvme.call_failable(NvmeControllerRequest::AddNamespace, ns)
-                        .await?;
-                    println!("Added namespace {}", nsid);
-
-                    // If --vtl0-lun was specified, add a SCSI disk to VTL0 backed by the NVMe namespace
-                    if let Some(lun) = vtl0_lun {
-                        resources
-                            .add_vtl0_scsi_disk(
-                                storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE,
-                                lun,
-                                vtl2_settings_proto::physical_device::DeviceType::Nvme,
-                                storage_builder::NVME_VTL2_INSTANCE_ID,
-                                nsid,
-                            )
-                            .await?;
-                        println!("Exposed namespace {} to VTL0 as SCSI lun={}", nsid, lun);
-                    }
-
-                    Ok(())
-                };
-
-                if let Err(error) = action.await {
-                    eprintln!("error adding nvme namespace: {}", error);
-                }
-            }
-            InteractiveCommand::RmNvmeNs { nsid, vtl0 } => {
-                if resources.vtl2_settings.is_none() {
-                    eprintln!("error: rm-nvme-ns requires --vtl2 mode");
-                    continue;
-                }
-                let action = async {
-                    // If --vtl0 was specified, find and remove the SCSI disk backed by this namespace
-                    if vtl0 {
-                        let removed_lun = resources
-                            .remove_vtl0_scsi_disk_by_nvme_nsid(
-                                storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE,
-                                storage_builder::NVME_VTL2_INSTANCE_ID,
-                                nsid,
-                            )
-                            .await?;
-                        if let Some(lun) = removed_lun {
-                            println!("Removed VTL0 SCSI lun={}", lun);
-                        } else {
-                            println!("No VTL0 SCSI disk found backed by NVMe nsid={}", nsid);
-                        }
-                    }
-
-                    let nvme = resources
-                        .nvme_vtl2_rpc
-                        .as_ref()
-                        .context("no vtl2 nvme controller")?;
-                    nvme.call_failable(NvmeControllerRequest::RemoveNamespace, nsid)
-                        .await?;
-                    println!("Removed NVMe namespace {}", nsid);
-                    anyhow::Ok(())
-                };
-
-                if let Err(error) = action.await {
-                    eprintln!("error removing nvme namespace: {}", error);
-                }
-            }
-            InteractiveCommand::Inspect {
-                recursive,
-                limit,
-                paravisor,
-                element,
-                update,
-            } => {
-                let obj = inspect_obj(
-                    if paravisor {
-                        InspectTarget::Paravisor
-                    } else {
-                        InspectTarget::Host
-                    },
-                    mesh,
-                    &vm_worker,
-                    vnc_worker.as_ref(),
-                    gdb_worker.as_ref(),
-                    &mut diag_inspector,
-                );
-
-                if let Some(value) = update {
-                    let Some(element) = element else {
-                        anyhow::bail!("must provide element for update")
-                    };
-
-                    let value = async {
-                        let update = inspect::update(&element, &value, obj);
-                        let value = CancelContext::new()
-                            .with_timeout(Duration::from_secs(1))
-                            .until_cancelled(update)
-                            .await??;
-                        anyhow::Ok(value)
-                    }
-                    .await;
-                    match value {
-                        Ok(node) => match &node.kind {
-                            inspect::ValueKind::String(s) => println!("{s}"),
-                            _ => println!("{:#}", node),
-                        },
-                        Err(err) => println!("error: {:#}", err),
-                    }
-                } else {
-                    let element = element.unwrap_or_default();
-                    let depth = if recursive { limit } else { Some(0) };
-                    let node = async {
-                        let mut inspection =
-                            InspectionBuilder::new(&element).depth(depth).inspect(obj);
-                        let _ = CancelContext::new()
-                            .with_timeout(Duration::from_secs(1))
-                            .until_cancelled(inspection.resolve())
-                            .await;
-                        inspection.results()
-                    }
-                    .await;
-
-                    println!("{:#}", node);
-                }
-            }
-            InteractiveCommand::RestartVnc => {
-                if let Some(vnc) = &mut vnc_worker {
-                    let action = async {
-                        let vnc_host = mesh
-                            .make_host("vnc", None)
-                            .await
-                            .context("spawning vnc process failed")?;
-
-                        vnc.restart(&vnc_host);
-                        anyhow::Result::<_>::Ok(())
-                    };
-
-                    if let Err(error) = action.await {
-                        eprintln!("error: {}", error);
-                    }
-                } else {
-                    eprintln!("ERROR: no VNC server running");
-                }
-            }
-            InteractiveCommand::Hvsock { term, port } => {
-                let vm_rpc = &vm_rpc;
-                let action = async || {
-                    let service_id = new_hvsock_service_id(port);
-                    let socket = vm_rpc
-                        .call_failable(
-                            VmRpc::ConnectHvsock,
-                            (
-                                CancelContext::new().with_timeout(Duration::from_secs(2)),
-                                service_id,
-                                DeviceVtl::Vtl0,
-                            ),
-                        )
-                        .await?;
-                    let socket = PolledSocket::new(driver, socket)?;
-                    let mut console = console_relay::Console::new(
-                        driver.clone(),
-                        term.or_else(openvmm_terminal_app).as_deref(),
-                        Some(ConsoleLaunchOptions {
-                            window_title: Some(format!("HVSock{} [OpenVMM]", port)),
-                        }),
-                    )?;
-                    driver
-                        .spawn("console-relay", async move { console.relay(socket).await })
-                        .detach();
-                    anyhow::Result::<_>::Ok(())
-                };
-
-                if let Err(error) = (action)().await {
-                    eprintln!("error: {}", error);
-                }
-            }
-            InteractiveCommand::ServiceVtl2 {
-                user_mode_only,
-                igvm,
-                mana_keepalive,
-                nvme_keepalive,
-            } => {
-                let paravisor_diag = paravisor_diag.clone();
-                let vm_rpc = vm_rpc.clone();
-                let igvm = igvm.or_else(|| opt.igvm.clone());
-                let ged_rpc = resources.ged_rpc.clone();
-                let r = async move {
-                    let start;
-                    if user_mode_only {
-                        start = Instant::now();
-                        paravisor_diag.restart().await?;
-                    } else {
-                        let path = igvm.context("no igvm file loaded")?;
-                        let file = fs_err::File::open(path)?;
-                        start = Instant::now();
-                        openvmm_helpers::underhill::save_underhill(
-                            &vm_rpc,
-                            ged_rpc.as_ref().context("no GED")?,
-                            GuestServicingFlags {
-                                nvme_keepalive,
-                                mana_keepalive,
-                            },
-                            file.into(),
-                        )
-                        .await?;
-                        openvmm_helpers::underhill::restore_underhill(
-                            &vm_rpc,
-                            ged_rpc.as_ref().context("no GED")?,
-                        )
-                        .await?;
-                    }
-                    let end = Instant::now();
-                    Ok(end - start)
-                }
-                .map(|r| Ok(StateChange::ServiceVtl2(r)));
-                if state_change_task.is_some() {
-                    tracing::error!("state change already in progress");
-                } else {
-                    state_change_task = Some(driver.spawn("state-change", r));
-                }
-            }
-            InteractiveCommand::Quit => {
-                tracing::info!("quitting");
-                // Work around the detached SCSI task holding up worker stop.
-                // TODO: Fix the underlying bug
-                resources.scsi_rpc = None;
-                resources.nvme_vtl2_rpc = None;
-
-                vm_worker.stop();
-                quit = true;
-            }
-            InteractiveCommand::ReadMemory { gpa, size, file } => {
-                let size = size as usize;
-                let data = vm_rpc.call(VmRpc::ReadMemory, (gpa, size)).await?;
-
-                match data {
-                    Ok(bytes) => {
-                        if let Some(file) = file {
-                            if let Err(err) = fs_err::write(file, bytes) {
-                                eprintln!("error: {err:?}");
-                            }
-                        } else {
-                            let width = 16;
-                            let show_ascii = true;
-
-                            let mut dump = String::new();
-                            for (i, chunk) in bytes.chunks(width).enumerate() {
-                                let hex_part: Vec<String> =
-                                    chunk.iter().map(|byte| format!("{:02x}", byte)).collect();
-                                let hex_line = hex_part.join(" ");
-
-                                if show_ascii {
-                                    let ascii_part: String = chunk
-                                        .iter()
-                                        .map(|&byte| {
-                                            if byte.is_ascii_graphic() || byte == b' ' {
-                                                byte as char
-                                            } else {
-                                                '.'
-                                            }
-                                        })
-                                        .collect();
-                                    dump.push_str(&format!(
-                                        "{:04x}: {:<width$}  {}\n",
-                                        i * width,
-                                        hex_line,
-                                        ascii_part,
-                                        width = width * 3 - 1
-                                    ));
-                                } else {
-                                    dump.push_str(&format!("{:04x}: {}\n", i * width, hex_line));
-                                }
-                            }
-
-                            println!("{dump}");
-                        }
-                    }
-                    Err(err) => {
-                        eprintln!("error: {err:?}");
-                    }
-                }
-            }
-            InteractiveCommand::WriteMemory { gpa, hex, file } => {
-                if hex.is_some() == file.is_some() {
-                    eprintln!("error: either path to the file or the hex string must be specified");
-                    continue;
-                }
-
-                let data = if let Some(file) = file {
-                    let data = fs_err::read(file);
-                    match data {
-                        Ok(data) => data,
-                        Err(err) => {
-                            eprintln!("error: {err:?}");
-                            continue;
-                        }
-                    }
-                } else if let Some(hex) = hex {
-                    if hex.len() & 1 != 0 {
-                        eprintln!(
-                            "error: expected even number of hex digits (2 hex digits per byte)"
-                        );
-                        continue;
-                    }
-                    let data: Result<Vec<u8>, String> = (0..hex.len())
-                        .step_by(2)
-                        .map(|i| {
-                            u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| {
-                                format!("invalid hex character at position {}: {}", i, e)
-                            })
-                        })
-                        .collect();
-
-                    match data {
-                        Ok(data) => data,
-                        Err(err) => {
-                            eprintln!("error: {err}");
-                            continue;
-                        }
-                    }
-                } else {
-                    unreachable!();
-                };
-
-                if data.is_empty() {
-                    eprintln!("error: no data to write");
-                    continue;
-                }
-
-                if let Err(err) = vm_rpc.call(VmRpc::WriteMemory, (gpa, data)).await? {
-                    eprintln!("error: {err:?}");
-                }
-            }
-            InteractiveCommand::Kvp(command) => {
-                let Some(kvp) = &resources.kvp_ic else {
-                    eprintln!("error: no kvp ic configured");
-                    continue;
-                };
-                if let Err(err) = kvp::handle_kvp(kvp, command).await {
-                    eprintln!("error: {err:#}");
-                }
-            }
-            InteractiveCommand::Input { .. } | InteractiveCommand::InputMode => unreachable!(),
-        }
-    }
-
-    vm_worker.stop();
-    vm_worker.join().await?;
-    Ok(())
+    let diag_inspector = DiagInspector::new(driver.clone(), paravisor_diag.clone());
+
+    // Create channels between the REPL and VmController.
+    let (vm_controller_send, vm_controller_recv) = mesh::channel();
+    let (vm_controller_event_send, vm_controller_event_recv) = mesh::channel();
+
+    let has_vtl2 = resources.vtl2_settings.is_some();
+    let serial_driver = resources
+        .serial_driver
+        .take()
+        .expect("serial driver must outlive serial resources");
+
+    // Build the VmController with exclusive resources.
+    let controller = vm_controller::VmController {
+        mesh: mesh_slot.take().unwrap(),
+        vm_worker,
+        vnc_worker,
+        gdb_worker,
+        diag_inspector: Some(diag_inspector),
+        vtl2_settings: resources.vtl2_settings,
+        ged_rpc: resources.ged_rpc.clone(),
+        vm_rpc: vm_rpc.clone(),
+        paravisor_diag: Some(paravisor_diag),
+        igvm_path: opt.igvm.clone(),
+        memory_backing_file: opt.memory_backing_file().cloned(),
+        memory: opt.memory_size(),
+        processors: opt.processors,
+        log_file: opt.log_file.clone(),
+        crash_dump_path: opt.crash_dump_path.clone(),
+        guest_power_actions: vm_controller::GuestPowerActions {
+            shutdown: opt.guest_shutdown_action,
+            reset: opt.guest_reset_action,
+            crash: opt.guest_crash_action,
+            watchdog: opt.guest_watchdog_action,
+        },
+    };
+
+    // Spawn the VmController as a task.
+    let controller_task = driver.spawn(
+        "vm-controller",
+        controller.run(vm_controller_recv, vm_controller_event_send, notify_recv),
+    );
+
+    // Run the REPL with shareable resources.
+    let repl_result = repl::run_repl(
+        driver,
+        repl::ReplResources {
+            vm_rpc,
+            vm_controller: vm_controller_send,
+            vm_controller_events: vm_controller_event_recv,
+            scsi_rpc: resources.scsi_rpc,
+            nvme_vtl2_rpc: resources.nvme_vtl2_rpc,
+            consomme_rpc: resources.consomme_rpc,
+            shutdown_ic: resources.shutdown_ic,
+            kvp_ic: resources.kvp_ic,
+            console_in: resources.console_in,
+            has_vtl2,
+        },
+    )
+    .await;
+
+    // Wait for the controller task to finish (it stops the VM worker and
+    // shuts down the mesh).
+    controller_task.await;
+    drop(serial_driver);
+
+    // run_repl returns the exit status: the code the guest drove via an opt-in
+    // exit (VmControllerEvent::ExitRequested), or 0 when the VM stopped normally.
+    repl_result
 }
 
 struct DiagDialer {
@@ -3469,7 +3036,7 @@ impl mesh_rpc::client::Dial for DiagDialer {
 ///
 /// This also caches the TTRPC connection to the guest so that only the first
 /// inspect request has to wait for the connection to be established.
-pub struct DiagInspector(DiagInspectorInner);
+pub(crate) struct DiagInspector(DiagInspectorInner);
 
 enum DiagInspectorInner {
     NotStarted(DefaultDriver, Arc<diag_client::DiagClient>),
@@ -3544,166 +3111,68 @@ impl InspectMut for DiagInspector {
     }
 }
 
-enum InspectTarget {
-    Host,
-    Paravisor,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use test_with_tracing::test;
 
-mod interactive_console {
-    use super::InteractiveCommand;
-    use rustyline::Helper;
-    use rustyline::Highlighter;
-    use rustyline::Hinter;
-    use rustyline::Validator;
-
-    #[derive(Helper, Highlighter, Hinter, Validator)]
-    pub(crate) struct OpenvmmRustylineEditor {
-        pub openvmm_inspect_req: std::sync::Arc<
-            mesh::Sender<(
-                super::InspectTarget,
-                String,
-                mesh::OneshotSender<inspect::Node>,
-            )>,
-        >,
-    }
-
-    impl rustyline::completion::Completer for OpenvmmRustylineEditor {
-        type Candidate = String;
-
-        fn complete(
-            &self,
-            line: &str,
-            pos: usize,
-            _ctx: &rustyline::Context<'_>,
-        ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
-            let Ok(cmd) = shell_words::split(line) else {
-                return Ok((0, Vec::with_capacity(0)));
-            };
-
-            let completions = futures::executor::block_on(
-                clap_dyn_complete::Complete {
-                    cmd,
-                    raw: Some(line.into()),
-                    position: Some(pos),
-                }
-                .generate_completions::<InteractiveCommand>(None, self),
+    #[test]
+    fn maps_igvm_personalities_to_chipsets() {
+        for (args, expected) in [
+            (
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "uefi",
+                ],
+                BaseChipsetType::HypervGen2Uefi,
+            ),
+            (
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "linux-direct",
+                ],
+                BaseChipsetType::UnenlightenedLinuxDirect,
+            ),
+            (
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "linux-direct",
+                    "--hv",
+                ],
+                BaseChipsetType::HyperVGen2LinuxDirect,
+            ),
+            (
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "linux-direct",
+                    "--isolation",
+                    "snp",
+                ],
+                BaseChipsetType::EnlightenedLinuxDirect,
+            ),
+            (
+                vec!["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"],
+                BaseChipsetType::HclHost,
+            ),
+        ] {
+            let opt = Options::try_parse_from(args).unwrap();
+            assert!(
+                std::mem::discriminant(&base_chipset_type(&opt))
+                    == std::mem::discriminant(&expected)
             );
-
-            let pos_from_end = {
-                let line = line.chars().take(pos).collect::<String>();
-
-                let trailing_ws = line.len() - line.trim_end().len();
-
-                if trailing_ws > 0 {
-                    line.len() - trailing_ws + 1 // +1 for the space
-                } else {
-                    let last_word = shell_words::split(&line)
-                        .unwrap_or_default()
-                        .last()
-                        .cloned()
-                        .unwrap_or_default();
-
-                    line.len() - last_word.len()
-                }
-            };
-
-            Ok((pos_from_end, completions))
-        }
-    }
-
-    impl clap_dyn_complete::CustomCompleterFactory for &OpenvmmRustylineEditor {
-        type CustomCompleter = OpenvmmComplete;
-        async fn build(&self, _ctx: &clap_dyn_complete::RootCtx<'_>) -> Self::CustomCompleter {
-            OpenvmmComplete {
-                openvmm_inspect_req: self.openvmm_inspect_req.clone(),
-            }
-        }
-    }
-
-    pub struct OpenvmmComplete {
-        openvmm_inspect_req: std::sync::Arc<
-            mesh::Sender<(
-                super::InspectTarget,
-                String,
-                mesh::OneshotSender<inspect::Node>,
-            )>,
-        >,
-    }
-
-    impl clap_dyn_complete::CustomCompleter for OpenvmmComplete {
-        async fn complete(
-            &self,
-            ctx: &clap_dyn_complete::RootCtx<'_>,
-            subcommand_path: &[&str],
-            arg_id: &str,
-        ) -> Vec<String> {
-            match (subcommand_path, arg_id) {
-                (["openvmm", "inspect"], "element") => {
-                    let on_error = vec!["failed/to/connect".into()];
-
-                    let (parent_path, to_complete) = (ctx.to_complete)
-                        .rsplit_once('/')
-                        .unwrap_or(("", ctx.to_complete));
-
-                    let node = {
-                        let paravisor = {
-                            let raw_arg = ctx
-                                .matches
-                                .subcommand()
-                                .unwrap()
-                                .1
-                                .get_one::<String>("paravisor")
-                                .map(|x| x.as_str())
-                                .unwrap_or_default();
-                            raw_arg == "true"
-                        };
-
-                        let (tx, rx) = mesh::oneshot();
-                        self.openvmm_inspect_req.send((
-                            if paravisor {
-                                super::InspectTarget::Paravisor
-                            } else {
-                                super::InspectTarget::Host
-                            },
-                            parent_path.to_owned(),
-                            tx,
-                        ));
-                        let Ok(node) = rx.await else {
-                            return on_error;
-                        };
-
-                        node
-                    };
-
-                    let mut completions = Vec::new();
-
-                    if let inspect::Node::Dir(dir) = node {
-                        for entry in dir {
-                            if entry.name.starts_with(to_complete) {
-                                if parent_path.is_empty() {
-                                    completions.push(format!("{}/", entry.name))
-                                } else {
-                                    completions.push(format!(
-                                        "{}/{}{}",
-                                        parent_path,
-                                        entry.name,
-                                        if matches!(entry.node, inspect::Node::Dir(..)) {
-                                            "/"
-                                        } else {
-                                            ""
-                                        }
-                                    ))
-                                }
-                            }
-                        }
-                    } else {
-                        return on_error;
-                    }
-
-                    completions
-                }
-                _ => Vec::new(),
-            }
         }
     }
 }

@@ -36,22 +36,26 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let mut dist_path = rt.read(openvmm_repo_path);
 
-                // Navigate to the petri/logview_new directory within the
+                // Navigate to the petri/logview directory within the
                 // OpenVMM repo
                 dist_path.push("petri");
-                dist_path.push("logview_new");
+                dist_path.push("logview");
 
                 rt.sh.change_dir(&dist_path);
 
                 // Because the project is using vite, the output will go
                 // directly to the 'dist-ci' folder
-                flowey::shell_cmd!(rt, "npm install").run()?;
+                //
+                // `npm ci` (rather than `npm install`) so that the build fails
+                // loudly if package-lock.json ever drifts out of sync with
+                // package.json, instead of silently repairing the tree.
+                flowey::shell_cmd!(rt, "npm ci").run()?;
                 flowey::shell_cmd!(rt, "npm run build:ci").run()?;
 
                 dist_path.push("dist-ci");
                 if !dist_path.exists() {
                     anyhow::bail!(
-                        "logview_new build failed. Expected 'dist-ci' directory at {:?} but it was not found.",
+                        "logview build failed. Expected 'dist-ci' directory at {:?} but it was not found.",
                         dist_path
                     );
                 }

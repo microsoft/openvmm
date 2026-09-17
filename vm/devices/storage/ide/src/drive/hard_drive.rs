@@ -17,6 +17,7 @@ use disk_backend::Disk;
 use disk_backend::DiskError;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryError;
 use guestmem::ranges::PagedRange;
 use ide_resources::IdePath;
 use inspect::Inspect;
@@ -639,7 +640,12 @@ impl HardDrive {
         }
     }
 
-    pub fn dma_transfer(&mut self, guest_memory: &GuestMemory, gpa: u64, len: usize) {
+    pub fn dma_transfer(
+        &mut self,
+        guest_memory: &GuestMemory,
+        gpa: u64,
+        len: usize,
+    ) -> Result<(), GuestMemoryError> {
         let buffer = self.state.buffer.as_mut().unwrap();
         let buffer_ptr = &self.command_buffer.buffer[buffer.range()][..len];
         {
@@ -654,16 +660,15 @@ impl HardDrive {
             );
         }
 
-        let r = match buffer.dma_type.as_ref().unwrap() {
+        // Perform the memory access first. If the guest pointed the DMA engine
+        // at inaccessible memory, propagate the error without advancing the
+        // buffer so the caller can raise the bus master DMA error, just as real
+        // hardware would on a failed bus access.
+        match buffer.dma_type.as_ref().unwrap() {
             DmaType::Write => guest_memory.write_from_atomic(gpa, buffer_ptr),
             DmaType::Read => guest_memory.read_to_atomic(gpa, buffer_ptr),
-        };
-        if let Err(err) = r {
-            tracelimit::error_ratelimited!(
-                error = &err as &dyn std::error::Error,
-                "dma transfer failed"
-            );
-        }
+        }?;
+
         if buffer.advance(len as u32) {
             match buffer.dma_type.as_ref().unwrap() {
                 DmaType::Write => self.read_data_port_buffer_complete(),
@@ -673,6 +678,7 @@ impl HardDrive {
                 self.state.pending_interrupt = true;
             }
         }
+        Ok(())
     }
 
     pub fn dma_advance_buffer(&mut self, len: usize) {
