@@ -142,6 +142,14 @@ flowey_request! {
         /// installed).
         pub pre_build_deps: Vec<ReadVar<SideEffect>>,
         pub output: WriteVar<CargoBuildOutput>,
+        /// Resolves to the `OUT_DIR` the crate's build script was invoked with.
+        ///
+        /// Useful for crates whose build script emits auxiliary artifacts that
+        /// cargo itself doesn't track (e.g: generated metadata files), as it
+        /// lets those artifacts be collected without relying on the build
+        /// script to copy them somewhere out-of-band (which only happens when
+        /// the build script actually re-runs).
+        pub build_script_out_dir: Option<WriteVar<PathBuf>>,
     }
 }
 
@@ -171,6 +179,7 @@ impl FlowNode for Node {
             config,
             pre_build_deps,
             output,
+            build_script_out_dir,
         } in requests
         {
             if let Some(target) = &target {
@@ -185,6 +194,7 @@ impl FlowNode for Node {
                 let flags = flags.clone().claim(ctx);
                 let in_folder = in_folder.claim(ctx);
                 let output = output.claim(ctx);
+                let build_script_out_dir = build_script_out_dir.claim(ctx);
                 let extra_env = extra_env.claim(ctx);
                 move |rt| {
                     let rust_toolchain = rt.read(rust_toolchain);
@@ -303,6 +313,13 @@ impl FlowNode for Node {
 
                     rt.sh.change_dir(out_dir.clone());
 
+                    if let Some(build_script_out_dir) = build_script_out_dir {
+                        rt.write(
+                            build_script_out_dir,
+                            &find_build_script_out_dir(&messages, &crate_name, crate_type)?,
+                        );
+                    }
+
                     let build_output =
                         rename_output(&messages, &crate_name, &out_name, crate_type, &out_dir)?;
 
@@ -326,6 +343,47 @@ struct CargoBuildCommand {
     crate_type: CargoCrateType,
 }
 
+/// Find the `OUT_DIR` the build script of `crate_name` was invoked with.
+///
+/// The build script is matched by package id (as reported alongside the
+/// crate's own compiler artifact) rather than by name, since a package id is
+/// unambiguous.
+fn find_build_script_out_dir(
+    messages: &[cargo_output::Message],
+    crate_name: &str,
+    crate_type: CargoCrateType,
+) -> Result<PathBuf, anyhow::Error> {
+    let package_id = messages
+        .iter()
+        .find_map(|msg| match msg {
+            cargo_output::Message::CompilerArtifact {
+                package_id,
+                target: cargo_output::Target { name, kind },
+                ..
+            } if name == crate_name && kind.iter().any(|k| k == crate_type.as_str()) => {
+                Some(package_id)
+            }
+            _ => None,
+        })
+        .with_context(|| {
+            format!(
+                "failed to find artifact {crate_name} of kind {kind}",
+                kind = crate_type.as_str()
+            )
+        })?;
+
+    messages
+        .iter()
+        .find_map(|msg| match msg {
+            cargo_output::Message::BuildScriptExecuted {
+                package_id: id,
+                out_dir,
+            } if id == package_id => Some(out_dir.clone()),
+            _ => None,
+        })
+        .with_context(|| format!("{crate_name} did not run a build script"))
+}
+
 fn rename_output(
     messages: &[cargo_output::Message],
     crate_name: &str,
@@ -339,6 +397,7 @@ fn rename_output(
             cargo_output::Message::CompilerArtifact {
                 target: cargo_output::Target { name, kind },
                 filenames,
+                ..
             } if name == crate_name && kind.iter().any(|k| k == crate_type.as_str()) => {
                 Some(filenames)
             }
