@@ -1454,6 +1454,25 @@ impl PciConfigSpace for VfioAssignedPciDevice {
 
     fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         match HeaderType00(offset) {
+            // MSE is virtualized for the guest while it remains enabled on the
+            // physical device for the lifetime of the assignment.
+            HeaderType00::STATUS_COMMAND => {
+                self.read_phys_config(offset, value.reborrow());
+                let mse_mask: u32 = cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits()
+                    .into();
+                let command = if self.mmio_enabled {
+                    value.extract() | mse_mask
+                } else {
+                    value.extract() & !mse_mask
+                };
+                value.set(command);
+                if let Some(patch) = self.config_patches.get(&offset) {
+                    let command = value.extract();
+                    value.set((command & !patch.mask) | (patch.value & patch.mask));
+                }
+            }
             // BAR registers: return locally cached values.
             HeaderType00::BAR0
             | HeaderType00::BAR1
@@ -1518,30 +1537,15 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     None
                 };
 
-                match mmio_change {
-                    // Enabling MMIO: propagate the Command write to the
-                    // physical device *before* mapping BARs into the IOMMU.
-                    // Enabling memory space on the real device un-revokes any
-                    // exported BAR dmabufs; the IOAS map-by-file P2P import
-                    // (IOMMU_IOAS_MAP_FILE) returns ENODEV while a dmabuf is
-                    // revoked, so the hardware enable must land first.
-                    Some(true) => {
-                        self.mmio_enabled = true;
-                        self.write_phys_config(offset, value);
-                        self.update_bar_mappings();
-                    }
-                    // Disabling MMIO: tear down the IOMMU mappings while device
-                    // memory is still enabled, then propagate the disable to
-                    // the physical device.
-                    Some(false) => {
-                        self.mmio_enabled = false;
-                        self.update_bar_mappings();
-                        self.write_phys_config(offset, value);
-                    }
-                    // No MMIO-enable change: just forward the write.
-                    None => {
-                        self.write_phys_config(offset, value);
-                    }
+                // Forward all guest-written command/status bits except MSE,
+                // which remains enabled on the physical device.
+                let physical_value =
+                    ByteEnabledDwordWrite::new(value.extract() | mse_mask, value.byte_enable());
+                self.write_phys_config(offset, physical_value);
+
+                if let Some(enabled) = mmio_change {
+                    self.mmio_enabled = enabled;
+                    self.update_bar_mappings();
                 }
 
                 if let Some(enabled) = mmio_change {
