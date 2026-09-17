@@ -26,18 +26,25 @@ rate-limited by default. To disable rate limiting (useful for debugging), set
 
 ### OpenTelemetry
 
-Build OpenVMM with the `otel` feature, then set `OPENVMM_OTEL=1` to export
-enabled spans using OTLP over HTTP with protobuf encoding. The exporter uses
-the standard OpenTelemetry environment variables. Only plaintext HTTP
-endpoints are currently supported. For example:
+Build OpenVMM with the `otel` feature, then set `OPENVMM_OTEL=1` to emit
+enabled spans through the platform's native tracing subsystem: ETW on Windows
+and `user_events` on Linux. For example:
 
 ```shell
 cargo build -p openvmm --features otel
 
 OPENVMM_OTEL=1 \
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+OTEL_RESOURCE_ATTRIBUTES="service.instance.id=boot-test-42" \
 target/debug/openvmm [...]
 ```
+
+The native events preserve OpenTelemetry trace and span identifiers. They are
+not sent directly to an OpenTelemetry Collector or Jaeger; a platform-specific
+agent must collect and forward them. Windows emits `Span` events from provider
+`openvmm`, and Linux emits the `user_events:openvmm_L4K1` tracepoint. On Linux,
+the process must have write access to the tracefs `user_events_data` file;
+OpenTelemetry initialization fails if `user_events` is unavailable or not
+writable.
 
 ## Configuring OpenHCL Trace Logging
 

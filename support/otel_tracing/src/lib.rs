@@ -19,9 +19,13 @@ pub type OpenTelemetryLayer<S> = tracing_opentelemetry::OpenTelemetryLayer<S, Sd
 /// An error returned while initializing OpenTelemetry tracing.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    /// The OTLP exporter could not be configured.
-    #[error("failed to build the OTLP span exporter")]
-    Exporter(#[source] opentelemetry_otlp::ExporterBuildError),
+    /// The native span processor could not be initialized.
+    #[error("failed to initialize native OpenTelemetry tracing: {0}")]
+    NativeProcessor(String),
+
+    /// Native OpenTelemetry tracing is not supported on this platform.
+    #[error("native OpenTelemetry tracing is not supported on this platform")]
+    UnsupportedPlatform,
 }
 
 /// Keeps the OpenTelemetry provider alive and flushes it when dropped.
@@ -41,25 +45,20 @@ impl Drop for TracerProviderGuard {
     }
 }
 
-/// Creates an OTLP/HTTP OpenTelemetry layer and its provider guard.
+/// Creates a native OpenTelemetry layer and its provider guard.
 ///
-/// The exporter uses the standard `OTEL_EXPORTER_OTLP_*` environment
-/// variables. The returned guard must live as long as the subscriber and be
-/// dropped before terminating the process.
-pub fn init_otlp_layer<S>(
+/// Completed spans are written to ETW on Windows and `user_events` on Linux.
+/// The returned guard must live as long as the subscriber and be dropped before
+/// terminating the process.
+pub fn init_native_layer<S>(
     service_name: &'static str,
     service_version: &'static str,
 ) -> Result<(OpenTelemetryLayer<S>, TracerProviderGuard), InitError>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .build()
-        .map_err(InitError::Exporter)?;
-
     let provider = SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
+        .with_span_processor(native_processor(service_name)?)
         .with_resource(
             Resource::builder()
                 .with_service_name(service_name)
@@ -74,15 +73,41 @@ where
     Ok((layer, TracerProviderGuard { provider }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::init_otlp_layer;
-    use tracing_subscriber::Registry;
+#[cfg(windows)]
+fn native_processor(
+    service_name: &'static str,
+) -> Result<opentelemetry_etw_traces::Processor, InitError> {
+    opentelemetry_etw_traces::Processor::builder(service_name)
+        .with_resource_attributes(["service.version", "run.id"])
+        .build()
+        .map_err(|error| InitError::NativeProcessor(error.to_string()))
+}
 
-    #[test]
-    fn initializes_and_shuts_down() {
-        let (layer, guard) = init_otlp_layer::<Registry>("otel-tracing-test", "0.0.0").unwrap();
-        drop(layer);
-        drop(guard);
+#[cfg(target_os = "linux")]
+fn native_processor(
+    service_name: &'static str,
+) -> Result<opentelemetry_user_events_trace::Processor, InitError> {
+    opentelemetry_user_events_trace::Processor::builder(service_name)
+        .build()
+        .map_err(|error| InitError::NativeProcessor(error.to_string()))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn native_processor(_service_name: &'static str) -> Result<UnsupportedProcessor, InitError> {
+    Err(InitError::UnsupportedPlatform)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+#[derive(Debug)]
+struct UnsupportedProcessor;
+
+#[cfg(not(any(windows, target_os = "linux")))]
+impl opentelemetry_sdk::trace::SpanProcessor for UnsupportedProcessor {
+    fn on_start(&self, _span: &mut opentelemetry_sdk::trace::Span, _cx: &opentelemetry::Context) {}
+
+    fn on_end(&self, _span: opentelemetry_sdk::trace::SpanData) {}
+
+    fn force_flush(&self) -> opentelemetry_sdk::error::OTelSdkResult {
+        Ok(())
     }
 }
