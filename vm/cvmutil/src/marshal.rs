@@ -4,15 +4,13 @@
 use crate::Tpm2bPublic;
 ///! Marshal TPM structures: selected ones only for our use case in cvmutil.
 ///! TPM reference documents such as TPM-Rev-2.0-Part-2-Structures-01.38.pdf is a good source.
-use tpm::tpm20proto::AlgId;
-use tpm::tpm20proto::protocol::Tpm2bBuffer;
-//use tpm::tpm20proto::protocol::Tpm2bPublic;
-use std::io::{self, Cursor, Read};
+use tpm_protocol::tpm20proto::AlgId;
+use tpm_protocol::tpm20proto::protocol::Tpm2bBuffer;
+use std::io;
 use zerocopy::{FromZeros, IntoBytes};
 
 // Constants for sealed key data format (from Canonical Go secboot package)
 pub const KEY_DATA_HEADER: u32 = 0x55534b24; // "USK$" magic bytes
-pub const KEY_POLICY_UPDATE_DATA_HEADER: u32 = 0x55534b50;
 pub const CURRENT_METADATA_VERSION: u32 = 2;
 
 // Table 187 -- TPMT_SENSITIVE Structure <I/O>
@@ -39,6 +37,7 @@ pub struct AfSplitData {
 
 /// TPM Key Data structure matching Go's tpmKeyData
 #[derive(Debug)]
+#[expect(dead_code)]
 pub struct TpmKeyData {
     pub version: u32,
     pub key_private: Tpm2bBuffer, // Parsed TPM2B_PRIVATE
@@ -117,8 +116,6 @@ impl AfSplitData {
 
     /// Parse AF split data from raw bytes using TPM2 binary format
     pub fn from_bytes(data: &[u8]) -> Result<Self, io::Error> {
-        let mut cursor = Cursor::new(data);
-
         tracing::debug!("AF Split parsing: total data length = {}", data.len());
 
         // Read stripes (4 bytes, LITTLE endian to match our export format)
@@ -382,7 +379,7 @@ impl TpmKeyData {
         }
     }
 
-    fn parse_v0(data: &[u8], version: u32) -> Result<Self, io::Error> {
+    fn parse_v0(_data: &[u8], version: u32) -> Result<Self, io::Error> {
         // Version 0 format - direct marshaling without AF split
         // This is a simplified parser - full implementation would need detailed parsing
         tracing::info!("Parsing version 0 sealed key data");
@@ -403,7 +400,7 @@ impl TpmKeyData {
         tracing::info!("Parsing version 1 sealed key data");
 
         let af_split_data = AfSplitData::from_bytes(data)?;
-        let merged_data = af_split_data.merge()?;
+        let _merged_data = af_split_data.merge()?;
 
         // Parse the merged data - simplified implementation
         Ok(TpmKeyData {

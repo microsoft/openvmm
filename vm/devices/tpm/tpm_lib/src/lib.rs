@@ -68,7 +68,9 @@ pub const TPM_V185_MAX_NV_INDEX_SIZE: u16 = 16 * 1024;
 // Scale this with maximum attestation payload
 pub(crate) const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
 
+/// Size of an RSA-2048 modulus in bits.
 pub const RSA_2K_MODULUS_BITS: u16 = 2048;
+/// Size of an RSA-2048 modulus in bytes.
 pub const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
 const RSA_2K_EXPONENT_SIZE: usize = 3;
 
@@ -2098,7 +2100,7 @@ pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     // Define the RSA scheme as TPM2_ALG_NULL for general use
     let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
 
-    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0); // 0 exponent means use default (2^16 + 1)
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, RSA_2K_MODULUS_BITS, 0); // 0 exponent means use default (2^16 + 1)
 
     let object_attributes = TpmaObjectBits::new()
         .with_fixed_tpm(true)
@@ -2115,7 +2117,7 @@ pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         object_attributes,
         &[],
         rsa_params,
-        &[0u8; crate::RSA_2K_MODULUS_SIZE],
+        &[0u8; RSA_2K_MODULUS_SIZE],
     )
     .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
 

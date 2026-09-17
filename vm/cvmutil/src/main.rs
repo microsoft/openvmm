@@ -3,13 +3,12 @@
 
 //! The module includes the CvmUtil, which is a tool to create and manage vTPM blobs.
 //! vTPM blobs are used to provide TPM functionality to trusted and confidential VMs.
-use ms_tpm_20_ref::MsTpm20RefPlatform;
-use tpm::TPM_RSA_SRK_HANDLE;
-use tpm::tpm_helper::{self, TpmEngineHelper};
-use tpm::tpm20proto::protocol::{
+use tpm_lib as tpm_helper;
+use tpm_protocol::TPM_RSA_SRK_HANDLE;
+use tpm_protocol::tpm20proto::protocol::{
     Tpm2bBuffer, Tpm2bPublic, TpmsRsaParams, TpmtPublic, TpmtRsaScheme, TpmtSymDefObject,
 };
-use tpm::tpm20proto::{AlgId, AlgIdEnum, TpmaObjectBits};
+use tpm_protocol::tpm20proto::{AlgId, AlgIdEnum, TPM20_RH_OWNER, TpmaObjectBits};
 mod marshal;
 mod vtpm_helper;
 mod vtpm_sock_server;
@@ -28,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::{fs, fs::File, vec};
 use zerocopy::FromZeros;
 
-use crate::vtpm_helper::create_tpm_engine_helper;
+use crate::vtpm_helper::{TpmEngineHelper, create_tpm_engine_helper};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -379,7 +378,7 @@ fn create_vtpm_blob(
     // Ubuntu expects the TPM to use the initial deterministic seeds from ColdInit.
 
     // Create a primary key: SRK
-    let auth_handle = tpm::tpm20proto::TPM20_RH_OWNER;
+    let auth_handle = TPM20_RH_OWNER;
     let result = tpm_helper::srk_pub_template();
     assert!(result.is_ok());
     let srk_in_public = result.unwrap();
@@ -392,7 +391,7 @@ fn create_vtpm_blob(
 
             // Evict the SRK handle.
             let result = tpm_engine_helper.evict_control(
-                tpm::tpm20proto::TPM20_RH_OWNER,
+                TPM20_RH_OWNER,
                 response.object_handle,
                 TPM_RSA_SRK_HANDLE,
             );
@@ -410,7 +409,10 @@ fn create_vtpm_blob(
             let mut hasher = Sha256::new();
             hasher.update(response.out_public.public_area.serialize());
             let public_area_hash = hasher.finalize();
-            tracing::trace!("SRK public area SHA256 hash: {:x}", public_area_hash);
+            tracing::trace!(
+                "SRK public area SHA256 hash: {}",
+                hex::encode(public_area_hash)
+            );
 
             // Calculate and print the SRK name (algorithm ID + hash)
             let algorithm_id = response.out_public.public_area.name_alg;
@@ -473,7 +475,10 @@ fn export_vtpm_srk_pub(mut tpm_engine_helper: TpmEngineHelper, srk_out_path: &st
             let mut hasher = Sha256::new();
             hasher.update(response.out_public.public_area.serialize());
             let public_area_hash = hasher.finalize();
-            tracing::trace!("SRK public area SHA256 hash: {:x}", public_area_hash);
+            tracing::trace!(
+                "SRK public area SHA256 hash: {}",
+                hex::encode(public_area_hash)
+            );
             let algorithm_id = response.out_public.public_area.name_alg;
             let mut srk_name = vec![0u8; 2 + public_area_hash.len()];
             srk_name[0] = (algorithm_id.0.get() >> 8) as u8;
@@ -491,8 +496,8 @@ fn export_vtpm_srk_pub(mut tpm_engine_helper: TpmEngineHelper, srk_out_path: &st
             hasher.update(response.out_public.public_area.serialize());
             let public_area_hash = hasher.finalize();
             tracing::trace!(
-                "SRK public area SHA256 hash: {:x} is written to file {}",
-                public_area_hash,
+                "SRK public area SHA256 hash: {} is written to file {}",
+                hex::encode(public_area_hash),
                 srk_out_path
             );
         }
@@ -568,7 +573,7 @@ fn recreate_srk_test(vtpm_blob_path: &str) {
     tracing::info!("Step 2: Undefining persistent SRK...");
 
     let result = tpm_engine_helper.evict_control(
-        tpm::tpm20proto::TPM20_RH_OWNER, // auth_handle
+        TPM20_RH_OWNER, // auth_handle
         TPM_RSA_SRK_HANDLE,              // object_handle (persistent handle to remove)
         TPM_RSA_SRK_HANDLE,              // persistent_handle (same as object_handle for removal)
     );
@@ -604,7 +609,7 @@ fn recreate_srk_test(vtpm_blob_path: &str) {
     // Step 3: Recreate the SRK using the same method as create_vtpm_blob
     tracing::info!("Step 3: Recreating SRK...");
 
-    let auth_handle = tpm::tpm20proto::TPM20_RH_OWNER;
+    let auth_handle = TPM20_RH_OWNER;
     let srk_template = tpm_helper::srk_pub_template().expect("Failed to create SRK template");
 
     let create_result = tpm_engine_helper.create_primary(auth_handle, srk_template);
@@ -693,7 +698,7 @@ fn recreate_srk_test(vtpm_blob_path: &str) {
     // Step 5: Make the new SRK persistent again (restore the blob to its original state)
     tracing::info!("Step 5: Making new SRK persistent...");
     let result = tpm_engine_helper.evict_control(
-        tpm::tpm20proto::TPM20_RH_OWNER,
+        TPM20_RH_OWNER,
         new_object_handle,
         TPM_RSA_SRK_HANDLE,
     );
@@ -804,13 +809,13 @@ fn write_srk_template(template_path: &str) {
     let mut hasher = Sha256::new();
     hasher.update(&serialized_template);
     let template_hash = hasher.finalize();
-    tracing::trace!("Template SHA256: {:x}", template_hash);
+    tracing::trace!("Template SHA256: {}", hex::encode(template_hash));
 
     tracing::info!("SRK template generation completed successfully.");
 }
 
 /// Seal data to SRK using TPM-standard format compatible with Ubuntu secboot.
-fn seal_data_to_srk(srk_pub_path: &str, input_file: &str, output_file: &str) {
+fn seal_data_to_srk(_srk_pub_path: &str, input_file: &str, output_file: &str) {
     use marshal::{AfSplitData, CURRENT_METADATA_VERSION, KEY_DATA_HEADER};
     use std::fs;
 
@@ -1070,7 +1075,6 @@ fn unseal_data_from_vtpm(vtpm_blob_path: &str, sealed_file: &str, output_file: &
         }
     };
 
-    offset += import_sym_seed.payload_size();
     tracing::info!(
         "Parsed TPM2B_ENCRYPTED_SECRET: {} bytes",
         import_sym_seed.payload_size()
@@ -1862,7 +1866,7 @@ fn export_new_key_as_sealed_blob(
 
     // Generate the key pair in TPM under Owner hierarchy (like SRK)
     let create_result =
-        tpm_engine_helper.create_primary(tpm::tpm20proto::TPM20_RH_OWNER, key_template);
+        tpm_engine_helper.create_primary(TPM20_RH_OWNER, key_template);
 
     let (key_handle, key_public) = match create_result {
         Ok(response) => (response.object_handle, response.out_public),
@@ -1933,8 +1937,8 @@ fn export_new_key_as_sealed_blob(
 
 /// Create RSA key template optimized for export/import operations
 fn create_exportable_rsa_key_template() -> TpmtPublic {
-    use tpm::tpm20proto::protocol::*;
-    use tpm::tpm20proto::*;
+    use tpm_protocol::tpm20proto::protocol::*;
+    use tpm_protocol::tpm20proto::*;
 
     let mut key_template = TpmtPublic::new_zeroed();
 

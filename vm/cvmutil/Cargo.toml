@@ -9,15 +9,18 @@ rust-version.workspace = true
 [features]
 
 [dependencies]
-ms-tpm-20-ref.workspace = true
+ms-tpm-20-ref = { workspace = true, features = ["vendored"] }
 getrandom.workspace = true
+hex.workspace = true
+tpm_lib.workspace = true
+tpm_protocol.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zerocopy.workspace = true
 clap = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 base64.workspace = true
-openssl.workspace = true
+openssl = { workspace = true, features = ["vendored"] }
 ctrlc.workspace = true
 
 [dev-dependencies]

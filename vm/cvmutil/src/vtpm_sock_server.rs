@@ -10,8 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::vtpm_helper::create_tpm_engine_helper;
-use tpm::tpm_helper::TpmEngineHelper;
+use crate::vtpm_helper::{TpmEngineHelper, create_tpm_engine_helper};
 
 /// Setup Ctrl+C signal handler to allow graceful shutdown
 fn setup_signal_handler() -> Arc<AtomicBool> {
@@ -48,7 +47,7 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
     let vtpm_blob_content = fs::read(vtpm_blob_path).expect("failed to read vtpm blob file");
 
     // Create TPM engine helper
-    let (mut vtpm_engine_helper, mut nv_blob_accessor) = create_tpm_engine_helper();
+    let (mut vtpm_engine_helper, nv_blob_accessor) = create_tpm_engine_helper();
 
     // Restore TPM state from blob
     tracing::info!(
@@ -102,10 +101,9 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
     tracing::info!("Press Ctrl+C to stop the server");
 
     // Start control socket handler in a separate thread
-    let ctrl_tpm_engine = Arc::clone(&tpm_engine);
     let ctrl_running = running.clone();
     let ctrl_handle = thread::spawn(move || {
-        handle_control_socket(ctrl_listener, ctrl_tpm_engine, ctrl_running);
+        handle_control_socket(ctrl_listener, ctrl_running);
     });
 
     // Handle data connections in the main thread
@@ -123,12 +121,14 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
 
                 // Handle each connection in a separate thread
                 thread::spawn(move || {
-                    handle_tpm_data_client(
+                    if let Err(error) = handle_tpm_data_client(
                         stream,
                         tpm_engine_clone,
                         nv_accessor_clone,
                         client_running,
-                    );
+                    ) {
+                        tracing::debug!("TPM data client failed: {}", error);
+                    }
                 });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -174,7 +174,6 @@ fn parse_bind_address(bind_addr: &str) -> (String, u16) {
 /// Handle the TPM simulator control socket
 fn handle_control_socket(
     listener: TcpListener,
-    tpm_engine: Arc<Mutex<TpmEngineHelper>>,
     running: Arc<AtomicBool>,
 ) {
     tracing::info!("Control socket handler started");
@@ -182,11 +181,10 @@ fn handle_control_socket(
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _)) => {
-                let tpm_engine_clone = Arc::clone(&tpm_engine);
                 let client_running = running.clone();
 
                 thread::spawn(move || {
-                    handle_control_client(stream, tpm_engine_clone, client_running);
+                    handle_control_client(stream, client_running);
                 });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -207,8 +205,7 @@ fn handle_control_socket(
 
 /// Handle a single control client connection
 fn handle_control_client(
-    mut stream: TcpStream,
-    tpm_engine: Arc<Mutex<TpmEngineHelper>>,
+    stream: TcpStream,
     running: Arc<AtomicBool>,
 ) {
     let peer_addr = stream
@@ -229,10 +226,7 @@ fn handle_control_client(
             Ok(command) => {
                 tracing::debug!("Received control command: {:?}", command);
 
-                let response = {
-                    let mut engine = tpm_engine.lock().unwrap();
-                    process_control_command(&mut engine, &command)
-                };
+                let response = process_control_command(&command);
 
                 if let Err(e) = write_control_response(&mut writer, &response) {
                     tracing::error!("Failed to send control response: {}", e);
@@ -307,7 +301,7 @@ fn read_control_command(
 }
 
 /// Process a control command
-fn process_control_command(engine: &mut TpmEngineHelper, command: &ControlCommand) -> Vec<u8> {
+fn process_control_command(command: &ControlCommand) -> Vec<u8> {
     match command {
         ControlCommand::SessionEnd => {
             tracing::debug!("TPM Session End requested");
@@ -399,8 +393,6 @@ fn write_control_response(
 
 /// Maximum internal buffer we can safely process (TPM_PAGE_SIZE equivalent).
 const INTERNAL_MAX_CMD: usize = 4096;
-const INTERNAL_MAX_RSP: usize = 4096;
-const ABSOLUTE_MAX_CMD: usize = 8192; // hard safety ceiling beyond which we refuse
 
 #[repr(u32)]
 enum IfaceCmd {
@@ -418,7 +410,7 @@ fn handle_tpm_data_client(
     tpm_engine: Arc<Mutex<TpmEngineHelper>>,
     _nv_accessor: Arc<Mutex<impl std::any::Any + Send>>,
     running: Arc<AtomicBool>,
-) {
+) -> std::io::Result<()> {
     use std::io::Write;
     let peer_addr = stream
         .peer_addr()
@@ -451,20 +443,20 @@ fn handle_tpm_data_client(
 
         match cmd_code {
             x if x == IfaceCmd::RemoteHandshake as u32 => {
-                let client_version = read_u32(&mut reader).unwrap();
+                let client_version = read_u32(&mut reader)?;
                 tracing::info!("REMOTE_HANDSHAKE client_version={}", client_version);
                 // serverVersion = 1; flags = tpmInRawMode|tpmPlatformAvailable|tpmSupportsPP
-                write_u32(&mut writer, 1);
+                write_u32(&mut writer, 1)?;
                 let flags = 0x04 | 0x01 | 0x08; // raw | platform | PP
-                write_u32(&mut writer, flags);
+                write_u32(&mut writer, flags)?;
             }
             x if x == IfaceCmd::SendCommand as u32 => {
                 // locality
                 let mut loc = [0u8; 1];
                 use std::io::Read;
-                reader.read_exact(&mut loc);
+                reader.read_exact(&mut loc)?;
                 let locality = loc[0];
-                let cmd_buf = read_var_bytes(&mut reader, max_cmd).unwrap();
+                let cmd_buf = read_var_bytes(&mut reader, max_cmd)?;
                 if cmd_buf.len() < 10 {
                     tracing::warn!("TPM command too short {}", cmd_buf.len());
                 }
@@ -490,7 +482,7 @@ fn handle_tpm_data_client(
                     })
                 };
 
-                write_var_bytes(&mut writer, &resp);
+                write_var_bytes(&mut writer, &resp)?;
                 tracing::info!(
                     "SendCommand locality={} in={} out={}",
                     locality,
@@ -505,19 +497,19 @@ fn handle_tpm_data_client(
                 // no payload
             }
             x if x == IfaceCmd::SignalHashData as u32 => {
-                let data = read_var_bytes(&mut reader, max_cmd).unwrap();
+                let data = read_var_bytes(&mut reader, max_cmd)?;
                 tracing::debug!("HashData {} bytes (ignored pass-through)", data.len());
             }
             x if x == IfaceCmd::SessionEnd as u32 => {
                 tracing::info!("SessionEnd requested");
-                write_u32(&mut writer, 0); // status before break (consistent with C? C returns true then writes status after switch)
-                writer.flush();
+                write_u32(&mut writer, 0)?; // status before break (consistent with C? C returns true then writes status after switch)
+                writer.flush()?;
                 break;
             }
             x if x == IfaceCmd::Stop as u32 => {
                 tracing::info!("Stop requested");
-                write_u32(&mut writer, 0);
-                writer.flush();
+                write_u32(&mut writer, 0)?;
+                writer.flush()?;
                 // Optionally signal broader shutdown
                 break;
             }
@@ -533,7 +525,7 @@ fn handle_tpm_data_client(
         }
 
         // Trailing status (always 0) after a handled interface command (except unknown/early failure)
-        write_u32(&mut writer, 0);
+        write_u32(&mut writer, 0)?;
         if let Err(e) = writer.flush() {
             tracing::debug!("Flush failed: {}", e);
             break;
@@ -541,6 +533,7 @@ fn handle_tpm_data_client(
     }
 
     tracing::info!("TPM data client disconnected: {}", peer_addr);
+    Ok(())
 }
 
 // Helpers.

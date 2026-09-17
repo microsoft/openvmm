@@ -6,8 +6,42 @@ use ms_tpm_20_ref::MsTpm20RefPlatform;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 ///! Helper to create and manage a TPM engine instance with in-memory NV state for testing.
-use tpm::tpm_helper::{self, TpmEngineHelper};
-use tpm::tpm20proto::protocol::Tpm2bBuffer;
+use tpm_lib::TpmEngine;
+use tpm_lib::TpmEngineError;
+
+pub struct CvmTpmEngine(MsTpm20RefPlatform);
+
+impl std::ops::Deref for CvmTpmEngine {
+    type Target = MsTpm20RefPlatform;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for CvmTpmEngine {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl TpmEngine for CvmTpmEngine {
+    fn execute_command(
+        &mut self,
+        command: &mut [u8],
+        response: &mut [u8],
+    ) -> Result<(), TpmEngineError> {
+        MsTpm20RefPlatform::execute_command(&mut self.0, command, response)
+            .map(|_| ())
+            .map_err(TpmEngineError::from_error)
+    }
+
+    fn max_nv_index_size(&self) -> u16 {
+        tpm_lib::TPM_V138_MAX_NV_INDEX_SIZE
+    }
+}
+
+pub type TpmEngineHelper = tpm_lib::TpmEngineHelper<CvmTpmEngine>;
 struct TestPlatformCallbacks {
     blob: Vec<u8>,
     time: Instant,
@@ -65,7 +99,7 @@ pub fn create_tpm_engine_helper() -> (TpmEngineHelper, Arc<Mutex<Vec<u8>>>) {
     let tpm_engine: MsTpm20RefPlatform = result.unwrap();
 
     let tpm_helper = TpmEngineHelper {
-        tpm_engine,
+        tpm_engine: CvmTpmEngine(tpm_engine),
         reply_buffer: [0u8; 4096],
     };
 

@@ -1316,8 +1316,11 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmtSymDefObject {
+        /// Symmetric algorithm identifier.
         pub algorithm: AlgId,
+        /// Symmetric key size in bits.
         pub key_bits: u16_be,
+        /// Symmetric mode identifier.
         pub mode: AlgId,
     }
 
@@ -1400,8 +1403,11 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmsRsaParams {
+        /// Symmetric algorithm used for a restricted decryption key.
         pub symmetric: TpmtSymDefObject,
+        /// RSA signing or encryption scheme.
         pub scheme: TpmtRsaScheme,
+        /// RSA key size in bits.
         pub key_bits: u16_be,
         /// Public exponent value (`0` encodes $65537$).
         pub exponent: u32_be,
@@ -1490,10 +1496,13 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmtPublic {
+        /// Object type identifier.
         pub my_type: AlgId,
+        /// Algorithm used to compute the object name.
         pub name_alg: AlgId,
         /// Attributes that define object capabilities.
         pub object_attributes: TpmaObject,
+        /// Authorization policy digest.
         pub auth_policy: Tpm2bBuffer,
         // `TPMS_RSA_PARAMS`
         /// Algorithm-specific parameters associated with the object.
