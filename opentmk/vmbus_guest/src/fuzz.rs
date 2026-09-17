@@ -133,7 +133,39 @@ pub fn post_raw_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig
     payload: &[u8],
 ) -> Result<()> {
     let len = payload.len().min(MAX_MESSAGE_SIZE);
-    post_message(ctx, connection_id, &payload[..len])
+    let msg = &payload[..len];
+
+    // Reject client-only (host→guest) message types: posting these from
+    // the guest triggers an `unreachable!` panic in Vmbusr.dll that
+    // kills vmwp.exe. The fuzzer can mutate the MessageType field to
+    // any value, so we filter here rather than in the grammar.
+    if msg.len() >= 4 {
+        let msg_type = u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]);
+        match msg_type {
+            1  |  // OFFER_CHANNEL
+            2  |  // RESCIND_CHANNEL_OFFER
+            4  |  // ALL_OFFERS_DELIVERED
+            6  |  // OPEN_CHANNEL_RESULT
+            10 |  // GPADL_CREATED
+            12 |  // GPADL_TORNDOWN
+            15 |  // VERSION_RESPONSE (all three variants)
+            17 |  // UNLOAD_COMPLETE
+            20 |  // CLOSE_RESERVED_CHANNEL_RESPONSE
+            23 |  // TL_CONNECT_RESULT
+            24 |  // MODIFY_CHANNEL_RESPONSE
+            26 |  // MODIFY_CONNECTION_RESPONSE
+            28    // PAUSE_RESPONSE
+            => {
+                log::debug!(
+                    "post_raw_message: dropping client-only message type {msg_type}"
+                );
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    post_message(ctx, connection_id, msg)
 }
 
 /// Post `payload` verbatim, then drain the message page for up to

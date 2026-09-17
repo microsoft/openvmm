@@ -206,44 +206,75 @@ fn read_input(
 
 /// Reset VMBus state at a testcase boundary.
 ///
-/// Deliberately much cheaper than the netvsp reset: this fuzzer's
-/// testcases are mostly channel messages, and re-running SynIC +
-/// negotiation + `RequestOffers` every testcase would cost more than
-/// the testcases themselves. Instead we:
+/// The fuzzer posts arbitrary channel messages on the *live* negotiated
+/// connection, so a testcase can drive host-side connection or channel
+/// state that the guest's cached session never mirrors (see the module
+/// docs). Left in place, that host<->guest desync makes a later
+/// testcase's legitimate channel-open wedge, and the host resets the
+/// whole VM.
 ///
-/// 1. Discard host messages the previous testcase provoked but never
-///    read. Without this, the next testcase's `vmbus_msg_comp` would
-///    pick up the *previous* testcase's reply and report it as its
-///    own, making results non-reproducible.
-/// 2. Drain the ring so a testcase that filled it doesn't make every
-///    later `vmbus_packet` fail with `RingFull`.
-/// 3. Drop the whole session if the connection is gone — a testcase
-///    can legitimately post `Unload` and tear VMBus down, and every
-///    later call would otherwise fail against dead state. The next
-///    call rebuilds from scratch.
+/// To keep each testcase hermetic we cycle the connection every
+/// boundary, reusing the SynIC + hypercall context so the reset costs a
+/// handshake rather than a full SynIC re-program:
+///
+/// 1. Drain and discard any host messages the previous testcase
+///    provoked but never read, so they can't be misread during the
+///    teardown handshake or by the next testcase.
+/// 2. Close the ring channel if one was opened, freeing its ring and
+///    releasing the GPADL host-side.
+/// 3. `Unload` the connection so the host returns to a disconnected
+///    state and the guest's `CONNECTION` global is cleared.
+/// 4. Re-`InitiateContact` and re-`RequestOffers` on the same context,
+///    refreshing the offer list for the next testcase.
+///
+/// Every step is best-effort: a testcase that already desynced the host
+/// can make `Unload` or `InitiateContact` time out, in which case we
+/// drop the whole session so the next call rebuilds it from scratch (a
+/// fresh SynIC included).
 pub fn reset_session() {
     let mut cell = VMBUS.lock();
     let Some(session) = cell.session.as_mut() else {
         return;
     };
 
+    // 1. Clear stale host messages from the SIMP page.
+    log::debug!("vmbus reset: step 1 drain_pending");
     if let Err(e) = fuzz::drain_pending(&mut *session.ctx, RESET_DRAIN_LIMIT) {
         log::debug!("vmbus: reset drain_pending failed: {e:?}");
     }
-    if let Some(chan) = session.chan.as_mut() {
-        chan.drain_recv(RESET_DRAIN_LIMIT);
+
+    // 2. Close the ring channel, freeing the ring and its GPADL.
+    if let Some(chan) = session.chan.take() {
+        log::debug!("vmbus reset: step 2 close channel");
+        if let Err(e) = chan.close(&mut *session.ctx) {
+            log::debug!("vmbus: reset close_channel failed: {e:?}");
+        }
     }
 
-    // A fuzzed `Unload` (or a host-side teardown) clears the
-    // process-wide connection state. Anything we still hold refers to
-    // a connection that no longer exists.
-    if vmbus_guest::connection::connection().is_none() {
-        log::info!("vmbus: connection gone after testcase; dropping session for rebuild");
-        // Drop the channel handle without closing it: the connection
-        // it belonged to is already gone, so `CloseChannel` would just
-        // time out. The ring allocation is leaked, which is acceptable
-        // for a fuzzing guest that is torn down with the VM.
-        cell.session = None;
+    // 3. Tear the connection down so host and guest agree on a clean
+    //    slate. `unload` clears the process-wide `CONNECTION` state.
+    if vmbus_guest::connection::connection().is_some() {
+        log::debug!("vmbus reset: step 3 unload (awaiting UnloadComplete)");
+        if let Err(e) = vmbus_guest::unload(&mut *session.ctx) {
+            log::debug!("vmbus: reset unload failed: {e:?}");
+        }
+    }
+
+    // 4. Bring the connection back up on the same SynIC + context.
+    log::debug!("vmbus reset: step 4 initiate (awaiting VersionResponse)");
+    let reconnect = vmbus_guest::connection::initiate(&mut *session.ctx).and_then(|()| {
+        log::debug!("vmbus reset: step 4 request_offers (awaiting AllOffersDelivered)");
+        vmbus_guest::request_offers(&mut *session.ctx)
+    });
+    match reconnect {
+        Ok(offers) => {
+            log::debug!("vmbus: reset reconnected with {} offers", offers.len());
+            session.offers = offers;
+        }
+        Err(e) => {
+            log::info!("vmbus: reset reconnect failed ({e:?}); dropping session for full rebuild");
+            cell.session = None;
+        }
     }
 }
 
