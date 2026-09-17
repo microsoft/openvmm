@@ -377,10 +377,8 @@ pub struct NicConfig {
 }
 
 fn netvsp_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
-    // Some guest behaviors requires the nic interfaces to be enumerated in a
-    // particular order. vmbus channel offers are by default sorted using the
-    // instance id. Leverage that to sort the network offers based on the
-    // vport index.
+    // Preserve the vport and MAC address in the instance ID for stable channel
+    // identity. Guest enumeration order is controlled separately by offer_order.
     Guid {
         data1: 0xf8615163,
         data2: vport_index as u16,
@@ -398,20 +396,45 @@ fn netvsp_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
     }
 }
 
+// Order VF managers by the upper 32 bits, then their vports by the lower 32
+// bits, so VMBus enumeration does not fall back to the instance GUID.
+fn netvsp_offer_order(base_adapter_index: u32, vport_index: usize) -> u64 {
+    (u64::from(base_adapter_index) << 32) | vport_index as u64
+}
+
 #[cfg(test)]
 mod netvsp_instance_id_tests {
     use super::netvsp_instance_id;
+    use super::netvsp_offer_order;
+    use guid::Guid;
     use test_with_tracing::test;
 
     #[test]
-    #[ignore = "reproduces bug 64115645"]
     fn two_vfs_preserve_primary_netvsp_offer_order() {
-        let primary = netvsp_instance_id(0, [0x00, 0x15, 0x5d, 0x12, 0x12, 0x13]);
-        let secondary = netvsp_instance_id(0, [0x00, 0x15, 0x5d, 0x12, 0x12, 0x12]);
+        let interface_id = Guid {
+            data1: 0xf8615163,
+            data2: 0xdf3e,
+            data3: 0x46c5,
+            data4: [0x91, 0x3f, 0xf2, 0xd2, 0xf9, 0x65, 0xed, 0x0e],
+        };
+        let primary_instance = netvsp_instance_id(0, [0x00, 0x15, 0x5d, 0x12, 0x12, 0x13]);
+        let secondary_instance = netvsp_instance_id(0, [0x00, 0x15, 0x5d, 0x12, 0x12, 0x12]);
+        let sort_key = |offer_order: Option<u64>, instance_id| {
+            (interface_id, offer_order.unwrap_or(u64::MAX), instance_id)
+        };
 
         assert!(
-            primary < secondary,
-            "secondary VF NetVSP sorts before the primary VF because both use vport index 0"
+            sort_key(None, secondary_instance) < sort_key(None, primary_instance),
+            "the duplicate vport index allows the secondary MAC to win the GUID tie-breaker"
+        );
+        assert!(
+            sort_key(Some(netvsp_offer_order(1, 0)), primary_instance)
+                < sort_key(Some(netvsp_offer_order(2, 0)), secondary_instance),
+            "explicit offer order must take precedence over the instance GUID"
+        );
+        assert!(
+            netvsp_offer_order(1, 0) < netvsp_offer_order(1, 1),
+            "vport order must be preserved within a VF manager"
         );
     }
 }
@@ -934,6 +957,11 @@ impl UhVmNetworkSettings {
         let ready_ports = Arc::new(futures::lock::Mutex::new(
             (0..endpoints.len()).map(|_| false).collect::<Vec<bool>>(),
         ));
+        let minimum_adapter_index = endpoints
+            .iter()
+            .map(|endpoint| endpoint.adapter_index)
+            .min()
+            .unwrap_or_default();
         let vf_manager = Arc::new(vf_manager);
         for (
             i,
@@ -945,6 +973,7 @@ impl UhVmNetworkSettings {
         ) in endpoints.into_iter().enumerate()
         {
             let vmbus_instance_id = netvsp_instance_id(i, mac_address.to_bytes());
+            let offer_order = netvsp_offer_order(minimum_adapter_index, i);
             let p = partition.clone();
             let get_guest_os_id = move || -> HvGuestOsId {
                 p.vtl0_guest_os_id()
@@ -952,6 +981,7 @@ impl UhVmNetworkSettings {
             };
 
             let mut nic_builder = netvsp::Nic::builder()
+                .offer_order(offer_order)
                 .limit_ring_buffer(true)
                 .get_guest_os_id(Box::new(get_guest_os_id))
                 .max_queues(nic_max_sub_channels);

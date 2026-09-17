@@ -12,7 +12,6 @@ use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
-use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
@@ -28,6 +27,8 @@ const FIRST_VTL2_MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa7
 const SECOND_VTL2_MANA_INSTANCE: Guid = guid::guid!("2ad64873-df8e-4c3d-9e5a-d3078d9c4987");
 const FIRST_VTL2_MANA_MAC_ADDRESS: net_backend_resources::mac_address::MacAddress =
     net_backend_resources::mac_address::MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x13]);
+const SECOND_VTL2_MANA_MAC_ADDRESS: net_backend_resources::mac_address::MacAddress =
+    net_backend_resources::mac_address::MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
 /// implementation.
@@ -64,25 +65,37 @@ async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), any
     Ok(())
 }
 
-/// Reproduces bug 64115645 with two single-vport VTL2 MANA VFs and no
-/// subordinate VTL0 VFs. The first VTL2 settings entry must become eth0.
-#[openvmm_test(unstable(reason = "reproduces bug 64115645", openhcl_linux_direct_x64))]
-async fn two_mana_vfs_preserve_primary_netvsp_offer_order(
+/// Verifies that NetVSP offer order determines which of two single-vport VTL2
+/// MANA VFs becomes `eth0`, even though their generated NetVSP instance GUIDs
+/// sort in the opposite order, and that the primary NIC remains stable across
+/// OpenHCL servicing.
+///
+/// Note: does not prove that `offer_order` is restored. Servicing rebuilds the
+/// NICs in the same configuration order.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn two_mana_vfs_preserve_primary_nic_across_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    let (vm, agent) = config
+    let flags = config.default_servicing_flags();
+    let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| {
             b.with_mana_vf(FIRST_VTL2_MANA_INSTANCE, FIRST_VTL2_MANA_MAC_ADDRESS)
-                .with_mana_vf(SECOND_VTL2_MANA_INSTANCE, NIC_MAC_ADDRESS)
+                .with_mana_vf(SECOND_VTL2_MANA_INSTANCE, SECOND_VTL2_MANA_MAC_ADDRESS)
         })
         .run()
         .await?;
 
     let sh = agent.unix_shell();
-    let primary_mac = cmd!(sh, "cat /sys/class/net/eth0/address")
-        .read()
-        .await?;
+    let primary_mac = cmd!(sh, "cat /sys/class/net/eth0/address").read().await?;
+    assert_eq!(primary_mac, "00:15:5d:12:12:13");
+
+    vm.restart_openhcl(igvm_file, flags).await?;
+    agent.ping().await?;
+
+    let sh = agent.unix_shell();
+    let primary_mac = cmd!(sh, "cat /sys/class/net/eth0/address").read().await?;
     assert_eq!(primary_mac, "00:15:5d:12:12:13");
 
     agent.power_off().await?;

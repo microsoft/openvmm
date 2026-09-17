@@ -2161,6 +2161,65 @@ fn test_netvsp_channel_id_order() {
 }
 
 #[test]
+fn test_save_restore_netvsp_channel_id_order() {
+    let interface_id = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
+    let primary_instance_id = guid::guid!("f8615163-0000-1000-2000-00155d121213");
+    let secondary_instance_id = guid::guid!("f8615163-0000-1000-2000-00155d121212");
+
+    let mut env = TestEnv::new();
+    for (instance_id, offer_order) in [(secondary_instance_id, 1), (primary_instance_id, 0)] {
+        env.c()
+            .offer_channel(OfferParamsInternal {
+                interface_id,
+                instance_id,
+                offer_order: Some(offer_order),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    env.connect(Version::Win10, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    let state = env.server.save();
+
+    let mut env = TestEnv::new();
+    // Deliberatly swapping the offer_order.
+    let primary_offer_id = env
+        .c()
+        .offer_channel(OfferParamsInternal {
+            interface_id,
+            instance_id: primary_instance_id,
+            offer_order: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+    let secondary_offer_id = env
+        .c()
+        .offer_channel(OfferParamsInternal {
+            interface_id,
+            instance_id: secondary_instance_id,
+            offer_order: Some(0),
+            ..Default::default()
+        })
+        .unwrap();
+
+    env.c().restore(state).unwrap();
+    env.c().restore_channel(primary_offer_id, false).unwrap();
+    env.c().restore_channel(secondary_offer_id, false).unwrap();
+
+    let primary_channel_id = env.server.channels[primary_offer_id]
+        .info
+        .as_ref()
+        .unwrap()
+        .channel_id;
+    let secondary_channel_id = env.server.channels[secondary_offer_id]
+        .info
+        .as_ref()
+        .unwrap()
+        .channel_id;
+    assert!(primary_channel_id < secondary_channel_id);
+}
+
+#[test]
 fn test_channel_id_order_absolute() {
     let mut env = TestEnv::with_params(true, false);
 
