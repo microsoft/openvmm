@@ -2,3 +2,4 @@
 // Licensed under the MIT License.
 
 pub mod hypercall;
+pub mod serial;

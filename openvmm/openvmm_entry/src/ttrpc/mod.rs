@@ -862,7 +862,7 @@ impl VmService {
                         enable_memory_protections: false,
                         enable_debugging: false,
                         disable_frontpage: false,
-                        enable_tpm: false,
+                        tpm_version: None,
                         enable_battery: false,
                         enable_vpci_boot: false,
                         default_boot_always_attempt: false,

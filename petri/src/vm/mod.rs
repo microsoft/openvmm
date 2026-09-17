@@ -2645,11 +2645,29 @@ impl Default for TpmConfig {
 /// TPM reference implementation version used by the test infrastructure.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PetriTpmVersion {
+    /// TPM reference implementation version 1.38
+    V138,
     /// TPM reference implementation version 1.85
     #[default]
     V185,
-    /// TPM reference implementation version 1.38
-    V138,
+}
+
+impl From<PetriTpmVersion> for tpm_resources::TpmVersion {
+    fn from(version: PetriTpmVersion) -> Self {
+        match version {
+            PetriTpmVersion::V138 => tpm_resources::TpmVersion::V138,
+            PetriTpmVersion::V185 => tpm_resources::TpmVersion::V185,
+        }
+    }
+}
+
+impl From<PetriTpmVersion> for get_resources::ged::GedTpmVersion {
+    fn from(version: PetriTpmVersion) -> Self {
+        match version {
+            PetriTpmVersion::V138 => get_resources::ged::GedTpmVersion::V138,
+            PetriTpmVersion::V185 => get_resources::ged::GedTpmVersion::V185,
+        }
+    }
 }
 
 /// Hardware sealing policy used by the test infrastructure.
