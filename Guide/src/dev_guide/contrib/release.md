@@ -32,7 +32,7 @@ publication process.
 We expect a high quality bar for all code that goes into the OpenVMM main
 branch, and we ask developers to hold release branches to the highest quality
 standards. The OpenVMM maintainers will gradually slow the rate of churn into
-these branches as we get closer to a close date.
+these branches as we get closer to a shipping date.
 
 ```admonish note title="See also"
 [Security Releases](security_releases.md) describes private reporting and
