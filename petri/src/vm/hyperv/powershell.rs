@@ -562,13 +562,13 @@ impl HyperVNewCustomVMArgs {
                     }
                 }),
             management_vtl_feature_flags: properties.is_openhcl.then(|| {
-                HyperVManagementVtlFeatureFlags::new()
-                    .with_strict_encryption_policy(
-                        vmgs.encryption_policy()
-                            .map(|p| p.is_strict())
-                            .unwrap_or(false),
-                    )
-                    .with_tpm_version(tpm.as_ref().map(|t| t.version))
+                HyperVManagementVtlFeatureFlags::new().with_strict_encryption_policy(
+                    vmgs.encryption_policy()
+                        .map(|p| p.is_strict())
+                        .unwrap_or(false),
+                )
+                // TODO Once UEFI is fixed
+                //.with_tpm_version(tpm.as_ref().map(|t| t.version))
             }),
             guest_state_encryption_policy: {
                 // A requested hardware sealing policy takes precedence over the
