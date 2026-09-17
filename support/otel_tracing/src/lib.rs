@@ -57,14 +57,13 @@ pub fn init_native_layer<S>(
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
+    let resource = Resource::builder()
+        .with_service_name(service_name)
+        .with_attributes([KeyValue::new("service.version", service_version)])
+        .build();
     let provider = SdkTracerProvider::builder()
-        .with_span_processor(native_processor(service_name)?)
-        .with_resource(
-            Resource::builder()
-                .with_service_name(service_name)
-                .with_attributes([KeyValue::new("service.version", service_version)])
-                .build(),
-        )
+        .with_span_processor(native_processor(service_name, &resource)?)
+        .with_resource(resource)
         .build();
 
     let tracer = provider.tracer(service_name);
@@ -76,9 +75,10 @@ where
 #[cfg(windows)]
 fn native_processor(
     service_name: &'static str,
+    resource: &Resource,
 ) -> Result<opentelemetry_etw_traces::Processor, InitError> {
     opentelemetry_etw_traces::Processor::builder(service_name)
-        .with_resource_attributes(["service.version", "run.id"])
+        .with_resource_attributes(part_c_resource_keys(resource))
         .build()
         .map_err(|error| InitError::NativeProcessor(error.to_string()))
 }
@@ -86,6 +86,7 @@ fn native_processor(
 #[cfg(target_os = "linux")]
 fn native_processor(
     service_name: &'static str,
+    _resource: &Resource,
 ) -> Result<opentelemetry_user_events_trace::Processor, InitError> {
     opentelemetry_user_events_trace::Processor::builder(service_name)
         .build()
@@ -93,8 +94,19 @@ fn native_processor(
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn native_processor(_service_name: &'static str) -> Result<UnsupportedProcessor, InitError> {
+fn native_processor(
+    _service_name: &'static str,
+    _resource: &Resource,
+) -> Result<UnsupportedProcessor, InitError> {
     Err(InitError::UnsupportedPlatform)
+}
+
+#[cfg(any(windows, test))]
+fn part_c_resource_keys(resource: &Resource) -> impl Iterator<Item = String> + '_ {
+    resource.iter().filter_map(|(key, _)| match key.as_str() {
+        "service.name" | "service.instance.id" => None,
+        key => Some(key.to_string()),
+    })
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -109,5 +121,29 @@ impl opentelemetry_sdk::trace::SpanProcessor for UnsupportedProcessor {
 
     fn force_flush(&self) -> opentelemetry_sdk::error::OTelSdkResult {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::part_c_resource_keys;
+    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::Resource;
+
+    #[test]
+    fn part_c_keys_include_non_part_a_resource_attributes() {
+        let resource = Resource::builder_empty()
+            .with_attributes([
+                KeyValue::new("service.name", "openvmm"),
+                KeyValue::new("service.instance.id", "run-42"),
+                KeyValue::new("service.version", "1.0"),
+                KeyValue::new("run.id", "boot-42"),
+            ])
+            .build();
+
+        let mut keys = part_c_resource_keys(&resource).collect::<Vec<_>>();
+        keys.sort();
+
+        assert_eq!(keys, ["run.id", "service.version"]);
     }
 }
