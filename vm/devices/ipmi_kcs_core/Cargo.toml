@@ -1,0 +1,27 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "ipmi_kcs_core"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Derive `inspect` support on the device/SEL types. Pulls in the (no_std) inspect
+# crate; left off for minimal-footprint consumers such as the C FFI staticlib.
+inspect = ["dep:inspect"]
+# Emit rate-limited diagnostic traces from the KCS state machine. Pulls in
+# tracelimit (which requires std); left off for no_std consumers.
+trace = ["dep:tracelimit"]
+
+[dependencies]
+open_enum.workspace = true
+inspect = { workspace = true, default-features = false, features = ["derive"], optional = true }
+tracelimit = { workspace = true, optional = true }
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

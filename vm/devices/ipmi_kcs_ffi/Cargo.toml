@@ -1,0 +1,20 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "ipmi_kcs_ffi"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+# `staticlib` for linking into the Legacy HCL C++ (OS Repo); `rlib` so the crate
+# is unit-testable with the standard harness.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Minimal-footprint consumer: no `inspect`/`trace` features, so only the
+# no_std + alloc core logic is pulled in.
+ipmi_kcs_core.workspace = true
+
+[lints]
+workspace = true
