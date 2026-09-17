@@ -42,7 +42,8 @@ the virtual processors for execution. Existing `state_change` and
 breakdown.
 
 Successful lifecycle boundaries also emit an info event with the message
-`VM startup milestone` and a stable `milestone` field. These events identify
+`VM startup milestone`, the stable metadata name and `event_name` field
+`vm.startup.milestone`, and a stable `milestone` field. These events identify
 the following invariants:
 
 - `hypervisor_resolved`
@@ -60,6 +61,26 @@ the following invariants:
 
 Consumers should use the milestone field rather than parsing the
 human-readable message.
+
+### Exporter compatibility
+
+Lifecycle instrumentation uses only the `tracing` API and does not depend on a
+specific exporter. On Windows, the existing `Microsoft.HvLite` ETW subscriber
+receives the structured milestone fields and span start/stop records. The ETW
+event header uses the human-readable message, so ETW consumers should identify
+milestones by the `event_name` and `milestone` fields.
+
+Standalone OpenVMM does not currently configure a Linux `user_events`
+subscriber. A future subscriber can bridge the same spans to OpenTelemetry and
+use a `user_events` trace exporter without changing the instrumentation call
+sites.
+
+`OPENVMM_LOG_SPANS` controls span lifecycle records in formatted stderr output;
+it is not required for other subscribers. Exporters should use the static span
+names, the `mode` span field, and the `vm.startup.milestone` event's
+`milestone` field as the stable schema. Exporter-generated activity, trace, and
+span identifiers are transport details and must not be treated as lifecycle
+identifiers.
 
 ### Rate limiting
 

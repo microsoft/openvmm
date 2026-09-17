@@ -183,7 +183,12 @@ const SYSTEM_IRQ_ACPI: u32 = 9;
 const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 fn startup_milestone(milestone: &'static str) {
-    tracing::info!(milestone, "VM startup milestone");
+    tracing::info!(
+        name: "vm.startup.milestone",
+        event_name = "vm.startup.milestone",
+        milestone,
+        "VM startup milestone"
+    );
 }
 
 enum VpciEjectResult {
@@ -3643,7 +3648,12 @@ impl LoadedVmInner {
 }
 
 impl LoadedVm {
-    #[tracing::instrument(name = "resume_vm", target = "openvmm::perf", skip_all)]
+    #[tracing::instrument(
+        name = "resume_vm",
+        target = "openvmm::perf",
+        parent = None,
+        skip_all
+    )]
     async fn resume(&mut self) -> bool {
         if self.running {
             return false;
