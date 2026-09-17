@@ -243,8 +243,6 @@ enum LogOpType {
 
 #[derive(Debug, Error)]
 enum InitDataError {
-    #[error("Unsupported Attestation Type")]
-    UnsupportedAttestationType(AttestationType),
     #[error("Failed to get Attestation Report")]
     FailedGetAttestationReport,
     #[error("Invalid Attestation Report")]
@@ -1843,7 +1841,7 @@ fn verify_init_data_inner(
     let report_data = [0u8; 64];
     let mut report = tee_call
         .get_attestation_report(&report_data)
-        .map_err(|e| InitDataError::FailedGetAttestationReport)?;
+        .map_err(|_| InitDataError::FailedGetAttestationReport)?;
 
     let attestation_type = match tee_call.tee_type() {
         TeeType::Snp => AttestationType::Snp,
@@ -1860,9 +1858,15 @@ fn verify_init_data_inner(
             tracing::info!(CVM_ALLOWED, "Host data: {:?}", host_data);
             tracing::info!(CVM_ALLOWED, "Asserted init data: {:?}", asserted_init_data);
             if host_data == asserted_init_data {
-                return Ok(());
+                Ok(())
             } else {
-                return Err(InitDataError::InitDataAssertionFail);
+                tracing::error!(
+                    CVM_ALLOWED,
+                    actual = ?host_data,
+                    asserted = ?asserted_init_data,
+                    "init data does not match the asserted value"
+                );
+                Err(InitDataError::InitDataAssertionFail)
             }
         }
         AttestationType::Tdx => {
@@ -1870,10 +1874,18 @@ fn verify_init_data_inner(
             let tdreport = x86defs::tdx::TdReport::mut_from_bytes(&mut report.report[..])
                 .map_err(|_e| InitDataError::InvalidAttestationReport)?;
             let mr_config = tdreport.td_info.td_info_base.mr_owner_config;
-            if mr_config[0..32] == asserted_init_data {
-                return Ok(());
+            tracing::info!(CVM_ALLOWED, "MR owner config: {:?}", mr_config);
+            tracing::info!(CVM_ALLOWED, "Asserted init data: {:?}", asserted_init_data);
+            if tdx_init_data_matches(&mr_config, &asserted_init_data) {
+                Ok(())
             } else {
-                return Err(InitDataError::InitDataAssertionFail);
+                tracing::error!(
+                    CVM_ALLOWED,
+                    actual = ?mr_config,
+                    asserted = ?asserted_init_data,
+                    "init data does not match the asserted value"
+                );
+                Err(InitDataError::InitDataAssertionFail)
             }
         }
         _ => {
@@ -1884,9 +1896,14 @@ fn verify_init_data_inner(
                 "Unsupported attestation type: {:?}",
                 attestation_type
             );
-            return Ok(());
+            Ok(())
         }
     }
+}
+
+fn tdx_init_data_matches(mr_owner_config: &[u8; 48], asserted_init_data: &[u8; 32]) -> bool {
+    let (init_data, padding) = mr_owner_config.split_at(asserted_init_data.len());
+    init_data == asserted_init_data && padding.iter().all(|&byte| byte == 0)
 }
 
 // Public function to verify the InitData hash
@@ -1894,29 +1911,29 @@ fn verify_init_data_inner(
 /// Takes the asserted InitData hash and the attestation type as arguments.
 /// Passes the asserted InitData hash to the appropriate
 /// TEE call interface for verify_init_data_inner.
-/// Returns Ok(()) if the hashes match, or an error if they do not.
+/// A hash mismatch or other verification error prevents the VM from booting.
 pub fn verify_init_data(
     asserted_init_data: [u8; 32],
     tee_type: AttestationType,
 ) -> Result<(), Error> {
-    match tee_type {
+    let result = match tee_type {
         AttestationType::Snp => {
             let tee_call: Box<dyn TeeCall> = Box::new(tee_call::SnpCall);
             verify_init_data_inner(asserted_init_data, tee_call.as_ref())
-                .map_err(|e| Error::from(AttestationErrorInner::InitDataAssertionFail(e)))
         }
         AttestationType::Tdx => {
-            let tee_call: Box<dyn TeeCall> = Box::new(tee_call::TdxCall);
+            let tee_call: Box<dyn TeeCall> = Box::new(tee_call::TdxCall::new(false));
             verify_init_data_inner(asserted_init_data, tee_call.as_ref())
-                .map_err(|e| Error::from(AttestationErrorInner::InitDataAssertionFail(e)))
         }
         _ => {
             // Unsupported attestation type
             // Do not fail as this is not fatal
             tracing::info!(CVM_ALLOWED, "Unsupported attestation type: {:?}", tee_type);
-            Ok(())
+            return Ok(());
         }
-    }
+    };
+
+    result.map_err(|err| Error::from(AttestationErrorInner::InitDataAssertionFail(err)))
 }
 
 /// Prepare the request payload and request GSP from the host via GET.
@@ -4944,7 +4961,7 @@ mod tests {
         ) -> Result<tee_call::GetAttestationReportResult, tee_call::Error> {
             Ok(tee_call::GetAttestationReportResult {
                 report: [0u8; x86defs::snp::SNP_REPORT_SIZE].to_vec(),
-                tcb_version: None,
+                key_derivation_svn: None,
             })
         }
 
@@ -4958,7 +4975,10 @@ mod tests {
     }
 
     impl tee_call::TeeCallGetDerivedKey for MockSnpTeeCall {
-        fn get_derived_key(&self, _tcb_version: u64) -> Result<[u8; 32], tee_call::Error> {
+        fn get_derived_key(
+            &self,
+            _policy: KeyDerivationPolicy,
+        ) -> Result<[u8; 32], tee_call::Error> {
             Ok([0u8; tee_call::HW_DERIVED_KEY_LENGTH])
         }
     }
@@ -4978,6 +4998,41 @@ mod tests {
 
         let mock_call: Box<dyn TeeCall> = Box::new(MockSnpTeeCall {});
         let result = verify_init_data_inner(asserted_init_data, mock_call.as_ref());
-        assert!(result.is_err_and(|e| { matches!(e, InitDataError::InitDataAssertionFail) }));
+        assert!(matches!(result, Err(InitDataError::InitDataAssertionFail)));
+    }
+
+    #[test]
+    fn tdx_init_data_matches_zero_padded_hash() {
+        let asserted_init_data = [0x5a; 32];
+        let mut mr_owner_config = [0u8; 48];
+        mr_owner_config[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
+
+        assert!(tdx_init_data_matches(&mr_owner_config, &asserted_init_data));
+    }
+
+    #[test]
+    fn tdx_init_data_rejects_hash_mismatch() {
+        let asserted_init_data = [0x5a; 32];
+        let mut mr_owner_config = [0u8; 48];
+        mr_owner_config[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
+        mr_owner_config[0] ^= 1;
+
+        assert!(!tdx_init_data_matches(
+            &mr_owner_config,
+            &asserted_init_data
+        ));
+    }
+
+    #[test]
+    fn tdx_init_data_rejects_nonzero_padding() {
+        let asserted_init_data = [0x5a; 32];
+        let mut mr_owner_config = [0u8; 48];
+        mr_owner_config[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
+        mr_owner_config[asserted_init_data.len()] = 1;
+
+        assert!(!tdx_init_data_matches(
+            &mr_owner_config,
+            &asserted_init_data
+        ));
     }
 }
