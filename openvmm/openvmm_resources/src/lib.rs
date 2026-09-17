@@ -44,6 +44,8 @@ vm_resource::register_static_resolvers! {
     serial_pl011::resolver::SerialPl011Resolver,
     chipset::battery::resolver::BatteryResolver,
     guest_watchdog::resolver::HyperVGuestWatchdogResolver,
+    #[cfg(guest_arch = "x86_64")]
+    ipmi_kcs::resolver::IpmiKcsResolver,
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,
