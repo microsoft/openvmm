@@ -1,0 +1,28 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+import "vmservice.disk.proto";
+
+// NVMe controller. Attached behind a PCIe port in the topology, or hot-added
+// at runtime via AddVmPcieDevice.
+message NvmeConfig {
+    // Controller identifier.
+    string controller_id = 1;
+    // Namespaces exposed by the controller.
+    repeated NvmeNamespace namespaces = 2;
+}
+
+// A namespace within an NVMe controller.
+message NvmeNamespace {
+    // Namespace ID (1-based).
+    uint32 nsid = 1;
+    // Backing disk.
+    DiskBackend backend = 2;
+    // Expose the namespace read-only to the guest.
+    bool read_only = 3;
+}

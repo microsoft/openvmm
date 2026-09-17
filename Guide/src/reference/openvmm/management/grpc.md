@@ -28,29 +28,29 @@ The list below summarizes the available RPCs; some definitions may be added
 before their implementation is connected end to end.
 ```
 
-* CreateVM
-* TeardownVM
-* PauseVM
-* ResumeVM
-* WaitVM
-* CapabilitiesVM
-* PropertiesVM
-* ModifyResource
-* AddPcieDevice
-* RemovePcieDevice
-* AddVpciDevice
-* RemoveVpciDevice
+* CreateVm
+* TeardownVm
+* PauseVm
+* ResumeVm
+* WaitVm
+* VmProperties
+* ModifyVmResource
+* AddVmPcieDevice
+* RemoveVmPcieDevice
+* AddVmVpciDevice
+* RemoveVmVpciDevice
+* Capabilities
 * Quit
 
-`AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
+`AddVmVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
 hypervisor backend must support virtual devices. The caller supplies the
-guest-visible instance ID in `AddVpciDeviceRequest.instance_id` and uses the
-same ID for `RemoveVpciDevice`. The response is empty. Removing an unknown
+guest-visible instance ID in `AddVmVpciDeviceRequest.instance_id` and uses the
+same ID for `RemoveVmVpciDevice`. The response is empty. Removing an unknown
 or previously removed instance ID returns an error.
 
-Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
-hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
+Unlike `AddVmPcieDevice`, VPCI does not require a root complex or a predeclared
+hotplug-capable PCIe port. `AddVmPcieDevice` remains available when standard PCIe
 hotplug semantics or a non-VPCI host backend is required.
 
 ## VFIO and accelerated SMMU
@@ -67,7 +67,7 @@ device reference is an error, as is unavailable iommufd support. Omitting
 iommufd path do not fall back to legacy assignment.
 
 Contexts are declared at VM creation and retained until teardown, even when
-unused or after their last device is removed. `AddPcieDevice` uses the same
+unused or after their last device is removed. `AddVmPcieDevice` uses the same
 `VfioDevice` message and can reference any declared context. There is no RPC
 to add or remove contexts, and no client file descriptor is needed.
 
