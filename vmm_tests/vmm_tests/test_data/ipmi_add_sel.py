@@ -59,7 +59,7 @@ def ioctl_code(direction, number, size):
 
 def ioctl(fd, request, value):
     result = libc.ioctl(fd, request, ctypes.byref(value))
-    if result != 0:
+    if result == -1:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
 
