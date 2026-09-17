@@ -28,7 +28,8 @@ rate-limited by default. To disable rate limiting (useful for debugging), set
 
 Build OpenVMM with the `otel` feature, then set `OPENVMM_OTEL=1` to emit
 enabled spans through the platform's native tracing subsystem: ETW on Windows
-and `user_events` on Linux. For example:
+and `user_events` on GNU/Linux. Other platforms do not currently have a native
+OpenTelemetry trace sink. For example:
 
 ```shell
 cargo build -p openvmm --features otel

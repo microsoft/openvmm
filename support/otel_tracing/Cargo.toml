@@ -17,7 +17,7 @@ tracing-subscriber.workspace = true
 [target.'cfg(windows)'.dependencies]
 opentelemetry-etw-traces.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 opentelemetry-user-events-trace.workspace = true
 
 [lints]

@@ -83,7 +83,7 @@ fn native_processor(
         .map_err(|error| InitError::NativeProcessor(error.to_string()))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn native_processor(
     service_name: &'static str,
     _resource: &Resource,
@@ -93,7 +93,7 @@ fn native_processor(
         .map_err(|error| InitError::NativeProcessor(error.to_string()))
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, all(target_os = "linux", target_env = "gnu"))))]
 fn native_processor(
     _service_name: &'static str,
     _resource: &Resource,
@@ -109,17 +109,24 @@ fn part_c_resource_keys(resource: &Resource) -> impl Iterator<Item = String> + '
     })
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, all(target_os = "linux", target_env = "gnu"))))]
 #[derive(Debug)]
 struct UnsupportedProcessor;
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, all(target_os = "linux", target_env = "gnu"))))]
 impl opentelemetry_sdk::trace::SpanProcessor for UnsupportedProcessor {
     fn on_start(&self, _span: &mut opentelemetry_sdk::trace::Span, _cx: &opentelemetry::Context) {}
 
     fn on_end(&self, _span: opentelemetry_sdk::trace::SpanData) {}
 
     fn force_flush(&self) -> opentelemetry_sdk::error::OTelSdkResult {
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(
+        &self,
+        _timeout: std::time::Duration,
+    ) -> opentelemetry_sdk::error::OTelSdkResult {
         Ok(())
     }
 }
