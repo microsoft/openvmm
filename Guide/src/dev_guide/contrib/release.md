@@ -77,6 +77,9 @@ policy is authoritative if the release cadence changes. When a new OpenHCL
 release ships, the release that is now three product releases behind moves out
 of service.
 
+This servicing policy applies prospectively to releases created under the new
+model. Existing release branches retain the lifecycle states listed below.
+
 ### Backport acceptance bar
 
 Release branches accept security fixes and critical bug fixes only. A critical
