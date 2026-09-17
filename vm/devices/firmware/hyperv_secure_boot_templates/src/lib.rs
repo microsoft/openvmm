@@ -59,6 +59,8 @@ pub mod aarch64 {
 pub mod x64 {
     include_templates! {
         (microsoft_windows, "x64/MicrosoftWindows_Template.json"),
+        (microsoft_windows_confidential, "x64/MicrosoftWindows_Confidential_Template.json"),
         (microsoft_uefi_ca, "x64/MicrosoftUEFI_Template.json"),
+        (microsoft_uefi_ca_confidential, "x64/MicrosoftUEFI_Confidential_Template.json"),
     }
 }

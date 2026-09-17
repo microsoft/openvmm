@@ -62,6 +62,7 @@ members = [
   "vm/cvmutil",
   # opentmk
   "opentmk",
+  "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
 ]
@@ -84,6 +85,10 @@ xtask_fuzz = { path = "xtask/xtask_fuzz" }
 opentmk_protocol = { path = "opentmk/opentmk_protocol" }
 opentmk_core = { path = "opentmk/opentmk_core" }
 opentmk_disk = { path = "opentmk/opentmk_disk" }
+
+# opentmk executor
+opentmk_exec_packet = { path = "opentmk/opentmk_exec_packet" }
+opentmk_decoder = { path = "opentmk/opentmk_decoder" }
 
 flowey = { path = "flowey/flowey" }
 flowey_cli = { path = "flowey/flowey_cli" }
@@ -373,6 +378,7 @@ tpm_device = { path = "vm/devices/tpm/tpm_device" }
 tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
 tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
+tpm_vmgs = { path = "vm/devices/tpm/tpm_vmgs" }
 pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
@@ -525,6 +531,7 @@ hex = "0.4"
 pbjson = "0.5"
 pbjson-build = "0.5"
 pbjson-types = "0.5"
+postcard = { version = "1.1.3", default-features = false }
 prost = "0.11"
 prost-build = "0.11"
 prost-types = "0.11"
@@ -564,7 +571,7 @@ x509-cert = { version = "0.3.0-rc.4", default-features = false }
 # TPM 1.38
 ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
 # TPM 1.85
-ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f", default-features = false }
+ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "ed7078db7e4f42461e69732010a1346b695f75fc", default-features = false }
 
 # --- Data structures / collections ---
 arrayvec = { version = "0.7", default-features = false }

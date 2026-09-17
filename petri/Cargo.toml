@@ -42,6 +42,7 @@ serial_16550_resources.workspace = true
 serial_socket.workspace = true
 storvsp_resources.workspace = true
 tpm_resources.workspace = true
+tpm_vmgs.workspace = true
 uidevices_resources.workspace = true
 video_core.workspace = true
 virtio_resources.workspace = true
