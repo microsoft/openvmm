@@ -2005,7 +2005,7 @@ async fn mana_nic_servicing_both_boot_with_nvme_only(
     let error = vm
         .restart_openhcl(igvm_file, flags)
         .await
-        .expect_err("NVMe allocations should fail DMA manager restore validation");
+        .expect_err("MANA allocations should fail DMA manager restore validation");
     assert!(
         format!("{error:#}").contains("unrestored allocations found"),
         "unexpected servicing error: {error:#}"
