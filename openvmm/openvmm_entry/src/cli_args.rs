@@ -23,6 +23,7 @@ use clap::Parser;
 use clap::ValueEnum;
 use cxl_spec::CfmwsWindowRestrictions;
 use guid::Guid;
+use net_backend_resources::mac_address::MacAddress;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
@@ -609,6 +610,7 @@ options:
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     ///
     /// For consomme, forward host ports into the guest with `hostfwd=`:
     ///   --net consomme:hostfwd=tcp::3389-:3389
@@ -882,6 +884,7 @@ The openhcl personality requires explicit --hv --vtl2."#
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
 
@@ -1035,6 +1038,7 @@ flags:
     ///
     /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
     /// at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
@@ -3104,6 +3108,8 @@ impl FromStr for EndpointConfigCli {
 pub struct NicConfigCli {
     pub vtl: DeviceVtl,
     pub endpoint: EndpointConfigCli,
+    /// MAC address to expose to the guest. A random address is used if omitted.
+    pub mac_address: Option<MacAddress>,
     pub max_queues: Option<u16>,
     pub underhill: bool,
     pub pcie_port: Option<String>,
@@ -3114,6 +3120,7 @@ impl FromStr for NicConfigCli {
 
     fn from_str(mut s: &str) -> Result<Self, Self::Err> {
         let mut vtl = DeviceVtl::Vtl0;
+        let mut mac_address = None;
         let mut max_queues = None;
         let mut underhill = false;
         let mut pcie_port = None;
@@ -3122,6 +3129,9 @@ impl FromStr for NicConfigCli {
                 match opt {
                     "queues" => {
                         max_queues = Some(val.parse().map_err(|_| "failed to parse queue count")?);
+                    }
+                    "mac" => {
+                        mac_address = Some(val.parse().map_err(|_| "failed to parse MAC address")?);
                     }
                     "pcie_port" => {
                         if val.is_empty() {
@@ -3155,6 +3165,7 @@ impl FromStr for NicConfigCli {
         Ok(NicConfigCli {
             vtl,
             endpoint,
+            mac_address,
             max_queues,
             underhill,
             pcie_port,
@@ -4539,6 +4550,7 @@ mod tests {
         // Test basic endpoint
         let config = NicConfigCli::from_str("none").unwrap();
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
+        assert!(config.mac_address.is_none());
         assert!(config.max_queues.is_none());
         assert!(!config.underhill);
         assert!(config.pcie_port.is_none());
@@ -4556,6 +4568,14 @@ mod tests {
         assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
+        // Test with explicit MAC address
+        let config = NicConfigCli::from_str("mac=00-15-5d-12-12-13:none").unwrap();
+        assert_eq!(
+            config.mac_address,
+            Some(MacAddress::new([0x00, 0x15, 0x5d, 0x12, 0x12, 0x13]))
+        );
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
         // Test with underhill
         let config = NicConfigCli::from_str("uh:none").unwrap();
         assert!(config.underhill);
@@ -4569,6 +4589,7 @@ mod tests {
 
         // Test error cases
         assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
+        assert!(NicConfigCli::from_str("mac=invalid:none").is_err());
         assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
         assert!(NicConfigCli::from_str("pcie_port=rp0:vtl2:none").is_err());
         assert!(NicConfigCli::from_str("uh:pcie_port=rp0:none").is_err());
