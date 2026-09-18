@@ -71,6 +71,23 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
                 )])
         });
 
+        // Nothing may run against the requested revision until it is known to
+        // be reviewed history. This job never checks it out, so it also
+        // bootstraps the flowey the write-capable publish job consumes.
+        let gate_job = pipeline
+            .new_job(
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                FlowArch::X86_64,
+                "verify release commit is reviewed",
+            )
+            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
+            .dep_on(
+                |ctx| flowey_lib_hvlite::_jobs::check_openvmm_release_commit::Request {
+                    done: ctx.new_done_handle(),
+                },
+            )
+            .finish();
+
         let assemble_job = pipeline
             .new_job(
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -119,6 +136,7 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
 
         pipeline.non_artifact_dep(&publish_job, &validate_job);
         pipeline.non_artifact_dep(&validate_job, &assemble_job);
+        pipeline.non_artifact_dep(&assemble_job, &gate_job);
 
         Ok(pipeline)
     }
