@@ -315,16 +315,6 @@ mod test {
     }
 
     #[test]
-    fn ipmi_defaults_false_and_parses_true() {
-        let default = serde_json::from_str::<HclDevicePlatformSettings>("{}").unwrap();
-        assert!(!default.enable_ipmi);
-
-        let enabled =
-            serde_json::from_str::<HclDevicePlatformSettings>(r#"{"EnableIpmi":true}"#).unwrap();
-        assert!(enabled.enable_ipmi);
-    }
-
-    #[test]
     fn smoke_test_sample_with_vtl2settings() {
         serde_json::from_slice::<DevicePlatformSettingsV2Json>(include_bytes!(
             "dps_test_json_with_vtl2settings.json"

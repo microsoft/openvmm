@@ -484,7 +484,7 @@ impl GuestEmulationTransportClient {
     /// Forwards a completed IPMI System Event Log record to the host.
     ///
     /// This function is non-blocking and does not wait for a host response.
-    pub fn ipmi_sel(&self, record_id: u16, record: crate::api::IpmiSelRecord) {
+    pub fn ipmi_sel(&self, record_id: u16, record: ipmi_protocol::SelRecord) {
         self.control.notify(msg::Msg::IpmiSel { record_id, record });
     }
 

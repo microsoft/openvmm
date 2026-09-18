@@ -18,7 +18,6 @@ mod sel;
 mod tests;
 
 pub use chipset_resources::ipmi_kcs::SelEventSink;
-pub use chipset_resources::ipmi_kcs::SendOutcome;
 pub use ipmi_protocol::KCS_COMMAND_GET_STATUS_ABORT;
 pub use ipmi_protocol::KCS_COMMAND_WRITE_END;
 pub use ipmi_protocol::KCS_COMMAND_WRITE_START;

@@ -81,7 +81,7 @@ pub mod ged {
         pub guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         /// Notification of firmware events.
         pub firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
-        /// Test observer for IPMI SEL notifications received from OpenHCL.
+        /// Optional Petri observer for IPMI SEL notifications already received over GET.
         pub ipmi_sel_event_send: Option<mesh::Sender<IpmiSelEvent>>,
         /// Enable secure boot.
         pub secure_boot_enabled: bool,

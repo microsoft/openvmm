@@ -54,19 +54,10 @@ pub mod ipmi_kcs {
     /// Size of the ARM64 KCS MMIO aperture.
     pub const IPMI_KCS_MMIO_REGION_SIZE_AARCH64: u64 = 0x1000;
 
-    /// Result of attempting to forward an IPMI SEL record.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum SendOutcome {
-        /// The sink accepted the record.
-        Accepted,
-        /// The sink dropped the record without blocking the virtual BMC.
-        Dropped,
-    }
-
     /// Non-blocking sink for completed IPMI SEL records.
     pub trait SelEventSink: Send {
-        /// Attempts to forward a completed SEL record.
-        fn try_send(&mut self, record_id: u16, record: SelRecord) -> SendOutcome;
+        /// Attempts to forward a completed SEL record, returning whether it was accepted.
+        fn try_send(&mut self, record_id: u16, record: SelRecord) -> bool;
     }
 
     /// Resource kind for IPMI SEL event sinks.
@@ -88,7 +79,10 @@ pub mod ipmi_kcs {
     pub struct IpmiKcsDeviceHandleX64 {
         /// Non-blocking sink for completed SEL records.
         pub event_sink: Resource<IpmiSelEventSinkHandleKind>,
-        /// Trusted wall-clock source used for SEL timestamps.
+        /// Wall-clock source used for Unix-epoch SEL timestamps.
+        ///
+        /// This resource supplies time to UEFI and is not dependent on a
+        /// guest-visible CMOS device.
         pub time_source: Resource<CmosRtcTimeSourceHandleKind>,
     }
 
@@ -101,7 +95,10 @@ pub mod ipmi_kcs {
     pub struct IpmiKcsDeviceHandleAArch64 {
         /// Non-blocking sink for completed SEL records.
         pub event_sink: Resource<IpmiSelEventSinkHandleKind>,
-        /// Trusted wall-clock source used for SEL timestamps.
+        /// Wall-clock source used for Unix-epoch SEL timestamps.
+        ///
+        /// This resource supplies time to UEFI and is not dependent on a
+        /// guest-visible CMOS device.
         pub time_source: Resource<CmosRtcTimeSourceHandleKind>,
     }
 

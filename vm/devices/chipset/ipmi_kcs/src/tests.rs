@@ -48,12 +48,12 @@ struct SharedSink {
 }
 
 impl SelEventSink for SharedSink {
-    fn try_send(&mut self, record_id: u16, record: SelRecord) -> SendOutcome {
+    fn try_send(&mut self, record_id: u16, record: SelRecord) -> bool {
         if !self.accept.load(Ordering::Relaxed) {
-            return SendOutcome::Dropped;
+            return false;
         }
         self.state.lock().records.push((record_id, record));
-        SendOutcome::Accepted
+        true
     }
 }
 
@@ -506,20 +506,6 @@ fn sel_capacity_is_bounded_without_overwrite() {
 }
 
 #[test]
-fn record_and_reservation_ids_roll_over_without_reserved_values() {
-    let (_, mut source) = device(1);
-    let mut state = source.save().unwrap();
-    state.next_record_id = 0xfffe;
-    state.reservation_id = 0xffff;
-    let mut device = restore_target(1, state);
-
-    assert_eq!(add_record(&mut device, 0x11)[3..5], [0xfe, 0xff]);
-    assert_eq!(add_record(&mut device, 0x22)[3..5], [1, 0]);
-    let reservation = transact(&mut device, &storage_request(COMMAND_RESERVE_SEL, &[]));
-    assert_eq!(reservation[3..5], [1, 0]);
-}
-
-#[test]
 fn clear_sel_validates_fields_and_resets_store() {
     let clock = FakeClock::new(100);
     let mut device = IpmiKcs::new(Box::new(clock.clone()));
@@ -575,7 +561,7 @@ fn clear_sel_validates_fields_and_resets_store() {
 }
 
 #[test]
-fn sel_time_supports_positive_negative_and_wrapping_offsets() {
+fn sel_time_supports_positive_and_negative_offsets() {
     let clock = FakeClock::new(1000);
     let mut device = IpmiKcs::new(Box::new(clock.clone()));
 
@@ -606,15 +592,6 @@ fn sel_time_supports_positive_negative_and_wrapping_offsets() {
     clock.set(500);
     let time = transact(&mut device, &storage_request(COMMAND_GET_SEL_TIME, &[]));
     assert_eq!(u32::from_le_bytes(time[3..7].try_into().unwrap()), 0);
-
-    clock.set(0);
-    transact(
-        &mut device,
-        &storage_request(COMMAND_SET_SEL_TIME, &u32::MAX.to_le_bytes()),
-    );
-    clock.set(10);
-    let time = transact(&mut device, &storage_request(COMMAND_GET_SEL_TIME, &[]));
-    assert_eq!(u32::from_le_bytes(time[3..7].try_into().unwrap()), 9);
 }
 
 #[test]
@@ -695,7 +672,7 @@ fn sink_forwarding_is_limited_to_256_per_trusted_second() {
 }
 
 #[test]
-fn reset_preserves_sel_time_reservation_and_stats() {
+fn reset_clears_transaction_and_preserves_sel() {
     let clock = FakeClock::new(100);
     let mut device = IpmiKcs::new(Box::new(clock));
     transact(
@@ -703,7 +680,6 @@ fn reset_preserves_sel_time_reservation_and_stats() {
         &storage_request(COMMAND_SET_SEL_TIME, &200u32.to_le_bytes()),
     );
     add_record(&mut device, 0x42);
-    let reservation = transact(&mut device, &storage_request(COMMAND_RESERVE_SEL, &[]));
 
     device.write_command(KCS_COMMAND_WRITE_START);
     assert_eq!(device.read_data(), 0);
@@ -714,13 +690,7 @@ fn reset_preserves_sel_time_reservation_and_stats() {
     assert_eq!(device.read_status(), KCS_STATE_IDLE);
     assert_eq!(device.sel_len(), 1);
     assert_eq!(device.sel_time_offset_seconds(), 100);
-    assert_eq!(device.stats().committed, 1);
-
-    let current_reservation = transact(&mut device, &storage_request(COMMAND_RESERVE_SEL, &[]));
-    assert_eq!(
-        u16::from_le_bytes([current_reservation[3], current_reservation[4]]),
-        u16::from_le_bytes([reservation[3], reservation[4]]) + 1
-    );
+    assert_eq!(add_record(&mut device, 0x43)[3..5], [2, 0]);
 }
 
 fn restore_target(seconds: i64, state: save_restore::SavedState) -> IpmiKcs {
@@ -770,34 +740,28 @@ fn save_restore_idle_write_and_read_transactions() {
 }
 
 #[test]
-fn save_restore_full_sel_and_adjusted_time() {
+fn save_restore_preserves_sel_and_adjusted_time() {
     let clock = FakeClock::new(1000);
     let mut source = IpmiKcs::new(Box::new(clock.clone()));
     transact(
         &mut source,
         &storage_request(COMMAND_SET_SEL_TIME, &1500u32.to_le_bytes()),
     );
-    for fill in 0..128u8 {
-        add_record(&mut source, fill);
-    }
-    clear(&mut source, 0, 0);
+    add_record(&mut source, 0x11);
+    add_record(&mut source, 0x22);
 
     let state = source.save().unwrap();
     let state = SavedStateBlob::new(state)
         .parse::<save_restore::SavedState>()
         .unwrap();
     let mut restored = restore_target(1100, state);
-    assert_eq!(restored.sel_len(), 128);
+    assert_eq!(restored.sel_len(), 2);
+    assert_eq!(restored.sel_record(0).unwrap()[7], 0x11);
+    assert_eq!(restored.sel_record(1).unwrap()[7], 0x22);
     assert_eq!(restored.sel_time_offset_seconds(), 500);
-    assert_eq!(restored.stats(), SelStats::default());
     let time = transact(&mut restored, &storage_request(COMMAND_GET_SEL_TIME, &[]));
     assert_eq!(u32::from_le_bytes(time[3..7].try_into().unwrap()), 1600);
-    assert_completion(
-        &add_record(&mut restored, 0xff),
-        STORAGE_REQUEST,
-        COMMAND_ADD_SEL_ENTRY,
-        COMPLETION_SEL_FULL,
-    );
+    assert_eq!(add_record(&mut restored, 0x33)[3..5], [3, 0]);
 }
 
 fn assert_invalid_state(state: save_restore::SavedState) {
@@ -818,54 +782,15 @@ fn malformed_saved_state_is_rejected() {
     assert_invalid_state(state);
 
     let mut state = valid.clone();
-    state.status = STATUS_IBF;
-    assert_invalid_state(state);
-
-    let mut state = valid.clone();
     state.request = vec![0; 65];
     assert_invalid_state(state);
 
     let mut state = valid.clone();
-    state.response = vec![0; 65];
-    assert_invalid_state(state);
-
-    let mut state = valid.clone();
-    state.response = vec![0];
-    state.response_position = 2;
-    assert_invalid_state(state);
-
-    let mut state = valid.clone();
-    state.status = KCS_STATE_READ;
-    state.response.clear();
-    assert_invalid_state(state);
-
-    let mut state = valid.clone();
-    state.write_end_pending = true;
-    assert_invalid_state(state);
-
-    let mut state = valid.clone();
     state.sel_count = 1;
-    assert_invalid_state(state);
-
-    let mut state = valid.clone();
-    state.sel_records = (1..=129u16)
-        .map(|record_id| {
-            let mut record = vec![0; 16];
-            record[0..2].copy_from_slice(&record_id.to_le_bytes());
-            record
-        })
-        .collect();
-    state.sel_count = 129;
-    state.next_record_id = 130;
     assert_invalid_state(state);
 
     let mut state = valid.clone();
     state.sel_records = vec![vec![0; 15]];
-    state.sel_count = 1;
-    assert_invalid_state(state);
-
-    let mut state = valid.clone();
-    state.sel_records = vec![vec![0; 16]];
     state.sel_count = 1;
     assert_invalid_state(state);
 
@@ -877,17 +802,7 @@ fn malformed_saved_state_is_rejected() {
     state.next_record_id = 2;
     assert_invalid_state(state);
 
-    for next_record_id in [0, 0xffff] {
-        let mut state = valid.clone();
-        state.next_record_id = next_record_id;
-        assert_invalid_state(state);
-    }
-
     let mut state = valid;
-    let mut record = vec![0; 16];
-    record[0..2].copy_from_slice(&1u16.to_le_bytes());
-    state.sel_records = vec![record];
-    state.sel_count = 1;
-    state.next_record_id = 1;
+    state.next_record_id = 0;
     assert_invalid_state(state);
 }

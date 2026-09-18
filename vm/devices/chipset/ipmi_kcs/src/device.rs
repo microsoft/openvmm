@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn advertises_exact_amd64_pio_region() {
+    fn pio_device_maps_ports_and_dispatches() {
         let mut device = device();
         assert!(device.supports_pio().is_some());
         assert!(device.supports_mmio().is_none());
@@ -273,11 +273,6 @@ mod tests {
                 IPMI_KCS_DATA_PORT..=IPMI_KCS_STATUS_COMMAND_PORT
             )]
         );
-    }
-
-    #[test]
-    fn rejects_invalid_accesses() {
-        let mut device = device();
 
         assert!(matches!(
             device.io_read(IPMI_KCS_DATA_PORT, &mut [0; 2]),
@@ -295,11 +290,7 @@ mod tests {
             device.io_write(IPMI_KCS_STATUS_COMMAND_PORT + 1, &[0]),
             IoResult::Err(IoError::InvalidRegister)
         ));
-    }
 
-    #[test]
-    fn get_device_id_works_over_pio() {
-        let mut device = device();
         let response = transact(
             &mut device,
             &[NETFN_APPLICATION << 2, COMMAND_GET_DEVICE_ID],
@@ -327,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn advertises_exact_arm64_mmio_region() {
+    fn mmio_device_maps_region_and_dispatches() {
         let mut device = mmio_device();
         assert!(device.supports_pio().is_none());
         assert!(device.supports_mmio().is_some());
@@ -339,11 +330,6 @@ mod tests {
                     ..=IPMI_KCS_MMIO_BASE_ADDRESS_AARCH64 + IPMI_KCS_MMIO_REGION_SIZE_AARCH64 - 1
             )]
         );
-    }
-
-    #[test]
-    fn arm64_mmio_rejects_invalid_accesses() {
-        let mut device = mmio_device();
 
         assert!(matches!(
             device.mmio_read(IPMI_KCS_MMIO_DATA_ADDRESS_AARCH64, &mut [0; 4]),
@@ -361,11 +347,6 @@ mod tests {
             device.mmio_write(IPMI_KCS_MMIO_STATUS_COMMAND_ADDRESS_AARCH64 + 1, &[0]),
             IoResult::Err(IoError::InvalidRegister)
         ));
-    }
-
-    #[test]
-    fn get_device_id_works_over_arm64_mmio() {
-        let mut device = mmio_device();
 
         device
             .mmio_write(

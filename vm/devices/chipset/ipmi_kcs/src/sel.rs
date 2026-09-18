@@ -5,7 +5,6 @@
 
 use crate::IpmiKcs;
 use crate::KCS_MESSAGE_MAX;
-use crate::SendOutcome;
 use crate::protocol::completion;
 use crate::protocol::invalid_length;
 use crate::protocol::write_response;
@@ -213,13 +212,10 @@ impl IpmiKcs {
 
         if let Some(sink) = self.sink.as_mut() {
             if self.rate_limiter.allow(trusted_seconds) {
-                match sink.try_send(record_id, record) {
-                    SendOutcome::Accepted => {
-                        self.stats.forwarded = self.stats.forwarded.saturating_add(1);
-                    }
-                    SendOutcome::Dropped => {
-                        self.stats.sink_dropped = self.stats.sink_dropped.saturating_add(1);
-                    }
+                if sink.try_send(record_id, record) {
+                    self.stats.forwarded = self.stats.forwarded.saturating_add(1);
+                } else {
+                    self.stats.sink_dropped = self.stats.sink_dropped.saturating_add(1);
                 }
             } else {
                 self.stats.rate_limited = self.stats.rate_limited.saturating_add(1);

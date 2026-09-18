@@ -4498,9 +4498,7 @@ impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResol
         self,
         resolver: &mut ResourceResolver,
     ) -> anyhow::Result<()> {
-        resolver.add_resolver(self.get.clone());
-        resolver
-            .add_resolver(guest_emulation_transport::resolver::IpmiSelEventSinkResolver(self.get));
+        resolver.add_resolver(self.get);
         if let Some(vmgs) = self.vmgs {
             resolver.add_resolver(vmgs);
         }

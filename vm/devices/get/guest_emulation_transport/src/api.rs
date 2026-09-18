@@ -18,9 +18,6 @@ pub use get_protocol::ProtocolVersion;
 pub use get_protocol::SaveGuestVtl2StateFlags;
 pub use get_protocol::VmgsIoStatus;
 
-/// A completed IPMI System Event Log record.
-pub type IpmiSelRecord = [u8; get_protocol::IPMI_SEL_RECORD_SIZE];
-
 use guid::Guid;
 use mesh::MeshPayload;
 use std::time::Duration;

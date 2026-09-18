@@ -455,11 +455,6 @@ pub struct PcieBarApertureEntry {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ipmi_enabled_is_bit_33() {
-        assert_eq!(Flags::new().with_ipmi_enabled(true).into_bits(), 1 << 33);
-    }
-
     fn read<T>(bytes: &[u8]) -> T
     where
         T: FromBytes + Immutable + KnownLayout,

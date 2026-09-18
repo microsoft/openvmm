@@ -7,7 +7,6 @@ use crate::GuestEmulationTransportClient;
 use chipset_resources::ipmi_kcs::IpmiSelEventSinkHandleKind;
 use chipset_resources::ipmi_kcs::ResolvedIpmiSelEventSink;
 use chipset_resources::ipmi_kcs::SelEventSink;
-use chipset_resources::ipmi_kcs::SendOutcome;
 use get_protocol::IPMI_SEL_RECORD_SIZE;
 use std::convert::Infallible;
 use vm_resource::CanResolveTo;
@@ -44,9 +43,9 @@ impl ResolveResource<GetClientKind, PlatformResource> for GuestEmulationTranspor
 struct GetIpmiSelEventSink(GuestEmulationTransportClient);
 
 impl SelEventSink for GetIpmiSelEventSink {
-    fn try_send(&mut self, record_id: u16, record: [u8; IPMI_SEL_RECORD_SIZE]) -> SendOutcome {
+    fn try_send(&mut self, record_id: u16, record: [u8; IPMI_SEL_RECORD_SIZE]) -> bool {
         self.0.ipmi_sel(record_id, record);
-        SendOutcome::Accepted
+        true
     }
 }
 

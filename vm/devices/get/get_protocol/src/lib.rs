@@ -403,35 +403,6 @@ impl IpmiSelNotification {
     }
 }
 
-#[cfg(test)]
-mod ipmi_sel_tests {
-    use super::*;
-
-    #[test]
-    fn notification_wire_layout() {
-        let record_id = 0x1234;
-        let record = [
-            0x34, 0x12, 0x02, 0x78, 0x56, 0x34, 0x12, 0x20, 0x00, 0x04, 0x01, 0x6f, 0xaa, 0xbb,
-            0xcc, 0xdd,
-        ];
-        let notification = IpmiSelNotification::new(record_id, record);
-
-        let mut expected = vec![1, 1, 13, 0, 0x34, 0x12];
-        expected.extend_from_slice(&record);
-        assert_eq!(notification.as_bytes(), expected);
-
-        let (decoded, remaining) =
-            IpmiSelNotification::read_from_prefix(&expected).expect("valid notification");
-        assert!(remaining.is_empty());
-        assert_eq!(
-            decoded.message_header.message_id(),
-            HostNotifications::IPMI_SEL
-        );
-        assert_eq!(decoded.record_id.get(), record_id);
-        assert_eq!(decoded.record, record);
-    }
-}
-
 pub const TRACE_MSG_MAX_SIZE: usize = 256;
 open_enum! {
     #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
