@@ -99,6 +99,11 @@ describes the source definitions.
   KVM SNP does not support Hyper-V enlightenments.
   The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
 
+  For multi-VP SNP IGVM boots, `--processors` must match the processor count
+  encoded in the image. Hyper-V-enlightened MSHV guests can start APs using
+  Hyper-V APIC-to-VP lookup and processor-start hypercalls. The guest kernel
+  must allocate shared hypercall input and output buffers for this path.
+
   SNP does not support UEFI, VTL2, or hugetlb-backed memory. In addition to
   the minimal emulated chipset and serial console, optional devices are
   limited to virtio devices attached through PCIe.
