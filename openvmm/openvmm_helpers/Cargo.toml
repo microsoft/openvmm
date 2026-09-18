@@ -6,11 +6,15 @@ name = "openvmm_helpers"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Enable opening qcow2 disks. Off by default; see openvmm_resources.
+disklayer_qcow2 = ["dep:disklayer_qcow2"]
+
 [dependencies]
 disk_backend_resources.workspace = true
 disk_vhd1.workspace = true
 disklayer_vhdx.workspace = true
-disklayer_qcow2.workspace = true
+disklayer_qcow2 = { workspace = true, optional = true }
 get_resources.workspace = true
 hypervisor_resources.workspace = true
 openvmm_defs.workspace = true
