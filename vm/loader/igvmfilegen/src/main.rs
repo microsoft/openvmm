@@ -1,7 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Implements a command line utility to generate IGVM files.
+//! Host-side command-line utility for constructing IGVM files.
+//!
+//! `igvmfilegen` combines a configuration manifest with firmware, kernel,
+//! initrd, boot-shim, and sidecar resources; lays them out for the selected
+//! platforms; and emits launch measurements and endorsement data.
+//!
+//! The OpenHCL build normally invokes this tool through `cargo xflowey
+//! build-igvm`, which supplies a supported manifest and all resource paths.
+//! Direct commands are useful when developing image layouts.
 
 #![forbid(unsafe_code)]
 

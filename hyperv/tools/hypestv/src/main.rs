@@ -1,7 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Interactive CLI for Hyper-V VMs.
+//! Windows-only interactive shell for developing and debugging Hyper-V VMs.
+//!
+//! Hypestv can select a VM, change its power state, attach serial consoles, and
+//! inspect or reload an OpenHCL paravisor. It combines those operations in a
+//! REPL with history and completion and is intended for direct developer use,
+//! not stable automation.
+//!
+//! Run `hypestv` to start detached and select a VM interactively, or pass a VM
+//! name to select it at startup. Non-Windows builds provide only an
+//! unsupported-platform stub.
 
 #![forbid(unsafe_code)]
 

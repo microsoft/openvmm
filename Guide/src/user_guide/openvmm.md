@@ -16,6 +16,11 @@ At the moment, OpenVMM can be built and run on the following host platforms:
 When compiled, OpenVMM consists of a single standalone `openvmm` / `openvmm.exe`
 executable.[^dlls]
 
+The [OpenVMM binary lifecycle](../reference/openvmm/binary_lifecycle.md)
+describes what that executable links, how it resolves a command line into a VM,
+and how to diagnose startup and shutdown. For practical launch commands, begin
+with [Running OpenVMM](./openvmm/run.md).
+
 ```admonish note
 As you explore the OpenVMM repo, you may find references to the term **HvLite**.
 

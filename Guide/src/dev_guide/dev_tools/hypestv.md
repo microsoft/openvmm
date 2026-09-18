@@ -10,6 +10,27 @@ designed to interact with Hyper-VMs.
 
 [`ohcldiag-dev`]: ../../reference/openhcl/diag/ohcldiag_dev.md
 
+## Platform and build
+
+Hypestv runs on Windows and controls VMs registered with the local Hyper-V
+service. It is not a remote management client and has no non-Windows support.
+
+Build it from a Windows checkout or a configured WSL cross environment:
+
+```powershell
+cargo build -p hypestv
+```
+
+Start detached or select an initial VM by name:
+
+```powershell
+.\target\debug\hypestv.exe
+.\target\debug\hypestv.exe <VM_NAME>
+```
+
+The interface is deliberately interactive. Do not drive it from scripts; use a
+stable Hyper-V or OpenHCL management API for automation.
+
 In many ways, it is similar to the OpenVMM interactive console. In time, it may
 end up sharing code and capabilities with it and with `ohcldiag-dev`, but it
 will always be a Hyper-V specific tool.
@@ -107,3 +128,28 @@ VM killed
 tdxvm [stopping]>
 tdxvm [off]>
 ```
+
+## Asynchronous event model
+
+Power operations and endpoint connections can complete after the prompt is
+redrawn. Hypestv prints completion, disconnection, and failure events as they
+arrive. The prompt's state is therefore a recent observation rather than a
+transactional lock on Hyper-V state.
+
+Press Enter to refresh the prompt after an asynchronous transition. Avoid
+starting a conflicting operation while the VM is still starting, stopping, or
+reloading.
+
+## Troubleshooting
+
+- If `select` fails, use `list` and match the registered VM name exactly.
+- If a WMI `kill` fails while Hyper-V believes the VM is transitioning, retry
+  with `kill --force` only when abrupt power loss is acceptable.
+- If guest `shutdown` has no effect, verify that the guest shutdown service and
+  integration path are running.
+- If `pv` commands cannot connect, confirm that the VM contains OpenHCL and that
+  the paravisor reached its diagnostic service.
+- For a failed reload, enable `pv kmsg log` and the relevant serial ports before
+  trying again so early output is retained.
+- If displayed state appears stale, wait for the asynchronous completion event
+  and press Enter.
