@@ -54,6 +54,10 @@ use clap::Subcommand;
 use clap::ValueEnum;
 use guid::Guid;
 use pal_async::DefaultPool;
+use serde::Serializer as _;
+use serde::ser::SerializeSeq;
+use std::io;
+use std::io::Write;
 use std::path::PathBuf;
 use vhdx::AsyncFile;
 use vhdx::CreateParams;
@@ -508,8 +512,11 @@ struct MapRun {
     file_offset: Option<u64>,
 }
 
-async fn collect_map(image: &VhdxFile<BlockingFile>) -> Result<Vec<MapRun>> {
-    let mut runs = Vec::new();
+async fn visit_map_runs(
+    image: &VhdxFile<BlockingFile>,
+    mut visit: impl FnMut(MapRun) -> Result<()>,
+) -> Result<()> {
+    let mut pending: Option<MapRun> = None;
     let mut offset = 0;
     while offset < image.disk_size() {
         let length = (image.disk_size() - offset).min(image.block_size() as u64) as u32;
@@ -534,36 +541,31 @@ async fn collect_map(image: &VhdxFile<BlockingFile>) -> Result<Vec<MapRun>> {
                     length,
                 } => (guest_offset, length, None),
             };
-            append_map_run(&mut runs, guest_offset, length as u64, file_offset);
+            let run = MapRun {
+                guest_offset,
+                length: length as u64,
+                file_offset,
+            };
+            if let Some(previous) = pending.as_mut()
+                && previous.guest_offset + previous.length == run.guest_offset
+                && match (previous.file_offset, run.file_offset) {
+                    (None, None) => true,
+                    (Some(previous_file), Some(file)) => previous_file + previous.length == file,
+                    _ => false,
+                }
+            {
+                previous.length += run.length;
+            } else if let Some(previous) = pending.replace(run) {
+                visit(previous)?;
+            }
         }
         drop(guard);
         offset += length as u64;
     }
-    Ok(runs)
-}
-
-fn append_map_run(
-    runs: &mut Vec<MapRun>,
-    guest_offset: u64,
-    length: u64,
-    file_offset: Option<u64>,
-) {
-    if let Some(previous) = runs.last_mut()
-        && previous.guest_offset + previous.length == guest_offset
-        && match (previous.file_offset, file_offset) {
-            (None, None) => true,
-            (Some(previous_file), Some(file)) => previous_file + previous.length == file,
-            _ => false,
-        }
-    {
-        previous.length += length;
-        return;
+    if let Some(run) = pending {
+        visit(run)?;
     }
-    runs.push(MapRun {
-        guest_offset,
-        length,
-        file_offset,
-    });
+    Ok(())
 }
 
 async fn map(path: &std::path::Path, json: bool) -> Result<()> {
@@ -573,28 +575,35 @@ async fn map(path: &std::path::Path, json: bool) -> Result<()> {
         .read_only()
         .await
         .context("failed to open VHDX")?;
-    let runs = collect_map(&image).await?;
+    let stdout = io::stdout();
+    let mut output = io::BufWriter::new(stdout.lock());
 
     if json {
-        let values: Vec<_> = runs
-            .iter()
-            .map(|run| {
-                serde_json::json!({
+        {
+            let mut serializer = serde_json::Serializer::pretty(&mut output);
+            let mut sequence = serializer.serialize_seq(None)?;
+            visit_map_runs(&image, |run| {
+                sequence.serialize_element(&serde_json::json!({
                     "start": run.guest_offset,
                     "length": run.length,
                     "allocated": run.file_offset.is_some(),
                     "file_offset": run.file_offset,
-                })
+                }))?;
+                Ok(())
             })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&values)?);
+            .await?;
+            sequence.end()?;
+        }
+        writeln!(output)?;
     } else {
-        println!(
+        writeln!(
+            output,
             "{:<14} {:<14} {:<12} FILE OFFSET",
             "START", "LENGTH", "ALLOCATED"
-        );
-        for run in runs {
-            println!(
+        )?;
+        visit_map_runs(&image, |run| {
+            writeln!(
+                output,
                 "{:<14} {:<14} {:<12} {}",
                 run.guest_offset,
                 run.length,
@@ -606,8 +615,10 @@ async fn map(path: &std::path::Path, json: bool) -> Result<()> {
                 run.file_offset
                     .map(|offset| offset.to_string())
                     .unwrap_or_else(|| "-".to_string())
-            );
-        }
+            )?;
+            Ok(())
+        })
+        .await?;
     }
     Ok(())
 }
@@ -1098,6 +1109,16 @@ mod tests {
             .expect("unknown extension should fail");
         assert!(error.to_string().contains("specify --format"));
         assert!(infer_format(std::path::Path::new("disk.unknown")).is_none());
+    }
+
+    async fn collect_map(image: &VhdxFile<BlockingFile>) -> Result<Vec<MapRun>> {
+        let mut runs = Vec::new();
+        visit_map_runs(image, |run| {
+            runs.push(run);
+            Ok(())
+        })
+        .await?;
+        Ok(runs)
     }
 
     fn options(file: PathBuf, size: u64) -> CreateOptions {

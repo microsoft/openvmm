@@ -5809,6 +5809,7 @@ dependencies = [
  "fs-err",
  "guid",
  "pal_async",
+ "serde",
  "serde_json",
  "tempfile",
  "tracing",
