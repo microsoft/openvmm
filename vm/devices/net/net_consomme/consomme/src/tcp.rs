@@ -50,6 +50,7 @@ use socket2::Protocol;
 use socket2::SockAddr;
 use socket2::Socket;
 use socket2::Type;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -81,11 +82,63 @@ pub(crate) struct Tcp {
     #[inspect(skip)]
     timer: Option<TcpTimer>,
     #[inspect(skip)]
-    timer_deadline: Option<TimerInstant>,
+    timer_deadlines: TimerDeadlines,
     connection_params: ConnectionParams,
     aggregate_stats: TcpAggregateStats,
     #[inspect(skip)]
     ready: Arc<ReadyList>,
+}
+
+#[derive(Default)]
+struct TimerDeadlines {
+    by_deadline: BTreeMap<TimerInstant, HashSet<FourTuple>>,
+    by_connection: HashMap<FourTuple, TimerInstant>,
+}
+
+impl TimerDeadlines {
+    fn update(&mut self, ft: FourTuple, deadline: Option<TimerInstant>) {
+        self.remove(ft);
+        if let Some(deadline) = deadline {
+            assert!(self.by_connection.insert(ft, deadline).is_none());
+            assert!(self.by_deadline.entry(deadline).or_default().insert(ft));
+        }
+    }
+
+    fn remove(&mut self, ft: FourTuple) {
+        let Some(deadline) = self.by_connection.remove(&ft) else {
+            return;
+        };
+        let remove_deadline = {
+            let connections = self
+                .by_deadline
+                .get_mut(&deadline)
+                .expect("deadline index is inconsistent");
+            assert!(connections.remove(&ft));
+            connections.is_empty()
+        };
+        if remove_deadline {
+            assert!(self.by_deadline.remove(&deadline).is_some());
+        }
+    }
+
+    fn next(&self) -> Option<TimerInstant> {
+        self.by_deadline
+            .first_key_value()
+            .map(|(&deadline, _)| deadline)
+    }
+
+    fn pop_expired(&mut self, now: TimerInstant) -> Option<FourTuple> {
+        let (&deadline, connections) = self.by_deadline.first_key_value()?;
+        if deadline > now {
+            return None;
+        }
+        let ft = *connections
+            .iter()
+            .next()
+            .expect("deadline index contains an empty entry");
+        self.remove(ft);
+        Some(ft)
+    }
 }
 
 /// Tracks which TCP connections need polling, so that `poll_tcp` can service
@@ -287,7 +340,7 @@ impl Tcp {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             timer: None,
-            timer_deadline: None,
+            timer_deadlines: TimerDeadlines::default(),
             connection_params: ConnectionParams {
                 rx_buffer: NormalizedBufferBounds::from_bounds(rx_buffer),
                 tx_buffer: NormalizedBufferBounds::from_bounds(tx_buffer),
@@ -995,33 +1048,26 @@ impl<T: Client> Access<'_, T> {
                 }
                 Err(_) => false,
             });
-        let timer_expired = self
-            .inner
-            .tcp
-            .timer_deadline
-            .is_some_and(|deadline| deadline <= TimerInstant::now());
-        let mut next_deadline = if timer_expired {
-            None
-        } else {
-            self.inner.tcp.timer_deadline
-        };
-
-        // Timer wakeups are infrequent relative to socket readiness. Scan all
-        // connections only when the shared timer fires to process expired
-        // timers and find the next deadline.
-        if timer_expired {
+        let expired_at = self.inner.tcp.timer_deadlines.next().and_then(|deadline| {
             let now = TimerInstant::now();
+            (deadline <= now).then_some(now)
+        });
+        if let Some(now) = expired_at {
             let super::Consomme {
                 tcp, state, dns, ..
             } = &mut *self.inner;
             let Tcp {
                 connections,
+                timer_deadlines,
                 aggregate_stats,
                 ..
             } = tcp;
-            connections.retain(|ft, conn| {
+            while let Some(ft) = timer_deadlines.pop_expired(now) {
+                let conn = connections
+                    .get_mut(&ft)
+                    .expect("timer deadline references a missing connection");
                 let mut sender = Sender {
-                    ft,
+                    ft: &ft,
                     state,
                     client: self.client,
                 };
@@ -1058,17 +1104,12 @@ impl<T: Client> Access<'_, T> {
                             aggregate_stats.record_timeout_close();
                         }
                     }
-                    ready.forget(*ft);
-                    return false;
+                    connections.remove(&ft);
+                    ready.forget(ft);
+                } else {
+                    timer_deadlines.update(ft, conn.inner.next_timer_deadline());
                 }
-
-                if let Some(deadline) = conn.inner.next_timer_deadline() {
-                    next_deadline = Some(
-                        next_deadline.map_or(deadline, |next_deadline| next_deadline.min(deadline)),
-                    );
-                }
-                true
-            });
+            }
         }
 
         // Service only the connections that have pending work: those marked
@@ -1080,6 +1121,7 @@ impl<T: Client> Access<'_, T> {
             let super::Consomme {
                 tcp, state, dns, ..
             } = &mut *self.inner;
+            tcp.timer_deadlines.remove(ft);
             let Some(conn) = tcp.connections.get_mut(&ft) else {
                 continue;
             };
@@ -1166,15 +1208,12 @@ impl<T: Client> Access<'_, T> {
                 if sender.client.rx_mtu() == 0 {
                     ready.block_on_rx(ft);
                 }
-                if let Some(deadline) = conn.inner.next_timer_deadline() {
-                    next_deadline = Some(
-                        next_deadline.map_or(deadline, |next_deadline| next_deadline.min(deadline)),
-                    );
-                }
+                tcp.timer_deadlines
+                    .update(ft, conn.inner.next_timer_deadline());
             }
         }
 
-        self.inner.tcp.timer_deadline = next_deadline;
+        let next_deadline = self.inner.tcp.timer_deadlines.next();
         if let Some(deadline) = next_deadline {
             let timer = self
                 .inner
@@ -1184,13 +1223,20 @@ impl<T: Client> Access<'_, T> {
             if timer.poll_until(cx, deadline).is_ready() {
                 cx.waker().wake_by_ref();
             }
+        } else {
+            self.inner.tcp.timer = None;
         }
     }
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.tcp.timer = Some(TcpTimer::new(self.client.driver()));
         let ready = self.inner.tcp.ready.clone();
-        self.inner.tcp.connections.retain(|ft, conn| {
+        let Tcp {
+            connections,
+            timer_deadlines,
+            ..
+        } = &mut self.inner.tcp;
+        connections.retain(|ft, conn| {
             let TcpBackend::Socket {
                 socket: opt_socket, ..
             } = &mut conn.backend
@@ -1215,6 +1261,7 @@ impl<T: Client> Access<'_, T> {
                         "failed to update driver for tcp connection"
                     );
                     ready.forget(*ft);
+                    timer_deadlines.remove(*ft);
                     false
                 }
             }
@@ -1270,6 +1317,7 @@ impl<T: Client> Access<'_, T> {
             });
         if replace_time_wait && let Some(conn) = self.inner.tcp.connections.remove(&ft) {
             ready.forget(ft);
+            self.inner.tcp.timer_deadlines.remove(ft);
             if matches!(
                 conn.backend,
                 TcpBackend::Dns(ref handler) if handler.is_in_flight()
@@ -1317,6 +1365,7 @@ impl<T: Client> Access<'_, T> {
                     );
                     e.remove();
                     ready.forget(ft);
+                    self.inner.tcp.timer_deadlines.remove(ft);
                     if dns_in_flight {
                         self.inner.dns.complete_tcp_query();
                     }

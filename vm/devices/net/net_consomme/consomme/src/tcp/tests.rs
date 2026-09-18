@@ -39,6 +39,36 @@ struct TestClient {
 }
 
 #[test]
+fn timer_deadlines_replace_stale_minimum() {
+    let first = FourTuple {
+        src: "192.0.2.1:1".parse().unwrap(),
+        dst: "192.0.2.2:2".parse().unwrap(),
+    };
+    let second = FourTuple {
+        src: "192.0.2.3:3".parse().unwrap(),
+        dst: "192.0.2.4:4".parse().unwrap(),
+    };
+    let now = TimerInstant::now();
+    let first_deadline = now + Duration::from_secs(1);
+    let second_deadline = now + Duration::from_secs(2);
+    let postponed_deadline = now + Duration::from_secs(3);
+    let mut deadlines = TimerDeadlines::default();
+
+    deadlines.update(first, Some(first_deadline));
+    deadlines.update(second, Some(second_deadline));
+    assert_eq!(deadlines.next(), Some(first_deadline));
+
+    deadlines.update(first, Some(postponed_deadline));
+    assert_eq!(deadlines.next(), Some(second_deadline));
+
+    deadlines.update(second, None);
+    assert_eq!(deadlines.next(), Some(postponed_deadline));
+
+    deadlines.update(first, None);
+    assert_eq!(deadlines.next(), None);
+}
+
+#[test]
 fn dns_tcp_frame_boundary_tracker_handles_fragmented_frames() {
     let mut tracker = DnsTcpFrameBoundaryTracker::default();
     assert!(tracker.at_frame_boundary());
