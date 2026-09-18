@@ -3,6 +3,29 @@
 
 //! Conservative comparison of trusted local report snapshots, never VMGS data.
 //!
+//! # Reading the flow
+//!
+//! An **observation** is the SVN and comparison domain extracted from one trusted
+//! local report. A **floor** is the last accepted observation: later runtime
+//! operations must meet or exceed every ordered component of that floor.
+//! **Ratchet** means replacing the floor with an accepted observation, never
+//! rolling it back if subsequent sealing or persistence fails.
+//!
+//! There are two entry paths:
+//! - **Boot:** `BootTcbFloor::observe` consumes an already acquired report (no
+//!   hardware I/O). It initializes or advances the prospective floor. A bad
+//!   observation permanently disables export for that boot, without failing boot
+//!   unsealing. The caller also requires successful boot sealing before enrollment.
+//! - **Runtime:** `observe_and_ratchet` calls `Snapshot::observe` to fetch a fresh
+//!   report, then calls `check_successor` to validate it against the floor. Only
+//!   after that check succeeds does it replace the floor and return the accepted
+//!   SVN for sealing or candidate verification. A rejected observation leaves the
+//!   existing floor intact so a later attempt can retry.
+//!
+//! `check_successor` is a pure compatibility/minimum check: it neither fetches a
+//! report nor changes state. "Successor" includes an equal TCB, not only an
+//! upgrade. It does not authenticate a protector or appraise vendor TCB status.
+//!
 //! SNP layouts follow `TCB_VERSION` and `ATTESTATION_REPORT` in the
 //! [SEV-SNP Firmware ABI specification (AMD 56860)](https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP).
 //! Raw packed integer ordering is not a component-wise security ordering, and
@@ -95,6 +118,14 @@ impl BootTcbFloor {
         }
     }
 
+    /// Record an existing boot report; this method makes no hardware calls.
+    ///
+    /// The first valid observation initializes the prospective floor. Subsequent
+    /// ones must pass `check_successor` before replacing it. A parsing or policy
+    /// error latches `invalid`: later reports cannot re-enable export in this
+    /// boot. Disabled or already-invalid collectors ignore further observations.
+    /// This deliberately returns no error to the boot-unlock flow.
+    ///
     /// Only pass the result directly from the trusted local `TeeCall`, before
     /// host callouts or key unwrap can fail. Never pass host or VMGS report bytes.
     pub(crate) fn observe(&mut self, tee: &dyn TeeCall, report: &GetAttestationReportResult) {
@@ -120,6 +151,9 @@ impl BootTcbFloor {
         }
     }
 
+    /// Transfer the collected floor if at least one valid report was observed
+    /// and collection was never invalidated. This alone does not prove sealing
+    /// succeeded; the boot caller separately gates runtime enrollment on that.
     pub(crate) fn finish(self) -> Option<RuntimeTcbFloor> {
         if self.enabled && !self.invalid {
             self.floor
@@ -129,6 +163,8 @@ impl BootTcbFloor {
     }
 }
 
+/// Compact metadata from one local report, not a persisted VMGS snapshot.
+/// Used both for a new observation and for the currently accepted floor.
 #[derive(Debug)]
 struct Snapshot {
     svn: KeyDerivationSvn,
@@ -226,6 +262,16 @@ impl RuntimeTcbFloor {
         protector_matches(tee, config, protector, dek)
     }
 
+    /// Fetch, check, and commit a runtime observation, in that order.
+    ///
+    /// Report acquisition/parsing or `check_successor` failure leaves the floor
+    /// unchanged. On success, return the SVN of the newly accepted floor. The
+    /// update intentionally precedes derivation, protector verification, and
+    /// disk I/O: none of those later failures may undo a trusted TCB increase.
+    ///
+    /// For example, accepting components (2, 4) after (2, 3) retains (2, 4)
+    /// even if the ensuing write fails; a retry at (2, 3) must then be rejected.
+    /// These are component vectors, not packed integers or lexicographic values.
     fn observe_and_ratchet(&mut self, tee: &dyn TeeCall) -> Result<KeyDerivationSvn, Error> {
         let observed = Snapshot::observe(tee)?;
         self.snapshot.check_successor(&observed)?;
@@ -236,6 +282,9 @@ impl RuntimeTcbFloor {
 }
 
 impl Snapshot {
+    /// Fetch one fresh local report and extract its SVN/comparison domain.
+    /// Unlike `BootTcbFloor::observe`, this performs hardware I/O. It does not
+    /// compare against or mutate a floor, derive keys, or inspect VMGS.
     fn observe(tee: &dyn TeeCall) -> Result<Self, Error> {
         let report = tee
             .get_attestation_report(&[0; REPORT_DATA_SIZE])
@@ -243,8 +292,13 @@ impl Snapshot {
         Self::from_report(tee, &report)
     }
 
-    // This parser is private: the result must originate from trusted local
-    // hardware, not attestation bytes supplied by the host or a VMGS header.
+    /// Extract a snapshot without I/O or comparison against an earlier TCB.
+    /// Check the SVN's TEE variant and, for SNP, the report layout and agreement
+    /// between its raw reported TCB and the adapter's extracted SVN.
+    ///
+    /// Trust comes from the local hardware interface, not this parser: this is
+    /// not signature verification of an arbitrary report. Never pass report
+    /// bytes supplied by the host or a VMGS header.
     fn from_report(tee: &dyn TeeCall, report: &GetAttestationReportResult) -> Result<Self, Error> {
         let svn = report
             .key_derivation_svn
@@ -274,6 +328,23 @@ impl Snapshot {
         Ok(Self { svn, snp_domain })
     }
 
+    /// Can `observed` replace `self` as the minimum accepted runtime TCB?
+    /// `self` is the existing floor; `observed` is a candidate local observation.
+    /// Neither argument is modified, and this method performs no hardware I/O.
+    ///
+    /// - Require the same SNP comparison domain (report version/family/model).
+    /// - Within a compatible domain, identical SVN values are accepted, even
+    ///   when there is no supported component-ordering rule.
+    /// - For changed SNP SVNs, require a supported layout, equal reserved bytes,
+    ///   and non-decreasing named components.
+    /// - For TDX, require the same module identity and non-decreasing CPU/TEE
+    ///   SVN components. Different TEE types are incompatible.
+    ///
+    /// A higher component cannot compensate for a lower one. Known component
+    /// regressions fail with `TcbLowered`; incompatible domains, identities,
+    /// reserved bytes, or unsupported ordering fail with `TcbIncompatible`.
+    /// Acceptance is only a minimum-TCB decision, not proof that a candidate
+    /// protector can be unsealed or that the TCB has a particular vendor status.
     fn check_successor(&self, observed: &Self) -> Result<(), Error> {
         if self.snp_domain != observed.snp_domain {
             return Err(Error(ErrorInner::TcbIncompatible));

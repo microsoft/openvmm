@@ -26,7 +26,7 @@ Ordinary stateless mode bypasses VMGS encryption when hardware sealing is not
 requested. Stateless mode with the `HardwareSealing` encryption policy instead
 requires hardware sealing: it seals a new DEK on provisioning and unseals then
 rotates it on later boots. Unsupported required sealing or failure to derive,
-unseal, or write the required protector prevents boot from completing.
+unseal, write, or finalize the required protector prevents boot from completing.
 
 The main implementation is in
 [`underhill_attestation`](https://openvmm.dev/rustdoc/linux/underhill_attestation/index.html),
@@ -59,9 +59,11 @@ trusted operation results, not the presence of an entry on disk. An LM event
 maintains an established recovery path; it does not perform first-time sealing.
 Once enabled, recovery can repair a subsequently missing or corrupt protector.
 It neither changes the policy nor rotates the DEK. Hardware calls run off the
-VP and GET executors. Notifications are
-coalesced, and failed attempts retry with bounded backoff. There is no periodic
-verification; after success, the worker waits for another event.
+VP and GET executors. GET coalesces notifications received before callback
+registration into one pending event and delivers it when registration completes.
+The worker also latches events received before startup or during recovery.
+Failed attempts retry with bounded backoff. There is no periodic verification;
+after success, the worker waits for another event.
 
 ### Runtime TCB floor
 
@@ -77,10 +79,12 @@ floor, runtime resealing stays disabled with a warning; existing boot recovery
 behavior is unchanged.
 
 If optional boot sealing does not succeed, no floor is exported to the runtime
-worker. The additional enrollment flush also disables runtime recovery on failure
-without changing the existing boot-unlock result. This preserves boot behavior,
-but means a transient failure can leave runtime recovery unavailable until the
-next boot. Existing protector write/unlock errors retain their original handling.
+worker. When hardware sealing is only a backup, finalization failure disables
+runtime recovery without failing boot. When sealing is required, or boot used
+hardware unsealing to recover the DEK, failure to confirm the active sealed key
+or flush completed writes fails boot. The full unlock/key-rotation sequence is
+not automatically retried after this failure because it may already have changed
+the active DEK. Existing protector write/unlock errors retain their handling.
 
 The comparison is a partial order, not a packed-integer or lexicographic order:
 
@@ -103,9 +107,13 @@ candidate exactly, even if the hardware could still derive an older SVN's key.
 ### Lifecycle and limits
 
 Memory-preserving migration retains the worker and its floor. Stopping the
-worker drains an in-flight recovery attempt. Serialized save/restore of the
-resealer is unsupported because it has no protected floor-transfer format;
-reconstruction must not replace the source floor with a destination report.
+worker drains an in-flight recovery attempt. Serialized servicing is unsupported
+for VMs with this worker: its save operation returns `SaveError::NotSupported`,
+which fails the VM save, and its restore operation rejects saved state. There is
+no saved-state reconstruction or reconstruction-triggered durable rewrite. The
+worker has no protected floor-transfer format, so reconstruction must not
+replace the source floor with a destination report. Pending recovery, including a
+failed flush obligation, survives only while the resident worker is retained.
 
 Cold boot establishes a new runtime lifetime. The floor is not a persistent
 anti-rollback counter and does not prevent replay of an entire VMGS snapshot.

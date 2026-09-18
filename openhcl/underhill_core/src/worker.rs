@@ -1496,8 +1496,9 @@ async fn new_underhill_vm(
         control_send,
     } = params;
 
-    // Register before platform security initialization. GET callbacks only
-    // latch a bounded wakeup; no hardware or VMGS I/O runs on the GET loop.
+    // Enqueue registration before platform security initialization. GET latches
+    // earlier notifications until registration is processed. The callback only
+    // latches a bounded wakeup; no hardware or VMGS I/O runs on the GET loop.
     let migration_notification = Arc::new(crate::hardware_reseal::MigrationNotification::default());
     let notification = migration_notification.clone();
     get_client.set_post_live_migration_callback(Box::new(move || notification.notify()));
