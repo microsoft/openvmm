@@ -78,4 +78,5 @@ pub mod run_vmm_perf;
 pub mod stop_test_igvm_agent_rpc_server;
 pub mod test_nextest_unit_tests_archive;
 pub mod test_nextest_vmm_tests_archive;
+pub mod verify_openvmm_release_commit;
 pub mod write_incubator_target_runner;
