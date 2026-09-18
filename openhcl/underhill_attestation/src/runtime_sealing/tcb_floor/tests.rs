@@ -352,14 +352,48 @@ fn initialization_fetches_one_report_without_deriving() {
 }
 
 #[test]
+fn snp_layout_selection_separates_report_support_from_cpu_encoding() {
+    // Independent numeric expectations: catch gaps, endpoints, and accidental
+    // widening of the named production ranges.
+    for version in [0, 1, 2, 3, 4, 5, 6, u32::MAX] {
+        assert_eq!(
+            SnpDomain {
+                version,
+                cpuid: None
+            }
+            .tcb_layout(),
+            None
+        );
+        for family in [0x18, 0x19, 0x1a, 0x1b] {
+            for model in 0..=u8::MAX {
+                let expected = match (version, family, model) {
+                    (3..=5, 0x19, 0x00..=0x1f) => Some(SnpTcbLayout::Legacy),
+                    (3..=5, 0x1a, 0x90..=0xaf | 0xc0..=0xcf) => Some(SnpTcbLayout::Turin),
+                    _ => None,
+                };
+                let domain = SnpDomain {
+                    version,
+                    cpuid: Some([family, model]),
+                };
+                assert_eq!(domain.tcb_layout(), expected, "{domain:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn legacy_and_turin_equal_and_each_component_upgrade() {
+    // Explicit ABI byte offsets, independent of the production layout types.
+    // AMD 56860 revision 1.59 table 4 defines the two Turin model ranges.
     let layouts: &[(u8, u8, &[usize])] = &[
         (0x19, 0x00, &[0, 1, 6, 7]),
         (0x19, 0x0f, &[0, 1, 6, 7]),
         (0x19, 0x10, &[0, 1, 6, 7]),
         (0x19, 0x1f, &[0, 1, 6, 7]),
-        (0x1a, 0x00, &[0, 1, 2, 3, 7]),
-        (0x1a, 0x0f, &[0, 1, 2, 3, 7]),
+        (0x1a, 0x90, &[0, 1, 2, 3, 7]),
+        (0x1a, 0xaf, &[0, 1, 2, 3, 7]),
+        (0x1a, 0xc0, &[0, 1, 2, 3, 7]),
+        (0x1a, 0xcf, &[0, 1, 2, 3, 7]),
     ];
     for version in [3, 4, 5] {
         for &(family, model, components) in layouts {
@@ -387,14 +421,20 @@ fn legacy_and_turin_equal_and_each_component_upgrade() {
 
 #[test]
 fn component_downgrades_rejected_even_with_larger_packed_number() {
-    let layouts: &[(u8, &[usize])] = &[(0x19, &[0, 1, 6, 7]), (0x1a, &[0, 1, 2, 3, 7])];
-    for &(family, components) in layouts {
+    let layouts: &[(u8, u8, &[usize])] = &[
+        (0x19, 0x00, &[0, 1, 6, 7]),
+        (0x1a, 0x90, &[0, 1, 2, 3, 7]),
+        (0x1a, 0xaf, &[0, 1, 2, 3, 7]),
+        (0x1a, 0xc0, &[0, 1, 2, 3, 7]),
+        (0x1a, 0xcf, &[0, 1, 2, 3, 7]),
+    ];
+    for &(family, model, components) in layouts {
         for &component in components {
             let mut base = [0; 8];
             for &index in components {
                 base[index] = 2;
             }
-            let tee = MutableTee::snp(3, family, 0, base);
+            let tee = MutableTee::snp(3, family, model, base);
             let config = config();
             let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
             let mut lowered = base;
@@ -420,12 +460,18 @@ fn component_downgrades_rejected_even_with_larger_packed_number() {
 
 #[test]
 fn reserved_tcb_bytes_must_remain_equal() {
-    let layouts: &[(u8, &[usize])] = &[(0x19, &[2, 3, 4, 5]), (0x1a, &[4, 5, 6])];
-    for &(family, reserved) in layouts {
+    let layouts: &[(u8, u8, &[usize])] = &[
+        (0x19, 0x00, &[2, 3, 4, 5]),
+        (0x1a, 0x90, &[4, 5, 6]),
+        (0x1a, 0xaf, &[4, 5, 6]),
+        (0x1a, 0xc0, &[4, 5, 6]),
+        (0x1a, 0xcf, &[4, 5, 6]),
+    ];
+    for &(family, model, reserved) in layouts {
         for &index in reserved {
             // Nonzero reserved bytes are permitted only if they stay equal.
             let base = [2; 8];
-            let tee = MutableTee::snp(5, family, 0, base);
+            let tee = MutableTee::snp(5, family, model, base);
             let config = config();
             let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
             floor.create_protector(&tee, &config, &DEK).unwrap();
@@ -446,6 +492,52 @@ fn reserved_tcb_bytes_must_remain_equal() {
 }
 
 #[test]
+fn same_raw_tcb_byte_is_snp_component_or_reserved_depending_on_cpu() {
+    // Explicit ABI expectations: byte 6 is legacy SNP but Turin reserved;
+    // byte 3 is legacy reserved but Turin SNP. Do not consult layout types.
+    for version in [3, 4, 5] {
+        for (family, model, index, upgrade_allowed) in [
+            (0x19, 0x00, 6, true),
+            (0x1a, 0x90, 6, false),
+            (0x19, 0x00, 3, false),
+            (0x1a, 0x90, 3, true),
+            (0x1a, 0xc0, 6, false),
+            (0x1a, 0xc0, 3, true),
+        ] {
+            let base = [2; 8];
+            let tee = MutableTee::snp(version, family, model, base);
+            let config = config();
+            let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+            let mut changed = base;
+            changed[index] += 1;
+            tee.set_svn(snp_svn(changed));
+            if upgrade_allowed {
+                let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
+                assert!(svn_equal(header_svn(&protector), snp_svn(changed)));
+                assert!(
+                    floor
+                        .verify_protector(&tee, &config, &protector, &DEK)
+                        .unwrap()
+                );
+                assert_floor(&floor, snp_svn(changed));
+                assert_eq!(tee.state.lock().derivations.len(), 2);
+            } else {
+                assert!(matches!(
+                    floor.create_protector(&tee, &config, &DEK),
+                    Err(Error(ErrorInner::TcbIncompatible))
+                ));
+                assert!(matches!(
+                    floor.verify_protector(&tee, &config, &[], &DEK),
+                    Err(Error(ErrorInner::TcbIncompatible))
+                ));
+                assert_floor(&floor, snp_svn(base));
+                assert!(tee.state.lock().derivations.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn version_family_and_model_domains_cannot_switch_even_at_equal_svn() {
     let domains = [
         (2, 0x19, 0),
@@ -456,12 +548,20 @@ fn version_family_and_model_domains_cannot_switch_even_at_equal_svn() {
         (3, 0x19, 0x10),
         (3, 0x1a, 0),
         (3, 0x1a, 1),
+        (3, 0x1a, 0x90),
+        (3, 0x1a, 0xaf),
+        (3, 0x1a, 0xc0),
+        (3, 0x1a, 0xcf),
+        (4, 0x1a, 0x90),
+        (5, 0x1a, 0x90),
         (3, 0xff, 0),
         (3, 0xff, 1),
         (3, 0x19, 0x20),
         (3, 0x1a, 0x10),
         (6, 0x19, 0),
         (6, 0x19, 1),
+        (6, 0x1a, 0x90),
+        (6, 0x1a, 0xc0),
         (6, 0xff, 0),
         (u32::MAX, 0x19, 0),
     ];
@@ -495,11 +595,19 @@ fn v2_and_unknown_versions_or_cpus_are_exact_only() {
         (1, 0x19, 0),
         (2, 0x19, 0),
         (6, 0x19, 0),
+        (6, 0x1a, 0x90),
+        (6, 0x1a, 0xaf),
+        (6, 0x1a, 0xc0),
+        (6, 0x1a, 0xcf),
         (u32::MAX, 0x1a, 0),
         (3, 0xff, 0),
         (4, 0x19, 0x20),
         (5, 0x1a, 0x10),
-    ] {
+    ]
+    .into_iter()
+    .chain([3, 4, 5].into_iter().flat_map(|version| {
+        [0x00, 0x0f, 0x8f, 0xb0, 0xbf, 0xd0, 0xff].map(|model| (version, 0x1a, model))
+    })) {
         let base = [2; 8];
         let tee = MutableTee::snp(version, family, model, base);
         let config = config();
@@ -519,6 +627,38 @@ fn v2_and_unknown_versions_or_cpus_are_exact_only() {
             }
         }
         assert_eq!(tee.state.lock().derivations.len(), 2);
+    }
+}
+
+#[test]
+fn typed_snp_report_preserves_prefix_and_version_handling() {
+    use zerocopy::FromZeros;
+
+    for version in [2, 3, 5] {
+        let mut report = SnpReport::new_zeroed();
+        report.version = version;
+        report.reported_tcb = u64::from_le_bytes(BASE_TCB);
+        report.cpuid_fam_id = 0x19;
+        report.cpuid_mod_id = 0x11;
+        report.cpuid_step = 2;
+        let tee = MutableTee::snp(version, 0x19, 0x11, BASE_TCB);
+        for trailing in [0, 16] {
+            let mut bytes = report.as_bytes().to_vec();
+            bytes.resize(bytes.len() + trailing, 0xa5);
+            tee.state.lock().report = bytes;
+            let floor = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+            assert_floor(&floor, snp_svn(BASE_TCB));
+            let domain = floor.snapshot.snp_domain.unwrap();
+            assert_eq!(domain.version, version);
+            assert_eq!(domain.cpuid, (version >= 3).then_some([0x19, 0x11]));
+        }
+        for length in [0, 4, 0x188, 0x18b, size_of::<SnpReport>() - 1] {
+            tee.state.lock().report = report.as_bytes()[..length].to_vec();
+            assert!(matches!(
+                RuntimeTcbFloor::new(&tee, &config()),
+                Err(Error(ErrorInner::MalformedReport))
+            ));
+        }
     }
 }
 

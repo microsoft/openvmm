@@ -3,9 +3,8 @@
 
 //! Conservative comparison of trusted local report snapshots, never VMGS data.
 //!
-//! SNP layout references: AMD ABI 56860, TCB_VERSION and SNP attestation report;
-//! [VirTEE report offsets](https://docs.rs/sev/8.0.0/src/sev/firmware/guest/types/snp.rs.html)
-//! and [TCB component order](https://docs.rs/sev/8.0.0/src/sev/firmware/host/types/snp.rs.html).
+//! SNP layouts follow `TCB_VERSION` and `ATTESTATION_REPORT` in the
+//! [SEV-SNP Firmware ABI specification (AMD 56860)](https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP).
 //! Raw packed integer ordering is not a component-wise security ordering, and
 //! Turin moves components relative to Milan/Genoa.
 
@@ -23,10 +22,21 @@ use tee_call::GetAttestationReportResult;
 use tee_call::KeyDerivationSvn;
 use tee_call::REPORT_DATA_SIZE;
 use tee_call::TeeCall;
+use x86defs::snp::SNP_CPUID_FAMILY_MILAN_GENOA;
+use x86defs::snp::SNP_CPUID_FAMILY_TURIN;
+use x86defs::snp::SNP_CPUID_MODELS_MILAN_GENOA;
+use x86defs::snp::SNP_CPUID_MODELS_TURIN_90_AF;
+use x86defs::snp::SNP_CPUID_MODELS_TURIN_C0_CF;
+use x86defs::snp::SnpReport;
+use x86defs::snp::SnpTcbVersionLegacy;
+use x86defs::snp::SnpTcbVersionTurin;
+use zerocopy::FromBytes;
 
-const SNP_REPORT_SIZE: usize = 1184;
-const SNP_REPORTED_TCB_OFFSET: usize = 0x180;
-const SNP_CPUID_OFFSET: usize = 0x188;
+// OpenHCL policy, not an AMD CPU-generation mapping: only report versions
+// 3 through 5 currently support component ordering here. V2 lacks CPUID fields;
+// v6 adds extended TCB semantics this floor does not model. Other versions
+// remain equality-only, even when the CPU model has a known TCB layout.
+const SNP_REPORT_VERSIONS_WITH_COMPONENT_ORDERING: core::ops::RangeInclusive<u32> = 3..=5;
 
 /// A resident, runtime-only TCB floor derived exclusively from local hardware.
 ///
@@ -41,7 +51,8 @@ const SNP_CPUID_OFFSET: usize = 0x188;
 ///
 /// SNP ordering is component-wise only for report versions 3, 4, and 5 within
 /// the exact same version/family/model. Milan/Genoa (family 0x19, models
-/// 0x00..=0x1f) and Turin (family 0x1a, models 0x00..=0x0f) use distinct layouts;
+/// 0x00..=0x1f) and Turin (family 0x1a, models 0x90..=0xaf and 0xc0..=0xcf)
+/// use distinct layouts;
 /// reserved TCB bytes must remain equal. All other SNP domains require exact
 /// SVN equality. Version 2 has no trusted CPUID and is also equality-only.
 /// TDX uses a structural minimum-TCB policy: CPU SVN bytes must individually
@@ -66,6 +77,9 @@ pub struct RuntimeTcbFloor {
 ///
 /// Collection never affects boot unlocking, including cached lower-SVN unseal
 /// policies, SKR fallback, and retry/skip-hardware-unsealing decisions.
+/// A valid collection alone does not authorize runtime enrollment: the caller
+/// must also require successful sealing and persistence of the current active
+/// DEK in the successful unlock attempt.
 pub(crate) struct BootTcbFloor {
     enabled: bool,
     floor: Option<RuntimeTcbFloor>,
@@ -127,6 +141,35 @@ struct SnpDomain {
     // Unknown v3+ layouts retain these bytes only as opaque discriminators;
     // they never authorize component ordering. V2 does not have CPUID fields.
     cpuid: Option<[u8; 2]>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SnpTcbLayout {
+    Legacy,
+    Turin,
+}
+
+impl SnpDomain {
+    /// Select a supported layout, separately from comparing its components.
+    /// Family alone is insufficient: each family includes other CPU models.
+    fn tcb_layout(&self) -> Option<SnpTcbLayout> {
+        if !SNP_REPORT_VERSIONS_WITH_COMPONENT_ORDERING.contains(&self.version) {
+            return None;
+        }
+        let [family, model] = self.cpuid?;
+        match family {
+            SNP_CPUID_FAMILY_MILAN_GENOA if SNP_CPUID_MODELS_MILAN_GENOA.contains(&model) => {
+                Some(SnpTcbLayout::Legacy)
+            }
+            SNP_CPUID_FAMILY_TURIN
+                if SNP_CPUID_MODELS_TURIN_90_AF.contains(&model)
+                    || SNP_CPUID_MODELS_TURIN_C0_CF.contains(&model) =>
+            {
+                Some(SnpTcbLayout::Turin)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl RuntimeTcbFloor {
@@ -211,17 +254,16 @@ impl Snapshot {
         }
         let snp_domain = match svn {
             KeyDerivationSvn::Snp { tcb_version } => {
-                if report.report.len() < SNP_REPORT_SIZE {
-                    return Err(Error(ErrorInner::MalformedReport));
-                }
-                let version = u32::from_le_bytes(report_field(&report.report, 0)?);
-                let reported_tcb =
-                    u64::from_le_bytes(report_field(&report.report, SNP_REPORTED_TCB_OFFSET)?);
-                if reported_tcb != tcb_version {
+                // Read an owned value: the byte buffer need not satisfy the
+                // report's alignment. Preserve acceptance of trailing bytes.
+                let (snp_report, _) = SnpReport::read_from_prefix(&report.report)
+                    .map_err(|_| Error(ErrorInner::MalformedReport))?;
+                let version = snp_report.version;
+                if snp_report.reported_tcb != tcb_version {
                     return Err(Error(ErrorInner::ReportTcbMismatch));
                 }
                 let cpuid = if version >= 3 {
-                    Some(report_field(&report.report, SNP_CPUID_OFFSET)?)
+                    Some([snp_report.cpuid_fam_id, snp_report.cpuid_mod_id])
                 } else {
                     None
                 };
@@ -245,29 +287,45 @@ impl Snapshot {
                 KeyDerivationSvn::Snp { tcb_version: next },
                 Some(domain),
             ) => {
-                // true means an ordered component; false means reserved and
-                // therefore equality-only. No unknown layout gets a mask.
-                let components = match (domain.version, domain.cpuid) {
-                    (3..=5, Some([0x19, 0x00..=0x1f])) => {
-                        [true, true, false, false, false, false, true, true]
+                // AMD 56860 rev. 1.59 section 2.3, tables 4 and 5. The
+                // report version gates supported semantics; family/model
+                // chooses the encoding. Preserve raw SVN for key derivation.
+                let floor = floor.to_le_bytes();
+                let next = next.to_le_bytes();
+                let layout = domain
+                    .tcb_layout()
+                    .ok_or(Error(ErrorInner::TcbIncompatible))?;
+                let meets_floor = match layout {
+                    SnpTcbLayout::Legacy => {
+                        let floor = SnpTcbVersionLegacy::read_from_bytes(&floor)
+                            .map_err(|_| Error(ErrorInner::MalformedReport))?;
+                        let next = SnpTcbVersionLegacy::read_from_bytes(&next)
+                            .map_err(|_| Error(ErrorInner::MalformedReport))?;
+                        if next.reserved != floor.reserved {
+                            return Err(Error(ErrorInner::TcbIncompatible));
+                        }
+                        next.bootloader >= floor.bootloader
+                            && next.tee >= floor.tee
+                            && next.snp >= floor.snp
+                            && next.microcode >= floor.microcode
                     }
-                    (3..=5, Some([0x1a, 0x00..=0x0f])) => {
-                        [true, true, true, true, false, false, false, true]
+                    SnpTcbLayout::Turin => {
+                        let floor = SnpTcbVersionTurin::read_from_bytes(&floor)
+                            .map_err(|_| Error(ErrorInner::MalformedReport))?;
+                        let next = SnpTcbVersionTurin::read_from_bytes(&next)
+                            .map_err(|_| Error(ErrorInner::MalformedReport))?;
+                        if next.reserved != floor.reserved {
+                            return Err(Error(ErrorInner::TcbIncompatible));
+                        }
+                        next.fmc >= floor.fmc
+                            && next.bootloader >= floor.bootloader
+                            && next.tee >= floor.tee
+                            && next.snp >= floor.snp
+                            && next.microcode >= floor.microcode
                     }
-                    _ => return Err(Error(ErrorInner::TcbIncompatible)),
                 };
-                for ((floor, next), component) in floor
-                    .to_le_bytes()
-                    .into_iter()
-                    .zip(next.to_le_bytes())
-                    .zip(components)
-                {
-                    if component && next < floor {
-                        return Err(Error(ErrorInner::TcbLowered));
-                    }
-                    if !component && next != floor {
-                        return Err(Error(ErrorInner::TcbIncompatible));
-                    }
+                if !meets_floor {
+                    return Err(Error(ErrorInner::TcbLowered));
                 }
                 Ok(())
             }
@@ -308,14 +366,6 @@ fn components_meet<const N: usize>(actual: &[u8; N], minimum: &[u8; N]) -> bool 
         .iter()
         .zip(minimum)
         .all(|(actual, minimum)| actual >= minimum)
-}
-
-fn report_field<const N: usize>(report: &[u8], offset: usize) -> Result<[u8; N], Error> {
-    report
-        .get(offset..)
-        .and_then(|tail| tail.get(..N))
-        .and_then(|field| field.try_into().ok())
-        .ok_or(Error(ErrorInner::MalformedReport))
 }
 
 // Keep equality local rather than imposing a public ordering/equality contract
