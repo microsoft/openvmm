@@ -236,6 +236,7 @@ impl LayerIo for Qcow2Layer {
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
+        let _state = self.state.lock().await;
         let file = self.file.clone();
         unblock(move || file.sync_all())
             .await
