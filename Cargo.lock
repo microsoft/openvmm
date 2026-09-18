@@ -4893,7 +4893,7 @@ dependencies = [
 [[package]]
 name = "ms-tcg-tpm-sys"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f#fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=90d23db6e415fa7f88d917b448f46f2e6a90ca56#90d23db6e415fa7f88d917b448f46f2e6a90ca56"
 dependencies = [
  "bitfield-struct 0.13.0",
  "cmake",
@@ -5290,6 +5290,7 @@ dependencies = [
  "disk_backend",
  "nvme_spec",
  "thiserror 2.0.16",
+ "tracelimit",
 ]
 
 [[package]]
@@ -5718,6 +5719,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentmk_decoder"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "zerocopy",
+]
+
+[[package]]
 name = "opentmk_disk"
 version = "0.0.0"
 dependencies = [
@@ -5729,6 +5738,28 @@ dependencies = [
  "guid",
  "opentmk_protocol",
  "tempfile",
+]
+
+[[package]]
+name = "opentmk_exec_packet"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "opentmk_executor"
+version = "0.0.0"
+dependencies = [
+ "hvdef",
+ "log",
+ "opentmk_core",
+ "opentmk_decoder",
+ "opentmk_exec_packet",
+ "postcard",
+ "spin",
+ "uefi",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5831,6 +5862,7 @@ dependencies = [
  "state_unit",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tpm_resources",
  "tracelimit",
  "tracing",
  "uefi_specs",
@@ -5878,6 +5910,7 @@ dependencies = [
  "openvmm_pcat_locator",
  "smbios_defs",
  "thiserror 2.0.16",
+ "tpm_resources",
  "unix_socket",
  "virt",
  "virt_whp",
@@ -5955,6 +5988,7 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tpm_resources",
+ "tpm_vmgs",
  "tracelimit",
  "tracing",
  "tracing-subscriber",
@@ -6582,6 +6616,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "tpm_resources",
+ "tpm_vmgs",
  "tracing",
  "tracing-subscriber",
  "uidevices_resources",
@@ -8691,6 +8726,13 @@ dependencies = [
  "inspect",
  "mesh",
  "vm_resource",
+]
+
+[[package]]
+name = "tpm_vmgs"
+version = "0.0.0"
+dependencies = [
+ "tpm_resources",
  "vmgs_format",
 ]
 
@@ -9118,6 +9160,7 @@ dependencies = [
  "tpm_device",
  "tpm_protocol",
  "tpm_resources",
+ "tpm_vmgs",
  "tracelimit",
  "tracing",
  "tracing-subscriber",
