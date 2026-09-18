@@ -6,6 +6,10 @@
 [build]
 target = "x86_64-unknown-none"
 
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["optimize_for_size"]
+
 [env]
 MINIMAL_RT_BUILD = "1"
 

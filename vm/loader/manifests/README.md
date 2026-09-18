@@ -56,9 +56,9 @@ To build it manually, create a resources file containing absolute paths:
 Build the bootshim first:
 
 ```bash
-MINIMAL_RT_BUILD=1 cargo build \
+RUSTC_BOOTSTRAP=1 cargo build \
+  --config openhcl/minimal_rt/x86_64-config.toml \
   --profile boot-dev \
-  --target x86_64-unknown-none \
   -p snp_bootshim
 ```
 

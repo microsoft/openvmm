@@ -187,6 +187,13 @@ impl FlowNode for Node {
                     "openhcl/minimal_rt/{arch}-config.toml",
                     arch = target.architecture.into_str()
                 ));
+
+                // minimal_rt rebuilds core and alloc with size-oriented
+                // implementations on every architecture.
+                ctx.req(flowey_lib_common::install_rust::Request::InstallComponent(
+                    "rust-src".into(),
+                ));
+
                 if target.architecture == target_lexicon::Architecture::X86_64 {
                     // x86-64 doesn't actually use a custom target currently,
                     // since the x86_64-unknown-none target is stage 2 and has
@@ -195,11 +202,7 @@ impl FlowNode for Node {
                     Some(target.clone())
                 } else {
                     // We are building the target from source, so don't try to
-                    // install it via rustup. But do make sure the rust-src
-                    // component is available.
-                    ctx.req(flowey_lib_common::install_rust::Request::InstallComponent(
-                        "rust-src".into(),
-                    ));
+                    // install it via rustup.
                     None
                 }
             } else {
