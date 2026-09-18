@@ -282,7 +282,8 @@ impl StateUnit for HardwareReseal {
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {
-        self.schedule.force_reseal = true;
+        // Reset is not a migration notification. Preserve pending work, retry
+        // timing, and the resident floor without introducing recovery.
         Ok(())
     }
 

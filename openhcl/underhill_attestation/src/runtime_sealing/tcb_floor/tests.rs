@@ -709,7 +709,9 @@ fn tdx_each_component_upgrade_ratchets_and_subsequent_downgrade_is_rejected() {
     for module_id in [0, 1] {
         for change_cpu in [false, true] {
             for index in 0..16 {
-                if !change_cpu && index == 1 {
+                // TEE bytes 0 and 2 are ordered; byte 1 is the module identity
+                // and bytes 3..16 are reserved. CPU SVN orders all 16 bytes.
+                if !change_cpu && !matches!(index, 0 | 2) {
                     continue;
                 }
                 let mut tee_tcb_svn = [3; 16];
@@ -763,11 +765,69 @@ fn tdx_each_component_upgrade_ratchets_and_subsequent_downgrade_is_rejected() {
 }
 
 #[test]
+fn tdx_reserved_changes_are_incompatible_without_ratcheting_or_derivation() {
+    for module_id in [0, 1] {
+        for index in 3..16 {
+            // Explicit wire offsets independently check the typed ABI parser.
+            // Reject changes in either direction, including zero -> nonzero.
+            for (reserved, changed) in [(0, 1), (3, 4), (3, 2)] {
+                for upgrade_components in [false, true] {
+                    let mut tee_tcb_svn = [reserved; 16];
+                    tee_tcb_svn[0] = 3;
+                    tee_tcb_svn[1] = module_id;
+                    tee_tcb_svn[2] = 3;
+                    let base = KeyDerivationSvn::Tdx {
+                        tee_tcb_svn,
+                        cpu_svn: [5; 16],
+                    };
+                    let tee = MutableTee::tdx();
+                    tee.set_svn(base);
+                    let config = config();
+                    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+                    let candidate = floor.create_protector(&tee, &config, &DEK).unwrap();
+
+                    tee_tcb_svn[index] = changed;
+                    if upgrade_components {
+                        tee_tcb_svn[0] += 1;
+                        tee_tcb_svn[2] += 1;
+                    }
+                    tee.set_svn(KeyDerivationSvn::Tdx {
+                        tee_tcb_svn,
+                        cpu_svn: [if upgrade_components { 6 } else { 5 }; 16],
+                    });
+                    assert!(matches!(
+                        floor.create_protector(&tee, &config, &DEK),
+                        Err(Error(ErrorInner::TcbIncompatible))
+                    ));
+                    assert!(matches!(
+                        floor.verify_protector(&tee, &config, &candidate, &DEK),
+                        Err(Error(ErrorInner::TcbIncompatible))
+                    ));
+                    assert_floor(&floor, base);
+                    assert_eq!(tee.state.lock().derivations.len(), 1);
+
+                    // Rejection must not poison the floor or prevent recovery
+                    // once the original compatible observation is restored.
+                    tee.set_svn(base);
+                    assert!(
+                        floor
+                            .verify_protector(&tee, &config, &candidate, &DEK)
+                            .unwrap()
+                    );
+                    assert_floor(&floor, base);
+                    assert_eq!(tee.state.lock().derivations.len(), 2);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn tdx_incomparable_components_rejected_despite_lexicographically_greater_svn() {
     for module_id in [0, 1] {
         for change_cpu in [false, true] {
             for lowered_index in 1..16 {
-                if !change_cpu && lowered_index == 1 {
+                if !change_cpu && lowered_index != 2 {
                     continue;
                 }
                 let mut tee_tcb_svn = [3; 16];
@@ -823,7 +883,8 @@ fn tdx_module_identity_changes_rejected_even_with_higher_components() {
         tee.set_svn(base);
         let config = config();
         let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
-        tee_tcb_svn = [4; 16];
+        tee_tcb_svn[0] = 4;
+        tee_tcb_svn[2] = 4;
         tee_tcb_svn[1] = destination_id;
         tee.set_svn(KeyDerivationSvn::Tdx {
             tee_tcb_svn,
@@ -856,7 +917,7 @@ fn tdx_lower_module_isvsvn_rejected_even_with_higher_platform_and_cpu_svns() {
         let config = config();
         let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
         tee_tcb_svn[0] -= 1;
-        tee_tcb_svn[2..].fill(4);
+        tee_tcb_svn[2] = 4;
         tee.set_svn(KeyDerivationSvn::Tdx {
             tee_tcb_svn,
             cpu_svn: [6; 16],
@@ -941,7 +1002,7 @@ fn tdx_candidate_requires_exact_svn_despite_compatible_newer_report() {
     for module_id in [0, 1] {
         for change_cpu in [false, true] {
             for index in 0..16 {
-                if !change_cpu && index == 1 {
+                if !change_cpu && !matches!(index, 0 | 2) {
                     continue;
                 }
                 let mut tee_tcb_svn = [3; 16];
