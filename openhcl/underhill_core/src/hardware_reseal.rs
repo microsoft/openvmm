@@ -289,6 +289,7 @@ impl StateUnit for HardwareReseal {
     async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
         // Memory-preserving migration retains the floor. Serialized servicing
         // must not reconstruct a new, potentially lower floor from VMGS/report.
+        // This error fails the VM save, rather than omitting this state unit.
         Err(SaveError::NotSupported)
     }
 
