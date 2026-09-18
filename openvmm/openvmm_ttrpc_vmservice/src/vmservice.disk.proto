@@ -1,0 +1,46 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+// Disk backend shared by virtio-blk (and reusable for other disk types).
+// Covers the common, non-dev subset of DiskCliKind; richer kinds (sql, blob,
+// crypt, autocache, prwrap, ...) can be added as new oneof arms. TBD(A).
+message DiskBackend {
+    oneof kind {
+        // A file-backed disk.
+        FileDisk file = 1;
+    }
+}
+
+// A disk backed by a host file.
+message FileDisk {
+    // Path to the backing file.
+    string path = 1;
+    // Bypass the OS page cache (O_DIRECT).
+    bool direct = 2;
+}
+
+enum DiskType {
+    DISK_TYPE_UNSPECIFIED = 0;
+    DISK_TYPE_VHD1        = 1;
+    DISK_TYPE_VHDX        = 2;
+    DISK_TYPE_PHYSICAL    = 3;
+}
+
+message ScsiDisk {
+    uint32 controller = 1;
+    uint32 lun        = 2;
+    string host_path  = 3;
+    DiskType type     = 4;
+    bool read_only    = 5;
+}
+
+message VpmemDisk {
+    string host_path = 1;
+    DiskType type    = 2;
+    bool read_only   = 3;
+}

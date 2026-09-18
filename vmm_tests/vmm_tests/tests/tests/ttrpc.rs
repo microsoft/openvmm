@@ -83,25 +83,25 @@ async fn test_ttrpc_interface(
 
     let query_props = || {
         client.call().start(
-            vmservice::Vm::PropertiesVm,
-            vmservice::PropertiesVmRequest { types: Vec::new() },
+            vmservice::Vm::VmProperties,
+            vmservice::VmPropertiesRequest { types: Vec::new() },
         )
     };
 
     let caps = client
         .call()
-        .start(vmservice::Vm::CapabilitiesVm, ())
+        .start(vmservice::Vm::Capabilities, ())
         .await
         .unwrap();
     assert!(
         caps.supported_resources.iter().any(|r| r.resource
-            == vmservice::capabilities_vm_response::Resource::Scsi as i32
+            == vmservice::capabilities_response::Resource::Scsi as i32
             && r.add),
         "SCSI add should be advertised as a supported resource"
     );
     assert!(
         caps.supported_resources.iter().any(|r| r.resource
-            == vmservice::capabilities_vm_response::Resource::Vpci as i32
+            == vmservice::capabilities_response::Resource::Vpci as i32
             && r.add
             && r.remove
             && !r.update),
@@ -109,7 +109,7 @@ async fn test_ttrpc_interface(
     );
     assert_eq!(
         caps.supported_guest_os,
-        vec![vmservice::capabilities_vm_response::SupportedGuestOs::Linux as i32],
+        vec![vmservice::capabilities_response::SupportedGuestOs::Linux as i32],
         "only Linux direct boot is supported"
     );
 
@@ -126,7 +126,7 @@ async fn test_ttrpc_interface(
             vmservice::Vm::CreateVm,
             vmservice::CreateVmRequest {
                 config: Some(vmservice::VmConfig::default()),
-                log_id: String::new(),
+                log_id: None,
             },
         )
         .await
@@ -204,7 +204,7 @@ async fn test_ttrpc_interface(
         // topology (replacing flat memory), an explicit processor topology,
         // and a PCIe topology with virtio + NVMe devices behind root ports
         // and a switch, plus an empty hotplug port used below for
-        // AddPcieDevice/RemovePcieDevice. Other iterations use the simpler
+        // AddVmPcieDevice/RemoveVmPcieDevice. Other iterations use the simpler
         // flat-memory configuration so the flat path stays covered too.
         let (memory_config, numa_config, processor_config, pcie) = if i == 0 {
             let switch = vmservice::PcieSwitch {
@@ -251,8 +251,8 @@ async fn test_ttrpc_interface(
                     pcie_root_port(
                         "rp1",
                         false,
-                        Some(attachment_device(vmservice::PcieDeviceKind {
-                            kind: Some(vmservice::pcie_device_kind::Kind::Nvme(
+                        Some(attachment_device(vmservice::PciDeviceKind {
+                            kind: Some(vmservice::pci_device_kind::Kind::Nvme(
                                 vmservice::NvmeConfig {
                                     controller_id: "nvme0".to_string(),
                                     namespaces: vec![vmservice::NvmeNamespace {
@@ -275,7 +275,7 @@ async fn test_ttrpc_interface(
                                 backend: Some(vmservice::NicBackend {
                                     kind: Some(vmservice::nic_backend::Kind::Consomme(
                                         vmservice::ConsommeBackend {
-                                            cidr: String::new(),
+                                            cidr: None,
                                             ports: vec![],
                                         },
                                     )),
@@ -286,7 +286,7 @@ async fn test_ttrpc_interface(
                     // A switch hosting a virtio-blk device on its first
                     // downstream port.
                     pcie_root_port("rp3", false, Some(attachment_switch(switch))),
-                    // Empty hotplug-capable port for AddPcieDevice.
+                    // Empty hotplug-capable port for AddVmPcieDevice.
                     pcie_root_port("rphp", true, None),
                 ],
                 ..Default::default()
@@ -409,17 +409,19 @@ async fn test_ttrpc_interface(
                             nic_config: vec![vmservice::NicConfig {
                                 nic_id: consomme_nic_id.clone(),
                                 mac_address: "00-15-5D-12-12-12".to_string(),
-                                backend: Some(vmservice::nic_config::Backend::Consomme(
-                                    vmservice::ConsommeBackend {
-                                        cidr: String::new(),
-                                        ports: vec![vmservice::PortConfig {
-                                            host_port: host_port.into(),
-                                            guest_port: 80,
-                                            protocol: vmservice::IpProtocol::Tcp as i32,
-                                            host_address: host_address.to_string(),
-                                        }],
-                                    },
-                                )),
+                                backend: Some(vmservice::NicBackend {
+                                    kind: Some(vmservice::nic_backend::Kind::Consomme(
+                                        vmservice::ConsommeBackend {
+                                            cidr: None,
+                                            ports: vec![vmservice::PortConfig {
+                                                host_port: host_port.into(),
+                                                guest_port: 80,
+                                                protocol: vmservice::IpProtocol::Tcp as i32,
+                                                host_address: host_address.to_string(),
+                                            }],
+                                        },
+                                    )),
+                                }),
                                 ..Default::default()
                             }],
                             virtio_console: Some(vmservice::VirtioConsoleConfig {
@@ -450,7 +452,7 @@ async fn test_ttrpc_interface(
                         smbios_config,
                         ..Default::default()
                     }),
-                    log_id: String::new(),
+                    log_id: None,
                 },
             )
             .await
@@ -492,7 +494,10 @@ async fn test_ttrpc_interface(
         );
 
         // Invalid options exercise Consomme update/remove without binding a port.
-        for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
+        for modify_type in [
+            vmservice::ResourceModifyType::Update,
+            vmservice::ResourceModifyType::Remove,
+        ] {
             for (protocol, host_address, expected_error) in [
                 (99, "", "invalid protocol"),
                 (
@@ -509,25 +514,27 @@ async fn test_ttrpc_interface(
                 let err = client
                     .call()
                     .start(
-                        vmservice::Vm::ModifyResource,
-                        vmservice::ModifyResourceRequest {
+                        vmservice::Vm::ModifyVmResource,
+                        vmservice::ModifyVmResourceRequest {
                             r#type: modify_type as i32,
                             resource: Some(
-                                vmservice::modify_resource_request::Resource::NicConfig(
+                                vmservice::modify_vm_resource_request::Resource::NicConfig(
                                     vmservice::NicConfig {
                                         nic_id: consomme_nic_id.clone(),
                                         mac_address: "00-15-5D-12-12-12".to_string(),
-                                        backend: Some(vmservice::nic_config::Backend::Consomme(
-                                            vmservice::ConsommeBackend {
-                                                cidr: String::new(),
-                                                ports: vec![vmservice::PortConfig {
-                                                    host_port: 8080,
-                                                    guest_port: 80,
-                                                    protocol,
-                                                    host_address: host_address.to_string(),
-                                                }],
-                                            },
-                                        )),
+                                        backend: Some(vmservice::NicBackend {
+                                            kind: Some(vmservice::nic_backend::Kind::Consomme(
+                                                vmservice::ConsommeBackend {
+                                                    cidr: None,
+                                                    ports: vec![vmservice::PortConfig {
+                                                        host_port: 8080,
+                                                        guest_port: 80,
+                                                        protocol,
+                                                        host_address: host_address.to_string(),
+                                                    }],
+                                                },
+                                            )),
+                                        }),
                                         ..Default::default()
                                     },
                                 ),
@@ -544,14 +551,14 @@ async fn test_ttrpc_interface(
             }
         }
 
-        // On iteration 0, exercise AddPcieDevice/RemovePcieDevice with
+        // On iteration 0, exercise AddVmPcieDevice/RemoveVmPcieDevice with
         // both a simple virtio device and one with a host backend.
         if i == 0 {
             client
                 .call()
                 .start(
-                    vmservice::Vm::AddPcieDevice,
-                    vmservice::AddPcieDeviceRequest {
+                    vmservice::Vm::AddVmPcieDevice,
+                    vmservice::AddVmPcieDeviceRequest {
                         port_name: "rphp".to_string(),
                         device: Some(virtio_device(vmservice::virtio_device::Kind::Rng(
                             vmservice::VirtioRng {},
@@ -564,8 +571,8 @@ async fn test_ttrpc_interface(
             client
                 .call()
                 .start(
-                    vmservice::Vm::RemovePcieDevice,
-                    vmservice::RemovePcieDeviceRequest {
+                    vmservice::Vm::RemoveVmPcieDevice,
+                    vmservice::RemoveVmPcieDeviceRequest {
                         port_name: "rphp".to_string(),
                     },
                 )
@@ -575,8 +582,8 @@ async fn test_ttrpc_interface(
             client
                 .call()
                 .start(
-                    vmservice::Vm::AddPcieDevice,
-                    vmservice::AddPcieDeviceRequest {
+                    vmservice::Vm::AddVmPcieDevice,
+                    vmservice::AddVmPcieDeviceRequest {
                         port_name: "rphp".to_string(),
                         device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
                             vmservice::VirtioFs {
@@ -593,8 +600,8 @@ async fn test_ttrpc_interface(
             client
                 .call()
                 .start(
-                    vmservice::Vm::RemovePcieDevice,
-                    vmservice::RemovePcieDeviceRequest {
+                    vmservice::Vm::RemoveVmPcieDevice,
+                    vmservice::RemoveVmPcieDeviceRequest {
                         port_name: "rphp".to_string(),
                     },
                 )
@@ -606,7 +613,7 @@ async fn test_ttrpc_interface(
                 client
                     .call()
                     .start(
-                        vmservice::Vm::AddVpciDevice,
+                        vmservice::Vm::AddVmVpciDevice,
                         virtio_fs_vpci_request(
                             &instance_id,
                             "vpci-fs",
@@ -619,8 +626,8 @@ async fn test_ttrpc_interface(
                 client
                     .call()
                     .start(
-                        vmservice::Vm::RemoveVpciDevice,
-                        vmservice::RemoveVpciDeviceRequest {
+                        vmservice::Vm::RemoveVmVpciDevice,
+                        vmservice::RemoveVmVpciDeviceRequest {
                             instance_id: instance_id.to_string(),
                         },
                     )
@@ -916,7 +923,7 @@ async fn test_ttrpc_uefi_boot(
                         }),
                         ..Default::default()
                     }),
-                    log_id: String::new(),
+                    log_id: None,
                 },
             )
             .await
@@ -971,8 +978,8 @@ async fn test_ttrpc_uefi_boot(
     let props = client
         .call()
         .start(
-            vmservice::Vm::PropertiesVm,
-            vmservice::PropertiesVmRequest { types: Vec::new() },
+            vmservice::Vm::VmProperties,
+            vmservice::VmPropertiesRequest { types: Vec::new() },
         )
         .await
         .unwrap();
@@ -1056,8 +1063,8 @@ async fn log_serial(
     }
 }
 
-/// Wraps a `PcieDeviceKind` as a device attachment behind a PCIe port.
-fn attachment_device(device: vmservice::PcieDeviceKind) -> vmservice::PcieAttachment {
+/// Wraps a `PciDeviceKind` as a device attachment behind a PCIe port.
+fn attachment_device(device: vmservice::PciDeviceKind) -> vmservice::PcieAttachment {
     vmservice::PcieAttachment {
         kind: Some(vmservice::pcie_attachment::Kind::Device(device)),
     }
@@ -1086,10 +1093,10 @@ fn pcie_root_port(
     }
 }
 
-/// Wraps a virtio device function kind as a `PcieDeviceKind`.
-fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceKind {
-    vmservice::PcieDeviceKind {
-        kind: Some(vmservice::pcie_device_kind::Kind::Virtio(
+/// Wraps a virtio device function kind as a `PciDeviceKind`.
+fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PciDeviceKind {
+    vmservice::PciDeviceKind {
+        kind: Some(vmservice::pci_device_kind::Kind::Virtio(
             vmservice::VirtioDevice { kind: Some(kind) },
         )),
     }
@@ -1101,8 +1108,8 @@ fn virtio_fs_vpci_request(
     tag: &str,
     root_path: &Path,
     read_only: bool,
-) -> vmservice::AddVpciDeviceRequest {
-    vmservice::AddVpciDeviceRequest {
+) -> vmservice::AddVmVpciDeviceRequest {
+    vmservice::AddVmVpciDeviceRequest {
         instance_id: instance_id.to_string(),
         device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
             vmservice::VirtioFs {
@@ -1130,7 +1137,7 @@ async fn validate_vpci_virtio_fs_hotplug(
     client
         .call()
         .start(
-            vmservice::Vm::AddVpciDevice,
+            vmservice::Vm::AddVmVpciDevice,
             virtio_fs_vpci_request(&first_instance_id, "vpci-fs-1", first_root, false),
         )
         .await
@@ -1139,7 +1146,7 @@ async fn validate_vpci_virtio_fs_hotplug(
     client
         .call()
         .start(
-            vmservice::Vm::AddVpciDevice,
+            vmservice::Vm::AddVmVpciDevice,
             virtio_fs_vpci_request(&second_instance_id, "vpci-fs-2", second_root, true),
         )
         .await
@@ -1168,8 +1175,8 @@ async fn validate_vpci_virtio_fs_hotplug(
     client
         .call()
         .start(
-            vmservice::Vm::RemoveVpciDevice,
-            vmservice::RemoveVpciDeviceRequest {
+            vmservice::Vm::RemoveVmVpciDevice,
+            vmservice::RemoveVmVpciDeviceRequest {
                 instance_id: second_instance_id.to_string(),
             },
         )
@@ -1185,8 +1192,8 @@ async fn validate_vpci_virtio_fs_hotplug(
     client
         .call()
         .start(
-            vmservice::Vm::RemoveVpciDevice,
-            vmservice::RemoveVpciDeviceRequest {
+            vmservice::Vm::RemoveVmVpciDevice,
+            vmservice::RemoveVmVpciDeviceRequest {
                 instance_id: first_instance_id.to_string(),
             },
         )
@@ -1195,8 +1202,8 @@ async fn validate_vpci_virtio_fs_hotplug(
     let err = client
         .call()
         .start(
-            vmservice::Vm::RemoveVpciDevice,
-            vmservice::RemoveVpciDeviceRequest {
+            vmservice::Vm::RemoveVmVpciDevice,
+            vmservice::RemoveVmVpciDeviceRequest {
                 instance_id: first_instance_id.to_string(),
             },
         )

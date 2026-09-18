@@ -1,0 +1,192 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+import "vmservice.disk.proto";
+import "vmservice.nic.proto";
+
+// The underlying transport mechanism backing a virtio Device.
+// Currently only PCIe is supported.
+message VirtioTransport {
+    message MmioVirtioTransport {
+    }
+    message PcieVirtioTransport {
+        string port_name = 1;
+    }
+    message VpciVirtioTransport {
+        string instance_id = 1;
+    }
+
+    oneof transport {
+        MmioVirtioTransport mmio = 1;
+        PcieVirtioTransport pcie = 2;
+        VpciVirtioTransport vpci = 3;
+    }
+}
+
+// A virtio device function, independent of its transport. Today these are
+// carried over PCIe (via PciDeviceKind.virtio); the same message can be
+// reused for a virtio-mmio transport in the future.
+message VirtioDevice {
+    oneof kind {
+        // virtio-blk block device.
+        VirtioBlk blk = 1;
+        // virtio-net network device.
+        VirtioNet net = 2;
+        // virtio-rng entropy device.
+        VirtioRng rng = 3;
+        // virtio-vsock socket device.
+        VirtioVsock vsock = 4;
+        // virtio-console serial device.
+        VirtioConsole console = 5;
+        // A virtio device whose datapath is backed by an external vhost-user
+        // process (e.g. vhost-user-blk / vhost-user-fs).
+        VhostUser vhost_user = 6;
+        // Built-in virtio-fs filesystem device.
+        VirtioFs fs = 7;
+    }
+}
+
+//
+// console device
+//
+
+// virtio-console serial device configuration.
+message VirtioConsole {
+    // The serial backend the console is connected to.
+    SerialBackend backend = 1;
+}
+
+// A serial backend: where a serial/console stream is connected. Modeled as a
+// oneof so more backends (stderr, file, tcp listener, terminal, ...) can be
+// added later. TBD(F): the CLI also accepts console|stderr|file|listen|tcp|term.
+message SerialBackend {
+    oneof kind {
+        // Relay the stream over a named pipe / Unix domain socket.
+        SerialRelay relay = 1;
+    }
+}
+
+// A named-pipe / Unix-domain-socket serial relay.
+message SerialRelay {
+    // Path to a named pipe or Unix domain socket.
+    string socket_path = 1;
+    // When true, connect to an existing pipe/socket as a client instead of
+    // creating a new server listener (e.g. the host already created it).
+    bool connect = 2;
+}
+
+//
+// block device
+//
+
+// virtio-blk block device configuration.
+message VirtioBlk {
+    // Backing disk.
+    DiskBackend backend = 1;
+    // Expose the disk read-only to the guest.
+    bool read_only = 2;
+}
+
+//
+// network device
+//
+
+// virtio-net network device configuration. An absent backend means "none"
+// (no host connectivity).
+message VirtioNet {
+    // Maximum number of queue pairs. Absent => backend/host default.
+    optional uint32 max_queues = 1;
+    // Host network backend.
+    NicBackend backend = 2;
+    // MAC address for the adapter (e.g. "12-34-56-78-9A-BC").
+    string mac_address = 3;
+}
+
+//
+// vhost-user process-backed device
+//
+
+// A virtio device backed by an external vhost-user backend process.
+message VhostUser {
+    // Unix socket path of the vhost-user backend.
+    string socket_path = 1;
+    // The vhost-user device type and its config.
+    VhostUserDevice device = 2;
+}
+
+// The concrete vhost-user device behind a VhostUser.
+message VhostUserDevice {
+    oneof kind {
+        // vhost-user-blk block device.
+        VhostUserBlk blk = 1;
+        // vhost-user-fs filesystem device.
+        VhostUserFs fs = 2;
+        // A generic vhost-user device identified by numeric virtio device ID.
+        VhostUserGeneric other = 3;
+    }
+}
+
+// vhost-user-blk device. Most config comes from the backend; only queue
+// overrides are specified here.
+message VhostUserBlk {
+    // Number of virtqueues. Absent => backend default.
+    optional uint32 num_queues = 1;
+    // Per-queue size. Absent => backend default.
+    optional uint32 queue_size = 2;
+}
+
+// vhost-user-fs filesystem device.
+message VhostUserFs {
+    // Mount tag the guest uses to mount the filesystem.
+    string tag = 1;
+    // Number of virtqueues. Absent => backend default.
+    optional uint32 num_queues = 2;
+    // Per-queue size. Absent => backend default.
+    optional uint32 queue_size = 3;
+}
+
+// A generic vhost-user device addressed by raw virtio device ID.
+message VhostUserGeneric {
+    // Numeric virtio device ID.
+    uint32 device_id = 1;
+    // Per-queue sizes, one entry per virtqueue.
+    repeated uint32 queue_sizes = 2;
+}
+
+//
+// rng device
+//
+
+// virtio-rng carries no config beyond the PCIe port it attaches to.
+message VirtioRng {
+}
+
+//
+// vsock device
+//
+
+// virtio-vsock socket device configuration.
+message VirtioVsock {
+    // Unix socket base path (mirrors --virtio-vsock-path).
+    string socket_path = 1;
+}
+
+message VirtioFs {
+    string tag       = 1;
+    string root_path = 2;
+    bool read_only   = 3;
+}
+
+message VirtioConsoleConfig {
+    // Path to a named pipe or Unix domain socket for the console backend.
+    string socket_path = 1;
+    // When true, connect to an existing pipe/socket at socket_path as a client
+    // instead of creating a new server listener. Used when the host has already
+    // created the socket/pipe.
+    bool connect = 2;
+}
