@@ -654,7 +654,9 @@ async fn finish_attempt(
 }
 
 #[async_test]
-async fn start_and_resume_without_event_do_no_hardware_or_io_even_when_due(driver: DefaultDriver) {
+async fn start_resume_and_reset_without_event_do_no_hardware_or_io_even_when_due(
+    driver: DefaultDriver,
+) {
     for existing in [false, true] {
         let mut fixture = Fixture::new(&driver, existing).await;
         // Even stale or missing protectors must not create work without an event.
@@ -662,7 +664,13 @@ async fn start_and_resume_without_event_do_no_hardware_or_io_even_when_due(drive
         let expired = Instant::from_nanos(0);
         fixture.worker.schedule.deadline = expired;
         fixture.worker.schedule.not_before = expired;
-        for _ in 0..2 {
+        for reset in [false, true] {
+            if reset {
+                fixture.worker.reset().await.unwrap();
+                // Fail before the no-work helper if reset introduces recovery.
+                assert!(!fixture.worker.schedule.force_reseal);
+                assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
+            }
             fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
             assert!(!fixture.worker.schedule.running);
             assert!(!fixture.worker.schedule.force_reseal);
@@ -714,7 +722,7 @@ async fn explicit_notification_reseals_even_matching_hardware_with_same_dek(driv
 }
 
 #[async_test]
-async fn event_recovers_migration_and_success_stays_idle_without_more_events(
+async fn event_recovers_migration_and_reset_after_success_stays_idle_without_more_events(
     driver: DefaultDriver,
 ) {
     let mut fixture = Fixture::new(&driver, true).await;
@@ -726,6 +734,16 @@ async fn event_recovers_migration_and_success_stays_idle_without_more_events(
     assert!(fixture.io.state.lock().writes > 0);
     assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
+
+    let deadline = fixture.worker.schedule.deadline;
+    let not_before = fixture.worker.schedule.not_before;
+    fixture.worker.reset().await.unwrap();
+    // Assert before polling: a reset regression must fail, not wait for work.
+    assert!(!fixture.worker.schedule.force_reseal);
+    assert_eq!(fixture.worker.schedule.failures, 0);
+    assert_eq!(fixture.worker.schedule.deadline, deadline);
+    assert_eq!(fixture.worker.schedule.not_before, not_before);
+    assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
 
     *fixture.io.state.lock() = IoState::default();
     // Advance past all deadlines without sleeping. Check both the running
@@ -757,6 +775,54 @@ async fn event_recovers_migration_and_success_stays_idle_without_more_events(
         runtime_sealing::protector_matches(&MockTee(hardware), &config(), &protector, &DEK)
             .unwrap()
     );
+}
+
+#[async_test]
+async fn reset_preserves_latched_notification_and_backoff(driver: DefaultDriver) {
+    for retry in [false, true] {
+        let mut fixture = Fixture::new(&driver, true).await;
+        // A distant gate makes polling deterministic without timer delays.
+        let deadline = Instant::now() + Duration::from_secs(86400);
+        if retry {
+            fixture.worker.schedule.completed(deadline, false, 0);
+        } else {
+            fixture.worker.schedule.deadline = deadline;
+            fixture.worker.schedule.not_before = deadline;
+        }
+        let deadline = fixture.worker.schedule.deadline;
+        let not_before = fixture.worker.schedule.not_before;
+        let failures = fixture.worker.schedule.failures;
+        fixture.worker.notification.notify();
+        fixture.worker.reset().await.unwrap();
+        assert_eq!(fixture.worker.schedule.force_reseal, retry);
+        assert_eq!(fixture.worker.schedule.failures, failures);
+        assert_eq!(fixture.worker.schedule.deadline, deadline);
+        assert_eq!(fixture.worker.schedule.not_before, not_before);
+        assert!(fixture.worker.notification.pending.load(Ordering::SeqCst));
+
+        fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
+        assert!(fixture.worker.schedule.force_reseal);
+        assert_eq!(fixture.worker.schedule.failures, failures);
+        assert_eq!(fixture.worker.schedule.not_before, not_before);
+        assert_eq!(fixture.worker.schedule.due(), not_before);
+        assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.io.state.lock().reads, 0);
+        assert_eq!(fixture.io.state.lock().writes, 0);
+        assert_eq!(fixture.io.state.lock().flushes, 0);
+
+        fixture.worker.schedule.deadline = Instant::from_nanos(0);
+        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 3)).await;
+        assert!(!fixture.worker.schedule.force_reseal);
+        assert_eq!(fixture.worker.schedule.failures, 0);
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 3);
+        assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
+        assert!(fixture.io.state.lock().writes > 0);
+        assert_eq!(fixture.io.state.lock().flushes, 2);
+        fixture.close().await;
+    }
 }
 
 #[async_test]
@@ -1418,6 +1484,8 @@ async fn save_is_rejected_and_reset_preserves_upgrade_after_failed_flush(driver:
 
     // Serialized reconstruction must not silently replace the floor with a
     // new report or cached metadata. Even an empty restore is unsupported.
+    let deadline = fixture.worker.schedule.deadline;
+    let not_before = fixture.worker.schedule.not_before;
     fixture.hardware.tcb_version.store(8, Ordering::SeqCst);
     assert!(matches!(
         fixture.worker.save().await,
@@ -1431,8 +1499,17 @@ async fn save_is_rejected_and_reset_preserves_upgrade_after_failed_flush(driver:
         Err(RestoreError::SavedStateNotSupported)
     ));
     fixture.worker.reset().await.unwrap();
+    assert!(fixture.worker.schedule.force_reseal);
+    assert_eq!(fixture.worker.schedule.failures, 1);
+    assert_eq!(fixture.worker.schedule.deadline, deadline);
+    assert_eq!(fixture.worker.schedule.not_before, not_before);
+    assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
     fixture.worker.start().await;
     fixture.worker.stop().await;
+    assert!(fixture.worker.schedule.force_reseal);
+    assert_eq!(fixture.worker.schedule.failures, 1);
+    assert_eq!(fixture.worker.schedule.deadline, deadline);
+    assert_eq!(fixture.worker.schedule.not_before, not_before);
     assert!(Arc::ptr_eq(&resident_floor, &fixture.worker.tcb_floor));
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 2);
