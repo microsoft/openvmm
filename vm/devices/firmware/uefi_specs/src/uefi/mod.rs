@@ -8,6 +8,7 @@
 
 pub mod boot;
 pub mod common;
+pub mod firmware_volume;
 pub mod nvram;
 pub mod signing;
 pub mod time;
