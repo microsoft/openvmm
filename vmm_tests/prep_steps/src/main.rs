@@ -331,7 +331,7 @@ async fn boot_vm_with_target_disk(
     PetriVmBuilder::new(
         PetriTestParams {
             test_name: name,
-            logger,
+            log_source: logger,
             // FUTURE: To properly support post_test_hooks we'd need to catch panics
             // and early failure returns. Not worth it for this simple prep step tool.
             post_test_hooks: &mut vec![],

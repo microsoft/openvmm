@@ -107,6 +107,10 @@ pub fn extract_zip_if_new(
         let bsdtar = crate::_util::bsdtar_name(rt);
         flowey::shell_cmd!(rt, "{bsdtar} -xf {file}").run()?;
         fs_err::write(pkg_info_file, file_version)?;
+
+        // change back to the root dir so subsequent extractions don't get
+        // nested when there is no persistent dir
+        rt.sh.change_dir(&root_dir);
     } else {
         log::info!("already extracted!");
     }
@@ -164,6 +168,10 @@ pub fn extract_tar_gz_if_new(
         flowey::shell_cmd!(rt, "tar -xf {file}").run()?;
 
         fs_err::write(pkg_info_file, file_version)?;
+
+        // change back to the root dir so subsequent extractions don't get
+        // nested when there is no persistent dir
+        rt.sh.change_dir(&root_dir);
     } else {
         log::info!("already extracted!");
     }
@@ -257,6 +265,10 @@ pub fn extract_tar_bz2_if_new(
         flowey::shell_cmd!(rt, "tar -xf {file}").run()?;
 
         fs_err::write(pkg_info_file, file_version)?;
+
+        // change back to the root dir so subsequent extractions don't get
+        // nested when there is no persistent dir
+        rt.sh.change_dir(&root_dir);
     } else {
         log::info!("already extracted!");
     }

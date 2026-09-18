@@ -124,13 +124,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
         )
         .context("firmware/arch not compatible with OpenVMM backend")?;
 
-        let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
-        let params = petri::PetriTestParams {
-            test_name: "virtio_fs",
-            logger: &log_source,
-            post_test_hooks: &mut post_test_hooks,
-        };
 
         // Open the perf rootfs erofs image for the virtio-blk device (carries fio).
         let erofs_path = require_petritools_erofs(resolver);
@@ -144,15 +138,16 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
         let vfs_root_path = vfs_root.path().to_string_lossy().into_owned();
         tracing::info!(host_path = %vfs_root_path, "virtio-fs host root");
 
-        let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
-            .with_processor_topology(petri::ProcessorTopology {
-                vp_count: 2,
-                ..Default::default()
-            })
-            .with_memory(petri::MemoryConfig {
-                startup_bytes: 1024 * 1024 * 1024, // 1 GB
-                ..Default::default()
-            });
+        let mut builder =
+            petri::PetriVmBuilder::minimal("virtio_fs", &log_source, artifacts, driver)?
+                .with_processor_topology(petri::ProcessorTopology {
+                    vp_count: 2,
+                    ..Default::default()
+                })
+                .with_memory(petri::MemoryConfig {
+                    startup_bytes: 1024 * 1024 * 1024, // 1 GB
+                    ..Default::default()
+                });
 
         // Attach erofs (port 0) + virtio-fs (port 1) and a NIC. Only one
         // modify_backend() call is allowed, so combine all PCIe device setup

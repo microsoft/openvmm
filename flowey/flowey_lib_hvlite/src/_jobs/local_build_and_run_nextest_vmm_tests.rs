@@ -16,6 +16,8 @@ use crate::common::CommonPlatform;
 use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts;
+use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsSelections;
+use crate::init_vmm_tests_content_dir::VmmTestsPreBuiltArtifactsSelections;
 use crate::init_vmm_tests_env::PetriParams;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey::node::prelude::*;
@@ -32,34 +34,13 @@ pub struct VmmTestSelections {
     /// List of artifacts to download
     pub downloaded_artifacts: Vec<KnownTestArtifacts>,
     /// List of artifacts to build
-    pub build: BuildSelections,
+    pub build: VmmTestsBuiltArtifactsSelections,
+    /// Prebuilt artifacts to download
+    pub prebuilt_artifacts: VmmTestsPreBuiltArtifactsSelections,
+    /// Prep steps variants
+    pub prep_steps_variants: Vec<String>,
     /// Dependencies to install
     pub external_deps: VmmTestsExternalDeps,
-    /// Whether to download release IGVM files from GitHub
-    pub needs_release_igvm: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct BuildSelections {
-    pub openhcl_standard: bool,
-    pub openhcl_standard_dev: bool,
-    pub openhcl_cvm: bool,
-    pub openhcl_linux_direct: bool,
-    pub openvmm: bool,
-    pub openvmm_vhost: bool,
-    pub pipette_windows: bool,
-    pub pipette_linux: bool,
-    pub prep_steps_standard: bool,
-    pub prep_steps_no_vmbus: bool,
-    pub guest_test_uefi: bool,
-    pub tmks: bool,
-    pub tmk_vmm_windows: bool,
-    pub tmk_vmm_linux: bool,
-    pub vmgstool: bool,
-    pub vmgstool_dev: bool,
-    pub tpm_guest_tests_windows: bool,
-    pub tpm_guest_tests_linux: bool,
-    pub test_igvm_agent_rpc_server: bool,
 }
 
 flowey_request! {
@@ -170,8 +151,9 @@ impl SimpleFlowNode for Node {
             filter: nextest_filter_expr,
             downloaded_artifacts,
             build,
+            prebuilt_artifacts,
+            prep_steps_variants,
             external_deps,
-            needs_release_igvm,
         } = selections;
 
         // Some things can only be built on linux
@@ -180,9 +162,10 @@ impl SimpleFlowNode for Node {
                 || build.openhcl_standard_dev
                 || build.openhcl_cvm
                 || build.openhcl_linux_direct
-                || build.pipette_linux
+                || build.pipette_linux_musl_x64
+                || build.pipette_linux_musl_aarch64
                 || build.openvmm_vhost
-                || build.tmk_vmm_linux
+                || build.tmk_vmm_linux_musl
                 || build.tpm_guest_tests_linux)
         {
             anyhow::bail!(
@@ -330,7 +313,7 @@ impl SimpleFlowNode for Node {
             output
         });
 
-        let register_pipette_linux_musl = build.pipette_linux.then(|| {
+        let mut built_pipette_linux_musl = |arch| {
             let output = ctx.reqv(|v| crate::build_pipette::Request {
                 target: CommonTriple::Common {
                     arch,
@@ -341,7 +324,10 @@ impl SimpleFlowNode for Node {
             });
             if copy_extras {
                 copy_to_dir.push((
-                    extras_dir.to_owned(),
+                    extras_dir.join(match arch {
+                        CommonArch::X86_64 => "x64",
+                        CommonArch::Aarch64 => "aarch64",
+                    }),
                     output.map(ctx, |x| {
                         Some(match x {
                             crate::build_pipette::PipetteOutput::LinuxBin { bin: _, dbg } => dbg,
@@ -351,7 +337,15 @@ impl SimpleFlowNode for Node {
                 ));
             }
             output
-        });
+        };
+
+        let register_pipette_linux_musl_x64 = build
+            .pipette_linux_musl_x64
+            .then(|| built_pipette_linux_musl(CommonArch::X86_64));
+
+        let register_pipette_linux_musl_aarch64 = build
+            .pipette_linux_musl_aarch64
+            .then(|| built_pipette_linux_musl(CommonArch::Aarch64));
 
         let register_guest_test_uefi = build.guest_test_uefi.then(|| {
             let output = ctx.reqv(|v| crate::build_guest_test_uefi::Request {
@@ -440,7 +434,7 @@ impl SimpleFlowNode for Node {
             output
         });
 
-        let register_tmk_vmm = build.tmk_vmm_windows.then(|| {
+        let register_tmk_vmm = build.tmk_vmm.then(|| {
             let output = ctx.reqv(|v| crate::build_tmk_vmm::Request {
                 target: CommonTriple::Common {
                     arch,
@@ -461,7 +455,7 @@ impl SimpleFlowNode for Node {
             output
         });
 
-        let register_tmk_vmm_linux_musl = build.tmk_vmm_linux.then(|| {
+        let register_tmk_vmm_linux_musl = build.tmk_vmm_linux_musl.then(|| {
             let output = ctx.reqv(|v| crate::build_tmk_vmm::Request {
                 target: CommonTriple::Common {
                     arch,
@@ -484,16 +478,7 @@ impl SimpleFlowNode for Node {
             output
         });
 
-        let needs_prep_steps = build.prep_steps_standard || build.prep_steps_no_vmbus;
-        let mut prep_steps_variants: Vec<String> = Vec::new();
-        if build.prep_steps_standard {
-            prep_steps_variants.push("standard".into());
-        }
-        if build.prep_steps_no_vmbus {
-            prep_steps_variants.push("no-vmbus".into());
-        }
-
-        let register_prep_steps = needs_prep_steps.then(|| {
+        let register_prep_steps = build.prep_steps.then(|| {
             let output = ctx.reqv(|v| crate::build_prep_steps::Request {
                 target: target.clone(),
                 profile: CommonProfile::from_release(release),
@@ -648,7 +633,8 @@ impl SimpleFlowNode for Node {
             openvmm: register_openvmm,
             openvmm_vhost: register_openvmm_vhost,
             pipette_windows: register_pipette_windows,
-            pipette_linux_musl: register_pipette_linux_musl,
+            pipette_linux_musl_x64: register_pipette_linux_musl_x64,
+            pipette_linux_musl_aarch64: register_pipette_linux_musl_aarch64,
             guest_test_uefi: register_guest_test_uefi,
             openhcl_standard: register_openhcl_standard,
             openhcl_standard_dev: register_openhcl_standard_dev,
@@ -668,8 +654,8 @@ impl SimpleFlowNode for Node {
                 test_content_dir: ReadVar::from_static(test_content_dir.clone()),
                 vmm_tests_target: target_triple.clone(),
                 built_artifacts,
+                prebuilt_artifacts,
                 is_repo_root: true,
-                needs_release_igvm,
                 needs_incubator_profiles: incubator_profile.is_some(),
                 done: v,
             });
@@ -799,7 +785,7 @@ impl SimpleFlowNode for Node {
             let test_content_config = TestContentConfig::Uninitialized {
                 test_content_dir: Some(ReadVar::from_static(test_content_dir)),
                 built_artifacts,
-                needs_release_igvm,
+                prebuilt_artifacts,
             };
 
             side_effects.push(ctx.reqv(|v| {

@@ -55,7 +55,7 @@ struct Args {
     #[clap(long, env = "INCUBATOR_NO_PTY")]
     no_pty: bool,
     /// Timeout in seconds.
-    #[clap(long, env = "INCUBATOR_TIMEOUT", default_value_t = 1800)]
+    #[clap(long, env = "INCUBATOR_TIMEOUT", default_value_t = 300)]
     timeout: u64,
     /// Command to run in the guest: the program followed by its arguments.
     ///

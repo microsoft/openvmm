@@ -131,8 +131,8 @@ fn cca_runtime(
         artifacts.venv_dir.get(),
         rootfs.path(),
         &venv_bin_path,
-        params.logger.log_file("shrinkwrap_stdout")?,
-        params.logger.log_file("shrinkwrap_stderr")?,
+        params.log_source.log_file("shrinkwrap_stdout")?,
+        params.log_source.log_file("shrinkwrap_stderr")?,
     )?;
 
     tracing::info!("openvmm cca tests finished");

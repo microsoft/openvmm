@@ -74,7 +74,11 @@ fn host_tmks_core(
     driver
         .spawn(
             "log",
-            petri::log_task(params.logger.log_file("tmk_vmm")?, stdout, "tmk_vmm stdout"),
+            petri::log_task(
+                params.log_source.log_file("tmk_vmm")?,
+                stdout,
+                "tmk_vmm stdout",
+            ),
         )
         .detach();
 
@@ -219,7 +223,7 @@ async fn openvmm_openhcl_tmks(
     driver: DefaultDriver,
     artifacts: OpenhclTmkArtifacts<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
-    let logger = params.logger.clone();
+    let logger = params.log_source.clone();
     let mut vm = petri::PetriVmBuilder::new(params, artifacts.vm, &driver)?
         .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
         .with_expect_no_boot_event()
@@ -256,7 +260,7 @@ mod hyperv {
         driver: DefaultDriver,
         artifacts: OpenhclTmkArtifacts<HyperVPetriBackend>,
     ) -> anyhow::Result<()> {
-        let logger = params.logger.clone();
+        let logger = params.log_source.clone();
         let mut vm = petri::PetriVmBuilder::new(params, artifacts.vm, &driver)?
             .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
             .with_expect_no_boot_event()
