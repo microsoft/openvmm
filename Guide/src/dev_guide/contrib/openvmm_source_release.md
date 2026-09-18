@@ -51,11 +51,15 @@ Resolve the commit to release, then request the release with a repository
 dispatch:
 
 ```bash
-REVISION=$(git rev-parse <REF>)
+REF=<REF>
+REVISION=$(git rev-parse "$REF^{commit}")
 gh api repos/microsoft/openvmm/dispatches \
   -f event_type=openvmm-source-release \
   -f "client_payload[revision]=$REVISION"
 ```
+
+The `^{commit}` matters: an annotated tag otherwise resolves to the tag
+object, which the workflow cannot compare against a branch.
 
 GitHub loads repository-dispatch workflows from the default branch. The
 workflow and its Flowey bootstrap therefore come from reviewed code, while
