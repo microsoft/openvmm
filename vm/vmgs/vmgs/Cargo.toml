@@ -41,6 +41,7 @@ zerocopy.workspace = true
 pal_async.workspace = true
 disklayer_ram.workspace = true
 parking_lot.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
