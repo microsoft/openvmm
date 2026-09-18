@@ -221,6 +221,8 @@ pub struct PetriVmConfig {
     pub host_log_levels: Option<OpenvmmLogConfig>,
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
+    /// Whether to expose an IPMI KCS interface to the guest.
+    pub ipmi_enabled: bool,
     /// The amount of memory, in bytes, to assign to the VM
     pub memory: MemoryConfig,
     /// The processor topology for the VM
@@ -432,6 +434,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
+                ipmi_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -508,6 +511,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
+                ipmi_enabled: false,
                 memory: Default::default(),
                 proc_topology: Default::default(),
 
@@ -1445,6 +1449,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .openhcl_config_mut()
             .expect("VMBus redirection is only supported for OpenHCL firmware.")
             .vmbus_redirect = enable;
+        self
+    }
+
+    /// Enable the IPMI KCS interface for an OpenHCL UEFI VM.
+    pub fn with_ipmi(mut self, enable: bool) -> Self {
+        self.config.ipmi_enabled = enable;
         self
     }
 

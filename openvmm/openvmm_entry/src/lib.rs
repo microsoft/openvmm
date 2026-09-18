@@ -1452,6 +1452,7 @@ async fn vm_config_from_command_line(
                         TpmVersion::V185 => get_resources::ged::GedTpmVersion::V185,
                     }),
                     firmware_event_send: None,
+                    ipmi_sel_event_send: None,
                     secure_boot_enabled: opt.secure_boot,
                     secure_boot_template: match opt.secure_boot_template {
                         Some(SecureBootTemplateCli::Windows) => {
@@ -1465,6 +1466,7 @@ async fn vm_config_from_command_line(
                         },
                     },
                     enable_battery: opt.battery,
+                    enable_ipmi: false,
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
