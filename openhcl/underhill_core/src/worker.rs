@@ -3397,6 +3397,12 @@ async fn new_underhill_vm(
             let connection = relay_filter.take();
 
             if enable_vpci_relay {
+                // Determine if we're doing a mock TDISP flow.
+                let test_tdisp_flow = matches!(
+                    env_cfg.test_configuration,
+                    Some(TestScenarioConfig::VpciTdispFlow)
+                );
+
                 use vpci_relay::*;
 
                 let mut relay = VpciRelay::new(
@@ -3425,13 +3431,11 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    isolation,
                     vtom,
                     VpciRelayOptions {
                         // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
-                        test_tdisp_flow: matches!(
-                            env_cfg.test_configuration,
-                            Some(TestScenarioConfig::VpciTdispFlow)
-                        ),
+                        test_tdisp_flow,
                     },
                 );
 
