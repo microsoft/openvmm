@@ -3571,6 +3571,7 @@ impl LoadedVmInner {
 }
 
 impl LoadedVm {
+    #[tracing::instrument(name = "resume_vm", target = "openvmm::perf", skip_all)]
     async fn resume(&mut self) -> bool {
         if self.running {
             return false;
