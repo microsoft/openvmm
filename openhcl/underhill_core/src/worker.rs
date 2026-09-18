@@ -2314,10 +2314,11 @@ async fn new_underhill_vm(
         );
         if runtime_tcb_floor.is_none() {
             // Preserve boot's existing hardware recovery behavior, but never
-            // enable runtime resealing without a trustworthy source floor.
+            // enable runtime resealing without successful boot sealing and a
+            // trustworthy source floor.
             tracelimit::warn_ratelimited!(
                 CVM_ALLOWED,
-                "runtime hardware resealing disabled: no usable boot TCB floor"
+                "runtime hardware resealing disabled: boot sealing or trusted TCB floor unavailable"
             );
         }
     }
