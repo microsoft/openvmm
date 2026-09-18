@@ -1212,6 +1212,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cvmutil"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "clap",
+ "ctrlc",
+ "getrandom 0.4.2",
+ "hex",
+ "ms-tpm-20-ref",
+ "openssl",
+ "parking_lot",
+ "sha2",
+ "tempfile",
+ "tpm_lib",
+ "tpm_protocol",
+ "tracing",
+ "tracing-subscriber",
+ "zerocopy",
+]
+
+[[package]]
 name = "cxl_spec"
 version = "0.0.0"
 dependencies = [
@@ -8694,6 +8715,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "thiserror 2.0.16",
+ "tracing",
  "zerocopy",
 ]
 

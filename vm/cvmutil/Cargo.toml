@@ -1,0 +1,31 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "cvmutil"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+
+[dependencies]
+ms-tpm-20-ref = { workspace = true, features = ["vendored"] }
+getrandom.workspace = true
+hex.workspace = true
+tpm_lib.workspace = true
+tpm_protocol.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zerocopy.workspace = true
+clap = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+base64.workspace = true
+openssl = { workspace = true, features = ["vendored"] }
+ctrlc.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
