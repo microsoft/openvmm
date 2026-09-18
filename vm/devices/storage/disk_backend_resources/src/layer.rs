@@ -87,3 +87,16 @@ pub struct VhdxDiskLayerHandle {
 impl ResourceId<DiskLayerHandleKind> for VhdxDiskLayerHandle {
     const ID: &'static str = "vhdx";
 }
+
+/// Handle for a Qcow2 disk layer.
+#[derive(MeshPayload)]
+pub struct Qcow2DiskLayerHandle {
+    /// The open file handle for the Qcow2 file.
+    pub file: std::fs::File,
+    /// Whether to open the Qcow2 as read-only.
+    pub read_only: bool,
+}
+
+impl ResourceId<DiskLayerHandleKind> for Qcow2DiskLayerHandle {
+    const ID: &'static str = "qcow2";
+}

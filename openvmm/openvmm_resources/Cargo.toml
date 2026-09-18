@@ -25,6 +25,9 @@ virt_whp = ["openvmm_core/virt_whp", "dep:virt_whp"]
 # Enable building with macOS hypervisor framework support.
 virt_hvf = ["dep:virt_hvf"]
 
+# Enable the experimental qcow2 disk layer.
+disklayer_qcow2 = ["dep:disklayer_qcow2"]
+
 [dependencies]
 hypervisor_resources.workspace = true
 mesh_worker.workspace = true
@@ -43,6 +46,7 @@ disk_layered.workspace = true
 disk_prwrap.workspace = true
 disk_vhd1.workspace = true
 disklayer_vhdx.workspace = true
+disklayer_qcow2 = { workspace = true, optional = true }
 disklayer_ram.workspace = true
 disklayer_sqlite = { workspace = true, optional = true }
 
