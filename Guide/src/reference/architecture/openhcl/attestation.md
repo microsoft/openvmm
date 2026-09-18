@@ -96,19 +96,46 @@ The comparison is a partial order, not a packed-integer or lexicographic order:
   select the layout. Version 2 and unknown domains require exact SVN equality;
   cross-domain transitions are rejected. The floor tracks the reported SVN used
   for key derivation; it does not enforce the extended TCB added in report v6.
-- **TDX:** CPU SVN components must be non-decreasing. TEE SVN byte 1 identifies
-  the module and must match, including legacy identity 0; the remaining bytes
-  must be individually non-decreasing. This minimum-TCB comparison does not
-  determine Intel security status, which requires authenticated Intel TCB Info.
+- **TDX:** CPU SVN components must be non-decreasing. TEE SVN is parsed using
+  the typed `TeeTcbSvn` ABI layout: major SVN (byte 1) identifies the module
+  and must match, including legacy identity 0. Minor SVN (byte 0) and SE_SVN
+  (byte 2) must be non-decreasing; reserved bytes 3–15 must remain equal.
+  Reserved metadata changes are incompatible, not upgrades. This minimum-TCB
+  comparison does not determine Intel security status, which requires
+  authenticated Intel TCB Info.
 
 Candidate verification also checks a fresh report. Its SVN must match the
 candidate exactly, even if the hardware could still derive an older SVN's key.
 
+CPU SVN comparison uses all 16 unsigned bytes in their original positions:
+every destination byte must be at least its resident floor byte. There is no
+integer conversion or lexicographic ordering; an increase in one byte cannot
+compensate for a decrease in another. Intel PCS [Get TDX TCB Info V4][intel-tcb],
+step 3.a, uses component-wise minima for the 16 PCK certificate TCB components;
+[Appendix A][intel-tcb-model] describes the components and comparison metadata.
+OpenHCL's raw-report comparison is a local no-decrease policy, not that complete
+appraisal algorithm: it neither maps raw CPU SVN bytes to PCK component identities
+nor establishes cross-platform equivalence or Intel security status.
+
+For SNP, `SnpDomain` retains report version and CPU family/model because the raw
+TCB bytes do not identify their own layout. CPU family/model selects the layout;
+version gates supported report semantics. Exact domain equality is required even
+for identical raw SVNs or CPUs sharing a layout. This conservative restriction
+avoids interpreting one CPU's component bytes using another CPU's meanings.
+See [AMD 56860][amd-snp], revision 1.59, section 2.3, tables 4 and 5.
+
+[intel-tcb]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-tdx-v4
+[intel-tcb-model]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-model-v3
+[amd-snp]: https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP
+
 ### Lifecycle and limits
 
 Memory-preserving migration retains the worker and its floor. Stopping the
-worker drains an in-flight recovery attempt. Serialized servicing is unsupported
-for VMs with this worker: its save operation returns `SaveError::NotSupported`,
+worker drains an in-flight recovery attempt. Reset does not request resealing;
+it preserves the floor, existing retries and backoff, and latched notifications.
+
+Serialized servicing is unsupported for VMs with this worker: its save operation
+returns `SaveError::NotSupported`,
 which fails the VM save, and its restore operation rejects saved state. There is
 no saved-state reconstruction or reconstruction-triggered durable rewrite. The
 worker has no protected floor-transfer format, so reconstruction must not

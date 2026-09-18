@@ -53,6 +53,7 @@ use x86defs::snp::SNP_CPUID_MODELS_TURIN_C0_CF;
 use x86defs::snp::SnpReport;
 use x86defs::snp::SnpTcbVersionLegacy;
 use x86defs::snp::SnpTcbVersionTurin;
+use x86defs::tdx::TeeTcbSvn;
 use zerocopy::FromBytes;
 
 // OpenHCL policy, not an AMD CPU-generation mapping: only report versions
@@ -171,6 +172,23 @@ struct Snapshot {
     snp_domain: Option<SnpDomain>,
 }
 
+/// The interpretation domain of an SNP report's raw TCB bytes.
+///
+/// SVN bytes alone cannot tell us which security components they describe.
+/// AMD 56860 rev. 1.59, section 2.3, tables 4/5 define different TCB_VERSION
+/// layouts for pre-Turin and Turin CPUs: e.g. byte 0 is bootloader on the
+/// former but FMC on the latter. CPU family/model selects that layout, not
+/// report version. The report version separately gates the semantics we support
+/// (including CPUID availability); future reports can add unmodeled TCB fields.
+/// See the [AMD firmware ABI specification].
+///
+/// Require exact domain equality before even accepting equal raw SVNs. This
+/// avoids comparing unrelated components across CPUs or report formats. It is
+/// deliberately stricter than merely having the same layout: no cross-domain
+/// ordering is defined here. Unknown domains allow unchanged SVNs only; their
+/// metadata must not be discarded or interpreted using a guessed layout.
+///
+/// [AMD firmware ABI specification]: https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP
 #[derive(Debug, PartialEq, Eq)]
 struct SnpDomain {
     version: u32,
@@ -337,8 +355,9 @@ impl Snapshot {
     ///   when there is no supported component-ordering rule.
     /// - For changed SNP SVNs, require a supported layout, equal reserved bytes,
     ///   and non-decreasing named components.
-    /// - For TDX, require the same module identity and non-decreasing CPU/TEE
-    ///   SVN components. Different TEE types are incompatible.
+    /// - For TDX, require the same module identity and reserved bytes, with
+    ///   non-decreasing minor SVN, SE_SVN, and CPU SVN components. Different
+    ///   TEE types are incompatible.
     ///
     /// A higher component cannot compensate for a lower one. Known component
     /// regressions fail with `TcbLowered`; incompatible domains, identities,
@@ -411,16 +430,27 @@ impl Snapshot {
                 },
                 None,
             ) => {
-                // Byte 1 selects the module identity, not an ordered SVN.
+                // Parse the ABI layout without changing the raw derivation SVN.
+                let floor_tee = TeeTcbSvn::read_from_bytes(&floor_tee)
+                    .map_err(|_| Error(ErrorInner::MalformedReport))?;
+                let next_tee = TeeTcbSvn::read_from_bytes(&next_tee)
+                    .map_err(|_| Error(ErrorInner::MalformedReport))?;
+                // Major SVN selects the module identity, not an ordered SVN.
                 // This rejects both legacy/TD-preserving transitions and
-                // transitions between distinct TD-preserving identities.
-                if next_tee[1] != floor_tee[1] {
+                // transitions between distinct TD-preserving identities. A
+                // change in reserved metadata has no supported ordering.
+                if next_tee.tdx_module_svn_major != floor_tee.tdx_module_svn_major
+                    || next_tee._reserved != floor_tee._reserved
+                {
                     return Err(Error(ErrorInner::TcbIncompatible));
                 }
-                // With the identity equal (including 0 for legacy modules),
-                // comparing all remaining bytes implements both layouts.
+                // CPU SVN is kept as 16 bytes: apply the local per-position
+                // floor rule documented on components_meet, not Rust array Ord
+                // (lexicographic) or a packed-integer comparison. TEE SVN has
+                // its own named-field rules and must not use that helper.
                 if !components_meet(&next_cpu, &floor_cpu)
-                    || !components_meet(&next_tee, &floor_tee)
+                    || next_tee.tdx_module_svn_minor < floor_tee.tdx_module_svn_minor
+                    || next_tee.seam_last_patch_svn < floor_tee.seam_last_patch_svn
                 {
                     return Err(Error(ErrorInner::TcbLowered));
                 }
@@ -432,6 +462,24 @@ impl Snapshot {
     }
 }
 
+/// Inclusive component-wise minimum: every unsigned byte must meet the same
+/// position in the floor. For CPU SVN, N is 16; there is no endian conversion,
+/// sorting, or carry between components. With other bytes equal, (2, 4) meets
+/// (2, 3), but (3, 2) does not: growth cannot compensate for a regression.
+///
+/// Official context: Intel PCS [Get TDX TCB Info V4], step 3.a, requires all
+/// 16 PCK certificate TCB component SVNs to meet their corresponding TCB Info
+/// values; [Appendix A] describes the 16 components and `tcbType` comparison
+/// metadata. This motivates component-wise rather than scalar ordering.
+///
+/// This function applies OpenHCL's local no-decrease policy to two raw CPU SVN
+/// observations. It does NOT implement PCS appraisal, map raw bytes to PCK
+/// component identities, or establish equivalence across platform families.
+/// Do not infer `UpToDate`/revocation status from it: that requires authenticated
+/// platform-specific collateral, including FMSPC and TCB Info.
+///
+/// [Get TDX TCB Info V4]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-tdx-v4
+/// [Appendix A]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-model-v3
 fn components_meet<const N: usize>(actual: &[u8; N], minimum: &[u8; N]) -> bool {
     actual
         .iter()
