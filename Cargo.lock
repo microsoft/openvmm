@@ -5764,6 +5764,7 @@ dependencies = [
 name = "opentmk_executor"
 version = "0.0.0"
 dependencies = [
+ "cfg-if",
  "hvdef",
  "log",
  "opentmk_core",
@@ -5772,6 +5773,7 @@ dependencies = [
  "postcard",
  "spin",
  "uefi",
+ "vmbus_guest",
  "zerocopy",
 ]
 
@@ -10388,6 +10390,20 @@ dependencies = [
  "mesh",
  "open_enum",
  "static_assertions",
+ "thiserror 2.0.16",
+ "zerocopy",
+]
+
+[[package]]
+name = "vmbus_guest"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "hvdef",
+ "log",
+ "open_enum",
+ "opentmk_core",
+ "spin",
  "thiserror 2.0.16",
  "zerocopy",
 ]

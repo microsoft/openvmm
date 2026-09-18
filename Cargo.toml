@@ -62,6 +62,7 @@ members = [
   # opentmk
   "opentmk",
   "opentmk/opentmk_executor",
+  "opentmk/vmbus_guest",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
 ]
@@ -84,6 +85,7 @@ xtask_fuzz = { path = "xtask/xtask_fuzz" }
 opentmk_protocol = { path = "opentmk/opentmk_protocol" }
 opentmk_core = { path = "opentmk/opentmk_core" }
 opentmk_disk = { path = "opentmk/opentmk_disk" }
+vmbus_guest = { path = "opentmk/vmbus_guest" }
 
 # opentmk executor
 opentmk_exec_packet = { path = "opentmk/opentmk_exec_packet" }

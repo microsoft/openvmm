@@ -121,5 +121,10 @@ pub static LOGGER: TmkLogger<Mutex<Serial>> = TmkLogger::new(Serial {});
 
 /// Initializes the global logger.
 pub fn init() -> Result<(), SetLoggerError> {
-    log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Debug))
+    // Route only Info and above over the (synchronous, byte-at-a-time) COM2
+    // serial port. Debug/Trace records short-circuit inside the `log!` macros
+    // at the `max_level()` check, so they are never formatted, never lock the
+    // writer, and never stall the guest spinning on the UART transmit register.
+    // Bump this to `Debug` when diagnosing to re-enable the verbose per-op logs.
+    log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info))
 }

@@ -2,22 +2,21 @@
 # Licensed under the MIT License.
 
 [package]
-name = "opentmk_executor"
+name = "vmbus_guest"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cfg-if.workspace = true
+bitfield-struct.workspace = true
 hvdef.workspace = true
 log.workspace = true
+open_enum.workspace = true
 opentmk_core.workspace = true
 spin.workspace = true
+thiserror.workspace = true
 zerocopy.workspace = true
-postcard = { workspace = true, features = ["alloc"] }
-opentmk_exec_packet.workspace = true
-opentmk_decoder.workspace = true
-uefi = { workspace = true, features = ["alloc"] }
-vmbus_guest.workspace = true
+
+[target.'cfg(target_os = "uefi")'.dependencies]
 
 [lints]
 workspace = true
