@@ -130,6 +130,28 @@ By default a RAM-backed disk is used to isolate virtio/storvsc overhead
 without host filesystem noise. Pass `--data-disk` with a path on fast
 storage (e.g., NVMe) for end-to-end latency measurements.
 
+### virtio-fs readdir
+
+Measures virtio-fs directory listing (readdir) throughput using a
+directory populated with many small files. Exercises the FUSE readdir
+and readdirplus paths in the VMM:
+
+```bash
+burette run --test virtio-fs-readdir -o readdir.json
+
+# Custom file count (default: 10,000)
+burette run --test virtio-fs-readdir --readdir-file-count 30000
+```
+
+Reported metrics:
+
+- `virtiofs_readdir_plain_time` /
+  `virtiofs_readdir_plain_entries_per_sec` —
+  plain READDIR path (no per-entry lookups)
+- `virtiofs_readdir_plus_time` /
+  `virtiofs_readdir_plus_entries_per_sec` —
+  READDIRPLUS path (with per-entry lookups)
+
 ## Comparing Reports
 
 ```bash
