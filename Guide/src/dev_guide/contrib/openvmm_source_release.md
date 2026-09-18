@@ -66,18 +66,25 @@ The workflow confirms that the requested commit is contained in a protected
 rather than keeping its own list, so a newly cut release branch works
 immediately. Requesting an unmerged commit fails before the tag is created.
 
+That check runs in its own first job, before any job checks out the
+requested revision. Because that job runs no code from the revision, the
+Flowey it bootstraps and hands to the later `contents: write` job cannot
+have been tampered with by the revision under release.
+
 The workflow:
 
-1. reads `[workspace.package] version` and the commit from the checkout;
-2. assembles `openvmm-<VERSION>-vendor.tar.gz` once with
+1. verifies the requested commit is on a reviewed branch, without
+   checking it out;
+2. reads `[workspace.package] version` and the commit from the checkout;
+3. assembles `openvmm-<VERSION>-vendor.tar.gz` once with
    `cargo vendor --locked --versioned-dirs`;
-3. checks out the same revision, appends the generated `cargo_config`
+4. checks out the same revision, appends the generated `cargo_config`
    to `.cargo/config.toml`, and builds `openvmm` with
    `--locked --offline`;
-4. creates or verifies `openvmm-v<VERSION>` at that commit, after confirming
-   the commit is on a reviewed branch and that no release already exists
-   for it;
-5. creates a **draft** release for that tag, relies on GitHub's
+5. creates or verifies `openvmm-v<VERSION>` at that commit, after confirming
+   the archived revision is the requested one, that it is on a reviewed
+   branch, and that no release already exists for it;
+6. creates a **draft** release for that tag, relies on GitHub's
    automatic source archive, and uploads only the vendor archive.
 
 The workflow does not upload `SHA256SUMS` or a provenance attestation.
