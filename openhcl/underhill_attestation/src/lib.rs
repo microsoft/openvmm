@@ -1997,6 +1997,24 @@ mod tests {
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
+    fn test_attestation_config() -> AttestationVmConfig {
+        AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            ipmi_enabled: false,
+            secure_boot: false,
+            tpm_enabled: true,
+            tpm_version: AttestationTpmVersion::V138,
+            tpm_persisted: true,
+            filtered_vpci_devices_allowed: false,
+            vm_unique_id: String::new(),
+            vmgs_provisioner: None,
+            hardware_sealing_policy: HardwareSealingPolicy::None,
+        }
+    }
+
     fn new_test_file() -> Disk {
         ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
     }
@@ -3169,7 +3187,7 @@ mod tests {
         let get_pair = new_test_get(driver, false, None).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
+        let att_cfg = test_attestation_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -3374,7 +3392,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
+        let att_cfg = test_attestation_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -3459,7 +3477,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
+        let att_cfg = test_attestation_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -3551,7 +3569,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
+        let att_cfg = test_attestation_config();
         // Without hardware sealing support
         let tee = MockTeeCallNoGetDerivedKey {};
 

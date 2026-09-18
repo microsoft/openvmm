@@ -522,24 +522,4 @@ pub mod runtime_claims {
         /// Hardware sealing policy
         pub hardware_sealing_policy: HardwareSealingPolicy,
     }
-
-    impl Default for AttestationVmConfig {
-        fn default() -> Self {
-            Self {
-                current_time: None,
-                root_cert_thumbprint: String::new(),
-                console_enabled: false,
-                interactive_console_enabled: false,
-                ipmi_enabled: false,
-                secure_boot: false,
-                tpm_enabled: true,
-                tpm_version: AttestationTpmVersion::V138,
-                tpm_persisted: true,
-                filtered_vpci_devices_allowed: false,
-                vm_unique_id: String::new(),
-                vmgs_provisioner: None,
-                hardware_sealing_policy: HardwareSealingPolicy::None,
-            }
-        }
-    }
 }
