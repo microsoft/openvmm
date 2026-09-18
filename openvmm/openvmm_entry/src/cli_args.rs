@@ -1193,7 +1193,7 @@ options:
     pub deprecated_efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
 
     /// Perform a default boot even if boot entries exist and fail (deprecated; use --uefi default_boot_always_attempt)
-    #[clap(long = "default-boot-always-attempt", hide = true, requires("uefi"))]
+    #[clap(long = "default-boot-always-attempt", hide = true)]
     pub deprecated_default_boot_always_attempt: bool,
 
     /// Enable AMD IOMMU (AMD-Vi) emulation on specified root complexes.
@@ -1412,8 +1412,12 @@ Syntax: id=<name>
 impl Options {
     /// Returns the structured UEFI configuration with deprecated options merged in.
     pub fn effective_uefi(&self) -> anyhow::Result<Option<UefiCli>> {
-        let Some(mut uefi) = self.uefi.clone() else {
-            return Ok(None);
+        let mut uefi = match &self.uefi {
+            Some(uefi) => uefi.clone(),
+            None if self.igvm.is_some() && !self.pcat && self.igvm_personality.is_none() => {
+                UefiCli::default()
+            }
+            None => return Ok(None),
         };
 
         if let Some(firmware) = &self.deprecated_uefi_firmware {
