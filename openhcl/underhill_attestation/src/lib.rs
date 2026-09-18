@@ -89,6 +89,8 @@ enum AttestationErrorInner {
     ReadKeyProtectorById(#[source] vmgs::ReadFromVmgsError),
     #[error("failed to unlock vmgs data store")]
     UnlockVmgsDataStore(#[source] UnlockVmgsDataStoreError),
+    #[error("failed to finalize required hardware sealing")]
+    FinalizeHardwareSealing(#[source] FinalizeHardwareSealingError),
     #[error("failed to read guest secret key from vmgs")]
     ReadGuestSecretKey(#[source] vmgs::ReadFromVmgsError),
     #[error("failed to verify VMGS provenance")]
@@ -544,6 +546,32 @@ async fn try_unlock_vmgs(
         Err((AttestationErrorInner::UnlockVmgsDataStore(e), retry))?;
     }
 
+    // Hardware recovery is essential even in stateful mode if SKR/GSP did
+    // not supply the ingress DEK. Do not treat that path as an optional backup.
+    let sealing_required = require_hardware_sealing
+        || derived_keys_result
+            .key_protector_settings
+            .use_hardware_unlock;
+    let hardware_sealed =
+        match finalize_hardware_sealing(vmgs, sealed_egress_key, sealing_required).await {
+            Ok(sealed) => sealed,
+            Err(error) => {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    op_type = ?LogOpType::DecryptVmgs,
+                    success = false,
+                    error = &error as &dyn std::error::Error,
+                    "Failed to finalize required hardware sealing"
+                );
+                get.event_log_fatal(guest_emulation_transport::api::EventLogId::ATTESTATION_FAILED)
+                    .await;
+                // Unlock may already have rotated the DEK and written metadata.
+                // Do not replay that flow using the SKR retry flag after a flush
+                // failure. Abort boot rather than report unconfirmed durability.
+                return Err((AttestationErrorInner::FinalizeHardwareSealing(error), false));
+            }
+        };
+
     tracing::info!(
         CVM_ALLOWED,
         op_type = ?LogOpType::DecryptVmgs,
@@ -558,7 +586,6 @@ async fn try_unlock_vmgs(
         "Unlocked datastore"
     );
 
-    let hardware_sealed = finalize_hardware_sealing(vmgs, sealed_egress_key).await;
     Ok(UnlockResult {
         state_refresh_request: derived_keys_result
             .gsp_extended_status_flags
@@ -567,34 +594,58 @@ async fn try_unlock_vmgs(
     })
 }
 
-/// Finalize runtime enrollment only after successful boot unlock/persistence.
-/// This additional durability check must not turn an optional backup failure
-/// into a boot failure. Original write/unlock errors remain fatal to the attempt.
+#[derive(Debug, Error)]
+enum FinalizeHardwareSealingError {
+    #[error("no hardware protector was sealed for this unlock attempt")]
+    MissingSealedKey,
+    #[error("active VMGS encryption key is unavailable")]
+    ActiveKey(#[source] ::vmgs::Error),
+    #[error("sealed DEK does not match the active VMGS encryption key")]
+    ActiveKeyMismatch,
+    #[error("failed to flush the hardware protector and VMGS metadata")]
+    Flush(#[source] ::vmgs::Error),
+}
+
+/// Check that the sealed DEK is active, then flush completed boot writes.
+/// Required sealing (including hardware-unseal recovery) must fail boot if
+/// identity or durability cannot be confirmed. Optional backup failures only
+/// disable runtime enrollment. No keys are regenerated or writes replayed here.
 async fn finalize_hardware_sealing(
     vmgs: &mut Vmgs,
     sealed_egress_key: Option<[u8; AES_GCM_KEY_LENGTH]>,
-) -> bool {
-    let Some(sealed_egress_key) = sealed_egress_key else {
-        return false;
-    };
-    // Recovery via old decrypt_egress can leave a different active key when
-    // ingress == encrypt_egress and unlock therefore does not rotate the key.
-    // Compare trusted in-memory key state, never an untrusted protector header.
-    if !vmgs
-        .active_encryption_key()
-        .is_ok_and(|active| constant_time_eq::constant_time_eq_32(active, &sealed_egress_key))
-    {
-        return false;
+    required: bool,
+) -> Result<bool, FinalizeHardwareSealingError> {
+    if sealed_egress_key.is_none() && !required {
+        return Ok(false);
     }
-    if let Err(err) = vmgs.flush().await {
-        tracelimit::warn_ratelimited!(
-            CVM_ALLOWED,
-            error = &err as &dyn std::error::Error,
-            "Failed to flush boot hardware sealing; runtime hardware resealing disabled"
-        );
-        return false;
+    let result = async {
+        let sealed_egress_key =
+            sealed_egress_key.ok_or(FinalizeHardwareSealingError::MissingSealedKey)?;
+        // Old-egress recovery can leave another key active. Compare trusted
+        // in-memory key state, never an untrusted protector header.
+        let active = vmgs
+            .active_encryption_key()
+            .map_err(FinalizeHardwareSealingError::ActiveKey)?;
+        if !constant_time_eq::constant_time_eq_32(active, &sealed_egress_key) {
+            return Err(FinalizeHardwareSealingError::ActiveKeyMismatch);
+        }
+        vmgs.flush()
+            .await
+            .map_err(FinalizeHardwareSealingError::Flush)
     }
-    true
+    .await;
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if required => Err(error),
+        Err(error) => {
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                error = &error as &dyn std::error::Error,
+                "Failed to finalize optional hardware sealing; runtime hardware resealing disabled"
+            );
+            Ok(false)
+        }
+    }
 }
 
 /// If required, attest platform. Gets VMGS datastore key.
@@ -3886,7 +3937,9 @@ mod tests {
                 .unwrap();
                 assert!(vmgs.encrypted());
                 assert_eq!(
-                    finalize_hardware_sealing(&mut vmgs, sealed_key).await,
+                    finalize_hardware_sealing(&mut vmgs, sealed_key, false)
+                        .await
+                        .unwrap(),
                     eligible
                 );
             }
@@ -3941,8 +3994,16 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(vmgs.active_encryption_key().unwrap(), &active_dek);
-        assert!(!finalize_hardware_sealing(&mut vmgs, Some(sealed_dek)).await);
-        assert!(!finalize_hardware_sealing(&mut vmgs, None).await);
+        assert!(
+            !finalize_hardware_sealing(&mut vmgs, Some(sealed_dek), false)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !finalize_hardware_sealing(&mut vmgs, None, false)
+                .await
+                .unwrap()
+        );
     }
 
     fn init_sec_with_retry_reports(

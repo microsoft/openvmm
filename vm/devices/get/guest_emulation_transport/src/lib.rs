@@ -128,6 +128,9 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use test_with_tracing::test;
     use vmbus_async::async_dgram::AsyncRecvExt;
     use vmbus_async::async_dgram::AsyncSendExt;
@@ -500,6 +503,98 @@ mod tests {
 
         assert_eq!(result.utc, 1);
         assert_eq!(result.time_zone, 2);
+    }
+
+    // A time response fences all earlier notifications on the same host pipe.
+    // Awaiting host_time also fences earlier callback registrations on the
+    // client's control channel, without sleeps or relying on executor ordering.
+    fn post_live_migration_time_response(notifications: usize) -> TestGetResponses {
+        let mut responses = TestGetResponses::default();
+        for _ in 0..notifications {
+            responses = responses.add_response(Event::Response(
+                get_protocol::PostLiveMigrationNotification {
+                    message_header: get_protocol::HeaderGeneric::new(
+                        get_protocol::GuestNotifications::NOTIFY_POST_LIVE_MIGRATION,
+                    ),
+                }
+                .as_bytes()
+                .to_vec(),
+            ));
+        }
+        responses.add_response(Event::Response(
+            get_protocol::TimeResponse::new(0, 1, 2, false)
+                .as_bytes()
+                .to_vec(),
+        ))
+    }
+
+    #[async_test]
+    async fn post_live_migration_before_registration_is_coalesced(driver: DefaultDriver) {
+        for early_notifications in [1, 32] {
+            let mut get = new_transport_pair(
+                driver.clone(),
+                Some(vec![
+                    post_live_migration_time_response(early_notifications),
+                    post_live_migration_time_response(0),
+                    post_live_migration_time_response(0),
+                    post_live_migration_time_response(1),
+                ]),
+                ProtocolVersion::NICKEL_REV2,
+                None,
+                None,
+            )
+            .await;
+
+            // Force GET to consume the notification(s) before even enqueueing
+            // registration. This deterministically exercises the losing order.
+            get.client.host_time().await;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let callback_calls = calls.clone();
+            get.client
+                .set_post_live_migration_callback(Box::new(move || {
+                    callback_calls.fetch_add(1, Ordering::SeqCst);
+                }));
+            get.client.host_time().await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+            // Replacing the callback must not replay the drained pending bit.
+            let replacement_calls = Arc::new(AtomicUsize::new(0));
+            let callback_calls = replacement_calls.clone();
+            get.client
+                .set_post_live_migration_callback(Box::new(move || {
+                    callback_calls.fetch_add(1, Ordering::SeqCst);
+                }));
+            get.client.host_time().await;
+            assert_eq!(replacement_calls.load(Ordering::SeqCst), 0);
+            get.client.host_time().await;
+            assert_eq!(replacement_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[async_test]
+    async fn post_live_migration_after_registration_is_delivered(driver: DefaultDriver) {
+        let mut get = new_transport_pair(
+            driver,
+            Some(vec![
+                post_live_migration_time_response(0),
+                post_live_migration_time_response(2),
+            ]),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = calls.clone();
+        get.client
+            .set_post_live_migration_callback(Box::new(move || {
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+            }));
+        get.client.host_time().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        get.client.host_time().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[async_test]
