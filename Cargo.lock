@@ -9030,10 +9030,12 @@ dependencies = [
  "guest_emulation_transport",
  "guid",
  "hex",
+ "inspect",
  "mesh",
  "openhcl_attestation_protocol",
  "pal_async",
  "parking_lot",
+ "scsi_buffers",
  "serde",
  "serde_json",
  "static_assertions",
@@ -9045,6 +9047,7 @@ dependencies = [
  "user_driver_emulated_mock",
  "vmgs",
  "vmgs_format",
+ "x86defs",
  "zerocopy",
 ]
 
@@ -11974,6 +11977,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "open_enum",
  "static_assertions",
+ "test_with_tracing",
  "zerocopy",
 ]
 

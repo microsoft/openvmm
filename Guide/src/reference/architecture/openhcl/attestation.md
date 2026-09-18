@@ -22,6 +22,12 @@ current hardware SVN. Recovery requires hardware support for that derivation
 and successful protector authentication. This differs from the minimum TCB
 policy used for runtime resealing below.
 
+Ordinary stateless mode bypasses VMGS encryption when hardware sealing is not
+requested. Stateless mode with the `HardwareSealing` encryption policy instead
+requires hardware sealing: it seals a new DEK on provisioning and unseals then
+rotates it on later boots. Unsupported required sealing or failure to derive,
+unseal, or write the required protector prevents boot from completing.
+
 The main implementation is in
 [`underhill_attestation`](https://openvmm.dev/rustdoc/linux/underhill_attestation/index.html),
 with local hardware access provided by
@@ -46,9 +52,14 @@ The GET `NOTIFY_POST_LIVE_MIGRATION` notification triggers this recovery:
 4. Verify again after persistence to detect hardware or SVN changes during the
    operation.
 
-Recovery is enabled only for encrypted VMGS with a supported hardware-sealing
-policy and a trusted runtime floor. It neither changes that policy nor rotates
-the DEK. Hardware calls run off the VP and GET executors. Notifications are
+Recovery is enabled only when the successful boot-unlock attempt has sealed,
+written, and flushed a hardware protector for the active DEK and established a
+trusted runtime floor under a supported policy. This eligibility comes from
+trusted operation results, not the presence of an entry on disk. An LM event
+maintains an established recovery path; it does not perform first-time sealing.
+Once enabled, recovery can repair a subsequently missing or corrupt protector.
+It neither changes the policy nor rotates the DEK. Hardware calls run off the
+VP and GET executors. Notifications are
 coalesced, and failed attempts retry with bounded backoff. There is no periodic
 verification; after success, the worker waits for another event.
 
@@ -65,13 +76,22 @@ reset, and normal stop/start cannot lower it. If boot cannot establish a usable
 floor, runtime resealing stays disabled with a warning; existing boot recovery
 behavior is unchanged.
 
+If optional boot sealing does not succeed, no floor is exported to the runtime
+worker. The additional enrollment flush also disables runtime recovery on failure
+without changing the existing boot-unlock result. This preserves boot behavior,
+but means a transient failure can leave runtime recovery unavailable until the
+next boot. Existing protector write/unlock errors retain their original handling.
+
 The comparison is a partial order, not a packed-integer or lexicographic order:
 
 - **SNP:** known TCB components must be non-decreasing within the same supported
   report version and CPU family/model; reserved bytes must remain equal.
-  Milan/Genoa and Turin use different layouts. Version 2 and unknown domains
-  require exact SVN equality; cross-domain transitions are rejected. The floor
-  tracks the reported SVN used for key derivation.
+  For report versions 3–5, Milan/Genoa (family `19h`, models `00h–1Fh`) and
+  Turin (family `1Ah`, models `90h–AFh` and `C0h–CFh`) use distinct typed
+  layouts, as defined by AMD 56860 section 2.3. Report version alone does not
+  select the layout. Version 2 and unknown domains require exact SVN equality;
+  cross-domain transitions are rejected. The floor tracks the reported SVN used
+  for key derivation; it does not enforce the extended TCB added in report v6.
 - **TDX:** CPU SVN components must be non-decreasing. TEE SVN byte 1 identifies
   the module and must match, including legacy identity 0; the remaining bytes
   must be individually non-decreasing. This minimum-TCB comparison does not
