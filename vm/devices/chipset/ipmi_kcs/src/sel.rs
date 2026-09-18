@@ -156,6 +156,9 @@ impl IpmiKcs {
             return invalid_length(out);
         };
 
+        // Reservations are accepted for software compatibility but are not
+        // enforced because this virtual BMC has one serialized KCS requestor
+        // and no independent SEL mutators.
         let offset = usize::from(request.offset);
         if offset >= SEL_RECORD_SIZE {
             return completion(out, COMPLETION_PARAMETER_OUT_OF_RANGE);
@@ -236,6 +239,7 @@ impl IpmiKcs {
             return invalid_length(out);
         };
 
+        // See get_sel_entry for why request.reservation_id is not validated.
         if request.signature != CLEAR_SEL_SIGNATURE {
             return completion(out, COMPLETION_INVALID_DATA_FIELD);
         }

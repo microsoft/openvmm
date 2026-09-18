@@ -112,6 +112,7 @@
       - [framebuffer]()
       - [input]()
   - [Emulated]()
+    - [IPMI KCS](./reference/emulated/ipmi_kcs.md)
     - [vTPM]()
     - [NVMe]()
       - [Overview](./reference/emulated/NVMe/overview.md)

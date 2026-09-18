@@ -113,7 +113,7 @@ pub mod ged {
         /// BMC-assigned SEL record identifier.
         pub record_id: u16,
         /// Completed SEL record.
-        pub record: [u8; 16],
+        pub record: ipmi_protocol::SelRecord,
     }
 
     /// The firmware and chipset configuration for the guest.

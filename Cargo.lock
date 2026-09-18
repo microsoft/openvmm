@@ -2954,6 +2954,7 @@ name = "get_resources"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "ipmi_protocol",
  "mesh",
  "smbios_defs",
  "thiserror 2.0.16",
