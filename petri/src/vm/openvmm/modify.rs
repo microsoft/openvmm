@@ -159,27 +159,38 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Add a single-vport MANA VF to VTL2 and expose its synthetic NIC to VTL0.
-    pub fn with_mana_vf(mut self, instance_id: Guid, mac_address: MacAddress) -> Self {
+    pub fn with_mana_vf(self, instance_id: Guid, mac_address: MacAddress) -> Self {
+        self.with_mana_vf_vports(instance_id, [mac_address])
+    }
+
+    /// Add a MANA VF to VTL2 and expose one synthetic NIC per vport to VTL0.
+    pub fn with_mana_vf_vports(
+        mut self,
+        instance_id: Guid,
+        mac_addresses: impl IntoIterator<Item = MacAddress>,
+    ) -> Self {
         let vtl2_settings = self
             .runtime_config
             .vtl2_settings
             .as_mut()
             .expect("a VTL2 MANA VF requires OpenHCL firmware");
-        let endpoint = net_backend_resources::consomme::ConsommeHandle {
-            cidr: None,
-            ports: Vec::new(),
-            recv: None,
-        }
-        .into_resource();
 
         self.config.vpci_devices.push(VpciDeviceConfig {
             vtl: DeviceVtl::Vtl2,
             instance_id,
             resource: GdmaDeviceHandle {
-                vports: vec![VportDefinition {
-                    mac_address,
-                    endpoint,
-                }],
+                vports: mac_addresses
+                    .into_iter()
+                    .map(|mac_address| VportDefinition {
+                        mac_address,
+                        endpoint: net_backend_resources::consomme::ConsommeHandle {
+                            cidr: None,
+                            ports: Vec::new(),
+                            recv: None,
+                        }
+                        .into_resource(),
+                    })
+                    .collect(),
             }
             .into_resource(),
             vnode: None,
