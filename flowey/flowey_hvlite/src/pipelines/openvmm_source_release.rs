@@ -11,8 +11,8 @@ use flowey_lib_common::git_checkout::RepoSource;
 
 /// A pipeline that assembles, validates, and drafts an OpenVMM source release.
 ///
-/// This pipeline has no CI or PR triggers. It is dispatched by hand, against a
-/// commit whose `[workspace.package] version` a reviewed pull request has
+/// This pipeline has no CI or PR triggers. A `repository_dispatch` event names
+/// the commit whose `[workspace.package] version` a reviewed pull request has
 /// already set to the version being released.
 ///
 /// It ends at an `openvmm-v<VERSION>` tag, a vendor archive upload, and a
@@ -36,11 +36,16 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
 
         let mut pipeline = Pipeline::new();
         pipeline.gh_set_name("OpenVMM Source Release");
+        pipeline.gh_disable_workflow_dispatch();
+        pipeline.gh_add_repository_dispatch_trigger("openvmm-source-release");
         let (publish_release, use_release) = pipeline.new_typed_artifact::<
             flowey_lib_hvlite::assemble_openvmm_vendor_release::VendorReleaseOutput,
         >("openvmm-vendor-release");
 
-        let openvmm_repo_source = RepoSource::GithubSelf;
+        // repository_dispatch always loads this workflow and bootstraps Flowey
+        // from the default branch. Only the release payload uses the requested
+        // revision.
+        let openvmm_repo_source = RepoSource::GithubSelfAtRepositoryDispatchRevision;
 
         pipeline.gh_set_flowey_bootstrap_template(
             crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
@@ -65,6 +70,23 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
                     GhPermissionValue::Read,
                 )])
         });
+
+        // Nothing may run against the requested revision until it is known to
+        // be reviewed history. This job never checks it out, so it also
+        // bootstraps the flowey the write-capable publish job consumes.
+        let gate_job = pipeline
+            .new_job(
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                FlowArch::X86_64,
+                "verify release commit is reviewed",
+            )
+            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
+            .dep_on(
+                |ctx| flowey_lib_hvlite::_jobs::check_openvmm_release_commit::Request {
+                    done: ctx.new_done_handle(),
+                },
+            )
+            .finish();
 
         let assemble_job = pipeline
             .new_job(
@@ -114,6 +136,7 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
 
         pipeline.non_artifact_dep(&publish_job, &validate_job);
         pipeline.non_artifact_dep(&validate_job, &assemble_job);
+        pipeline.non_artifact_dep(&assemble_job, &gate_job);
 
         Ok(pipeline)
     }

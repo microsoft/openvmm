@@ -60,6 +60,11 @@ pub struct WorkflowDispatch {
     pub inputs: Inputs,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct RepositoryDispatch {
+    pub types: Vec<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct PrTrigger {
@@ -112,7 +117,10 @@ pub struct Concurrency {
 pub struct Triggers {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow_call: Option<WorkflowCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow_dispatch: Option<WorkflowDispatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_dispatch: Option<RepositoryDispatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<PrTrigger>,
     #[serde(skip_serializing_if = "Option::is_none")]

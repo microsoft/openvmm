@@ -10,6 +10,10 @@
 //!
 //! GitHub automatically provides source archives for the release tag. The only
 //! uploaded asset is the vendor archive required for offline Cargo builds.
+//!
+//! A dispatch may name any ref, so this job confirms that the archived
+//! revision is the requested one and is contained in a protected `main` or
+//! `release/*` branch before tagging it.
 
 use crate::assemble_openvmm_vendor_release::{VendorReleaseOutput, read_vendor_identity};
 use flowey::node::prelude::*;
@@ -29,6 +33,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::publish_gh_release::Node>();
         ctx.import::<flowey_lib_common::use_gh_cli::Node>();
+        ctx.import::<crate::verify_openvmm_release_commit::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -92,6 +97,39 @@ impl SimpleFlowNode for Node {
             }
         });
 
+        let requested_revision = ctx
+            .get_gh_context_var()
+            .event()
+            .repository_dispatch_revision();
+        let revision_matches_request =
+            ctx.emit_rust_step("verify the archived revision was requested", |ctx| {
+                let target = target.clone().claim(ctx);
+                let requested_revision = requested_revision.claim(ctx);
+                move |rt| {
+                    let revision = rt.read(target);
+                    let requested_revision = rt.read(requested_revision);
+
+                    crate::verify_openvmm_release_commit::validate_commit_sha(&requested_revision)
+                        .context("invalid source release request")?;
+                    if revision != requested_revision {
+                        anyhow::bail!(
+                            "release artifact revision {revision} does not match requested \
+                             revision {requested_revision}"
+                        );
+                    }
+
+                    Ok(())
+                }
+            });
+
+        // The pipeline already gated on this revision before anything checked
+        // it out, but that check is worth repeating here: this is the only job
+        // that can create a tag and a release.
+        let commit_is_reviewed = ctx.reqv(|done| crate::verify_openvmm_release_commit::Request {
+            revision: target.clone(),
+            done,
+        });
+
         // Create the tag before the draft so a later tag cannot silently rebind
         // the release to a different commit. Reruns reuse it only when it still
         // names the exact archived revision.
@@ -100,6 +138,8 @@ impl SimpleFlowNode for Node {
             // check. The side effect a rust step hands back is never written to
             // the var db, so reading it at runtime would panic.
             no_existing_release.claim(ctx);
+            commit_is_reviewed.claim(ctx);
+            revision_matches_request.claim(ctx);
             // Order the archive-existence check ahead of the tag as well. The
             // tag cannot be taken back, so an artifact that arrived without its
             // vendor archive must fail before the tag exists, not after.
