@@ -659,6 +659,8 @@ impl virt::ResetPartition for MshvPartition {
     fn reset(&self) -> Result<(), Error> {
         use virt::x86::vm::AccessVmState;
 
+        self.inner.scrub_partition()?;
+
         for irq in 0..virt::irqcon::IRQ_LINES as u8 {
             self.inner.irq_routes.set_irq_route(irq, None);
         }
