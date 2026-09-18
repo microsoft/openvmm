@@ -190,9 +190,11 @@ jobs:
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_cross_build 0
     displayName: run xtask fmt
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 1
+    displayName: cargo clippy
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 1
+      $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 5
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_cross_build 1
     displayName: cargo clippy
   - bash: |-
@@ -414,6 +416,8 @@ jobs:
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 5
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 1
+    displayName: cargo clippy
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 8
     displayName: cargo clippy
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_clippy 7
     displayName: cargo clippy
