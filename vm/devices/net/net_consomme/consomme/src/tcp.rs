@@ -156,6 +156,7 @@ struct ReadyInner {
     queue: VecDeque<FourTuple>,
     queued: HashSet<FourTuple>,
     blocked_on_rx: HashSet<FourTuple>,
+    retry_timer_on_rx: HashSet<FourTuple>,
     outer: Option<Waker>,
 }
 
@@ -171,14 +172,19 @@ impl ReadyList {
 
     /// Records a connection that could not make progress because the client
     /// had no receive capacity.
-    fn block_on_rx(&self, ft: FourTuple) {
-        self.inner.lock().blocked_on_rx.insert(ft);
+    fn block_on_rx(&self, ft: FourTuple, retry_timer: bool) {
+        let mut inner = self.inner.lock();
+        inner.blocked_on_rx.insert(ft);
+        if retry_timer {
+            inner.retry_timer_on_rx.insert(ft);
+        }
     }
 
     fn forget(&self, ft: FourTuple) {
         let mut inner = self.inner.lock();
         inner.queued.remove(&ft);
         inner.blocked_on_rx.remove(&ft);
+        inner.retry_timer_on_rx.remove(&ft);
     }
 
     /// Re-enqueues connections that were blocked on client receive capacity.
@@ -189,6 +195,10 @@ impl ReadyList {
                 inner.queue.push_back(ft);
             }
         }
+    }
+
+    fn take_timer_retry(&self, ft: FourTuple) -> bool {
+        self.inner.lock().retry_timer_on_rx.remove(&ft)
     }
 
     /// Enqueues a connection and wakes the outer task so a new poll cycle
@@ -761,6 +771,15 @@ impl RetransmissionState {
         };
     }
 
+    fn retry_now(&mut self, now: TimerInstant) {
+        match &mut self.timer {
+            RetransmissionTimer::Rto { deadline, .. }
+            | RetransmissionTimer::Persist { deadline, .. }
+            | RetransmissionTimer::Recovery { deadline, .. } => *deadline = now,
+            RetransmissionTimer::None => {}
+        }
+    }
+
     fn can_retransmit_on_window_reopen(&self, ack_number: TcpSeqNumber) -> bool {
         self.window_reopen_retransmit != Some(ack_number)
     }
@@ -1008,6 +1027,7 @@ impl<T: Client> Access<'_, T> {
                                     ft: &ft,
                                     client: self.client,
                                     state: &mut self.inner.state,
+                                    rx_blocked: false,
                                 };
 
                                 let conn = match TcpConnection::new_from_accept(
@@ -1070,6 +1090,7 @@ impl<T: Client> Access<'_, T> {
                     ft: &ft,
                     state,
                     client: self.client,
+                    rx_blocked: false,
                 };
                 if conn.inner.process_expired_timers(now, &mut sender) {
                     tracing::debug!(
@@ -1107,6 +1128,9 @@ impl<T: Client> Access<'_, T> {
                     connections.remove(&ft);
                     ready.forget(ft);
                 } else {
+                    if sender.rx_blocked {
+                        ready.block_on_rx(ft, true);
+                    }
                     timer_deadlines.update(ft, conn.inner.next_timer_deadline());
                 }
             }
@@ -1134,11 +1158,19 @@ impl<T: Client> Access<'_, T> {
                 ft: &ft,
                 state,
                 client: self.client,
+                rx_blocked: false,
             };
-            let timed_out = conn.inner.next_timer_deadline().is_some_and(|deadline| {
+            let retry_timer = ready.take_timer_retry(ft);
+            if retry_timer {
+                conn.inner.retransmission.retry_now(TimerInstant::now());
+            }
+            let expired_at = conn.inner.next_timer_deadline().and_then(|deadline| {
                 let now = TimerInstant::now();
-                deadline <= now && conn.inner.process_expired_timers(now, &mut sender)
+                (deadline <= now).then_some(now)
             });
+            let timed_out =
+                expired_at.is_some_and(|now| conn.inner.process_expired_timers(now, &mut sender));
+            let timer_rx_blocked = sender.rx_blocked;
             let keep = if timed_out {
                 tracing::debug!(
                     src = %ft.src,
@@ -1205,8 +1237,8 @@ impl<T: Client> Access<'_, T> {
                 tcp.connections.remove(&ft);
                 ready.forget(ft);
             } else {
-                if sender.client.rx_mtu() == 0 {
-                    ready.block_on_rx(ft);
+                if sender.rx_blocked {
+                    ready.block_on_rx(ft, timer_rx_blocked);
                 }
                 tcp.timer_deadlines
                     .update(ft, conn.inner.next_timer_deadline());
@@ -1334,12 +1366,25 @@ impl<T: Client> Access<'_, T> {
             ft: &ft,
             client: self.client,
             state: &mut self.inner.state,
+            rx_blocked: false,
         };
 
         let mut mark_ready = false;
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
-                let keep = e.get_mut().inner.handle_packet(&mut sender, &tcp)?;
+                let keep = match e.get_mut().inner.handle_packet(&mut sender, &tcp) {
+                    Ok(keep) => keep,
+                    Err(err) => {
+                        self.inner
+                            .tcp
+                            .timer_deadlines
+                            .update(ft, e.get().inner.next_timer_deadline());
+                        if sender.rx_blocked {
+                            ready.block_on_rx(ft, false);
+                        }
+                        return Err(err);
+                    }
+                };
                 if keep {
                     // Push out any newly-unblocked data (e.g., this ACK advanced
                     // the peer window) so we don't wait an entire poll cycle.
@@ -1412,6 +1457,7 @@ impl<T: Client> Access<'_, T> {
                             ft: &ft,
                             client: sender.client,
                             state: sender.state,
+                            rx_blocked: false,
                         };
                         TcpConnection::new(
                             &mut sender,
@@ -1485,9 +1531,18 @@ struct Sender<'a, T> {
     ft: &'a FourTuple,
     client: &'a mut T,
     state: &'a mut ConsommeState,
+    rx_blocked: bool,
 }
 
 impl<T: Client> Sender<'_, T> {
+    fn rx_mtu(&mut self) -> usize {
+        let rx_mtu = self.client.rx_mtu();
+        if rx_mtu == 0 {
+            self.rx_blocked = true;
+        }
+        rx_mtu
+    }
+
     fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
         let payload_len = payload.as_ref().map_or(0, |p| p.len());
         let buffer = &mut self.state.buffer;
@@ -1596,7 +1651,7 @@ impl<T: Client> Sender<'_, T> {
     }
 
     fn try_rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) -> bool {
-        if self.client.rx_mtu() == 0 {
+        if self.rx_mtu() == 0 {
             return false;
         }
 
@@ -2325,7 +2380,7 @@ impl TcpConnectionInner {
     }
 
     fn send_syn(&mut self, sender: &mut Sender<'_, impl Client>, ack_number: Option<TcpSeqNumber>) {
-        if self.tx_send != self.tx_acked || sender.client.rx_mtu() == 0 {
+        if self.tx_send != self.tx_acked || sender.rx_mtu() == 0 {
             return;
         }
 
@@ -2398,7 +2453,7 @@ impl TcpConnectionInner {
         }
 
         while self.needs_ack || self.tx_send < tx_done || send_fin_probe {
-            let rx_mtu = sender.client.rx_mtu();
+            let rx_mtu = sender.rx_mtu();
             if rx_mtu == 0 {
                 // Out of receive buffers.
                 self.stats.tx_blocked_no_rx_mtu.increment();
@@ -2666,7 +2721,7 @@ impl TcpConnectionInner {
             return retransmitted;
         }
 
-        if self.tx_acked >= self.tx_send || sender.client.rx_mtu() == 0 {
+        if self.tx_acked >= self.tx_send || sender.rx_mtu() == 0 {
             return false;
         }
 
@@ -2677,7 +2732,7 @@ impl TcpConnectionInner {
             SocketAddr::V6(_) => IPV6_HEADER_LEN,
         };
         let tcp_header_len = 20;
-        let mtu = sender.client.rx_mtu().min(sender.state.buffer.len());
+        let mtu = sender.rx_mtu().min(sender.state.buffer.len());
         let max_payload = mtu.saturating_sub(ETHERNET_HEADER_LEN + ip_header_len + tcp_header_len);
         let scale = if self.tx_window_scale_active {
             self.tx_window_scale
@@ -2729,7 +2784,7 @@ impl TcpConnectionInner {
     }
 
     fn retransmit_syn(&mut self, sender: &mut Sender<'_, impl Client>) -> bool {
-        if self.tx_syn == TxSynState::None || sender.client.rx_mtu() == 0 {
+        if self.tx_syn == TxSynState::None || sender.rx_mtu() == 0 {
             return false;
         }
 
@@ -2745,7 +2800,7 @@ impl TcpConnectionInner {
             return false;
         }
 
-        let rx_mtu = sender.client.rx_mtu();
+        let rx_mtu = sender.rx_mtu();
         let ip_header_len = match sender.ft.dst {
             SocketAddr::V4(_) => IPV4_HEADER_LEN,
             SocketAddr::V6(_) => IPV6_HEADER_LEN,
@@ -2823,7 +2878,9 @@ impl TcpConnectionInner {
     /// shouldn't be combined with data so that they are interpreted correctly
     /// by the peer.
     fn ack(&mut self, sender: &mut Sender<'_, impl Client>) {
-        let _ = self.try_ack(sender);
+        if !self.try_ack(sender) {
+            self.needs_ack = true;
+        }
     }
 
     fn ack_or_defer(&mut self, sender: &mut Sender<'_, impl Client>) {
@@ -2833,7 +2890,7 @@ impl TcpConnectionInner {
     }
 
     fn try_ack(&mut self, sender: &mut Sender<'_, impl Client>) -> bool {
-        if sender.client.rx_mtu() == 0 {
+        if sender.rx_mtu() == 0 {
             return false;
         }
 

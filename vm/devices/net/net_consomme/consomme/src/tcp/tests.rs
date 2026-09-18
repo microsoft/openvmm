@@ -1300,6 +1300,31 @@ async fn test_tcp_port_forward_defers_initial_syn_without_rx_buffer(driver: Defa
     );
 }
 
+#[pal_async::async_test]
+async fn test_idle_tcp_connection_is_not_rx_blocked(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    let ft = h.four_tuple();
+    h.clear_guest_packets();
+    h.client.rx_buffers = Some(0);
+    h.mark_connection_ready();
+
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+
+    assert!(
+        !h.consomme
+            .tcp
+            .ready
+            .inner
+            .lock()
+            .blocked_on_rx
+            .contains(&ft)
+    );
+}
+
 /// Test that a stale ACK from a recently closed guest connection resets the
 /// stale tuple without allowing guest packets to accelerate SYN retransmits.
 #[pal_async::async_test]
@@ -2190,6 +2215,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
             ft: &ft,
             client: &mut client,
             state: &mut consomme.state,
+            rx_blocked: false,
         };
         conn.inner.handle_listen_syn(&mut sender, &invalid_syn_ack)
     };
@@ -2933,6 +2959,17 @@ async fn test_tcp_fin_wait_zero_window_probes_refresh_timeout(driver: DefaultDri
         "a zero-window probe should follow the unacceptable-segment path"
     );
 
+    let expected_deadline = h.connection_inner().next_timer_deadline();
+    assert_eq!(
+        h.consomme
+            .tcp
+            .timer_deadlines
+            .by_connection
+            .get(&ft)
+            .copied(),
+        expected_deadline,
+        "the deadline index must update before returning the packet error"
+    );
     assert!(
         h.connection_inner().lifetime_timer.deadline()
             > Some(Instant::now() + Duration::from_secs(1)),
@@ -3347,18 +3384,14 @@ async fn test_tcp_zero_window_persist_probe(driver: DefaultDriver) {
         h.connection_inner().retransmission.timer,
         RetransmissionTimer::Persist { backoff: 1, .. }
     ));
+    let ft = h.four_tuple();
+    {
+        let ready = h.consomme.tcp.ready.inner.lock();
+        assert!(ready.blocked_on_rx.contains(&ft));
+        assert!(ready.retry_timer_on_rx.contains(&ft));
+    }
 
     h.client.add_rx_buffers(1);
-    {
-        let access = h.consomme.access(&mut h.client);
-        let conn = access.inner.tcp.connections.values_mut().next().unwrap();
-        conn.inner.retransmission.timer = RetransmissionTimer::Persist {
-            deadline: Instant::now() - Duration::from_millis(1),
-            backoff: 1,
-            recover: None,
-        };
-    }
-    h.mark_connection_ready();
     h.clear_guest_packets();
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
