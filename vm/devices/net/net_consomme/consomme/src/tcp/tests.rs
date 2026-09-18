@@ -39,6 +39,36 @@ struct TestClient {
 }
 
 #[test]
+fn timer_deadlines_replace_stale_minimum() {
+    let first = FourTuple {
+        src: "192.0.2.1:1".parse().unwrap(),
+        dst: "192.0.2.2:2".parse().unwrap(),
+    };
+    let second = FourTuple {
+        src: "192.0.2.3:3".parse().unwrap(),
+        dst: "192.0.2.4:4".parse().unwrap(),
+    };
+    let now = TimerInstant::now();
+    let first_deadline = now + Duration::from_secs(1);
+    let second_deadline = now + Duration::from_secs(2);
+    let postponed_deadline = now + Duration::from_secs(3);
+    let mut deadlines = TimerDeadlines::default();
+
+    deadlines.update(first, Some(first_deadline));
+    deadlines.update(second, Some(second_deadline));
+    assert_eq!(deadlines.next(), Some(first_deadline));
+
+    deadlines.update(first, Some(postponed_deadline));
+    assert_eq!(deadlines.next(), Some(second_deadline));
+
+    deadlines.update(second, None);
+    assert_eq!(deadlines.next(), Some(postponed_deadline));
+
+    deadlines.update(first, None);
+    assert_eq!(deadlines.next(), None);
+}
+
+#[test]
 fn dns_tcp_frame_boundary_tracker_handles_fragmented_frames() {
     let mut tracker = DnsTcpFrameBoundaryTracker::default();
     assert!(tracker.at_frame_boundary());
@@ -756,6 +786,10 @@ impl TcpTestHarness {
         }
     }
 
+    fn mark_connection_ready(&self) {
+        self.consomme.tcp.ready.enqueue(self.four_tuple());
+    }
+
     /// Borrow the established connection's inner state for assertions.
     fn connection_inner(&self) -> &TcpConnectionInner {
         let ft = self.four_tuple();
@@ -1237,6 +1271,8 @@ async fn test_tcp_port_forward_defers_initial_syn_without_rx_buffer(driver: Defa
     ));
     connection.inner.lifetime_timer =
         LifetimeTimer::Handshake(TimerInstant::now() - Duration::from_millis(1));
+    let ft = *consomme.tcp.connections.keys().next().unwrap();
+    consomme.tcp.ready.enqueue(ft);
     received.lock().clear();
     client.add_rx_buffers(1);
     std::future::poll_fn(|cx| {
@@ -1261,6 +1297,31 @@ async fn test_tcp_port_forward_defers_initial_syn_without_rx_buffer(driver: Defa
     assert!(
         rst.ack_number.is_none(),
         "a pre-handshake reset must not acknowledge an unknown guest sequence"
+    );
+}
+
+#[pal_async::async_test]
+async fn test_idle_tcp_connection_is_not_rx_blocked(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    let ft = h.four_tuple();
+    h.clear_guest_packets();
+    h.client.rx_buffers = Some(0);
+    h.mark_connection_ready();
+
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+
+    assert!(
+        !h.consomme
+            .tcp
+            .ready
+            .inner
+            .lock()
+            .blocked_on_rx
+            .contains(&ft)
     );
 }
 
@@ -2154,6 +2215,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
             ft: &ft,
             client: &mut client,
             state: &mut consomme.state,
+            rx_blocked: false,
         };
         conn.inner.handle_listen_syn(&mut sender, &invalid_syn_ack)
     };
@@ -2705,6 +2767,7 @@ async fn test_tcp_time_wait_cleanup(driver: DefaultDriver) {
         // Force the deadline into the past to simulate timeout expiry.
         conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() - Duration::from_secs(1));
     }
+    h.mark_connection_ready();
 
     // Polling should reap the expired TimeWait connection.
     std::future::poll_fn(|cx| {
@@ -2760,6 +2823,7 @@ async fn test_tcp_guest_action_timeout_cleanup(driver: DefaultDriver) {
             conn.inner.lifetime_timer =
                 LifetimeTimer::Close(Instant::now() - Duration::from_secs(1));
         }
+        h.mark_connection_ready();
 
         std::future::poll_fn(|cx| {
             h.consomme.access(&mut h.client).poll(cx);
@@ -2895,6 +2959,17 @@ async fn test_tcp_fin_wait_zero_window_probes_refresh_timeout(driver: DefaultDri
         "a zero-window probe should follow the unacceptable-segment path"
     );
 
+    let expected_deadline = h.connection_inner().next_timer_deadline();
+    assert_eq!(
+        h.consomme
+            .tcp
+            .timer_deadlines
+            .by_connection
+            .get(&ft)
+            .copied(),
+        expected_deadline,
+        "the deadline index must update before returning the packet error"
+    );
     assert!(
         h.connection_inner().lifetime_timer.deadline()
             > Some(Instant::now() + Duration::from_secs(1)),
@@ -2965,6 +3040,7 @@ async fn test_tcp_closing_cleanup(driver: DefaultDriver) {
         );
         conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() - Duration::from_secs(1));
     }
+    h.mark_connection_ready();
 
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
@@ -3039,6 +3115,7 @@ async fn test_tcp_last_ack_cleanup(driver: DefaultDriver) {
         );
         conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() - Duration::from_secs(1));
     }
+    h.mark_connection_ready();
 
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
@@ -3099,6 +3176,7 @@ async fn test_tcp_retransmits_unacknowledged_data(driver: DefaultDriver) {
             recover: None,
         };
     }
+    h.mark_connection_ready();
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
         Poll::Ready(())
@@ -3150,6 +3228,7 @@ async fn test_tcp_retransmits_fin_until_acknowledged(driver: DefaultDriver) {
             recover: None,
         };
     }
+    h.mark_connection_ready();
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
         Poll::Ready(())
@@ -3204,6 +3283,7 @@ async fn test_tcp_close_before_syn_ack_retransmits_syn_then_fin(driver: DefaultD
         };
         assert_eq!(conn.inner.state, TcpState::SynReceived);
     }
+    h.mark_connection_ready();
 
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
@@ -3253,6 +3333,7 @@ async fn test_tcp_zero_window_persist_probe(driver: DefaultDriver) {
             recover: None,
         };
     }
+    h.mark_connection_ready();
 
     h.clear_guest_packets();
     std::future::poll_fn(|cx| {
@@ -3287,6 +3368,7 @@ async fn test_tcp_zero_window_persist_probe(driver: DefaultDriver) {
             recover: None,
         };
     }
+    h.mark_connection_ready();
     h.client.rx_buffers = Some(0);
     h.clear_guest_packets();
     std::future::poll_fn(|cx| {
@@ -3302,17 +3384,14 @@ async fn test_tcp_zero_window_persist_probe(driver: DefaultDriver) {
         h.connection_inner().retransmission.timer,
         RetransmissionTimer::Persist { backoff: 1, .. }
     ));
+    let ft = h.four_tuple();
+    {
+        let ready = h.consomme.tcp.ready.inner.lock();
+        assert!(ready.blocked_on_rx.contains(&ft));
+        assert!(ready.retry_timer_on_rx.contains(&ft));
+    }
 
     h.client.add_rx_buffers(1);
-    {
-        let access = h.consomme.access(&mut h.client);
-        let conn = access.inner.tcp.connections.values_mut().next().unwrap();
-        conn.inner.retransmission.timer = RetransmissionTimer::Persist {
-            deadline: Instant::now() - Duration::from_millis(1),
-            backoff: 1,
-            recover: None,
-        };
-    }
     h.clear_guest_packets();
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
@@ -3410,6 +3489,7 @@ async fn test_tcp_zero_window_persist_preserves_recovery(driver: DefaultDriver) 
             recover: None,
         };
     }
+    h.mark_connection_ready();
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
         Poll::Ready(())
@@ -3436,6 +3516,7 @@ async fn test_tcp_zero_window_persist_preserves_recovery(driver: DefaultDriver) 
             recover: Some(recover),
         };
     }
+    h.mark_connection_ready();
     h.clear_guest_packets();
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
@@ -3477,6 +3558,7 @@ async fn test_tcp_zero_window_persist_preserves_recovery(driver: DefaultDriver) 
             recover: Some(recover),
         };
     }
+    h.mark_connection_ready();
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
         Poll::Ready(())
@@ -3673,6 +3755,7 @@ async fn test_tcp_rto_recovery_advances_on_each_ack(driver: DefaultDriver) {
             recover: None,
         };
     }
+    h.mark_connection_ready();
     h.clear_guest_packets();
     std::future::poll_fn(|cx| {
         h.consomme.access(&mut h.client).poll(cx);
