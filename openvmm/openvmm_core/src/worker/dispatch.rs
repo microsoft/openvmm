@@ -109,6 +109,7 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use tpm_resources::TpmVersion;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -3394,7 +3395,7 @@ impl LoadedVmInner {
                 enable_debugging,
                 enable_memory_protections,
                 disable_frontpage,
-                enable_tpm,
+                tpm_version,
                 enable_battery,
                 enable_serial,
                 enable_vpci_boot,
@@ -3431,7 +3432,7 @@ impl LoadedVmInner {
                     debugging: enable_debugging,
                     memory_protections: enable_memory_protections,
                     frontpage: !disable_frontpage,
-                    tpm: enable_tpm,
+                    tpm: tpm_version.is_some(),
                     battery: enable_battery,
                     guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
                     vpci_boot: enable_vpci_boot,
@@ -3443,6 +3444,7 @@ impl LoadedVmInner {
                     force_dma_bounce,
                     hv: enable_hv,
                     hibernation: hibernation_enabled,
+                    disable_sha1_pcr: tpm_version.is_some_and(|v| v >= TpmVersion::V185),
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
@@ -3881,6 +3883,7 @@ impl LoadedVm {
                                 },
                             );
 
+                            let mapper = self.inner.memory_manager.device_memory_mapper();
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
                                 &self.state_units,
@@ -3894,7 +3897,7 @@ impl LoadedVm {
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                                                shared_mem_mapper: None,
+                                                shared_mem_mapper: Some(&mapper),
                                             },
                                         )
                                         .await

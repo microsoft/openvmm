@@ -133,6 +133,7 @@ use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use tpm_resources::TpmVersion;
+use tpm_vmgs::tpm_nvram_file_id;
 use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
@@ -1878,15 +1879,19 @@ async fn new_underhill_vm(
         }
     };
 
-    let tpm_hint_version = match dps.general.tpm_version {
-        Some(get_protocol::dps_json::GetTpmVersion::V138) => TpmVersion::V138,
-        Some(get_protocol::dps_json::GetTpmVersion::V185) => TpmVersion::V185,
-        None => TpmVersion::V138,
+    let tpm_hint_version = match (
+        dps.general.management_vtl_features.use_tpm_138_by_default(),
+        dps.general.management_vtl_features.use_tpm_185_by_default(),
+    ) {
+        (true, false) => TpmVersion::V138,
+        (false, true) => TpmVersion::V185,
+        (false, false) => TpmVersion::V138,
+        (true, true) => TpmVersion::V185,
     };
     let tpm_version = if let Some((_, ref vmgs)) = vmgs {
-        if vmgs.check_file_allocated(TpmVersion::V185.to_nvram_vmgs_file_id()) {
+        if vmgs.check_file_allocated(tpm_nvram_file_id(TpmVersion::V185)) {
             TpmVersion::V185
-        } else if vmgs.check_file_allocated(TpmVersion::V138.to_nvram_vmgs_file_id()) {
+        } else if vmgs.check_file_allocated(tpm_nvram_file_id(TpmVersion::V138)) {
             TpmVersion::V138
         } else {
             tpm_hint_version
@@ -1895,7 +1900,7 @@ async fn new_underhill_vm(
         tpm_hint_version
     };
 
-    let tpm_nvram_id = tpm_version.to_nvram_vmgs_file_id();
+    let tpm_nvram_id = tpm_nvram_file_id(tpm_version);
     let tpm_size = vmgs
         .as_ref()
         .and_then(|(_, vmgs)| vmgs.get_file_info(tpm_nvram_id).ok())
@@ -3929,6 +3934,7 @@ async fn new_underhill_vm(
             &runtime_params,
             load_kind,
             &dps,
+            dps.general.tpm_enabled && tpm_version >= TpmVersion::V185,
             isolation.is_isolated(),
             &chipset_mmio,
         )
@@ -4014,7 +4020,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         bios_guid: _,
         vpci_boot_enabled: _,
         hardware_sealing_policy: _,
-        tpm_version: _,
 
         // Validated below
         processor_idle_enabled,
@@ -4340,6 +4345,7 @@ async fn load_firmware(
     runtime_params: &RuntimeParameters,
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
+    disable_sha1_pcr: bool,
     isolated: bool,
     chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), anyhow::Error> {
@@ -4347,7 +4353,10 @@ async fn load_firmware(
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
         None => CString::default(),
     };
-    let loader_config = crate::loader::Config { cmdline_append };
+    let loader_config = crate::loader::Config {
+        cmdline_append,
+        disable_sha1_pcr,
+    };
     let caps = partition.caps();
     let vtl0_vp_context = crate::loader::load(
         gm,

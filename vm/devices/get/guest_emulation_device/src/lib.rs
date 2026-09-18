@@ -40,7 +40,6 @@ use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
 use get_protocol::VmgsIoStatus;
 use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
-use get_protocol::dps_json::GetTpmVersion;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use get_protocol::dps_json::GuestStateLifetime;
 use get_protocol::dps_json::HardwareSealingPolicy;
@@ -139,9 +138,8 @@ pub struct GuestConfig {
     pub serial_tx_only: bool,
     /// Enable vmbus redirection.
     pub vmbus_redirection: bool,
-    /// TPM reference implementation version.
-    #[inspect(debug)]
-    pub tpm_version: Option<GetTpmVersion>,
+    /// Enable the TPM device in the guest.
+    pub enable_tpm: bool,
     /// The encoded VTL2 settings document.
     #[inspect(with = "Option::is_some")]
     pub vtl2_settings: Option<Vec<u8>>,
@@ -1390,7 +1388,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     enable_vmbus_redirector: state.config.com2,
                 },
                 enable_firmware_debugging,
-                enable_tpm: state.config.tpm_version.is_some(),
+                enable_tpm: state.config.enable_tpm,
                 secure_boot_enabled: state.config.secure_boot_enabled,
                 secure_boot_template_id: match state.config.secure_boot_template {
                     SecureBootTemplateType::SECURE_BOOT_DISABLED => HclSecureBootTemplateId::None,
@@ -1450,7 +1448,6 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     hardware_sealing_policy_id: state.config.hardware_sealing_policy,
                     efi_diagnostics_log_level: state.config.efi_diagnostics_log_level,
                     force_dma_bounce_enabled: state.config.force_dma_bounce_enabled,
-                    tpm_version: state.config.tpm_version,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),

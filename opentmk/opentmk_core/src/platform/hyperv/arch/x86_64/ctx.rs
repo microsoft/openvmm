@@ -8,7 +8,6 @@ use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::arch::asm;
 use core::ops::Range;
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
 use hvdef::hypercall::InitialVpContextX64;
 
 use hvdef::AlignedU128;
@@ -37,7 +36,7 @@ use crate::tmkdefs::TmkResult;
 impl SecureInterceptPlatformTrait for HvTestCtx {
     /// Configure the Secure Interrupt Message Page (SIMP) and the first
     /// SynIC interrupt (SINT0) so that the hypervisor can vector
-    /// hypervisor side notifications back to the guest.  
+    /// hypervisor side notifications back to the guest.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
         let layout = Layout::from_size_align(4096, 4096).map_err(|_| TmkError::AllocationFailed)?;
 

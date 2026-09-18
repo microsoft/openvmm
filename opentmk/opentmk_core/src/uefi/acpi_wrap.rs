@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 //! ACPI table handling for UEFI environment.
+#![cfg_attr(not(target_arch = "x86_64"), expect(unused))]
 use core::mem::size_of;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicPtr;
