@@ -130,6 +130,27 @@ By default a RAM-backed disk is used to isolate virtio/storvsc overhead
 without host filesystem noise. Pass `--data-disk` with a path on fast
 storage (e.g., NVMe) for end-to-end latency measurements.
 
+### Virtio-fs
+
+Measures virtio-fs file I/O throughput (MiB/s) and IOPS using fio in a linux_direct VM with an erofs tool image and a host-backed virtio-fs mount. Includes both single-thread and parallel (4-job) random I/O workloads to exercise multi-queue behavior:
+
+```bash
+burette run --test virtio-fs -o virtiofs.json
+
+# Custom test file size (default 512 MiB)
+burette run --test virtio-fs --virtiofs-file-size-mib 1024 -o virtiofs.json
+```
+
+Reported metrics:
+
+- `fio_virtiofs_seq_read_bw` / `fio_virtiofs_seq_write_bw` — sequential bandwidth (MiB/s, 128k blocks)
+- `fio_virtiofs_rand_read_bw` / `fio_virtiofs_rand_write_bw` — random bandwidth (MiB/s, 4k blocks)
+- `fio_virtiofs_rand_read_iops` / `fio_virtiofs_rand_write_iops` — random IOPS (4k blocks)
+- `fio_virtiofs_rand_read_par4_bw` / `fio_virtiofs_rand_write_par4_bw` — parallel random bandwidth (4 jobs)
+- `fio_virtiofs_rand_read_par4_iops` / `fio_virtiofs_rand_write_par4_iops` — parallel random IOPS (4 jobs)
+
+Uses `--direct=0` (FUSE does not support O_DIRECT) with explicit page cache invalidation before each workload to ensure I/O hits the FUSE path.
+
 ## Comparing Reports
 
 ```bash
