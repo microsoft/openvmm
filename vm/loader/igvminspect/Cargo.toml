@@ -1,0 +1,24 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+edition.workspace = true
+name = "igvminspect"
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+fs-err.workspace = true
+igvm = { workspace = true, features = ["corim"] }
+igvm_defs.workspace = true
+resource_dll_parser.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+zerocopy.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

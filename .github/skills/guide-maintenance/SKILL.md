@@ -147,8 +147,12 @@ Each row in the mapping table follows:
 | Code path | Guide page |
 | --- | --- |
 | `openvmm/openvmm_build_info/` | `reference/openvmm/management/cli.md` |
+| `vm/loader/igvminspect/` | `dev_guide/dev_tools/igvminspect.md` |
 
 ## What to Flag
+
+- Changes to `igvminspect` commands or extracted file layout must update
+  `dev_guide/dev_tools/igvminspect.md`.
 
 - Changes to the reported build identity -- the `-V` / `--version` strings, the
   version format, dirty detection, or what a Git-free tree reports -- must
