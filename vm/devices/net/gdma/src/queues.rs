@@ -37,7 +37,7 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 // Offset the queue IDs seen by the guest.
-const ID_OFFSET: usize = 24;
+pub(crate) const ID_OFFSET: usize = 24;
 
 struct CqEq<T> {
     region: DmaRegion,

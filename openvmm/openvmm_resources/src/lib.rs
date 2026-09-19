@@ -88,6 +88,7 @@ vm_resource::register_static_resolvers! {
     // PCI devices
     cxl_spec::test::resolver::CxlTestDeviceResolver,
     gdma::resolver::GdmaDeviceResolver,
+    gdma_test::resolver::GdmaTestDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,
     virtio::resolver::VirtioPciResolver,

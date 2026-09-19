@@ -6,6 +6,9 @@ name = "gdma"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+test_helpers = []
+
 [dependencies]
 gdma_defs.workspace = true
 gdma_resources.workspace = true
