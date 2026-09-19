@@ -106,6 +106,7 @@ use serial_core::resources::DisconnectedSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::io;
 #[cfg(unix)]
@@ -946,11 +947,9 @@ async fn vm_config_from_command_line(
     );
 
     #[cfg(guest_arch = "x86_64")]
-    let mut amd_iommu_names: std::collections::HashSet<&str> =
-        opt.amd_iommu.iter().map(|s| s.as_str()).collect();
+    let mut amd_iommu_names: HashSet<&str> = opt.amd_iommu.iter().map(|s| s.as_str()).collect();
     #[cfg(guest_arch = "x86_64")]
-    let mut vtd_names: std::collections::HashSet<&str> =
-        opt.intel_vtd.iter().map(|s| s.as_str()).collect();
+    let mut vtd_names: HashSet<&str> = opt.intel_vtd.iter().map(|s| s.as_str()).collect();
 
     // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
     // entries up front. Entries are removed as they are matched to a root
@@ -1796,32 +1795,35 @@ async fn vm_config_from_command_line(
     }
 
     let mut virtio_devices = Vec::new();
-    let mut add_virtio_device = |bus, resource: Resource<VirtioDeviceHandle>| {
-        let bus = match bus {
+    let mut add_virtio_device =
+        |bus, resource: Resource<VirtioDeviceHandle>, pcie_devices: &mut Vec<_>| match bus {
             VirtioBusCli::Auto => {
                 // Use VPCI when possible (currently only on Windows and macOS due
                 // to KVM backend limitations).
                 if with_hv && (cfg!(windows) || cfg!(target_os = "macos")) {
-                    None
+                    vpci_devices.push(VpciDeviceConfig {
+                        vtl: DeviceVtl::Vtl0,
+                        instance_id: Guid::new_random(),
+                        resource: VirtioPciDeviceHandle(resource).into_resource(),
+                        vnode: None,
+                    });
                 } else {
-                    Some(VirtioBus::Pci)
+                    virtio_devices.push((VirtioBus::Pci, resource));
                 }
             }
-            VirtioBusCli::Mmio => Some(VirtioBus::Mmio),
-            VirtioBusCli::Pci => Some(VirtioBus::Pci),
-            VirtioBusCli::Vpci => None,
-        };
-        if let Some(bus) = bus {
-            virtio_devices.push((bus, resource));
-        } else {
-            vpci_devices.push(VpciDeviceConfig {
+            VirtioBusCli::Mmio => virtio_devices.push((VirtioBus::Mmio, resource)),
+            VirtioBusCli::Pci => virtio_devices.push((VirtioBus::Pci, resource)),
+            VirtioBusCli::Pcie(port_name) => pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            }),
+            VirtioBusCli::Vpci => vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
                 vnode: None,
-            });
-        }
-    };
+            }),
+        };
 
     for cli_cfg in &opt.virtio_net {
         if cli_cfg.underhill {
@@ -1840,7 +1842,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
@@ -1859,7 +1861,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(opt.virtio_fs_bus, resource);
+            add_virtio_device(opt.virtio_fs_bus.clone(), resource, &mut pcie_devices);
         }
     }
 
@@ -1877,7 +1879,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(opt.virtio_fs_bus, resource);
+            add_virtio_device(opt.virtio_fs_bus.clone(), resource, &mut pcie_devices);
         }
     }
 
@@ -1894,7 +1896,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
@@ -1909,7 +1911,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
@@ -1922,7 +1924,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(opt.virtio_rng_bus, resource);
+            add_virtio_device(opt.virtio_rng_bus.clone(), resource, &mut pcie_devices);
         }
     }
 
@@ -1935,7 +1937,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
@@ -1988,25 +1990,23 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
-    let virtio_vsock_bus = opt.virtio_vsock_bus.unwrap_or(VirtioBusCli::Auto);
+    let virtio_vsock_bus = opt.virtio_vsock_bus.clone().unwrap_or(VirtioBusCli::Auto);
 
     if let Some(vsock_path) = &opt.virtio_vsock_path {
         let listener = vsock_listener(Some(vsock_path))?.unwrap();
-        add_virtio_device(
-            virtio_vsock_bus,
-            virtio_resources::vsock::VirtioVsockHandle {
-                // The guest CID does not matter since the UDS relay does not use it. It just needs
-                // to be some non-reserved value for the guest to use.
-                guest_cid: 0x3,
-                base_path: vsock_path.clone(),
-                listener,
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::vsock::VirtioVsockHandle {
+            // The guest CID does not matter since the UDS relay does not use it. It just needs
+            // to be some non-reserved value for the guest to use.
+            guest_cid: 0x3,
+            base_path: vsock_path.clone(),
+            listener,
+        }
+        .into_resource();
+        add_virtio_device(virtio_vsock_bus.clone(), resource, &mut pcie_devices);
     }
 
     #[cfg(target_os = "linux")]
@@ -2017,11 +2017,13 @@ async fn vm_config_from_command_line(
             .open("/dev/vhost-vsock")
             .context("failed to open /dev/vhost-vsock")?
             .into();
-        add_virtio_device(
-            virtio_vsock_bus,
-            virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource(),
-        );
+        let resource =
+            virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource();
+        add_virtio_device(virtio_vsock_bus, resource, &mut pcie_devices);
     }
+
+    #[cfg(target_os = "linux")]
+    pcie_devices.extend(vfio_pcie_devices);
 
     let mut cfg = Config {
         chipset,
@@ -2030,11 +2032,7 @@ async fn vm_config_from_command_line(
         pcie_root_complexes,
         pcie_ecam_below_4gb: opt.pcie_ecam_below_4gb,
         #[cfg(target_os = "linux")]
-        pcie_devices: {
-            let mut devs = pcie_devices;
-            devs.extend(vfio_pcie_devices);
-            devs
-        },
+        pcie_devices,
         #[cfg(not(target_os = "linux"))]
         pcie_devices,
         pcie_switches,
@@ -2168,6 +2166,14 @@ async fn vm_config_from_command_line(
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
+    let mut pcie_port_names = HashSet::new();
+    for device in &cfg.pcie_devices {
+        anyhow::ensure!(
+            pcie_port_names.insert(&device.port_name),
+            "multiple devices use PCIe port '{}'",
+            device.port_name
+        );
+    }
     resources.serial_driver = Some(serial_driver);
     validate_snp_config(&cfg)?;
     Ok((cfg, resources))
@@ -3117,6 +3123,7 @@ impl InspectMut for DiagInspector {
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::fs::File;
     use test_with_tracing::test;
 
     #[test]
@@ -3176,5 +3183,149 @@ mod tests {
                     == std::mem::discriminant(&expected)
             );
         }
+    }
+
+    #[test]
+    fn maps_virtio_vsock_to_named_pcie_port() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let socket_path = temp_dir.path().join("vsock");
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--virtio-vsock-path",
+                socket_path.to_str().unwrap(),
+                "--virtio-vsock-bus",
+                "pcie:custom",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .unwrap();
+
+            assert_eq!(config.pcie_devices.len(), 1);
+            assert_eq!(config.pcie_devices[0].port_name, "custom");
+            mesh.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn maps_virtio_fs_and_rng_to_named_pcie_ports() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let root_path = temp_dir.path().to_str().unwrap();
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--virtio-fs",
+                &format!("fs,{root_path}"),
+                "--virtio-fs-bus",
+                "pcie:fs",
+                "--virtio-rng",
+                "--virtio-rng-bus",
+                "pcie:rng",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .unwrap();
+
+            let port_names: Vec<_> = config
+                .pcie_devices
+                .iter()
+                .map(|device| device.port_name.as_str())
+                .collect();
+            assert_eq!(port_names, ["fs", "rng"]);
+            mesh.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn rejects_duplicate_pcie_port_assignments() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let root_path = temp_dir.path().to_str().unwrap();
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--virtio-fs",
+                &format!("pcie_port=custom:fs,{root_path}"),
+                "--virtio-rng",
+                "--virtio-rng-bus",
+                "pcie:custom",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let error = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(error.to_string(), "multiple devices use PCIe port 'custom'");
+            mesh.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn rejects_duplicate_pcie_port_assignment_from_storage() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--nvme-pci",
+                "id=nvme0,pcie_port=custom",
+                "--virtio-rng",
+                "--virtio-rng-bus",
+                "pcie:custom",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let error = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(error.to_string(), "multiple devices use PCIe port 'custom'");
+            mesh.shutdown().await;
+        });
     }
 }
