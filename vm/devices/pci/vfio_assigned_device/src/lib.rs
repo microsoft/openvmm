@@ -102,6 +102,76 @@ struct ConfigPatch {
     value: u32,
 }
 
+const SYNTHETIC_PASID_OFFSET: u16 = 0xff8;
+const PASID_CAP_EXEC: u16 = 1 << 1;
+const PASID_CAP_PRIV: u16 = 1 << 2;
+const PASID_CTRL_ENABLE: u16 = 1 << 0;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PasidCapabilities {
+    pub width: u8,
+    pub exec: bool,
+    pub privileged: bool,
+}
+
+#[derive(Debug, Inspect)]
+struct SyntheticPasidCapability {
+    #[inspect(hex)]
+    offset: u16,
+    #[inspect(hex)]
+    capability: u16,
+    #[inspect(hex)]
+    control: u16,
+}
+
+impl SyntheticPasidCapability {
+    fn new(capabilities: PasidCapabilities) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            capabilities.width <= 20,
+            "PASID width {} exceeds the PCIe maximum of 20",
+            capabilities.width
+        );
+
+        let capability = (u16::from(capabilities.width) << 8)
+            | (u16::from(capabilities.exec) * PASID_CAP_EXEC)
+            | (u16::from(capabilities.privileged) * PASID_CAP_PRIV);
+
+        Ok(Self {
+            offset: SYNTHETIC_PASID_OFFSET,
+            capability,
+            control: 0,
+        })
+    }
+
+    fn register(&self) -> u32 {
+        u32::from(self.capability) | (u32::from(self.control) << 16)
+    }
+
+    fn contains_offset(&self, offset: u16) -> bool {
+        offset == self.offset || offset == self.offset + 4
+    }
+
+    fn write(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
+        if offset == self.offset {
+            return;
+        }
+        debug_assert_eq!(offset, self.offset + 4);
+        let requested = (value.merge(self.register()) >> 16) as u16;
+        let mut writable = PASID_CTRL_ENABLE;
+        if self.capability & PASID_CAP_EXEC != 0 {
+            writable |= PASID_CAP_EXEC;
+        }
+        if self.capability & PASID_CAP_PRIV != 0 {
+            writable |= PASID_CAP_PRIV;
+        }
+        self.control = requested & writable;
+    }
+
+    fn reset(&mut self) {
+        self.control = 0;
+    }
+}
+
 /// MSI-X emulation state, discovered from the physical device's capabilities.
 #[derive(Inspect)]
 struct MsixEmulationState {
@@ -221,6 +291,9 @@ pub(crate) struct VfioAssignedPciDevice {
     )]
     config_patches: BTreeMap<u16, ConfigPatch>,
 
+    /// Synthetic PASID capability exposed for an accelerated IOMMUFD device.
+    synthetic_pasid: Option<SyntheticPasidCapability>,
+
     /// Accelerated (iommufd-nested) SMMU stream, present only for a device
     /// behind an accel-capable SMMU. Owns the StreamID derived from the guest
     /// RequesterID seen on routed config-space writes, and every host object
@@ -326,6 +399,7 @@ impl VfioAssignedPciDevice {
             bar_addresses,
             // Legacy group/type1 path never does nested S1 (rejected earlier).
             None,
+            None,
         )
         .await
     }
@@ -340,6 +414,7 @@ impl VfioAssignedPciDevice {
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
         accel_stream: Option<iommufd_nesting::AccelStream>,
+        pasid_capabilities: Option<PasidCapabilities>,
     ) -> anyhow::Result<Self> {
         Self::from_device(
             device,
@@ -350,6 +425,7 @@ impl VfioAssignedPciDevice {
             memory_mapper,
             bar_addresses,
             accel_stream,
+            pasid_capabilities,
         )
         .await
     }
@@ -363,6 +439,7 @@ impl VfioAssignedPciDevice {
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
         accel_stream: Option<iommufd_nesting::AccelStream>,
+        pasid_capabilities: Option<PasidCapabilities>,
     ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
@@ -445,7 +522,14 @@ impl VfioAssignedPciDevice {
         let pm_csr_offset = caps.pm_csr_offset;
         let pcie_flr_control_offset = caps.pcie_flr_control_offset;
         let af_flr_control_offset = caps.af_flr_control_offset;
-        let config_patches = caps.config_patches;
+        let mut config_patches = caps.config_patches;
+        let synthetic_pasid = synthesize_pasid_capability(
+            &mut config_patches,
+            caps.last_ext_cap_offset,
+            caps.pasid_cap_offset,
+            vfio_device.config_size,
+            pasid_capabilities,
+        )?;
 
         // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
         // the ioctl on every VM reset for devices that don't support it.
@@ -600,6 +684,7 @@ impl VfioAssignedPciDevice {
             supports_reset,
             bar_direct_maps,
             config_patches,
+            synthetic_pasid,
             accel_stream,
             binding,
         })
@@ -1021,6 +1106,10 @@ struct DiscoveredCapabilities {
     af_flr_control_offset: Option<u16>,
     /// Config space patch table for filtering capabilities from the guest.
     config_patches: BTreeMap<u16, ConfigPatch>,
+    /// Last capability in the visible extended-capability chain.
+    last_ext_cap_offset: Option<u16>,
+    /// Existing PASID capability offset, if VFIO exposes one in the future.
+    pasid_cap_offset: Option<u16>,
 }
 
 /// Walk both the standard (0x34+) and extended (0x100+) PCI capability chains
@@ -1042,6 +1131,8 @@ fn discover_capabilities(
         pcie_flr_control_offset: None,
         af_flr_control_offset: None,
         config_patches: BTreeMap::new(),
+        last_ext_cap_offset: None,
+        pasid_cap_offset: None,
     };
 
     // Clear multi-function bit so the device appears as single-function.
@@ -1236,6 +1327,7 @@ fn discover_capabilities(
 
             let cap_id = caps::ExtendedCapabilityId((header & 0xFFFF) as u16);
             let cap_next = ((header >> 20) & 0xFFF) as u16;
+            result.last_ext_cap_offset = Some(offset);
 
             tracing::debug!(
                 ?cap_id,
@@ -1261,6 +1353,9 @@ fn discover_capabilities(
                         },
                     );
                 }
+                caps::ExtendedCapabilityId::PASID => {
+                    result.pasid_cap_offset = Some(offset);
+                }
                 _ => {}
             }
 
@@ -1282,6 +1377,50 @@ fn discover_capabilities(
     }
 
     result
+}
+
+fn synthesize_pasid_capability(
+    config_patches: &mut BTreeMap<u16, ConfigPatch>,
+    last_ext_cap_offset: Option<u16>,
+    existing_pasid_offset: Option<u16>,
+    config_size: u64,
+    capabilities: Option<PasidCapabilities>,
+) -> anyhow::Result<Option<SyntheticPasidCapability>> {
+    let Some(capabilities) = capabilities.filter(|capabilities| capabilities.width != 0) else {
+        return Ok(None);
+    };
+    if existing_pasid_offset.is_some() {
+        return Ok(None);
+    }
+
+    anyhow::ensure!(
+        config_size >= 0x1000,
+        "cannot synthesize PASID capability in {config_size:#x}-byte PCI config space"
+    );
+    let last_ext_cap_offset = last_ext_cap_offset
+        .context("cannot synthesize PASID capability without an extended-capability chain")?;
+    anyhow::ensure!(
+        last_ext_cap_offset < SYNTHETIC_PASID_OFFSET,
+        "cannot append PASID capability after extended capability at {last_ext_cap_offset:#x}"
+    );
+
+    let next_mask = 0xfff0_0000;
+    let next_value = u32::from(SYNTHETIC_PASID_OFFSET) << 20;
+    let tail_patch = config_patches
+        .entry(last_ext_cap_offset)
+        .or_insert(ConfigPatch { mask: 0, value: 0 });
+    tail_patch.value = (tail_patch.value & !next_mask) | next_value;
+    tail_patch.mask |= next_mask;
+
+    config_patches.insert(
+        SYNTHETIC_PASID_OFFSET,
+        ConfigPatch {
+            mask: u32::MAX,
+            value: u32::from(caps::ExtendedCapabilityId::PASID.0) | (1 << 16),
+        },
+    );
+
+    SyntheticPasidCapability::new(capabilities).map(Some)
 }
 
 /// Read from the MSI-X emulator at the given offset, handling sub-DWORD
@@ -1364,7 +1503,8 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             ref mut msix,
             supports_reset,
             config_patches: _, // immutable — built at init
-            binding: _,        // lifetime handle — no reset needed
+            ref mut synthetic_pasid,
+            binding: _, // lifetime handle — no reset needed
             ref mut accel_stream,
         } = *self;
 
@@ -1380,6 +1520,9 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         if let Some(msix) = msix {
             msix.enabled = false;
             msix.capability.reset();
+        }
+        if let Some(pasid) = synthetic_pasid {
+            pasid.reset();
         }
 
         // Reset cached BAR addresses to power-on defaults. For passthrough
@@ -1479,6 +1622,14 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 if let Some(v) = value.restrict(PciConfigByteEnable::HIGH_WORD) {
                     msix.capability.read(0, v);
                 }
+            }
+            offset
+                if self
+                    .synthetic_pasid
+                    .as_ref()
+                    .is_some_and(|pasid| offset.0 == pasid.offset + 4) =>
+            {
+                value.set(self.synthetic_pasid.as_ref().unwrap().register());
             }
             // Everything else: read from physical device, applying any
             // config space patches.
@@ -1659,6 +1810,14 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     msix.capability.write(0, value);
                 }
                 // Skip write_phys_config for MSI-X control register.
+                return IoResult::Ok;
+            }
+            _ if self
+                .synthetic_pasid
+                .as_ref()
+                .is_some_and(|pasid| pasid.contains_offset(offset)) =>
+            {
+                self.synthetic_pasid.as_mut().unwrap().write(offset, value);
                 return IoResult::Ok;
             }
             // All other registers: pass through to physical device.
@@ -2186,6 +2345,89 @@ mod tests {
             caps.config_patches.contains_key(&0x200),
             "REBAR should be patched"
         );
+    }
+
+    #[test]
+    fn extended_caps_pasid_is_detected() {
+        let mut cfg = MockConfigSpace::new(0x200);
+        cfg.write_u32(0x34, 0x00);
+        cfg.write_u32(
+            0x100,
+            MockConfigSpace::ext_cap_header(caps::ExtendedCapabilityId::PASID.0, 1, 0),
+        );
+
+        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        assert_eq!(discovered.last_ext_cap_offset, Some(0x100));
+        assert_eq!(discovered.pasid_cap_offset, Some(0x100));
+    }
+
+    #[test]
+    fn synthetic_pasid_capability_is_linked_and_writable() {
+        let mut patches = BTreeMap::from([(
+            0x300,
+            ConfigPatch {
+                mask: 0x0000_ffff,
+                value: 0,
+            },
+        )]);
+        let mut pasid = synthesize_pasid_capability(
+            &mut patches,
+            Some(0x300),
+            None,
+            0x1000,
+            Some(PasidCapabilities {
+                width: 14,
+                exec: false,
+                privileged: true,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+
+        let tail = patches.get(&0x300).unwrap();
+        assert_eq!(tail.mask, 0xfff0_ffff);
+        assert_eq!(tail.value, u32::from(SYNTHETIC_PASID_OFFSET) << 20);
+        let header = patches.get(&SYNTHETIC_PASID_OFFSET).unwrap();
+        assert_eq!(header.mask, u32::MAX);
+        assert_eq!(header.value, 0x0001_001b);
+        assert_eq!(pasid.register(), 0x0000_0e04);
+
+        assert!(pasid.contains_offset(SYNTHETIC_PASID_OFFSET));
+        pasid.write(
+            SYNTHETIC_PASID_OFFSET,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(u32::MAX),
+        );
+        assert_eq!(pasid.control, 0);
+
+        assert!(pasid.contains_offset(SYNTHETIC_PASID_OFFSET + 4));
+        pasid.write(
+            SYNTHETIC_PASID_OFFSET + 4,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x0007_0000),
+        );
+        assert_eq!(pasid.control, PASID_CTRL_ENABLE | PASID_CAP_PRIV);
+        assert!(!pasid.contains_offset(SYNTHETIC_PASID_OFFSET + 8));
+        pasid.reset();
+        assert_eq!(pasid.control, 0);
+    }
+
+    #[test]
+    fn synthetic_pasid_capability_is_not_duplicated() {
+        let mut patches = BTreeMap::new();
+        let pasid = synthesize_pasid_capability(
+            &mut patches,
+            Some(0x300),
+            Some(0x280),
+            0x1000,
+            Some(PasidCapabilities {
+                width: 14,
+                exec: false,
+                privileged: true,
+            }),
+        )
+        .unwrap();
+
+        assert!(pasid.is_none());
+        assert!(patches.is_empty());
     }
 
     // --- Malformed capability chains ---
