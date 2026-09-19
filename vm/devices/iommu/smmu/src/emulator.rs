@@ -73,6 +73,10 @@ pub struct HostSmmuCaps {
     pub(crate) ttendian: registers::Idr0TtEndian,
     /// Host 4KB translation granule support (IDR5.GRAN4K).
     pub(crate) gran4k: bool,
+    /// Host SMMU PASID/SSID width (IDR1.SSIDSIZE).
+    pub(crate) ssid_bits: u8,
+    /// Host SMMU ATS support (IDR0.ATS).
+    pub(crate) ats: bool,
 }
 
 impl HostSmmuCaps {
@@ -86,6 +90,7 @@ impl HostSmmuCaps {
     /// [`SmmuSharedState::bind_accel_viommu`].
     pub fn from_idr(idr: [u32; 6]) -> Self {
         let idr0 = registers::Idr0::from(idr[0]);
+        let idr1 = registers::Idr1::from(idr[1]);
         let idr5 = registers::Idr5::from(idr[5]);
 
         Self {
@@ -93,7 +98,19 @@ impl HostSmmuCaps {
             ttf: registers::Idr0Ttf::from(idr0.ttf()),
             ttendian: registers::Idr0TtEndian(idr0.ttendian()),
             gran4k: idr5.gran4k(),
+            ssid_bits: idr1.ssidsize(),
+            ats: idr0.ats(),
         }
+    }
+
+    /// Maximum PASID width exposed to the guest endpoint and vSMMU.
+    pub fn ssid_bits(self) -> u8 {
+        self.ssid_bits
+    }
+
+    /// Whether ATS may be exposed to the guest.
+    pub fn ats(self) -> bool {
+        self.ats
     }
 }
 
@@ -202,12 +219,13 @@ pub struct SmmuDevice {
 }
 
 impl SmmuDevice {
-    fn sanitize_cr0(value: u32) -> registers::Cr0 {
+    fn sanitize_cr0(value: u32, ats_supported: bool) -> registers::Cr0 {
         let requested = registers::Cr0::from(value);
         registers::Cr0::new()
             .with_smmuen(requested.smmuen())
             .with_eventqen(requested.eventqen())
             .with_cmdqen(requested.cmdqen())
+            .with_atschk(requested.atschk() && ats_supported)
     }
 
     fn sanitize_gbpa(value: u32) -> registers::Gbpa {
@@ -248,9 +266,7 @@ impl SmmuDevice {
 
         let idr1 = registers::Idr1::new()
             .with_sidsize(config.sidsize)
-            // TODO: support substreams (SSID/PASID). When SSIDSIZE > 0, the
-            // accel path must validate the host SMMU's SSIDSIZE >= the
-            // advertised value in resolve_host_caps.
+            // Resolved from the host before VM start for accelerated devices.
             .with_ssidsize(0)
             .with_cmdqs(8) // 256 entries max
             .with_eventqs(8) // 256 entries max
@@ -356,11 +372,19 @@ impl SmmuDevice {
         &self.shared_state
     }
 
+    fn effective_idr0(&self) -> registers::Idr0 {
+        self.idr0.with_ats(self.shared_state.ats_supported())
+    }
+
+    fn effective_idr1(&self) -> registers::Idr1 {
+        self.idr1.with_ssidsize(self.shared_state.ssid_bits())
+    }
+
     /// Handles a 32-bit MMIO read at the given offset from the device base.
     fn read_reg32(&self, offset: u32) -> u32 {
         match offset as u16 {
-            registers::IDR0 => self.idr0.into(),
-            registers::IDR1 => self.idr1.into(),
+            registers::IDR0 => self.effective_idr0().into(),
+            registers::IDR1 => self.effective_idr1().into(),
             registers::IDR2 => self.idr2,
             registers::IDR3 => self.idr3,
             registers::IDR4 => self.idr4,
@@ -441,7 +465,7 @@ impl SmmuDevice {
             | registers::IRQ_CTRLACK => {}
 
             registers::CR0 => {
-                let requested = Self::sanitize_cr0(value);
+                let requested = Self::sanitize_cr0(value, self.shared_state.ats_supported());
                 let previous = self.cr0;
                 self.cr0 = requested;
 
@@ -759,7 +783,8 @@ impl SmmuDevice {
                     | CmdOpcode::TLBI_NSNH_ALL
                     | CmdOpcode::CFGI_CD
                     | CmdOpcode::CFGI_CD_ALL
-            ) || (opcode == CmdOpcode::ATC_INV && self.idr0.ats());
+            ) || (opcode == CmdOpcode::ATC_INV
+                && self.shared_state.ats_supported());
 
             if forwardable {
                 // SID-based invalidations (CFGI_CD/CFGI_CD_ALL, and ATC_INV
@@ -1051,13 +1076,20 @@ impl ChangeDeviceState for SmmuDevice {
         let reset_gbpa = registers::Gbpa::new().with_abort(false);
         let reset_strtab_base = 0;
         let reset_strtab_base_cfg = registers::StrtabBaseCfg::new();
-        let TranslationPolicy { oas_mask, .. } = shared_state.translation_policy();
+        let TranslationPolicy {
+            oas_mask,
+            ssid_bits,
+            ats,
+            ..
+        } = shared_state.translation_policy();
         let reset_policy = TranslationPolicy {
             enabled: reset_cr0.smmuen(),
             gbpa_abort: reset_gbpa.abort(),
             strtab_base: registers::StrtabBase::from(reset_strtab_base).addr(),
             strtab_log2size: reset_strtab_base_cfg.log2size(),
             oas_mask,
+            ssid_bits,
+            ats,
         };
         shared_state.transition_translation_policy(reset_policy, "SMMU reset");
 
@@ -1191,7 +1223,7 @@ impl SaveRestore for SmmuDevice {
             gerrorn,
         } = saved;
 
-        let restored_cr0 = Self::sanitize_cr0(cr0);
+        let restored_cr0 = Self::sanitize_cr0(cr0, self.shared_state.ats_supported());
         let restored_cr1 = registers::Cr1::from(cr1);
         let restored_cr2 = registers::Cr2::from(cr2);
         let restored_gbpa = Self::sanitize_gbpa(gbpa);
@@ -2320,7 +2352,35 @@ mod tests {
             ttf: Idr0Ttf::new().with_aarch64(true),
             ttendian: Idr0TtEndian::LE,
             gran4k: true,
+            ssid_bits: 14,
+            ats: true,
         }
+    }
+
+    #[test]
+    fn test_accel_host_caps_are_advertised() {
+        let gm = GuestMemory::allocate(0x1000);
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            gm,
+            &SmmuConfig {
+                sidsize: 16,
+                oas_policy: SmmuOasPolicy::Fixed(48),
+                accel: true,
+            },
+            None,
+            None,
+        );
+
+        dev.shared_state
+            .bind_accel_viommu(test_host_caps(), &MockViommu::new())
+            .unwrap();
+
+        assert!(Idr0::from(read32(&mut dev, IDR0)).ats());
+        assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 14);
+
+        write32(&mut dev, CR0, Cr0::new().with_atschk(true).into());
+        assert!(Cr0::from(read32(&mut dev, CR0ACK)).atschk());
     }
 
     #[test]
@@ -3363,8 +3423,18 @@ mod tests {
     /// `CERROR_ILL` instead of being forwarded.
     #[test]
     fn test_cmdq_atc_inv_illegal_when_ats_disabled() {
-        let (mut dev, sink) = make_accel_cmdq_test_device();
-        assert!(!dev.idr0.ats());
+        let mut dev = make_cmdq_test_device();
+        let sink = MockViommu::new();
+        dev.shared_state
+            .bind_accel_viommu(
+                HostSmmuCaps {
+                    ats: false,
+                    ..test_host_caps()
+                },
+                &sink,
+            )
+            .expect("bind ATS-disabled host SMMU");
+        assert!(!Idr0::from(read32(&mut dev, IDR0)).ats());
 
         write_cmdq_entry(
             &dev,

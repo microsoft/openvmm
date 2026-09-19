@@ -84,6 +84,18 @@ pub(super) struct SmmuDevicesResult {
     pub shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>>,
     /// ACPI IORT configuration for each SMMU instance.
     pub configs: Vec<vmm_core::acpi_builder::AcpiSmmuConfig>,
+    /// Shared states corresponding one-to-one with `configs`.
+    config_states: Vec<Arc<smmu::SmmuSharedState>>,
+}
+
+impl SmmuDevicesResult {
+    /// Refreshes host-derived ACPI capabilities after cold-plug devices bind.
+    pub fn refresh_acpi_capabilities(&mut self) {
+        assert_eq!(self.configs.len(), self.config_states.len());
+        for (config, state) in self.configs.iter_mut().zip(&self.config_states) {
+            config.ats_supported = state.ats_supported();
+        }
+    }
 }
 
 fn reserved_iova_ranges(
@@ -119,6 +131,7 @@ pub(super) fn setup_smmu(
     let mut shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>> =
         vec![None; pcie_host_bridges.len()];
     let mut configs = Vec::new();
+    let mut config_states = Vec::new();
 
     // Iterate RCs with SMMU enabled, zipping with resolved MMIO+SPI resources.
     let smmu_rcs = root_complexes
@@ -183,7 +196,8 @@ pub(super) fn setup_smmu(
                     )
                 })?;
 
-        shared_states[rc_pos] = Some(smmu_device.lock().shared_state().clone());
+        let shared_state = smmu_device.lock().shared_state().clone();
+        shared_states[rc_pos] = Some(shared_state.clone());
         let reserved_iova_ranges =
             reserved_iova_ranges(accel, resolved.device_assignment_msi_iova_range)
                 .with_context(|| format!("SMMU on root complex {}", rc.name))?;
@@ -201,13 +215,16 @@ pub(super) fn setup_smmu(
             base: smmu.base,
             event_gsiv: smmu.evtq_intid,
             gerr_gsiv: smmu.gerr_intid,
+            ats_supported: false,
             reserved_iova_ranges,
         });
+        config_states.push(shared_state);
     }
 
     Ok(SmmuDevicesResult {
         shared_states,
         configs,
+        config_states,
     })
 }
 
