@@ -5799,6 +5799,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "openvmm-img"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "blocking",
+ "clap",
+ "fs-err",
+ "guid",
+ "pal_async",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "vhdx",
+]
+
+[[package]]
 name = "openvmm_build_info"
 version = "0.1.0"
 dependencies = [

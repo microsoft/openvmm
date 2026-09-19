@@ -102,6 +102,29 @@ particular strategy.
   metadata, while `disklayer_vhdx::chain::open_vhdx_chain` walks and
   opens parent chains automatically.
 
+## Parent lookup
+
+The Rust chain opener and `openvmm-img check` interpret parent metadata through
+`ParentLocator::vhdx_parent()`. This validates the locator type and requires a
+nonzero parent linkage GUID. Both verify that the selected parent's data-write
+GUID matches the child's recorded linkage.
+
+Both callers use `VhdxParent::candidate_paths()` to enumerate paths. On Windows,
+the order is relative path, volume GUID path, then absolute Win32 path, as
+specified by MS-VHDX section 2.6.2.6.3. On Unix, only the relative locator is
+used, with backslashes translated to native separators. Windows-only locators
+are ignored even if their strings happen to name existing Unix files.
+
+`VhdxParent` stores locator strings without host-specific path validation or
+normalization. These are VHDX locator strings, not native filesystem paths;
+conversion to native paths happens during candidate enumeration. Path syntax
+is not validated by these helpers.
+
+Candidate enumeration does not open files. The callers select an existing
+candidate before verifying linkage; they do not retry later candidates on a
+linkage mismatch or repair stale locators. OpenVMM's normal Windows `.vhdx`
+path uses native VHDMP instead of this Rust chain opener.
+
 ## Related pages
 
 - [Storage backends](./storage.md) — catalog of all storage backends

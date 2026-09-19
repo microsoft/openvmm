@@ -77,6 +77,39 @@ impl<T: Into<OpenErrorInner>> From<T> for OpenError {
     }
 }
 
+impl OpenError {
+    /// Classify this error for programmatic handling.
+    pub fn kind(&self) -> OpenErrorKind {
+        match self.0 {
+            OpenErrorInner::Io(_) => OpenErrorKind::Io,
+            OpenErrorInner::Corrupt(CorruptionType::LogReplayRequired) => {
+                OpenErrorKind::LogReplayRequired
+            }
+            OpenErrorInner::Corrupt(_) => OpenErrorKind::Corruption,
+            OpenErrorInner::InvalidParameter(_) => OpenErrorKind::InvalidParameter,
+            OpenErrorInner::MetadataCache(CacheError::Read { .. }) => OpenErrorKind::Io,
+            OpenErrorInner::PipelineFailed(_)
+            | OpenErrorInner::MetadataCache(CacheError::PipelineFailed(_)) => OpenErrorKind::Other,
+        }
+    }
+}
+
+/// Classification of errors encountered while opening a VHDX file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OpenErrorKind {
+    /// The backing file could not be read or written.
+    Io,
+    /// The VHDX structure is inconsistent.
+    Corruption,
+    /// The VHDX has a dirty log that must be replayed.
+    LogReplayRequired,
+    /// An open option is invalid.
+    InvalidParameter,
+    /// Another internal open failure occurred.
+    Other,
+}
+
 /// Errors returned by runtime VHDX I/O operations.
 ///
 /// Covers read, write, flush, trim, and close. Use [`kind()`](Self::kind)
@@ -174,6 +207,25 @@ pub(crate) enum CacheError {
     PipelineFailed(#[source] PipelineFailed),
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_metadata_cache_failures() {
+        let read_error = OpenError(OpenErrorInner::MetadataCache(CacheError::Read {
+            err: std::io::Error::other("read failed"),
+            file_offset: 0,
+        }));
+        assert_eq!(read_error.kind(), OpenErrorKind::Io);
+
+        let pipeline_error = OpenError(OpenErrorInner::MetadataCache(CacheError::PipelineFailed(
+            PipelineFailed("failed".into()),
+        )));
+        assert_eq!(pipeline_error.kind(), OpenErrorKind::Other);
+    }
+}
+
 /// Specific reasons a VHDX creation or parameter validation may fail.
 ///
 /// Each variant corresponds to a distinct validation error detected
@@ -211,6 +263,18 @@ pub enum InvalidFormatReason {
     /// The block alignment is not a power of 2.
     #[error("block alignment must be a power of 2")]
     BlockAlignmentNotPowerOfTwo,
+
+    /// A differencing disk did not specify its parent's data write GUID.
+    #[error("differencing disk requires a non-zero parent linkage GUID")]
+    MissingParentLinkage,
+
+    /// A parent locator string contained a NUL character.
+    #[error("parent locator strings cannot contain NUL characters")]
+    ParentLocatorContainsNull,
+
+    /// Parent locator metadata exceeded the VHDX hosting-sector limit.
+    #[error("parent locator metadata exceeds the 64 KiB hosting-sector limit")]
+    ParentLocatorTooLarge,
 
     /// The block size / logical sector size combination is invalid (chunk ratio is zero).
     #[error("invalid block size / logical sector size combination")]

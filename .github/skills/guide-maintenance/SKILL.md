@@ -147,6 +147,7 @@ Each row in the mapping table follows:
 | Code path | Guide page |
 | --- | --- |
 | `openvmm/openvmm_build_info/` | `reference/openvmm/management/cli.md` |
+| `vm/devices/storage/openvmm-img/` | `user_guide/openvmm-img.md` |
 
 ## What to Flag
 
@@ -155,3 +156,5 @@ Each row in the mapping table follows:
   update `reference/openvmm/management/cli.md`, and
   `dev_guide/contrib/openvmm_packaging.md` when the packager-facing contract
   changes.
+- Changes to `openvmm-img` commands, options, format support, or behavior must
+   update `user_guide/openvmm-img.md`.
