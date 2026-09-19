@@ -387,13 +387,18 @@ pub mod thread {
     use loan_cell::LoanCell;
     use pal_async::DefaultDriver;
     use pal_async::DefaultPool;
+    use pal_async::WeakDefaultDriver;
     use pal_async::driver::Driver;
     use pal_async::task::Spawn;
     use pal_async::task::TaskMetadata;
     use std::sync::Arc;
 
     thread_local! {
-        static CURRENT_DRIVER: LoanCell<DefaultDriver> = const { LoanCell::new() };
+        // Holds a WEAK reference on purpose: this is lent for the entire lifetime
+        // of a dedicated pool thread's `run()`, and a strong reference would keep
+        // the pool's task queue (and its IO backend fds) alive forever, so the
+        // thread could never exit once its device drops the driver. See `build`.
+        static CURRENT_DRIVER: LoanCell<WeakDefaultDriver> = const { LoanCell::new() };
     }
 
     /// A backend for [`VmTaskDriverSource`](super::VmTaskDriverSource) based on
@@ -429,7 +434,16 @@ pub mod thread {
             if target_vp.is_some() {
                 let pool = DefaultPool::new();
                 let driver = pool.driver();
-                let tls_driver = driver.clone();
+                // Publish a *weak* reference to this pool's driver into the thread
+                // local so that resources built with `VmTaskDriverSource::current()`
+                // (e.g. block-device disks) dispatch their IO onto this thread while
+                // they run here. It must be weak: `pool.run()` returns only once the
+                // last strong driver is dropped, and this reference is lent for the
+                // whole of `run()`. A strong clone would be a self-reference that
+                // keeps the queue open forever, so the thread (and its epoll/eventfd)
+                // would never be reclaimed after the device closes its channel --
+                // leaking a thread and fds on every guest reset.
+                let tls_driver = driver.downgrade();
                 std::thread::Builder::new()
                     .name(name)
                     .spawn(move || {
@@ -488,7 +502,20 @@ pub mod thread {
 
     impl CurrentThreadDriver {
         fn with_driver<R>(&self, f: impl FnOnce(&DefaultDriver) -> R) -> R {
-            CURRENT_DRIVER.with(|cell| cell.borrow(|driver| f(driver.unwrap_or(&self.default))))
+            CURRENT_DRIVER.with(|cell| {
+                cell.borrow(|weak| {
+                    // The thread local only holds a weak reference (see `build`),
+                    // so upgrade it transiently for the duration of `f`. A borrow
+                    // only ever runs from a task on the pool's own thread, so the
+                    // pool -- kept alive by the device that scheduled that task --
+                    // is live here and the upgrade succeeds. Fall back to the
+                    // default when not on a dedicated pool thread.
+                    match weak.and_then(|w| w.upgrade()) {
+                        Some(driver) => f(&driver),
+                        None => f(&self.default),
+                    }
+                })
+            })
         }
     }
 
@@ -565,12 +592,15 @@ pub mod thread {
         ) -> std::pin::Pin<Box<dyn Future<Output = std::io::Result<i32>> + Send + '_>> {
             use pal_async::io_uring::{IoUringDriver, IoUringSubmit};
             Box::pin(async move {
-                // We have to clone the driver, since the current driver may
-                // change across the lifetime of the async block. This is not
-                // very expensive, though--in practice this is an Arc refcount
-                // increment, and the driver is per-thread so there is no cache
-                // contention.
-                let driver = CURRENT_DRIVER.with(|cell| cell.borrow(|driver| driver.cloned()));
+                // Upgrade the thread local's weak driver to an owned strong one,
+                // since the current driver may change across the lifetime of the
+                // async block. This is not very expensive, though--in practice
+                // this is an Arc refcount increment, and the driver is per-thread
+                // so there is no cache contention. Holding the strong reference
+                // across the in-flight IO is correct: the pool must stay alive
+                // until the IO completes.
+                let driver =
+                    CURRENT_DRIVER.with(|cell| cell.borrow(|weak| weak.and_then(|w| w.upgrade())));
                 let driver = driver.as_ref().unwrap_or(&self.default);
                 // SAFETY: passthru from caller
                 unsafe {
@@ -610,5 +640,47 @@ pub mod thread {
         }
 
         fn retarget_vp(&self, _target_vp: u32) {}
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::CURRENT_DRIVER;
+        use pal_async::DefaultPool;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        /// Regression test for the guest-reset thread/fd leak: a dedicated per-VP
+        /// pool thread must exit once every strong driver is dropped. The thread
+        /// publishes its own driver into `CURRENT_DRIVER` while running; a strong
+        /// reference there would keep `pool.run()` from ever returning, leaking the
+        /// thread and its IO backend fds on every guest reset. Lending a weak
+        /// reference lets the thread exit here.
+        #[test]
+        fn dedicated_pool_thread_exits_when_driver_dropped() {
+            let pool = DefaultPool::new();
+            let driver = pool.driver();
+            let weak = driver.downgrade();
+            let handle = std::thread::Builder::new()
+                .name("test-vp-pool".into())
+                .spawn(move || {
+                    CURRENT_DRIVER.with(|cell| cell.lend(&weak, || pool.run()));
+                })
+                .unwrap();
+
+            // Drop the only strong driver; the pool's task queue should close and
+            // the thread should exit promptly.
+            drop(driver);
+
+            let start = Instant::now();
+            while !handle.is_finished() {
+                assert!(
+                    start.elapsed() < Duration::from_secs(5),
+                    "dedicated pool thread did not exit after its driver was dropped; \
+                     a strong self-reference is leaking the thread"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            handle.join().unwrap();
+        }
     }
 }
