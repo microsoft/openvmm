@@ -82,6 +82,22 @@ struct RequestParametersIso {
 }
 
 impl AsyncScsiDisk for SimpleScsiDvd {
+    fn clear_nexus_state(&self) {
+        self.sense_data.set(None);
+        let mut media_state = self.media_state.lock();
+        // The tray lock is the one that bites: an initiator that set PREVENT and
+        // then went away would otherwise leave the next one unable to eject, its
+        // START STOP UNIT failed with MEDIUM_REMOVAL_PREVENTED by a decision it
+        // never made.
+        media_state.prevent = false;
+        media_state.persistent = false;
+        // Queued for an initiator that is gone. The next one learns the current
+        // media state from its own TEST UNIT READY or GET EVENT STATUS.
+        media_state.pending_medium_event = IsoMediumEvent::None;
+        // drive_state and the media itself are deliberately untouched: an ejected
+        // tray stays ejected, as it would on a real drive.
+    }
+
     fn execute_scsi<'a>(
         &'a self,
         external_data: &'a RequestBuffers<'a>,
@@ -2639,6 +2655,136 @@ mod tests {
     #[test]
     fn validate_new_scsi_dvd() {
         new_scsi_dvd(512, 2048, true);
+    }
+
+    fn make_medium_removal_request(prevent: bool, persistent: bool) -> Request {
+        let cdb = scsi::CdbMediaRemoval {
+            operation_code: ScsiOp::MEDIUM_REMOVAL,
+            lun: 0,
+            reserved: [0; 2],
+            flags: scsi::MediaRemovalFlags::new()
+                .with_prevent(prevent)
+                .with_persistent(persistent),
+        };
+        let mut data = [0u8; 16];
+        data[..size_of::<scsi::CdbMediaRemoval>()].copy_from_slice(cdb.as_bytes());
+        Request {
+            cdb: data,
+            srb_flags: 0,
+        }
+    }
+
+    fn make_eject_request() -> Request {
+        let cdb = scsi::StartStop {
+            operation_code: ScsiOp::START_STOP_UNIT,
+            immediate: 0,
+            reserved2: [0; 2],
+            flag: scsi::StartStopFlags::new()
+                .with_start(false)
+                .with_load_eject(true),
+            control: 0,
+        };
+        let mut data = [0u8; 16];
+        data[..size_of::<scsi::StartStop>()].copy_from_slice(cdb.as_bytes());
+        Request {
+            cdb: data,
+            srb_flags: 0,
+        }
+    }
+
+    /// A tray lock belongs to the initiator that set it, not to the drive.
+    ///
+    /// PREVENT ALLOW MEDIUM REMOVAL is scoped to the I_T nexus, so when the nexus
+    /// goes away - the guest closed the channel, or was reset in place, which
+    /// closes it too - the lock has to go with it. Otherwise the next guest to
+    /// boot cannot eject, and its START STOP UNIT is failed with
+    /// MEDIUM_REMOVAL_PREVENTED by a decision it never made (umbrella #186).
+    ///
+    /// The first eject is the control: without it a pass would only show that
+    /// ejecting works, not that clearing the nexus is what made it work.
+    #[async_test]
+    async fn validate_tray_lock_does_not_outlive_the_nexus() {
+        let mut scsi_dvd = new_scsi_dvd(ISO_SECTOR_SIZE, 2048, true);
+        let external_data = OwnedRequestBuffers::new(&[0]);
+        let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+
+        check_execute_scsi(
+            &mut scsi_dvd,
+            &external_data.buffer(&guest_mem),
+            &make_medium_removal_request(true, false),
+            true,
+        )
+        .await;
+        assert!(scsi_dvd.media_state.lock().prevent);
+
+        // Locked, so this one must be refused.
+        check_execute_scsi(
+            &mut scsi_dvd,
+            &external_data.buffer(&guest_mem),
+            &make_eject_request(),
+            false,
+        )
+        .await;
+
+        scsi_dvd.clear_nexus_state();
+        assert!(!scsi_dvd.media_state.lock().prevent);
+        assert!(!scsi_dvd.media_state.lock().persistent);
+
+        // Same command, same drive, same media: it succeeds now only because the
+        // lock did not survive the nexus.
+        check_execute_scsi(
+            &mut scsi_dvd,
+            &external_data.buffer(&guest_mem),
+            &make_eject_request(),
+            true,
+        )
+        .await;
+    }
+
+    /// Sense data is per-nexus too, and the tray state is NOT.
+    ///
+    /// The second half is the guard against over-clearing: an ejected tray must
+    /// stay ejected, as it would on real hardware, so a fix that resets the whole
+    /// MediaState would fail here.
+    ///
+    /// Order matters. The eject has to come FIRST and the failing command last:
+    /// a command that succeeds clears the sense slot on its way out, so an eject
+    /// placed after it would leave the slot empty and the sense assertion would
+    /// hold whether or not anything cleared it. Written the other way round this
+    /// test passed against a `clear_nexus_state` mutated to do nothing at all.
+    #[async_test]
+    async fn validate_sense_clears_but_the_tray_state_survives() {
+        let mut scsi_dvd = new_scsi_dvd(ISO_SECTOR_SIZE, 2048, true);
+        let external_data = OwnedRequestBuffers::new(&[0]);
+        let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+
+        check_execute_scsi(
+            &mut scsi_dvd,
+            &external_data.buffer(&guest_mem),
+            &make_eject_request(),
+            true,
+        )
+        .await;
+        let ejected = scsi_dvd.media_state.lock().drive_state;
+
+        // A failed command leaves sense data behind for the initiator to collect.
+        check_execute_scsi(
+            &mut scsi_dvd,
+            &external_data.buffer(&guest_mem),
+            &make_cdb16_request(ScsiOp::READ16, 4096, 1),
+            false,
+        )
+        .await;
+        assert!(scsi_dvd.sense_data.get().is_some());
+
+        scsi_dvd.clear_nexus_state();
+
+        assert!(scsi_dvd.sense_data.get().is_none());
+        assert_eq!(
+            scsi_dvd.media_state.lock().drive_state,
+            ejected,
+            "the tray belongs to the drive, not to the initiator"
+        );
     }
 
     #[async_test]

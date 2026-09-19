@@ -1632,6 +1632,15 @@ struct ScsiControllerState {
     poll_mode_queue_depth: AtomicU32,
 }
 
+impl ScsiControllerState {
+    /// Tells every attached device that the initiator it was talking to is gone.
+    fn clear_nexus_state(&self) {
+        for disk in self.disks.read().values() {
+            disk.disk.clear_nexus_state();
+        }
+    }
+}
+
 pub struct ScsiController {
     state: Arc<ScsiControllerState>,
 }
@@ -1762,6 +1771,13 @@ impl VmbusDevice for StorageDevice {
         }
         if channel_index == 0 {
             *self.protocol.state.write() = ProtocolState::Init(InitState::Begin);
+            // Closing the primary channel ends the initiator-target nexus, so the
+            // state scoped to it goes with the protocol state. A machine reset
+            // arrives here too: the server closes every open channel on the way
+            // down (vmbus_server's client_release_channel notifies Action::Close),
+            // and without this the next boot inherits the previous guest's tray
+            // lock and pending sense.
+            self.controller.clear_nexus_state();
         }
     }
 
