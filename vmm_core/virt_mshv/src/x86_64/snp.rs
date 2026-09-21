@@ -1865,7 +1865,14 @@ mod tests {
 
     #[test]
     fn snp_igvm_injection_selects_creation_policy_and_preserves_vmsa() {
-        let default_args = partition_create_args(true, false, false, None);
+        let restricted_args = partition_create_args(
+            &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: true,
+            }),
+            false,
+            false,
+        )
+        .unwrap();
         for restricted in [false, true] {
             let features = x86defs::snp::SevFeatures::new()
                 .with_snp(true)
@@ -1873,9 +1880,16 @@ mod tests {
             let config = snp_config(features);
             let sev_features = snp_sev_features(&config).unwrap();
             assert_eq!(sev_features.restrict_injection(), restricted);
-            let args = partition_create_args(true, false, false, Some(sev_features));
+            let args = partition_create_args(
+                &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(Box::new(
+                    config.clone(),
+                ))),
+                false,
+                false,
+            )
+            .unwrap();
             assert_eq!(
-                args.pt_flags ^ default_args.pt_flags,
+                args.pt_flags ^ restricted_args.pt_flags,
                 if restricted {
                     0
                 } else {
@@ -1900,10 +1914,42 @@ mod tests {
     }
 
     #[test]
+    fn snp_direct_boot_partition_policy_matches_vmsa() {
+        for restricted_injection in [false, true] {
+            let args = partition_create_args(
+                &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                    restricted_injection,
+                }),
+                false,
+                false,
+            )
+            .unwrap();
+            let vmsa = virt::x86::snp::vmsa_from_initial_regs(
+                &virt::x86::X86InitialRegs {
+                    registers: Default::default(),
+                    mtrrs: Default::default(),
+                    pat: Default::default(),
+                },
+                virt::x86::snp::SnpVmsaConfig {
+                    restricted_injection,
+                },
+            );
+            assert_eq!(vmsa.sev_features.restrict_injection(), restricted_injection);
+            assert_eq!(
+                (args.pt_flags >> MSHV_PT_SNP_INJECTION_POLICY_SHIFT) & 3,
+                if vmsa.sev_features.restrict_injection() {
+                    0
+                } else {
+                    1
+                },
+            );
+        }
+    }
+
+    #[test]
     fn injection_policy_is_snp_only() {
-        let config = snp_config(x86defs::snp::SevFeatures::new().with_snp(true));
-        let sev_features = snp_sev_features(&config).unwrap();
-        let args = partition_create_args(false, false, false, Some(sev_features));
+        let args =
+            partition_create_args(&virt::ProtoPartitionIsolation::None, false, false).unwrap();
         assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
     }
 
@@ -1921,7 +1967,15 @@ mod tests {
         ] {
             let config = snp_config(features);
             assert!(matches!(
-                snp_sev_features(&config).unwrap_err().0,
+                partition_create_args(
+                    &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(Box::new(
+                        config
+                    ))),
+                    false,
+                    false,
+                )
+                .unwrap_err()
+                .0,
                 ErrorInner::UnsupportedSnpIgvmVmsa { .. }
             ));
         }
