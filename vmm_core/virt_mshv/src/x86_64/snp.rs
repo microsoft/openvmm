@@ -77,7 +77,6 @@ pub(crate) struct MshvSnpConfig {
     vmsa_memory: GuestMemory,
     #[inspect(hex)]
     sev_features: u64,
-    restricted_injection: bool,
 }
 
 pub(super) fn snp_sev_features(
@@ -105,6 +104,7 @@ pub(super) fn snp_sev_features(
 
     let (parsed_vmsa, _) = x86defs::snp::SevVmsa::read_from_prefix(vmsa.page.as_ref())
         .map_err(|_| ErrorInner::InvalidSnpIgvmVmsa)?;
+    // This mask permits either injection mode; it does not select one.
     let allowed_features = x86defs::snp::SevFeatures::new()
         .with_snp(true)
         .with_restrict_injection(true);
@@ -143,7 +143,6 @@ pub(super) fn prepare_snp_config(
     };
     vmsa_bytes.copy_from_slice(vmsa.page.as_ref());
     let vmsa_gpa = vmsa.gpa;
-    let restricted_injection = sev_features.restrict_injection();
 
     Ok(MshvSnpConfig {
         snp_policy: config.policy,
@@ -151,7 +150,6 @@ pub(super) fn prepare_snp_config(
         vmsa_gpa,
         vmsa_memory,
         sev_features: sev_features.into_bits(),
-        restricted_injection,
     })
 }
 
@@ -900,7 +898,9 @@ impl MshvPartitionInner {
             snp_policy,
             id_block_enabled = parameters.id_block_enabled != 0,
             vmsa_gpa = config.map(|config| config.vmsa_gpa),
-            restricted_injection = config.map(|config| config.restricted_injection),
+            restricted_injection = config.map(|config| {
+                x86defs::snp::SevFeatures::from(config.sev_features).restrict_injection()
+            }),
             "completing MSHV SNP launch"
         );
         data.import_data.psp_parameters = parameters;
@@ -1902,7 +1902,6 @@ mod tests {
             );
 
             let mut prepared = prepare_snp_config(&config, 48).unwrap();
-            assert_eq!(prepared.restricted_injection, restricted);
             assert_eq!(prepared.sev_features, features.into_bits());
             assert_eq!(prepared.snp_policy, config.policy);
             assert_eq!(prepared.vmsa_gpa, config.vp_contexts[0].gpa);
