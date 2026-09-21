@@ -543,7 +543,10 @@ impl ChangeDeviceState for GenericPcieRootComplex {
     async fn reset(&mut self) {
         for (_, d) in self.devices.iter_mut() {
             if let BusDevice::RootPort { port, .. } = d {
-                port.port.cfg_space.reset();
+                // Reset via the port so presence detect is re-asserted for a
+                // still-connected device; a bare cfg_space.reset() would clear
+                // it and the guest's pciehp would evict the device on reboot.
+                port.port.reset();
             }
         }
     }
