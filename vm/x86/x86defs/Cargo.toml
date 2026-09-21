@@ -13,5 +13,9 @@ arbitrary = { workspace = true, optional = true }
 bitfield-struct.workspace = true
 static_assertions.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

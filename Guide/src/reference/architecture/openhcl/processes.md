@@ -78,6 +78,10 @@ The VM worker process (`underhill_vm`) is responsible for the high-performance d
 - **Device Emulation:** Coordinates device emulation for the guest VM. Some devices run in-process while others run in separate device worker processes for isolation.
 - **I/O Processing:** Handles high-speed I/O operations.
 
+The worker also manages VMGS hardware resealing after live migration. See
+[Attestation and VMGS protection](./attestation.md#resiliency) for the recovery
+flow and its security boundaries.
+
 ## Diagnostics Server (`diag_server`)
 
 The diagnostics server provides an interface for debugging and monitoring the OpenHCL environment.

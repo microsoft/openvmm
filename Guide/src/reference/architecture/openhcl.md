@@ -58,6 +58,7 @@ OpenHCL is built on top of a specialized Linux kernel and consists of several us
 For more details on the internal components and selected OpenHCL device paths, see:
 
 - [Processes and Components](./openhcl/processes.md)
+- [Attestation and VMGS Protection](./openhcl/attestation.md)
 - [VMBus Relay and Device Interception](./openhcl/vmbus.md)
 - [Storage Translation](./openhcl/storage_translation.md)
 - [Storage Configuration Model](./openhcl/storage_configuration.md)

@@ -147,9 +147,14 @@ Each row in the mapping table follows:
 | Code path | Guide page |
 | --- | --- |
 | `openvmm/openvmm_build_info/` | `reference/openvmm/management/cli.md` |
+| `openhcl/underhill_attestation/` | `reference/architecture/openhcl/attestation.md` |
+| `openhcl/tee_call/` | `reference/architecture/openhcl/attestation.md` |
+| `openhcl/underhill_core/src/hardware_reseal.rs` | `reference/architecture/openhcl/attestation.md` |
 
 ## What to Flag
 
+- Changes to OpenHCL attestation, VMGS hardware recovery, or runtime TCB policy
+   must update `reference/architecture/openhcl/attestation.md`.
 - Changes to the reported build identity -- the `-V` / `--version` strings, the
   version format, dirty detection, or what a Git-free tree reports -- must
   update `reference/openvmm/management/cli.md`, and
