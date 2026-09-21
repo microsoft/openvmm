@@ -82,12 +82,15 @@ jobs:
         false
         EOF
       shell: bash
-    - name: create gh cache dir
+    - name: read the requested revision
       run: |-
         flowey v 0 'flowey_lib_hvlite::_jobs::check_openvmm_release_commit:0:flowey_core/src/node/github_context.rs' update --env-source github.event.client_payload.revision <<'EOF'
         ${{ toJSON(github.event.client_payload.revision) }}
         EOF
-        flowey e 0 flowey_lib_common::download_gh_cli 0
+        flowey e 0 flowey_lib_hvlite::_jobs::check_openvmm_release_commit 1
+      shell: bash
+    - name: create gh cache dir
+      run: flowey e 0 flowey_lib_common::download_gh_cli 0
       shell: bash
     - name: Pre-processing cache vars
       run: |-

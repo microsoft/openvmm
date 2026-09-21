@@ -108,8 +108,11 @@ impl SimpleFlowNode for Node {
                 move |rt| {
                     let revision = rt.read(target);
                     let requested_revision = rt.read(requested_revision);
+                    let requested_revision = requested_revision
+                        .as_str()
+                        .context("repository dispatch payload must name a `revision` string")?;
 
-                    crate::verify_openvmm_release_commit::validate_commit_sha(&requested_revision)
+                    crate::verify_openvmm_release_commit::validate_commit_sha(requested_revision)
                         .context("invalid source release request")?;
                     if revision != requested_revision {
                         anyhow::bail!(
