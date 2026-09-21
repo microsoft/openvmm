@@ -142,7 +142,11 @@ impl GhContextVarReader<'_, state::Event> {
     }
 
     /// `github.event.client_payload.revision`
-    pub fn repository_dispatch_revision(self) -> ReadVar<String> {
+    ///
+    /// The dispatch payload is external input, so this is the raw JSON value.
+    /// Callers must reject anything that is not a string rather than letting
+    /// a malformed payload fail deserialization.
+    pub fn repository_dispatch_revision(self) -> ReadVar<serde_json::Value> {
         self.read_var("github.event.client_payload.revision", false, true)
     }
 }

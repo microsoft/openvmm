@@ -5,7 +5,7 @@
 //!
 //! This job never checks out the requested revision, so it runs no code from
 //! it. Every job that does is ordered after this one, and this job is also the
-//! one that bootstraps the Flowey the write-capable publish job later
+//! one that bootstraps the Flowey that the write-capable publish job later
 //! consumes.
 
 use flowey::node::prelude::*;
@@ -32,6 +32,16 @@ impl SimpleFlowNode for Node {
             .get_gh_context_var()
             .event()
             .repository_dispatch_revision();
+        let revision = ctx.emit_rust_stepv("read the requested revision", |ctx| {
+            let revision = revision.claim(ctx);
+            move |rt| {
+                let revision = rt.read(revision);
+                revision
+                    .as_str()
+                    .map(Into::into)
+                    .context("repository dispatch payload must name a `revision` string")
+            }
+        });
 
         ctx.req(crate::verify_openvmm_release_commit::Request { revision, done });
 
