@@ -81,7 +81,9 @@ use snp::snp_hv_cpuid_overrides;
 use snp::snp_sev_features;
 use snp::snp_start_vp_vmsa_gpa;
 
-// Matches the kernel UAPI extension; use mshv-bindings once it exports this field.
+// TODO: Matches upcoming kernel header changes to specify SNP interrupt
+// injection type. Update this to use new mshv bindings once that crate is
+// updated.
 const MSHV_PT_SNP_INJECTION_POLICY_SHIFT: u32 = 6;
 const MSHV_PT_SNP_RESTRICTED_INJECTION: u64 = 0;
 const MSHV_PT_SNP_NORMAL_INJECTION: u64 = 1;
