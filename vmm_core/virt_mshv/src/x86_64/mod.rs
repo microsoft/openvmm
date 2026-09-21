@@ -78,7 +78,13 @@ pub(crate) use snp::acquire_snp_host_access;
 use snp::prepare_snp_config;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
+use snp::snp_sev_features;
 use snp::snp_start_vp_vmsa_gpa;
+
+// Matches the kernel UAPI extension; use mshv-bindings once it exports this field.
+const MSHV_PT_SNP_INJECTION_POLICY_SHIFT: u32 = 6;
+const MSHV_PT_SNP_RESTRICTED_INJECTION: u64 = 0;
+const MSHV_PT_SNP_NORMAL_INJECTION: u64 = 1;
 
 pub(crate) enum MshvProtoPartitionIsolation {
     None,
@@ -109,14 +115,19 @@ impl virt::Hypervisor for LinuxMshv {
         };
         let isolation = config.isolation.isolation_type();
         validate_snp_cpuid_offload_config(isolation, self.snp_disable_cpuid_offload)?;
+        let sev_features = igvm_snp_config.map(snp_sev_features).transpose()?;
         let snp = isolation == virt::IsolationType::Snp;
         let x2apic = matches!(
             config.processor_topology.apic_mode(),
             vm_topology::processor::x86::ApicMode::X2ApicSupported
                 | vm_topology::processor::x86::ApicMode::X2ApicEnabled
         );
-        let create_args =
-            partition_create_args(snp, x2apic, config.processor_topology.smt_enabled());
+        let create_args = partition_create_args(
+            snp,
+            x2apic,
+            config.processor_topology.smt_enabled(),
+            sev_features,
+        );
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
 
@@ -212,6 +223,7 @@ fn partition_create_args(
     snp: bool,
     x2apic: bool,
     smt: bool,
+    snp_sev_features: Option<x86defs::snp::SevFeatures>,
 ) -> mshv_bindings::mshv_create_partition_v2 {
     let mut pt_flags =
         1 << mshv_bindings::MSHV_PT_BIT_LAPIC | 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES;
@@ -221,6 +233,15 @@ fn partition_create_args(
     }
     if smt {
         pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_SMT_ENABLED_GUEST;
+    }
+    if snp {
+        let injection_policy =
+            if snp_sev_features.is_some_and(|features| !features.restrict_injection()) {
+                MSHV_PT_SNP_NORMAL_INJECTION
+            } else {
+                MSHV_PT_SNP_RESTRICTED_INJECTION
+            };
+        pt_flags |= injection_policy << MSHV_PT_SNP_INJECTION_POLICY_SHIFT;
     }
 
     mshv_bindings::mshv_create_partition_v2 {
@@ -1553,7 +1574,7 @@ mod tests {
 
     #[test]
     fn snp_partition_creation_uses_isolation_flags() {
-        let args = partition_create_args(true, false, false);
+        let args = partition_create_args(true, false, false, None);
         let pt_isolation = args.pt_isolation;
         let pt_num_cpu_fbanks = args.pt_num_cpu_fbanks;
         let pt_cpu_fbanks = args.pt_cpu_fbanks;
@@ -1566,6 +1587,7 @@ mod tests {
             0
         );
         assert_ne!(args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_X2APIC, 0);
+        assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
         assert_ne!(
             args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES,
             0
@@ -1586,7 +1608,7 @@ mod tests {
 
     #[test]
     fn ordinary_partition_creation_keeps_feature_banks() {
-        let args = partition_create_args(false, false, true);
+        let args = partition_create_args(false, false, true, None);
         let pt_isolation = args.pt_isolation;
         let pt_num_cpu_fbanks = args.pt_num_cpu_fbanks;
 
@@ -1600,6 +1622,7 @@ mod tests {
             0
         );
         assert_eq!(args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_X2APIC, 0);
+        assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
         assert_ne!(
             args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
             0

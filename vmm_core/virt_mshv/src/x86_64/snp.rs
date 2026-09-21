@@ -80,10 +80,9 @@ pub(crate) struct MshvSnpConfig {
     restricted_injection: bool,
 }
 
-pub(super) fn prepare_snp_config(
+pub(super) fn snp_sev_features(
     config: &virt::SnpConfig,
-    physical_address_width: u8,
-) -> Result<MshvSnpConfig, Error> {
+) -> Result<x86defs::snp::SevFeatures, Error> {
     if config.highest_vtl != 0 {
         return Err(ErrorInner::UnsupportedSnpVtl(config.highest_vtl).into());
     }
@@ -98,12 +97,8 @@ pub(super) fn prepare_snp_config(
     }
 
     let vmsa = &config.vp_contexts[0];
-    let vmsa_end = vmsa
-        .gpa
-        .checked_add(hvdef::HV_PAGE_SIZE)
-        .ok_or(ErrorInner::InvalidSnpVmsaGpa(vmsa.gpa))?;
     if !vmsa.gpa.is_multiple_of(hvdef::HV_PAGE_SIZE)
-        || (physical_address_width < u64::BITS as u8 && vmsa_end > (1u64 << physical_address_width))
+        || vmsa.gpa.checked_add(hvdef::HV_PAGE_SIZE).is_none()
     {
         return Err(ErrorInner::InvalidSnpVmsaGpa(vmsa.gpa).into());
     }
@@ -125,21 +120,37 @@ pub(super) fn prepare_snp_config(
         .into());
     }
 
+    Ok(parsed_vmsa.sev_features)
+}
+
+pub(super) fn prepare_snp_config(
+    config: &virt::SnpConfig,
+    physical_address_width: u8,
+) -> Result<MshvSnpConfig, Error> {
+    let sev_features = snp_sev_features(config)?;
+    let vmsa = &config.vp_contexts[0];
+    let vmsa_end = vmsa
+        .gpa
+        .checked_add(hvdef::HV_PAGE_SIZE)
+        .ok_or(ErrorInner::InvalidSnpVmsaGpa(vmsa.gpa))?;
+    if physical_address_width < u64::BITS as u8 && vmsa_end > (1u64 << physical_address_width) {
+        return Err(ErrorInner::InvalidSnpVmsaGpa(vmsa.gpa).into());
+    }
+
     let mut vmsa_memory = GuestMemory::allocate(hvdef::HV_PAGE_SIZE as usize);
     let Some(vmsa_bytes) = vmsa_memory.inner_buf_mut() else {
         return Err(ErrorInner::InvalidSnpVmsaBacking.into());
     };
     vmsa_bytes.copy_from_slice(vmsa.page.as_ref());
     let vmsa_gpa = vmsa.gpa;
-    let sev_features = parsed_vmsa.sev_features.into_bits();
-    let restricted_injection = parsed_vmsa.sev_features.restrict_injection();
+    let restricted_injection = sev_features.restrict_injection();
 
     Ok(MshvSnpConfig {
         snp_policy: config.policy,
         id_block: config.id_block.clone(),
         vmsa_gpa,
         vmsa_memory,
-        sev_features,
+        sev_features: sev_features.into_bits(),
         restricted_injection,
     })
 }
@@ -1832,6 +1843,135 @@ impl MshvProcessor<'_> {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    fn snp_config(features: x86defs::snp::SevFeatures) -> virt::SnpConfig {
+        let mut page = Box::new([0; 4096]);
+        let (vmsa, _) = x86defs::snp::SevVmsa::mut_from_prefix(page.as_mut()).unwrap();
+        vmsa.sev_features = features;
+        vmsa.rip = 0x1234;
+        virt::SnpConfig {
+            policy: 0x30000,
+            highest_vtl: 0,
+            shared_gpa_boundary: 0,
+            has_relocation: false,
+            vp_contexts: vec![virt::SnpVpContext {
+                gpa: 0x1000,
+                vp_index: VpIndex::BSP,
+                page,
+            }],
+            id_block: None,
+        }
+    }
+
+    #[test]
+    fn snp_igvm_injection_selects_creation_policy_and_preserves_vmsa() {
+        let default_args = partition_create_args(true, false, false, None);
+        for restricted in [false, true] {
+            let features = x86defs::snp::SevFeatures::new()
+                .with_snp(true)
+                .with_restrict_injection(restricted);
+            let config = snp_config(features);
+            let sev_features = snp_sev_features(&config).unwrap();
+            assert_eq!(sev_features.restrict_injection(), restricted);
+            let args = partition_create_args(true, false, false, Some(sev_features));
+            assert_eq!(
+                args.pt_flags ^ default_args.pt_flags,
+                if restricted {
+                    0
+                } else {
+                    MSHV_PT_SNP_NORMAL_INJECTION << MSHV_PT_SNP_INJECTION_POLICY_SHIFT
+                },
+            );
+            assert_eq!(
+                (args.pt_flags >> MSHV_PT_SNP_INJECTION_POLICY_SHIFT) & 3,
+                if restricted { 0 } else { 1 },
+            );
+
+            let mut prepared = prepare_snp_config(&config, 48).unwrap();
+            assert_eq!(prepared.restricted_injection, restricted);
+            assert_eq!(prepared.sev_features, features.into_bits());
+            assert_eq!(prepared.snp_policy, config.policy);
+            assert_eq!(prepared.vmsa_gpa, config.vp_contexts[0].gpa);
+            assert_eq!(
+                prepared.vmsa_memory.inner_buf_mut().unwrap(),
+                config.vp_contexts[0].page.as_ref(),
+            );
+        }
+    }
+
+    #[test]
+    fn injection_policy_is_snp_only() {
+        let config = snp_config(x86defs::snp::SevFeatures::new().with_snp(true));
+        let sev_features = snp_sev_features(&config).unwrap();
+        let args = partition_create_args(false, false, false, Some(sev_features));
+        assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
+    }
+
+    #[test]
+    fn snp_igvm_rejects_unsupported_injection_features_before_creation() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        for features in [
+            features.with_snp(false),
+            features.with_alternate_injection(true),
+            features.with_secure_avic(true),
+            features
+                .with_restrict_injection(true)
+                .with_alternate_injection(true),
+            features.with_vtom(true),
+        ] {
+            let config = snp_config(features);
+            assert!(matches!(
+                snp_sev_features(&config).unwrap_err().0,
+                ErrorInner::UnsupportedSnpIgvmVmsa { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn snp_igvm_rejects_invalid_topology_before_creation() {
+        let mut config = snp_config(x86defs::snp::SevFeatures::new().with_snp(true));
+        config.vp_contexts[0].vp_index = VpIndex::new(1);
+        assert!(matches!(
+            snp_sev_features(&config).unwrap_err().0,
+            ErrorInner::InvalidSnpIgvmTopology
+        ));
+        config.vp_contexts[0].vp_index = VpIndex::BSP;
+        config.vp_contexts.push(config.vp_contexts[0].clone());
+        assert!(matches!(
+            snp_sev_features(&config).unwrap_err().0,
+            ErrorInner::InvalidSnpIgvmTopology
+        ));
+        config.vp_contexts.clear();
+        assert!(matches!(
+            snp_sev_features(&config).unwrap_err().0,
+            ErrorInner::InvalidSnpIgvmTopology
+        ));
+    }
+
+    #[test]
+    fn snp_igvm_rejects_invalid_vmsa_gpa_before_creation() {
+        for gpa in [0x1001, !(hvdef::HV_PAGE_SIZE - 1)] {
+            let mut config = snp_config(x86defs::snp::SevFeatures::new().with_snp(true));
+            config.vp_contexts[0].gpa = gpa;
+            assert!(matches!(
+                snp_sev_features(&config).unwrap_err().0,
+                ErrorInner::InvalidSnpVmsaGpa(invalid) if invalid == gpa
+            ));
+        }
+    }
+
+    #[test]
+    fn snp_igvm_preparation_checks_partition_address_width() {
+        let config = snp_config(x86defs::snp::SevFeatures::new().with_snp(true));
+        snp_sev_features(&config).unwrap();
+        assert!(matches!(
+            prepare_snp_config(&config, 12).unwrap_err().0,
+            ErrorInner::InvalidSnpVmsaGpa(0x1000)
+        ));
+        for width in [13, 48, 64] {
+            prepare_snp_config(&config, width).unwrap();
+        }
+    }
 
     #[test]
     fn snp_hypercall_requires_valid_consistent_registers() {
