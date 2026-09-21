@@ -183,6 +183,7 @@ impl ReadyList {
     fn forget(&self, ft: FourTuple) {
         let mut inner = self.inner.lock();
         inner.queued.remove(&ft);
+        inner.queue.retain(|queued| *queued != ft);
         inner.blocked_on_rx.remove(&ft);
         inner.retry_timer_on_rx.remove(&ft);
     }
@@ -197,8 +198,18 @@ impl ReadyList {
         }
     }
 
-    fn take_timer_retry(&self, ft: FourTuple) -> bool {
-        self.inner.lock().retry_timer_on_rx.remove(&ft)
+    fn take_timer_retry(&self, ft: FourTuple, rx_ready: bool) -> bool {
+        let mut inner = self.inner.lock();
+        if !inner.retry_timer_on_rx.contains(&ft) {
+            return false;
+        }
+        if rx_ready {
+            inner.retry_timer_on_rx.remove(&ft);
+            true
+        } else {
+            inner.blocked_on_rx.insert(ft);
+            false
+        }
     }
 
     /// Enqueues a connection and wakes the outer task so a new poll cycle
@@ -1160,7 +1171,7 @@ impl<T: Client> Access<'_, T> {
                 client: self.client,
                 rx_blocked: false,
             };
-            let retry_timer = ready.take_timer_retry(ft);
+            let retry_timer = ready.take_timer_retry(ft, sender.client.rx_mtu() != 0);
             if retry_timer {
                 conn.inner.retransmission.retry_now(TimerInstant::now());
             }

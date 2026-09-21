@@ -69,6 +69,41 @@ fn timer_deadlines_replace_stale_minimum() {
 }
 
 #[test]
+fn ready_list_forget_removes_queued_connection() {
+    let ft = FourTuple {
+        src: "192.0.2.1:1".parse().unwrap(),
+        dst: "192.0.2.2:2".parse().unwrap(),
+    };
+    let ready = ReadyList::default();
+
+    ready.enqueue(ft);
+    ready.forget(ft);
+    ready.enqueue(ft);
+
+    assert_eq!(ready.drain().into_iter().collect::<Vec<_>>(), [ft]);
+}
+
+#[test]
+fn timer_retry_waits_for_rx_capacity() {
+    let ft = FourTuple {
+        src: "192.0.2.1:1".parse().unwrap(),
+        dst: "192.0.2.2:2".parse().unwrap(),
+    };
+    let ready = ReadyList::default();
+
+    ready.block_on_rx(ft, true);
+    assert!(!ready.take_timer_retry(ft, false));
+    {
+        let inner = ready.inner.lock();
+        assert!(inner.blocked_on_rx.contains(&ft));
+        assert!(inner.retry_timer_on_rx.contains(&ft));
+    }
+
+    assert!(ready.take_timer_retry(ft, true));
+    assert!(!ready.inner.lock().retry_timer_on_rx.contains(&ft));
+}
+
+#[test]
 fn dns_tcp_frame_boundary_tracker_handles_fragmented_frames() {
     let mut tracker = DnsTcpFrameBoundaryTracker::default();
     assert!(tracker.at_frame_boundary());
