@@ -567,7 +567,11 @@ impl Node {
                         ctx.emit_rust_step("validate repository dispatch revision", |ctx| {
                             let revision = revision.clone().claim(ctx);
                             move |rt| {
-                                validate_commit_sha(&rt.read(revision))?;
+                                let revision = rt.read(revision);
+                                let revision = revision.as_str().context(
+                                    "repository dispatch payload must name a `revision` string",
+                                )?;
+                                validate_commit_sha(revision)?;
                                 Ok(())
                             }
                         });
