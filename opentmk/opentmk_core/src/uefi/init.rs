@@ -14,6 +14,12 @@ use super::alloc::ALLOCATOR;
 const EFI_GUID: uefi::Guid = guid!("610b9e98-c6f6-47f8-8b47-2d2da0d52a91");
 const OS_LOADER_INDICATIONS: &str = "OsLoaderIndications";
 
+/// Parameters for initializing the OpenTMK UEFI environment.
+pub struct InitParams {
+    /// Serial port used for logging.
+    pub logging_port: crate::arch::serial::SerialPort,
+}
+
 fn enable_uefi_vtl_protection() {
     let mut buf = vec![0u8; 1024];
     let mut str_buff = vec![0u16; 1024];
@@ -60,12 +66,12 @@ fn enable_uefi_vtl_protection() {
 /// Switches to a capped heap, installs the serial logger, captures the ACPI
 /// tables while boot services are still available, then enables VTL protection
 /// (which exits boot services).
-pub fn init() -> Result<(), Status> {
+pub fn init(params: InitParams) -> Result<(), Status> {
     let r: bool = ALLOCATOR.switch_to_capped_heap(512);
     if !r {
         return Err(Status::ABORTED);
     }
-    crate::tmk_logger::init().map_err(|_| Status::NOT_READY)?;
+    crate::tmk_logger::init(params.logging_port).map_err(|_| Status::NOT_READY)?;
     // Initialize ACPI table context before exit_boot_services (called
     // within enable_uefi_vtl_protection) so that the UEFI system table
     // configuration entries are still accessible.

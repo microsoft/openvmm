@@ -142,6 +142,9 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
                     simple_tmk_path(MachineArch::Aarch64)
                 }),
 
+            _ if id == opentmk::OPENTMK_EFI_X64 => opentmk_efi_path(MachineArch::X86_64),
+            _ if id == opentmk::OPENTMK_EFI_AARCH64 => opentmk_efi_path(MachineArch::Aarch64),
+
             _ if id == cca::SHRINKWRAP => cca_shrinkwrap_path(),
             _ if id == cca::VENV => cca_venv_path(),
             _ if id == cca::ROOTFS => cca_package_path("rootfs.ext2", "CCA emulation rootfs"),
@@ -602,6 +605,22 @@ fn simple_tmk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
             cmd: &format!(
                 "RUSTC_BOOTSTRAP=1 cargo build -p simple_tmk --config openhcl/minimal_rt/{arch_str}-config.toml"
             ),
+        },
+    )
+}
+
+/// Path to the output location of the opentmk UEFI application.
+fn opentmk_efi_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = match arch {
+        MachineArch::X86_64 => "x86_64-unknown-uefi",
+        MachineArch::Aarch64 => "aarch64-unknown-uefi",
+    };
+    get_path(
+        format!("target/{target}/debug"),
+        "opentmk.efi",
+        MissingCommand::Build {
+            package: "opentmk",
+            target: Some(target),
         },
     )
 }

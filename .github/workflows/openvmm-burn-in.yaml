@@ -179,42 +179,42 @@ jobs:
     - name: download artifacts from github actions run
       run: |-
         flowey.exe e 0 flowey_lib_common::download_gh_artifact 5
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 0
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 6
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 1
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 7
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 6
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 2
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 1
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 15
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 2
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 5
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 0
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 16
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 8
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 7
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 3
       shell: bash
     - name: download artifacts from github actions run
       run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 1
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 16
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 2
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 6
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 0
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 17
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 8
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 0
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
         flowey.exe e 0 flowey_lib_common::download_gh_artifact 9
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 13
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 4
       shell: bash
     - name: download artifacts from github actions run
       run: |-
@@ -223,13 +223,13 @@ jobs:
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 13
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 4
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 11
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 15
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 15
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 6
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 14
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 5
       shell: bash
     - name: download artifacts from github actions run
       run: |-
@@ -238,18 +238,23 @@ jobs:
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 14
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 17
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 8
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 3
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 15
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 9
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 12
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 12
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 3
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 10
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 13
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 13
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 0 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -339,8 +344,8 @@ jobs:
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 17
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 10
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 18
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 11
         flowey.exe e 0 flowey_lib_hvlite::test_nextest_vmm_tests_archive 24
       shell: bash
     - name: generate nextest command
@@ -351,8 +356,8 @@ jobs:
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 11
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 11
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 12
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 12
         flowey.exe e 0 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 5
       shell: bash
     - name: running vmm_test prep_steps

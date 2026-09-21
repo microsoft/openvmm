@@ -72,6 +72,7 @@ pub struct HyperVPetriBackend {}
 pub struct HyperVPetriRuntime {
     vm: HyperVVM,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
+    opentmk_scan: Option<Task<crate::opentmk::OpenTmkRun>>,
     temp_dir: TempDir,
     output_dir: PathBuf,
     driver: DefaultDriver,
@@ -476,11 +477,25 @@ impl PetriVmmBackend for HyperVPetriBackend {
         }
 
         let serial_pipe_path = vm.get_vm_com_port_path(1);
-        let serial_log_file = log_source.log_file("guest")?;
-        log_tasks.push(driver.spawn(
-            "guest-log",
-            hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
-        ));
+
+        let opentmk_scan = if config.firmware.is_opentmk() {
+            let opentmk_log_file = log_source.log_file("opentmk")?;
+            Some(driver.spawn(
+                "opentmk-scan",
+                crate::opentmk::hyperv_opentmk_scan_task(
+                    driver.clone(),
+                    serial_pipe_path,
+                    opentmk_log_file,
+                ),
+            ))
+        } else {
+            let serial_log_file = log_source.log_file("guest")?;
+            log_tasks.push(driver.spawn(
+                "guest-log",
+                hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
+            ));
+            None
+        };
 
         vm.start().await?;
 
@@ -488,6 +503,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             HyperVPetriRuntime {
                 vm,
                 log_tasks,
+                opentmk_scan,
                 temp_dir,
                 output_dir: log_source.output_dir().to_owned(),
                 driver: driver.clone(),
@@ -506,6 +522,9 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     type VmFramebufferAccess = vm::HyperVFramebufferAccess;
 
     async fn teardown(mut self) -> anyhow::Result<()> {
+        if let Some(task) = self.opentmk_scan.take() {
+            task.cancel().await;
+        }
         futures::future::join_all(self.log_tasks.into_iter().map(|t| t.cancel())).await;
         self.vm.remove().await
     }
@@ -581,6 +600,29 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         timeout: Option<Duration>,
     ) -> anyhow::Result<Option<FirmwareEvent>> {
         self.vm.wait_for_boot_event(timeout).await
+    }
+
+    async fn wait_for_opentmk(
+        &mut self,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::opentmk::OpenTmkRun> {
+        let mut task = self
+            .opentmk_scan
+            .take()
+            .context("OpenTMK serial capture was not configured for this VM")?;
+        let result = mesh::CancelContext::new()
+            .with_timeout(timeout)
+            .until_cancelled(&mut task)
+            .await;
+        match result {
+            Ok(run) => Ok(run),
+            Err(_) => {
+                // Deterministically stop the scan task, closing the COM1 pipe
+                // and log file, instead of relying on drop-cancellation timing.
+                task.cancel().await;
+                anyhow::bail!("timed out after {timeout:?} waiting for OpenTMK results on COM1")
+            }
+        }
     }
 
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {

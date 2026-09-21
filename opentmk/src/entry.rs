@@ -4,12 +4,16 @@
 //! UEFI entrypoint for the OpenTMK test binary.
 
 use crate::tmk_assert;
+use opentmk_core::arch::serial::SerialPort;
+use opentmk_core::uefi::init::InitParams;
 use opentmk_core::uefi::init::init;
 use uefi::Status;
 
 #[uefi::entry]
 fn uefi_main() -> Status {
-    let r = init();
+    let r = init(InitParams {
+        logging_port: SerialPort::COM1,
+    });
     tmk_assert!(r.is_ok(), "init should succeed");
     log::warn!("TEST_START");
     crate::tests::run_test();

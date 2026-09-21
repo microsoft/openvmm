@@ -6602,6 +6602,7 @@ dependencies = [
  "net_backend_resources",
  "netvsp_resources",
  "nvme_resources",
+ "opentmk_disk",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_hypervisors",
