@@ -2703,7 +2703,7 @@ impl<T: RingMem> NetChannel<T> {
                     rndisprot::PPI_VLAN => {
                         let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
-                        metadata.vlan = Some(crate::vlan_adapters::metadata_from_eth_vlan_info(n));
+                        metadata.vlan = Some(vlan_adapters::metadata_from_eth_vlan_info(n));
                     }
                     _ => {}
                 }

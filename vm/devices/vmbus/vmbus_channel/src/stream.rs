@@ -6,8 +6,6 @@
 //! Historically these lived in `vmbus_core`, but they're pure async
 //! utilities with no protocol content, so they belong here where the
 //! host-side `futures`/`std` dependency is already in scope.
-//! `vmbus_core` re-exports [`TaggedStream`] for callers that used the
-//! old path.
 
 use core::pin::Pin;
 use core::task::Context;

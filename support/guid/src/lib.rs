@@ -76,9 +76,8 @@ macro_rules! guid {
 impl Guid {
     /// Return a new randomly-generated Version 4 UUID.
     ///
-    /// Available when the `getrandom` feature is enabled (default). When
-    /// building for `no_std` targets without a random source, disable
-    /// `default-features` on the `guid` dependency.
+    /// Available when the `getrandom` feature is enabled. Disable this
+    /// feature on `no_std` targets that do not provide a random source.
     #[cfg(feature = "getrandom")]
     pub fn new_random() -> Self {
         let mut guid = Guid::default();
