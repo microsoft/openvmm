@@ -266,6 +266,13 @@ impl BackingPrivate for HypervisorBackedArm64 {
         false
     }
 
+    fn poll_interrupt_controller(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _scan_irr: bool,
+    ) {
+    }
+
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
         this.backing
             .next_deliverability_notifications

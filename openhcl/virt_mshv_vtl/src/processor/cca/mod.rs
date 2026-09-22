@@ -293,11 +293,6 @@ fn inject_virtual_interrupt(lrs: &mut [u64], interrupt: PendingInterrupt) -> boo
     true
 }
 
-fn virtual_interrupt_is_listed(lrs: &[u64], intid: u32) -> bool {
-    lrs.iter()
-        .any(|lr| *lr & ICH_LR_STATE_MASK != 0 && *lr & ICH_LR_VINTID_MASK == u64::from(intid))
-}
-
 fn running_priority(lrs: &[u64]) -> u8 {
     let mut running = 0xff;
 
@@ -586,16 +581,20 @@ impl BackingPrivate for CcaBacked {
 
     fn process_interrupts(
         this: &mut UhProcessor<'_, Self>,
-        _scan_irr: VtlArray<bool, 2>,
+        scan_irr: VtlArray<bool, 2>,
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
     ) -> bool {
         let _ = dev;
         for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
-            this.poll_gic(vtl);
+            Self::poll_interrupt_controller(this, vtl, scan_irr[vtl] || *first_scan_irr);
         }
         *first_scan_irr = false;
         false
+    }
+
+    fn poll_interrupt_controller(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, _scan_irr: bool) {
+        this.poll_gic(vtl);
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {

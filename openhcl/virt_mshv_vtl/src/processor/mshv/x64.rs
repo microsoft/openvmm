@@ -372,7 +372,12 @@ impl BackingPrivate for HypervisorBackedX86 {
         Ok(())
     }
 
-    fn poll_apic(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl, _scan_irr: bool) {}
+    fn poll_interrupt_controller(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _scan_irr: bool,
+    ) {
+    }
 
     fn process_interrupts(
         _this: &mut UhProcessor<'_, Self>,
