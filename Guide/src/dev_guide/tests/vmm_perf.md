@@ -1,7 +1,10 @@
 # VMM.Perf Runner
 
-`vmm_perf` runs packaged VirtualClient performance profiles against an OpenVMM
-build and collects their metrics and diagnostic files.
+`vmm_perf` uses Microsoft's [VirtualClient][] workload runner to execute
+packaged performance profiles against an OpenVMM build and collect their
+metrics and diagnostic files.
+
+[VirtualClient]: https://github.com/microsoft/VirtualClient
 
 ## When to use VMM.Perf
 

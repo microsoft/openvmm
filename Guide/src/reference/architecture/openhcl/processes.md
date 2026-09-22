@@ -1,74 +1,26 @@
 # OpenHCL Processes and Components
 
-This page describes the major software components and processes in the OpenHCL
-paravisor environment.
+This page identifies the major software components and long-running processes
+in OpenHCL. See the [OpenHCL boot flow](./boot.md) for their startup order.
 
-## Boot Shim (`openhcl_boot`)
+## Boot components
 
-The boot shim is the first code that executes in VTL2. It performs early
-hardware initialization and prepares the Linux environment.
+The host loads these components before the main paravisor process starts:
 
-**Source code:**
-[openhcl/openhcl_boot](https://github.com/microsoft/openvmm/tree/main/openhcl/openhcl_boot)
-| **Docs:**
-[openhcl_boot rustdoc](https://openvmm.dev/rustdoc/linux/openhcl_boot/index.html)
-
-**Key Responsibilities:**
-
-- **Hardware Initialization:** Sets up CPU state, enables MMU, and configures initial page tables.
-- **Configuration Parsing:** Combines measured parameters with permitted host
-	data. Isolated VMs filter host options that could weaken guest guarantees.
-- **Device Tree Construction:** Describes CPU topology, memory, and devices for
-	Linux.
-- **Sidecar Initialization:** Sets up control structures for the Sidecar kernel (x86_64 only).
-- **Kernel Handoff:** Transfers control to the Linux kernel.
-
-## Linux Kernel
-
-OpenHCL runs on a minimal Linux kernel that provides memory management,
-scheduling, process support, and device drivers.
-
-**Key Responsibilities:**
-
-- **Hardware Abstraction:** Manages CPU and memory resources.
-- **Device Drivers:** Provides drivers for paravisor-specific hardware and standard devices.
-- **Filesystem:** Mounts the initial ramdisk (initrd) as the root filesystem.
-- **Process Management:** Launches the initial userspace process (`underhill_init`).
-
-## Sidecar Kernel (x86_64)
-
-On supported x86_64 systems, a lightweight sidecar kernel runs on selected
-CPUs to reduce Linux boot cost and resource use.
-
-For more details, see the [Sidecar Architecture](./sidecar.md) page.
-
-**Source code:**
-[openhcl/sidecar](https://github.com/microsoft/openvmm/tree/main/openhcl/sidecar)
-| **Docs:**
-[sidecar rustdoc](https://openvmm.dev/rustdoc/linux/sidecar/index.html)
-
-**Key Responsibilities:**
-
-- **Fast Boot:** Allows secondary CPUs to start without initializing the full
-	Linux kernel.
-- **Dispatch Loop:** Runs a minimal loop waiting for commands from the host or the main kernel.
-- **On-Demand Conversion:** Can be converted to a full Linux CPU when required.
-
-## Init Process (`underhill_init`)
-
-`underhill_init` is the first Linux userspace process. It prepares the minimal
-paravisor environment and replaces itself with `openvmm_hcl`.
-
-**Source code:**
-[openhcl/underhill_init](https://github.com/microsoft/openvmm/tree/main/openhcl/underhill_init)
-| **Docs:**
-[underhill_init rustdoc](https://openvmm.dev/rustdoc/linux/underhill_init/index.html)
-
-**Key Responsibilities:**
-
-- **System Setup:** Mounts necessary filesystems (e.g., `/proc`, `/sys`, `/dev`).
-- **Environment Preparation:** Sets up the execution environment for the paravisor.
-- **Process Launch:** `exec`s the main paravisor process (`openvmm_hcl`).
+- [`openhcl_boot` source](https://github.com/microsoft/openvmm/tree/main/openhcl/openhcl_boot)
+	([rustdoc](https://openvmm.dev/rustdoc/linux/openhcl_boot/index.html)):
+	Initializes VTL2, validates its inputs, builds the Linux device tree, and
+	transfers control to Linux.
+- **Linux kernel:** Provides memory management, scheduling, process support,
+	and the drivers used by the paravisor.
+- [`sidecar` source](https://github.com/microsoft/openvmm/tree/main/openhcl/sidecar)
+	([rustdoc](https://openvmm.dev/rustdoc/linux/sidecar/index.html)):
+	Runs a small dispatch kernel on selected x86_64 processors that have not been
+	brought online in Linux. See [Sidecar Kernel](./sidecar.md).
+- [`underhill_init` source](https://github.com/microsoft/openvmm/tree/main/openhcl/underhill_init)
+	([rustdoc](https://openvmm.dev/rustdoc/linux/underhill_init/index.html)):
+	Runs as Linux PID 1, prepares the user-mode environment, and replaces itself
+	with `openvmm_hcl`.
 
 ## Paravisor (`openvmm_hcl`)
 

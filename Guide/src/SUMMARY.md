@@ -47,7 +47,7 @@
     - [simple_tmk](./dev_guide/tests/simple_tmk.md)
     - [OpenTMK](./dev_guide/tests/opentmk.md)
     - [OpenTMK Executor](./dev_guide/tests/opentmk_executor.md)
-  - [Performance Benchmarks]()
+  - [Performance Benchmarks](./dev_guide/tests/perf.md)
     - [Performance Tests (burette)](./dev_guide/tests/perf.md)
     - [VMM.Perf Runner](./dev_guide/tests/vmm_perf.md)
   - [Fuzzing](./dev_guide/tests/fuzzing.md)

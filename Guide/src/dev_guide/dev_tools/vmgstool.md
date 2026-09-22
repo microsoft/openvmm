@@ -3,10 +3,13 @@
 `vmgstool` creates, inspects, and modifies version 3 VM Guest State (VMGS)
 files for provisioning and debugging.
 
-OpenHCL uses VMGS to persist firmware variables and security state on behalf of
-a VM. The store is packaged as a VHD and contains numbered logical files. These
-are data slots rather than host filesystem files; for example, BIOS NVRAM and
-vTPM state occupy separate well-known file IDs.
+OpenHCL uses VMGS v3 on both Hyper-V and OpenVMM. OpenVMM also uses VMGS v3 for
+VMs without OpenHCL. Hyper-V VMs without an HCL use a different state format.
+
+VMGS persists firmware variables and security state on behalf of a VM. The
+store is packaged as a VHD and contains numbered logical files. These are data
+slots rather than host filesystem files; for example, BIOS NVRAM and vTPM
+state occupy separate well-known file IDs.
 
 Confidential VMs can encrypt selected VMGS contents before deployment so the
 host handles encrypted state rather than plaintext guest secrets.
@@ -15,14 +18,22 @@ host handles encrypted state rather than plaintext guest secrets.
 
 A VMGS store contains redundant headers, a file table, and allocated data
 blocks. Commands identify logical data through either a numeric file ID or a
-known symbolic name.
+known symbolic name. See [`vmgs_format::FileId`][] for the authoritative list
+of IDs and names.
+
+[`vmgs_format::FileId`]: https://github.com/microsoft/openvmm/blob/main/vm/vmgs/vmgs_format/src/lib.rs#L41-L65
 
 Use `dump-file-table` to discover which IDs are allocated before modifying a
 store:
 
 ```powershell
-vmgstool.exe dump-file-table --file-path path\to\guest.vmgs `
-    --key-path path\to\key.bin
+vmgstool.exe dump-file-table --file-path path\to\guest.vmgs
+```
+
+```admonish note
+`dump-file-table` can inspect an encrypted store without its key. However, its
+per-file encryption information can be inaccurate when the store was last
+modified by a pre-1.8 version of OpenHCL, VmgsTool, or OpenVMM.
 ```
 
 ## Alternatively: Pre-Built Binaries

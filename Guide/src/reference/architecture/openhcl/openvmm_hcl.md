@@ -70,23 +70,11 @@ cargo xflowey build-igvm x64
 ```
 
 The recipe determines the target, features, kernel, initrd contents, boot
-loader, sidecar, and manifest. Output is placed below:
+loader, sidecar, and manifest. See [Building OpenHCL][] for available recipes,
+artifact locations, and instructions for substituting a custom `openvmm_hcl`
+binary.
 
-```text
-flowey-out/artifacts/build-igvm/<PROFILE>/<RECIPE>/openhcl-<RECIPE>.bin
-```
-
-To experiment with a custom user-mode binary, build the target selected by the
-recipe and pass it back to Flowey. For example:
-
-```bash
-cargo build --target x86_64-unknown-linux-musl \
-  -p openvmm_hcl --features <FEATURES>
-
-cargo xflowey build-igvm x64 \
-  --custom-openvmm-hcl \
-  target/x86_64-unknown-linux-musl/debug/openvmm_hcl
-```
+[Building OpenHCL]: ../../../dev_guide/getting_started/build_openhcl.md
 
 ```admonish warning
 A standalone `openvmm_hcl` file is not a bootable product. It expects the
