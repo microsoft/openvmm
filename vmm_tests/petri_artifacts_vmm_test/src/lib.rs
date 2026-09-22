@@ -806,6 +806,9 @@ pub mod artifacts {
         /// Filename used for [`enum@LATEST_CVM_X64`] in the VMM test content directory
         pub const LATEST_CVM_X64_FILE_NAME: &str = "vmfirmwareigvm-cvm-x64.dll";
 
+        /// Measured kernel command-line marker identifying the VMGS test firmware.
+        pub const CVM_X64_BOOT_MARKER: &str = "OPENHCL_VMGS_TEST=1";
+
         declare_artifacts! {
             /// An x64 CVM OpenHCL resource DLL
             LATEST_CVM_X64,

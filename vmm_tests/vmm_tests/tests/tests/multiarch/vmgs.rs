@@ -9,6 +9,9 @@ use petri::ResolvedArtifact;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::vmfw_dll::CVM_X64_BOOT_MARKER;
+#[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_NATIVE;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
@@ -151,9 +154,8 @@ async fn vmgstool_create<T: PetriVmmBackend>(
     Ok(())
 }
 
-const VMGS_CAPACITY: u64 = 64 * 1024 * 1024;
-
 /// Verifies `copy-igvmfile` by booting OpenHCL from the resulting VMGS.
+#[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[VMGSTOOL_NATIVE, LATEST_CVM_X64],
 )]
@@ -164,6 +166,8 @@ async fn vmgstool_copy_igvmfile<T: PetriVmmBackend>(
         ResolvedArtifact<LATEST_CVM_X64>,
     ),
 ) -> Result<(), anyhow::Error> {
+    const VMGS_CAPACITY: u64 = 64 * 1024 * 1024;
+
     let temp_dir = tempfile::tempdir()?;
     let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
@@ -193,7 +197,14 @@ async fn vmgstool_copy_igvmfile<T: PetriVmmBackend>(
         .run()
         .await?;
 
-    vm.test_inspect_openhcl().await?;
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+    let command_line = vtl2_agent.unix_shell().read_file("/proc/cmdline").await?;
+    anyhow::ensure!(
+        command_line
+            .split_ascii_whitespace()
+            .any(|arg| arg == CVM_X64_BOOT_MARKER),
+        "OpenHCL did not boot the VMGS test firmware: missing measured marker {CVM_X64_BOOT_MARKER:?} in {command_line:?}"
+    );
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 

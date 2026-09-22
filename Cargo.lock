@@ -2386,6 +2386,7 @@ dependencies = [
  "sha2",
  "target-lexicon",
  "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "vmm_test_images",
  "which 8.0.0",

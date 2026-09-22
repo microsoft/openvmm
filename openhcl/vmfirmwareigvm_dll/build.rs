@@ -132,6 +132,7 @@ fn main() {
         println!("cargo:rustc-link-arg=/NOENTRY"); // resource DLL
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rerun-if-changed=resources.rc");
+        println!("cargo:rerun-if-changed={uh_igvm_path}");
         embed_resource::compile("resources.rc", macros.map(|(k, v)| format!("{k}={v}")))
             .manifest_required()
             .unwrap();

@@ -125,6 +125,7 @@ impl IntoPipeline for BuildReproducibleCli {
                         recipe,
                         custom_target: Some(CommonTriple::Custom(openhcl_musl_target(recipe_arch))),
                         extra_features: BTreeSet::new(),
+                        extra_command_line: None,
                         release_cfg: release,
                         confidential_debug: false,
                     },

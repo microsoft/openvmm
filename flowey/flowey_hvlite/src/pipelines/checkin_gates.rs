@@ -193,8 +193,10 @@ impl IntoPipeline for CheckinGatesCli {
             .as_triple()
         };
 
-        let (pub_vmfirmwareigvm_cvm_x64, use_vmfirmwareigvm_cvm_x64) =
-            pipeline.new_typed_artifact("x64-vmfirmwareigvm-cvm");
+        let vmgs_firmware_enabled = !matches!(backend_hint, PipelineBackendHint::Ado);
+        let (pub_vmfirmwareigvm_cvm_x64, use_vmfirmwareigvm_cvm_x64) = vmgs_firmware_enabled
+            .then(|| pipeline.new_typed_artifact("x64-vmfirmwareigvm-cvm"))
+            .unzip();
 
         // initialize the various "VmmTestsArtifactsBuilder" containers, which
         // are used to "skim off" various artifacts that the VMM test jobs
@@ -1079,7 +1081,7 @@ impl IntoPipeline for CheckinGatesCli {
                 (matches!(config, PipelineConfig::Ci) && !mi_secure)
                     .then(|| pipeline.new_typed_artifact(artifact_name_openhcl_baseline(arch)))
                     .unzip();
-            if arch == CommonArch::X86_64 && !mi_secure {
+            if vmgs_firmware_enabled && arch == CommonArch::X86_64 && !mi_secure {
                 use_openhcl_cvm_for_vmfirmwareigvm_dll =
                     use_openhcl_igvms.get(&OpenhclIgvmRecipe::X64Cvm).cloned();
             }
@@ -1132,10 +1134,17 @@ impl IntoPipeline for CheckinGatesCli {
                                 let pub_openhcl_igvm = pub_openhcl_igvms.remove(&recipe).unwrap();
                                 let pub_openhcl_igvm_extras =
                                     pub_openhcl_igvms_extras.remove(&recipe).unwrap();
+                                let extra_command_line = (vmgs_firmware_enabled
+                                    && !mi_secure
+                                    && recipe == OpenhclIgvmRecipe::X64Cvm)
+                                    .then(|| {
+                                        petri_artifacts_vmm_test::artifacts::vmfw_dll::CVM_X64_BOOT_MARKER.into()
+                                    });
                                 (
                                     OpenhclIgvmBuildParams {
                                         profile: openvmm_hcl_profile,
                                         recipe,
+                                        extra_command_line,
                                         custom_target: Some(CommonTriple::Custom(
                                             openhcl_musl_target(arch),
                                         )),
@@ -1425,8 +1434,9 @@ impl IntoPipeline for CheckinGatesCli {
                 })?;
             Box::new(move |ctx| {
                 let mut artifacts = resolve(ctx);
-                artifacts.vmfirmwareigvm_cvm_x64 =
-                    Some(ctx.use_typed_artifact(&use_vmfirmwareigvm_cvm_x64));
+                artifacts.vmfirmwareigvm_cvm_x64 = use_vmfirmwareigvm_cvm_x64
+                    .as_ref()
+                    .map(|artifact| ctx.use_typed_artifact(artifact));
                 artifacts
             })
         };
@@ -1937,7 +1947,7 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(distro_build_job);
         }
 
-        {
+        if let Some(pub_vmfirmwareigvm_cvm_x64) = pub_vmfirmwareigvm_cvm_x64 {
             let use_openhcl_cvm = use_openhcl_cvm_for_vmfirmwareigvm_dll.unwrap();
             let job = pipeline
                 .new_job(
@@ -1946,12 +1956,11 @@ impl IntoPipeline for CheckinGatesCli {
                     "build vmfirmwareigvm cvm [x64-windows]",
                 )
                 .gh_set_pool(gh_pools::default_windows())
-                .ado_set_pool(ado_pools::default_windows())
                 .dep_on(
                     move |ctx| flowey_lib_hvlite::build_vmfirmwareigvm_dll::Request {
                         arch: CommonArch::X86_64,
                         igvm_bin: flowey_lib_hvlite::build_vmfirmwareigvm_dll::IgvmInput::Openhcl(
-                            ctx.use_typed_artifact(&use_openhcl_cvm),
+                            Box::new(ctx.use_typed_artifact(&use_openhcl_cvm)),
                         ),
                         resource_id: flowey_lib_hvlite::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
                         dll_version: ReadVar::from_static(

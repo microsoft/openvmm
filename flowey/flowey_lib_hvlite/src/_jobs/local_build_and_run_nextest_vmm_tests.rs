@@ -230,6 +230,11 @@ impl SimpleFlowNode for Node {
                 recipe: custom_recipe,
                 custom_target: None,
                 extra_features: BTreeSet::new(),
+                extra_command_line: (build.vmfirmwareigvm_cvm
+                    && recipe == OpenhclIgvmRecipe::X64Cvm)
+                    .then(|| {
+                        petri_artifacts_vmm_test::artifacts::vmfw_dll::CVM_X64_BOOT_MARKER.into()
+                    }),
                 disable_secure_avic,
                 confidential_debug: true,
                 openhcl_igvm,
@@ -285,7 +290,9 @@ impl SimpleFlowNode for Node {
                 .context("the CVM firmware DLL requires an x64 CVM IGVM")?;
             Some(ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
                 arch: CommonArch::X86_64,
-                igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::Openhcl(openhcl_cvm),
+                igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::Openhcl(Box::new(
+                    openhcl_cvm,
+                )),
                 resource_id: crate::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
                 dll_version: ReadVar::from_static(
                     crate::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
