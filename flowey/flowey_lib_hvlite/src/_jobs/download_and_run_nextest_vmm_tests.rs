@@ -40,8 +40,11 @@ impl VmmTestsProfile {
     fn parameters(&self, ctx: &mut NodeCtx<'_>) -> VmmTestsParameters {
         match self {
             VmmTestsProfile::X64WindowsAll => {
-                let (built_artifacts, built_artifacts_write) =
+                let (mut built_artifacts, mut built_artifacts_write) =
                     VmmTestsArtifactsBuilderWindowsX86::pair(ctx);
+                let (vmfirmwareigvm_cvm_x64, vmfirmwareigvm_cvm_x64_write) = ctx.new_var();
+                built_artifacts.vmfirmwareigvm_cvm_x64 = Some(vmfirmwareigvm_cvm_x64);
+                built_artifacts_write.vmfirmwareigvm_cvm_x64 = Some(vmfirmwareigvm_cvm_x64_write);
                 let mut nextest_filter_expr = "all()".to_string();
                 // self-hosted runners don't have HvlDeviceHost installed
                 // TODO: configure runners and remove this exclusion

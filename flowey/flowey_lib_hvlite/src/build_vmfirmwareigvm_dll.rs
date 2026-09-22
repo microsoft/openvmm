@@ -10,7 +10,9 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 pub const UNUSED_DLL_VERSION: (u16, u16, u16, u16) = (0, 0, 0, 0);
+pub const SNP_RESOURCE_ID: u32 = 13515;
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize)]
 pub enum IgvmInput {
     File(ReadVar<PathBuf>),

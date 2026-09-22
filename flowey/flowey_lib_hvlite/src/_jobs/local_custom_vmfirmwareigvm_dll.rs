@@ -37,7 +37,6 @@ impl SimpleFlowNode for Node {
             igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::File(ReadVar::from_static(
                 igvm_payload,
             )),
-            // custom-vmfirmwareigvm-dll pipeline uses resource ID 1.
             resource_id: 1,
             // fixed version to signal that this is a custom dll
             dll_version: ReadVar::from_static((1, 0, 1337, 0)),

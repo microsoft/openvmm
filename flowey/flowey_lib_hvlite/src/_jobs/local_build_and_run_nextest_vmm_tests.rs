@@ -57,6 +57,7 @@ pub struct BuildSelections {
     pub tmk_vmm_linux: bool,
     pub vmgstool: bool,
     pub vmgstool_dev: bool,
+    pub vmfirmwareigvm_cvm: bool,
     pub tpm_guest_tests_windows: bool,
     pub tpm_guest_tests_linux: bool,
     pub test_igvm_agent_rpc_server: bool,
@@ -130,6 +131,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_vmm_tests_content_dir::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<crate::build_vmgstool::Node>();
+        ctx.import::<crate::build_vmfirmwareigvm_dll::Node>();
         ctx.import::<crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::_jobs::consume_and_test_nextest_vmm_tests_archive::Node>();
         ctx.import::<crate::build_flowey_hvlite::Node>();
@@ -276,6 +278,25 @@ impl SimpleFlowNode for Node {
                 }
             })
         });
+
+        let register_vmfirmwareigvm_cvm_x64 = if build.vmfirmwareigvm_cvm {
+            let openhcl_cvm = register_openhcl_cvm
+                .clone()
+                .context("the CVM firmware DLL requires an x64 CVM IGVM")?;
+            Some(ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
+                arch: CommonArch::X86_64,
+                igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::Openhcl(openhcl_cvm),
+                resource_id: crate::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
+                dll_version: ReadVar::from_static(
+                    crate::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
+                ),
+                internal_dll_name:
+                    petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64_FILE_NAME.into(),
+                vmfirmwareigvm_dll: v,
+            }))
+        } else {
+            None
+        };
 
         let register_openvmm = build.openvmm.then(|| {
             let output = ctx.reqv(|v| crate::build_openvmm::Request {
@@ -653,6 +674,7 @@ impl SimpleFlowNode for Node {
             openhcl_standard: register_openhcl_standard,
             openhcl_standard_dev: register_openhcl_standard_dev,
             openhcl_cvm: register_openhcl_cvm,
+            vmfirmwareigvm_cvm_x64: register_vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct: register_openhcl_linux_direct,
             tmks: register_tmks,
             tmk_vmm: register_tmk_vmm,

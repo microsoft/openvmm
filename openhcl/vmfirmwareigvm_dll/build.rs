@@ -75,7 +75,7 @@ fn main() {
     // (path) absolute path to an IGVM file to package up
     let uh_igvm_path = std::env::var("UH_IGVM_PATH").expect("must set UH_IGVM_PATH");
 
-    // (u32) Defaults to 1, the resource ID used before UH_RESOURCE_ID was configurable.
+    // (u32) VMFW resource ID (defaults to 1).
     let uh_resource_id = std::env::var("UH_RESOURCE_ID")
         .map(|id| id.parse::<u32>().expect("UH_RESOURCE_ID must be a u32"))
         .unwrap_or(1);

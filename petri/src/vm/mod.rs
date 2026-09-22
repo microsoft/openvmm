@@ -1399,7 +1399,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Boot the paravisor from VMGS
+    /// Load OpenHCL from VMGS, falling back to in-box firmware (Hyper-V only).
     pub fn with_openhcl_from_vmgs(mut self) -> Self {
         match &mut self.config.firmware {
             Firmware::OpenhclLinuxDirect { igvm_firmware, .. }
@@ -3110,7 +3110,6 @@ impl Firmware {
         }
     }
 
-    #[cfg_attr(not(windows), expect(dead_code))]
     fn openhcl_firmware(&self) -> Option<&IgvmFirmwareSource> {
         match self {
             Firmware::OpenhclLinuxDirect { igvm_firmware, .. }

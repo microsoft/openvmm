@@ -195,7 +195,6 @@ impl IntoPipeline for CheckinGatesCli {
 
         let (pub_vmfirmwareigvm_cvm_x64, use_vmfirmwareigvm_cvm_x64) =
             pipeline.new_typed_artifact("x64-vmfirmwareigvm-cvm");
-        let mut pub_vmfirmwareigvm_cvm_x64 = Some(pub_vmfirmwareigvm_cvm_x64);
 
         // initialize the various "VmmTestsArtifactsBuilder" containers, which
         // are used to "skim off" various artifacts that the VMM test jobs
@@ -1415,7 +1414,7 @@ impl IntoPipeline for CheckinGatesCli {
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd vmm_tests artifact: {missing}")
             })?;
-        let vmm_tests_artifacts_windows_amd_snp_x86: ResolveVmmTestsDepArtifacts = {
+        let vmm_tests_artifacts_windows_amd_snp_x86: ResolveVmmTestsBuiltArtifacts = {
             let resolve = vmm_tests_artifacts_windows_x86
                 .clone()
                 .finish()
@@ -1424,7 +1423,6 @@ impl IntoPipeline for CheckinGatesCli {
                         "missing required windows-amd-snp vmm_tests artifact: {missing}"
                     )
                 })?;
-            let use_vmfirmwareigvm_cvm_x64 = use_vmfirmwareigvm_cvm_x64.clone();
             Box::new(move |ctx| {
                 let mut artifacts = resolve(ctx);
                 artifacts.vmfirmwareigvm_cvm_x64 =
@@ -1941,7 +1939,6 @@ impl IntoPipeline for CheckinGatesCli {
 
         {
             let use_openhcl_cvm = use_openhcl_cvm_for_vmfirmwareigvm_dll.unwrap();
-            let pub_vmfirmwareigvm_cvm_x64 = pub_vmfirmwareigvm_cvm_x64.take().unwrap();
             let job = pipeline
                 .new_job(
                     FlowPlatform::Windows,
@@ -1956,7 +1953,7 @@ impl IntoPipeline for CheckinGatesCli {
                         igvm_bin: flowey_lib_hvlite::build_vmfirmwareigvm_dll::IgvmInput::Openhcl(
                             ctx.use_typed_artifact(&use_openhcl_cvm),
                         ),
-                        resource_id: 13515,
+                        resource_id: flowey_lib_hvlite::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
                         dll_version: ReadVar::from_static(
                             flowey_lib_hvlite::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
                         ),

@@ -440,7 +440,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         if properties.is_openhcl {
             if let Some(local_path) = &igvm_file {
-                // Copy the IGVM file locally, since it is not accessible from a WSL filesystem
+                // Hyper-V cannot access IGVM files in a WSL filesystem.
                 let Some(IgvmFirmwareSource::File(igvm_path)) = config.firmware.openhcl_firmware()
                 else {
                     unreachable!();
