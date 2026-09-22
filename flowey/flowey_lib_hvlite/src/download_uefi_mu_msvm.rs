@@ -164,6 +164,33 @@ pub mod latest_patina {
     use crate::common::CommonArch;
     use flowey::node::prelude::*;
 
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+        assets: Vec<Asset>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Asset {
+        name: String,
+        browser_download_url: String,
+    }
+
+    impl Release {
+        fn unique_asset(&self, file_name: &str) -> anyhow::Result<&Asset> {
+            let mut matches = self.assets.iter().filter(|asset| asset.name == file_name);
+            let asset = matches.next().ok_or_else(|| {
+                anyhow::anyhow!("missing asset {file_name} in release {}", self.tag_name)
+            })?;
+            anyhow::ensure!(
+                matches.next().is_none(),
+                "duplicate asset {file_name} in release {}",
+                self.tag_name
+            );
+            Ok(asset)
+        }
+    }
+
     flowey_request! {
         pub enum Request {
             Download {
@@ -211,12 +238,8 @@ pub mod latest_patina {
                                 "{gh_cli} api repos/microsoft/mu_msvm/releases/latest"
                             )
                             .read()?;
-                            #[derive(Deserialize)]
-                            struct Release {
-                                tag_name: String,
-                            }
                             let release: Release = serde_json::from_str(&release_json)?;
-                            let tag = release.tag_name;
+                            let tag = &release.tag_name;
                             log::info!("using mu_msvm Patina release {tag}");
                             fs_err::create_dir_all(&artifact_dir)?;
                             fs_err::write(artifact_dir.join("release.json"), release_json)?;
@@ -229,11 +252,10 @@ pub mod latest_patina {
                                 rt.sh.change_dir(&working_dir);
                                 let file_name =
                                     format!("firmware-RELEASE-{arch_tag}-CLANGPDB-patina.tar.gz");
-                                flowey::shell_cmd!(
-                                    rt,
-                                    "{gh_cli} release download --repo microsoft/mu_msvm {tag} --pattern {file_name} --clobber"
-                                )
-                                .run()?;
+                                let asset = release.unique_asset(&file_name)?;
+                                let url = &asset.browser_download_url;
+                                flowey::shell_cmd!(rt, "curl --fail -L {url} -o {file_name}")
+                                    .run()?;
                                 let archive = rt.sh.current_dir().join(&file_name);
                                 let extract_dir =
                                     flowey_lib_common::_util::extract::extract_zip_if_new(
@@ -260,6 +282,54 @@ pub mod latest_patina {
         match arch {
             CommonArch::X86_64 => "MSVM-X64.fd",
             CommonArch::Aarch64 => "MSVM-AARCH64.fd",
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Asset;
+        use super::Release;
+        use test_with_tracing::test;
+
+        #[test]
+        fn requires_unique_patina_asset() {
+            for arch in ["X64", "AARCH64"] {
+                let file_name = format!("firmware-RELEASE-{arch}-CLANGPDB-patina.tar.gz");
+                let asset = || Asset {
+                    name: file_name.clone(),
+                    browser_download_url: format!("https://example.com/{file_name}"),
+                };
+                let mut release = Release {
+                    tag_name: "vtest".into(),
+                    assets: vec![Asset {
+                        name: "unrelated.tar.gz".into(),
+                        browser_download_url: "https://example.com/unrelated.tar.gz".into(),
+                    }],
+                };
+                assert!(
+                    release
+                        .unique_asset(&file_name)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("missing asset")
+                );
+                release.assets.push(asset());
+                assert_eq!(
+                    release
+                        .unique_asset(&file_name)
+                        .unwrap()
+                        .browser_download_url,
+                    asset().browser_download_url
+                );
+                release.assets.push(asset());
+                assert!(
+                    release
+                        .unique_asset(&file_name)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("duplicate asset")
+                );
+            }
         }
     }
 }
