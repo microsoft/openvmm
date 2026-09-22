@@ -7,8 +7,8 @@ initial state. OpenHCL is delivered as an IGVM image.
 
 ## Purpose
 
-The IGVM file serves as the firmware image for the OpenHCL paravisor. It allows
-the host VMM to:
+The IGVM file serves as the firmware image for the OpenHCL paravisor. It instructs
+the host VMM on how to:
 
 1. Load the OpenHCL components into VTL2 memory.
 2. Place them at required physical addresses in a defined order so launch

@@ -3,7 +3,7 @@
 
 //! Windows-only interactive shell for developing and debugging Hyper-V VMs.
 //!
-//! Hypestv can select a VM, change its power state, attach serial consoles, and
+//! hypestv can select a VM, change its power state, attach serial consoles, and
 //! inspect or reload an OpenHCL paravisor. It combines those operations in a
 //! REPL with history and completion and is intended for direct developer use,
 //! not stable automation.

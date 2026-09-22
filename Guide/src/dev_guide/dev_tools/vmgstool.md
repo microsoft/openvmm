@@ -17,17 +17,6 @@ A VMGS store contains redundant headers, a file table, and allocated data
 blocks. Commands identify logical data through either a numeric file ID or a
 known symbolic name.
 
-Accepted symbolic names include:
-
-- Firmware state: `BIOS_NVRAM`, `CUSTOM_UEFI`, `GUEST_FIRMWARE`,
-    `GUEST_WATCHDOG`, and `RTC_SKEW`.
-- TPM and attestation state: `TPM_PPI`, `TPM_NVRAM`, `TPM_185_NVRAM`,
-    `TPM_NVRAM_BACKUP`, and `ATTEST`.
-- Key and identity state: `KEY_PROTECTOR`, `HW_KEY_PROTECTOR`,
-    `GUEST_SECRET_KEY`, `VM_UNIQUE_ID`, `PLATFORM_SEED`, and
-    `HIBERNATION_TOKEN`.
-- Metadata: `FILE_TABLE`, `EXTENDED_FILE_TABLE`, and `PROVENANCE_DOC`.
-
 Use `dump-file-table` to discover which IDs are allocated before modifying a
 store:
 

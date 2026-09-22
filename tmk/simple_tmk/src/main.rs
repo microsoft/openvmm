@@ -7,10 +7,6 @@
 //! ELF `tmk_tests` section. [`tmk_vmm`](https://docs.rs/tmk_vmm) discovers
 //! those descriptors, loads this image as a guest kernel, and runs each test
 //! without booting firmware or a general-purpose operating system.
-//!
-//! This is not a host CLI. It must be built with the repository's
-//! `minimal_rt` configuration and is normally built and consumed by the TMK
-//! portions of `cargo xflowey vmm-tests-run`.
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: TMK tests are going to need to perform unsafe operations.

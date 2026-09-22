@@ -7,11 +7,6 @@
 //! establishes the VTL2 address space and processor state, constructs Linux
 //! boot parameters and a device tree, and initializes the sidecar kernel when
 //! configured. It then transfers control to the OpenHCL Linux kernel.
-//!
-//! `openhcl_boot` is a `minimal_rt` IGVM component with no command-line
-//! interface. Developers normally build and package it, together with the
-//! kernel, initrd, sidecar, and `openvmm_hcl`, through `cargo xflowey
-//! build-igvm`.
 
 // See build.rs.
 #![cfg_attr(minimal_rt, no_std, no_main)]

@@ -15,9 +15,6 @@ host loads OpenHCL IGVM into VTL2
                  `- exec /bin/openvmm_hcl
 ```
 
-The executable is not the host-side `openvmm` CLI. It runs inside
-the paravisor and manages the lower-trust VTL0 guest from VTL2.
-
 ## Startup responsibilities
 
 After Linux userspace starts, `openvmm_hcl` performs these broad tasks:

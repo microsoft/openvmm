@@ -3,7 +3,7 @@
 
 //! In-guest agent used by the Petri VM test framework.
 //!
-//! Pipette accepts host requests over VSocket or TCP, executes processes, and
+//! Pipette accepts host requests over VSock or TCP, executes processes, and
 //! provides guest operations such as file transfer, tracing, crash handling,
 //! and shutdown. On Linux it can also run as PID 1 and perform the minimal init
 //! work needed by direct-boot test images; on Windows it can run as a service.

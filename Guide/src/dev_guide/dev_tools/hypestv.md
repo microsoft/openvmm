@@ -28,8 +28,7 @@ Start detached or select an initial VM by name:
 .\target\debug\hypestv.exe <VM_NAME>
 ```
 
-The interface is deliberately interactive. Do not drive it from scripts; use a
-stable Hyper-V or OpenHCL management API for automation.
+The interface is deliberately interactive, it is not intended for use in automation.
 
 In many ways, it is similar to the OpenVMM interactive console. In time, it may
 end up sharing code and capabilities with it and with `ohcldiag-dev`, but it

@@ -8,9 +8,6 @@
 //! function calls, and dispatches registered low-level operations such as port
 //! I/O and hypercalls. This supports external fuzzing and hardware-interface
 //! test drivers without booting a general-purpose guest OS.
-//!
-//! This binary is built as a UEFI guest payload and driven through its serial
-//! protocol; it has no host-side command-line interface.
 
 #![cfg_attr(target_os = "uefi", no_main)]
 #![cfg_attr(target_os = "uefi", no_std)]
