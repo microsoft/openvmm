@@ -79,10 +79,10 @@ The host transfers control to `openhcl_boot`, which performs these steps:
     unit (MMU).
 2. **Configuration validation:** Validate imported regions and combine measured
     build-time parameters with the runtime data permitted by the image policy.
-3. **Device tree construction:** Build the hardware description passed to
-    Linux.
+3. **Device tree construction:** Build the hardware topology and the set of
+    devices passed to Linux.
 4. **Sidecar setup (x86_64):** Assign processors to Linux or sidecar, initialize
-    their control structures, and start the sidecar application processors.
+    their control structures, and start the sidecar processors.
 5. **Kernel handoff:** Start Linux with the final device tree, command line, and
     architecture-specific boot data.
 
