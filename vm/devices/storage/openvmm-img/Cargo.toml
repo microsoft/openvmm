@@ -18,6 +18,7 @@ serde_json = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 vhdx.workspace = true
+vmm_cli.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

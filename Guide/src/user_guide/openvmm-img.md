@@ -21,17 +21,33 @@ cargo run -p openvmm-img -- create path/to/disk.vhdx --size 64G
 cargo run -p openvmm-img -- create path/to/disk --format vhdx --size 64G
 ```
 
-Use `--type fixed` to provision all payload blocks during creation. Use
-`--type differencing` with `--parent` to create a child image:
+Format-specific options are passed as comma-separated key-value pairs. Use
+`allocation=fixed` to provision all VHDX payload blocks during creation:
+
+```bash
+cargo run -p openvmm-img -- create path/to/disk.vhdx --size 64G \
+    --format-options allocation=fixed
+```
+
+Use `--parent` to create a differencing image. The parent implies dynamic
+allocation, so it cannot be combined with `allocation=fixed`:
 
 ```bash
 cargo run -p openvmm-img -- create path/to/child.vhdx \
-    --size 64G --type differencing --parent path/to/parent.vhdx
+    --size 64G --parent path/to/parent.vhdx
 ```
 
 A differencing child inherits its parent's logical sector size unless one is
 specified explicitly. An explicit logical sector size must match the parent.
 The child and parent may have different virtual disk sizes.
+
+Run `format-options` without a format to list the supported formats, or pass a
+format to list its accepted options:
+
+```bash
+cargo run -p openvmm-img -- format-options
+cargo run -p openvmm-img -- format-options vhdx
+```
 
 ## Inspecting and Validating Images
 
@@ -64,6 +80,15 @@ cargo run -p openvmm-img -- convert path/to/disk.raw \
     --output path/to/disk.vhdx --output-format vhdx
 cargo run -p openvmm-img -- convert path/to/disk.vhdx \
     --output path/to/disk.raw --output-format raw
+```
+
+VHDX output options use the same key-value syntax. For example, this creates a
+fixed VHDX with 4 MiB payload blocks:
+
+```bash
+cargo run -p openvmm-img -- convert path/to/disk.raw \
+    --output path/to/disk.vhdx --output-format vhdx \
+    --format-options allocation=fixed,block_size=4M
 ```
 
 The input format is inferred from `.raw`, `.img`, or `.vhdx`. Use

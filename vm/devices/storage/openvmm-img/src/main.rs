@@ -5,7 +5,7 @@
 //! VHDX virtual disk images.
 //!
 //! `openvmm-img` is a cross-platform frontend for the [`vhdx`] crate. It supports
-//! dynamic, fixed, and differencing VHDX images through six commands:
+//! dynamic, fixed, and differencing VHDX images through seven commands:
 //!
 //! - `create` creates a new image and records parent locator metadata for
 //!   differencing disks.
@@ -17,6 +17,8 @@
 //! - `check` validates VHDX metadata and follows the complete differencing
 //!   parent chain.
 //! - `replay` replays a dirty VHDX write-ahead log and leaves the image clean.
+//! - `format-options` displays the format-specific options accepted by `create`
+//!   and `convert`.
 //!
 //! Run `openvmm-img --help` or `openvmm-img <command> --help` for command syntax and
 //! option details.
@@ -46,40 +48,54 @@
 
 mod file;
 mod util;
+mod vhdx;
 
+use ::vhdx::AsyncFile;
+use ::vhdx::VhdxFile;
 use anyhow::Context;
 use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
-use guid::Guid;
 use pal_async::DefaultPool;
-use serde::Serializer as _;
-use serde::ser::SerializeSeq;
-use std::io;
-use std::io::Write;
 use std::path::PathBuf;
-use vhdx::AsyncFile;
-use vhdx::CreateParams;
-use vhdx::DiskType as VhdxDiskType;
-use vhdx::OpenError;
-use vhdx::OpenErrorKind;
-use vhdx::ReadRange;
-use vhdx::VhdxFile;
-use vhdx::VhdxParent;
-use vhdx::WriteRange;
 
 use crate::file::BlockingFile;
+use crate::vhdx::CreateOptions;
+use crate::vhdx::DiskType;
+use crate::vhdx::InconsistentImage;
+use crate::vhdx::VhdxAllocation;
+use crate::vhdx::VhdxConvertFormatOptions;
+use crate::vhdx::create_image;
+use crate::vhdx::read_chunk as read_vhdx_chunk;
+use crate::vhdx::write_chunk as write_vhdx_chunk;
 
-#[derive(Clone, Copy, ValueEnum)]
-enum DiskType {
-    /// Allocate blocks as data is written.
-    Dynamic,
-    /// Allocate all data blocks when the image is created.
-    Fixed,
-    /// Read unallocated blocks from a parent VHDX.
-    Differencing,
-}
+#[cfg(test)]
+use crate::vhdx::MapRun;
+#[cfg(test)]
+use crate::vhdx::VhdxCreateFormatOptions;
+#[cfg(test)]
+use crate::vhdx::check as test_check;
+#[cfg(test)]
+use crate::vhdx::disk_type as vhdx_disk_type;
+#[cfg(test)]
+use crate::vhdx::parse_convert_format_options as parse_vhdx_convert_format_options;
+#[cfg(test)]
+use crate::vhdx::parse_create_format_options as parse_vhdx_create_format_options;
+#[cfg(test)]
+use crate::vhdx::replay as test_replay;
+#[cfg(test)]
+use crate::vhdx::resolve_parent_path;
+#[cfg(test)]
+use crate::vhdx::visit_map_runs;
+#[cfg(test)]
+use ::vhdx::CreateParams;
+#[cfg(test)]
+use ::vhdx::DiskType as VhdxDiskType;
+#[cfg(test)]
+use ::vhdx::VhdxParent;
+#[cfg(test)]
+use guid::Guid;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum ImageFormat {
@@ -119,28 +135,18 @@ enum Command {
         /// Virtual disk size. Accepts binary suffixes such as K, M, G, and T.
         #[arg(long, value_parser = util::parse_size)]
         size: u64,
-        /// VHDX allocation type.
-        #[arg(long = "type", value_enum, default_value = "dynamic")]
-        disk_type: DiskType,
-        /// Parent VHDX path. Required for, and only valid with, differencing images.
+        /// Output-format-specific key-value options.
+        #[arg(long, value_name = "KEY=VALUE,...")]
+        format_options: Option<String>,
+        /// Parent image path. Creates a differencing image.
         #[arg(long)]
         parent: Option<PathBuf>,
-        /// VHDX payload block size. Must be a multiple of 1 MiB between 1 MiB
-        /// and 256 MiB. Defaults to 2 MiB. Accepts binary size suffixes.
-        #[arg(long, value_parser = util::parse_size)]
-        block_size: Option<u64>,
         /// Logical sector size in bytes: 512 or 4096.
         #[arg(long)]
         logical_sector_size: Option<u32>,
         /// Physical sector size in bytes: 512 or 4096.
         #[arg(long)]
         physical_sector_size: Option<u32>,
-        /// Alignment of the VHDX data region. Accepts binary size suffixes.
-        #[arg(long, value_parser = util::parse_size)]
-        block_alignment: Option<u64>,
-        /// SCSI page 83 identifier GUID. A random GUID is generated when omitted.
-        #[arg(long)]
-        page83: Option<String>,
         /// Replace the output file if it already exists.
         #[arg(short, long)]
         force: bool,
@@ -174,14 +180,9 @@ enum Command {
         /// Format of the converted image.
         #[arg(long, value_enum)]
         output_format: ImageFormat,
-        /// Allocation type for VHDX output.
-        #[arg(long = "type", value_enum, default_value = "dynamic")]
-        disk_type: DiskType,
-        /// Payload block size for VHDX output. Must be a multiple of 1 MiB
-        /// between 1 MiB and 256 MiB. Defaults to 2 MiB. Accepts binary size
-        /// suffixes.
-        #[arg(long, value_parser = util::parse_size)]
-        block_size: Option<u64>,
+        /// Output-format-specific key-value options.
+        #[arg(long, value_name = "KEY=VALUE,...")]
+        format_options: Option<String>,
         /// Replace the output file if it already exists.
         #[arg(short, long)]
         force: bool,
@@ -198,6 +199,12 @@ enum Command {
         /// Report whether replay is required without modifying the image.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Display the options accepted by an image format.
+    FormatOptions {
+        /// Image format whose options will be displayed. Lists formats when omitted.
+        #[arg(value_enum)]
+        format: Option<ImageFormat>,
     },
 }
 
@@ -237,43 +244,50 @@ async fn run(command: Command, driver: &impl pal_async::task::Spawn) -> Result<(
             file,
             format,
             size,
-            disk_type,
+            format_options,
             parent,
-            block_size,
             logical_sector_size,
             physical_sector_size,
-            block_alignment,
-            page83,
             force,
         } => {
             let CreateFormat::Vhdx = format
                 .map(Ok)
                 .unwrap_or_else(|| infer_create_format(&file))?;
+            let format_options = vhdx::parse_create_format_options(format_options.as_deref())?;
             create_image(CreateOptions {
                 file,
                 size,
-                disk_type,
+                disk_type: vhdx::disk_type(format_options.output.allocation, parent.is_some())?,
                 parent,
-                block_size,
+                block_size: format_options.output.block_size.map(|size| size.0),
                 logical_sector_size,
                 physical_sector_size,
-                block_alignment,
-                page83,
+                block_alignment: format_options.block_alignment.map(|size| size.0),
+                page83: format_options.page83,
                 force,
             })
             .await
         }
-        Command::Info { file, json } => info(&file, json).await,
-        Command::Map { file, json } => map(&file, json).await,
+        Command::Info { file, json } => vhdx::info(&file, json).await,
+        Command::Map { file, json } => vhdx::map(&file, json).await,
         Command::Convert {
             input,
             output,
             input_format,
             output_format,
-            disk_type,
-            block_size,
+            format_options,
             force,
         } => {
+            let format_options = match output_format {
+                ImageFormat::Raw => {
+                    anyhow::ensure!(
+                        format_options.is_none(),
+                        "raw output does not accept --format-options"
+                    );
+                    VhdxConvertFormatOptions::default()
+                }
+                ImageFormat::Vhdx => vhdx::parse_convert_format_options(format_options.as_deref())?,
+            };
             convert(
                 &input,
                 &output,
@@ -286,461 +300,32 @@ async fn run(command: Command, driver: &impl pal_async::task::Spawn) -> Result<(
                         )
                     })?,
                 output_format,
-                disk_type,
-                block_size,
+                match format_options.output.allocation {
+                    VhdxAllocation::Dynamic => DiskType::Dynamic,
+                    VhdxAllocation::Fixed => DiskType::Fixed,
+                },
+                format_options.output.block_size.map(|size| size.0),
                 force,
                 driver,
             )
             .await
         }
-        Command::Check { file } => check(&file).await,
-        Command::Replay { file, dry_run } => replay(&file, dry_run, driver).await,
+        Command::Check { file } => vhdx::check(&file).await,
+        Command::Replay { file, dry_run } => vhdx::replay(&file, dry_run, driver).await,
+        Command::FormatOptions { format } => print_format_options(format),
     }
 }
 
-#[derive(Debug)]
-struct InconsistentImage(String);
-
-impl std::fmt::Display for InconsistentImage {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
+fn print_format_options(format: Option<ImageFormat>) -> Result<()> {
+    match format {
+        None => {
+            println!("Formats:");
+            println!("  raw   No format-specific options");
+            println!("  vhdx  VHDX creation and conversion options");
+        }
+        Some(ImageFormat::Raw) => println!("Raw images have no format-specific options."),
+        Some(ImageFormat::Vhdx) => return vhdx::print_format_options(),
     }
-}
-
-impl std::error::Error for InconsistentImage {}
-
-fn inconsistent(message: impl Into<String>) -> anyhow::Error {
-    anyhow::Error::new(InconsistentImage(message.into()))
-}
-
-struct CreateOptions {
-    file: PathBuf,
-    size: u64,
-    disk_type: DiskType,
-    parent: Option<PathBuf>,
-    block_size: Option<u64>,
-    logical_sector_size: Option<u32>,
-    physical_sector_size: Option<u32>,
-    block_alignment: Option<u64>,
-    page83: Option<String>,
-    force: bool,
-}
-
-async fn create_image(options: CreateOptions) -> Result<()> {
-    let is_differencing = matches!(options.disk_type, DiskType::Differencing);
-    anyhow::ensure!(
-        is_differencing == options.parent.is_some(),
-        "--parent is required for differencing disks and invalid for other disk types"
-    );
-
-    let block_size = options.block_size.unwrap_or(0);
-    let block_alignment = options.block_alignment.unwrap_or(0);
-    let mut params = CreateParams {
-        disk_size: options.size,
-        block_size: u32::try_from(block_size).context("block size exceeds 4 GiB")?,
-        logical_sector_size: options.logical_sector_size.unwrap_or(0),
-        physical_sector_size: options.physical_sector_size.unwrap_or(0),
-        disk_type: match options.disk_type {
-            DiskType::Dynamic => VhdxDiskType::Dynamic,
-            DiskType::Fixed => VhdxDiskType::Fixed,
-            DiskType::Differencing => VhdxDiskType::Dynamic,
-        },
-        block_alignment: u32::try_from(block_alignment).context("block alignment exceeds 4 GiB")?,
-        page_83_data: parse_guid(options.page83.as_deref(), "page83")?,
-        ..Default::default()
-    };
-
-    if let Some(parent_path) = options.parent {
-        let parent_file = BlockingFile::open(&parent_path, true)
-            .with_context(|| format!("failed to open parent {}", parent_path.display()))?;
-        let parent = VhdxFile::open(parent_file)
-            .read_only()
-            .await
-            .context("failed to read parent VHDX")?;
-        let parent_logical_sector_size = parent.logical_sector_size();
-        if let Some(logical_sector_size) = options.logical_sector_size {
-            anyhow::ensure!(
-                logical_sector_size == parent_logical_sector_size,
-                "child logical sector size must match parent logical sector size ({parent_logical_sector_size})"
-            );
-        }
-        params.logical_sector_size = parent_logical_sector_size;
-        let child_directory = options
-            .file
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let absolute_parent = fs_err::canonicalize(&parent_path)
-            .with_context(|| format!("failed to resolve parent {}", parent_path.display()))?;
-        let relative_path =
-            util::relative_path(child_directory, &absolute_parent).and_then(|path| {
-                let path = path
-                    .to_str()
-                    .context("relative parent path is not valid Unicode")?;
-                #[cfg(unix)]
-                anyhow::ensure!(
-                    !path.contains('\\'),
-                    "relative parent path contains a backslash"
-                );
-                Ok(path.replace(std::path::MAIN_SEPARATOR, "\\"))
-            });
-        // On Windows the parent may be on another drive, leaving no relative
-        // path; the absolute path below is then the only locator. Elsewhere
-        // there is no absolute locator, so a relative path is required.
-        #[cfg(windows)]
-        let relative_path = relative_path.ok();
-        #[cfg(not(windows))]
-        let relative_path = Some(relative_path?);
-        let mut vhdx_parent = VhdxParent::new(parent.data_write_guid())?;
-        if let Some(relative_path) = relative_path {
-            vhdx_parent = vhdx_parent.with_relative_path(relative_path)?;
-        }
-        #[cfg(windows)]
-        let vhdx_parent = {
-            let absolute_path = absolute_parent
-                .to_str()
-                .context("absolute parent path is not valid Unicode")?;
-            let absolute_path = if absolute_path.starts_with(r"\\?\") {
-                absolute_path.to_owned()
-            } else {
-                format!(r"\\?\{}", absolute_path)
-            };
-            vhdx_parent.with_absolute_win32_path(absolute_path)?
-        };
-        params.disk_type = VhdxDiskType::Differencing(vhdx_parent);
-    }
-
-    let file = BlockingFile::create(&options.file, options.force)
-        .with_context(|| format!("failed to create {}", options.file.display()))?;
-    vhdx::create(&file, &mut params)
-        .await
-        .context("failed to create VHDX")?;
-    println!(
-        "Created {} ({})",
-        options.file.display(),
-        util::format_size(options.size)
-    );
-    Ok(())
-}
-
-fn parse_guid(value: Option<&str>, name: &str) -> Result<Guid> {
-    value
-        .map(|value| {
-            value
-                .parse()
-                .with_context(|| format!("invalid --{name} GUID"))
-        })
-        .transpose()
-        .map(|value| value.unwrap_or(Guid::ZERO))
-}
-
-async fn info(path: &std::path::Path, json: bool) -> Result<()> {
-    let file = BlockingFile::open(path, true)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    let image = VhdxFile::open(file)
-        .read_only()
-        .await
-        .context("failed to open VHDX")?;
-    let parent = image
-        .parent_locator()
-        .await
-        .context("failed to read parent locator")?
-        .map(|locator| locator.vhdx_parent())
-        .transpose()
-        .context("failed to interpret VHDX parent locator")?;
-    let image_type = if image.has_parent() {
-        "differencing"
-    } else if image.is_fully_allocated() {
-        "fixed"
-    } else {
-        "dynamic"
-    };
-
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "format": "vhdx",
-                "disk_size": image.disk_size(),
-                "block_size": image.block_size(),
-                "logical_sector_size": image.logical_sector_size(),
-                "physical_sector_size": image.physical_sector_size(),
-                "type": image_type,
-                "has_parent": image.has_parent(),
-                "parent_linkage": parent.as_ref().map(|parent| parent.linkage().to_string()),
-                "relative_path": parent.as_ref().and_then(|parent| parent.relative_path()),
-                "absolute_win32_path": parent.as_ref().and_then(|parent| parent.absolute_win32_path()),
-                "volume_path": parent.as_ref().and_then(|parent| parent.volume_path()),
-                "page_83_data": image.page_83_data().to_string(),
-                "data_write_guid": image.data_write_guid().to_string(),
-                "is_read_only": image.is_read_only(),
-            }))?
-        );
-    } else {
-        println!("File:                 {}", path.display());
-        println!("Format:               VHDX");
-        println!("Type:                 {image_type}");
-        println!(
-            "Disk size:            {} ({})",
-            image.disk_size(),
-            util::format_size(image.disk_size())
-        );
-        println!("Block size:           {}", image.block_size());
-        println!("Logical sector size:  {}", image.logical_sector_size());
-        println!("Physical sector size: {}", image.physical_sector_size());
-        println!("Page 83 ID:           {}", image.page_83_data());
-        println!("Data write GUID:      {}", image.data_write_guid());
-        if let Some(parent) = parent {
-            println!("Parent linkage:       {}", parent.linkage());
-            println!(
-                "Relative parent:      {}",
-                parent.relative_path().unwrap_or("-")
-            );
-            println!(
-                "Absolute parent:      {}",
-                parent.absolute_win32_path().unwrap_or("-")
-            );
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct MapRun {
-    guest_offset: u64,
-    length: u64,
-    file_offset: Option<u64>,
-}
-
-async fn visit_map_runs(
-    image: &VhdxFile<BlockingFile>,
-    mut visit: impl FnMut(MapRun) -> Result<()>,
-) -> Result<()> {
-    let mut pending: Option<MapRun> = None;
-    let mut offset = 0;
-    while offset < image.disk_size() {
-        let length = (image.disk_size() - offset).min(image.block_size() as u64) as u32;
-        let mut ranges = Vec::new();
-        let guard = image
-            .resolve_read(offset, length, &mut ranges)
-            .await
-            .context("failed to resolve VHDX allocation map")?;
-        for range in ranges {
-            let (guest_offset, length, file_offset) = match range {
-                ReadRange::Data {
-                    guest_offset,
-                    length,
-                    file_offset,
-                } => (guest_offset, length, Some(file_offset)),
-                ReadRange::Zero {
-                    guest_offset,
-                    length,
-                }
-                | ReadRange::Unmapped {
-                    guest_offset,
-                    length,
-                } => (guest_offset, length, None),
-            };
-            let run = MapRun {
-                guest_offset,
-                length: length as u64,
-                file_offset,
-            };
-            if let Some(previous) = pending.as_mut()
-                && previous.guest_offset + previous.length == run.guest_offset
-                && match (previous.file_offset, run.file_offset) {
-                    (None, None) => true,
-                    (Some(previous_file), Some(file)) => previous_file + previous.length == file,
-                    _ => false,
-                }
-            {
-                previous.length += run.length;
-            } else if let Some(previous) = pending.replace(run) {
-                visit(previous)?;
-            }
-        }
-        drop(guard);
-        offset += length as u64;
-    }
-    if let Some(run) = pending {
-        visit(run)?;
-    }
-    Ok(())
-}
-
-async fn map(path: &std::path::Path, json: bool) -> Result<()> {
-    let file = BlockingFile::open(path, true)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    let image = VhdxFile::open(file)
-        .read_only()
-        .await
-        .context("failed to open VHDX")?;
-    let stdout = io::stdout();
-    let mut output = io::BufWriter::new(stdout.lock());
-
-    if json {
-        {
-            let mut serializer = serde_json::Serializer::pretty(&mut output);
-            let mut sequence = serializer.serialize_seq(None)?;
-            visit_map_runs(&image, |run| {
-                sequence.serialize_element(&serde_json::json!({
-                    "start": run.guest_offset,
-                    "length": run.length,
-                    "allocated": run.file_offset.is_some(),
-                    "file_offset": run.file_offset,
-                }))?;
-                Ok(())
-            })
-            .await?;
-            sequence.end()?;
-        }
-        writeln!(output)?;
-    } else {
-        writeln!(
-            output,
-            "{:<14} {:<14} {:<12} FILE OFFSET",
-            "START", "LENGTH", "ALLOCATED"
-        )?;
-        visit_map_runs(&image, |run| {
-            writeln!(
-                output,
-                "{:<14} {:<14} {:<12} {}",
-                run.guest_offset,
-                run.length,
-                if run.file_offset.is_some() {
-                    "yes"
-                } else {
-                    "no"
-                },
-                run.file_offset
-                    .map(|offset| offset.to_string())
-                    .unwrap_or_else(|| "-".to_string())
-            )?;
-            Ok(())
-        })
-        .await?;
-    }
-    Ok(())
-}
-
-async fn check(path: &std::path::Path) -> Result<()> {
-    let mut current_path = fs_err::canonicalize(path)
-        .with_context(|| format!("failed to resolve {}", path.display()))?;
-    let mut visited = std::collections::HashSet::new();
-
-    loop {
-        if !visited.insert(current_path.clone()) {
-            return Err(inconsistent(format!(
-                "parent chain contains a cycle at {}",
-                current_path.display()
-            )));
-        }
-        let file = BlockingFile::open(&current_path, true)
-            .with_context(|| format!("failed to open {}", current_path.display()))?;
-        let image = match VhdxFile::open(file).read_only().await {
-            Ok(image) => image,
-            Err(error) if error.kind() == OpenErrorKind::LogReplayRequired => {
-                println!(
-                    "WARNING: {} requires log replay; run `openvmm-img replay {}`",
-                    current_path.display(),
-                    current_path.display()
-                );
-                return Ok(());
-            }
-            Err(error) => return Err(classify_open_error(&current_path, error)),
-        };
-        if !image.has_parent() {
-            break;
-        }
-
-        let parent_info = image
-            .parent_locator()
-            .await
-            .map_err(|error| classify_open_error(&current_path, error))?
-            .ok_or_else(|| inconsistent("differencing image has no parent locator"))?
-            .vhdx_parent()
-            .map_err(|error| inconsistent(format!("invalid VHDX parent locator: {error}")))?;
-        let linkage = parent_info.linkage();
-        let parent_path = resolve_parent_path(&current_path, &parent_info).ok_or_else(|| {
-            inconsistent(format!(
-                "parent of {} was not found",
-                current_path.display()
-            ))
-        })?;
-        let parent_file = BlockingFile::open(&parent_path, true)
-            .with_context(|| format!("failed to open parent {}", parent_path.display()))?;
-        let parent = VhdxFile::open(parent_file)
-            .read_only()
-            .await
-            .map_err(|error| classify_open_error(&parent_path, error))?;
-        if parent.data_write_guid() != linkage {
-            return Err(inconsistent(format!(
-                "parent linkage mismatch for {}: expected {}, found {}",
-                current_path.display(),
-                linkage,
-                parent.data_write_guid()
-            )));
-        }
-        if parent.logical_sector_size() != image.logical_sector_size() {
-            return Err(inconsistent(format!(
-                "parent logical sector size mismatch for {}: child uses {}, parent uses {}",
-                current_path.display(),
-                image.logical_sector_size(),
-                parent.logical_sector_size()
-            )));
-        }
-        current_path = fs_err::canonicalize(&parent_path)
-            .with_context(|| format!("failed to resolve {}", parent_path.display()))?;
-    }
-
-    println!("OK: {}", path.display());
-    Ok(())
-}
-
-fn resolve_parent_path(child_path: &std::path::Path, parent: &VhdxParent) -> Option<PathBuf> {
-    let child_directory = child_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    parent
-        .candidate_paths(child_directory)
-        .find(|candidate| candidate.is_file())
-}
-
-fn classify_open_error(path: &std::path::Path, error: OpenError) -> anyhow::Error {
-    match error.kind() {
-        OpenErrorKind::Corruption | OpenErrorKind::LogReplayRequired => {
-            inconsistent(format!("{} is inconsistent: {error:#}", path.display()))
-        }
-        _ => anyhow::Error::new(error).context(format!("failed to open {}", path.display())),
-    }
-}
-
-async fn replay(
-    path: &std::path::Path,
-    dry_run: bool,
-    driver: &impl pal_async::task::Spawn,
-) -> Result<()> {
-    if dry_run {
-        let file = BlockingFile::open(path, true)
-            .with_context(|| format!("failed to open {}", path.display()))?;
-        match VhdxFile::open(file).read_only().await {
-            Ok(_) => println!("No replay required: {}", path.display()),
-            Err(error) if error.kind() == OpenErrorKind::LogReplayRequired => {
-                println!("Replay required: {}", path.display())
-            }
-            Err(error) => return Err(classify_open_error(path, error)),
-        }
-        return Ok(());
-    }
-
-    let file = BlockingFile::open(path, false)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    let image = VhdxFile::open(file)
-        .writable(driver)
-        .await
-        .map_err(|error| classify_open_error(path, error))?;
-    image.close().await.context("failed to close VHDX")?;
-    println!("Replay complete: {}", path.display());
     Ok(())
 }
 
@@ -956,78 +541,6 @@ async fn copy_vhdx_to_vhdx(
     Ok(())
 }
 
-async fn read_vhdx_chunk(
-    image: &VhdxFile<BlockingFile>,
-    payload: &BlockingFile,
-    offset: u64,
-    length: u32,
-) -> Result<Vec<u8>> {
-    let mut data = vec![0; length as usize];
-    let mut ranges = Vec::new();
-    let guard = image
-        .resolve_read(offset, length, &mut ranges)
-        .await
-        .context("failed to resolve VHDX read")?;
-    for range in ranges {
-        if let ReadRange::Data {
-            guest_offset,
-            length,
-            file_offset,
-        } = range
-        {
-            let range_data = payload
-                .read_into(file_offset, vec![0; length as usize])
-                .await
-                .context("failed to read VHDX payload")?;
-            let start = (guest_offset - offset) as usize;
-            data[start..start + length as usize].copy_from_slice(&range_data);
-        }
-    }
-    drop(guard);
-    Ok(data)
-}
-
-async fn write_vhdx_chunk(
-    image: &VhdxFile<BlockingFile>,
-    payload: &BlockingFile,
-    offset: u64,
-    data: &[u8],
-) -> Result<()> {
-    let length = u32::try_from(data.len()).context("copy chunk is too large")?;
-    let mut ranges = Vec::new();
-    let guard = image
-        .resolve_write(offset, length, &mut ranges)
-        .await
-        .context("failed to resolve VHDX write")?;
-    for range in ranges {
-        match range {
-            WriteRange::Data {
-                guest_offset,
-                length,
-                file_offset,
-            } => {
-                let start = (guest_offset - offset) as usize;
-                payload
-                    .write_from(file_offset, data[start..start + length as usize].to_vec())
-                    .await
-                    .context("failed to write VHDX payload")?;
-            }
-            WriteRange::Zero {
-                file_offset,
-                length,
-            } => payload
-                .zero_range(file_offset, length as u64)
-                .await
-                .context("failed to zero VHDX payload")?,
-        }
-    }
-    guard
-        .complete()
-        .await
-        .context("failed to commit VHDX allocation")?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1109,6 +622,72 @@ mod tests {
             .expect("unknown extension should fail");
         assert!(error.to_string().contains("specify --format"));
         assert!(infer_format(std::path::Path::new("disk.unknown")).is_none());
+    }
+
+    #[test]
+    fn format_options_accepts_an_optional_format() {
+        let args = CliArgs::try_parse_from(["openvmm-img", "format-options"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Command::FormatOptions { format: None }
+        ));
+
+        let args = CliArgs::try_parse_from(["openvmm-img", "format-options", "vhdx"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Command::FormatOptions {
+                format: Some(ImageFormat::Vhdx)
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_vhdx_format_options_by_command() {
+        let create = parse_vhdx_create_format_options(Some(
+            "allocation=fixed,block_size=4M,block_alignment=1G,page83=00112233-4455-6677-8899-aabbccddeeff",
+        ))
+        .unwrap();
+        assert_eq!(create.output.allocation, VhdxAllocation::Fixed);
+        assert_eq!(
+            create.output.block_size,
+            Some(vmm_cli::MemorySize(4 * 1024 * 1024))
+        );
+        assert_eq!(
+            create.block_alignment,
+            Some(vmm_cli::MemorySize(1024 * 1024 * 1024))
+        );
+        assert_eq!(
+            create.page83,
+            Some("00112233-4455-6677-8899-aabbccddeeff".parse().unwrap())
+        );
+
+        let convert =
+            parse_vhdx_convert_format_options(Some("allocation=fixed,block_size=4M")).unwrap();
+        assert_eq!(convert.output.allocation, VhdxAllocation::Fixed);
+        assert_eq!(
+            convert.output.block_size,
+            Some(vmm_cli::MemorySize(4 * 1024 * 1024))
+        );
+        assert!(parse_vhdx_convert_format_options(Some("block_alignment=1G")).is_err());
+        assert!(
+            parse_vhdx_convert_format_options(Some("page83=00112233-4455-6677-8899-aabbccddeeff"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn vhdx_format_options_validate_defaults_and_parent_allocation() {
+        assert_eq!(
+            parse_vhdx_create_format_options(None).unwrap(),
+            VhdxCreateFormatOptions::default()
+        );
+        assert!(parse_vhdx_create_format_options(Some("allocation=other")).is_err());
+        assert!(parse_vhdx_create_format_options(Some("block_size=1M,block_size=2M")).is_err());
+        assert!(matches!(
+            vhdx_disk_type(VhdxAllocation::Dynamic, true).unwrap(),
+            DiskType::Differencing
+        ));
+        assert!(vhdx_disk_type(VhdxAllocation::Fixed, true).is_err());
     }
 
     async fn collect_map(image: &VhdxFile<BlockingFile>) -> Result<Vec<MapRun>> {
@@ -1423,7 +1002,7 @@ mod tests {
         .unwrap();
         std::fs::remove_file(parent_path).unwrap();
 
-        let error = check(&child_path).await.unwrap_err();
+        let error = test_check(&child_path).await.unwrap_err();
         assert!(error.downcast_ref::<InconsistentImage>().is_some());
     }
 
@@ -1449,7 +1028,7 @@ mod tests {
             .with_relative_path("parent.vhdx")
             .unwrap();
         let child_file = BlockingFile::create(&child_path, false).unwrap();
-        vhdx::create(
+        ::vhdx::create(
             &child_file,
             &mut CreateParams {
                 disk_size: size,
@@ -1461,7 +1040,7 @@ mod tests {
         .await
         .unwrap();
 
-        let error = check(&child_path).await.unwrap_err();
+        let error = test_check(&child_path).await.unwrap_err();
         assert!(error.downcast_ref::<InconsistentImage>().is_some());
         assert!(format!("{error:#}").contains("logical sector size mismatch"));
     }
@@ -1479,7 +1058,7 @@ mod tests {
             .await
             .unwrap();
 
-        let error = check(&path).await.unwrap_err();
+        let error = test_check(&path).await.unwrap_err();
         assert!(error.downcast_ref::<InconsistentImage>().is_some());
     }
 
@@ -1491,10 +1070,10 @@ mod tests {
             .await
             .unwrap();
 
-        check(&path).await.unwrap();
-        replay(&path, true, &driver).await.unwrap();
-        replay(&path, false, &driver).await.unwrap();
-        check(&path).await.unwrap();
+        test_check(&path).await.unwrap();
+        test_replay(&path, true, &driver).await.unwrap();
+        test_replay(&path, false, &driver).await.unwrap();
+        test_check(&path).await.unwrap();
     }
 
     #[pal_async::async_test]

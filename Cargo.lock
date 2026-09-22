@@ -5815,6 +5815,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vhdx",
+ "vmm_cli",
 ]
 
 [[package]]

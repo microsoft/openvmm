@@ -14,11 +14,30 @@ use syn::Data;
 use syn::DeriveInput;
 use syn::Expr;
 use syn::Fields;
+use syn::Lit;
 use syn::LitStr;
+use syn::Meta;
 use syn::Token;
 use syn::Type;
 use syn::Variant;
 use syn::parse_macro_input;
+
+fn doc_string(attrs: &[syn::Attribute]) -> syn::Result<String> {
+    let mut lines = Vec::new();
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("doc")) {
+        let Meta::NameValue(meta) = &attr.meta else {
+            continue;
+        };
+        let Expr::Lit(expr) = &meta.value else {
+            continue;
+        };
+        let Lit::Str(doc) = &expr.lit else {
+            continue;
+        };
+        lines.push(doc.value().trim().to_owned());
+    }
+    Ok(lines.join("\n"))
+}
 
 /// Derive a `FromStr` impl that parses a comma-separated `key=value` option
 /// string into this struct. Documented in the `vmm_cli` crate.
@@ -195,6 +214,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
     let mut accept_arms = Vec::new();
     let mut flatten_accepts = Vec::new();
     let mut append_keys = Vec::new();
+    let mut append_options = Vec::new();
     let mut finish_fields = Vec::new();
     let mut positional: Option<(syn::Ident, Type, String)> = None;
 
@@ -204,6 +224,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
         let fa = parse_field_attr(field)?;
         validate_field_attr(field, &fa)?;
         let key = fa.key.clone().unwrap_or_else(|| fname.to_string());
+        let help = doc_string(&field.attrs)?;
 
         if fa.positional {
             if positional.is_some() {
@@ -225,6 +246,9 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             append_keys.push(quote! {
                 <#ty as ::vmm_cli::KeyValueFields>::append_keys(__keys);
             });
+            append_options.push(quote! {
+                <#ty as ::vmm_cli::KeyValueFields>::append_options(__options);
+            });
             flatten_accepts.push(quote! {
                 if <#ty as ::vmm_cli::KeyValueFields>::accept(&mut __a.#fname, __key, __value)? {
                     return ::core::result::Result::Ok(true);
@@ -235,6 +259,9 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             });
         } else if fa.flag {
             append_keys.push(quote! { __keys.push(#key); });
+            append_options.push(quote! {
+                __options.push(::vmm_cli::KeyValueOption { key: #key, help: #help });
+            });
             accum_fields.push(quote! { #fname: ::core::option::Option<bool>, });
             accept_arms.push(quote! {
                 #key => { ::vmm_cli::private::set_toggle(&mut __a.#fname, #key, __value)?; }
@@ -264,6 +291,9 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             }
         } else if let Some(inner) = option_inner(ty) {
             append_keys.push(quote! { __keys.push(#key); });
+            append_options.push(quote! {
+                __options.push(::vmm_cli::KeyValueOption { key: #key, help: #help });
+            });
             accum_fields.push(quote! { #fname: #ty, });
             accept_arms.push(quote! {
                 #key => {
@@ -273,6 +303,9 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
             finish_fields.push(quote! { #fname: __a.#fname, });
         } else {
             append_keys.push(quote! { __keys.push(#key); });
+            append_options.push(quote! {
+                __options.push(::vmm_cli::KeyValueOption { key: #key, help: #help });
+            });
             accum_fields.push(quote! { #fname: ::core::option::Option<#ty>, });
             accept_arms.push(quote! {
                 #key => {
@@ -296,13 +329,16 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
     }
 
     // Body of `KeyValueFields::accept`.
-    let accept_body = if accept_arms.is_empty() && flatten_accepts.is_empty() {
-        quote! {
+    let accept_body = match (accept_arms.is_empty(), flatten_accepts.is_empty()) {
+        (true, true) => quote! {
             let _ = (&mut *__a, __key, __value);
             ::core::result::Result::Ok(false)
-        }
-    } else {
-        quote! {
+        },
+        (true, false) => quote! {
+            #(#flatten_accepts)*
+            ::core::result::Result::Ok(false)
+        },
+        (false, _) => quote! {
             match __key {
                 #(#accept_arms)*
                 _ => {
@@ -311,7 +347,7 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
                 }
             }
             ::core::result::Result::Ok(true)
-        }
+        },
     };
 
     // Body of `FromStr::from_str`: seed the accumulator, consume the leading
@@ -359,6 +395,10 @@ fn expand_struct(input: DeriveInput) -> syn::Result<TokenStream2> {
 
             fn append_keys(__keys: &mut ::std::vec::Vec<&'static str>) {
                 #(#append_keys)*
+            }
+
+            fn append_options(__options: &mut ::std::vec::Vec<::vmm_cli::KeyValueOption>) {
+                #(#append_options)*
             }
 
             fn accept(
