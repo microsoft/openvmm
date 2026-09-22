@@ -24,7 +24,7 @@ vm_resource.workspace = true
 
 anyhow.workspace = true
 guid = { workspace = true, features = ["getrandom"] }
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 pal_async.workspace = true
 task_control.workspace = true

@@ -13,7 +13,7 @@ jiff_exts = ["dep:jiff"]
 inspect = ["dep:inspect"]
 
 [dependencies]
-inspect = { workspace = true, optional = true }
+inspect = { workspace = true, optional = true, features = ["std"] }
 
 parking_lot.workspace = true
 jiff = { workspace = true, optional = true }
