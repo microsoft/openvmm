@@ -166,7 +166,15 @@ async fn vmgstool_copy_igvmfile<T: PetriVmmBackend>(
         ResolvedArtifact<LATEST_CVM_X64>,
     ),
 ) -> Result<(), anyhow::Error> {
-    const VMGS_CAPACITY: u64 = 64 * 1024 * 1024;
+    const VMGS_HEADROOM: u64 = 64 * 1024 * 1024;
+
+    // The DLL bounds the IGVM size; reserve space for metadata and other guest state.
+    let firmware_dll_size = fs_err::metadata(vmfw_dll.get())?.len();
+    let vmgs_capacity = firmware_dll_size
+        .checked_add(VMGS_HEADROOM)
+        .and_then(|size| size.checked_next_multiple_of(1024 * 1024))
+        .ok_or_else(|| anyhow::anyhow!("firmware DLL is too large to size the VMGS"))?;
+    tracing::info!(firmware_dll_size, vmgs_capacity, "sizing VMGS for firmware");
 
     let temp_dir = tempfile::tempdir()?;
     let vmgs_path = temp_dir.path().join("test.vmgs");
@@ -177,7 +185,7 @@ async fn vmgstool_copy_igvmfile<T: PetriVmmBackend>(
         .arg("--filepath")
         .arg(&vmgs_path)
         .arg("--file-size")
-        .arg(VMGS_CAPACITY.to_string());
+        .arg(vmgs_capacity.to_string());
     run_host_cmd(cmd).await?;
 
     let mut cmd = Command::new(vmgstool_path);
