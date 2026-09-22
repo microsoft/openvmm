@@ -3,9 +3,10 @@
 
 //! Provides the [`Guid`] type with the same layout as the Windows type `GUID`.
 
+#![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use std::str::FromStr;
+use core::str::FromStr;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -73,7 +74,12 @@ macro_rules! guid {
 }
 
 impl Guid {
-    /// Return a new randomly-generated Version 4 UUID
+    /// Return a new randomly-generated Version 4 UUID.
+    ///
+    /// Available when the `getrandom` feature is enabled (default). When
+    /// building for `no_std` targets without a random source, disable
+    /// `default-features` on the `guid` dependency.
+    #[cfg(feature = "getrandom")]
     pub fn new_random() -> Self {
         let mut guid = Guid::default();
         getrandom::fill(guid.as_mut_bytes()).expect("rng failure");
@@ -157,8 +163,8 @@ impl Guid {
     }
 }
 
-impl std::fmt::Display for Guid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Guid {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
@@ -177,14 +183,14 @@ impl std::fmt::Display for Guid {
     }
 }
 
-impl std::fmt::LowerHex for Guid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self, f)
+impl core::fmt::LowerHex for Guid {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(self, f)
     }
 }
 
-impl std::fmt::UpperHex for Guid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::UpperHex for Guid {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
@@ -203,9 +209,9 @@ impl std::fmt::UpperHex for Guid {
     }
 }
 
-impl std::fmt::Debug for Guid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self, f)
+impl core::fmt::Debug for Guid {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(self, f)
     }
 }
 

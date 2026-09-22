@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+hyperv_keyboard_protocol.workspace = true
 input_core.workspace = true
 uidevices_resources.workspace = true
 video_core.workspace = true

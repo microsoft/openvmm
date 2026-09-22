@@ -43,7 +43,7 @@ nvme_resources.workspace = true
 disk_prwrap.workspace = true
 disk_backend.workspace = true
 
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 
 [lints]
 workspace = true

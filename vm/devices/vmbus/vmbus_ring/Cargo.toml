@@ -6,8 +6,23 @@ name = "vmbus_ring"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["guestmem-adapters"]
+# Enables the `guestmem`-integration bits: `RingRangeReader`/`Writer`
+# (implementing `guestmem::MemoryRead`/`MemoryWrite`), `Control::from_page`,
+# `inspect_ring`/`reader_needs_signal`/`writer_needs_signal` helpers, the
+# `gparange` submodule (which parses GPA ranges into `guestmem::PagedRange`),
+# and the `OutgoingPacketType::GpaDirect` variant that takes `PagedRange`
+# slices.
+#
+# Disable for `no_std` targets that don't want the `guestmem` dependency
+# (e.g. UEFI guests). The core ring engine — `RingMem`, `SendRing`/
+# `RecvRing` packet framing, signaling decisions, and `pending_send_sz`
+# protocol — remains available and is what most guest-side code needs.
+guestmem-adapters = ["dep:guestmem"]
+
 [dependencies]
-guestmem.workspace = true
+guestmem = { workspace = true, optional = true }
 
 inspect.workspace = true
 safeatomic.workspace = true

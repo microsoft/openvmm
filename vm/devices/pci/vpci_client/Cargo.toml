@@ -36,7 +36,7 @@ zerocopy.workspace = true
 closeable_mutex.workspace = true
 test_with_tracing.workspace = true
 vpci.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 mesh.workspace = true
 task_control.workspace = true
 

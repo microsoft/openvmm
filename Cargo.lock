@@ -3704,6 +3704,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperv_keyboard_protocol"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "zerocopy",
+]
+
+[[package]]
 name = "hyperv_secure_boot_templates"
 version = "0.0.0"
 dependencies = [
@@ -5129,7 +5137,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "event-listener",
  "futures",
  "futures-concurrency",
@@ -5142,8 +5149,8 @@ dependencies = [
  "mesh",
  "net_backend",
  "net_backend_resources",
+ "netvsp_protocol",
  "netvsp_resources",
- "open_enum",
  "pal_async",
  "parking_lot",
  "safeatomic",
@@ -5159,6 +5166,18 @@ dependencies = [
  "vmbus_core",
  "vmbus_ring",
  "vmcore",
+ "zerocopy",
+]
+
+[[package]]
+name = "netvsp_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "open_enum",
+ "static_assertions",
+ "vmbus_core",
  "zerocopy",
 ]
 
@@ -8983,6 +9002,7 @@ dependencies = [
  "futures",
  "guestmem",
  "guid",
+ "hyperv_keyboard_protocol",
  "input_core",
  "inspect",
  "mesh",
@@ -10382,11 +10402,10 @@ name = "vmbus_core"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
- "futures",
  "guid",
  "hvdef",
  "inspect",
- "mesh",
+ "mesh_protobuf",
  "open_enum",
  "static_assertions",
  "thiserror 2.0.16",

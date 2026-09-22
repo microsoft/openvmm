@@ -7,12 +7,37 @@
 #![forbid(unsafe_code)]
 
 mod buffers;
-mod protocol;
 pub mod resolver;
-mod rndisprot;
 mod rx_bufs;
 mod saved_state;
 mod test;
+
+// Re-export the shared wire modules from `netvsp_protocol` so existing
+// `crate::protocol` and `crate::rndisprot` paths keep resolving after the
+// extraction. All wire types are canonically defined in `netvsp_protocol`.
+pub use netvsp_protocol::protocol;
+pub use netvsp_protocol::rndisprot;
+
+// `net_backend::VlanMetadata` <-> `rndisprot::EthVlanInfo` conversions. Both
+// types come from external crates so the orphan rule blocks `From` impls;
+// use free functions instead.
+mod vlan_adapters {
+    use crate::rndisprot::EthVlanInfo;
+
+    pub fn eth_vlan_info_from_metadata(metadata: net_backend::VlanMetadata) -> EthVlanInfo {
+        EthVlanInfo::new()
+            .with_priority(metadata.priority())
+            .with_drop_eligible_indicator(metadata.drop_eligible_indicator())
+            .with_vlan_id(metadata.vlan_id())
+    }
+
+    pub fn metadata_from_eth_vlan_info(val: EthVlanInfo) -> net_backend::VlanMetadata {
+        net_backend::VlanMetadata::new()
+            .with_priority(val.priority())
+            .with_drop_eligible_indicator(val.drop_eligible_indicator())
+            .with_vlan_id(val.vlan_id())
+    }
+}
 
 use crate::buffers::GuestBuffers;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
@@ -2678,7 +2703,7 @@ impl<T: RingMem> NetChannel<T> {
                     rndisprot::PPI_VLAN => {
                         let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
-                        metadata.vlan = Some(n.into());
+                        metadata.vlan = Some(crate::vlan_adapters::metadata_from_eth_vlan_info(n));
                     }
                     _ => {}
                 }

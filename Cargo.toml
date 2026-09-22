@@ -284,6 +284,7 @@ hyperv_ic_protocol = { path = "vm/devices/hyperv_ic_protocol" }
 hyperv_ic_resources = { path = "vm/devices/hyperv_ic_resources" }
 hyperv_ic_guest = { path = "vm/devices/hyperv_ic_guest" }
 input_core = { path = "vm/devices/input_core" }
+hyperv_keyboard_protocol = { path = "vm/devices/input/hyperv_keyboard_protocol" }
 cxl_spec = { path = "vm/devices/cxl" }
 underhill_config = { path = "vm/devices/get/underhill_config" }
 missing_dev = { path = "vm/devices/missing_dev" }
@@ -303,6 +304,7 @@ net_mana = { path = "vm/devices/net/net_mana" }
 net_tap = { path = "vm/devices/net/net_tap" }
 net_packet_capture = { path = "vm/devices/net/net_packet_capture" }
 netvsp = { path = "vm/devices/net/netvsp" }
+netvsp_protocol = { path = "vm/devices/net/netvsp_protocol" }
 netvsp_resources = { path = "vm/devices/net/netvsp_resources" }
 nvme = { path = "vm/devices/storage/nvme" }
 nvme_common = { path = "vm/devices/storage/nvme_common" }

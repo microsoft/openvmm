@@ -54,7 +54,7 @@ vmgs_format.workspace = true
 vmgs_resources.workspace = true
 vmm_core_defs.workspace = true
 vmotherboard.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect = { workspace = true, features = ["initiate"] }
 kmsg.workspace = true
 mesh_process.workspace = true

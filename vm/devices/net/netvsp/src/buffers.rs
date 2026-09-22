@@ -259,7 +259,7 @@ impl BufferAccess for BufferPool {
                     typ: rndisprot::PPI_VLAN,
                     per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
                 },
-                payload: Into::<rndisprot::EthVlanInfo>::into(vlan_info).into(),
+                payload: crate::vlan_adapters::eth_vlan_info_from_metadata(vlan_info).into(),
             })
         } else {
             None

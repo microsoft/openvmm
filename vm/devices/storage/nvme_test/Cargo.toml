@@ -23,7 +23,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true

@@ -24,7 +24,7 @@ vpci.workspace = true
 
 chipset_resources.workspace = true
 
-guid = { workspace = true, features = ["inspect"] }
+guid = { workspace = true, features = ["getrandom", "inspect"] }
 inspect.workspace = true
 inspect_counters.workspace = true
 ipmi_protocol.workspace = true

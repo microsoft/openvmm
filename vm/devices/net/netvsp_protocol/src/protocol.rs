@@ -1,12 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(dead_code)]
-
 use crate::rndisprot;
 use bitfield_struct::bitfield;
 use inspect::Inspect;
-use vmbus_channel::gpadl::GpadlId;
+use vmbus_core::protocol::GpadlId;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;

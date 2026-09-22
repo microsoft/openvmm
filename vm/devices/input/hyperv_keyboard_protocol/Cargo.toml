@@ -1,0 +1,19 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# `hyperv_keyboard_protocol` — Hyper-V synthetic keyboard wire types.
+#
+# Shared between the host-side vdev (`uidevices::keyboard`) and guest-side
+# drivers (opentmk's `vmbus_guest::devices::keyboard`).
+
+[package]
+name = "hyperv_keyboard_protocol"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+guid.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true
