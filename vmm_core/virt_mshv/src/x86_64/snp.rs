@@ -324,26 +324,6 @@ pub(super) fn set_ghcb_gp(ghcb: &mut x86defs::snp::GhcbPage, index: usize, value
     true
 }
 
-pub(super) fn read_snp_start_vp_input(
-    vcpufd: &VcpuFd,
-    gpa: u64,
-) -> Result<hvdef::hypercall::StartVirtualProcessorX64, mshv_ioctls::MshvError> {
-    let mut data = [0; size_of::<hvdef::hypercall::StartVirtualProcessorX64>()];
-    for (offset, chunk) in data.chunks_mut(16).enumerate() {
-        let mut request = mshv_bindings::mshv_read_write_gpa {
-            base_gpa: gpa + (offset * 16) as u64,
-            byte_count: chunk.len() as u32,
-            ..Default::default()
-        };
-        let result = vcpufd.gpa_read(&mut request)?;
-        chunk.copy_from_slice(&result.data[..chunk.len()]);
-    }
-    Ok(
-        hvdef::hypercall::StartVirtualProcessorX64::read_from_bytes(&data)
-            .expect("buffer is exactly the StartVirtualProcessor input size"),
-    )
-}
-
 pub(super) fn ghcb_rax_is_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
     ghcb.save.valid_bitmap0 & GHCB_RAX_VALID_BIT != 0
 }
@@ -1063,12 +1043,7 @@ impl MshvProcessor<'_> {
         Ok(regs)
     }
 
-    fn dispatch_snp_hypercall(
-        &mut self,
-        info: &hvdef::HvX64HypercallInterceptMessage,
-        regs: &mut HvX64RegisterPage,
-    ) -> (u16, u8) {
-        let vcpufd = self.runner.vcpufd;
+    fn dispatch_snp_hypercall(&mut self, regs: &mut HvX64RegisterPage) -> (u16, u8) {
         let mut handler = MshvHypercallHandler {
             partition: self.partition,
             reg_page: regs,
@@ -1078,49 +1053,10 @@ impl MshvProcessor<'_> {
             modified_xmm: 0,
         };
 
-        if info.rcx as u16 == hvdef::HypercallCode::HvCallStartVirtualProcessor.0 {
-            let input_end = info
-                .rdx
-                .checked_add(size_of::<hvdef::hypercall::StartVirtualProcessorX64>() as u64);
-            let result = input_end
-                .ok_or(hvdef::HvError::InvalidParameter)
-                .and_then(|_| {
-                    read_snp_start_vp_input(vcpufd, info.rdx).map_err(|err| {
-                        tracelimit::warn_ratelimited!(
-                            error = &err as &dyn std::error::Error,
-                            input_gpa = info.rdx,
-                            "failed to read SNP StartVirtualProcessor input"
-                        );
-                        hvdef::HvError::InvalidParameter
-                    })
-                })
-                .and_then(|input| {
-                    if input.rsvd0 != 0 || input.rsvd1 != 0 {
-                        return Err(hvdef::HvError::InvalidParameter);
-                    }
-                    hv1_hypercall::StartVirtualProcessor::start_virtual_processor(
-                        &mut handler,
-                        input.partition_id,
-                        input.vp_index,
-                        Vtl::try_from(input.target_vtl)?,
-                        &input.vp_context,
-                    )
-                });
-            let output = match result {
-                Ok(()) => hvdef::hypercall::HypercallOutput::SUCCESS,
-                Err(err) => err.into(),
-            };
-            hv1_hypercall::X64RegisterState::set_gp(
-                &mut handler,
-                hv1_hypercall::X64HypercallRegister::Rax,
-                output.into(),
-            );
-        } else {
-            MshvHypercallHandler::DISPATCHER.dispatch(
-                &self.partition.gm,
-                X64RegisterIo::new(&mut handler, true, false),
-            );
-        }
+        MshvHypercallHandler::DISPATCHER.dispatch(
+            &self.partition.gm,
+            X64RegisterIo::new(&mut handler, true, false),
+        );
         (handler.modified_gp, handler.modified_xmm)
     }
 
@@ -1153,7 +1089,7 @@ impl MshvProcessor<'_> {
     fn handle_snp_hypercall_intercept(&mut self, message: &HvMessage) -> Result<(), VpHaltReason> {
         let info = message.as_message::<hvdef::HvX64HypercallInterceptMessage>();
         let mut regs = self.snp_hypercall_registers(info)?;
-        let (modified_gp, modified_xmm) = self.dispatch_snp_hypercall(info, &mut regs);
+        let (modified_gp, modified_xmm) = self.dispatch_snp_hypercall(&mut regs);
         self.write_snp_hypercall_output(&regs, modified_gp, modified_xmm)
     }
 

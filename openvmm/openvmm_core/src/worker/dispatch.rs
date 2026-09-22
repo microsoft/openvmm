@@ -3499,6 +3499,7 @@ impl LoadedVmInner {
                 force_dma_bounce,
                 enable_hv,
                 hibernation_enabled,
+                force_firmware_version,
             } => {
                 let acpi_tables = [
                     // MADT
@@ -3538,6 +3539,7 @@ impl LoadedVmInner {
                     hv: enable_hv,
                     hibernation: hibernation_enabled,
                     disable_sha1_pcr: tpm_version.is_some_and(|v| v >= TpmVersion::V185),
+                    force_firmware_version,
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {

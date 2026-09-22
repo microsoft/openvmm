@@ -187,6 +187,8 @@ pub enum GuestFirmwareConfig {
         enable_vpci_boot: bool,
         /// Enable UEFI firmware debugging for VTL0.
         firmware_debug: bool,
+        /// Enable UEFI memory protections for VTL0.
+        enable_memory_protections: bool,
         /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
         disable_frontpage: bool,
         /// Where to send UEFI console output
@@ -1385,10 +1387,12 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             pcat_boot_device_order,
             uefi_console_mode,
             default_boot_always_attempt,
+            enable_memory_protections,
         ) = match state.config.firmware {
             GuestFirmwareConfig::Uefi {
                 enable_vpci_boot,
                 firmware_debug,
+                enable_memory_protections,
                 disable_frontpage: v_disable_frontpage,
                 console_mode,
                 default_boot_always_attempt: v_default_boot_always_attempt,
@@ -1400,10 +1404,18 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 None,
                 Some(console_mode),
                 v_default_boot_always_attempt,
+                enable_memory_protections,
             ),
-            GuestFirmwareConfig::Pcat { boot_order } => {
-                (false, false, false, true, Some(boot_order), None, false)
-            }
+            GuestFirmwareConfig::Pcat { boot_order } => (
+                false,
+                false,
+                false,
+                true,
+                Some(boot_order),
+                None,
+                false,
+                false,
+            ),
         };
 
         let json = get_protocol::dps_json::DevicePlatformSettingsV2Json {
@@ -1456,7 +1468,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     measure_additional_pcrs: true,
                     disable_sha384_pcr: false,
                     media_present_enabled_by_default: false,
-                    memory_protection_mode: 0,
+                    memory_protection_mode: enable_memory_protections.into(),
                     default_boot_always_attempt,
                     vpci_boot_enabled,
                     vpci_instance_filter: None,

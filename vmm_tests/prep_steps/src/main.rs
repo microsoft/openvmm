@@ -3,9 +3,13 @@
 
 //! Perform preparation steps for our VMM tests.
 //!
-//! Currently this means booting a Windows VM to perform one task:
-//! 1. Mount the VHD that will be used for Windows-based CVM tests and install
-//!    pipette into it.
+//! This host-side helper uses Petri and OpenVMM to boot a Windows VM, mount the
+//! VHD used by Windows-based CVM tests, and install the Pipette guest agent.
+//!
+//! It is normally built and invoked by `cargo xflowey vmm-tests-run` while
+//! resolving test artifacts. Direct invocation is primarily useful when
+//! debugging image preparation and requires the same external artifacts as the
+//! VMM test pipeline.
 //!
 //! This tool is intentionally as minimal as possible, to keep tests easily
 //! reproducible. Anything that can be done through pipette during the test

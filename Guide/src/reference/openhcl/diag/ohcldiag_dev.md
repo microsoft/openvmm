@@ -4,18 +4,56 @@ OpenHCL includes a "diag server", which provides an interface to diagnose
 and interact with the OpenHCL binary and user-mode state.
 
 `ohcldiag-dev` is the "move-fast, break things" tool used by the core OpenHCL
-dev team, and as such, it makes NO stability guarantees as to the specific
-format of the CLI, output via stdout/stderr, etc...
+development team. It makes no stability guarantees for command syntax,
+stdout/stderr, inspect paths, or command availability.
 
-That is to say:
-**ANY AUTOMATION THAT ATTEMPTS TO USE `ohcldiag-dev` WILL EVENTUALLY BREAK!**
+```admonish warning title="Interactive development only"
+Automation that parses or invokes `ohcldiag-dev` will eventually break. Use a
+versioned management or diagnostic protocol for scripts and products.
+```
 
-`ochldiag-dev` is designed to work no matter where you run OpenHCL: in a Hyper-V
+`ohcldiag-dev` is designed to work no matter where you run OpenHCL: in a Hyper-V
 VM, an OpenVMM VM using VSM or nested virtualization, or in other VMMs that
 support paravisors. Consider the [`hypestv`][] tool for an interactive dev/test
 tool specifically for Hyper-V VMs.
 
 [`hypestv`]: ../../../dev_guide/dev_tools/hypestv.md
+
+## Selecting a VM
+
+The first positional argument identifies the diagnostics endpoint. Accepted
+forms include:
+
+| Form | Platform | Meaning |
+| --- | --- | --- |
+| `<VM_NAME>` | Windows | Hyper-V VM name, unless the value is a socket path |
+| `hyperv:<VM_NAME>` | Windows | Explicit Hyper-V VM name |
+| `hyperv-id:<GUID>` | Windows | Hyper-V VM identifier |
+| `vsock:path/to/socket` | Windows or Linux | OpenVMM hybrid-vsock socket |
+| `path/to/socket` | Windows or Linux | Hybrid-vsock socket path |
+
+The VM must have a running OpenHCL diagnostics server and the host VMM must
+expose the corresponding transport.
+
+## Confidential VM restrictions
+
+A production confidential VM restricts diagnostics that could reveal guest
+data. Inspect exposes a reduced tree, and shell, debugger, core-dump,
+saved-state, and similar operations may be unavailable.
+
+Debug or confidential-debug images expose more functionality by design. Do not
+use a debug image to infer the diagnostic surface of a production CVM.
+
+See [CVM restrictions](./cvm_restrictions.md) for the policy details.
+
+## Binary output safety
+
+Commands such as `core-dump`, `perf-trace`, `dump-saved-state`, and
+`memory-profile-trace` can emit binary data. Supply an output path instead of
+redirecting a terminal stream where the command supports one.
+
+Packet capture appends a NIC index to the selected output basename. Open the
+result with a PCAP-compatible analyzer such as Wireshark.
 
 ## Examples
 
@@ -31,7 +69,8 @@ PS > .\ohcldiag-dev.exe <vm name> inspect build_info
 }
 ```
 
-You can use that to validate your VM is running with the OpenHCL image you intended by checking the scm-revision output matches the commit hash of the OpenHCL repo (if building OpenHCL, you can get the commit hash of your repo using  `git log --max-count=1`).
+Use this to validate that the VM is running the intended OpenHCL image. Compare
+the reported revision with `git log --max-count=1` from the source checkout.
 
 The detailed kernel version information is available from the initial RAM filesystem only:
 
@@ -85,7 +124,8 @@ ohcldiag-dev.exe <vm name> inspect -r
 
 The kernel `kmsg` log currently contains both the kernel log output and the
 OpenHCL log output. You can see this output via the
-[serial console](./tracing.md#enabling-serial-logging-for-openhcl), if you have it configured, or via `ohcldiag-dev`:
+[serial console](./tracing.md#enabling-serial-logging-for-openhcl), when
+configured, or through `ohcldiag-dev`:
 
 ```powershell
 ohcldiag-dev.exe <vm name> kmsg

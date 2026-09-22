@@ -252,6 +252,7 @@ pub fn create_host_channel(
     let guest_config = GuestConfig {
         firmware: GuestFirmwareConfig::Uefi {
             firmware_debug: false,
+            enable_memory_protections: false,
             enable_vpci_boot: false,
             disable_frontpage: false,
             console_mode: UefiConsoleMode::DEFAULT,

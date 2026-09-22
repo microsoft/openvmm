@@ -1,16 +1,15 @@
 ---
 name: guide-maintenance
 description: >
-  Maintain the OpenVMM Guide and its code-sync mapping. Load when: (1) adding,
-  removing, or moving Guide pages, (2) adding new device crates or CLI args
-  that need doc coverage, (3) updating the doc-code-sync mapping table, or
-  (4) auditing Guide freshness against code changes.
+  Maintain the OpenVMM Guide. Load when: (1) adding, removing, or moving Guide
+  pages, (2) adding new device crates or CLI args that need doc coverage, or
+  (3) auditing Guide freshness against code changes.
 ---
 
 # Guide Maintenance Skill
 
-Procedures for keeping the OpenVMM Guide (`Guide/src/`) in sync with the
-codebase. The doc-code-sync mapping table is maintained in this skill file;
+Procedures for keeping the OpenVMM Guide (`Guide/src/`) in sync with the codebase.
+
 `.github/instructions/doc-code-sync.instructions.md` contains the instructions
 and heuristics that are automatically loaded during Copilot code review on
 `*.rs` and `Cargo.toml` files.
@@ -48,26 +47,13 @@ content get a path; placeholder topics for future work get an empty link `()`.
 - [Page Title](./reference/path/to/page.md)
 ```
 
-### 4. Update the doc-code-sync mapping
-
-**This is the critical step.** Add a row to the mapping table in this file:
-
-```markdown
-| `path/to/code/crate/` | `reference/path/to/page.md` |
-```
-
-Also add a bullet to the "What to Flag" section if the new page covers a
-category of change (e.g., "New frobulator variant added → update frobulator.md").
-
 ---
 
 ## Removing or Moving a Guide Page
 
 1. Update or remove the entry in `Guide/src/SUMMARY.md`
-2. Remove or update the corresponding row in the doc-code-sync mapping table
-3. Check for cross-references from other Guide pages (grep for the old path)
-4. If moving: ensure the SUMMARY.md link and the mapping table both point to
-   the new location
+2. Check for cross-references from other Guide pages (grep for the old path)
+3. If moving: ensure the SUMMARY.md link points to the new location
 
 ---
 
@@ -81,9 +67,7 @@ When a new crate is added under `vm/devices/`:
 
 2. **Create the page** following the "Adding a New Guide Page" procedure above.
 
-3. **Update the mapping table** with the crate path → Guide page.
-
-4. **Update the "What to Flag" list** if the new crate introduces a new
+3. **Update the "What to Flag" list** if the new crate introduces a new
    category of reviewable change.
 
 ---
@@ -104,8 +88,8 @@ When `openvmm/openvmm_entry/src/cli_args.rs` changes:
 
 To check whether the Guide is in sync with the code:
 
-1. **Scan the mapping table** in this file
-2. For each row, check whether the Guide page content still matches the code:
+1. **Scan the Guide pages** in `Guide/src/`
+2. Check whether the Guide page content still matches the code:
    - Crate names still correct?
    - Struct/enum names still exist?
    - Behavioral descriptions still accurate?
@@ -122,36 +106,4 @@ grep -r "crate_name" Guide/src/
 
 # Find placeholder topics (empty links) in SUMMARY.md
 grep '()\s*$' Guide/src/SUMMARY.md
-
-# Find code crates with no Guide mapping
-# Compare vm/devices/*/Cargo.toml crate names against the mapping table
 ```
-
----
-
-## Mapping Table Format
-
-Each row in the mapping table follows:
-
-```
-| `code/path/` | `guide/path.md` |
-```
-
-- Code paths use repo-root-relative paths with trailing `/` for directories
-- Guide paths are relative to `Guide/src/`
-- Multiple Guide pages for one code path: comma-separated
-- Use glob-style `*` in code paths for crate families (e.g., `nvme*/`)
-
-## Code-to-Guide Mapping
-
-| Code path | Guide page |
-| --- | --- |
-| `openvmm/openvmm_build_info/` | `reference/openvmm/management/cli.md` |
-
-## What to Flag
-
-- Changes to the reported build identity -- the `-V` / `--version` strings, the
-  version format, dirty detection, or what a Git-free tree reports -- must
-  update `reference/openvmm/management/cli.md`, and
-  `dev_guide/contrib/openvmm_packaging.md` when the packager-facing contract
-  changes.

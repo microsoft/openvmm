@@ -17,5 +17,4 @@ does, the PR should update the Guide or flag a follow-up.
 - Crate renamed or moved → grep `Guide/src/` for the old name
 - New crate under `vm/devices/` → consider whether it needs a reference page
 
-For the full code-to-Guide mapping and maintenance procedures, load the
-**`guide-maintenance`** skill.
+For the full maintenance procedures, load the **`guide-maintenance`** skill.

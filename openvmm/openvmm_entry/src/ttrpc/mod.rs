@@ -926,6 +926,7 @@ impl VmService {
                         force_dma_bounce: false,
                         enable_hv: true,
                         hibernation_enabled: true,
+                        force_firmware_version: false,
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
                     Some((base_template, uefi.secure_boot_enabled)),

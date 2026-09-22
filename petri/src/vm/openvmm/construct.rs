@@ -991,6 +991,7 @@ impl PetriVmConfigSetupCore<'_> {
                     force_dma_bounce: *force_dma_bounce,
                     enable_hv: !self.no_hv,
                     hibernation_enabled: self.hibernation_enabled,
+                    force_firmware_version: false,
                 }
             }
             (
@@ -1178,6 +1179,7 @@ impl PetriVmConfigSetupCore<'_> {
         let ged = get_resources::ged::GuestEmulationDeviceHandle {
             firmware: get_resources::ged::GuestFirmwareConfig::Uefi {
                 firmware_debug: false,
+                enable_memory_protections: false,
                 disable_frontpage: *disable_frontpage,
                 enable_vpci_boot: *enable_vpci_boot,
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,

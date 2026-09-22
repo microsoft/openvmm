@@ -1,9 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Command-line utility for interacting with a physical TPM during guest attestation tests.
-//! Supports reading the AK certificate NV index and producing attestation reports with
-//! optional user-provided payloads.
+//! In-guest command-line probe for TPM and attestation integration tests.
+//!
+//! The utility sends TPM 2.0 commands through `/dev/tpmrm0` or `/dev/tpm0` on
+//! Unix and TPM Base Services on Windows. Its subcommands read and verify the
+//! AK certificate, submit guest input and decode an IGVM attestation report,
+//! and define, write, or verify arbitrary owner-authorized NV indices.
+//!
+//! Petri normally copies this executable into a VM and invokes it through
+//! Pipette to validate the guest-visible vTPM and OpenHCL attestation contract.
+//! It can also be run manually inside a guest with `tpm_guest_tests <command>`;
+//! failures and comparison mismatches produce a nonzero exit status.
 
 mod report;
 mod tpm;

@@ -1,7 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Standalone CLI for testing the incubator launcher.
+//! QEMU-backed runner for executing test commands in an emulated Linux guest.
+//!
+//! Incubator reads a TOML hardware profile, boots a QEMU TCG VM with a shared
+//! host directory, connects to the in-guest Pipette agent, and returns the
+//! requested command's exit status. It is used for configurations such as
+//! AArch64 PCIe, IOMMU, and device-assignment tests that need hardware models
+//! outside OpenVMM's device surface.
+//!
+//! Flowey normally configures this binary as a Cargo/nextest target runner via
+//! `INCUBATOR_*` environment variables. It can also be launched directly with
+//! `incubator --profile <profile> --share <directory> <command> [args...]` for
+//! focused debugging.
 
 #![forbid(unsafe_code)]
 

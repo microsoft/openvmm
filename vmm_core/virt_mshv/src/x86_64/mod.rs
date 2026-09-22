@@ -1279,9 +1279,50 @@ impl MshvHypercallHandler<'_> {
             hv1_hypercall::HvPostMessage,
             hv1_hypercall::HvSignalEvent,
             hv1_hypercall::HvRetargetDeviceInterrupt,
+            hv1_hypercall::HvGetVpIndexFromApicId,
             hv1_hypercall::HvX64StartVirtualProcessor,
         ],
     );
+}
+
+impl hv1_hypercall::GetVpIndexFromApicId for MshvHypercallHandler<'_> {
+    fn get_vp_index_from_apic_id(
+        &mut self,
+        partition_id: u64,
+        target_vtl: Vtl,
+        apic_ids: &[u32],
+        vp_indices: &mut [u32],
+    ) -> hv1_hypercall::HvRepResult {
+        get_vp_indices_from_apic_ids(partition_id, target_vtl, apic_ids, vp_indices, |apic_id| {
+            self.partition
+                .vps
+                .iter()
+                .find(|vp| vp.vp_info.apic_id == apic_id)
+                .map(|vp| vp.vp_info.base.vp_index)
+        })
+    }
+}
+
+fn get_vp_indices_from_apic_ids(
+    partition_id: u64,
+    target_vtl: Vtl,
+    apic_ids: &[u32],
+    vp_indices: &mut [u32],
+    mut lookup: impl FnMut(u32) -> Option<VpIndex>,
+) -> hv1_hypercall::HvRepResult {
+    if partition_id != hvdef::HV_PARTITION_ID_SELF {
+        return Err((hvdef::HvError::InvalidPartitionId, 0));
+    }
+    if target_vtl != Vtl::Vtl0 {
+        return Err((hvdef::HvError::InvalidParameter, 0));
+    }
+
+    for (i, (&apic_id, vp_index)) in apic_ids.iter().zip(vp_indices).enumerate() {
+        *vp_index = lookup(apic_id)
+            .ok_or((hvdef::HvError::InvalidParameter, i))?
+            .index();
+    }
+    Ok(())
 }
 
 impl hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
@@ -1579,6 +1620,64 @@ mod tests {
             virt::IsolationType::None,
             false
         ));
+    }
+
+    #[test]
+    fn apic_id_lookup_uses_vp_indices_and_reports_partial_completion() {
+        let lookup = |apic_id| match apic_id {
+            8 => Some(VpIndex::new(0)),
+            12 => Some(VpIndex::new(1)),
+            _ => None,
+        };
+        let mut output = [u32::MAX; 3];
+        get_vp_indices_from_apic_ids(
+            hvdef::HV_PARTITION_ID_SELF,
+            Vtl::Vtl0,
+            &[12, 8, 12],
+            &mut output,
+            lookup,
+        )
+        .unwrap();
+        assert_eq!(output, [1, 0, 1]);
+
+        output.fill(u32::MAX);
+        assert_eq!(
+            get_vp_indices_from_apic_ids(
+                hvdef::HV_PARTITION_ID_SELF,
+                Vtl::Vtl0,
+                &[8, 9, 12],
+                &mut output,
+                lookup,
+            ),
+            Err((hvdef::HvError::InvalidParameter, 1)),
+        );
+        assert_eq!(output, [0, u32::MAX, u32::MAX]);
+    }
+
+    #[test]
+    fn apic_id_lookup_rejects_other_partitions_and_vtls() {
+        for (partition_id, vtl, error) in [
+            (0, Vtl::Vtl0, hvdef::HvError::InvalidPartitionId),
+            (
+                hvdef::HV_PARTITION_ID_SELF,
+                Vtl::Vtl1,
+                hvdef::HvError::InvalidParameter,
+            ),
+            (
+                hvdef::HV_PARTITION_ID_SELF,
+                Vtl::Vtl2,
+                hvdef::HvError::InvalidParameter,
+            ),
+        ] {
+            let mut output = [u32::MAX];
+            assert_eq!(
+                get_vp_indices_from_apic_ids(partition_id, vtl, &[0], &mut output, |_| {
+                    panic!("invalid target must not perform a lookup")
+                }),
+                Err((error, 0)),
+            );
+            assert_eq!(output, [u32::MAX]);
+        }
     }
 
     #[test]
