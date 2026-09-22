@@ -1877,6 +1877,7 @@ async fn build_pcie_topology(
                 attached,
                 devfn,
                 acs_capabilities_supported,
+                pasid,
             } = root_port;
             ports.push(PciePortConfig {
                 name: port_name.clone(),
@@ -1888,7 +1889,7 @@ async fn build_pcie_topology(
                     .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                     .transpose()?,
                 cxl: false,
-                pasid: false,
+                pasid,
             });
             if let Some(attached) = attached {
                 walk_pcie_attachment(port_name, attached, &mut switches, &mut pending_devices)?;
@@ -1988,6 +1989,7 @@ fn walk_pcie_attachment(
                     attached,
                     devfn,
                     acs_capabilities_supported,
+                    pasid,
                 } = downstream;
                 ports.push(PciePortConfig {
                     name: downstream_name.clone(),
@@ -1999,7 +2001,7 @@ fn walk_pcie_attachment(
                         .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                         .transpose()?,
                     cxl: false,
-                    pasid: false,
+                    pasid,
                 });
                 if let Some(attached) = attached {
                     children.push((downstream_name, attached));
@@ -2580,6 +2582,53 @@ mod tests {
                 assert!(result.is_err());
             } else {
                 assert_eq!(result.unwrap().root_complexes[0].iommu.is_some(), has_iommu);
+            }
+        }
+    }
+
+    #[test]
+    fn pcie_topology_pasid() {
+        for pasid in [None, Some(false), Some(true)] {
+            let mut attached = None;
+            for name in ["nested", "switch", "root"] {
+                let mut port = vmservice::PciePort {
+                    name: name.into(),
+                    attached,
+                    ..Default::default()
+                };
+                if let Some(pasid) = pasid {
+                    port.pasid = pasid;
+                }
+                if name == "root" {
+                    let topology = futures::executor::block_on(build_pcie_topology(
+                        vmservice::PcieTopologyConfig {
+                            root_complexes: vec![vmservice::PcieRootComplex {
+                                name: "rc0".into(),
+                                root_ports: vec![port],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                        &FdRegistry::default(),
+                        &IommufdContexts::default(),
+                    ))
+                    .unwrap();
+                    let expected = pasid.unwrap_or(false);
+                    assert_eq!(topology.root_complexes[0].ports[0].pasid, expected);
+                    assert_eq!(topology.switches.len(), 2);
+                    for switch in topology.switches {
+                        assert_eq!(switch.ports[0].pasid, expected);
+                    }
+                    break;
+                }
+                attached = Some(vmservice::PcieAttachment {
+                    kind: Some(vmservice::pcie_attachment::Kind::Switch(
+                        vmservice::PcieSwitch {
+                            name: format!("{name}-switch"),
+                            downstream_ports: vec![port],
+                        },
+                    )),
+                });
             }
         }
     }

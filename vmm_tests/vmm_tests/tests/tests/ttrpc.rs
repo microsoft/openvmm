@@ -221,6 +221,7 @@ async fn test_ttrpc_interface(
                         ))),
                         acs_capabilities_supported: Some(1),
                         devfn: None,
+                        pasid: false,
                     },
                     vmservice::PciePort {
                         name: "sw0-dp1".to_string(),
@@ -228,6 +229,7 @@ async fn test_ttrpc_interface(
                         attached: None,
                         devfn: None,
                         acs_capabilities_supported: None,
+                        pasid: false,
                     },
                 ],
             };
@@ -1083,6 +1085,7 @@ fn pcie_root_port(
         attached,
         devfn: None,
         acs_capabilities_supported: None,
+        pasid: false,
     }
 }
 

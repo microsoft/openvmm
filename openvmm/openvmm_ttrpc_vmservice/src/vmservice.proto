@@ -556,6 +556,9 @@ message PciePort {
     optional uint32 devfn = 4;
     // ACS capability bits exposed by this port. Absent => default capabilities.
     optional uint32 acs_capabilities_supported = 5;
+    // Advertise End-to-End TLP Prefix support for downstream PASID use.
+    // Defaults to false. All downstream ports of a switch must agree.
+    bool pasid = 6;
 }
 
 // A PCIe switch: a set of downstream ports, each of which may have its own
