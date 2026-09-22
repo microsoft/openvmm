@@ -262,10 +262,13 @@ fn positional_head() {
 
 #[derive(KeyValueGroup, Debug, PartialEq)]
 enum Transport {
+    /// Connect over TCP.
     #[kv(key = "tcp")]
     Tcp(String),
+    /// Connect through a Unix socket.
     #[kv(key = "unix")]
     Unix(Option<String>),
+    /// Disable the transport.
     #[kv(key = "none")]
     None,
 }
@@ -279,6 +282,28 @@ struct WithGroup {
 
 #[test]
 fn group_selects_one_variant() {
+    assert_eq!(
+        WithGroup::options(),
+        [
+            KeyValueOption {
+                key: "id",
+                help: "",
+            },
+            KeyValueOption {
+                key: "tcp",
+                help: "Connect over TCP.",
+            },
+            KeyValueOption {
+                key: "unix",
+                help: "Connect through a Unix socket.",
+            },
+            KeyValueOption {
+                key: "none",
+                help: "Disable the transport.",
+            },
+        ]
+    );
+
     assert_eq!(
         "id=a,tcp=1.2.3.4".parse::<WithGroup>().unwrap().transport,
         Transport::Tcp("1.2.3.4".into())

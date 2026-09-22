@@ -462,13 +462,18 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
     let mut arms = Vec::new();
     let mut keys = Vec::new();
     let mut append_keys = Vec::new();
+    let mut append_options = Vec::new();
     let mut default_variant = None;
 
     for variant in &data.variants {
         let vname = &variant.ident;
         let (key, is_default) = parse_variant_attr(variant)?;
+        let help = doc_string(&variant.attrs)?;
         keys.push(format!("'{key}'"));
         append_keys.push(quote! { __keys.push(#key); });
+        append_options.push(quote! {
+            __options.push(::vmm_cli::KeyValueOption { key: #key, help: #help });
+        });
 
         let build = match &variant.fields {
             Fields::Unit => quote! {
@@ -530,6 +535,10 @@ fn expand_group(input: DeriveInput) -> syn::Result<TokenStream2> {
 
             fn append_keys(__keys: &mut ::std::vec::Vec<&'static str>) {
                 #(#append_keys)*
+            }
+
+            fn append_options(__options: &mut ::std::vec::Vec<::vmm_cli::KeyValueOption>) {
+                #(#append_options)*
             }
 
             fn accept(
