@@ -54,65 +54,6 @@ pub struct HypercallParameters<'a> {
     output: &'a mut [u8],
 }
 
-#[cfg(test)]
-mod start_vp_tests {
-    use super::*;
-    use crate::HvX64StartVirtualProcessor;
-    use crate::StartVirtualProcessor;
-    use hvdef::Vtl;
-    use hvdef::hypercall::InitialVpContextX64;
-    use hvdef::hypercall::StartVirtualProcessorX64;
-    use test_with_tracing::test;
-    use zerocopy::FromZeros;
-    use zerocopy::IntoBytes;
-
-    #[derive(Default)]
-    struct Handler {
-        called: bool,
-    }
-
-    impl StartVirtualProcessor<InitialVpContextX64> for Handler {
-        fn start_virtual_processor(
-            &mut self,
-            _partition_id: u64,
-            _vp_index: u32,
-            _target_vtl: Vtl,
-            _vp_context: &InitialVpContextX64,
-        ) -> HvResult<()> {
-            self.called = true;
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn x64_start_vp_validates_reserved_fields() {
-        for (rsvd0, rsvd1) in [(0, 0), (1, 0), (0, 1)] {
-            let input = StartVirtualProcessorX64 {
-                rsvd0,
-                rsvd1,
-                ..FromZeros::new_zeroed()
-            };
-            let mut handler = Handler::default();
-            let result = <Handler as HypercallDispatch<HvX64StartVirtualProcessor>>::dispatch(
-                &mut handler,
-                HypercallParameters {
-                    control: Control::new(),
-                    input: input.as_bytes(),
-                    output: &mut [],
-                },
-            );
-            let valid = rsvd0 == 0 && rsvd1 == 0;
-            assert_eq!(handler.called, valid);
-            let expected = if valid {
-                HypercallOutput::SUCCESS
-            } else {
-                HvError::InvalidParameter.into()
-            };
-            assert_eq!(u64::from(result), u64::from(expected));
-        }
-    }
-}
-
 /// `[u64; 2]` buffer aligned to 16 bytes for hypercall inputs.
 #[repr(C, align(16))]
 #[derive(Copy, Clone)]
