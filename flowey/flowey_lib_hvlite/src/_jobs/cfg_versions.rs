@@ -6,6 +6,7 @@
 //! pipelines.
 
 use crate::common::CommonArch;
+use crate::download_uefi_mu_msvm::FirmwareFlavor;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -25,6 +26,8 @@ pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
 pub const MU_MSVM: &str = "26.0.31";
+pub const MU_MSVM_X64_FLAVOR: FirmwareFlavor = FirmwareFlavor::LegacyVs2022;
+pub const MU_MSVM_AARCH64_FLAVOR: FirmwareFlavor = FirmwareFlavor::LegacyClangPdb;
 pub const NEXTEST: &str = "0.9.133";
 pub const NODEJS: &str = "24.x";
 // None disables hcl-dev builds and tests; Some(version) enables them.
@@ -230,6 +233,10 @@ impl FlowNode for Node {
         if !has_local_uefi {
             ctx.config(crate::download_uefi_mu_msvm::Config {
                 version: Some(MU_MSVM.into()),
+                flavors: BTreeMap::from([
+                    (CommonArch::X86_64, MU_MSVM_X64_FLAVOR),
+                    (CommonArch::Aarch64, MU_MSVM_AARCH64_FLAVOR),
+                ]),
                 ..Default::default()
             });
         }

@@ -7,11 +7,155 @@ use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
+enum FirmwareVersion {
+    Pinned(String),
+    Resolved(ReadVar<Release>),
+}
+
+/// Firmware core and toolchain used by the RELEASE build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FirmwareFlavor {
+    LegacyVs2022,
+    LegacyClangPdb,
+    PatinaClangPdb,
+}
+
+impl FirmwareFlavor {
+    fn file_name(self, arch: CommonArch) -> anyhow::Result<&'static str> {
+        Ok(match (self, arch) {
+            (Self::LegacyVs2022, CommonArch::X86_64) => "RELEASE-X64-VS2022-artifacts.tar.gz",
+            (Self::LegacyVs2022, CommonArch::Aarch64) => {
+                anyhow::bail!("mu_msvm does not support AARCH64 with VS2022")
+            }
+            (Self::LegacyClangPdb, CommonArch::X86_64) => "firmware-RELEASE-X64-CLANGPDB.tar.gz",
+            (Self::LegacyClangPdb, CommonArch::Aarch64) => {
+                "RELEASE-AARCH64-CLANGPDB-artifacts.tar.gz"
+            }
+            (Self::PatinaClangPdb, CommonArch::X86_64) => {
+                "firmware-RELEASE-X64-CLANGPDB-patina.tar.gz"
+            }
+            (Self::PatinaClangPdb, CommonArch::Aarch64) => {
+                "firmware-RELEASE-AARCH64-CLANGPDB-patina.tar.gz"
+            }
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Release {
+    tag_name: String,
+    assets: Vec<Asset>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
+
+impl Release {
+    fn unique_asset(&self, file_name: &str) -> anyhow::Result<&Asset> {
+        let mut matches = self.assets.iter().filter(|asset| asset.name == file_name);
+        let asset = matches.next().ok_or_else(|| {
+            anyhow::anyhow!("missing asset {file_name} in release {}", self.tag_name)
+        })?;
+        anyhow::ensure!(
+            matches.next().is_none(),
+            "duplicate asset {file_name} in release {}",
+            self.tag_name
+        );
+        Ok(asset)
+    }
+}
+
+fn download_firmware(
+    ctx: &mut NodeCtx<'_>,
+    version: FirmwareVersion,
+    flavor: FirmwareFlavor,
+    arch: CommonArch,
+    out_vars: Vec<WriteVar<PathBuf>>,
+) -> anyhow::Result<()> {
+    let file_name = flavor.file_name(arch)?;
+    let extract_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
+    let (archive, archive_version) = match version {
+        FirmwareVersion::Pinned(version) => {
+            let archive = ctx.reqv(|path| flowey_lib_common::download_gh_release::Request {
+                repo_owner: "microsoft".into(),
+                repo_name: "mu_msvm".into(),
+                needs_auth: false,
+                tag: format!("v{version}"),
+                file_name: file_name.into(),
+                path,
+            });
+            (
+                archive,
+                ReadVar::from_static(format!("{version}-{file_name}")),
+            )
+        }
+        FirmwareVersion::Resolved(release) => {
+            let archive = ctx.emit_rust_stepv(format!("download mu_msvm {file_name}"), |ctx| {
+                let release = release.claim(ctx);
+                move |rt| {
+                    let release = rt.read(release);
+                    let asset = release.unique_asset(file_name)?;
+                    let url = &asset.browser_download_url;
+                    let mut cmd = flowey::shell_cmd!(rt, "curl --fail -L {url} -o {file_name}");
+                    if matches!(rt.platform(), FlowPlatform::Windows) {
+                        cmd = cmd.arg("--ssl-revoke-best-effort");
+                    }
+                    cmd.run()?;
+                    Ok((
+                        rt.sh.current_dir().join(file_name),
+                        format!("{}-{file_name}", release.tag_name),
+                    ))
+                }
+            });
+            (
+                archive.clone().map(ctx, |(path, _)| path),
+                archive.map(ctx, |(_, version)| version),
+            )
+        }
+    };
+    ctx.emit_rust_step(
+        format!(
+            "unpack mu_msvm package ({})",
+            match arch {
+                CommonArch::X86_64 => "x64",
+                CommonArch::Aarch64 => "aarch64",
+            }
+        ),
+        |ctx| {
+            let extract_deps = extract_deps.claim(ctx);
+            let archive = archive.claim(ctx);
+            let archive_version = archive_version.claim(ctx);
+            let out_vars = out_vars.claim(ctx);
+            move |rt| {
+                let archive = rt.read(archive);
+                let version = rt.read(archive_version);
+                let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
+                    rt,
+                    extract_deps,
+                    &archive,
+                    &version,
+                )?;
+                let msvm_fd = extract_dir.join("FV/MSVM.fd");
+                for out in out_vars {
+                    rt.write(out, &msvm_fd);
+                }
+                Ok(())
+            }
+        },
+    );
+    Ok(())
+}
+
 flowey_config! {
     /// Config for the download_uefi_mu_msvm node.
     pub struct Config {
         /// Specify version of mu_msvm to use
         pub version: Option<String>,
+        /// Firmware core and toolchain to download for each architecture
+        pub flavors: BTreeMap<CommonArch, FirmwareFlavor>,
         /// Use a local MSVM.fd path, keyed by architecture
         pub local_paths: BTreeMap<CommonArch, ConfigVar<PathBuf>>,
     }
@@ -100,59 +244,18 @@ impl FlowNodeWithConfig for Node {
         }
 
         let version = version.expect("local paths handled above");
-        let extract_archive_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
         for (arch, out_vars) in reqs {
-            let file_name = match arch {
-                CommonArch::X86_64 => "RELEASE-X64-VS2022-artifacts.tar.gz",
-                CommonArch::Aarch64 => "RELEASE-AARCH64-CLANGPDB-artifacts.tar.gz",
-            };
-
-            let mu_msvm_archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "mu_msvm".into(),
-                needs_auth: false,
-                tag: format!("v{version}"),
-                file_name: file_name.into(),
-                path: v,
-            });
-
-            let archive_file_version = format!("{version}-{file_name}");
-
-            ctx.emit_rust_step(
-                {
-                    format!(
-                        "unpack mu_msvm package ({})",
-                        match arch {
-                            CommonArch::X86_64 => "x64",
-                            CommonArch::Aarch64 => "aarch64",
-                        },
-                    )
-                },
-                |ctx| {
-                    let extract_archive_deps = extract_archive_deps.clone().claim(ctx);
-                    let out_vars = out_vars.claim(ctx);
-                    let mu_msvm_archive = mu_msvm_archive.claim(ctx);
-                    move |rt| {
-                        let mu_msvm_archive = rt.read(mu_msvm_archive);
-
-                        let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
-                            rt,
-                            extract_archive_deps,
-                            &mu_msvm_archive,
-                            &archive_file_version,
-                        )?;
-
-                        let msvm_fd = extract_dir.join("FV/MSVM.fd");
-
-                        for var in out_vars {
-                            rt.write(var, &msvm_fd)
-                        }
-
-                        Ok(())
-                    }
-                },
-            );
+            let flavor = config.flavors.get(&arch).copied().ok_or_else(|| {
+                anyhow::anyhow!("No mu_msvm firmware flavor configured for {arch:?}")
+            })?;
+            download_firmware(
+                ctx,
+                FirmwareVersion::Pinned(version.clone()),
+                flavor,
+                arch,
+                out_vars,
+            )?;
         }
 
         Ok(())
@@ -161,35 +264,12 @@ impl FlowNodeWithConfig for Node {
 
 /// Resolve and share a single latest Patina release across a pipeline's jobs.
 pub mod latest_patina {
+    use super::FirmwareFlavor;
+    use super::FirmwareVersion;
+    use super::Release;
+    use super::download_firmware;
     use crate::common::CommonArch;
     use flowey::node::prelude::*;
-
-    #[derive(Deserialize)]
-    struct Release {
-        tag_name: String,
-        assets: Vec<Asset>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct Asset {
-        name: String,
-        browser_download_url: String,
-    }
-
-    impl Release {
-        fn unique_asset(&self, file_name: &str) -> anyhow::Result<&Asset> {
-            let mut matches = self.assets.iter().filter(|asset| asset.name == file_name);
-            let asset = matches.next().ok_or_else(|| {
-                anyhow::anyhow!("missing asset {file_name} in release {}", self.tag_name)
-            })?;
-            anyhow::ensure!(
-                matches.next().is_none(),
-                "duplicate asset {file_name} in release {}",
-                self.tag_name
-            );
-            Ok(asset)
-        }
-    }
 
     flowey_request! {
         pub enum Request {
@@ -211,6 +291,7 @@ pub mod latest_patina {
 
         fn imports(ctx: &mut ImportCtx<'_>) {
             ctx.import::<flowey_lib_common::use_gh_cli::Node>();
+            ctx.import::<flowey_lib_common::download_gh_release::Node>();
             ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
             ctx.import::<crate::_jobs::cfg_versions::Node>();
         }
@@ -223,13 +304,9 @@ pub mod latest_patina {
                 }
                 Request::Download { artifact_dir, done } => {
                     let gh_cli = ctx.reqv(flowey_lib_common::use_gh_cli::Request::Get);
-                    let extract_deps =
-                        flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
-                    ctx.emit_rust_step("download latest Patina ClangPDB firmware", |ctx| {
+                    let release = ctx.emit_rust_stepv("resolve latest mu_msvm release", |ctx| {
                         let gh_cli = gh_cli.claim(ctx);
-                        let artifact_dir = artifact_dir.claim(ctx);
-                        let extract_deps = extract_deps.claim(ctx);
-                        done.claim(ctx);
+                        let artifact_dir = artifact_dir.clone().claim(ctx);
                         move |rt| {
                             let gh_cli = rt.read(gh_cli);
                             let artifact_dir = rt.read(artifact_dir);
@@ -243,29 +320,33 @@ pub mod latest_patina {
                             log::info!("using mu_msvm Patina release {tag}");
                             fs_err::create_dir_all(&artifact_dir)?;
                             fs_err::write(artifact_dir.join("release.json"), release_json)?;
-
-                            let working_dir = rt.sh.current_dir();
-                            for (arch, arch_tag) in [
-                                (CommonArch::X86_64, "X64"),
-                                (CommonArch::Aarch64, "AARCH64"),
-                            ] {
-                                rt.sh.change_dir(&working_dir);
-                                let file_name =
-                                    format!("firmware-RELEASE-{arch_tag}-CLANGPDB-patina.tar.gz");
-                                let asset = release.unique_asset(&file_name)?;
-                                let url = &asset.browser_download_url;
-                                flowey::shell_cmd!(rt, "curl --fail -L {url} -o {file_name}")
-                                    .run()?;
-                                let archive = rt.sh.current_dir().join(&file_name);
-                                let extract_dir =
-                                    flowey_lib_common::_util::extract::extract_zip_if_new(
-                                        rt,
-                                        extract_deps.clone(),
-                                        &archive,
-                                        &format!("{tag}-{file_name}"),
-                                    )?;
+                            Ok(release)
+                        }
+                    });
+                    let mut firmware = Vec::new();
+                    for arch in [CommonArch::X86_64, CommonArch::Aarch64] {
+                        let (read, write) = ctx.new_var();
+                        download_firmware(
+                            ctx,
+                            FirmwareVersion::Resolved(release.clone()),
+                            FirmwareFlavor::PatinaClangPdb,
+                            arch,
+                            vec![write],
+                        )?;
+                        firmware.push((arch, read));
+                    }
+                    ctx.emit_rust_step("publish Patina firmware", |ctx| {
+                        let artifact_dir = artifact_dir.claim(ctx);
+                        let firmware = firmware
+                            .into_iter()
+                            .map(|(arch, path)| (arch, path.claim(ctx)))
+                            .collect::<Vec<_>>();
+                        done.claim(ctx);
+                        move |rt| {
+                            let artifact_dir = rt.read(artifact_dir);
+                            for (arch, path) in firmware {
                                 fs_err::copy(
-                                    extract_dir.join("FV/MSVM.fd"),
+                                    rt.read(path),
                                     artifact_dir.join(firmware_name(arch)),
                                 )?;
                             }
@@ -287,9 +368,46 @@ pub mod latest_patina {
 
     #[cfg(test)]
     mod tests {
-        use super::Asset;
+        use super::super::Asset;
+        use super::super::FirmwareFlavor;
         use super::Release;
+        use crate::common::CommonArch;
         use test_with_tracing::test;
+
+        #[test]
+        fn firmware_asset_names() {
+            for (arch, legacy_flavor, legacy, patina) in [
+                (
+                    CommonArch::X86_64,
+                    FirmwareFlavor::LegacyVs2022,
+                    "RELEASE-X64-VS2022-artifacts.tar.gz",
+                    "firmware-RELEASE-X64-CLANGPDB-patina.tar.gz",
+                ),
+                (
+                    CommonArch::Aarch64,
+                    FirmwareFlavor::LegacyClangPdb,
+                    "RELEASE-AARCH64-CLANGPDB-artifacts.tar.gz",
+                    "firmware-RELEASE-AARCH64-CLANGPDB-patina.tar.gz",
+                ),
+            ] {
+                assert_eq!(legacy_flavor.file_name(arch).unwrap(), legacy);
+                assert_eq!(
+                    FirmwareFlavor::PatinaClangPdb.file_name(arch).unwrap(),
+                    patina
+                );
+            }
+            assert_eq!(
+                FirmwareFlavor::LegacyClangPdb
+                    .file_name(CommonArch::X86_64)
+                    .unwrap(),
+                "firmware-RELEASE-X64-CLANGPDB.tar.gz"
+            );
+            assert!(
+                FirmwareFlavor::LegacyVs2022
+                    .file_name(CommonArch::Aarch64)
+                    .is_err()
+            );
+        }
 
         #[test]
         fn requires_unique_patina_asset() {

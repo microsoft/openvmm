@@ -92,6 +92,12 @@ jobs:
         mkdir -p "$AgentTempDirNormal/publish_artifacts/patina-firmware"
         echo "$AgentTempDirNormal/publish_artifacts/patina-firmware" | flowey v 0 'artifact_publish_from_patina-firmware' --is-raw-string update
       shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 0 flowey_lib_common::install_dist_pkg 0
+      shell: bash
+    - name: installing packages
+      run: flowey e 0 flowey_lib_common::install_dist_pkg 1
+      shell: bash
     - name: create gh cache dir
       run: flowey e 0 flowey_lib_common::download_gh_cli 0
       shell: bash
@@ -121,14 +127,29 @@ jobs:
     - name: setup gh cli
       run: flowey e 0 flowey_lib_common::use_gh_cli 0
       shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 0 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 0 flowey_lib_common::install_dist_pkg 1
-      shell: bash
-    - name: download latest Patina ClangPDB firmware
+    - name: resolve latest mu_msvm release
       run: flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 0
+      shell: bash
+    - name: download mu_msvm firmware-RELEASE-AARCH64-CLANGPDB-patina.tar.gz
+      run: |-
+        flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 5
+        flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 6
+        flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 7
+      shell: bash
+    - name: unpack mu_msvm package (aarch64)
+      run: flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 8
+      shell: bash
+    - name: download mu_msvm firmware-RELEASE-X64-CLANGPDB-patina.tar.gz
+      run: |-
+        flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 1
+        flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 2
+        flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 3
+      shell: bash
+    - name: unpack mu_msvm package (x64)
+      run: flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 4
+      shell: bash
+    - name: publish Patina firmware
+      run: flowey e 0 flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina 9
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 0 flowey_lib_common::cache 3
