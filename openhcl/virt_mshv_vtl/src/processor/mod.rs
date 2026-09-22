@@ -241,9 +241,15 @@ mod private {
             dev: &impl CpuIo,
         ) -> bool;
 
-        /// Process any pending APIC work.
-        #[cfg(guest_arch = "x86_64")]
-        fn poll_apic(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool);
+        /// Process any pending interrupt-controller work.
+        ///
+        /// `scan_irr` is an x86-specific delivery hint. Interrupt controllers
+        /// which do not use an IRR may ignore it.
+        fn poll_interrupt_controller(
+            this: &mut UhProcessor<'_, Self>,
+            vtl: GuestVtl,
+            scan_irr: bool,
+        );
 
         /// Requests the VP to exit when an external interrupt is ready to be
         /// delivered.
@@ -836,14 +842,11 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     fn flush_async_requests(&mut self) {
         if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
             let scan_irr = self.handle_wake();
-            #[cfg(guest_arch = "x86_64")]
             for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                 if scan_irr[vtl] {
-                    T::poll_apic(self, vtl, true);
+                    T::poll_interrupt_controller(self, vtl, true);
                 }
             }
-            #[cfg(not(guest_arch = "x86_64"))]
-            let _ = scan_irr;
         }
         self.runner.flush_deferred_state();
     }
