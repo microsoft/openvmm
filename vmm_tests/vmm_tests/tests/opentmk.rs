@@ -166,7 +166,7 @@ mod hyperv {
             opentmk_test!(@build concat!($base, "_tdx"), $test, $tpm, tdx)
         };
         (@build $name:expr, $test:literal, $tpm:expr, $iso:tt) => {
-            ::petri::SimpleTest::new(
+            ::petri::SimpleTest::new_sync(
                 $name,
                 |resolver| {
                     resolve_opentmk_openhcl::<HyperVPetriBackend>(
