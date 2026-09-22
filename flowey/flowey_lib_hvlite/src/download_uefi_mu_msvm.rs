@@ -158,3 +158,108 @@ impl FlowNodeWithConfig for Node {
         Ok(())
     }
 }
+
+/// Resolve and share a single latest Patina release across a pipeline's jobs.
+pub mod latest_patina {
+    use crate::common::CommonArch;
+    use flowey::node::prelude::*;
+
+    flowey_request! {
+        pub enum Request {
+            Download {
+                artifact_dir: ReadVar<PathBuf>,
+                done: WriteVar<SideEffect>,
+            },
+            UseFirmware {
+                artifact_dir: ReadVar<PathBuf>,
+                arch: CommonArch,
+            },
+        }
+    }
+
+    new_simple_flow_node!(struct Node);
+
+    impl SimpleFlowNode for Node {
+        type Request = Request;
+
+        fn imports(ctx: &mut ImportCtx<'_>) {
+            ctx.import::<flowey_lib_common::use_gh_cli::Node>();
+            ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
+            ctx.import::<crate::_jobs::cfg_versions::Node>();
+        }
+
+        fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+            match request {
+                Request::UseFirmware { artifact_dir, arch } => {
+                    let path = artifact_dir.map(ctx, move |dir| dir.join(firmware_name(arch)));
+                    ctx.req(crate::_jobs::cfg_versions::Request::LocalUefi(arch, path));
+                }
+                Request::Download { artifact_dir, done } => {
+                    let gh_cli = ctx.reqv(flowey_lib_common::use_gh_cli::Request::Get);
+                    let extract_deps =
+                        flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
+                    ctx.emit_rust_step("download latest Patina ClangPDB firmware", |ctx| {
+                        let gh_cli = gh_cli.claim(ctx);
+                        let artifact_dir = artifact_dir.claim(ctx);
+                        let extract_deps = extract_deps.claim(ctx);
+                        done.claim(ctx);
+                        move |rt| {
+                            let gh_cli = rt.read(gh_cli);
+                            let artifact_dir = rt.read(artifact_dir);
+                            let release_json = flowey::shell_cmd!(
+                                rt,
+                                "{gh_cli} api repos/microsoft/mu_msvm/releases/latest"
+                            )
+                            .read()?;
+                            #[derive(Deserialize)]
+                            struct Release {
+                                tag_name: String,
+                            }
+                            let release: Release = serde_json::from_str(&release_json)?;
+                            let tag = release.tag_name;
+                            log::info!("using mu_msvm Patina release {tag}");
+                            fs_err::create_dir_all(&artifact_dir)?;
+                            fs_err::write(artifact_dir.join("release.json"), release_json)?;
+
+                            let working_dir = rt.sh.current_dir();
+                            for (arch, arch_tag) in [
+                                (CommonArch::X86_64, "X64"),
+                                (CommonArch::Aarch64, "AARCH64"),
+                            ] {
+                                rt.sh.change_dir(&working_dir);
+                                let file_name =
+                                    format!("firmware-RELEASE-{arch_tag}-CLANGPDB-patina.tar.gz");
+                                flowey::shell_cmd!(
+                                    rt,
+                                    "{gh_cli} release download --repo microsoft/mu_msvm {tag} --pattern {file_name} --clobber"
+                                )
+                                .run()?;
+                                let archive = rt.sh.current_dir().join(&file_name);
+                                let extract_dir =
+                                    flowey_lib_common::_util::extract::extract_zip_if_new(
+                                        rt,
+                                        extract_deps.clone(),
+                                        &archive,
+                                        &format!("{tag}-{file_name}"),
+                                    )?;
+                                fs_err::copy(
+                                    extract_dir.join("FV/MSVM.fd"),
+                                    artifact_dir.join(firmware_name(arch)),
+                                )?;
+                            }
+                            Ok(())
+                        }
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn firmware_name(arch: CommonArch) -> &'static str {
+        match arch {
+            CommonArch::X86_64 => "MSVM-X64.fd",
+            CommonArch::Aarch64 => "MSVM-AARCH64.fd",
+        }
+    }
+}

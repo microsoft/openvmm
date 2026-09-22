@@ -8,6 +8,32 @@ The OpenVMM PR and CI pipelines will run the full test suite on all supported
 platforms; you'd typically run only the tests relevant to the changes you're
 working on.
 
+## Scheduled Pipelines
+
+The **OpenVMM Burn In** workflow downloads artifacts from a successful CI run
+on `main` and repeats the Windows x64 VMM tests 25 times. It runs on weekdays
+at 19:00 in `America/Los_Angeles`.
+
+The **OpenVMM Patina Nightly** workflow runs daily at the same time. It uses
+the CI VMM-test matrix and filters, including x64 and ARM64, with release
+builds. It omits formatting, lint, unit-test, performance, and publishing
+jobs. You can also start it manually using GitHub Actions' **Run workflow**.
+
+Patina nightly resolves the latest published `microsoft/mu_msvm` release once
+per run and downloads its RELEASE ClangPDB Patina firmware for X64 and
+AARCH64. The `patina-firmware` artifact contains both firmware files and
+`release.json`, which records the selected release. A missing firmware asset
+fails the download job; the pipeline does not fall back to non-Patina firmware.
+
+The firmware is used for standalone OpenVMM UEFI tests and embedded into the
+OpenHCL images built by this workflow. Historical OpenHCL images used by
+servicing tests retain their original firmware, as does native Hyper-V UEFI.
+PCAT and direct-boot tests remain in the matrix but do not exercise Patina.
+
+The pipeline is defined by `ci checkin-gates --config=patina-nightly` in
+Flowey. After editing its Rust definition, regenerate the workflows with
+`cargo xflowey regen`; do not edit the generated YAML directly.
+
 ## Writing VMM Tests
 
 To streamline the process of booting and interacting with VMs during VMM tests, the

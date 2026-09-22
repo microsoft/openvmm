@@ -24,6 +24,7 @@ use flowey_lib_hvlite::common::CommonArch;
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonProfile;
 use flowey_lib_hvlite::common::CommonTriple;
+use flowey_lib_hvlite::download_uefi_mu_msvm::latest_patina;
 use flowey_lib_hvlite::init_vmm_tests_content_dir::ResolveVmmTestsBuiltArtifacts;
 use flowey_lib_hvlite::init_vmm_tests_content_dir::vmm_tests_artifact_builders;
 use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
@@ -50,6 +51,8 @@ enum PipelineConfig {
     Ci,
     /// Release variant of the `Pr` pipeline.
     PrRelease,
+    /// Nightly VMM tests with the latest Patina ClangPDB firmware.
+    PatinaNightly,
 }
 
 /// A unified pipeline defining all checkin gates required to land a commit in
@@ -71,8 +74,13 @@ impl IntoPipeline for CheckinGatesCli {
             local_run_args,
         } = self;
 
+        let patina_nightly = matches!(config, PipelineConfig::PatinaNightly);
+        if patina_nightly && !matches!(backend_hint, PipelineBackendHint::Github) {
+            anyhow::bail!("Patina nightly requires the GitHub backend");
+        }
+
         let release = match config {
-            PipelineConfig::Ci | PipelineConfig::PrRelease => true,
+            PipelineConfig::Ci | PipelineConfig::PrRelease | PipelineConfig::PatinaNightly => true,
             PipelineConfig::Pr => false,
         };
 
@@ -125,6 +133,14 @@ impl IntoPipeline for CheckinGatesCli {
                     pipeline
                         .gh_set_pr_triggers(triggers)
                         .gh_set_name("[Optional] OpenVMM Release PR");
+                }
+                PipelineConfig::PatinaNightly => {
+                    pipeline
+                        .gh_set_name("OpenVMM Patina Nightly")
+                        .gh_add_schedule_trigger(GhScheduleTriggers {
+                            cron: "0 19 * * *".into(),
+                            timezone: Some("America/Los_Angeles".into()),
+                        });
                 }
             }
         }
@@ -230,6 +246,26 @@ impl IntoPipeline for CheckinGatesCli {
         // <https://github.com/orgs/community/discussions/12395>
         let mut all_jobs = Vec::new();
 
+        let use_patina_firmware = if patina_nightly {
+            let (publish, consume) = pipeline.new_artifact("patina-firmware");
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "download latest Patina firmware [x64, aarch64]",
+                )
+                .gh_set_pool(gh_pools::linux_x64_gh())
+                .dep_on(|ctx| latest_patina::Request::Download {
+                    artifact_dir: ctx.publish_artifact(publish),
+                    done: ctx.new_done_handle(),
+                })
+                .finish();
+            all_jobs.push(job);
+            Some(consume)
+        } else {
+            None
+        };
+
         // Quick check gate
         //
         // Combined fmt + clippy on one self-hosted linux machine.
@@ -264,7 +300,7 @@ impl IntoPipeline for CheckinGatesCli {
         };
 
         // emit xtask fmt job
-        {
+        if !patina_nightly {
             let windows_fmt_job = pipeline
                 .new_job(
                     FlowPlatform::Windows,
@@ -1105,7 +1141,7 @@ impl IntoPipeline for CheckinGatesCli {
                     if mi_secure { "(mi-secure) " } else { "" }
                 )
             };
-            let job = pipeline
+            let mut job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
@@ -1152,6 +1188,13 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
                     }
                 });
+
+            if let Some(firmware) = &use_patina_firmware {
+                job = job.dep_on(|ctx| latest_patina::Request::UseFirmware {
+                    artifact_dir: ctx.use_artifact(firmware),
+                    arch,
+                });
+            }
 
             all_jobs.push(job.finish());
 
@@ -1297,6 +1340,10 @@ impl IntoPipeline for CheckinGatesCli {
                 )),
             },
         ] {
+            if patina_nightly {
+                continue;
+            }
+
             // Skip unsupported jobs on ADO backend
             if matches!(backend_hint, PipelineBackendHint::Ado) && ado_pool.is_none() {
                 continue;
@@ -1754,6 +1801,14 @@ impl IntoPipeline for CheckinGatesCli {
                 .new_job(platform, arch, format!("run vmm-tests [{label}]"))
                 .gh_set_pool(gh_pool);
 
+            if let Some(firmware) = &use_patina_firmware {
+                vmm_tests_run_job =
+                    vmm_tests_run_job.dep_on(|ctx| latest_patina::Request::UseFirmware {
+                        artifact_dir: ctx.use_artifact(firmware),
+                        arch: target.common_arch().expect("known VMM test target"),
+                    });
+            }
+
             if let Some(pool) = ado_pool {
                 vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(pool);
             }
@@ -1882,7 +1937,7 @@ impl IntoPipeline for CheckinGatesCli {
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64
         {
-            if matches!(backend_hint, PipelineBackendHint::Github) {
+            if !patina_nightly && matches!(backend_hint, PipelineBackendHint::Github) {
                 let job = pipeline
                     .new_job(
                         FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -1902,7 +1957,7 @@ impl IntoPipeline for CheckinGatesCli {
 
         // Build the vendored source tree without the repository's
         // `.packages/` provisioning, as a Linux distribution would.
-        {
+        if !patina_nightly {
             let distro_build_job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
