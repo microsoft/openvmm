@@ -1250,7 +1250,6 @@ impl<M: RingMem> Inspect for InnerRing<M> {
 /// # Panics
 ///
 /// Panics if control_page is not aligned.
-
 pub fn inspect_ring(control_page: &guestmem_core::Page, response: &mut inspect::Response<'_>) {
     let control = Control::from_page(control_page).expect("control page is not aligned");
     response.field("control", control);
@@ -1258,7 +1257,6 @@ pub fn inspect_ring(control_page: &guestmem_core::Page, response: &mut inspect::
 
 /// Returns whether a ring buffer is in a state where the receiving end might
 /// need a signal.
-
 pub fn reader_needs_signal(control_page: &guestmem_core::Page) -> bool {
     Control::from_page(control_page).is_some_and(|control| {
         control.interrupt_mask().load(Ordering::Relaxed) == 0
@@ -1268,7 +1266,6 @@ pub fn reader_needs_signal(control_page: &guestmem_core::Page) -> bool {
 
 /// Returns whether a ring buffer is in a state where the sending end might need
 /// a signal.
-
 pub fn writer_needs_signal(control_page: &guestmem_core::Page, ring_size: u32) -> bool {
     Control::from_page(control_page).is_some_and(|control| {
         let pending_size = control.pending_send_size().load(Ordering::Relaxed);
