@@ -1077,11 +1077,25 @@ async fn vm_config_from_command_line(
     let pcie_generic_initiators = opt
         .pcie_generic_initiator
         .iter()
-        .map(|gi| openvmm_defs::config::PcieGenericInitiatorConfig {
-            port_name: gi.port_name.clone(),
-            node: gi.node,
+        .map(|gi| -> anyhow::Result<_> {
+            let memory_range = match (gi.memory_base, gi.memory_length) {
+                (None, None) => None,
+                (Some(base), Some(length)) => Some(
+                    (base..base
+                        .checked_add(length)
+                        .context("generic initiator memory range overflow")?)
+                        .try_into()
+                        .context("invalid generic initiator memory range")?,
+                ),
+                _ => unreachable!("CLI parser validates coherent-memory options"),
+            };
+            Ok(openvmm_defs::config::PcieGenericInitiatorConfig {
+                port_name: gi.port_name.clone(),
+                node: gi.node,
+                memory_range,
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
     #[cfg(target_os = "linux")]
     let vfio_pcie_devices: Vec<PcieDeviceConfig> = {
         use std::collections::HashMap;

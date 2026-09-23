@@ -1327,13 +1327,13 @@ live topology after switch downstream ports are enumerated.
 
 Examples:
     # The device behind switch downstream port sw1-downstream-0 is a generic
-    # initiator for NUMA node 1
-    --pcie-generic-initiator port=sw1-downstream-0,node=1
+    # initiator for NUMA node 1 with a coherent-memory aperture
+    --pcie-generic-initiator port=sw1-downstream-0,node=1,memory_base=0x8000000000,memory_length=0x2e41f00000
 
     # Also works for a root port name
     --pcie-generic-initiator port=rp0,node=2
 
-Syntax: port=<port_name>,node=<node>
+Syntax: port=<port_name>,node=<node>[,memory_base=<addr>,memory_length=<size>]
 "#)]
     #[clap(
         long = "pcie-generic-initiator",
@@ -3526,7 +3526,7 @@ impl FromStr for GenericPcieSwitchCli {
 }
 
 /// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
-#[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueArgs)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PcieGenericInitiatorCli {
     /// Name of the PCIe port (root port or switch downstream port) behind
     /// which the generic-initiator device resides.
@@ -3534,6 +3534,51 @@ pub struct PcieGenericInitiatorCli {
     pub port_name: String,
     /// NUMA node the device is a generic initiator for.
     pub node: u32,
+    /// Base GPA of the device's coherent-memory aperture.
+    pub memory_base: Option<u64>,
+    /// Length of the device's coherent-memory aperture.
+    pub memory_length: Option<u64>,
+}
+
+struct PcieGenericInitiatorAddress(u64);
+
+impl FromStr for PcieGenericInitiatorAddress {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.starts_with("0x") || s.starts_with("0X") {
+            Ok(Self(parse_address(s)?))
+        } else {
+            Ok(Self(s.parse()?))
+        }
+    }
+}
+
+#[derive(vmm_cli::KeyValueArgs)]
+struct PcieGenericInitiatorArgs {
+    #[kv(key = "port")]
+    port_name: String,
+    node: u32,
+    memory_base: Option<PcieGenericInitiatorAddress>,
+    memory_length: Option<PcieGenericInitiatorAddress>,
+}
+
+impl FromStr for PcieGenericInitiatorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let args: PcieGenericInitiatorArgs = s.parse()?;
+        if args.memory_base.is_some() != args.memory_length.is_some() {
+            anyhow::bail!("memory_base and memory_length must be specified together");
+        }
+
+        Ok(PcieGenericInitiatorCli {
+            port_name: args.port_name,
+            node: args.node,
+            memory_base: args.memory_base.map(|value| value.0),
+            memory_length: args.memory_length.map(|value| value.0),
+        })
+    }
 }
 
 /// CLI configuration for a PCIe remote device.
@@ -4977,6 +5022,8 @@ mod tests {
             PcieGenericInitiatorCli {
                 port_name: "rp0".to_string(),
                 node: 1,
+                memory_base: None,
+                memory_length: None,
             }
         );
 
@@ -4986,6 +5033,21 @@ mod tests {
             PcieGenericInitiatorCli {
                 port_name: "sw0-downstream-1".to_string(),
                 node: 2,
+                memory_base: None,
+                memory_length: None,
+            }
+        );
+
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str(
+                "port=rp0,node=1,memory_base=0x8000000000,memory_length=198674743296"
+            )
+            .unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "rp0".to_string(),
+                node: 1,
+                memory_base: Some(0x8000000000),
+                memory_length: Some(198674743296),
             }
         );
 
@@ -4996,6 +5058,9 @@ mod tests {
         assert!(PcieGenericInitiatorCli::from_str("rp0=1").is_err());
         assert!(PcieGenericInitiatorCli::from_str("port=,node=1").is_err());
         assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=x").is_err());
+        assert!(
+            PcieGenericInitiatorCli::from_str("port=rp0,node=1,memory_base=0x8000000000").is_err()
+        );
         assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=1,extra").is_err());
     }
 

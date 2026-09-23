@@ -319,6 +319,8 @@ pub struct PcieGenericInitiatorConfig {
     pub port_name: String,
     /// NUMA node the device is a generic initiator for.
     pub node: u32,
+    /// Optional coherent-memory range to associate with the NUMA node.
+    pub memory_range: Option<MemoryRange>,
 }
 
 #[derive(Debug, MeshPayload)]

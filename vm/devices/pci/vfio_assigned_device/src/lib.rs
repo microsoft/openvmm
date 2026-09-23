@@ -1245,9 +1245,9 @@ fn discover_capabilities(
             );
 
             match cap_id {
-                caps::ExtendedCapabilityId::SRIOV
-                | caps::ExtendedCapabilityId::ARI
-                | caps::ExtendedCapabilityId::REBAR => {
+                // The GB200 PF driver must read the SR-IOV capability even
+                // though OpenVMM does not create or assign guest VFs.
+                caps::ExtendedCapabilityId::ARI | caps::ExtendedCapabilityId::REBAR => {
                     tracing::info!(
                         ?cap_id,
                         offset = format_args!("{offset:#x}"),
