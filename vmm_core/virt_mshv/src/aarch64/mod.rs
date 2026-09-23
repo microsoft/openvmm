@@ -33,6 +33,8 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvRegisterAssoc;
 use pal::unix::pthread::Pthread;
 use pci_core::msi::SignalMsi;
+use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use virt::Hv1;
 use virt::PartitionConfig;
@@ -253,6 +255,11 @@ impl virt::Partition for MshvPartition {
 
     fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
         Some(Arc::new(crate::irqfd::MshvIrqFd::new(self.inner.clone())))
+    }
+
+    fn direct_iommu_vm_fd(&self) -> Option<BorrowedFd<'_>> {
+        // SAFETY: `self.inner.vmfd` owns the fd and outlives the returned borrow.
+        Some(unsafe { BorrowedFd::borrow_raw(self.inner.vmfd.as_raw_fd()) })
     }
 
     fn request_yield(&self, vp_index: VpIndex) {

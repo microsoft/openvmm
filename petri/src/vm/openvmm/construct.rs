@@ -694,6 +694,10 @@ impl PetriVmConfigOpenVmm {
             pcie_root_complexes: vec![],
             pcie_ecam_below_4gb: false,
             pcie_devices,
+            #[cfg(target_os = "linux")]
+            direct_iommus: vec![],
+            #[cfg(target_os = "linux")]
+            direct_assigned_devices: vec![],
             pcie_switches: vec![],
             pcie_generic_initiators: vec![],
             vpci_devices,

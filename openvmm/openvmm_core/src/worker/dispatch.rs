@@ -212,6 +212,11 @@ impl Manifest {
             pcie_root_complexes: config.pcie_root_complexes,
             pcie_ecam_below_4gb: config.pcie_ecam_below_4gb,
             pcie_devices: config.pcie_devices,
+            // Preserve direct-IOMMU names across restart.
+            #[cfg(target_os = "linux")]
+            direct_iommus: config.direct_iommus,
+            #[cfg(target_os = "linux")]
+            direct_assigned_devices: config.direct_assigned_devices,
             pcie_switches: config.pcie_switches,
             pcie_generic_initiators: config.pcie_generic_initiators,
             vpci_devices: config.vpci_devices,
@@ -256,6 +261,11 @@ pub struct Manifest {
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_ecam_below_4gb: bool,
     pcie_devices: Vec<PcieDeviceConfig>,
+    /// Direct iommufd context names.
+    #[cfg(target_os = "linux")]
+    direct_iommus: Vec<String>,
+    #[cfg(target_os = "linux")]
+    direct_assigned_devices: Vec<openvmm_defs::config::DirectAssignedDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
     pcie_generic_initiators: Vec<openvmm_defs::config::PcieGenericInitiatorConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
@@ -885,13 +895,119 @@ struct DynamicVpciDeviceEntry {
     device: vmm_core::device_builder::DynamicVpciDevice,
 }
 
-/// Most of the VM state for [`LoadedVm`], excluding things that are necessary
-/// for state machine transitions.
+#[cfg(guest_arch = "aarch64")]
+fn parse_host_pci_id(id: &str) -> anyhow::Result<(u16, u8, u8, u8)> {
+    let (segment, rest) = id.split_once(':').context("missing segment")?;
+    let (bus, rest) = rest.split_once(':').context("missing bus")?;
+    let (device, function) = rest.split_once('.').context("missing function")?;
+    Ok((
+        u16::from_str_radix(segment, 16).context("bad segment")?,
+        u8::from_str_radix(bus, 16).context("bad bus")?,
+        u8::from_str_radix(device, 16).context("bad device")?,
+        u8::from_str_radix(function, 16).context("bad function")?,
+    ))
+}
+
+#[cfg(guest_arch = "aarch64")]
+fn guest_requester_id(bus: u8, device: u8, function: u8) -> u32 {
+    (u32::from(bus) << 8) | (u32::from(device & 0x1f) << 3) | u32::from(function & 0x7)
+}
+
+#[cfg(guest_arch = "aarch64")]
+struct VirtIommuBinding {
+    host_pci_id: String,
+    bus_range: pci_core::bus_range::AssignedBusRange,
+    virt_iommu_id: u32,
+    rc_index: u32,
+}
+
+#[cfg(guest_arch = "aarch64")]
+struct ActiveVirtIommuBinding {
+    host_pci_id: String,
+    logical_device_id: u64,
+    virt_iommu_id: u32,
+    stream_id: u32,
+    rc_index: u32,
+}
+
+/// Tracks bindings for teardown before device fds and the partition are dropped.
+#[cfg(guest_arch = "aarch64")]
+struct VirtIommuLifecycle {
+    partition: Arc<dyn HvlitePartition>,
+    active: Vec<ActiveVirtIommuBinding>,
+    created: bool,
+}
+
+#[cfg(guest_arch = "aarch64")]
+impl VirtIommuLifecycle {
+    fn new(partition: Arc<dyn HvlitePartition>) -> Self {
+        Self {
+            partition,
+            active: Vec::new(),
+            created: false,
+        }
+    }
+
+    fn unbind_all(&mut self) -> anyhow::Result<()> {
+        #[cfg(all(target_os = "linux", feature = "virt_mshv"))]
+        {
+            let partition = self
+                .partition
+                .as_any()
+                .downcast_ref::<virt_mshv::MshvPartition>()
+                .context("an accelerated SMMU requires the MSHV backend")?;
+            let mut failed = Vec::new();
+            let mut errors = Vec::new();
+            while let Some(binding) = self.active.pop() {
+                if let Err(error) = partition.set_device_virtual_iommu(
+                    binding.logical_device_id,
+                    binding.virt_iommu_id,
+                    binding.stream_id,
+                    false,
+                ) {
+                    errors.push(format!("{}: {error}", binding.host_pci_id));
+                    failed.push(binding);
+                }
+            }
+            failed.reverse();
+            self.active = failed;
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                anyhow::bail!(errors.join("; "))
+            }
+        }
+
+        #[cfg(not(all(target_os = "linux", feature = "virt_mshv")))]
+        Ok(())
+    }
+}
+
+#[cfg(guest_arch = "aarch64")]
+impl Drop for VirtIommuLifecycle {
+    fn drop(&mut self) {
+        // Unbind first; vIOMMUs are partition-lifetime objects.
+        for _ in 0..3 {
+            let _ = self.unbind_all();
+            if self.active.is_empty() {
+                return;
+            }
+        }
+        tracing::error!(
+            remaining = self.active.len(),
+            "failed to unbind Hyper-V virtual-IOMMU devices before partition teardown"
+        );
+    }
+}
+
+/// Most VM state for [`LoadedVm`], excluding state-machine transition data.
 struct LoadedVmInner {
     driver_source: VmTaskDriverSource,
     resolver: ResourceResolver,
     partition_unit: PartitionUnit,
     partition: Arc<dyn HvlitePartition>,
+    #[cfg(guest_arch = "aarch64")]
+    virt_iommu_lifecycle: VirtIommuLifecycle,
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     memory_manager: GuestMemoryManager,
@@ -947,6 +1063,11 @@ struct LoadedVmInner {
     /// Instantiated IOMMU devices (ACPI configs + per-RC shared state),
     /// keyed by IOMMU type. `IommuDevices::None` when no IOMMU is configured.
     iommu_devices: IommuDevices,
+    /// Created after PCI assignment so bindings use final guest StreamIDs.
+    #[cfg(guest_arch = "aarch64")]
+    virt_iommus: Vec<smmu_wiring::VirtIommuSetup>,
+    #[cfg(guest_arch = "aarch64")]
+    virt_iommu_bindings: Vec<VirtIommuBinding>,
     /// IOAPIC PCIe Requester ID when x86 IOMMU interrupt remapping is active.
     /// For AMD this is threaded into IVRS at firmware-load time; for Intel
     /// the matching DMAR device scope is carried by the per-unit ACPI config.
@@ -2635,6 +2756,11 @@ impl InitializedVm {
             ResolvedIommu::None => IommuDevices::None,
         };
 
+        #[cfg(guest_arch = "aarch64")]
+        if let IommuDevices::Smmu(devices) = &iommu_devices {
+            smmu_wiring::mark_rmr_bridges_preserve_config(&mut pcie_host_bridges, &devices.configs);
+        }
+
         // Set up IOAPIC routing. When an x86 IOMMU covers the southbridge
         // IOAPIC (segment 0, bus 0), wrap the hypervisor's IoApicRouting
         // through that IOMMU's interrupt remapping table so IOAPIC-sourced
@@ -2681,6 +2807,33 @@ impl InitializedVm {
         // When the AMD IOMMU is enabled, per-device wrappers translate
         // IOVAs using the port's assigned bus range and remap MSIs using
         // the requester ID supplied by the PCI MSI path.
+
+        #[cfg(guest_arch = "aarch64")]
+        let virt_iommu_bindings: Vec<VirtIommuBinding> = {
+            let virt_iommus: &[smmu_wiring::VirtIommuSetup] = match &iommu_devices {
+                IommuDevices::Smmu(devices) => &devices.virt_iommus,
+                _ => &[],
+            };
+            cfg.direct_assigned_devices
+                .iter()
+                .filter_map(|device| {
+                    let port = port_info.get(device.port_name.as_str())?;
+                    let rc_index = pcie_host_bridges.get(port.rc_idx)?.index;
+                    let viommu = virt_iommus
+                        .iter()
+                        .find(|viommu| viommu.rc_index == rc_index)?;
+                    Some(VirtIommuBinding {
+                        host_pci_id: device.host_pci_id.clone(),
+                        bus_range: port.bus_range.clone(),
+                        virt_iommu_id: viommu.virt_iommu_id,
+                        rc_index,
+                    })
+                })
+                .collect()
+        };
+
+        #[cfg(target_os = "linux")]
+        let has_direct_iommus = !cfg.direct_iommus.is_empty();
 
         try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
             let chipset_builder = &chipset_builder;
@@ -2732,6 +2885,16 @@ impl InitializedVm {
                     chipset_builder,
                     port_name.clone(),
                     &pcie_ctx.dma_target,
+                    #[cfg(target_os = "linux")]
+                    if !has_direct_iommus {
+                        None
+                    } else {
+                        Some(
+                            partition.direct_iommu_vm_fd().context(
+                                "--direct-iommu requires a hypervisor backend with a VM fd",
+                            )?,
+                        )
+                    },
                 )
                 .await?;
 
@@ -3176,6 +3339,8 @@ impl InitializedVm {
                 driver_source,
                 resolver,
                 partition_unit,
+                #[cfg(guest_arch = "aarch64")]
+                virt_iommu_lifecycle: VirtIommuLifecycle::new(partition.clone()),
                 partition,
                 chipset_devices: devices,
                 _vmtime: vmtime,
@@ -3199,6 +3364,13 @@ impl InitializedVm {
                 vmbus_devices,
                 chipset_cfg: cfg.chipset,
                 chipset_capabilities: cfg.chipset_capabilities,
+                #[cfg(guest_arch = "aarch64")]
+                virt_iommus: match &iommu_devices {
+                    IommuDevices::Smmu(d) => d.virt_iommus.clone(),
+                    _ => Vec::new(),
+                },
+                #[cfg(guest_arch = "aarch64")]
+                virt_iommu_bindings,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
                 virtio_mmio_region,
@@ -3237,7 +3409,22 @@ impl InitializedVm {
             // read the assigned secondary bus numbers from the root ports'
             // bridge registers.
             this.assign_pci_resources().await?;
-            this.inner.load_firmware(false).await?;
+            // Final bus numbers determine the guest StreamIDs.
+            #[cfg(guest_arch = "aarch64")]
+            this.setup_virtual_iommus()?;
+            if let Err(error) = this.inner.load_firmware(false).await {
+                #[cfg(guest_arch = "aarch64")]
+                {
+                    return match this.unbind_virtual_iommu_bindings() {
+                        Ok(()) => Err(error.context("firmware load failed after vIOMMU setup")),
+                        Err(rollback) => Err(error.context(format!(
+                            "firmware load failed and Hyper-V unbind rollback remains pending: {rollback:#}"
+                        ))),
+                    };
+                }
+                #[cfg(not(guest_arch = "aarch64"))]
+                return Err(error);
+            }
         }
 
         Ok(this)
@@ -3688,23 +3875,141 @@ impl LoadedVm {
         true
     }
 
-    /// Assign PCI bus numbers and BAR addresses for all boot modes.
+    /// Creates vSMMUs and binds devices after PCI assignment and before firmware.
+    #[cfg(guest_arch = "aarch64")]
+    fn setup_virtual_iommus(&mut self) -> anyhow::Result<()> {
+        if self.inner.virt_iommus.is_empty() {
+            return Ok(());
+        }
+
+        #[cfg(all(target_os = "linux", feature = "virt_mshv"))]
+        {
+            let lifecycle_partition = self.inner.virt_iommu_lifecycle.partition.clone();
+            let partition = lifecycle_partition
+                .as_any()
+                .downcast_ref::<virt_mshv::MshvPartition>()
+                .context("an accelerated SMMU requires the MSHV backend")?;
+
+            if !self.inner.virt_iommu_lifecycle.created {
+                for viommu in &self.inner.virt_iommus {
+                    let feature_set = hvdef::hypercall::VirtIommuFeatureSet::generic_smmuv3(
+                        viommu.ats,
+                        viommu.ssid_bits,
+                        viommu.oas_bits,
+                    )
+                    .context("invalid caller-supplied Hyper-V vSMMU feature set")?;
+                    partition
+                        .create_virtual_iommu(
+                            viommu.virt_iommu_id,
+                            viommu.base_gpa_page,
+                            hvdef::hypercall::VirtIommuInterrupts {
+                                global_error: viommu.gerr_intid,
+                                event_queue: viommu.evtq_intid,
+                                sync: 0,
+                                page_request: 0,
+                            },
+                            feature_set,
+                        )
+                        .with_context(|| {
+                            format!(
+                                "failed to create Hyper-V virtual IOMMU {} (already-created vIOMMUs are partition-lifetime objects)",
+                                viommu.virt_iommu_id
+                            )
+                        })?;
+                }
+                self.inner.virt_iommu_lifecycle.created = true;
+            }
+
+            for binding in &self.inner.virt_iommu_bindings {
+                let (segment, bus, device, function) = parse_host_pci_id(&binding.host_pci_id)
+                    .with_context(|| format!("invalid host PCI address {}", binding.host_pci_id))?;
+                let logical_device_id =
+                    virt_mshv::logical_device_id(segment, bus, device, function);
+                let (secondary, _) = binding.bus_range.bus_range();
+                let stream_id = guest_requester_id(secondary, 0, 0);
+
+                let config = match &mut self.inner.iommu_devices {
+                    IommuDevices::Smmu(devices) => devices
+                        .configs
+                        .iter_mut()
+                        .find(|config| config.rc_index == binding.rc_index)
+                        .context("missing IORT SMMU config for DIRECT device")?,
+                    _ => anyhow::bail!("missing SMMU devices for accelerated root complex"),
+                };
+                anyhow::ensure!(
+                    !config.device_stream_ids.contains(&stream_id),
+                    "duplicate guest requester ID {stream_id:#x} on root complex {}",
+                    binding.rc_index
+                );
+
+                if let Err(error) = partition.set_device_virtual_iommu(
+                    logical_device_id,
+                    binding.virt_iommu_id,
+                    stream_id,
+                    true,
+                ) {
+                    let primary = anyhow::Error::new(error).context(format!(
+                        "failed to bind {} to virtual IOMMU {} at identity vSID {stream_id:#x}",
+                        binding.host_pci_id, binding.virt_iommu_id
+                    ));
+                    return match self.unbind_virtual_iommu_bindings() {
+                        Ok(()) => Err(primary),
+                        Err(rollback) => Err(primary.context(format!(
+                            "Hyper-V binding rollback remains pending: {rollback:#}"
+                        ))),
+                    };
+                }
+
+                config.device_stream_ids.push(stream_id);
+                self.inner
+                    .virt_iommu_lifecycle
+                    .active
+                    .push(ActiveVirtIommuBinding {
+                        host_pci_id: binding.host_pci_id.clone(),
+                        logical_device_id,
+                        virt_iommu_id: binding.virt_iommu_id,
+                        stream_id,
+                        rc_index: binding.rc_index,
+                    });
+                tracing::info!(
+                    host_pci_id = binding.host_pci_id,
+                    logical_device_id,
+                    virt_iommu_id = binding.virt_iommu_id,
+                    requester_id = stream_id,
+                    stream_id,
+                    "bound DIRECT device to Hyper-V virtual IOMMU"
+                );
+            }
+            return Ok(());
+        }
+
+        #[cfg(not(all(target_os = "linux", feature = "virt_mshv")))]
+        anyhow::bail!("an accelerated SMMU requires the MSHV hypervisor backend");
+    }
+
+    /// Unbinds devices in reverse order, retaining failures for teardown retry.
+    #[cfg(guest_arch = "aarch64")]
+    fn unbind_virtual_iommu_bindings(&mut self) -> anyhow::Result<()> {
+        let result = self.inner.virt_iommu_lifecycle.unbind_all();
+        if let IommuDevices::Smmu(devices) = &mut self.inner.iommu_devices {
+            for config in &mut devices.configs {
+                config.device_stream_ids.retain(|&stream_id| {
+                    self.inner
+                        .virt_iommu_lifecycle
+                        .active
+                        .iter()
+                        .any(|binding| {
+                            binding.rc_index == config.rc_index && binding.stream_id == stream_id
+                        })
+                });
+            }
+        }
+        result
+    }
+
+    /// Assign PCI bus numbers and BAR addresses before firmware runs.
     ///
-    /// This pre-programs PCI config space (bus numbers, bridge windows,
-    /// BAR addresses) before the guest starts. For UEFI, the firmware
-    /// is told via a config flag to skip its own PCI enumeration and
-    /// use the pre-assigned resources. For Linux direct boot, this is
-    /// required since there is no firmware to do PCI enumeration.
-    ///
-    /// This must only be called on clean boot or reset, not on
-    /// snapshot restore (where config space is already populated from
-    /// saved state).
-    ///
-    /// Config space accesses go through device state units (via the ECAM
-    /// MMIO path), so devices must be running. This method temporarily
-    /// starts state units with VPs held stopped, performs the assignment,
-    /// then stops state units again. The caller is responsible for
-    /// resuming normally afterward.
+    /// Device state units are started temporarily while VPs remain stopped.
     async fn assign_pci_resources(&mut self) -> anyhow::Result<()> {
         if self.inner.pcie_host_bridges.is_empty() {
             return Ok(());
@@ -3997,6 +4302,8 @@ impl LoadedVm {
                                                 driver_source: &self.inner.driver_source,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
                                                 shared_mem_mapper: Some(&mapper),
+                                                #[cfg(target_os = "linux")]
+                                                direct_iommu_vm_fd: None,
                                             },
                                         )
                                         .await
@@ -4188,6 +4495,12 @@ impl LoadedVm {
         while let Some(entry) = self.inner.dynamic_vpci_devices.pop() {
             entry.device.remove().await;
         }
+        #[cfg(guest_arch = "aarch64")]
+        for _ in 0..3 {
+            if self.unbind_virtual_iommu_bindings().is_ok() {
+                break;
+            }
+        }
         self.inner.partition_unit.teardown().await;
         if let Some(vmbus) = self.inner.vmbus_server {
             vmbus.remove().await.shutdown().await;
@@ -4308,6 +4621,12 @@ impl LoadedVm {
         shared_memory: Option<SharedMemoryBacking>,
         saved_state: SavedState,
     ) -> RestartState {
+        #[cfg(guest_arch = "aarch64")]
+        for _ in 0..3 {
+            if self.unbind_virtual_iommu_bindings().is_ok() {
+                break;
+            }
+        }
         let notify = self.inner.partition_unit.teardown().await;
         let input = self.inner.input_distributor.remove().await.into_inner();
 
@@ -4317,11 +4636,15 @@ impl LoadedVm {
 
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
-            floppy_disks: vec![],            // TODO
-            ide_disks: vec![],               // TODO
-            pcie_root_complexes: vec![],     // TODO
-            pcie_ecam_below_4gb: false,      // TODO
-            pcie_devices: vec![],            // TODO
+            floppy_disks: vec![],        // TODO
+            ide_disks: vec![],           // TODO
+            pcie_root_complexes: vec![], // TODO
+            pcie_ecam_below_4gb: false,  // TODO
+            pcie_devices: vec![],        // TODO
+            #[cfg(target_os = "linux")]
+            direct_iommus: vec![],
+            #[cfg(target_os = "linux")]
+            direct_assigned_devices: vec![],
             pcie_switches: vec![],           // TODO
             pcie_generic_initiators: vec![], // TODO
             vpci_devices: vec![],            // TODO
@@ -4596,5 +4919,16 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
                 .supports_pci()?
                 .pci_cfg_write_with_routing(access_type, address, value),
         )
+    }
+}
+
+#[cfg(all(test, guest_arch = "aarch64"))]
+mod gb200_identity_tests {
+    use super::*;
+
+    #[test]
+    fn guest_vsid_is_the_assigned_requester_id() {
+        assert_eq!(guest_requester_id(1, 0, 0), 0x100);
+        assert_eq!(guest_requester_id(0x7f, 0x1f, 7), 0x7fff);
     }
 }

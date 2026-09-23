@@ -5884,6 +5884,7 @@ dependencies = [
  "vfio_assigned_device",
  "vfio_assigned_device_resources",
  "virt",
+ "virt_mshv",
  "virt_whp",
  "virtio",
  "vm_loader",

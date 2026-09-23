@@ -60,13 +60,18 @@ pub struct VfioDeviceAttachIommufdPt {
     pub argsz: u32,
     pub flags: u32,
     pub pt_id: u32,
+    pub pasid: u32,
 }
 
 #[repr(C)]
 pub struct VfioDeviceDetachIommufdPt {
     pub argsz: u32,
     pub flags: u32,
+    pub pasid: u32,
 }
+
+const _: () = assert!(size_of::<VfioDeviceAttachIommufdPt>() == 16);
+const _: () = assert!(size_of::<VfioDeviceDetachIommufdPt>() == 12);
 
 /// A VFIO device opened via the cdev interface (`/dev/vfio/devices/vfioN`).
 ///
@@ -181,6 +186,7 @@ fn attach_iommufd_pt(device_fd: BorrowedFd<'_>, pt_id: u32) -> anyhow::Result<u3
         argsz: size_of::<VfioDeviceAttachIommufdPt>() as u32,
         flags: 0,
         pt_id,
+        pasid: 0,
     };
     // SAFETY: fd is valid (caller holds BorrowedFd), struct correctly
     // constructed.
@@ -201,6 +207,7 @@ fn detach_iommufd_pt(device_fd: BorrowedFd<'_>) -> anyhow::Result<()> {
     let mut cmd = VfioDeviceDetachIommufdPt {
         argsz: size_of::<VfioDeviceDetachIommufdPt>() as u32,
         flags: 0,
+        pasid: 0,
     };
     // SAFETY: fd is valid (caller holds BorrowedFd), struct correctly
     // constructed.

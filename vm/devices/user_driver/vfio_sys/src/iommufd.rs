@@ -195,6 +195,8 @@ pub const IOMMU_HWPT_ALLOC_NEST_PARENT: u32 = 1 << 0;
 pub const IOMMU_HWPT_DATA_NONE: u32 = 0;
 /// HWPT data type: ARM SMMUv3 (nested STE DW0-1).
 pub const IOMMU_HWPT_DATA_ARM_SMMUV3: u32 = 2;
+/// HWPT data type: direct attach.
+pub const IOMMU_HWPT_DATA_DIRECT: u32 = 3;
 
 #[repr(C)]
 struct IommuHwptAlloc {
@@ -219,6 +221,20 @@ struct IommuHwptAlloc {
 pub struct IommuHwptArmSmmuv3 {
     pub ste: [u64; 2],
 }
+
+/// Enables ATS/PASID for direct attach.
+pub const IOMMU_HWPT_DIRECT_FLAG_ATS_PASID: u32 = 1 << 0;
+
+/// Direct attach HWPT data.
+#[repr(C)]
+pub struct IommuHwptDirect {
+    /// Direct HWPT flags.
+    pub flags: u32,
+    /// Reserved; must be zero.
+    pub __reserved: u32,
+}
+
+const _: () = assert!(size_of::<IommuHwptDirect>() == 8);
 
 // --- Hardware info query ---
 
@@ -286,6 +302,8 @@ pub struct HwptInvalidateError {
 
 /// vIOMMU type: ARM SMMUv3.
 pub const IOMMU_VIOMMU_TYPE_ARM_SMMUV3: u32 = 1;
+/// vIOMMU type: direct attach.
+pub const IOMMU_VIOMMU_TYPE_DIRECT: u32 = 3;
 
 /// Outcome of [`IommufdCtx::viommu_alloc`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -309,6 +327,20 @@ struct IommuViommuAlloc {
     __reserved: u32,
     data_uptr: u64,
 }
+
+/// Direct attach vIOMMU data.
+#[repr(C)]
+pub struct IommuViommuDirect {
+    /// Hypervisor VM fd retained by the kernel.
+    pub vm_fd: i32,
+    /// Reserved; must be zero.
+    pub flags: u32,
+    /// Reserved; must be zero.
+    pub __reserved: u64,
+}
+
+const _: () = assert!(size_of::<IommuViommuDirect>() == 16);
+const _: () = assert!(core::mem::offset_of!(IommuViommuDirect, __reserved) == 8);
 
 // --- Virtual device ---
 
@@ -565,6 +597,51 @@ impl IommufdCtx {
         Ok(cmd.out_hwpt_id)
     }
 
+    /// Allocates a direct HWPT using `pt_id` as the vIOMMU ID.
+    pub fn hwpt_alloc_direct(&self, dev_id: u32, pt_id: u32, flags: u32) -> anyhow::Result<u32> {
+        anyhow::ensure!(
+            flags & !IOMMU_HWPT_DIRECT_FLAG_ATS_PASID == 0,
+            "unsupported direct HWPT flags {flags:#x}"
+        );
+        let data = IommuHwptDirect {
+            flags,
+            __reserved: 0,
+        };
+        let mut cmd = IommuHwptAlloc {
+            size: size_of::<IommuHwptAlloc>() as u32,
+            flags: 0,
+            dev_id,
+            pt_id,
+            out_hwpt_id: 0,
+            __reserved: 0,
+            data_type: IOMMU_HWPT_DATA_DIRECT,
+            data_len: size_of::<IommuHwptDirect>() as u32,
+            data_uptr: std::ptr::from_ref(&data) as u64,
+            fault_id: 0,
+            __reserved2: 0,
+        };
+        // SAFETY: The fd, command, and live type-specific data are valid for the ioctl.
+        tracing::debug!(
+            dev_id,
+            viommu_id = pt_id,
+            flags,
+            data_type = IOMMU_HWPT_DATA_DIRECT,
+            data_len = cmd.data_len,
+            "IOMMU_HWPT_ALLOC direct request"
+        );
+        unsafe {
+            ioctl::iommu_hwpt_alloc(self.file.as_raw_fd(), &mut cmd)
+                .context("IOMMU_HWPT_ALLOC direct failed")?;
+        }
+        tracing::debug!(
+            dev_id,
+            viommu_id = pt_id,
+            hwpt_id = cmd.out_hwpt_id,
+            "IOMMU_HWPT_ALLOC direct complete"
+        );
+        Ok(cmd.out_hwpt_id)
+    }
+
     /// Query hardware information for a device's IOMMU.
     ///
     /// Returns `(out_data_type, out_capabilities)`. The type-specific data is
@@ -689,6 +766,45 @@ impl IommufdCtx {
         }
     }
 
+    /// Allocates a direct vIOMMU for a bound VFIO `dev_id`.
+    pub fn viommu_alloc_direct(&self, dev_id: u32, vm_fd: RawFd) -> anyhow::Result<u32> {
+        let data = IommuViommuDirect {
+            vm_fd,
+            flags: 0,
+            __reserved: 0,
+        };
+        let mut cmd = IommuViommuAlloc {
+            size: size_of::<IommuViommuAlloc>() as u32,
+            flags: 0,
+            r#type: IOMMU_VIOMMU_TYPE_DIRECT,
+            dev_id,
+            hwpt_id: 0,
+            out_viommu_id: 0,
+            data_len: size_of::<IommuViommuDirect>() as u32,
+            __reserved: 0,
+            data_uptr: std::ptr::from_ref(&data) as u64,
+        };
+        // SAFETY: The fd, command, and live type-specific data are valid for the ioctl.
+        tracing::debug!(
+            dev_id,
+            vm_fd,
+            viommu_type = IOMMU_VIOMMU_TYPE_DIRECT,
+            data_len = cmd.data_len,
+            "IOMMU_VIOMMU_ALLOC direct request"
+        );
+        unsafe {
+            ioctl::iommu_viommu_alloc(self.file.as_raw_fd(), &mut cmd)
+                .context("IOMMU_VIOMMU_ALLOC direct failed")?;
+        }
+        tracing::debug!(
+            dev_id,
+            vm_fd,
+            viommu_id = cmd.out_viommu_id,
+            "IOMMU_VIOMMU_ALLOC direct complete"
+        );
+        Ok(cmd.out_viommu_id)
+    }
+
     /// Allocate a virtual device (vDevice) on a vIOMMU.
     ///
     /// `virt_id` is the virtual stream ID (e.g., guest BDF for SMMUv3).
@@ -703,10 +819,18 @@ impl IommufdCtx {
             virt_id,
         };
         // SAFETY: fd is valid, struct correctly constructed.
+        tracing::debug!(viommu_id, dev_id, virt_id, "IOMMU_VDEVICE_ALLOC request");
         unsafe {
             ioctl::iommu_vdevice_alloc(self.file.as_raw_fd(), &mut cmd)
                 .context("IOMMU_VDEVICE_ALLOC failed")?;
         }
+        tracing::debug!(
+            viommu_id,
+            dev_id,
+            virt_id,
+            vdevice_id = cmd.out_vdevice_id,
+            "IOMMU_VDEVICE_ALLOC complete"
+        );
         Ok(cmd.out_vdevice_id)
     }
 

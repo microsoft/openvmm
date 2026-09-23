@@ -165,13 +165,28 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             iommufd,
             iommu_id,
             bar_addresses,
+            direct_iommu,
+            direct_ats_pasid,
         } = resource;
 
-        // Inspect the device's passthrough disposition. A software/emulated
-        // IOMMU cannot program the host IOMMU, so reject. A hardware-nestable
-        // IOMMU hands us an opaque handle we downcast to the SMMU nesting
-        // context and wire up below; a plain (allowed) target needs no
-        // nesting.
+        let direct_vm_fd = if direct_iommu {
+            #[cfg(target_os = "linux")]
+            {
+                let vm_fd = input
+                    .direct_iommu_vm_fd
+                    .context("direct VFIO cdev attach requires a hypervisor backend VM fd")?
+                    .try_clone_to_owned()
+                    .context("failed to dup hypervisor VM fd for direct iommufd attach")?;
+                Some(std::fs::File::from(vm_fd))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                anyhow::bail!("direct VFIO cdev attach is only supported on Linux")
+            }
+        } else {
+            None
+        };
+
         let nesting_ctx: Option<smmu::SmmuNestingContext> = match input.dma_target.passthrough() {
             pci_core::dma::DmaPassthrough::SoftwareBlocked => {
                 anyhow::bail!(
@@ -180,6 +195,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 );
             }
             pci_core::dma::DmaPassthrough::Allowed => None,
+            pci_core::dma::DmaPassthrough::HardwareNestable(_) if direct_iommu => None,
             pci_core::dma::DmaPassthrough::HardwareNestable(handle) => Some(
                 handle
                     .downcast_ref::<smmu::SmmuNestingContext>()
@@ -188,11 +204,15 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             ),
         };
 
-        // The manager shares one vIOMMU per emulated SMMU, matched by the
-        // identity (`Arc::ptr_eq`) of the SMMU's shared state. Hand it the
-        // `Arc` directly; `None` signals the plain identity-DMA path (no
-        // nesting).
         let vsmmu = nesting_ctx.as_ref().map(|ctx| ctx.shared.clone());
+
+        tracing::info!(
+            pci_id,
+            iommu_id,
+            direct = direct_iommu,
+            needs_nesting = nesting_ctx.is_some(),
+            "opening VFIO cdev device with iommufd"
+        );
 
         tracing::info!(
             pci_id,
@@ -209,6 +229,12 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 iommufd,
                 iommu_id,
                 vsmmu,
+                direct_vm_fd,
+                direct_hwpt_flags: if direct_ats_pasid {
+                    vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_ATS_PASID
+                } else {
+                    0
+                },
             })
             .await
             .context("VFIO cdev manager failed")?;

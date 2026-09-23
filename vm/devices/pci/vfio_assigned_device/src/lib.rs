@@ -2148,22 +2148,18 @@ mod tests {
     // --- Extended capability patch tests ---
 
     #[test]
-    fn extended_caps_sriov_filtered() {
+    fn extended_caps_sriov_visible() {
         let mut cfg = MockConfigSpace::new(0x200);
-        // No standard caps
         cfg.write_u32(0x34, 0x00);
-        // Extended cap at 0x100: SR-IOV (0x10), version=1, next=0
         cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0x10, 1, 0));
 
         let msi = MsiTarget::disconnected();
         let caps = discover_capabilities(&cfg, &msi);
 
-        let patch = caps
-            .config_patches
-            .get(&0x100)
-            .expect("SR-IOV should be patched");
-        assert_eq!(patch.mask, 0x0000_FFFF);
-        assert_eq!(patch.value, 0);
+        assert!(
+            !caps.config_patches.contains_key(&0x100),
+            "SR-IOV must remain visible for the GB200 PF driver"
+        );
     }
 
     #[test]
