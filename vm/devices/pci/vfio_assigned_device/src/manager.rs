@@ -835,9 +835,8 @@ fn hyperv_logical_device_id(pci_id: &str) -> anyhow::Result<u64> {
     let bus = u8::from_str_radix(bus, 16).context("invalid PCI bus")?;
     let device = u8::from_str_radix(device, 16).context("invalid PCI device")?;
     let function = u8::from_str_radix(function, 16).context("invalid PCI function")?;
-    anyhow::ensure!(device < 32, "PCI device must be less than 32");
-    anyhow::ensure!(function < 8, "PCI function must be less than 8");
-    Ok(((segment as u64) << 16) | ((bus as u64) << 8) | ((device as u64) << 3) | function as u64)
+    hvdef::hypercall::pci_logical_device_id(segment, bus, device, function)
+        .context("PCI device must be less than 32 and function must be less than 8")
 }
 
 impl IoasManager {
