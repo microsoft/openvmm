@@ -59,6 +59,9 @@ use vmcore::save_restore::SavedStateNotSupported;
 
 const ATS_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const ATS_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+// PCI_ATS_CTRL_ENABLE is bit 15 of the 16-bit ATS Control register, which is
+// the upper word of the dword at capability offset + 4.
+const ATS_CONTROL_ENABLE: u32 = 0x8000_0000;
 
 #[derive(Clone, Copy, Debug, Default)]
 enum AtsResumeState {
@@ -361,7 +364,7 @@ fn ats_enabled(device: &VfioPciDevice, control_offset: Option<u16>) -> anyhow::R
         offset,
         ByteEnabledDwordRead::with_all_bytes_enabled(&mut control),
     )?;
-    Ok(control & 0x8000_0000 != 0)
+    Ok(control & ATS_CONTROL_ENABLE != 0)
 }
 
 fn set_ats_enabled(
@@ -373,7 +376,7 @@ fn set_ats_enabled(
         return Ok(());
     };
 
-    let value = if enabled { 0x8000_0000 } else { 0 };
+    let value = if enabled { ATS_CONTROL_ENABLE } else { 0 };
     device.write_config(
         offset,
         ByteEnabledDwordWrite::new(value, PciConfigByteEnable::HIGH_WORD),
@@ -1652,10 +1655,9 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             Ok(true) => {
                 self.ats_resume_state = AtsResumeState::Enabled;
                 if let Err(err) = self.set_ats_enabled_retry_async(false, "VM stop").await {
-                    tracing::error!(
-                        pci_id = self.pci_id.as_str(),
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "ATS disable failed; continuing device stop for kernel quarantine"
+                    panic!(
+                        "cannot stop VFIO device {} after ATS disable failure: {err:#}",
+                        self.pci_id
                     );
                 }
             }
@@ -1667,10 +1669,9 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
                 );
                 self.ats_resume_state = AtsResumeState::Unknown;
                 if let Err(disable_err) = self.set_ats_enabled_retry_async(false, "VM stop").await {
-                    tracing::error!(
-                        pci_id = self.pci_id.as_str(),
-                        error = disable_err.as_ref() as &dyn std::error::Error,
-                        "ATS disable after state read failure also failed; continuing device stop for kernel quarantine"
+                    panic!(
+                        "cannot stop VFIO device {} after ATS state read and disable failures: {disable_err:#}",
+                        self.pci_id
                     );
                 }
             }
@@ -2645,7 +2646,9 @@ mod tests {
             0x100,
             MockConfigSpace::ext_cap_header(caps::ExtendedCapabilityId::ATS.0, 1, 0x120),
         );
-        cfg.write_u32(0x104, 0x001f_0000);
+        // ATS Capability queue depth and ATS Control STU are both 0x1f;
+        // PCI_ATS_CTRL_ENABLE (0x8000) remains clear.
+        cfg.write_u32(0x104, 0x001f_001f);
         cfg.write_u32(
             0x120,
             MockConfigSpace::ext_cap_header(caps::ExtendedCapabilityId::PASID.0, 1, 0),
@@ -2683,6 +2686,11 @@ mod tests {
         assert!(!pasid_ats.config_patches.contains_key(&0x104));
         assert_eq!(pasid_ats.config_patches[&0x124].mask, 0x0001_0000);
         assert_eq!(pasid_ats.config_patches[&0x124].value, 0x0001_0000);
+    }
+
+    #[test]
+    fn ats_enable_mask_matches_pci_control_register() {
+        assert_eq!(ATS_CONTROL_ENABLE >> 16, 0x8000);
     }
 
     #[test]

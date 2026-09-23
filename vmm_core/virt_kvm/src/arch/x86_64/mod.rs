@@ -795,7 +795,7 @@ impl Partition for KvmPartition {
         Some(self.irqfd_state.clone())
     }
 
-    fn direct_iommu_vm_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+    fn direct_iommu_vm_fd(&self) -> Option<BorrowedFd<'_>> {
         Some(self.inner.kvm.vm_fd())
     }
 

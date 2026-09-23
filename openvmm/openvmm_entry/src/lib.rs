@@ -313,6 +313,7 @@ fn smbios_config_from_cli(
     })
 }
 
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 fn root_complex_for_port(
     port_name: &str,
     root_ports: &[cli_args::PcieRootPortCli],
@@ -331,13 +332,14 @@ fn root_complex_for_port(
     None
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DirectSmmuCapabilities {
     pasid: bool,
     ats: bool,
 }
 
-#[cfg(guest_arch = "aarch64")]
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 fn direct_smmu_capabilities(
     smmu: Option<&cli_args::SmmuCli>,
     direct: bool,
@@ -350,7 +352,7 @@ fn direct_smmu_capabilities(
     capabilities
 }
 
-#[cfg(guest_arch = "aarch64")]
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 fn validate_smmu_vfio_mode(smmu: &cli_args::SmmuCli, direct: bool) -> anyhow::Result<()> {
     anyhow::ensure!(
         !smmu.ats || direct,
@@ -3360,7 +3362,7 @@ mod tests {
         }
     }
 
-    #[cfg(guest_arch = "aarch64")]
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
     #[test]
     fn accelerated_smmu_supports_nested_and_direct_vfio() {
         use std::str::FromStr as _;
@@ -3372,7 +3374,7 @@ mod tests {
         assert!(validate_smmu_vfio_mode(&smmu, true).is_err());
     }
 
-    #[cfg(guest_arch = "aarch64")]
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
     #[test]
     fn pasid_smmu_requires_direct_vfio() {
         use std::str::FromStr as _;
@@ -3381,7 +3383,7 @@ mod tests {
         validate_smmu_vfio_mode(&smmu, true).unwrap();
     }
 
-    #[cfg(guest_arch = "aarch64")]
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
     #[test]
     fn ats_smmu_requires_direct_vfio() {
         use std::str::FromStr as _;
@@ -3390,7 +3392,7 @@ mod tests {
         validate_smmu_vfio_mode(&smmu, true).unwrap();
     }
 
-    #[cfg(guest_arch = "aarch64")]
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
     #[test]
     fn direct_smmu_resource_capabilities_are_separate() {
         use std::str::FromStr as _;
