@@ -205,7 +205,8 @@ async fn boot_no_vmbus_pcie(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
                         iommu_id: "iommu0".into(),
                         bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                         direct_iommu: false,
-                        direct_ats_pasid: false,
+                        direct_pasid: false,
+                        direct_ats: false,
                     }
                     .into_resource(),
                 });
@@ -321,6 +322,9 @@ async fn boot_no_vmbus_pcie_smmu_accel(
                             iommufd,
                             iommu_id: "iommu0".into(),
                             bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                            direct_iommu: false,
+                            direct_pasid: false,
+                            direct_ats: false,
                         }
                         .into_resource(),
                     });
@@ -557,7 +561,8 @@ async fn assigned_device_peer_to_peer_dma(
                         iommu_id: "iommu0".into(),
                         bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                         direct_iommu: false,
-                        direct_ats_pasid: false,
+                        direct_pasid: false,
+                        direct_ats: false,
                     }
                     .into_resource(),
                 });
@@ -570,7 +575,8 @@ async fn assigned_device_peer_to_peer_dma(
                         iommu_id: "iommu0".into(),
                         bar_addresses: [BarAddressConfig::GuestAssigned; 6],
                         direct_iommu: false,
-                        direct_ats_pasid: false,
+                        direct_pasid: false,
+                        direct_ats: false,
                     }
                     .into_resource(),
                 });
@@ -784,6 +790,9 @@ async fn assigned_device_smmu_accel_fault(
                             iommufd,
                             iommu_id: "iommu0".into(),
                             bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                            direct_iommu: false,
+                            direct_pasid: false,
+                            direct_ats: false,
                         }
                         .into_resource(),
                     });

@@ -2940,7 +2940,8 @@ fn build_vfio_device(
             iommu_id,
             bar_addresses,
             direct_iommu: false,
-            direct_ats_pasid: false,
+            direct_pasid: false,
+            direct_ats: false,
         }
         .into_resource());
     }
