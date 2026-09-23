@@ -50,6 +50,14 @@ petri::test!(test_ttrpc_interface, |resolver| {
 });
 
 petri::test!(test_ttrpc_no_vmbus, |resolver| {
+    // Restrict this test to aarch64 for now: without Hyper-V enlightenments,
+    // x64 guests rely on legacy timer calibration. PIT calibration is unreliable
+    // across backends and can stall boot before pipette starts.
+    if petri_artifacts_common::tags::MachineArch::host()
+        != petri_artifacts_common::tags::MachineArch::Aarch64
+    {
+        return None;
+    }
     let pipette = match petri_artifacts_common::tags::MachineArch::host() {
         petri_artifacts_common::tags::MachineArch::X86_64 => resolver
             .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64)
