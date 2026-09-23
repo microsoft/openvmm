@@ -22,8 +22,8 @@ enum SmmuBackend {
     HyperV,
 }
 
-fn smmu_backend(accel: bool) -> SmmuBackend {
-    if accel {
+fn smmu_backend(accel: bool, direct: bool) -> SmmuBackend {
+    if accel && direct {
         SmmuBackend::HyperV
     } else {
         SmmuBackend::Local
@@ -131,7 +131,7 @@ pub(super) fn mark_rmr_bridges_preserve_config(
 /// Result of [`setup_smmu`].
 #[derive(Default)]
 pub(super) struct SmmuDevicesResult {
-    /// Per-RC emulated SMMU state; accelerated SMMUs use `None`.
+    /// Per-RC emulated SMMU state; direct Hyper-V SMMUs use `None`.
     pub shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>>,
     /// ACPI IORT configuration for each SMMU instance.
     pub configs: Vec<vmm_core::acpi_builder::AcpiSmmuConfig>,
@@ -167,6 +167,7 @@ pub(super) fn setup_smmu(
     chipset_builder: &ChipsetBuilder<'_>,
     gm: &GuestMemory,
     acpi_available: bool,
+    direct_iommu_rc_indices: &[u32],
 ) -> anyhow::Result<SmmuDevicesResult> {
     // Instantiate SMMU chipset devices.
     let mut shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>> =
@@ -190,9 +191,16 @@ pub(super) fn setup_smmu(
     let mut virt_iommus = Vec::new();
 
     for ((rc_pos, rc, accel, ats, ssid_bits, oas), smmu) in smmu_rcs.zip(&resolved.instances) {
+        let rc_index = pcie_host_bridges[rc_pos].index;
+        let direct = direct_iommu_rc_indices.contains(&rc_index);
         anyhow::ensure!(
             !accel || acpi_available,
             "SMMU on root complex {}: accelerated translation requires ACPI",
+            rc.name
+        );
+        anyhow::ensure!(
+            !direct || accel,
+            "SMMU on root complex {}: direct assignment requires accelerated translation",
             rc.name
         );
 
@@ -209,13 +217,13 @@ pub(super) fn setup_smmu(
             }
         };
 
-        if smmu_backend(accel) == SmmuBackend::HyperV {
+        if smmu_backend(accel, direct) == SmmuBackend::HyperV {
             virt_iommus.push(VirtIommuSetup {
                 virt_iommu_id: (virt_iommus.len() + 1) as u32,
                 base_gpa_page: smmu.base >> 12,
                 evtq_intid: smmu.evtq_intid,
                 gerr_intid: smmu.gerr_intid,
-                rc_index: pcie_host_bridges[rc_pos].index,
+                rc_index,
                 ats,
                 ssid_bits,
                 oas_bits,
@@ -224,7 +232,7 @@ pub(super) fn setup_smmu(
                 reserved_iova_ranges(true, resolved.device_assignment_msi_iova_range)
                     .with_context(|| format!("SMMU on root complex {}", rc.name))?;
             configs.push(vmm_core::acpi_builder::AcpiSmmuConfig {
-                rc_index: pcie_host_bridges[rc_pos].index,
+                rc_index,
                 segment: pcie_host_bridges[rc_pos].segment,
                 base: smmu.base,
                 event_gsiv: smmu.evtq_intid,
@@ -343,8 +351,9 @@ mod tests {
 
     #[test]
     fn accelerated_smmu_uses_hyperv_not_local_device() {
-        assert_eq!(smmu_backend(true), SmmuBackend::HyperV);
-        assert_eq!(smmu_backend(false), SmmuBackend::Local);
+        assert_eq!(smmu_backend(true, true), SmmuBackend::HyperV);
+        assert_eq!(smmu_backend(true, false), SmmuBackend::Local);
+        assert_eq!(smmu_backend(false, false), SmmuBackend::Local);
     }
 
     #[test]
