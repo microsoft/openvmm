@@ -98,6 +98,8 @@ pub async fn build_dynamic_vpci_device(
                             driver_source,
                             doorbell_registration: ctx.doorbell_registration,
                             shared_mem_mapper: ctx.shared_mem_mapper,
+                            #[cfg(target_os = "linux")]
+                            direct_iommu_vm_fd: None,
                         },
                     )
                     .await
@@ -194,7 +196,14 @@ pub async fn build_vpci_device(
         guest_memory,
         &msi_conn,
     );
-    let device = resolve_and_add_pci_device(device_builder, ctx, &dma_target).await?;
+    let device = resolve_and_add_pci_device(
+        device_builder,
+        ctx,
+        &dma_target,
+        #[cfg(target_os = "linux")]
+        None,
+    )
+    .await?;
 
     {
         let device_id = (instance_id.data2 as u64) << 16 | (instance_id.data3 as u64 & 0xfff8);
@@ -236,13 +245,21 @@ pub async fn build_pcie_device(
     chipset_builder: &ChipsetBuilder<'_>,
     port_name: Arc<str>,
     dma_target: &DmaTarget,
+    #[cfg(target_os = "linux")] direct_iommu_vm_fd: Option<std::os::fd::BorrowedFd<'_>>,
 ) -> anyhow::Result<()> {
     let dev_name = format!("pcie:{}-{}", port_name, ctx.resource.id());
     let device_builder = chipset_builder
         .arc_mutex_device(dev_name)
         .on_pcie_port(vmotherboard::BusId::new(&port_name));
 
-    resolve_and_add_pci_device(device_builder, ctx, dma_target).await?;
+    resolve_and_add_pci_device(
+        device_builder,
+        ctx,
+        dma_target,
+        #[cfg(target_os = "linux")]
+        direct_iommu_vm_fd,
+    )
+    .await?;
 
     Ok(())
 }
@@ -253,6 +270,7 @@ pub async fn resolve_and_add_pci_device(
     device_builder: ArcMutexChipsetDeviceBuilder<'_, '_, ErasedChipsetDevice>,
     ctx: PciDeviceResolveContext<'_>,
     dma_target: &DmaTarget,
+    #[cfg(target_os = "linux")] direct_iommu_vm_fd: Option<std::os::fd::BorrowedFd<'_>>,
 ) -> anyhow::Result<Arc<closeable_mutex::CloseableMutex<ErasedChipsetDevice>>> {
     let device = device_builder
         .try_add_async(async |services| {
@@ -265,6 +283,8 @@ pub async fn resolve_and_add_pci_device(
                         driver_source: ctx.driver_source,
                         doorbell_registration: ctx.doorbell_registration,
                         shared_mem_mapper: ctx.shared_mem_mapper,
+                        #[cfg(target_os = "linux")]
+                        direct_iommu_vm_fd,
                     },
                 )
                 .await

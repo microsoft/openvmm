@@ -33,6 +33,8 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
+#[cfg(target_os = "linux")]
+use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use virt::InitialPageImport;
 use virt::Partition;
@@ -103,6 +105,10 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets the irqfd routing interface, if supported.
     fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>>;
 
+    /// Gets the backend VM fd for direct iommufd attach, if supported.
+    #[cfg(target_os = "linux")]
+    fn direct_iommu_vm_fd(&self) -> Option<BorrowedFd<'_>>;
+
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
 
@@ -122,7 +128,10 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets an interface to support downcasting to specific partition types.
     ///
     /// TODO: remove this.
-    #[cfg(all(windows, feature = "virt_whp"))]
+    #[cfg(any(
+        all(windows, feature = "virt_whp"),
+        all(target_os = "linux", feature = "virt_mshv")
+    ))]
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
@@ -263,6 +272,11 @@ where
         Partition::irqfd(self)
     }
 
+    #[cfg(target_os = "linux")]
+    fn direct_iommu_vm_fd(&self) -> Option<BorrowedFd<'_>> {
+        Partition::direct_iommu_vm_fd(self)
+    }
+
     fn supports_virtual_devices(&self) -> bool {
         self.new_virtual_device().is_some()
     }
@@ -287,7 +301,10 @@ where
         self.synic()
     }
 
-    #[cfg(all(windows, feature = "virt_whp"))]
+    #[cfg(any(
+        all(windows, feature = "virt_whp"),
+        all(target_os = "linux", feature = "virt_mshv")
+    ))]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

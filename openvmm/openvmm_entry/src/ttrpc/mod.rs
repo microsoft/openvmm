@@ -1395,6 +1395,10 @@ impl VmService {
             pcie_root_complexes: pcie.root_complexes,
             pcie_ecam_below_4gb: false,
             pcie_devices: pcie.devices,
+            #[cfg(target_os = "linux")]
+            direct_iommus: vec![],
+            #[cfg(target_os = "linux")]
+            direct_assigned_devices: vec![],
             pcie_switches: pcie.switches,
             pcie_generic_initiators: pcie.generic_initiators,
             vpci_devices: vec![],
@@ -2759,6 +2763,7 @@ async fn build_pcie_topology(
         .map(|initiator| PcieGenericInitiatorConfig {
             port_name: initiator.port_name,
             node: initiator.node,
+            memory_range: None,
         })
         .collect();
 
@@ -2782,6 +2787,10 @@ fn parse_pcie_iommu(
     match config.kind.context("missing PCIe IOMMU kind")? {
         Kind::Smmu(config) => {
             anyhow::ensure!(
+                !config.accel,
+                "accelerated SMMUs are not supported over ttrpc"
+            );
+            anyhow::ensure!(
                 cfg!(guest_arch = "aarch64"),
                 "SMMU is only supported for aarch64 guests"
             );
@@ -2796,7 +2805,9 @@ fn parse_pcie_iommu(
                 }
             };
             Ok(PcieIommuConfig::Smmu {
-                accel: config.accel,
+                accel: false,
+                ats: false,
+                ssid_bits: 0,
                 oas,
                 ssidsize,
             })
@@ -2928,6 +2939,8 @@ fn build_vfio_device(
             iommufd,
             iommu_id,
             bar_addresses,
+            direct_iommu: false,
+            direct_ats_pasid: false,
         }
         .into_resource());
     }
@@ -4736,6 +4749,7 @@ mod tests {
                         accel: actual_accel,
                         oas,
                         ssidsize,
+                        ..
                     } = result.unwrap()
                     else {
                         panic!("expected SMMU configuration");
@@ -4747,17 +4761,18 @@ mod tests {
                         (SmmuOas::Fixed(actual), Some(expected)) => {
                             assert_eq!(u32::from(actual), expected)
                         }
-                        _ => panic!("unexpected OAS policy"),
                     }
-                } else {
-                    assert!(
-                        result
-                            .err()
-                            .unwrap()
-                            .to_string()
-                            .contains("SMMU OAS out of range")
-                    );
+                    _ => panic!("unexpected OAS policy"),
                 }
+            } else {
+                assert!(
+                    result
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("SMMU OAS out of range")
+                );
+            }
             }
         }
     }
@@ -4772,7 +4787,7 @@ mod tests {
             None,
             Some(vmservice::PcieIommuConfig {
                 kind: Some(Kind::Smmu(vmservice::SmmuConfig {
-                    accel: true,
+                    accel: false,
                     oas_bits: Some(48),
                     ssid_bits: Some(0),
                 })),

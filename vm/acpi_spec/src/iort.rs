@@ -29,6 +29,8 @@ pub const IORT_NODE_COHERENT: u32 = 0x00000001;
 pub const IORT_MEMORY_ACCESS_COHERENCY: u8 = 1 << 0;
 pub const IORT_MEMORY_ACCESS_ATTRIBUTES: u8 = 1 << 1;
 pub const IORT_ID_SINGLE_MAPPING: u32 = 1 << 0;
+/// Root complex supports ATS.
+pub const IORT_ATS_SUPPORTED: u32 = 1 << 0;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
@@ -141,7 +143,11 @@ impl IortPciRootComplex {
         Self {
             header,
             memory_properties: IortMemoryAccessProperties::coherent(),
-            ats_attribute: u32::from(ats_supported).into(),
+            ats_attribute: if ats_supported {
+                IORT_ATS_SUPPORTED.into()
+            } else {
+                0.into()
+            },
             pci_segment_number: u32::from(pci_segment_number).into(),
             memory_address_limit: 64,
             reserved: [0; 3],
