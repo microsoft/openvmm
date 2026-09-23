@@ -2336,10 +2336,11 @@ impl InitializedVm {
         }
         let mut deferred_msi_conns: Vec<DeferredMsiConn> = Vec::new();
 
-        let (mut pcie_host_bridges, pcie_root_complexes) = {
+        let (mut pcie_host_bridges, pcie_root_complexes, pcie_root_complex_pasid_prefixing) = {
             pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
             let mut pcie_host_bridges = Vec::new();
             let mut pcie_root_complexes = Vec::new();
+            let mut pcie_root_complex_pasid_prefixing = Vec::new();
 
             for (rc_idx, (rc, ranges)) in cfg
                 .pcie_root_complexes
@@ -2432,6 +2433,14 @@ impl InitializedVm {
                     _ => (0, 0),
                 };
 
+                #[cfg(guest_arch = "aarch64")]
+                let pasid_tlp_prefixing = matches!(
+                    rc.iommu.as_ref(),
+                    Some(PcieIommuConfig::Smmu { ssid_bits, .. }) if *ssid_bits != 0
+                );
+                #[cfg(not(guest_arch = "aarch64"))]
+                let pasid_tlp_prefixing = false;
+
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
@@ -2441,7 +2450,9 @@ impl InitializedVm {
                             let root_port_definitions = rc
                                 .ports
                                 .iter()
-                                .map(pcie_topology::build_port_definition)
+                                .map(|port| {
+                                    pcie_topology::build_port_definition(port, pasid_tlp_prefixing)
+                                })
                                 .collect();
                             let builder = GenericPcieRootComplex::builder(
                                 &mut register_mmio,
@@ -2502,6 +2513,7 @@ impl InitializedVm {
                     preserve_boot_config: rc.preserve_bars
                         || matches!(&cfg.load_mode, LoadMode::Uefi { .. }),
                 });
+                pcie_root_complex_pasid_prefixing.push(pasid_tlp_prefixing);
 
                 pcie_root_complexes.push(root_complex.clone());
 
@@ -2509,7 +2521,11 @@ impl InitializedVm {
                 chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
             }
 
-            (pcie_host_bridges, pcie_root_complexes)
+            (
+                pcie_host_bridges,
+                pcie_root_complexes,
+                pcie_root_complex_pasid_prefixing,
+            )
         };
 
         // Build a port-name→(segment, bus_range) map covering all ports in
@@ -2521,6 +2537,7 @@ impl InitializedVm {
             segment: u16,
             bus_range: pci_core::bus_range::AssignedBusRange,
             rc_idx: usize,
+            pasid_tlp_prefixing: bool,
         }
         let mut port_info: std::collections::HashMap<Arc<str>, PortInfo> =
             std::collections::HashMap::new();
@@ -2530,12 +2547,19 @@ impl InitializedVm {
             .enumerate()
         {
             for p in rc.lock().downstream_ports() {
+                let explicit_pasid = cfg.pcie_root_complexes[rc_idx]
+                    .ports
+                    .iter()
+                    .find(|port| port.name == p.name.as_ref())
+                    .is_some_and(|port| port.pasid);
                 if let Some(_existing) = port_info.insert(
                     p.name.clone(),
                     PortInfo {
                         segment: hb.segment,
                         bus_range: p.bus_range,
                         rc_idx,
+                        pasid_tlp_prefixing: pcie_root_complex_pasid_prefixing[rc_idx]
+                            || explicit_pasid,
                     },
                 ) {
                     anyhow::bail!("duplicate PCIe port name '{}'", p.name);
@@ -2556,6 +2580,7 @@ impl InitializedVm {
             })?;
             let parent_segment = parent_port_info.segment;
             let parent_rc_idx = parent_port_info.rc_idx;
+            let pasid_tlp_prefixing = parent_port_info.pasid_tlp_prefixing;
 
             let msi_conn = pci_core::msi::MsiConnection::new();
 
@@ -2575,7 +2600,7 @@ impl InitializedVm {
                     let downstream_ports = switch
                         .ports
                         .iter()
-                        .map(pcie_topology::build_port_definition)
+                        .map(|port| pcie_topology::build_port_definition(port, pasid_tlp_prefixing))
                         .collect();
                     let definition = pcie::switch::GenericPcieSwitchDefinition {
                         name: switch.name.clone().into(),
@@ -2588,12 +2613,18 @@ impl InitializedVm {
             // Query the switch's actual downstream port names instead of
             // reconstructing them from the naming convention.
             for p in switch_device.lock().downstream_ports() {
+                let explicit_pasid = switch
+                    .ports
+                    .iter()
+                    .find(|port| port.name == p.name.as_ref())
+                    .is_some_and(|port| port.pasid);
                 if let Some(_existing) = port_info.insert(
                     p.name.clone(),
                     PortInfo {
                         segment: parent_segment,
                         bus_range: p.bus_range,
                         rc_idx: parent_rc_idx,
+                        pasid_tlp_prefixing: pasid_tlp_prefixing || explicit_pasid,
                     },
                 ) {
                     anyhow::bail!("duplicate PCIe port name '{}'", p.name);
