@@ -3,6 +3,7 @@
 
 //! Resource resolver for VFIO-assigned PCI devices.
 
+use crate::DirectCapabilityMediation;
 use crate::VfioAssignedPciDevice;
 use crate::manager::VfioContainerManager;
 use crate::manager::VfioManagerClient;
@@ -239,13 +240,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             "opening VFIO cdev device with iommufd"
         );
 
-        tracing::info!(
-            pci_id,
-            iommu_id,
-            needs_nesting = nesting_ctx.is_some(),
-            "opening VFIO cdev device with iommufd"
-        );
-
         let mut resp = self
             .client
             .prepare_device(crate::manager::CdevPrepareRequest {
@@ -316,6 +310,11 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             bar_addresses,
             accel_stream,
             pasid_capabilities,
+            DirectCapabilityMediation {
+                direct: direct_iommu,
+                pasid: direct_pasid,
+                ats: direct_ats,
+            },
         )
         .await?;
 
