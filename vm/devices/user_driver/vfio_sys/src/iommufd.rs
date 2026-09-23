@@ -637,7 +637,6 @@ impl IommufdCtx {
             fault_id: 0,
             __reserved2: 0,
         };
-        // SAFETY: The fd, command, and live type-specific data are valid for the ioctl.
         tracing::debug!(
             dev_id,
             viommu_id = pt_id,
@@ -646,6 +645,7 @@ impl IommufdCtx {
             data_len = cmd.data_len,
             "IOMMU_HWPT_ALLOC direct request"
         );
+        // SAFETY: The fd, command, and live type-specific data are valid for the ioctl.
         unsafe {
             ioctl::iommu_hwpt_alloc(self.file.as_raw_fd(), &mut cmd)
                 .context("IOMMU_HWPT_ALLOC direct failed")?;
@@ -805,7 +805,6 @@ impl IommufdCtx {
             __reserved: 0,
             data_uptr: std::ptr::from_ref(&data) as u64,
         };
-        // SAFETY: The fd, command, and live type-specific data are valid for the ioctl.
         tracing::debug!(
             dev_id,
             vm_fd,
@@ -813,6 +812,7 @@ impl IommufdCtx {
             data_len = cmd.data_len,
             "IOMMU_VIOMMU_ALLOC direct request"
         );
+        // SAFETY: The fd, command, and live type-specific data are valid for the ioctl.
         unsafe {
             ioctl::iommu_viommu_alloc(self.file.as_raw_fd(), &mut cmd)
                 .context("IOMMU_VIOMMU_ALLOC direct failed")?;
@@ -839,8 +839,8 @@ impl IommufdCtx {
             out_vdevice_id: 0,
             virt_id,
         };
-        // SAFETY: fd is valid, struct correctly constructed.
         tracing::debug!(viommu_id, dev_id, virt_id, "IOMMU_VDEVICE_ALLOC request");
+        // SAFETY: The fd and fully initialized command are valid for the ioctl.
         unsafe {
             ioctl::iommu_vdevice_alloc(self.file.as_raw_fd(), &mut cmd)
                 .context("IOMMU_VDEVICE_ALLOC failed")?;

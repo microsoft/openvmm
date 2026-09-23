@@ -4677,13 +4677,13 @@ impl LoadedVm {
 
         device_removal.drain().await;
         self.pause().await;
-        self.teardown_chipset_devices().await;
         #[cfg(guest_arch = "aarch64")]
         for _ in 0..3 {
             if self.unbind_virtual_iommu_bindings().is_ok() {
                 break;
             }
         }
+        self.teardown_chipset_devices().await;
         self.inner.partition_unit.teardown().await;
         if let Some(vmbus) = self.inner.vmbus_server {
             vmbus.remove().await.shutdown().await;
@@ -4823,13 +4823,17 @@ impl LoadedVm {
         shared_memory: Option<SharedMemoryBacking>,
         saved_state: SavedState,
     ) -> RestartState {
-        self.teardown_chipset_devices().await;
+        if self.state_units.is_running() {
+            self.state_units.stop().await;
+            self.running = false;
+        }
         #[cfg(guest_arch = "aarch64")]
         for _ in 0..3 {
             if self.unbind_virtual_iommu_bindings().is_ok() {
                 break;
             }
         }
+        self.teardown_chipset_devices().await;
         let notify = self.inner.partition_unit.teardown().await;
         let input = self.inner.input_distributor.remove().await.into_inner();
 
