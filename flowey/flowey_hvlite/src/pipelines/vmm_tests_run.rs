@@ -14,15 +14,19 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
+use flowey_lib_hvlite::build_incubator::IncubatorProfileNameOrPath;
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonTriple;
-use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
-use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelectionsWindows;
+use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
+use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDeps;
+use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
+use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
 use petri_artifacts_core::ArtifactId;
 use petri_artifacts_core::ArtifactListOutput;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io::Write as _;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -41,8 +45,10 @@ pub struct VmmTestsRunCli {
     /// Directory for the output artifacts.
     ///
     /// If not specified, defaults to `target/vmm_tests`.
-    /// WSL-to-Windows runs still require explicitly overriding this to a
-    /// Windows-accessible output directory.
+    /// WSL-to-Windows runs must override this to a Windows-accessible output
+    /// directory (a DrvFs mount like `/mnt/c/...`) only when the selected tests
+    /// use disk images that require a Windows filesystem (Hyper-V disks, or
+    /// VHDX / dynamic VHD1 images); otherwise the default works.
     #[clap(long)]
     dir: Option<PathBuf>,
 
@@ -110,6 +116,10 @@ pub struct VmmTestsRunCli {
     /// `disabled` in the IGVM manifest.
     #[clap(long)]
     pub disable_secure_avic: bool,
+
+    /// How many times to run the tests
+    #[clap(long)]
+    repetitions: Option<u64>,
 
     /// Run tests inside an emulated incubator.
     ///
@@ -182,6 +192,7 @@ impl IntoPipeline for VmmTestsRunCli {
             ci_profile,
             no_reuse_prepped_vhds,
             disable_secure_avic,
+            repetitions,
             incubator,
         } = self;
 
@@ -190,6 +201,9 @@ impl IntoPipeline for VmmTestsRunCli {
         if incubator.is_some() && target.is_none() {
             anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
         }
+
+        let repetitions =
+            NonZeroU64::new(repetitions.unwrap_or(1)).context("repetitions must not be zero")?;
 
         let target = resolve_target(target, backend_hint)?;
         let target_os = target.as_triple().operating_system;
@@ -211,25 +225,9 @@ impl IntoPipeline for VmmTestsRunCli {
 
         let repo_root = crate::repo_root();
 
-        // Validate output directory for WSL
-        validate_output_dir(dir.as_deref(), target_os)?;
-        let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
-        std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
-
-        // Resolve the incubator profile path. `--incubator` with no value uses
-        // the default profile for the target; `--incubator <PATH>` overrides.
-        let incubator_profile = match incubator {
-            None => None,
-            Some(Some(path)) => Some(path),
-            Some(None) => Some(default_incubator_profile(&repo_root, &target).ok_or_else(
-                || {
-                    anyhow::anyhow!(
-                        "no default incubator profile for target {target_str}; \
-                     pass an explicit path with --incubator <PATH>"
-                    )
-                },
-            )?),
-        };
+        let incubator_profile = incubator
+            .map(|i| resolve_incubator(i, &target))
+            .transpose()?;
 
         // Artifact discovery only needs to execute the test binary far enough
         // to dump its static artifact metadata (`--list-required-artifacts`),
@@ -309,7 +307,7 @@ impl IntoPipeline for VmmTestsRunCli {
         } else {
             let mut hyperv_tests: usize = 0;
             let mut hyperv_artifacts = Vec::new();
-            for (_, suite) in suites.iter() {
+            for suite in suites.values() {
                 let hyperv_testcases: Vec<_> = suite
                     .testcases
                     .iter()
@@ -350,6 +348,31 @@ impl IntoPipeline for VmmTestsRunCli {
         }
 
         log::info!("Resolved selections: {:?}", resolved);
+
+        // Validate the output directory now that we know which disk images the
+        // selected tests need. When targeting Windows from WSL, the only hard
+        // filesystem constraint is that certain disk images must live on a
+        // Windows filesystem rather than a `\\wsl$` 9p path:
+        //
+        // - Hyper-V tests attach their VHDs to a real Hyper-V VM, whose worker
+        //   process can't open disks over 9p, so any Hyper-V disk needs a
+        //   Windows path regardless of format.
+        // - OpenVMM opens fixed VHD1, VMGS, and raw/ISO images as plain files
+        //   (fine over 9p), but routes VHDX (and dynamic/differencing VHD1)
+        //   disks through the Windows virtual-disk mount API, which requires a
+        //   real local volume. The only such artifact today is the `.vhdx`.
+        //
+        // All other cases (streamed disks, or fixed-VHD1 files even with
+        // `--no-lazy-fetch`) work fine from the default WSL-side directory.
+        let needs_windows_disk = !build_only
+            && (resolved.needs_hyperv
+                || resolved
+                    .downloads
+                    .iter()
+                    .any(|a| a.filename().ends_with(".vhdx")));
+        validate_output_dir(dir.as_deref(), target_os, needs_windows_disk)?;
+        let test_content_dir = dir.unwrap_or_else(|| repo_root.join("target").join("vmm_tests"));
+        std::fs::create_dir_all(&test_content_dir).context("failed to create output directory")?;
 
         let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
             ReadVar::from_static(repo_root),
@@ -423,8 +446,13 @@ impl IntoPipeline for VmmTestsRunCli {
                     } else {
                         flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
                     },
-                    reuse_prepped_vhds: !no_reuse_prepped_vhds,
+                    petri_params: PetriParams {
+                        disable_remote_artifacts: false,
+                        reuse_prepped_vhds: !no_reuse_prepped_vhds,
+                        require_2mb_hugetlb: false, // TODO
+                    },
                     disable_secure_avic,
+                    repetitions,
                     incubator_profile,
                     done: ctx.new_done_handle(),
                 }
@@ -595,7 +623,7 @@ fn query_test_binary_artifacts(suite: &RustSuite) -> anyhow::Result<Vec<String>>
 }
 
 #[derive(clap::ValueEnum, Copy, Clone)]
-enum VmmTestTargetCli {
+pub(crate) enum VmmTestTargetCli {
     /// Windows Aarch64
     WindowsAarch64,
     /// Windows X64
@@ -607,7 +635,7 @@ enum VmmTestTargetCli {
 }
 
 /// Resolve a CLI target option to a CommonTriple, defaulting to the host.
-fn resolve_target(
+pub(crate) fn resolve_target(
     target: Option<VmmTestTargetCli>,
     backend_hint: PipelineBackendHint,
 ) -> anyhow::Result<CommonTriple> {
@@ -633,46 +661,41 @@ fn resolve_target(
     })
 }
 
-/// Default incubator profile path for a target, used when `--incubator` is
-/// passed without an explicit profile path. Returns `None` for targets that
-/// have no incubator profile.
-fn default_incubator_profile(repo_root: &Path, target: &CommonTriple) -> Option<PathBuf> {
-    let name = match *target {
-        CommonTriple::AARCH64_LINUX_MUSL => "aarch64-tcg-pcie",
-        _ => return None,
-    };
-    Some(
-        repo_root
-            .join("petri/incubator/profiles")
-            .join(format!("{name}.toml")),
-    )
-}
-
 /// Validate the output directory path based on the current platform.
 ///
-/// When running under WSL and targeting Windows, the output directory must be a
-/// Windows-accessible path (DrvFs mount like `/mnt/c/...`) because Windows
-/// requires VHDs to reside on a Windows filesystem. On native Windows or Linux
-/// this check is a no-op.
+/// When running under WSL and targeting Windows, some disk images must live on
+/// a Windows-accessible path (a DrvFs mount like `/mnt/c/...`) rather than a
+/// `\\wsl$` 9p path: Hyper-V disks (attached to a real Hyper-V VM) and VHDX /
+/// dynamic VHD1 images (opened via the Windows virtual-disk mount API). This
+/// constraint only applies when the selected tests actually use such a disk
+/// (`needs_windows_disk`); fixed-VHD1, VMGS, ISO, and streamed disks work fine
+/// from the WSL side. On native Windows or Linux this check is a no-op.
 fn validate_output_dir(
     dir: Option<&Path>,
     target_os: target_lexicon::OperatingSystem,
+    needs_windows_disk: bool,
 ) -> anyhow::Result<()> {
-    if flowey_cli::running_in_wsl() && matches!(target_os, target_lexicon::OperatingSystem::Windows)
+    if needs_windows_disk
+        && flowey_cli::running_in_wsl()
+        && matches!(target_os, target_lexicon::OperatingSystem::Windows)
     {
         if let Some(dir) = dir {
             if !flowey_cli::is_wsl_windows_path(dir) {
                 anyhow::bail!(
                     "When targeting Windows from WSL, --dir must be a path on Windows \
-                        (i.e., on a DrvFs mount like /mnt/c/vmm_tests). \
+                        (i.e., on a DrvFs mount like /mnt/c/vmm_tests) because the selected \
+                        tests use disk images that require a Windows filesystem (Hyper-V \
+                        disks, or VHDX / dynamic VHD1 images). \
                         Got: {}",
                     dir.display()
                 );
             }
         } else {
             anyhow::bail!(
-                "An output directory on the Windows filesystem \
-                    must be specified when targeting Windows from WSL."
+                "The selected tests use disk images that require a Windows filesystem \
+                    (Hyper-V disks, or VHDX / dynamic VHD1 images) when targeting Windows \
+                    from WSL. Specify an output directory on a DrvFs mount with --dir \
+                    (e.g., --dir /mnt/c/vmm_tests)."
             )
         }
     }
@@ -687,17 +710,22 @@ fn selections_from_resolved(
 ) -> VmmTestSelections {
     VmmTestSelections {
         filter,
-        artifacts: resolved.downloads.into_iter().collect(),
+        downloaded_artifacts: resolved.downloads.into_iter().collect(),
         build: resolved.build.clone(),
-        deps: match target_os {
+        external_deps: match target_os {
             target_lexicon::OperatingSystem::Windows => {
-                VmmTestsDepSelections::Windows(VmmTestsDepSelectionsWindows {
+                VmmTestsExternalDeps::Windows(VmmTestsExternalDepsWindows {
                     hyperv: resolved.needs_hyperv,
                     whp: resolved.build.openvmm,
                     hardware_isolation: resolved.needs_hardware_isolation,
                 })
             }
-            target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
+            target_lexicon::OperatingSystem::Linux => {
+                VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
+                    hugetlb_2mb_overcommit_pages: None, // TODO
+                    prepare_vhost_vsock: false,         // TODO
+                })
+            }
             _ => unreachable!(),
         },
         needs_release_igvm: resolved.needs_release_igvm,
@@ -840,6 +868,7 @@ impl ResolvedArtifactSelections {
             }
             petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED::GLOBAL_UNIQUE_ID =>
             {
+                self.build.openvmm = true;
                 self.build.prep_steps_standard = true;
                 // prep_steps needs actual VHD files on disk to copy them.
                 // Force download even when lazy fetch is enabled.
@@ -850,6 +879,7 @@ impl ResolvedArtifactSelections {
             }
             petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID =>
             {
+                self.build.openvmm = true;
                 self.build.prep_steps_no_vmbus = true;
                 self.force_downloads
                     .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
@@ -921,4 +951,30 @@ impl ResolvedArtifactSelections {
         };
         Ok(())
     }
+}
+
+/// Resolve the incubator profile path. `--incubator` with no value uses
+/// the default profile for the target; `--incubator <PATH>` overrides.
+pub(crate) fn resolve_incubator(
+    incubator: Option<PathBuf>,
+    target: &CommonTriple,
+) -> anyhow::Result<IncubatorProfileNameOrPath> {
+    Ok(match incubator {
+        // If no separators or extension, assume it is a profile name
+        Some(path) if path.components().count() == 1 && path.extension().is_none() => {
+            IncubatorProfileNameOrPath::Name(path.to_string_lossy().to_string())
+        }
+        Some(path) => IncubatorProfileNameOrPath::Path(path),
+        None => IncubatorProfileNameOrPath::Name(
+            flowey_lib_hvlite::build_incubator::default_incubator_profile(target)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no default incubator profile for target {}; \
+                         pass an explicit path with --incubator <PATH>",
+                        target.as_triple().to_string()
+                    )
+                })?
+                .into(),
+        ),
+    })
 }

@@ -7,6 +7,7 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+chipset_device.workspace = true
 openhcl_tdisp.workspace = true
 pci_core.workspace = true
 tdisp.workspace = true
@@ -32,7 +33,6 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
-chipset_device.workspace = true
 closeable_mutex.workspace = true
 test_with_tracing.workspace = true
 vpci.workspace = true

@@ -467,7 +467,7 @@ impl VtlReturn for TestHypercallHandler<'_> {
 
 impl VtlSwitchOps for TestHypercallHandler<'_> {
     fn advance_ip(&mut self) {
-        X64RegisterIo::new(self, true).advance_ip();
+        X64RegisterIo::new(self, true, true).advance_ip();
     }
 
     fn inject_invalid_opcode_fault(&mut self) {
@@ -994,7 +994,7 @@ impl TestHypercallAbi {
     fn io_builder(&self) -> TestHandlerIoBuilder {
         match *self {
             TestHypercallAbi::X64 { is_64bit } => {
-                Box::new(move |h| Box::new(X64RegisterIo::new(h, is_64bit)))
+                Box::new(move |h| Box::new(X64RegisterIo::new(h, is_64bit, true)))
             }
             TestHypercallAbi::Aarch64 {
                 pre_advanced,

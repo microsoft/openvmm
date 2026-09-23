@@ -176,7 +176,7 @@ if [[ $1 == "build" || $1 == "run" ]]; then
         
 
         if [[ $4 == "uefi" ]]; then
-            args+=" --uefi --uefi-firmware $uefi_firmware --vmbus-scsi id=scsi0 --disk memdiff:$disk_path,on=scsi0"
+            args+=" --uefi firmware=$uefi_firmware --vmbus-scsi id=scsi0 --disk memdiff:$disk_path,on=scsi0"
         elif [[ $4 == "linux" ]]; then
             args+=""
         else
@@ -189,7 +189,7 @@ if [[ $1 == "build" || $1 == "run" ]]; then
 
         if [[ $4 == "uefi" ]]; then
             recipe="$short_arch"
-            args+=" --vmbus-scsi id=scsi0 --disk memdiff:$disk_path,on=scsi0 --gfx --vmbus-com1-serial term --uefi-console-mode com1 --uefi"
+            args+=" --vmbus-scsi id=scsi0 --disk memdiff:$disk_path,on=scsi0 --gfx --vmbus-com1-serial term --uefi console=com1"
         elif [[ $4 == "linux" ]]; then
             recipe="$short_arch-test-linux-direct"
             args+=" --vmbus-com1-serial term --vmbus-com2-serial term"
@@ -321,14 +321,13 @@ Here is a full working example that launches OpenVMM with a VHDX disk:
 cargo run --target x86_64-pc-windows-msvc -- \
   --vmbus-scsi id=scsi0 \
   --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx),on=scsi0" \
-  --uefi \
-  --uefi-firmware "$(wslpath -w .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd)" \
+    --uefi "firmware=$(wslpath -w .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd)" \
   --gfx -p 6 -m 8GB
 ```
 
 ~~~admonish tip
 If you have the [WSLENV export](#running-windows-openvmm-from-within-wsl)
-active, you can omit `--uefi-firmware` — the `X86_64_OPENVMM_UEFI_FIRMWARE`
+active, you can omit the `firmware` option. The `X86_64_OPENVMM_UEFI_FIRMWARE`
 env var (set in `.cargo/config.toml`) is automatically translated to a
 Windows path:
 

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import React, { useEffect, useRef } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router";
 import "./styles/common.css";
 
 interface SearchInputProps {

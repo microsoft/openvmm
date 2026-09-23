@@ -115,33 +115,14 @@ impl CdevDevice {
     /// Returns the attached page table ID (may differ from input if the
     /// kernel auto-created a HWPT for the IOAS).
     pub fn attach_ioas(&self, pt_id: u32) -> anyhow::Result<u32> {
-        let mut cmd = VfioDeviceAttachIommufdPt {
-            argsz: size_of::<VfioDeviceAttachIommufdPt>() as u32,
-            flags: 0,
-            pt_id,
-        };
-        // SAFETY: fd is valid, struct correctly constructed.
-        unsafe {
-            ioctl::vfio_device_attach_iommufd_pt(self.file.as_raw_fd(), &mut cmd)
-                .context("VFIO_DEVICE_ATTACH_IOMMUFD_PT failed")?;
-        }
-        Ok(cmd.pt_id)
+        attach_iommufd_pt(self.file.as_fd(), pt_id)
     }
 
     /// Detach the device from its current IOAS/HWPT.
     ///
     /// After detaching, the device is in a blocking DMA state.
     pub fn detach_ioas(&self) -> anyhow::Result<()> {
-        let mut cmd = VfioDeviceDetachIommufdPt {
-            argsz: size_of::<VfioDeviceDetachIommufdPt>() as u32,
-            flags: 0,
-        };
-        // SAFETY: fd is valid, struct correctly constructed.
-        unsafe {
-            ioctl::vfio_device_detach_iommufd_pt(self.file.as_raw_fd(), &mut cmd)
-                .context("VFIO_DEVICE_DETACH_IOMMUFD_PT failed")?;
-        }
-        Ok(())
+        detach_iommufd_pt(self.file.as_fd())
     }
 
     /// Convert to a standard [`Device`](super::Device) for config space,
@@ -164,4 +145,68 @@ impl AsFd for CdevDevice {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.file.as_fd()
     }
+}
+
+impl super::Device {
+    /// Attach this VFIO device to an iommufd page table (IOAS or HWPT) by its
+    /// object ID, via `VFIO_DEVICE_ATTACH_IOMMUFD_PT`.
+    ///
+    /// Only valid for a device opened through the cdev path and bound to
+    /// iommufd (see [`CdevDevice::bind_iommufd`]); legacy group-path devices
+    /// use the container/IOAS model instead. If the device is already attached,
+    /// the kernel replaces the page table atomically. Returns the attached
+    /// page table ID (the kernel may substitute an auto-created HWPT for an
+    /// IOAS).
+    pub fn attach_pt(&self, pt_id: u32) -> anyhow::Result<u32> {
+        attach_iommufd_pt(self.as_fd(), pt_id)
+    }
+
+    /// Detach this VFIO device from its current iommufd page table, via
+    /// `VFIO_DEVICE_DETACH_IOMMUFD_PT`. Afterward the device is in the blocking
+    /// DMA state (abort). Only valid for iommufd-bound (cdev) devices.
+    pub fn detach_pt(&self) -> anyhow::Result<()> {
+        detach_iommufd_pt(self.as_fd())
+    }
+}
+
+/// Attach a VFIO cdev device (by fd) to an iommufd page table (IOAS or HWPT)
+/// via `VFIO_DEVICE_ATTACH_IOMMUFD_PT`.
+///
+/// Shared implementation behind [`CdevDevice::attach_ioas`] and
+/// [`super::Device::attach_pt`]. If the device is already attached, the kernel
+/// performs an atomic page-table replacement. Returns the attached page table
+/// ID (the kernel may substitute an auto-created HWPT for an IOAS).
+fn attach_iommufd_pt(device_fd: BorrowedFd<'_>, pt_id: u32) -> anyhow::Result<u32> {
+    let mut cmd = VfioDeviceAttachIommufdPt {
+        argsz: size_of::<VfioDeviceAttachIommufdPt>() as u32,
+        flags: 0,
+        pt_id,
+    };
+    // SAFETY: fd is valid (caller holds BorrowedFd), struct correctly
+    // constructed.
+    unsafe {
+        ioctl::vfio_device_attach_iommufd_pt(device_fd.as_raw_fd(), &mut cmd)
+            .context("VFIO_DEVICE_ATTACH_IOMMUFD_PT failed")?;
+    }
+    Ok(cmd.pt_id)
+}
+
+/// Detach a VFIO cdev device (by fd) from its current iommufd page table via
+/// `VFIO_DEVICE_DETACH_IOMMUFD_PT`. Afterward the device is in the blocking DMA
+/// state (abort).
+///
+/// Shared implementation behind [`CdevDevice::detach_ioas`] and
+/// [`super::Device::detach_pt`].
+fn detach_iommufd_pt(device_fd: BorrowedFd<'_>) -> anyhow::Result<()> {
+    let mut cmd = VfioDeviceDetachIommufdPt {
+        argsz: size_of::<VfioDeviceDetachIommufdPt>() as u32,
+        flags: 0,
+    };
+    // SAFETY: fd is valid (caller holds BorrowedFd), struct correctly
+    // constructed.
+    unsafe {
+        ioctl::vfio_device_detach_iommufd_pt(device_fd.as_raw_fd(), &mut cmd)
+            .context("VFIO_DEVICE_DETACH_IOMMUFD_PT failed")?;
+    }
+    Ok(())
 }

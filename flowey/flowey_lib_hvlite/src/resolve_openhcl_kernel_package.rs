@@ -16,6 +16,15 @@ pub enum OpenhclKernelPackageKind {
     CvmDev,
 }
 
+impl OpenhclKernelPackageKind {
+    pub fn is_dev(self) -> bool {
+        match self {
+            Self::Main | Self::Cvm => false,
+            Self::Dev | Self::CvmDev => true,
+        }
+    }
+}
+
 flowey_config! {
     /// Config for the resolve_openhcl_kernel_package node.
     pub struct Config {
@@ -130,6 +139,14 @@ impl FlowNodeWithConfig for Node {
         // Verify we have either local paths or versions for each requested architecture
         for (kind, arch) in &all_reqs {
             if !local_paths.contains_key(arch) && !versions.contains_key(kind) {
+                if kind.is_dev() {
+                    anyhow::bail!(
+                        "OpenHCL dev kernel support is disabled; provide local kernel paths for \
+                         {:?} to enable {:?}",
+                        arch,
+                        kind,
+                    );
+                }
                 anyhow::bail!(
                     "Must provide either SetLocal for {:?} or SetVersion for {:?}",
                     arch,

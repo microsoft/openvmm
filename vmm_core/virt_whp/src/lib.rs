@@ -39,7 +39,6 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory::MemoryMapper;
-use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use range_map_vec::RangeMap;
@@ -53,7 +52,6 @@ use std::task::Waker;
 use thiserror::Error;
 use virt::IsolationType;
 use virt::NeedsYield;
-use virt::PageVisibility;
 use virt::PartitionAccessState;
 use virt::PartitionConfig;
 use virt::ProtoPartition;
@@ -110,6 +108,13 @@ struct WhpPartitionInner {
     mem_layout: MemoryLayout,
     #[inspect(skip)]
     gm: GuestMemory,
+    /// Resolves guest-memory-access faults on demand, letting the memory
+    /// backing commit lazily-backed pages and opportunistically widen the
+    /// mapped range to a soft large page. Set when the memory backing supplies
+    /// one via [`virt::PartitionConfig::fault_resolver`].
+    #[inspect(skip)]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    fault_resolver: Option<Arc<dyn virt::ResolveMemoryFault>>,
     vtl2_emulation: Option<vtl2::Vtl2Emulation>,
     #[cfg(guest_arch = "x86_64")]
     irq_routes: virt::irqcon::IrqRoutes,
@@ -128,6 +133,7 @@ struct WhpPartitionInner {
 }
 
 #[derive(Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 struct VtlPartition {
     #[inspect(skip)]
     whp: whp::Partition,
@@ -151,6 +157,23 @@ struct VtlPartition {
 }
 
 impl VtlPartition {
+    /// Adds the WHP partition's SLAT (nested page table) mapping counters to
+    /// the inspection under `memory`, reporting how many guest pages the
+    /// hypervisor has mapped at 4 KB, 2 MB, and 1 GB granularity.
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.field(
+            "memory",
+            inspect::adhoc(|req| {
+                if let Ok(counters) = self.whp.memory_counters() {
+                    req.respond()
+                        .field("mapped_4k", counters.Mapped4KPageCount)
+                        .field("mapped_2m", counters.Mapped2MPageCount)
+                        .field("mapped_1g", counters.Mapped1GPageCount);
+                }
+            }),
+        );
+    }
+
     /// Query the default CPUID result for the given leaf/subleaf from VP0.
     #[cfg(guest_arch = "x86_64")]
     fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
@@ -292,7 +315,12 @@ impl IndexMut<Vtl> for RunStateVtls {
 }
 
 impl RunState {
-    fn reset(&mut self, vtl2_scrub: bool, is_bsp: bool) {
+    fn reset(
+        &mut self,
+        vtl2_scrub: bool,
+        is_bsp: bool,
+        prot_access: &mut dyn hv1_emulator::VtlProtectAccess,
+    ) {
         let &mut Self {
             ref mut active_vtl,
             ref mut runnable_vtls,
@@ -313,17 +341,17 @@ impl RunState {
         *crash_msg_address = None;
         *crash_msg_len = None;
         if !vtl2_scrub {
-            vtls.vtl0.reset(is_bsp);
+            vtls.vtl0.reset(is_bsp, prot_access);
         }
         if let Some(vtl) = &mut vtls.vtl2 {
-            vtl.reset(is_bsp);
+            vtl.reset(is_bsp, prot_access);
         }
         *halted = false;
     }
 }
 
 impl PerVtlRunState {
-    fn reset(&mut self, is_bsp: bool) {
+    fn reset(&mut self, is_bsp: bool, prot_access: &mut dyn hv1_emulator::VtlProtectAccess) {
         let Self {
             #[cfg(guest_arch = "x86_64")]
             lapic,
@@ -338,7 +366,7 @@ impl PerVtlRunState {
         }
 
         if let Some(hv) = hv {
-            hv.reset();
+            hv.reset(prot_access);
         }
 
         #[cfg(guest_arch = "aarch64")]
@@ -478,7 +506,10 @@ impl<'a> WhpVpRef<'a> {
 
     #[cfg(guest_arch = "x86_64")]
     fn wake_for_apic(&self, vtl: Vtl) {
-        self.vplc(vtl).scan_irr.store(true, Ordering::Relaxed);
+        // Publish the staged IRR before the wake. The APIC only wakes on the
+        // first transition to pending, so missing this publication can strand
+        // an interrupt with no later wake to rescan it.
+        self.vplc(vtl).scan_irr.store(true, Ordering::Release);
         self.wake();
     }
 
@@ -552,17 +583,18 @@ impl virt::ScrubVtl for WhpPartition {
 impl virt::AcceptInitialPages for WhpPartition {
     type Error = Error;
 
-    fn accept_initial_pages(&self, pages: &[(MemoryRange, PageVisibility)]) -> Result<(), Error> {
+    fn accept_initial_pages(&self, pages: &[virt::InitialPageImport]) -> Result<(), Error> {
         assert!(self.inner.isolation.is_isolated());
 
-        for (range, vis) in pages {
+        for page in pages {
             self.inner
                 .vtl0
-                .accept_pages(range, *vis)
+                .accept_pages(&page.range, page.import_type.page_visibility())
                 .map_err(Error::AcceptPages)?;
 
             if let Some(vtl2) = &self.inner.vtl2 {
-                vtl2.accept_pages(range, *vis).map_err(Error::AcceptPages)?;
+                vtl2.accept_pages(&page.range, page.import_type.page_visibility())
+                    .map_err(Error::AcceptPages)?;
             }
         }
 
@@ -571,6 +603,10 @@ impl virt::AcceptInitialPages for WhpPartition {
 }
 
 impl virt::Partition for WhpPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
         if whp::capabilities::reset_partition() {
             Some(self)
@@ -585,7 +621,7 @@ impl virt::Partition for WhpPartition {
         (!self.inner.isolation.is_isolated()).then_some(self)
     }
 
-    fn supports_initial_accept_pages(
+    fn supports_initial_page_acceptance(
         &self,
     ) -> Option<&dyn virt::AcceptInitialPages<Error = <Self as virt::Hv1>::Error>> {
         self.inner.isolation.is_isolated().then_some(self)
@@ -799,6 +835,8 @@ pub enum Error {
     NestedVirtIncompatibleWithVtl2,
     #[error("nested_virt is incompatible with isolation")]
     NestedVirtIncompatibleWithIsolation,
+    #[error("WHP does not support {0:?} isolation")]
+    IsolationNotSupported(IsolationType),
 }
 
 trait WhpResultExt<T> {
@@ -830,6 +868,7 @@ impl virt::Hypervisor for Whp {
                 platform_gsiv: Some(WHP_PMU_GSIV),
                 supports_gic_v3: true,
                 supports_its: false,
+                device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
             }
         }
     }
@@ -842,6 +881,11 @@ impl virt::Hypervisor for Whp {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<WhpProtoPartition<'a>, Error> {
+        let isolation = config.isolation.isolation_type();
+        if !matches!(isolation, IsolationType::None | IsolationType::Vbs) {
+            return Err(Error::IsolationNotSupported(isolation));
+        }
+
         let user_mode_apic = self.user_mode_apic;
         let offload_enlightenments = self.offload_enlightenments;
         let nested_virt = config.nested_virt;
@@ -936,6 +980,14 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             .unwrap()
             .try_into()
             .unwrap()
+    }
+
+    fn supports_memory_fault_resolution(&self) -> bool {
+        // On x86-64, WHP forwards guest memory-access faults back to the VMM, so
+        // the memory backing can resolve them on demand (soft large pages, lazy
+        // commit). WHP on aarch64 does not deliver these faults, so the backing
+        // must not defer any commit or protection to a fault.
+        cfg!(guest_arch = "x86_64")
     }
 
     fn build(
@@ -1258,6 +1310,7 @@ impl WhpPartitionInner {
             vps,
             mem_layout: config.mem_layout.clone(),
             gm: config.guest_memory.clone(),
+            fault_resolver: config.fault_resolver.clone(),
             vtl2_emulation,
             #[cfg(guest_arch = "x86_64")]
             irq_routes: Default::default(),
@@ -1267,7 +1320,7 @@ impl WhpPartitionInner {
             vtl0_alias_map_offset,
             monitor_page: MonitorPage::new(),
             hvstate,
-            isolation: proto_config.isolation,
+            isolation: proto_config.isolation.isolation_type(),
             #[cfg(guest_arch = "aarch64")]
             gic_msi: proto_config.processor_topology.gic_msi(),
             synic_ports: Default::default(),
@@ -1576,6 +1629,16 @@ impl VtlPartition {
                     #[cfg(guest_arch = "aarch64")]
                     {
                         features.bank0 |= F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
+
+                        // Opt into delivery of the system-reset intercept family
+                        // (PSCI SYSTEM_OFF2/hibernate, SYSTEM_RESET2) when the
+                        // hypervisor advertises it.
+                        if supported_synth_features
+                            .bank0
+                            .is_set(F::InterceptSystemReset)
+                        {
+                            features.bank0 |= F::InterceptSystemReset;
+                        }
                     }
 
                     if vtl == Vtl::Vtl0 {
@@ -1658,9 +1721,9 @@ impl VtlPartition {
 
             assert!(!with_overlays);
 
-            match config.isolation {
+            match config.isolation.isolation_type() {
                 IsolationType::Vbs => {}
-                ty => unimplemented!("isolation type unsupported: {ty:?}"),
+                ty => return Err(Error::IsolationNotSupported(ty)),
             }
 
             Box::new(memory::vtl2_mapper::VtlMemoryMapper::new(
@@ -1724,7 +1787,12 @@ impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
     ) -> Result<guestmem::LockedPages, hvdef::HvError> {
-        Ok(self.0.lock_gpns(false, &[gpn]).unwrap())
+        // Overlay pages are written through the returned locked pages, so lock
+        // them for write.
+        Ok(self
+            .0
+            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
+            .unwrap())
     }
 
     fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {
@@ -1795,7 +1863,9 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         let is_bsp = self.inner.vp_info.base.is_bsp();
-        self.state.reset(false, is_bsp);
+        let partition = self.vp.partition;
+        self.state
+            .reset(false, is_bsp, &mut WhpNoVtlProtections(&partition.gm));
 
         // For each enabled VTL: apply arch fixups that WHP doesn't handle (via
         // `finish_reset`), then clear stale pending per-VTL VP signal flags,
@@ -1826,7 +1896,9 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         // VTL2 stays enabled across a scrub. `enabled_vtls` and `vtl2_enable`
         // are both left set, so `state.reset` keeps `active_vtl` at VTL2 and
         // each AP idles in VTL2 (in startup suspend) during the servicing window.
-        self.state.reset(true, is_bsp);
+        let partition = self.vp.partition;
+        self.state
+            .reset(true, is_bsp, &mut WhpNoVtlProtections(&partition.gm));
 
         // Re-apply arch register fixups that WHP doesn't handle (`finish_reset`
         // must run after the partition-level WHP reset), then clear stale

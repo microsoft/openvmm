@@ -4,6 +4,7 @@
 //! X.509 certificate parsing and verification using OpenSSL.
 
 use super::X509Error;
+use super::X509PublicKey;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> X509Error {
     X509Error(crate::BackendError(err, op))
@@ -13,25 +14,32 @@ pub struct X509CertificateInner(pub(crate) openssl::x509::X509);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
-        let cert =
-            openssl::x509::X509::from_der(data).map_err(|e| err(e, "parsing DER certificate"))?;
+        let cert = openssl::x509::X509::from_der(data)
+            .map_err(|e| err(e, "parsing the DER certificate"))?;
         Ok(Self(cert))
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
+    pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         let pkey = self
             .0
             .public_key()
-            .map_err(|e| crate::rsa::RsaError(crate::BackendError(e, "extracting public key")))?;
-        // Currently we only expect RSA public keys, so verify the type.
-        // If someday we need to support other public key types, the return
-        // type of this function will need to change.
-        pkey.rsa().map_err(|e| {
-            crate::rsa::RsaError(crate::BackendError(e, "extracting RSA public key"))
-        })?;
-        Ok(crate::rsa::RsaPublicKey(
-            crate::rsa::ossl::RsaPublicKeyInner(pkey),
-        ))
+            .map_err(|e| err(e, "extracting the certificate public key"))?;
+        if pkey.rsa().is_ok() {
+            Ok(X509PublicKey::Rsa(crate::rsa::RsaPublicKey(
+                crate::rsa::ossl::RsaPublicKeyInner(pkey),
+            )))
+        } else if pkey.ec_key().is_ok() {
+            // Hand the already-parsed key to the ECDSA backend directly rather
+            // than re-serializing and re-parsing it.
+            let inner = crate::ecdsa::ossl::EcdsaPublicKeyInner::from_pkey(pkey)
+                .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
+            Ok(X509PublicKey::Ecdsa(crate::ecdsa::EcdsaPublicKey(inner)))
+        } else {
+            Err(err(
+                openssl::error::ErrorStack::get(),
+                "checking that the certificate public key algorithm is supported",
+            ))
+        }
     }
 
     pub fn verify(
@@ -39,7 +47,10 @@ impl X509CertificateInner {
         issuer_public_key: &crate::rsa::RsaPublicKey,
     ) -> Result<bool, crate::rsa::RsaError> {
         self.0.verify(&issuer_public_key.0.0).map_err(|e| {
-            crate::rsa::RsaError(crate::BackendError(e, "verifying certificate signature"))
+            crate::rsa::RsaError(crate::BackendError(
+                e,
+                "verifying the certificate signature",
+            ))
         })
     }
 
@@ -55,7 +66,7 @@ impl X509CertificateInner {
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0
             .to_der()
-            .map_err(|e| err(e, "encoding certificate as DER"))
+            .map_err(|e| err(e, "encoding the certificate as DER"))
     }
 
     pub fn issuer_dn(&self) -> Result<String, X509Error> {
@@ -65,7 +76,7 @@ impl X509CertificateInner {
             let value = entry
                 .data()
                 .as_utf8()
-                .map_err(|e| err(e, "decoding issuer name entry"))?
+                .map_err(|e| err(e, "decoding an issuer name entry"))?
                 .to_string();
             parts.push(format!("{oid}={value}"));
         }
@@ -77,7 +88,7 @@ impl X509CertificateInner {
             .0
             .serial_number()
             .to_bn()
-            .map_err(|e| err(e, "converting serial number"))?;
+            .map_err(|e| err(e, "converting the serial number"))?;
         Ok(bn.to_vec())
     }
 
@@ -124,7 +135,7 @@ impl X509CertificateInner {
                 .data()
                 .as_utf8()
                 .map(|u| Some(u.to_string()))
-                .map_err(|e| err(e, "decoding subject name")),
+                .map_err(|e| err(e, "decoding the subject common name")),
         }
     }
 }

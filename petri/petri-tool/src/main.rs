@@ -1,7 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Tool for using petri functionality from the command line.
+//! Host-side command-line utilities built on the Petri test framework.
+//!
+//! The current `cloud-init` command creates a raw Linux cloud-init disk with a
+//! Petri user and an architecture-matched Pipette guest agent. It resolves the
+//! required artifacts from the repository's known VMM-test paths and is useful
+//! when preparing guest images outside a full test run.
+//!
+//! Invoke it as `petri-tool cloud-init --arch <arch> <output>` or through
+//! `cargo run -p petri-tool -- ...`.
 
 #![forbid(unsafe_code)]
 

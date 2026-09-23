@@ -73,6 +73,7 @@ pub struct ResolvedPipelineJob {
     pub gh_override_if: Option<String>,
     pub gh_global_env: BTreeMap<String, String>,
     pub gh_pool: Option<GhRunner>,
+    pub gh_concurrency_group: Option<flowey_core::pipeline::GhConcurrencyGroup>,
     pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
     pub external_read_vars: BTreeSet<String>,
     pub cond_param_idx: Option<usize>,
@@ -179,6 +180,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             gh_override_if,
             gh_global_env,
             gh_pool,
+            gh_concurrency_group,
             gh_permissions,
         },
     ) in jobs.into_iter().enumerate()
@@ -233,6 +235,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             gh_override_if,
             gh_global_env,
             gh_pool,
+            gh_concurrency_group,
             gh_permissions,
             platform,
             arch,

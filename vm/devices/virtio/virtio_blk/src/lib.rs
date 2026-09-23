@@ -169,7 +169,13 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
         state: &mut BlkQueueState,
     ) -> Result<(), task_control::Cancelled> {
         stop.until_stopped(async {
-            loop {
+            // Set once the queue can no longer produce work, because the guest
+            // violated the queue protocol. Fetching stops, but in-flight IOs
+            // keep draining so their descriptors are still completed; the
+            // worker exits once they are done.
+            let mut queue_done = false;
+
+            while !(queue_done && self.ios.is_empty()) {
                 enum Event {
                     NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
                     Completed(IoCompletion),
@@ -181,7 +187,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         return Poll::Ready(Event::Completed(completion));
                     }
                     // Accept new work if under the depth limit.
-                    if self.ios.len() < MAX_IO_DEPTH {
+                    if !queue_done && self.ios.len() < MAX_IO_DEPTH {
                         if let Poll::Ready(item) = state.queue.poll_next_unpin(cx) {
                             let item = item.expect("virtio queue stream never ends");
                             return Poll::Ready(Event::NewWork(item));
@@ -201,10 +207,13 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         }));
                     }
                     Event::NewWork(Err(err)) => {
+                        // The queue is retired: the rejected chain is never
+                        // consumed, so retrying would fail identically forever.
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
-                            "error reading from virtio queue"
+                            "error reading from virtio queue, stopping worker"
                         );
+                        queue_done = true;
                     }
                     Event::Completed(completion) => {
                         self.finish_io(&mut state.queue, completion);

@@ -177,7 +177,7 @@ impl Node {
 
                                 flowey::shell_cmd!(
                                     rt,
-                                    "powershell -ExecutionPolicy Bypass -File {install_script_path}
+                                    "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {install_script_path}
                                         -Channel {version}
                                         -InstallDir {install_dir}
                                         -NoPath

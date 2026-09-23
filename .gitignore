@@ -40,6 +40,11 @@
 # Output from vmm tests
 vmm_test_results/
 
+# Vendored sources extracted from a source release's vendor archive, as a
+# distribution packager (or the distribution build gate) unpacks them
+/vendor/
+/cargo_config
+
 .gdb_history
 .openvmm_history
 __pycache__
@@ -50,5 +55,5 @@ flowey-persist
 # Node.js dependencies and artifacts
 node_modules/
 
-# Build output directories for logview_new
-**/logview_new/dist*
+# Build output directories for logview
+**/logview/dist*

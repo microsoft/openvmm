@@ -11,34 +11,39 @@ use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapab
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
+use pci_core::spec::caps::pci_express::MaxEndEndTlpPrefixes;
 use pcie::GenericPciePortDefinition;
 use pcie::PciePortSettings;
 
-/// Builds root-port PCIe settings from manifest flags.
+/// Builds port PCIe settings from manifest flags.
 ///
 /// When CXL is enabled, emit a default Flex Bus capability advertising both
 /// cache and memory support.
-fn build_root_port_settings(rp_cfg: &PciePortConfig) -> PciePortSettings {
+///
+/// When PASID is enabled, advertise support for up to four TLP prefixes to
+/// work for both switch and root ports.
+fn build_port_settings(port_cfg: &PciePortConfig) -> PciePortSettings {
     PciePortSettings {
-        acs_capabilities_supported: rp_cfg
+        acs_capabilities_supported: port_cfg
             .acs_capabilities_supported
             .unwrap_or(DEFAULT_ACS_CAP_MASK),
-        cxl_flex_bus_port_capability: rp_cfg.cxl.then_some(
+        cxl_flex_bus_port_capability: port_cfg.cxl.then_some(
             CxlFlexBusPortDvsecCapability::new()
                 .with_cache_capable(true)
                 .with_mem_capable(true),
         ),
+        tlp_prefixing_supported: port_cfg.pasid.then_some(MaxEndEndTlpPrefixes::Four),
     }
 }
 
-/// Converts a manifest root-port entry into the runtime root-port definition.
-pub(super) fn build_root_port_definition(rp_cfg: &PciePortConfig) -> GenericPciePortDefinition {
-    let settings = build_root_port_settings(rp_cfg);
+/// Converts a manifest port entry into the runtime port definition.
+pub(super) fn build_port_definition(port_cfg: &PciePortConfig) -> GenericPciePortDefinition {
+    let settings = build_port_settings(port_cfg);
 
     GenericPciePortDefinition {
-        name: rp_cfg.name.as_str().into(),
-        devfn: rp_cfg.devfn,
-        hotplug: rp_cfg.hotplug,
+        name: port_cfg.name.as_str().into(),
+        devfn: port_cfg.devfn,
+        hotplug: port_cfg.hotplug,
         settings,
     }
 }

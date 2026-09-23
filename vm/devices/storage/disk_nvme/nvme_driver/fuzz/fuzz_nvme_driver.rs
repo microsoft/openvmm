@@ -75,7 +75,15 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_conn, mem.dma_client());
-        let mut nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?;
+        let fused_keepalive_device: bool = u.arbitrary()?;
+        let mut nvme_driver = NvmeDriver::new(
+            &driver_source,
+            cpu_count,
+            device,
+            false,
+            fused_keepalive_device,
+        )
+        .await?;
         let namespace = nvme_driver.namespace(1).await?;
 
         Ok(Self {
@@ -284,6 +292,9 @@ pub enum NvmeDriverAction {
     },
     ReservationAcquire {
         target_cpu: u32,
+        #[arbitrary(with = |u: &mut Unstructured<'_>| {
+            u.int_in_range(0..=nvm::RESERVATION_ACTION_MAX)
+        })]
         action: u8,
         crkey: u64,
         prkey: u64,
@@ -291,12 +302,18 @@ pub enum NvmeDriverAction {
     },
     ReservationRelease {
         target_cpu: u32,
+        #[arbitrary(with = |u: &mut Unstructured<'_>| {
+            u.int_in_range(0..=nvm::RESERVATION_ACTION_MAX)
+        })]
         action: u8,
         crkey: u64,
         reservation_type: u8,
     },
     ReservationRegister {
         target_cpu: u32,
+        #[arbitrary(with = |u: &mut Unstructured<'_>| {
+            u.int_in_range(0..=nvm::RESERVATION_ACTION_MAX)
+        })]
         action: u8,
         crkey: Option<u64>,
         nrkey: u64,

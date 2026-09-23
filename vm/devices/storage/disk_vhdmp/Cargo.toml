@@ -24,6 +24,7 @@ windows-sys = { workspace = true, features = ["Win32_System_IO"] }
 disk_vhd1.workspace = true
 guestmem.workspace = true
 pal_async.workspace = true
+storage_tests.workspace = true
 tempfile.workspace = true
 
 [lints]

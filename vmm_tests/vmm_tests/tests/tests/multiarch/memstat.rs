@@ -403,8 +403,7 @@ async fn idle_test<T: PetriVmmBackend>(
         .with_memory({
             MemoryConfig {
                 startup_bytes: 16 * (1024 * 1024 * 1024),
-                dynamic_memory_range: None,
-                numa_mem_sizes: None,
+                ..Default::default()
             }
         })
         .with_openhcl_log_levels(OpenvmmLogConfig::BuiltInDefault)

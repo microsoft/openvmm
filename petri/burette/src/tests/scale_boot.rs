@@ -269,6 +269,7 @@ fn make_builder(
         })
         .with_memory(petri::MemoryConfig {
             startup_bytes: test.mem_mb * 1024 * 1024,
+            private_memory: Some(test.profile.uses_private_memory()),
             ..Default::default()
         }))
 }

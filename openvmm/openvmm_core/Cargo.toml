@@ -9,6 +9,9 @@ rust-version.workspace = true
 [features]
 gdb = ["vmm_core/gdb"]
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [dependencies]
 hypervisor_resources.workspace = true
 openvmm_defs.workspace = true
@@ -33,9 +36,10 @@ acpi.workspace = true
 cxl_spec.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
+x86defs.workspace = true
 hyperv_dump.workspace = true
 ide_resources.workspace = true
-igvm.workspace = true
+igvm = { workspace = true, features = ["corim"] }
 igvm_defs.workspace = true
 loader.workspace = true
 virt.workspace = true
@@ -59,7 +63,6 @@ chipset_resources.workspace = true
 closeable_mutex.workspace = true
 disk_backend.workspace = true
 firmware_pcat.workspace = true
-firmware_uefi_custom_vars.workspace = true
 firmware_uefi_resources.workspace = true
 framebuffer.workspace = true
 get_resources.workspace = true
@@ -76,7 +79,7 @@ smmu.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 serial_16550_resources.workspace = true
-storvsp.workspace = true
+tpm_resources.workspace = true
 virtio.workspace = true
 vmbus_channel.workspace = true
 vmbus_core.workspace = true

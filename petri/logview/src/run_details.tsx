@@ -7,9 +7,10 @@ import { SortingState } from "@tanstack/react-table";
 import { TestResult } from "./data_defs";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { fetchRunDetails } from "./utils/fetch_runs_data";
+import { parseRunKey } from "./data_defs";
 import { SearchInput } from "./search";
 import {
   createColumns,
@@ -88,6 +89,10 @@ function RunDetailsHeader({
   setSearchFilter,
   loadingSuccess,
 }: RunDetailsHeaderProps): React.JSX.Element {
+  const { runId: ghRunId, attempt } = parseRunKey(runId);
+  const ghRunHref = attempt
+    ? `https://github.com/microsoft/openvmm/actions/runs/${ghRunId}/attempts/${attempt}`
+    : `https://github.com/microsoft/openvmm/actions/runs/${ghRunId}`;
   return (
     <>
       <div className="common-header-left">
@@ -98,7 +103,7 @@ function RunDetailsHeader({
           </Link>
           <span>/</span>
           <Link to={`/runs/${runId}`} className="common-header-path">
-            {runId}
+            {attempt ? `${ghRunId} (attempt ${attempt})` : ghRunId}
           </Link>
         </div>
         {!loadingSuccess && (
@@ -109,6 +114,14 @@ function RunDetailsHeader({
         )}
       </div>
       <div className="common-header-right">
+        <a
+          href={ghRunHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="common-table-link"
+        >
+          GH Run
+        </a>
         <SearchInput value={searchFilter} onChange={setSearchFilter} />
         <span className="common-result-count">{resultCount} tests</span>
       </div>

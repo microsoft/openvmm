@@ -401,10 +401,15 @@ impl<'a> RequestBuffers<'a> {
         if for_write && !self.is_write {
             return Err(AccessError::ReadOnly);
         }
-        Ok(LockedIoBuffers(
-            self.guest_memory
-                .lock_range(self.range, LockedIoVecs::new())?,
-        ))
+        Ok(LockedIoBuffers(self.guest_memory.lock_range(
+            if for_write {
+                guestmem::AccessType::Write
+            } else {
+                guestmem::AccessType::Read
+            },
+            self.range,
+            LockedIoVecs::new(),
+        )?))
     }
 
     /// Returns a subrange of this set of buffers.

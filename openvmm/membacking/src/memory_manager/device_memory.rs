@@ -7,6 +7,7 @@
 use super::DEVICE_PRIORITY;
 use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingBacking;
+use crate::mapping_manager::MemoryPolicy;
 use crate::region_manager::MapParams;
 use crate::region_manager::RegionHandle;
 use crate::region_manager::RegionManagerClient;
@@ -119,7 +120,7 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
                     file_offset: new_mapping.file_offset,
                 },
                 new_mapping.writable,
-                None,
+                MemoryPolicy::none(),
             )) {
                 return Err(io::Error::other(e));
             }
@@ -178,7 +179,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                             file_offset: mapping.file_offset,
                         },
                         mapping.writable,
-                        None,
+                        MemoryPolicy::none(),
                     )
                     .await
                     .map_err(io::Error::other)?;

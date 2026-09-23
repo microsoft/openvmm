@@ -367,6 +367,38 @@ where
     pci_core::dma::DmaTarget::with_iommu(bus_range, devfn, iommu, msi)
 }
 
+/// Build a hardware-nestable [`DmaTarget`](pci_core::dma::DmaTarget) backed by
+/// an IOMMU translator.
+///
+/// Like [`new_dma_target`], but hands the resulting factory to
+/// [`DmaTarget::with_nestable_iommu`](pci_core::dma::DmaTarget::with_nestable_iommu)
+/// along with an opaque nesting `handle`, marking the device
+/// [`DmaPassthrough::HardwareNestable`](pci_core::dma::DmaPassthrough::HardwareNestable).
+/// Accel-capable IOMMUs (e.g. an SMMU programming the host IOMMU for nested
+/// stage-1 translation) call this so the device may be VFIO-assigned; the
+/// assignment backend downcasts `handle` to wire the device into the emulated
+/// IOMMU.
+pub fn new_nestable_dma_target<T>(
+    label: &str,
+    translator: T,
+    bus_range: AssignedBusRange,
+    devfn: u8,
+    guest_memory: GuestMemory,
+    handle: Arc<dyn std::any::Any + Send + Sync>,
+    msi: &pci_core::msi::MsiConnection,
+) -> pci_core::dma::DmaTarget
+where
+    T: IommuTranslator + Clone,
+{
+    let iommu = Arc::new(TranslatingDmaTarget::new(
+        format!("{label}-translating"),
+        translator,
+        bus_range.clone(),
+        guest_memory,
+    ));
+    pci_core::dma::DmaTarget::with_nestable_iommu(bus_range, devfn, iommu, handle, msi)
+}
+
 // =============================================================================
 // Interrupt Remapping Infrastructure
 // =============================================================================

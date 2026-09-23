@@ -24,6 +24,7 @@ disklayer_ram.workspace = true
 guestmem.workspace = true
 hvdef.workspace = true
 pal_async.workspace = true
+storage_tests.workspace = true
 
 [lints]
 workspace = true

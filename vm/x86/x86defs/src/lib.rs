@@ -36,6 +36,9 @@ pub const X64_CR0_NW: u64 = 0x0000000020000000; // not write-through
 pub const X64_CR0_CD: u64 = 0x0000000040000000; // cache disable
 pub const X64_CR0_PG: u64 = 0x0000000080000000; // paging
 
+/// Reserved bits in the low 32 of CR0 (bits 6-15, 17, 19-28).
+pub const X64_CR0_RSVDZ_MASK: u64 = 0x1FFA_FFC0;
+
 pub const X64_CR4_VME: u64 = 0x0000000000000001; // Virtual 8086 mode extensions
 pub const X64_CR4_PVI: u64 = 0x0000000000000002; // Protected mode virtual interrupts
 pub const X64_CR4_TSD: u64 = 0x0000000000000004; // Time stamp disable
@@ -63,11 +66,20 @@ pub const X64_EFER_LMA: u64 = 0x0000000000000400; // Long Mode Active
 pub const X64_EFER_NXE: u64 = 0x0000000000000800; // No-execute Enable
 pub const X64_EFER_SVME: u64 = 0x0000000000001000; // SVM enable
 pub const X64_EFER_FFXSR: u64 = 0x0000000000004000; // Fast save/restore enabled
+pub const X64_EFER_TCE: u64 = 0x0000000000008000; // Translation Cache Extension enable
 
 pub const X86X_MSR_DEFAULT_PAT: u64 = 0x0007040600070406;
 pub const X64_EMPTY_DR7: u64 = 0x0000000000000400;
 
 pub const USER_MODE_DPL: u8 = 3;
+
+/// Returns true if `v` is a canonical linear address for a paging mode with
+/// `bits` effective virtual address bits (48 or 57): the top `64 - bits` bits
+/// must be a sign-extension of the highest used bit.
+pub fn is_canonical_address(v: u64, bits: u32) -> bool {
+    let high = (v as i64) >> (bits - 1);
+    high == 0 || high == -1
+}
 
 pub const X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES: SegmentAttributes = SegmentAttributes::new()
     .with_granularity(true)

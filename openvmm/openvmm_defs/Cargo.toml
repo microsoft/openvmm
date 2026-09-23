@@ -16,13 +16,14 @@ vm_resource.workspace = true
 vmgs_resources.workspace = true
 
 vmotherboard.workspace = true
-firmware_uefi_custom_vars.workspace = true
 floppy_resources.workspace = true
 framebuffer.workspace = true
 get_resources.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
 net_backend_resources.workspace = true
+smbios_defs.workspace = true
+tpm_resources.workspace = true
 virt.workspace = true
 vmm_core_defs.workspace = true
 

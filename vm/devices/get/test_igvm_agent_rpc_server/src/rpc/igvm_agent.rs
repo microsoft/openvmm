@@ -19,6 +19,7 @@ use get_resources::ged::IgvmAttestTestConfig;
 use guid::Guid;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use test_igvm_agent_lib::Error;
 use test_igvm_agent_lib::IgvmAgentTestSetting;
@@ -41,8 +42,9 @@ struct AgentRegistry {
     /// Default setting (from CLI `--test_config`), applied to VMs that
     /// don't match any hardcoded pattern.
     default_setting: Option<IgvmAgentTestSetting>,
-    /// Live per-VM agents, lazily created on first request.
-    agents: HashMap<String, TestIgvmAgent>,
+    /// Live per-VM agents, lazily created on first request. Each agent has its
+    /// own lock so request processing for unrelated VMs can run concurrently.
+    agents: HashMap<String, Arc<Mutex<TestIgvmAgent>>>,
     /// Maps a VM's `VmId` GUID to its resolved test config.
     ///
     /// The two RPC entry points receive different `VmName` values: the IGVM
@@ -167,11 +169,27 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
         ),
         (
+            "ubuntu_2504_server_x64_tdx_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
             "ubuntu_2504_server_x64_snp_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
         (
@@ -204,6 +222,129 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        // `multiarch::tpm138` runs the same tests against the 1.38 vTPM. Its
+        // test-function names are abbreviated to keep VM names under the
+        // 100-character limit, so they need their own patterns here.
+        (
+            "ubuntu_2504_server_x64_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2022_x64_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2022_x64_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_skip_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_skip_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_use_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_use_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_hw_ak_stbl",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stbl",
             IgvmAttestTestConfig::StateRefresh,
         ),
     ];
@@ -264,34 +405,45 @@ pub fn process_igvm_attest(
     vm_name: &str,
     report: &[u8],
 ) -> TestAgentResult<Vec<u8>> {
-    let mut reg = registry().lock();
+    let agent = {
+        let mut reg = registry().lock();
 
-    // Clone the default setting before entering the entry API so the
-    // borrow checker is happy.
-    let default_setting = reg.default_setting.clone();
+        // Clone the default setting before entering the entry API so the
+        // borrow checker is happy.
+        let default_setting = reg.default_setting.clone();
 
-    // Record the resolved config keyed by `vm_id` for the GSP RPC path.
-    if let Some(vm_id) = vm_id {
-        if let Some(setting) = resolve_test_config(vm_name).or_else(|| default_setting.clone()) {
-            reg.vm_id_settings.insert(vm_id, setting);
+        // Record the resolved config keyed by `vm_id` for the GSP RPC path.
+        if let Some(vm_id) = vm_id {
+            if let Some(setting) = resolve_test_config(vm_name).or_else(|| default_setting.clone())
+            {
+                reg.vm_id_settings.insert(vm_id, setting);
+            }
         }
-    }
 
-    let agent = reg.agents.entry(vm_name.to_owned()).or_insert_with(|| {
-        let mut agent = TestIgvmAgent::new(vm_name);
-        if let Some(setting) = resolve_test_config(vm_name) {
-            agent.install_plan_from_setting(&setting);
-        } else if let Some(ref default) = default_setting {
-            agent.install_plan_from_setting(default);
-        }
-        tracing::info!(vm_name, "created per-VM test agent");
-        agent
-    });
+        reg.agents
+            .entry(vm_name.to_owned())
+            .or_insert_with(|| {
+                let mut agent = TestIgvmAgent::new(vm_name);
+                if let Some(setting) = resolve_test_config(vm_name) {
+                    agent.install_plan_from_setting(&setting);
+                } else if let Some(ref default) = default_setting {
+                    agent.install_plan_from_setting(default);
+                }
+                tracing::info!(vm_name, "created per-VM test agent");
+                Arc::new(Mutex::new(agent))
+            })
+            .clone()
+    };
 
-    let (payload, expected_len) = agent.handle_request(report).map_err(|err| match err {
-        Error::InvalidIgvmAttestRequest => TestAgentFacadeError::InvalidRequest,
-        _ => TestAgentFacadeError::AgentFailure,
-    })?;
+    // Key generation and response encryption can be expensive. Keep them
+    // outside the registry lock while preserving request order for this VM.
+    let (payload, expected_len) = agent
+        .lock()
+        .handle_request(report)
+        .map_err(|err| match err {
+            Error::InvalidIgvmAttestRequest => TestAgentFacadeError::InvalidRequest,
+            _ => TestAgentFacadeError::AgentFailure,
+        })?;
     if payload.len() != expected_len as usize {
         return Err(TestAgentFacadeError::InvalidRequest);
     }

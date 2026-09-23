@@ -44,13 +44,13 @@ pub struct Pkcs7SignedData(sys::Pkcs7SignedDataInner);
 /// An error for PKCS#7 operations.
 #[cfg(not(rust))]
 #[derive(Clone, Debug, Error)]
-#[error("PKCS#7 error")]
+#[error("PKCS#7 operation failed")]
 pub struct Pkcs7Error(#[source] super::BackendError);
 
 /// An error for PKCS#7 operations.
 #[cfg(rust)]
 #[derive(Clone, Debug, Error)]
-#[error("PKCS#7 error during {1}")]
+#[error("PKCS#7 operation failed while {1}")]
 pub struct Pkcs7Error(#[source] der::Error, &'static str);
 
 /// An error encountered while verifying a PKCS#7 signed data object.
@@ -58,13 +58,13 @@ pub struct Pkcs7Error(#[source] der::Error, &'static str);
 #[derive(Debug, Error)]
 pub enum Pkcs7VerifyError {
     /// A PKCS#7 parsing or structural error.
-    #[error("PKCS#7 error")]
+    #[error("failed to process the PKCS#7 signed data")]
     Pkcs7(#[from] Pkcs7Error),
     /// An RSA signature verification error.
-    #[error("RSA error")]
+    #[error("failed to verify a signature")]
     Rsa(#[from] crate::rsa::RsaError),
     /// An X.509 certificate error.
-    #[error("X509 error")]
+    #[error("failed to process a certificate")]
     X509(#[from] crate::x509::X509Error),
 }
 
@@ -146,11 +146,14 @@ fn verify_inner(
     signed_content: &[u8],
 ) -> Result<bool, Pkcs7VerifyError> {
     let (signer, signature) = p7.signer_cert_sig()?;
-    if !signer.public_key()?.pkcs1_verify(
-        signed_content,
-        &signature,
-        crate::HashAlgorithm::Sha256,
-    )? {
+    // This backend only verifies RSA signatures. A signer key that cannot be
+    // extracted (unsupported key type or backend failure) or is not RSA is a
+    // verification failure, returned as `Ok(false)` per `verify_uefi`'s
+    // documented contract rather than surfaced as an error.
+    let Some(signer_key) = signer.public_key().ok().and_then(|key| key.rsa()) else {
+        return Ok(false);
+    };
+    if !signer_key.pkcs1_verify(signed_content, &signature, crate::HashAlgorithm::Sha256)? {
         return Ok(false);
     }
 
@@ -183,15 +186,24 @@ fn verify_inner(
 
         for trusted in trusted_certs {
             let trusted_id = make_id(trusted)?;
-            if trusted_id == current_id
-                || (trusted.issued(current)? && current.verify(&trusted.public_key()?)?)
-            {
+            // A non-RSA issuer key cannot verify the child's RSA signature.
+            let issuer_verifies = trusted.issued(current)?
+                && match trusted.public_key()?.rsa() {
+                    Some(key) => current.verify(&key)?,
+                    None => false,
+                };
+            if trusted_id == current_id || issuer_verifies {
                 return Ok(true);
             }
         }
 
         for candidate in &embedded {
-            if candidate.issued(current)? && current.verify(&candidate.public_key()?)? {
+            let issuer_verifies = candidate.issued(current)?
+                && match candidate.public_key()?.rsa() {
+                    Some(key) => current.verify(&key)?,
+                    None => false,
+                };
+            if issuer_verifies {
                 current = candidate;
                 continue 'outer;
             }

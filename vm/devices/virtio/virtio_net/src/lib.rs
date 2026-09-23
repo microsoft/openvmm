@@ -17,6 +17,7 @@ pub mod resolver;
 #[cfg(test)]
 mod tests;
 
+use crate::buffers::RxQueueError;
 use crate::buffers::VirtioWorkPool;
 use anyhow::Context as _;
 use bitfield_struct::bitfield;
@@ -52,6 +53,8 @@ use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::in_order::InOrderCompletion;
+use virtio::queue::QueueCompletion;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
@@ -281,7 +284,11 @@ impl VirtioDevice for Device {
                 .with_bank(1, features_bank1.into_bits())
                 .with_ring_event_idx(true)
                 .with_ring_indirect_desc(true)
-                .with_ring_packed(true),
+                .with_ring_packed(true)
+                // We guarantee in-order descriptor completion per queue. We
+                // don't yet take advantage of the ability to do batched
+                // completions, but we may in the future.
+                .with_in_order(true),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
@@ -386,6 +393,8 @@ impl VirtioDevice for Device {
                     rx_queue_size,
                     tx_queue,
                     tx_queue_size,
+                    rx_in_order: InOrderCompletion::new(rx_queue_size),
+                    tx_in_order: InOrderCompletion::new(tx_queue_size),
                 };
                 self.insert_worker(
                     virtio_state,
@@ -518,7 +527,7 @@ impl ActiveState {
 
 /// The state for a tx packet that's currently pending in the backend endpoint.
 struct PendingTxPacket {
-    work: VirtioQueueCallbackWork,
+    completion: QueueCompletion,
 }
 
 pub struct NicBuilder {
@@ -532,12 +541,28 @@ impl NicBuilder {
     }
 
     /// Creates a new NIC.
+    ///
+    /// Fails if the network backend does not complete buffers in order.
+    /// virtio-net guarantees in-order descriptor completion per queue (so the
+    /// outstanding set is exactly the contiguous `[used_index, avail_index)`
+    /// range), which requires a backend that always completes in order. Every
+    /// real backend is ordered; this rejects the misconfiguration up front
+    /// rather than letting the device come up and wedge when the guest
+    /// activates it.
     pub fn build(
         self,
         driver_source: &VmTaskDriverSource,
         endpoint: Box<dyn Endpoint>,
         mac_address: MacAddress,
-    ) -> Device {
+    ) -> anyhow::Result<Device> {
+        if !endpoint.is_ordered() {
+            anyhow::bail!(
+                "network backend '{}' does not complete packets in order; \
+                 virtio-net requires an ordered backend",
+                endpoint.endpoint_type()
+            );
+        }
+
         // TODO: Implement VIRTIO_NET_F_MQ and VIRTIO_NET_F_RSS logic based on mulitqueue support.
         // let multiqueue = endpoint.multiqueue_support();
         // let max_queue_pairs = self.max_queue_pairs.clamp(1, multiqueue.max_queues.min(VIRTIO_NET_MAX_QUEUES));
@@ -570,7 +595,7 @@ impl NicBuilder {
             supported_hash_types: 0,
         };
 
-        Device {
+        Ok(Device {
             registers,
             coordinator,
             adapter,
@@ -578,7 +603,7 @@ impl NicBuilder {
             pairs: (0..max_queue_pairs)
                 .map(|_| QueuePairState::Empty)
                 .collect(),
-        }
+        })
     }
 }
 
@@ -798,6 +823,12 @@ struct VirtioState {
     rx_queue_size: u16,
     tx_queue: VirtioQueue,
     tx_queue_size: u16,
+    /// In-order completion discipline for the RX queue. virtio-net requires
+    /// the used ring to be published in avail order so the outstanding set is
+    /// exactly the contiguous `[used_index, avail_index)` range.
+    rx_in_order: InOrderCompletion,
+    /// In-order completion discipline for the TX queue.
+    tx_in_order: InOrderCompletion,
 }
 
 #[derive(Debug, Error)]
@@ -806,6 +837,8 @@ enum WorkerError {
     VirtioQueue(#[source] std::io::Error),
     #[error("endpoint")]
     Endpoint(#[source] anyhow::Error),
+    #[error("guest submitted duplicate descriptor index {0}")]
+    DuplicateDescriptor(u16),
     #[error("cancelled")]
     Cancelled(task_control::Cancelled),
 }
@@ -915,13 +948,13 @@ impl Worker {
             for _ in 0..8 {
                 let Some(work) = self
                     .virtio_state
-                    .tx_queue
-                    .try_next()
+                    .tx_in_order
+                    .try_next(&mut self.virtio_state.tx_queue)
                     .map_err(WorkerError::VirtioQueue)?
                 else {
                     break;
                 };
-                self.queue_tx_packet(work);
+                self.queue_tx_packet(work)?;
                 did_work = true;
             }
             if self.active_state.data.tx_segments.is_empty() {
@@ -931,22 +964,37 @@ impl Worker {
         Ok(did_work)
     }
 
-    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) {
+    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) -> Result<(), WorkerError> {
         let seg_start = self.active_state.data.tx_segments.len();
         match self.try_queue_tx_packet(&work) {
             Ok(idx) => {
-                self.active_state.pending_tx_packets[idx as usize] = Some(PendingTxPacket { work });
+                self.active_state.pending_tx_packets[idx as usize] = Some(PendingTxPacket {
+                    completion: work.into_completion(),
+                });
             }
             Err(err) => {
+                self.active_state.stats.tx_dropped.increment();
+                self.active_state.data.tx_segments.truncate(seg_start);
+                if let TxPacketError::DuplicateIndex(idx) = err {
+                    // A duplicate descriptor index cannot be tracked (the pending
+                    // slot is already taken), so treat it as a fatal queue protocol
+                    // violation rather than an out-of-order drop.
+                    return Err(WorkerError::DuplicateDescriptor(idx));
+                }
                 tracelimit::warn_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     "dropping TX packet"
                 );
-                self.active_state.stats.tx_dropped.increment();
-                self.active_state.data.tx_segments.truncate(seg_start);
-                self.virtio_state.tx_queue.complete(work, 0);
+                // Complete (drop) the packet in avail order via the in-order
+                // completion discipline.
+                self.virtio_state.tx_in_order.complete(
+                    &mut self.virtio_state.tx_queue,
+                    work.into_completion(),
+                    0,
+                );
             }
         }
+        Ok(())
     }
 
     /// Build TX segments and offload metadata for a packet.
@@ -1240,17 +1288,30 @@ impl Worker {
         let mut rx_ids = Vec::new();
         while let Some(work) = self
             .virtio_state
-            .rx_queue
-            .try_next()
+            .rx_in_order
+            .try_next(&mut self.virtio_state.rx_queue)
             .map_err(WorkerError::VirtioQueue)?
         {
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
-                Err(work) => {
-                    // Reason has been traced by the callee.
+                Err(RxQueueError::TooSmall(work)) => {
+                    // Complete (drop) the buffer in avail order via the in-order
+                    // completion discipline. Reason traced by callee.
                     self.active_state.stats.rx_dropped.increment();
-                    self.virtio_state.rx_queue.complete(work, 0);
+                    self.virtio_state.rx_in_order.complete(
+                        &mut self.virtio_state.rx_queue,
+                        work.into_completion(),
+                        0,
+                    );
+                }
+                Err(RxQueueError::DuplicateIndex(work)) => {
+                    // A duplicate descriptor index cannot be tracked (the pool
+                    // slot is already taken), so treat it as a fatal queue
+                    // protocol violation rather than an out-of-order drop.
+                    let idx = work.descriptor_index();
+                    self.active_state.stats.rx_dropped.increment();
+                    return Err(WorkerError::DuplicateDescriptor(idx));
                 }
             }
         }
@@ -1277,7 +1338,11 @@ impl Worker {
         for ready_id in state.data.rx_ready[..n].iter() {
             state.stats.rx_packets.increment();
             let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
-            self.virtio_state.rx_queue.complete(work, bytes);
+            self.virtio_state.rx_in_order.complete(
+                &mut self.virtio_state.rx_queue,
+                work.into_completion(),
+                bytes,
+            );
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
@@ -1350,7 +1415,11 @@ impl Worker {
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {
         let state = &mut self.active_state;
         let tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
-        self.virtio_state.tx_queue.complete(tx_packet.work, 0);
+        self.virtio_state.tx_in_order.complete(
+            &mut self.virtio_state.tx_queue,
+            tx_packet.completion,
+            0,
+        );
         self.active_state.stats.tx_packets.increment();
         Ok(())
     }

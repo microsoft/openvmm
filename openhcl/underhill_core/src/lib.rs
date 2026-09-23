@@ -12,10 +12,13 @@ mod diag;
 mod dispatch;
 mod emuplat;
 mod get_tracing;
+mod hibernate;
 mod inspect_internal;
 mod inspect_proc;
 mod livedump;
 mod loader;
+#[cfg(feature = "product_policy")]
+mod measured_product_policy;
 mod nvme_manager;
 mod options;
 mod reference_time;
@@ -328,6 +331,7 @@ async fn launch_workers(
         vmbus_max_version: opt.vmbus_max_version,
         vmbus_enable_mnf: opt.vmbus_enable_mnf,
         vmbus_force_confidential_external_memory: opt.vmbus_force_confidential_external_memory,
+        vmbus_force_gpa_pinning: opt.vmbus_force_gpa_pinning,
         vmbus_channel_unstick_delay: (opt.vmbus_channel_unstick_delay_ms != 0)
             .then(|| Duration::from_millis(opt.vmbus_channel_unstick_delay_ms)),
         cmdline_append: opt.cmdline_append.clone(),

@@ -32,7 +32,7 @@ static AES_ECB: LazyLock<Result<AlgHandle, AesKeyWrapError>> = LazyLock::new(|| 
         )
         .ok()
         .map(|()| AlgHandle(handle))
-        .map_err(|e| err(e, "open algorithm provider"))?;
+        .map_err(|e| err(e, "opening the AES algorithm provider"))?;
 
         windows::Win32::Security::Cryptography::BCryptSetProperty(
             handle.0.into(),
@@ -41,14 +41,16 @@ static AES_ECB: LazyLock<Result<AlgHandle, AesKeyWrapError>> = LazyLock::new(|| 
             0,
         )
         .ok()
-        .map_err(|e| err(e, "setting ECB property"))?;
+        .map_err(|e| err(e, "selecting the ECB chaining mode"))?;
 
         Ok(handle)
     }
 });
 
 fn err(err: windows_result::Error, op: &'static str) -> AesKeyWrapError {
-    AesKeyWrapError(AesKeyWrapErrorInner::Backend(crate::BackendError(err, op)))
+    AesKeyWrapError(AesKeyWrapErrorInner::Backend(crate::BackendError::Windows(
+        err, op,
+    )))
 }
 
 fn import_key(key: &[u8]) -> Result<KeyHandle, AesKeyWrapError> {
@@ -74,7 +76,7 @@ fn import_key(key: &[u8]) -> Result<KeyHandle, AesKeyWrapError> {
         )
         .ok()
         .map(|()| KeyHandle(handle))
-        .map_err(|e| err(e, "importing key"))
+        .map_err(|e| err(e, "importing the wrapping key"))
     }
 }
 
@@ -113,9 +115,9 @@ fn ecb_block(
         err(
             e,
             if op == 0 {
-                "AES-ECB encrypt"
+                "encrypting an AES-ECB block"
             } else {
-                "AES-ECB decrypt"
+                "decrypting an AES-ECB block"
             },
         )
     })?;
@@ -168,7 +170,7 @@ impl AesKeyUnwrapCtxInner<'_> {
             Some(v) => Ok(v),
             None => Err(err(
                 windows_result::Error::from_hresult(NTE_BAD_DATA),
-                "AES key unwrap integrity check",
+                "checking the key unwrap integrity",
             )),
         }
     }

@@ -58,19 +58,27 @@ impl<C> PolledChild<C> {
     }
 }
 
-/// Polls the wait backend for process exit, then calls `try_wait`.
+/// Polls the wait backend for the exit notification, then reaps the child.
+///
+/// `reap` performs a *blocking* wait. On Linux (pidfd) and Windows (handle)
+/// the backend only signals once the child is reapable, so the wait returns
+/// immediately. On macOS the kqueue `NOTE_EXIT` notification can arrive a few
+/// microseconds before `waitpid` can reap the child, so the wait blocks for
+/// that brief, kernel-bounded window (XNU delivers `NOTE_EXIT` while the
+/// process is exiting, with only a few non-blocking teardown steps remaining)
+/// rather than spinning on a non-blocking `try_wait`.
 ///
 /// This is the shared implementation of `PolledChild::poll_wait` for all
 /// child-process types.
 fn poll_child_exit(
     cx: &mut Context<'_>,
     wait: &mut Option<crate::sys::process::WaitInner>,
-    mut try_wait: impl FnMut() -> io::Result<Option<std::process::ExitStatus>>,
+    reap: impl FnOnce() -> io::Result<std::process::ExitStatus>,
 ) -> Poll<io::Result<std::process::ExitStatus>> {
     if let Some(w) = wait {
         ready!(w.poll_exit(cx))?;
     }
-    Ok(try_wait()?.expect("wait backend signaled readiness but process has not exited")).into()
+    Poll::Ready(reap())
 }
 
 // --- std::process::Child ---
@@ -86,7 +94,7 @@ impl PolledChild<std::process::Child> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<io::Result<std::process::ExitStatus>> {
-        poll_child_exit(cx, &mut self.wait, || self.child.try_wait())
+        poll_child_exit(cx, &mut self.wait, || self.child.wait())
     }
 
     /// Waits for the child process to exit.
@@ -114,7 +122,7 @@ impl PolledChild<pal::unix::process::Child> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<io::Result<std::process::ExitStatus>> {
-        poll_child_exit(cx, &mut self.wait, || self.child.try_wait())
+        poll_child_exit(cx, &mut self.wait, || self.child.wait())
     }
 
     /// Waits for the child process to exit.

@@ -218,30 +218,6 @@ pub enum ApplyVtlProtectionsError {
     InvalidVtl(Vtl),
 }
 
-/// Error setting guest VSM configuration.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum SetGuestVsmConfigError {
-    #[error("hypervisor failed to configure guest vsm to {enable_guest_vsm}")]
-    Hypervisor {
-        enable_guest_vsm: bool,
-        #[source]
-        hv_error: HvError,
-    },
-}
-
-/// Error getting the VP idnex from an APIC ID.
-#[derive(Error, Debug)]
-#[expect(missing_docs)]
-pub enum GetVpIndexFromApicIdError {
-    #[error("hypervisor failed when querying vp index for {apic_id}")]
-    Hypervisor {
-        #[source]
-        hv_error: HvError,
-        apic_id: u32,
-    },
-}
-
 /// Error setting VSM partition configuration.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
@@ -376,6 +352,7 @@ pub(crate) mod ioctls {
     const MSHV_VTL_RSI_SYSREG_READ: u16 = 0x42;
     const MSHV_VTL_RSI_SYSREG_WRITE: u16 = 0x43;
     const MSHV_VTL_RSI_SET_MEM_PERM: u16 = 0x44;
+    const MSHV_VTL_RSI_GET_IPA_STATE: u16 = 0x45;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -615,6 +592,14 @@ pub(crate) mod ioctls {
         MSHV_IOCTL,
         MSHV_VTL_RSI_SYSREG_READ,
         cca::mshv_rsi_sysreg_rw
+    );
+
+    // CCA: Get the RIPAS state of an ipa
+    ioctl_readwrite!(
+        hcl_rsi_ipa_state_read,
+        MSHV_IOCTL,
+        MSHV_VTL_RSI_GET_IPA_STATE,
+        cca::mshv_rsi_get_ipa_state
     );
 
     // CCA: Assign the address described by `mshv_rsi_set_mem_perm`
@@ -1493,10 +1478,11 @@ impl HclVp {
         // This is only used on CVMs. Skip it otherwise, since run page accesses
         // will fault on VPs that are still in the sidecar kernel.
         if isolation_type.is_hardware_isolated() {
-            // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
-            // so we know we have exclusive access.
-            let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
-            proxy_irr_blocked.fill(!0);
+            // SAFETY: The run page is not accessed by any other VPs/kernel at this point
+            // (`HclVp` creation), so we know we have exclusive access.
+            unsafe {
+                (*run.as_ptr()).proxy_irr_blocked.fill(!0);
+            }
         }
 
         let backing = match isolation_type {
@@ -1523,6 +1509,15 @@ impl HclVp {
                 },
             },
             IsolationType::Snp => {
+                // SAFETY: The run page is not accessed by any other VPs/kernel at this point
+                // (`HclVp` creation), so we know we have exclusive access.
+                unsafe {
+                    let context: &mut protocol::snp_vp_context =
+                        &mut *(&raw mut (*run.as_ptr()).context).cast();
+                    context
+                        .vmsa_tweak_bitmap
+                        .copy_from_slice(&hcl.snp_register_bitmap);
+                }
                 let vmsa_vtl0 = MappedPage::new(fd, HCL_VMSA_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?;
                 let vmsa_vtl1 = MappedPage::new(fd, HCL_VMSA_GUEST_VSM_PAGE_OFFSET | vp as i64)
@@ -1849,8 +1844,19 @@ impl Hcl {
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
+        // This capability is TDX-only. On non-TDX guests treat EOPNOTSUPP as
+        // "not supported" rather than failing; on TDX propagate the error.
         let supports_lower_vtl_timer_virt =
-            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+            match mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT) {
+                Ok(supported) => supported,
+                Err(Error::CheckExtensions(_, nix::errno::Errno::EOPNOTSUPP))
+                    if isolation != IsolationType::Tdx =>
+                {
+                    false
+                }
+                Err(err) => return Err(err),
+            };
+
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
@@ -2501,6 +2507,30 @@ impl Hcl {
         }
 
         value
+    }
+
+    /// Attempts to opt this TD into hardware-bound seal keys by setting
+    /// `TD_CTLS.ENABLE_HW_SEAL_KEYS` via `TDG.VM.WR`.
+    ///
+    /// Returns `Ok(true)` if the bit is set after the operation (the
+    /// `TDG.MR.KEY.GET` TDCALL is available), `Ok(false)` if the TDX module
+    /// does not support sealing, or an error if the write itself was rejected.
+    ///
+    /// Only valid on TDX-isolated partitions.
+    pub fn tdx_enable_hw_seal_keys(&self) -> Result<bool, x86defs::tdx::TdCallResult> {
+        self.mshv_vtl.tdx_enable_hw_seal_keys()
+    }
+
+    /// Reads the global-scope `TDX_FEATURES0` metadata field via `TDG.SYS.RD`,
+    /// enumerating optional TDX module features (including hardware-bound
+    /// sealing support).
+    ///
+    /// Returns an error if the module does not support `TDG.SYS.RD` or rejects
+    /// the field. Only valid on TDX-isolated partitions.
+    pub fn tdx_read_features0(
+        &self,
+    ) -> Result<x86defs::tdx::TdxFeatures0, x86defs::tdx::TdCallResult> {
+        self.mshv_vtl.tdx_read_features0()
     }
 
     /// Invokes the HvCallRetargetDeviceInterrupt hypercall.

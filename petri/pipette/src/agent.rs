@@ -223,11 +223,14 @@ async fn handle_request(
                         #[cfg(not(windows))]
                         timer.sleep(Duration::from_millis(250)).await;
                         loop {
-                            if let Err(err) = crate::shutdown::handle_shutdown(request) {
-                                tracing::error!(
-                                    error = err.as_ref() as &dyn std::error::Error,
-                                    "failed to shut down"
-                                );
+                            match crate::shutdown::handle_shutdown(request) {
+                                Ok(()) => break,
+                                Err(err) => {
+                                    tracing::error!(
+                                        error = err.as_ref() as &dyn std::error::Error,
+                                        "failed to shut down"
+                                    );
+                                }
                             }
                             timer.sleep(Duration::from_secs(5)).await;
                             tracing::warn!("still waiting to shut down, trying again");

@@ -418,18 +418,13 @@ impl ChipsetDevice for RelayedVpciDevice {
 }
 
 impl PciConfigSpace for RelayedVpciDevice {
-    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
-        value.set(self.0.read_cfg(offset));
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.0.read_cfg(offset, value);
         IoResult::Ok
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
-        let new_value = if value.is_full() {
-            value.extract()
-        } else {
-            value.merge(self.0.read_cfg(offset))
-        };
-        self.0.write_cfg(offset, new_value);
+        self.0.write_cfg(offset, value);
         IoResult::Ok
     }
 }

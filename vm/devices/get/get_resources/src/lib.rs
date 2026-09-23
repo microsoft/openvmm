@@ -69,8 +69,8 @@ pub mod ged {
         pub serial_tx_only: bool,
         /// Enable vmbus redirection.
         pub vmbus_redirection: bool,
-        /// Enable the TPM.
-        pub enable_tpm: bool,
+        /// The TPM reference implementation version to expose to the guest.
+        pub tpm_version: Option<GedTpmVersion>,
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
         /// The disk to back the GET's VMGS interface.
@@ -81,12 +81,16 @@ pub mod ged {
         pub guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         /// Notification of firmware events.
         pub firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
+        /// Optional Petri observer for IPMI SEL notifications already received over GET.
+        pub ipmi_sel_event_send: Option<mesh::Sender<IpmiSelEvent>>,
         /// Enable secure boot.
         pub secure_boot_enabled: bool,
         /// The secure boot template type.
         pub secure_boot_template: GuestSecureBootTemplateType,
         /// Enable battery.
         pub enable_battery: bool,
+        /// Enable the IPMI KCS interface.
+        pub enable_ipmi: bool,
         /// Suppress attestation and disable TPM state persistence.
         pub no_persistent_secrets: bool,
         /// Test configuration for IGVM Attest message.
@@ -97,6 +101,19 @@ pub mod ged {
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
         /// Force UEFI to bounce-buffer all DMA traffic.
         pub force_dma_bounce_enabled: bool,
+        /// Enable hibernation.
+        pub enable_hibernation: bool,
+        /// SMBIOS identity overrides delivered to the guest firmware.
+        pub smbios: smbios_defs::SmbiosConfig,
+    }
+
+    /// An IPMI SEL notification received from OpenHCL.
+    #[derive(Debug, Clone, Copy, MeshPayload, PartialEq, Eq)]
+    pub struct IpmiSelEvent {
+        /// BMC-assigned SEL record identifier.
+        pub record_id: u16,
+        /// Completed SEL record.
+        pub record: ipmi_protocol::SelRecord,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -108,6 +125,8 @@ pub mod ged {
             enable_vpci_boot: bool,
             /// Enable UEFI firmware debugging for VTL0.
             firmware_debug: bool,
+            /// Enable UEFI memory protections for VTL0.
+            enable_memory_protections: bool,
             /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
             disable_frontpage: bool,
             /// Where to send UEFI console output
@@ -156,6 +175,15 @@ pub mod ged {
         Info,
         /// All logs
         Full,
+    }
+
+    /// The TPM reference implementation version to expose to the guest.
+    #[derive(MeshPayload, Clone, Debug, Copy, PartialEq)]
+    pub enum GedTpmVersion {
+        /// TPM reference implementation version 1.38
+        V138,
+        /// TPM reference implementation version 1.85
+        V185,
     }
 
     /// The boot devices for a PC/AT BIOS.

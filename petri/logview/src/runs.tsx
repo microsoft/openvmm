@@ -10,7 +10,7 @@ import { RunData } from "./data_defs";
 import { fetchRunData } from "./utils/fetch_runs_data.ts";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table.tsx";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router";
 import { SearchInput } from "./search";
 import { run_filters } from "./branch_quick_filters";
 import {

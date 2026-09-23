@@ -345,6 +345,21 @@ fn init(
                     };
                 }
             }
+
+            // Sidecar must never be run for a node whose application processors
+            // are all kernel-started (REMOVED). Advertising one to the Linux
+            // sidecar driver via the device tree while its VPs are also
+            // kernel-started via `boot_cpus=` makes the driver and the
+            // kernel-start path contend over the same VP and hang AP bring-up.
+            // If one ever reaches sidecar, fail loudly here.
+            if !cpu_status[1..vp_count as usize]
+                .iter()
+                .any(|status| status.load(Relaxed) == CpuStatus::RUN.0)
+            {
+                panic!(
+                    "sidecar node {node_index} (base_vp={base_vp}, vp_count={vp_count}) has no sidecar-started APs"
+                );
+            }
         }
 
         node_init.push(NodeInit {

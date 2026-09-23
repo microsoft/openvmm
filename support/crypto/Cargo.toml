@@ -107,6 +107,7 @@ signature = { workspace = true, features = ["alloc"] }
 x509-cert.workspace = true
 
 [dev-dependencies]
+der = { workspace = true, features = ["derive", "alloc"] }
 hex.workspace = true
 x509-cert = { workspace = true, features = ["builder"] }
 

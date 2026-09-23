@@ -298,6 +298,9 @@ pub(crate) mod msg {
         /// CVM NOTE: The returned value should not be relied on for security purposes.
         /// It is expected that the guest will use NTP (or some other time source) after boot.
         HostTime(Rpc<(), Protocol<get_protocol::TimeResponse>>),
+        /// Ask the host to (re)load a firmware image into VTL0 guest RAM,
+        /// keyed by an opaque firmware token.
+        LoadFirmware(Rpc<u64, Protocol<get_protocol::LoadFirmwareResponse>>),
         /// Send an attestation request.
         IgvmAttest(Rpc<Box<IgvmAttestRequestData>, Result<Vec<u8>, crate::error::IgvmAttestError>>),
         /// Tell the host the location of the framebuffer.
@@ -344,6 +347,11 @@ pub(crate) mod msg {
         // Host Notifications (don't require a response)
         /// Report an event to the host.
         EventLog(Protocol<get_protocol::EventLogId>),
+        /// Forward a completed IPMI System Event Log record to the host.
+        IpmiSel {
+            record_id: u16,
+            record: [u8; get_protocol::IPMI_SEL_RECORD_SIZE],
+        },
         /// Report a power state change to the host.
         PowerState(PowerState),
         /// Report the result of a restore operation to the host.
@@ -1248,6 +1256,11 @@ impl<T: RingMem> ProcessLoop<T> {
                     get_protocol::ResetRamGpaRangeRequest::new(input)
                 });
             }
+            Msg::LoadFirmware(req) => {
+                self.push_basic_host_request_handler(req, |token| {
+                    get_protocol::LoadFirmwareRequest::new(token)
+                });
+            }
             Msg::SendServicingState(req) => self.push_primary_host_request_handler(move |access| {
                 req.handle_must_succeed(async |data| {
                     request_send_servicing_state(access, data).await
@@ -1284,6 +1297,13 @@ impl<T: RingMem> ProcessLoop<T> {
                 // any pending requests.
                 self.send_message(
                     get_protocol::EventLogNotification::new(event_log_id.0)
+                        .as_bytes()
+                        .to_vec(),
+                );
+            }
+            Msg::IpmiSel { record_id, record } => {
+                self.send_message(
+                    get_protocol::IpmiSelNotification::new(record_id, record)
                         .as_bytes()
                         .to_vec(),
                 );

@@ -4,14 +4,12 @@
 //! Mesh listener for accepting mesh connections over Unix sockets.
 //!
 //! Provides a framed [`MeshPayload`]-over-Unix-stream transport (with
-//! SCM_RIGHTS fd passing via [`crate::unix_common`]) and composes it with the
+//! SCM_RIGHTS fd passing via [`unix_socket`]) and composes it with the
 //! mesh inviter ([`crate::unix_node::UnixMeshInviter`]) to let external
 //! processes join a running mesh.
 
 #![cfg(unix)]
 
-use crate::unix_common::try_recv;
-use crate::unix_common::try_send;
 use crate::unix_node::Invitation;
 use crate::unix_node::InviteError;
 use crate::unix_node::JoinError;
@@ -33,8 +31,10 @@ use std::io::IoSlice;
 use std::os::unix::prelude::*;
 use std::path::Path;
 use thiserror::Error;
+use unix_socket::ScmReceiver;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
+use unix_socket::send_with_fds;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -104,7 +104,7 @@ async fn send_serialized(
     let mut fds = Vec::new();
     for resource in msg.resources {
         match resource {
-            Resource::Os(os) => fds.push(os),
+            Resource::Os(OsResource::Fd(fd)) => fds.push(fd),
             Resource::Port(_) => {
                 unreachable!("send_payload is only used with types that have OS resources")
             }
@@ -134,8 +134,14 @@ async fn send_serialized(
                 let data_offset = sent.saturating_sub(size_of::<PayloadHeader>());
                 let data_remaining = &msg.data[data_offset..];
                 let bufs = [IoSlice::new(header_remaining), IoSlice::new(data_remaining)];
-                let send_fds = if fds_sent { &[] } else { &fds[..] };
-                try_send(stream.get().as_fd(), &bufs, send_fds)
+                // Attach the fds on the first send only; an empty slice on
+                // subsequent (retry) sends yields no control message.
+                let to_send = if fds_sent { &fds[..0] } else { &fds[..] };
+                send_with_fds(
+                    stream.get().as_fd(),
+                    &bufs,
+                    to_send.iter().map(|fd| fd.as_fd()),
+                )
             })
         })
         .await
@@ -162,21 +168,28 @@ async fn recv_payload<T: MeshPayload>(
 async fn recv_serialized(
     stream: &mut PolledSocket<UnixStream>,
 ) -> Result<SerializedMessage<Resource>, RecvPayloadError> {
-    // Fds may arrive with any recvmsg call — collect them across all reads.
-    let mut fds = Vec::new();
+    // Validate sizes to prevent DoS from a malicious peer.
+    const MAX_DATA_LEN: usize = 4096;
+    const MAX_FD_COUNT: usize = 4;
 
-    // Read the header.
+    // Size the receive buffer to exactly the maximum this path accepts. The
+    // invitation this path transfers carries a single descriptor; a message
+    // carrying more than `MAX_FD_COUNT` is rejected below (or, if it actually
+    // attaches that many, by truncation).
+    let mut receiver = ScmReceiver::new(MAX_FD_COUNT);
+    // Descriptors arrive with a single read but must be accumulated here, since
+    // `recv` closes any it still holds on the next call.
+    let mut fds: Vec<OwnedFd> = Vec::new();
+
+    // Read the header. Fds may arrive with this read.
     let mut header = PayloadHeader::new_zeroed();
-    recv_exact_with_fds(stream, header.as_mut_bytes(), &mut fds)
+    recv_exact_with_fds(stream, header.as_mut_bytes(), &mut receiver, &mut fds)
         .await
         .map_err(RecvPayloadError::Io)?;
 
     let data_len = header.data_len as usize;
     let fd_count = header.fd_count as usize;
 
-    // Validate sizes to prevent DoS from a malicious peer.
-    const MAX_DATA_LEN: usize = 4096;
-    const MAX_FD_COUNT: usize = 4;
     if data_len > MAX_DATA_LEN {
         return Err(RecvPayloadError::DataTooLarge {
             len: data_len,
@@ -193,7 +206,7 @@ async fn recv_serialized(
     // Read the data (fds may also arrive here if the header read was split).
     let mut data = vec![0u8; data_len];
     if !data.is_empty() {
-        recv_exact_with_fds(stream, &mut data, &mut fds)
+        recv_exact_with_fds(stream, &mut data, &mut receiver, &mut fds)
             .await
             .map_err(RecvPayloadError::Io)?;
     }
@@ -205,26 +218,33 @@ async fn recv_serialized(
         });
     }
 
-    // Convert OsResource fds back to Resource.
-    let resources: Vec<Resource> = fds.into_iter().map(Resource::Os).collect();
+    // Move the received fds out as mesh resources.
+    let resources: Vec<Resource> = fds
+        .into_iter()
+        .map(|fd| Resource::Os(OsResource::Fd(fd)))
+        .collect();
 
     Ok(SerializedMessage { data, resources })
 }
 
-/// Read exactly `buf.len()` bytes from the stream, collecting any fds received.
+/// Read exactly `buf.len()` bytes from the stream, draining any fds received
+/// into `fds` after each read.
 async fn recv_exact_with_fds(
     stream: &mut PolledSocket<UnixStream>,
     buf: &mut [u8],
-    fds: &mut Vec<OsResource>,
+    receiver: &mut ScmReceiver,
+    fds: &mut Vec<OwnedFd>,
 ) -> io::Result<()> {
     let mut read = 0;
     while read < buf.len() {
         let n = poll_fn(|cx| {
             stream.poll_io(cx, InterestSlot::Read, PollEvents::IN, |stream| {
-                try_recv(stream.get().as_fd(), &mut buf[read..], fds)
+                receiver.recv(stream.get().as_fd(), &mut buf[read..])
             })
         })
         .await?;
+        // Drain immediately: the next `recv` closes any fds still held.
+        fds.extend(receiver.drain());
         if n == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }

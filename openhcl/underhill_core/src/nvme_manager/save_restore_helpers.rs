@@ -175,6 +175,7 @@ mod tests {
         IoQueueSavedState {
             cpu,
             iv: qid as u32,
+            unmapped: false,
             queue_data: QueuePairSavedState {
                 mem_len: 0,
                 base_pfn: 0,

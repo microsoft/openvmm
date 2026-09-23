@@ -109,7 +109,7 @@ impl GuestBuffers {
 
         let gpns = gpadl.first().unwrap().gpns().to_vec();
         let locked_pages = mem
-            .lock_gpns(false, &gpns)
+            .lock_gpns(guestmem::AccessType::Write, false, &gpns)
             .map_err(GuestBuffersError::GpnLock)?;
         Ok(Self {
             mem,
@@ -189,6 +189,15 @@ impl BufferAccess for BufferPool {
 
     fn write_data(&mut self, id: RxId, data: &[u8]) {
         self.buffers.write_at(self.offset(id) + RX_HEADER_LEN, data);
+    }
+
+    fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
+        let mut offset = self.offset(id) + RX_HEADER_LEN;
+        for segment in segments {
+            self.buffers.write_at(offset, segment);
+            offset += segment.len() as u32;
+        }
+        self.write_header(id, metadata);
     }
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {

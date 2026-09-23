@@ -229,7 +229,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
                             }
                             NicBackend::VirtioNet => (
                                 c.with_pcie_root_topology(1, 1, 2)
-                                    .with_virtio_nic("s0rc0rp0"),
+                                    .with_virtio_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS),
                                 "s0rc0rp1",
                             ),
                         };
@@ -537,7 +537,7 @@ mod tap {
                 }
                 super::NicBackend::VirtioNet => (
                     c.with_pcie_root_topology(1, 1, 3)
-                        .with_virtio_nic("s0rc0rp0"),
+                        .with_virtio_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS),
                     "s0rc0rp2",
                 ),
             };

@@ -477,7 +477,7 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
             Ok(g) => g,
             Err(e) => return Err(e),
         };
-        self.read_physical_memory(gpa, bytes).await
+        self.read_physical_memory(gpa, bytes, true).await
     }
 
     async fn read_memory(&mut self, gva: u64, bytes: &mut [u8]) -> Result<(), Self::Error> {
@@ -485,15 +485,23 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
             Ok(g) => g,
             Err(e) => return Err(e),
         };
-        self.read_physical_memory(gpa, bytes).await
+        self.read_physical_memory(gpa, bytes, false).await
     }
 
     async fn read_physical_memory(
         &mut self,
         gpa: u64,
         bytes: &mut [u8],
+        exec: bool,
     ) -> Result<(), Self::Error> {
-        self.check_vtl_access(gpa, TranslateMode::Read)?;
+        self.check_vtl_access(
+            gpa,
+            if exec {
+                TranslateMode::Execute
+            } else {
+                TranslateMode::Read
+            },
+        )?;
 
         if self.check_monitor_read(gpa, bytes) {
             Ok(())

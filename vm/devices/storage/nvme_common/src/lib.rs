@@ -86,13 +86,36 @@ pub fn from_nvme_reservation_report(
         None
     };
 
+    let get_host_id = |c: &nvm::RegisteredControllerExtended| {
+        // Some NVMe controllers wrongly send the first 16
+        // bytes of a SAS SCSI Transport ID as the Host ID. If we detect
+        // that, we skip the first 4 bytes of the Host ID.
+        //
+        // SCSI Transport ID of type SAS is defined as (24 bytes):
+        // 06 00 00 00 <8-byte SAS address> <12-byte reserved>
+        if c.hostid.starts_with(&[6, 0, 0, 0]) {
+            tracelimit::warn_ratelimited!(
+                ?c.cntlid,
+                ?c.rkey,
+                ?c.hostid,
+                "NVMe controller sent SAS SCSI Transport ID as Host ID"
+            );
+
+            let mut host_id = c.hostid.to_vec();
+            host_id.copy_within(4..16, 0);
+            host_id[12..16].fill(0);
+            host_id
+        } else {
+            c.hostid.to_vec()
+        }
+    };
     let controllers = controllers
         .iter()
         .map(|controller| pr::RegisteredController {
             key: controller.rkey,
             holds_reservation: controller.rcsts.holds_reservation(),
             controller_id: controller.cntlid,
-            host_id: controller.hostid.to_vec(),
+            host_id: get_host_id(controller),
         })
         .collect();
 

@@ -15,6 +15,7 @@ use crate::IpAddresses;
 use crate::IpVersion;
 use crate::PortForwardKey;
 use crate::dns_resolver::DnsResolver;
+use crate::dns_resolver::dns_tcp::DnsTcpFrameAssembler;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
 use futures::AsyncWrite;
@@ -26,6 +27,8 @@ use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
+use pal_async::timer::Instant as TimerInstant;
+use pal_async::timer::PolledTimer as TcpTimer;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetFrame;
@@ -60,6 +63,7 @@ use std::net::SocketAddrV6;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(InspectMut)]
@@ -68,6 +72,8 @@ pub(crate) struct Tcp {
     connections: HashMap<FourTuple, TcpConnection>,
     #[inspect(iter_by_key)]
     listeners: HashMap<PortForwardKey, TcpListener>,
+    #[inspect(skip)]
+    timer: Option<TcpTimer>,
     connection_params: ConnectionParams,
     aggregate_stats: TcpAggregateStats,
 }
@@ -83,6 +89,8 @@ struct TcpAggregateStats {
     connections_closed_peer_rst: Counter,
     /// Connections closed due to local errors (socket failures, invalid handshake).
     connections_closed_local_error: Counter,
+    /// Connections reaped after the peer did not finish a handshake or shutdown.
+    connections_closed_timeout: Counter,
 }
 
 impl TcpAggregateStats {
@@ -92,6 +100,10 @@ impl TcpAggregateStats {
             ConnectionCloseReason::PeerRst => self.connections_closed_peer_rst.increment(),
             ConnectionCloseReason::LocalError => self.connections_closed_local_error.increment(),
         }
+    }
+
+    fn record_timeout_close(&mut self) {
+        self.connections_closed_timeout.increment();
     }
 }
 
@@ -120,7 +132,14 @@ impl NormalizedBufferBounds {
 }
 
 #[derive(Debug, Error)]
-pub enum TcpError {
+#[error("{kind} for flow {flow}")]
+pub struct TcpError {
+    flow: FourTuple,
+    kind: TcpErrorKind,
+}
+
+#[derive(Debug, Error)]
+enum TcpErrorKind {
     #[error("still connecting")]
     StillConnecting,
     #[error("unacceptable segment number")]
@@ -133,11 +152,18 @@ pub enum TcpError {
     InvalidWindowScale,
 }
 
+impl TcpError {
+    fn new(flow: FourTuple, kind: TcpErrorKind) -> Self {
+        Self { flow, kind }
+    }
+}
+
 impl Tcp {
     pub fn new(rx_buffer: crate::TcpBufferBounds, tx_buffer: crate::TcpBufferBounds) -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
+            timer: None,
             connection_params: ConnectionParams {
                 rx_buffer: NormalizedBufferBounds::from_bounds(rx_buffer),
                 tx_buffer: NormalizedBufferBounds::from_bounds(tx_buffer),
@@ -161,9 +187,70 @@ enum LoopbackPortInfo {
 enum TcpBackend {
     /// A real host socket. The socket may be `None` while the connection is
     /// being constructed, or after both ends have closed.
-    Socket(Option<PolledSocket<Socket>>),
+    Socket {
+        socket: Option<PolledSocket<Socket>>,
+        static_dns: Option<StaticDnsTcpInspection>,
+    },
     /// A virtual DNS TCP handler (no real socket).
     Dns(DnsTcpHandler),
+}
+
+#[derive(Default)]
+struct StaticDnsTcpInspection {
+    frame_assembler: DnsTcpFrameAssembler,
+    forwarding: Option<ForwardingDnsTcpFrame>,
+    host_response_frames: DnsTcpFrameBoundaryTracker,
+}
+
+struct ForwardingDnsTcpFrame {
+    frame: Vec<u8>,
+    offset: usize,
+}
+
+enum StaticDnsTcpDisposition {
+    Hold,
+    Forward,
+}
+
+#[derive(Default)]
+struct DnsTcpFrameBoundaryTracker {
+    prefix: [u8; 2],
+    prefix_len: usize,
+    payload_remaining: usize,
+}
+
+impl DnsTcpFrameBoundaryTracker {
+    fn ingest(&mut self, mut data: &[u8]) {
+        while !data.is_empty() {
+            if self.payload_remaining != 0 {
+                let consumed = data.len().min(self.payload_remaining);
+                self.payload_remaining -= consumed;
+                data = &data[consumed..];
+                continue;
+            }
+
+            let consumed = data.len().min(self.prefix.len() - self.prefix_len);
+            self.prefix[self.prefix_len..self.prefix_len + consumed]
+                .copy_from_slice(&data[..consumed]);
+            self.prefix_len += consumed;
+            data = &data[consumed..];
+
+            if self.prefix_len == self.prefix.len() {
+                self.payload_remaining = u16::from_be_bytes(self.prefix) as usize;
+                self.prefix_len = 0;
+            }
+        }
+    }
+
+    fn at_frame_boundary(&self) -> bool {
+        self.prefix_len == 0 && self.payload_remaining == 0
+    }
+}
+
+impl StaticDnsTcpInspection {
+    fn is_empty(&self) -> bool {
+        self.frame_assembler.is_empty() && self.forwarding.is_none()
+    }
 }
 
 #[derive(Inspect)]
@@ -178,6 +265,9 @@ struct TcpConnection {
 struct TcpConnectionInner {
     loopback_port: LoopbackPortInfo,
     state: TcpState,
+
+    lifetime_timer: LifetimeTimer,
+    retransmission: RetransmissionState,
 
     #[inspect(with = "|x| x.len()")]
     rx_buffer: ring::Ring,
@@ -212,7 +302,8 @@ struct TcpConnectionInner {
     tx_acked: TcpSeqNumber,
     #[inspect(with = "inspect_seq")]
     tx_send: TcpSeqNumber,
-    tx_fin_buffered: bool,
+    tx_syn: TxSynState,
+    tx_fin: TxFinState,
     #[inspect(hex)]
     tx_window_len: u16,
     tx_window_scale: u8,
@@ -228,8 +319,331 @@ struct TcpConnectionInner {
     tx_mss: usize,
     #[inspect(skip)]
     last_close_reason: ConnectionCloseReason,
-
     stats: TcpConnStats,
+}
+
+const INITIAL_RTO: Duration = Duration::from_secs(1);
+const MIN_RTO: Duration = Duration::from_secs(1);
+const MAX_RTO: Duration = Duration::from_secs(60);
+const CLOCK_GRANULARITY: Duration = Duration::from_millis(1);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Copy, Default, Inspect)]
+#[inspect(tag = "kind")]
+enum LifetimeTimer {
+    #[default]
+    None,
+    Handshake(#[inspect(skip)] TimerInstant),
+    Close(#[inspect(skip)] TimerInstant),
+}
+
+impl LifetimeTimer {
+    fn deadline(self) -> Option<TimerInstant> {
+        match self {
+            Self::None => None,
+            Self::Handshake(deadline) | Self::Close(deadline) => Some(deadline),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Inspect, PartialEq, Eq)]
+enum TxSynState {
+    #[default]
+    None,
+    Syn,
+    SynAck,
+}
+
+#[derive(Clone, Copy, Default, Inspect, PartialEq, Eq)]
+enum TxFinState {
+    #[default]
+    None,
+    Buffered,
+    Sent,
+}
+
+impl TxFinState {
+    fn is_pending(self) -> bool {
+        self != Self::None
+    }
+}
+
+#[derive(Clone, Copy, Default, Inspect)]
+#[inspect(tag = "kind")]
+enum RetransmissionTimer {
+    #[default]
+    None,
+    Rto {
+        #[inspect(skip)]
+        deadline: TimerInstant,
+        #[inspect(skip)]
+        recover: Option<TcpSeqNumber>,
+    },
+    Persist {
+        #[inspect(skip)]
+        deadline: TimerInstant,
+        backoff: u8,
+        #[inspect(skip)]
+        recover: Option<TcpSeqNumber>,
+    },
+    Recovery {
+        #[inspect(skip)]
+        deadline: TimerInstant,
+        #[inspect(skip)]
+        recover: TcpSeqNumber,
+    },
+}
+
+impl RetransmissionTimer {
+    fn deadline(self) -> Option<TimerInstant> {
+        match self {
+            Self::None => None,
+            Self::Rto { deadline, .. }
+            | Self::Persist { deadline, .. }
+            | Self::Recovery { deadline, .. } => Some(deadline),
+        }
+    }
+}
+
+#[derive(Inspect)]
+struct RetransmissionState {
+    rto: Duration,
+    timer: RetransmissionTimer,
+    srtt: Option<Duration>,
+    rttvar: Option<Duration>,
+    #[inspect(skip)]
+    sample: Option<RttSample>,
+    #[inspect(skip)]
+    window_reopen_retransmit: Option<TcpSeqNumber>,
+    syn_retransmitted: bool,
+    duplicate_acks: u8,
+}
+
+struct RttSample {
+    sequence_end: TcpSeqNumber,
+    sent_at: TimerInstant,
+}
+
+impl RetransmissionState {
+    fn new() -> Self {
+        Self {
+            rto: INITIAL_RTO,
+            timer: RetransmissionTimer::None,
+            srtt: None,
+            rttvar: None,
+            sample: None,
+            window_reopen_retransmit: None,
+            syn_retransmitted: false,
+            duplicate_acks: 0,
+        }
+    }
+
+    fn on_send(&mut self, sequence_end: TcpSeqNumber) {
+        match self.timer {
+            RetransmissionTimer::Rto {
+                recover: Some(_), ..
+            }
+            | RetransmissionTimer::Recovery { .. } => return,
+            RetransmissionTimer::Rto { .. } if self.sample.is_some() => return,
+            _ => {}
+        }
+        self.on_send_at(sequence_end, TimerInstant::now());
+    }
+
+    fn on_send_at(&mut self, sequence_end: TcpSeqNumber, now: TimerInstant) {
+        if !matches!(
+            self.timer,
+            RetransmissionTimer::Rto { .. } | RetransmissionTimer::Recovery { .. }
+        ) {
+            self.timer = RetransmissionTimer::Rto {
+                deadline: now + self.rto,
+                recover: None,
+            };
+        }
+        if self.sample.is_none() {
+            self.sample = Some(RttSample {
+                sequence_end,
+                sent_at: now,
+            });
+        }
+    }
+
+    fn on_ack(&mut self, ack_number: TcpSeqNumber, tx_send: TcpSeqNumber, now: TimerInstant) {
+        self.duplicate_acks = 0;
+        self.window_reopen_retransmit = None;
+        let recover = self.recovery_boundary();
+        if let Some(sample) = self
+            .sample
+            .take_if(|sample| ack_number >= sample.sequence_end)
+        {
+            self.update_rto(now.saturating_sub(sample.sent_at));
+        }
+
+        self.timer = if ack_number < tx_send {
+            if let Some(recover) = recover.filter(|recover| ack_number < *recover) {
+                RetransmissionTimer::Recovery {
+                    deadline: now,
+                    recover,
+                }
+            } else {
+                RetransmissionTimer::Rto {
+                    deadline: now + self.rto,
+                    recover: None,
+                }
+            }
+        } else {
+            RetransmissionTimer::None
+        };
+    }
+
+    fn record_duplicate_ack(&mut self, is_duplicate: bool) -> bool {
+        if !is_duplicate {
+            return false;
+        }
+        self.duplicate_acks = self.duplicate_acks.saturating_add(1);
+        self.duplicate_acks == 3
+    }
+
+    fn on_fast_retransmit(&mut self, now: TimerInstant, recover: TcpSeqNumber) {
+        self.sample = None;
+        self.timer = RetransmissionTimer::Rto {
+            deadline: now + self.rto,
+            recover: Some(recover),
+        };
+    }
+
+    fn retry_fast_retransmit(&mut self) {
+        self.duplicate_acks = 2;
+    }
+
+    fn on_retransmit(&mut self, now: TimerInstant, recover: TcpSeqNumber) {
+        // Karn's algorithm: an ACK after a retransmission is ambiguous and
+        // cannot be used as an RTT sample.
+        self.duplicate_acks = 0;
+        self.sample = None;
+        self.rto = self.rto.saturating_mul(2).min(MAX_RTO);
+        self.timer = RetransmissionTimer::Rto {
+            deadline: now + self.rto,
+            recover: Some(recover),
+        };
+    }
+
+    fn on_recovery_retransmit(&mut self, now: TimerInstant, recover: TcpSeqNumber) {
+        self.sample = None;
+        self.timer = RetransmissionTimer::Rto {
+            deadline: now + self.rto,
+            recover: Some(recover),
+        };
+    }
+
+    fn update_persist(&mut self, blocked: bool, outstanding: bool) {
+        if blocked {
+            if !matches!(self.timer, RetransmissionTimer::Persist { .. }) {
+                let recover = self.recovery_boundary();
+                self.sample = None;
+                self.timer = RetransmissionTimer::Persist {
+                    deadline: TimerInstant::now() + self.rto,
+                    backoff: 0,
+                    recover,
+                };
+            }
+        } else if matches!(self.timer, RetransmissionTimer::Persist { .. }) {
+            let recover = self.recovery_boundary();
+            self.timer = if outstanding {
+                RetransmissionTimer::Rto {
+                    deadline: TimerInstant::now() + self.rto,
+                    recover,
+                }
+            } else {
+                RetransmissionTimer::None
+            };
+        }
+    }
+
+    fn rearm_persist(&mut self, now: TimerInstant, backoff: u8, recover: Option<TcpSeqNumber>) {
+        let backoff = backoff.saturating_add(1).min(u32::BITS as u8 - 1);
+        let multiplier = 1_u32 << backoff;
+        let interval = self.rto.saturating_mul(multiplier).min(MAX_RTO);
+        self.timer = RetransmissionTimer::Persist {
+            deadline: now + interval,
+            backoff,
+            recover,
+        };
+    }
+
+    fn retry_persist(&mut self, now: TimerInstant, backoff: u8, recover: Option<TcpSeqNumber>) {
+        self.timer = RetransmissionTimer::Persist {
+            deadline: now + self.rto,
+            backoff,
+            recover,
+        };
+    }
+
+    fn can_retransmit_on_window_reopen(&self, ack_number: TcpSeqNumber) -> bool {
+        self.window_reopen_retransmit != Some(ack_number)
+    }
+
+    fn on_early_retransmit(&mut self, now: TimerInstant, ack_number: TcpSeqNumber) {
+        // Karn's algorithm still applies, but RFC 6298 only backs off the RTO
+        // after its timer expires.
+        self.duplicate_acks = 0;
+        self.sample = None;
+        self.window_reopen_retransmit = Some(ack_number);
+        self.timer = RetransmissionTimer::Rto {
+            deadline: now + self.rto,
+            recover: self.recovery_boundary(),
+        };
+    }
+
+    fn recovery_boundary(&self) -> Option<TcpSeqNumber> {
+        match self.timer {
+            RetransmissionTimer::Rto { recover, .. }
+            | RetransmissionTimer::Persist { recover, .. } => recover,
+            RetransmissionTimer::Recovery { recover, .. } => Some(recover),
+            RetransmissionTimer::None => None,
+        }
+    }
+
+    fn on_syn_retransmit(&mut self) {
+        self.syn_retransmitted = true;
+    }
+
+    fn on_handshake_complete(&mut self) {
+        // RFC 6298 section 5.7 requires at least a 3-second RTO for data
+        // after a SYN retransmission when the backed-off RTO is smaller.
+        if self.syn_retransmitted {
+            self.rto = self.rto.max(Duration::from_secs(3));
+            self.syn_retransmitted = false;
+        }
+    }
+
+    fn update_rto(&mut self, sample: Duration) {
+        let (srtt, rttvar) = if let (Some(srtt), Some(rttvar)) = (self.srtt, self.rttvar) {
+            let error = srtt.abs_diff(sample);
+            let rttvar = duration_weighted_average(rttvar, 3, error, 1, 4);
+            let srtt = duration_weighted_average(srtt, 7, sample, 1, 8);
+            (srtt, rttvar)
+        } else {
+            (sample, sample / 2)
+        };
+        self.srtt = Some(srtt);
+        self.rttvar = Some(rttvar);
+
+        let variance = rttvar.saturating_mul(4).max(CLOCK_GRANULARITY);
+        self.rto = (srtt + variance).clamp(MIN_RTO, MAX_RTO);
+    }
+}
+
+fn duration_weighted_average(
+    a: Duration,
+    a_weight: u32,
+    b: Duration,
+    b_weight: u32,
+    divisor: u32,
+) -> Duration {
+    a.saturating_mul(a_weight)
+        .saturating_add(b.saturating_mul(b_weight))
+        / divisor
 }
 
 /// Why a connection was closed, for aggregate stats categorization.
@@ -295,6 +709,12 @@ struct TcpConnStats {
     tx_buffer_grows: Counter,
     /// Number of times the rx_buffer ring capacity was grown by autotune.
     rx_buffer_grows: Counter,
+    /// Retransmission timeouts.
+    retransmission_timeouts: Counter,
+    /// Retransmitted segments.
+    retransmitted_segments: Counter,
+    /// Retransmitted payload bytes.
+    retransmitted_bytes: Counter,
 }
 
 fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
@@ -418,7 +838,11 @@ impl<T: Client> Access<'_, T> {
                                         return true;
                                     }
                                 };
-                                tracing::trace!(?ft, "TCP connection established");
+                                tracing::trace!(
+                                    src = %ft.src,
+                                    dst = %ft.dst,
+                                    "TCP connection established"
+                                );
                                 e.insert(conn);
                                 self.inner.tcp.aggregate_stats.connections_accepted.increment();
                             }
@@ -435,40 +859,114 @@ impl<T: Client> Access<'_, T> {
                 }
                 Err(_) => false,
             });
-        // Check for any new incoming data
+        // Check for any new incoming data.
+        let mut now = None;
+        let mut next_deadline: Option<TimerInstant> = None;
         self.inner.tcp.connections.retain(|ft, conn| {
             let mut sender = Sender {
                 ft,
                 state: &mut self.inner.state,
                 client: self.client,
             };
-            let keep = match &mut conn.backend {
-                TcpBackend::Dns(dns_handler) => match &mut self.inner.dns {
-                    Some(dns) => conn
+            let timed_out = conn.inner.next_timer_deadline().is_some_and(|deadline| {
+                let now = *now.get_or_insert_with(TimerInstant::now);
+                deadline <= now && conn.inner.process_expired_timers(now, &mut sender)
+            });
+            if timed_out {
+                tracing::debug!(
+                    src = %ft.src,
+                    dst = %ft.dst,
+                    state = ?conn.inner.state,
+                    "TCP connection timer expired, reclaiming connection",
+                );
+                if matches!(
+                    conn.backend,
+                    TcpBackend::Dns(ref handler) if handler.is_in_flight()
+                ) {
+                    self.inner.dns.complete_tcp_query();
+                }
+                match conn.inner.state {
+                    TcpState::TimeWait => self
                         .inner
-                        .poll_dns_backend(cx, &mut sender, dns_handler, dns),
-                    None => {
-                        tracing::warn!("DNS TCP connection without DNS resolver, dropping");
+                        .tcp
+                        .aggregate_stats
+                        .record_close(ConnectionCloseReason::Normal),
+                    _ => {
+                        let guest_has_seen_connection = !matches!(
+                            conn.inner.state,
+                            TcpState::Connecting | TcpState::SynSent | TcpState::SynReceived
+                        ) || conn.inner.tx_syn != TxSynState::None;
+                        if guest_has_seen_connection && sender.client.rx_mtu() != 0 {
+                            let ack_number =
+                                (conn.inner.tx_syn != TxSynState::Syn).then_some(conn.inner.rx_seq);
+                            if sender.try_rst(conn.inner.tx_send, ack_number) {
+                                conn.inner.stats.rsts_tx.increment();
+                            }
+                        }
+                        self.inner.tcp.aggregate_stats.record_timeout_close();
+                    }
+                }
+                return false;
+            }
+
+            let keep = match &mut conn.backend {
+                TcpBackend::Dns(dns_handler) => {
+                    if self.inner.dns.can_answer_queries() {
+                        conn.inner.poll_dns_backend(
+                            cx,
+                            &mut sender,
+                            dns_handler,
+                            &mut self.inner.dns,
+                        )
+                    } else {
+                        tracelimit::warn_ratelimited!(
+                            src = %ft.src,
+                            dst = %ft.dst,
+                            "DNS TCP connection without an answer source, dropping"
+                        );
                         false
                     }
-                },
-                TcpBackend::Socket(opt_socket) => {
-                    conn.inner.poll_socket_backend(cx, &mut sender, opt_socket)
                 }
+                TcpBackend::Socket { socket, static_dns } => conn.inner.poll_socket_backend(
+                    cx,
+                    &mut sender,
+                    socket,
+                    static_dns,
+                    &self.inner.dns,
+                ),
             };
             if !keep {
                 self.inner
                     .tcp
                     .aggregate_stats
                     .record_close(conn.inner.last_close_reason);
+            } else if let Some(deadline) = conn.inner.next_timer_deadline() {
+                next_deadline = Some(
+                    next_deadline.map_or(deadline, |next_deadline| next_deadline.min(deadline)),
+                );
             }
             keep
-        })
+        });
+
+        if let Some(deadline) = next_deadline {
+            let timer = self
+                .inner
+                .tcp
+                .timer
+                .get_or_insert_with(|| TcpTimer::new(self.client.driver()));
+            if timer.poll_until(cx, deadline).is_ready() {
+                cx.waker().wake_by_ref();
+            }
+        }
     }
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
+        self.inner.tcp.timer = Some(TcpTimer::new(self.client.driver()));
         self.inner.tcp.connections.retain(|ft, conn| {
-            let TcpBackend::Socket(opt_socket) = &mut conn.backend else {
+            let TcpBackend::Socket {
+                socket: opt_socket, ..
+            } = &mut conn.backend
+            else {
                 // DNS connections have no real socket to refresh.
                 return true;
             };
@@ -520,8 +1018,31 @@ impl<T: Client> Access<'_, T> {
         };
         trace_tcp_packet(&ft, &tcp, tcp.payload.len(), "recv");
 
-        let is_dns_tcp =
-            is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_some());
+        let is_dns_tcp = is_gateway_dns_tcp(
+            &ft,
+            &self.inner.state.params,
+            self.inner.dns.can_answer_queries(),
+        );
+        let inspect_static_dns =
+            ft.dst.port() == crate::DNS_PORT && self.inner.dns.should_intercept_static_queries();
+
+        let replace_time_wait = tcp.control == TcpControl::Syn
+            && tcp.ack_number.is_none()
+            && self.inner.tcp.connections.get(&ft).is_some_and(|conn| {
+                conn.inner.state == TcpState::TimeWait && tcp.seq_number > conn.inner.rx_seq
+            });
+        if replace_time_wait && let Some(conn) = self.inner.tcp.connections.remove(&ft) {
+            if matches!(
+                conn.backend,
+                TcpBackend::Dns(ref handler) if handler.is_in_flight()
+            ) {
+                self.inner.dns.complete_tcp_query();
+            }
+            self.inner
+                .tcp
+                .aggregate_stats
+                .record_close(ConnectionCloseReason::Normal);
+        }
 
         let mut sender = Sender {
             ft: &ft,
@@ -556,9 +1077,7 @@ impl<T: Client> Access<'_, T> {
                     );
                     e.remove();
                     if dns_in_flight {
-                        if let Some(dns) = &mut self.inner.dns {
-                            dns.complete_tcp_query();
-                        }
+                        self.inner.dns.complete_tcp_query();
                     }
                 }
             }
@@ -609,6 +1128,7 @@ impl<T: Client> Access<'_, T> {
                             &tcp,
                             &self.inner.tcp.connection_params,
                             is_local_address,
+                            inspect_static_dns,
                         )?
                     };
                     e.insert(conn);
@@ -675,6 +1195,7 @@ struct Sender<'a, T> {
 
 impl<T: Client> Sender<'_, T> {
     fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
+        let payload_len = payload.as_ref().map_or(0, |p| p.len());
         let buffer = &mut self.state.buffer;
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
         eth_packet.set_dst_addr(self.state.params.client_mac);
@@ -683,7 +1204,7 @@ impl<T: Client> Sender<'_, T> {
             self.ft.dst.ip().into(),
             self.ft.src.ip().into(),
             IpProtocol::Tcp,
-            tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
+            tcp.header_len() + payload_len,
             64,
         );
         // Set the ethernet type based on IP version
@@ -714,28 +1235,77 @@ impl<T: Client> Sender<'_, T> {
         let dst_ip_addr: IpAddress = self.ft.dst.ip().into();
         let src_ip_addr: IpAddress = self.ft.src.ip().into();
         let mut tcp_packet = TcpPacket::new_unchecked(tcp_payload_buf);
+        // Checksums are computed explicitly below, so skip smoltcp's pass.
         tcp.emit(
             &mut tcp_packet,
             &dst_ip_addr,
             &src_ip_addr,
-            &ChecksumCapabilities::default(),
+            &ChecksumCapabilities::ignored(),
         );
 
-        // Copy payload into TCP packet
-        if let Some(payload) = &payload {
-            payload.copy_to_slice(tcp_packet.payload_mut());
-        }
-        tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
-        let n = ETHERNET_HEADER_LEN + ip_total_len;
         let checksum_state = match self.ft.dst {
             SocketAddr::V4(_) => ChecksumState::TCP4,
             SocketAddr::V6(_) => ChecksumState::TCP6,
         };
+        let n = ETHERNET_HEADER_LEN + ip_total_len;
 
-        self.client.recv(&buffer[..n], &checksum_state);
+        let payload = match payload {
+            Some(p) if p.len() != 0 => p,
+            _ => {
+                tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
+                let buffer = &self.state.buffer;
+                self.client.recv(&buffer[..n], &checksum_state);
+                return;
+            }
+        };
+
+        // Zero-copy payload path: leave the TCP window bytes in place and hand
+        // the header and (up to two) payload slices to the client as
+        // discontiguous segments, avoiding a copy of the payload into the
+        // header buffer. The TCP checksum must be recomputed across those
+        // segments because the payload was never linearized here.
+        let (a, b) = payload.as_slices();
+        let tcp_header_len = tcp_packet.header_len() as usize;
+        tcp_packet.set_checksum(0);
+        // The TCP header length is a multiple of 4, so the header and `a` are
+        // 16-bit aligned; `b` shifts by a byte only when `a` has odd length, in
+        // which case its partial checksum is byte-swapped.
+        let checksum = !checksum::combine(&[
+            checksum::pseudo_header(
+                &src_ip_addr,
+                &dst_ip_addr,
+                IpProtocol::Tcp,
+                (tcp_header_len + payload_len) as u32,
+            ),
+            checksum::data(&tcp_packet.as_ref()[..tcp_header_len]),
+            checksum::data(a),
+            if a.len() % 2 == 0 {
+                checksum::data(b)
+            } else {
+                checksum::data(b).swap_bytes()
+            },
+        ]);
+        tcp_packet.set_checksum(checksum);
+
+        let header_len = n - payload_len;
+        let buffer = &self.state.buffer;
+        let header = &buffer[..header_len];
+        if b.is_empty() {
+            self.client.recv_segments(&[header, a], &checksum_state);
+        } else {
+            self.client.recv_segments(&[header, a, b], &checksum_state);
+        }
     }
 
     fn rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) {
+        let _ = self.try_rst(seq, ack);
+    }
+
+    fn try_rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) -> bool {
+        if self.client.rx_mtu() == 0 {
+            return false;
+        }
+
         let tcp = TcpRepr {
             src_port: self.ft.dst.port(),
             dst_port: self.ft.src.port(),
@@ -754,6 +1324,7 @@ impl<T: Client> Sender<'_, T> {
         trace_tcp_packet(self.ft, &tcp, 0, "rst xmit");
 
         self.send_packet(&tcp, None);
+        true
     }
 }
 
@@ -777,6 +1348,10 @@ impl TcpConnection {
         TcpConnectionInner {
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
+            lifetime_timer: LifetimeTimer::Handshake(
+                TimerInstant::now().saturating_add(HANDSHAKE_TIMEOUT),
+            ),
+            retransmission: RetransmissionState::new(),
             rx_buffer: ring::Ring::new(0),
             rx_window_cap: rx_bounds.initial,
             rx_window_scale,
@@ -791,6 +1366,7 @@ impl TcpConnection {
             tx_buffer_max: tx_bounds.max,
             tx_acked: tx_seq,
             tx_send: tx_seq,
+            tx_syn: TxSynState::None,
             tx_window_len: 1,
             tx_window_scale: 0,
             tx_window_scale_active: false,
@@ -799,7 +1375,7 @@ impl TcpConnection {
             // The TCPv4 default maximum segment size is 536. This can be bigger for
             // IPv6.
             tx_mss: 536,
-            tx_fin_buffered: false,
+            tx_fin: TxFinState::None,
             last_close_reason: ConnectionCloseReason::LocalError,
             stats: TcpConnStats::default(),
         }
@@ -810,9 +1386,10 @@ impl TcpConnection {
         tcp: &TcpRepr<'_>,
         params: &ConnectionParams,
         is_local_address: bool,
+        inspect_static_dns: bool,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
-        inner.initialize_from_first_client_packet(tcp)?;
+        inner.initialize_from_first_client_packet(*sender.ft, tcp)?;
 
         let socket = Socket::new(
             match sender.ft.dst {
@@ -833,7 +1410,12 @@ impl TcpConnection {
         #[cfg(windows)]
         if sender.ft.dst.ip().is_loopback() {
             if let Err(err) = crate::windows::disable_connection_retries(&socket) {
-                tracing::trace!(err, "Failed to disable loopback retries");
+                tracing::trace!(
+                    err,
+                    src = %sender.ft.src,
+                    dst = %sender.ft.dst,
+                    "Failed to disable loopback retries"
+                );
             }
         }
 
@@ -865,7 +1447,10 @@ impl TcpConnection {
             }
         }
         Ok(Self {
-            backend: TcpBackend::Socket(Some(socket)),
+            backend: TcpBackend::Socket {
+                socket: Some(socket),
+                static_dns: inspect_static_dns.then(StaticDnsTcpInspection::default),
+            },
             inner,
         })
     }
@@ -885,9 +1470,12 @@ impl TcpConnection {
         };
         inner.send_syn(sender, None);
         Ok(Self {
-            backend: TcpBackend::Socket(Some(
-                PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
-            )),
+            backend: TcpBackend::Socket {
+                socket: Some(
+                    PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
+                ),
+                static_dns: None,
+            },
             inner,
         })
     }
@@ -901,7 +1489,7 @@ impl TcpConnection {
         params: &ConnectionParams,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
-        inner.initialize_from_first_client_packet(tcp)?;
+        inner.initialize_from_first_client_packet(*sender.ft, tcp)?;
 
         let flow = crate::dns_resolver::DnsFlow {
             src: sender.ft.src,
@@ -923,14 +1511,18 @@ impl TcpConnection {
 }
 
 impl TcpConnectionInner {
-    fn initialize_from_first_client_packet(&mut self, tcp: &TcpRepr<'_>) -> Result<(), DropReason> {
+    fn initialize_from_first_client_packet(
+        &mut self,
+        flow: FourTuple,
+        tcp: &TcpRepr<'_>,
+    ) -> Result<(), DropReason> {
         // The TCPv4 default maximum segment size is 536. This can be bigger for
         // IPv6.
         let tx_mss = tcp.max_seg_size.map_or(536, |x| x.into());
 
         if let Some(tx_window_scale) = tcp.window_scale {
             if tx_window_scale > 14 {
-                return Err(TcpError::InvalidWindowScale.into());
+                return Err(TcpError::new(flow, TcpErrorKind::InvalidWindowScale).into());
             }
             self.enable_window_scaling = true;
             self.tx_window_scale = tx_window_scale;
@@ -973,8 +1565,26 @@ impl TcpConnectionInner {
             dns_handler.set_guest_fin();
         }
 
-        // tx path first: drain DNS responses into tx_buffer.
-        // This frees up backpressure so that ingest can make progress.
+        // rx path: feed guest data into the DNS handler for query extraction.
+        // Done before the tx path so that a query answered locally from static
+        // records is drained into tx_buffer within the same poll.
+        let view = self.rx_buffer.view(0..self.rx_buffer.len());
+        let (a, b) = view.as_slices();
+        match dns_handler.ingest(&[a, b], dns) {
+            Ok(consumed) if consumed > 0 => {
+                self.rx_buffer.consume(consumed);
+            }
+            Ok(_) => {}
+            Err(_) => {
+                // The DNS TCP query could not be processed; reset the connection.
+                if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                    self.stats.rsts_tx.increment();
+                }
+                return false;
+            }
+        }
+
+        // tx path: drain DNS responses into tx_buffer.
         while !self.tx_buffer.is_full() {
             let (a, b) = self.tx_buffer.unwritten_slices_mut();
             let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
@@ -983,7 +1593,7 @@ impl TcpConnectionInner {
                     if n == 0 {
                         // EOF — close the connection.
                         if !self.state.tx_fin() {
-                            self.close();
+                            self.close(sender.state.params.tcp_close_timeout, sender.ft);
                         }
                         break;
                     }
@@ -998,39 +1608,18 @@ impl TcpConnectionInner {
                     );
                 }
                 Poll::Ready(Err(_)) => {
-                    sender.rst(self.tx_send, Some(self.rx_seq));
-                    self.stats.rsts_tx.increment();
+                    if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                        self.stats.rsts_tx.increment();
+                    }
                     return false;
                 }
                 Poll::Pending => break,
             }
         }
 
-        // rx path: feed guest data into the DNS handler for query extraction.
-        let view = self.rx_buffer.view(0..self.rx_buffer.len());
-        let (a, b) = view.as_slices();
-        match dns_handler.ingest(&[a, b], dns) {
-            Ok(consumed) if consumed > 0 => {
-                self.rx_buffer.consume(consumed);
-            }
-            Ok(_) => {}
-            Err(_) => {
-                // Invalid DNS TCP framing; reset the connection.
-                sender.rst(self.tx_send, Some(self.rx_seq));
-                self.stats.rsts_tx.increment();
-                return false;
-            }
-        }
-
         // Flush any deferred pure-ACK from per-packet `handle_tcp` calls.
         self.send_next(sender, AckPolicy::Flush);
-        let closing = self.state == TcpState::TimeWait
-            || self.state == TcpState::LastAck
-            || (self.state.tx_fin() && self.state.rx_fin() && self.tx_buffer.is_empty());
-        if closing {
-            self.last_close_reason = ConnectionCloseReason::Normal;
-        }
-        !closing
+        true
     }
 
     /// Poll the real-socket TCP connection backend.
@@ -1042,6 +1631,8 @@ impl TcpConnectionInner {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         opt_socket: &mut Option<PolledSocket<Socket>>,
+        static_dns: &mut Option<StaticDnsTcpInspection>,
+        dns: &DnsResolver,
     ) -> bool {
         // Wait for the outbound connection to complete.
         if self.state == TcpState::Connecting {
@@ -1066,6 +1657,7 @@ impl TcpConnectionInner {
             }
         } else if self.state == TcpState::SynSent {
             // Need to establish connection with client before sending data.
+            self.send_next(sender, AckPolicy::Flush);
             return true;
         }
 
@@ -1084,8 +1676,9 @@ impl TcpConnectionInner {
                                 "socket failure after fin"
                             ),
                         }
-                        sender.rst(self.tx_send, Some(self.rx_seq));
-                        self.stats.rsts_tx.increment();
+                        if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                            self.stats.rsts_tx.increment();
+                        }
                         return false;
                     }
 
@@ -1106,8 +1699,15 @@ impl TcpConnectionInner {
                         match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
                             Poll::Ready(Ok(n)) => {
                                 if n == 0 {
-                                    self.close();
+                                    self.close(sender.state.params.tcp_close_timeout, sender.ft);
                                     break 'read;
+                                }
+                                if let Some(static_dns) = static_dns.as_mut() {
+                                    let first = n.min(bufs[0].len());
+                                    static_dns.host_response_frames.ingest(&bufs[0][..first]);
+                                    static_dns
+                                        .host_response_frames
+                                        .ingest(&bufs[1][..n - first]);
                                 }
                                 self.tx_buffer.extend_by(n);
                             }
@@ -1126,8 +1726,9 @@ impl TcpConnectionInner {
                                         "socket read error"
                                     ),
                                 }
-                                sender.rst(self.tx_send, Some(self.rx_seq));
-                                self.stats.rsts_tx.increment();
+                                if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                                    self.stats.rsts_tx.increment();
+                                }
                                 return false;
                             }
                             Poll::Pending => break 'read,
@@ -1150,75 +1751,9 @@ impl TcpConnectionInner {
             }
         }
 
-        // Handle the rx path.
         if let Some(socket) = opt_socket.as_mut() {
-            let rx_high_water = self.rx_buffer.len();
-            while !self.rx_buffer.is_empty() {
-                let view = self.rx_buffer.view(0..self.rx_buffer.len());
-                let (a, b) = view.as_slices();
-                let bufs = [IoSlice::new(a), IoSlice::new(b)];
-                match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
-                    Poll::Ready(Ok(n)) => {
-                        self.rx_buffer.consume(n);
-                    }
-                    Poll::Ready(Err(err)) => {
-                        match err.kind() {
-                            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
-                            _ => {
-                                tracelimit::warn_ratelimited!(
-                                    error = &err as &dyn std::error::Error,
-                                    src = %sender.ft.src,
-                                    dst = %sender.ft.dst,
-                                    "socket write error"
-                                );
-                            }
-                        }
-                        sender.rst(self.tx_send, Some(self.rx_seq));
-                        self.stats.rsts_tx.increment();
-                        return false;
-                    }
-                    Poll::Pending => break,
-                }
-            }
-            // Draining to the host may have reopened the window; re-advertise it
-            // so the guest resumes without waiting on its persist timer.
-            if self.should_reopen_window() {
-                self.needs_ack = true;
-            }
-            // Autotune: if the host kept up (drained to empty) and the buffer
-            // was at least 75% full this cycle, the guest is rx-bound. Grow
-            // both the ring and the advertised window ceiling so the next ACK
-            // tells the guest it can send more. Gated on the assembler being
-            // empty because `Ring::resize` only preserves contiguous bytes
-            // in `[head, tail)` — any out-of-order data staged past `tail`
-            // via `write_at` would be lost.
-            if self.rx_buffer.is_empty()
-                && self.rx_assembler.is_empty()
-                && self.rx_window_cap < self.rx_buffer_max
-                && rx_high_water * 4 >= self.rx_window_cap * 3
-            {
-                let new_cap = (self.rx_window_cap * 2).min(self.rx_buffer_max);
-                let new_ring_cap = new_cap.next_power_of_two();
-                if new_ring_cap > self.rx_buffer.capacity() {
-                    self.rx_buffer.resize(new_ring_cap);
-                }
-                self.rx_window_cap = new_cap;
-                self.needs_ack = true;
-                self.stats.rx_buffer_grows.increment();
-            }
-            if self.rx_buffer.is_empty() && self.state.rx_fin() && !self.is_shutdown {
-                if let Err(err) = socket.get().shutdown(Shutdown::Write) {
-                    tracelimit::warn_ratelimited!(
-                        error = &err as &dyn std::error::Error,
-                        src = %sender.ft.src,
-                        dst = %sender.ft.dst,
-                        "shutdown error"
-                    );
-                    sender.rst(self.tx_send, Some(self.rx_seq));
-                    self.stats.rsts_tx.increment();
-                    return false;
-                }
-                self.is_shutdown = true;
+            if !self.poll_socket_write(cx, sender, socket, static_dns, dns) {
+                return false;
             }
         }
 
@@ -1226,7 +1761,202 @@ impl TcpConnectionInner {
         // read from the socket and no ACK is pending, send_data will find
         // nothing to do anyway.
         self.send_next(sender, AckPolicy::Flush);
+        self.compact_closed_buffers();
         true
+    }
+
+    /// Writes guest data to the host socket, optionally inspecting DNS frames.
+    fn poll_socket_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        sender: &mut Sender<'_, impl Client>,
+        socket: &mut PolledSocket<Socket>,
+        static_dns: &mut Option<StaticDnsTcpInspection>,
+        dns: &DnsResolver,
+    ) -> bool {
+        let rx_high_water = self.rx_buffer.len();
+        loop {
+            let write = if let Some(static_dns) = static_dns.as_mut() {
+                if matches!(
+                    self.poll_static_dns(static_dns, dns),
+                    StaticDnsTcpDisposition::Hold
+                ) {
+                    break;
+                }
+                let Some(forwarding) = static_dns.forwarding.as_ref() else {
+                    break;
+                };
+                Pin::new(&mut *socket).poll_write(cx, &forwarding.frame[forwarding.offset..])
+            } else {
+                if self.rx_buffer.is_empty() {
+                    break;
+                }
+                let view = self.rx_buffer.view(0..self.rx_buffer.len());
+                let (a, b) = view.as_slices();
+                let bufs = [IoSlice::new(a), IoSlice::new(b)];
+                Pin::new(&mut *socket).poll_write_vectored(cx, &bufs)
+            };
+
+            match write {
+                Poll::Ready(Ok(0)) | Poll::Pending => break,
+                Poll::Ready(Ok(n)) => {
+                    if let Some(static_dns) = static_dns {
+                        let Some(forwarding) = static_dns.forwarding.as_mut() else {
+                            break;
+                        };
+                        forwarding.offset += n;
+                        let complete = forwarding.offset == forwarding.frame.len();
+                        if complete && let Some(forwarding) = static_dns.forwarding.take() {
+                            static_dns.frame_assembler.recycle_buffer(forwarding.frame);
+                        }
+                    } else {
+                        self.rx_buffer.consume(n);
+                    }
+                }
+                Poll::Ready(Err(err)) => {
+                    match err.kind() {
+                        ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
+                        _ => {
+                            tracelimit::warn_ratelimited!(
+                                error = &err as &dyn std::error::Error,
+                                src = %sender.ft.src,
+                                dst = %sender.ft.dst,
+                                "socket write error"
+                            );
+                        }
+                    }
+                    if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                        self.stats.rsts_tx.increment();
+                    }
+                    return false;
+                }
+            }
+        }
+
+        // Draining to the host may have reopened the window; re-advertise it
+        // so the guest resumes without waiting on its persist timer.
+        if self.should_reopen_window() {
+            self.needs_ack = true;
+        }
+        // Autotune: if the host kept up (drained to empty) and the buffer
+        // was at least 75% full this cycle, the guest is rx-bound. Grow
+        // both the ring and the advertised window ceiling so the next ACK
+        // tells the guest it can send more. Gated on the assembler being
+        // empty because `Ring::resize` only preserves contiguous bytes
+        // in `[head, tail)` — any out-of-order data staged past `tail`
+        // via `write_at` would be lost.
+        if !self.state.rx_fin()
+            && self.rx_buffer.is_empty()
+            && self.rx_assembler.is_empty()
+            && self.rx_window_cap < self.rx_buffer_max
+            && rx_high_water * 4 >= self.rx_window_cap * 3
+        {
+            let new_cap = (self.rx_window_cap * 2).min(self.rx_buffer_max);
+            let new_ring_cap = new_cap.next_power_of_two();
+            if new_ring_cap > self.rx_buffer.capacity() {
+                self.rx_buffer.resize(new_ring_cap);
+            }
+            self.rx_window_cap = new_cap;
+            self.needs_ack = true;
+            self.stats.rx_buffer_grows.increment();
+        }
+
+        let static_dns_empty = static_dns
+            .as_ref()
+            .is_none_or(StaticDnsTcpInspection::is_empty);
+        if self.rx_buffer.is_empty() && static_dns_empty && self.state.rx_fin() && !self.is_shutdown
+        {
+            if let Err(err) = socket.get().shutdown(Shutdown::Write) {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    src = %sender.ft.src,
+                    dst = %sender.ft.dst,
+                    "shutdown error"
+                );
+                if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                    self.stats.rsts_tx.increment();
+                }
+                return false;
+            }
+            self.is_shutdown = true;
+        }
+
+        true
+    }
+
+    /// Answers complete DNS-over-TCP messages from static records.
+    fn poll_static_dns(
+        &mut self,
+        static_dns: &mut StaticDnsTcpInspection,
+        dns: &DnsResolver,
+    ) -> StaticDnsTcpDisposition {
+        if static_dns.forwarding.is_some() {
+            return StaticDnsTcpDisposition::Forward;
+        }
+
+        loop {
+            if static_dns.frame_assembler.frame().is_none() {
+                let view = self.rx_buffer.view(0..self.rx_buffer.len());
+                let (a, b) = view.as_slices();
+                let consumed = static_dns.frame_assembler.ingest(&[a, b]);
+                self.rx_buffer.consume(consumed);
+            }
+
+            let Some(frame) = static_dns.frame_assembler.frame() else {
+                if self.state.rx_fin()
+                    && self.rx_buffer.is_empty()
+                    && !static_dns.frame_assembler.is_empty()
+                {
+                    static_dns.forwarding = Some(ForwardingDnsTcpFrame {
+                        frame: static_dns.frame_assembler.take_buffered(),
+                        offset: 0,
+                    });
+                    return StaticDnsTcpDisposition::Forward;
+                }
+                return StaticDnsTcpDisposition::Hold;
+            };
+
+            let max_response_len = self.tx_buffer_max.saturating_sub(2).min(u16::MAX as usize);
+            let Some(response) = dns.build_static_response(&frame[2..], max_response_len) else {
+                let Some(frame) = static_dns.frame_assembler.take_frame() else {
+                    return StaticDnsTcpDisposition::Hold;
+                };
+                static_dns.forwarding = Some(ForwardingDnsTcpFrame { frame, offset: 0 });
+                return StaticDnsTcpDisposition::Forward;
+            };
+
+            if !static_dns.host_response_frames.at_frame_boundary() {
+                return StaticDnsTcpDisposition::Hold;
+            }
+
+            let response_len = response.len() + 2;
+            if self.tx_buffer.len() + response_len > self.tx_buffer_max {
+                return StaticDnsTcpDisposition::Hold;
+            }
+
+            let required_capacity = self.tx_buffer.len() + response_len;
+            if required_capacity > self.tx_buffer.capacity() {
+                self.tx_buffer.resize(
+                    required_capacity
+                        .next_power_of_two()
+                        .min(self.tx_buffer_max),
+                );
+                self.stats.tx_buffer_grows.increment();
+            }
+
+            let (a, b) = self.tx_buffer.unwritten_slices_mut();
+            let prefix = (response.len() as u16).to_be_bytes();
+            let mut framed_response = Vec::with_capacity(response_len);
+            framed_response.extend_from_slice(&prefix);
+            framed_response.extend_from_slice(&response);
+            let first = a.len().min(framed_response.len());
+            a[..first].copy_from_slice(&framed_response[..first]);
+            b[..framed_response.len() - first].copy_from_slice(&framed_response[first..]);
+            self.tx_buffer.extend_by(framed_response.len());
+            if let Some(frame) = static_dns.frame_assembler.take_frame() {
+                static_dns.frame_assembler.recycle_buffer(frame);
+            }
+        }
     }
 
     fn handle_connect_error(
@@ -1247,8 +1977,9 @@ impl TcpConnectionInner {
             );
         } else {
             log_connect_error(sender.ft, &err);
-            sender.rst(self.tx_send, Some(self.rx_seq));
-            self.stats.rsts_tx.increment();
+            if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                self.stats.rsts_tx.increment();
+            }
         }
     }
 
@@ -1290,6 +2021,7 @@ impl TcpConnectionInner {
     fn send_next(&mut self, sender: &mut Sender<'_, impl Client>, ack_policy: AckPolicy) {
         match self.state {
             TcpState::Connecting => {}
+            TcpState::SynSent => self.send_syn(sender, None),
             TcpState::SynReceived => self.send_syn(sender, Some(self.rx_seq)),
             _ => self.send_data(sender, ack_policy),
         }
@@ -1333,6 +2065,12 @@ impl TcpConnectionInner {
 
         sender.send_packet(&tcp, None);
         self.tx_send += 1;
+        self.tx_syn = if ack_number.is_some() {
+            TxSynState::SynAck
+        } else {
+            TxSynState::Syn
+        };
+        self.retransmission.on_send(self.tx_send);
         if ack_number.is_some() {
             // The guest reads the SYN-ACK window unscaled, so record that value.
             self.rx_window_last_adv = window_len as usize;
@@ -1351,15 +2089,18 @@ impl TcpConnectionInner {
             0
         };
         let tx_payload_end = self.tx_acked + self.tx_buffer.len();
-        let tx_end = tx_payload_end + self.tx_fin_buffered as usize;
+        let tx_end = tx_payload_end + self.tx_fin.is_pending() as usize;
         let tx_window_end = self.tx_acked + ((self.tx_window_len as usize) << scale);
         let tx_done = seq_min([tx_end, tx_window_end]);
+        let mut send_fin_probe = self.tx_fin == TxFinState::Buffered
+            && self.tx_buffer.is_empty()
+            && self.tx_send == self.tx_acked;
 
         if self.tx_send < tx_end && tx_window_end <= self.tx_send {
             self.stats.tx_blocked_window_full.increment();
         }
 
-        while self.needs_ack || self.tx_send < tx_done {
+        while self.needs_ack || self.tx_send < tx_done || send_fin_probe {
             let rx_mtu = sender.client.rx_mtu();
             if rx_mtu == 0 {
                 // Out of receive buffers.
@@ -1417,17 +2158,19 @@ impl TcpConnectionInner {
             // Set PSH on the segment that drains all currently-buffered data.
             // This tells the guest TCP stack to deliver the data to the
             // application immediately rather than waiting for more.
-            // Note: when tx_fin_buffered is true, the FIN block below will
+            // Note: when a FIN is pending, the FIN block below will
             // override tcp.control to Fin, which takes priority over Psh.
-            if payload_len > 0 && tx_next == tx_payload_end && !self.tx_fin_buffered {
+            if payload_len > 0 && tx_next == tx_payload_end && !self.tx_fin.is_pending() {
                 tcp.control = TcpControl::Psh;
             }
 
-            // Include the fin if present if there is still room.
-            if self.tx_fin_buffered
+            // Include the FIN if it fits in the peer window. A FIN-only close
+            // is also sent through a zero window as a probe so a lost window
+            // update cannot stall the close until the lifetime timeout.
+            if self.tx_fin.is_pending()
                 && tcp.control != TcpControl::Fin
                 && tx_next == tx_payload_end
-                && tx_next < tx_window_end
+                && (tx_next < tx_window_end || send_fin_probe)
             {
                 tcp.control = TcpControl::Fin;
                 tx_next += 1;
@@ -1458,21 +2201,41 @@ impl TcpConnectionInner {
             self.stats.bytes_tx_to_guest.add(payload_len as u64);
             self.stats.tx_segment_size.add_sample(payload_len as u64);
             self.tx_send = tx_next;
+            if tcp.control == TcpControl::Fin {
+                self.tx_fin = TxFinState::Sent;
+                send_fin_probe = false;
+            }
+            if tx_next > tcp.seq_number {
+                self.retransmission.on_send(tx_next);
+            }
             self.needs_ack = false;
             self.record_advertised_window(window_len);
         }
 
+        self.retransmission.update_persist(
+            !self.tx_buffer.is_empty() && self.tx_window_len == 0,
+            self.tx_acked < self.tx_send,
+        );
         assert!(self.tx_send <= tx_end);
+        self.compact_closed_buffers();
     }
 
-    fn close(&mut self) {
-        tracing::trace!("fin");
+    fn close(&mut self, close_timeout: Duration, flow: &FourTuple) {
+        if self.tx_fin.is_pending() {
+            return;
+        }
+        tracing::trace!(src = %flow.src, dst = %flow.dst, "fin");
         match self.state {
-            TcpState::SynSent | TcpState::SynReceived | TcpState::Established => {
+            TcpState::SynSent | TcpState::SynReceived => {
+                self.start_close_deadline(close_timeout);
+            }
+            TcpState::Established => {
                 self.state = TcpState::FinWait1;
+                self.start_close_deadline(close_timeout);
             }
             TcpState::CloseWait => {
                 self.state = TcpState::LastAck;
+                self.restart_close_deadline(close_timeout);
             }
             TcpState::Connecting
             | TcpState::FinWait1
@@ -1481,7 +2244,279 @@ impl TcpConnectionInner {
             | TcpState::TimeWait
             | TcpState::LastAck => unreachable!("fin in {:?}", self.state),
         }
-        self.tx_fin_buffered = true;
+        self.tx_fin = TxFinState::Buffered;
+    }
+
+    /// Start the user timeout for a graceful close. State transitions do not
+    /// extend it unless the connection makes forward progress.
+    fn start_close_deadline(&mut self, close_timeout: Duration) {
+        if !matches!(self.lifetime_timer, LifetimeTimer::Close(_)) {
+            self.lifetime_timer =
+                LifetimeTimer::Close(TimerInstant::now().saturating_add(close_timeout));
+        }
+    }
+
+    fn refresh_close_deadline(&mut self, now: TimerInstant, close_timeout: Duration) {
+        if matches!(self.lifetime_timer, LifetimeTimer::Close(_)) {
+            self.lifetime_timer = LifetimeTimer::Close(now.saturating_add(close_timeout));
+        }
+    }
+
+    fn restart_close_deadline(&mut self, close_timeout: Duration) {
+        self.lifetime_timer =
+            LifetimeTimer::Close(TimerInstant::now().saturating_add(close_timeout));
+    }
+
+    /// Start or restart the 2*MSL TIME-WAIT interval.
+    fn restart_time_wait(&mut self, close_timeout: Duration) {
+        self.restart_close_deadline(close_timeout);
+        self.compact_closed_buffers();
+    }
+
+    fn compact_closed_buffers(&mut self) {
+        if self.state.tx_fin() && self.tx_buffer.is_empty() && self.tx_buffer.capacity() != 0 {
+            self.tx_buffer = ring::Ring::new(0);
+        }
+
+        if self.state.rx_fin() && self.rx_buffer.is_empty() && self.rx_buffer.capacity() != 0 {
+            assert!(self.rx_assembler.is_empty());
+            self.rx_buffer = ring::Ring::new(0);
+        }
+    }
+
+    fn next_timer_deadline(&self) -> Option<TimerInstant> {
+        [
+            self.lifetime_timer.deadline(),
+            self.retransmission.timer.deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// Process expired retransmission and connection-lifetime timers. Returns
+    /// `true` when the connection should be reclaimed.
+    fn process_expired_timers(
+        &mut self,
+        now: TimerInstant,
+        sender: &mut Sender<'_, impl Client>,
+    ) -> bool {
+        if self
+            .lifetime_timer
+            .deadline()
+            .is_some_and(|deadline| now >= deadline)
+        {
+            return true;
+        }
+
+        match self.retransmission.timer {
+            RetransmissionTimer::Rto { deadline, recover } if now >= deadline => {
+                self.stats.retransmission_timeouts.increment();
+                if self.retransmit_earliest(sender) {
+                    self.retransmission
+                        .on_retransmit(now, recover.unwrap_or(self.tx_send));
+                } else {
+                    self.retransmission.timer = RetransmissionTimer::Rto {
+                        deadline: now + self.retransmission.rto,
+                        recover,
+                    };
+                }
+            }
+            RetransmissionTimer::Recovery { deadline, .. } if now >= deadline => {
+                self.process_recovery_retransmit(now, sender);
+            }
+            RetransmissionTimer::Persist {
+                deadline,
+                backoff,
+                recover,
+            } if now >= deadline => {
+                if self.send_zero_window_probe(sender) {
+                    self.retransmission.rearm_persist(now, backoff, recover);
+                } else {
+                    self.retransmission.retry_persist(now, backoff, recover);
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn process_recovery_retransmit(
+        &mut self,
+        now: TimerInstant,
+        sender: &mut Sender<'_, impl Client>,
+    ) {
+        let RetransmissionTimer::Recovery { recover, .. } = self.retransmission.timer else {
+            return;
+        };
+        if self.retransmit_earliest(sender) {
+            self.retransmission.on_recovery_retransmit(now, recover);
+        } else {
+            self.retransmission.timer = RetransmissionTimer::Rto {
+                deadline: now + self.retransmission.rto,
+                recover: Some(recover),
+            };
+        }
+    }
+
+    /// Retransmit the earliest unacknowledged segment per RFC 6298 section 5.4.
+    fn retransmit_earliest(&mut self, sender: &mut Sender<'_, impl Client>) -> bool {
+        if self.tx_syn != TxSynState::None {
+            let retransmitted = self.retransmit_syn(sender);
+            if retransmitted {
+                self.retransmission.on_syn_retransmit();
+            }
+            return retransmitted;
+        }
+
+        if self.tx_acked >= self.tx_send || sender.client.rx_mtu() == 0 {
+            return false;
+        }
+
+        let window_len = self.rx_window_len();
+        let tx_payload_end = self.tx_acked + self.tx_buffer.len();
+        let ip_header_len = match sender.ft.dst {
+            SocketAddr::V4(_) => IPV4_HEADER_LEN,
+            SocketAddr::V6(_) => IPV6_HEADER_LEN,
+        };
+        let tcp_header_len = 20;
+        let mtu = sender.client.rx_mtu().min(sender.state.buffer.len());
+        let max_payload = mtu.saturating_sub(ETHERNET_HEADER_LEN + ip_header_len + tcp_header_len);
+        let scale = if self.tx_window_scale_active {
+            self.tx_window_scale
+        } else {
+            0
+        };
+        let tx_window_end = self.tx_acked + ((self.tx_window_len as usize) << scale);
+        let payload_len = (tx_payload_end - self.tx_acked)
+            .min(self.tx_mss)
+            .min(max_payload)
+            .min(tx_window_end - self.tx_acked)
+            .min(self.tx_send - self.tx_acked);
+
+        let mut tcp = TcpRepr {
+            src_port: sender.ft.dst.port(),
+            dst_port: sender.ft.src.port(),
+            control: TcpControl::None,
+            seq_number: self.tx_acked,
+            ack_number: Some(self.rx_seq),
+            window_len,
+            window_scale: None,
+            max_seg_size: None,
+            sack_permitted: false,
+            sack_ranges: [None, None, None],
+            timestamp: None,
+            payload: &[],
+        };
+        let segment_end = self.tx_acked + payload_len;
+        if self.tx_fin == TxFinState::Sent && segment_end == tx_payload_end {
+            tcp.control = TcpControl::Fin;
+        } else if payload_len > 0 && segment_end == tx_payload_end {
+            tcp.control = TcpControl::Psh;
+        }
+
+        if payload_len == 0 && tcp.control != TcpControl::Fin {
+            return false;
+        }
+
+        trace_tcp_packet(sender.ft, &tcp, payload_len, "retransmit");
+        let payload = self.tx_buffer.view(0..payload_len);
+        sender.send_packet(&tcp, Some(payload));
+        self.stats.pkts_tx_to_guest.increment();
+        self.stats.bytes_tx_to_guest.add(payload_len as u64);
+        self.stats.tx_segment_size.add_sample(payload_len as u64);
+        self.stats.retransmitted_segments.increment();
+        self.stats.retransmitted_bytes.add(payload_len as u64);
+        self.record_advertised_window(window_len);
+        true
+    }
+
+    fn retransmit_syn(&mut self, sender: &mut Sender<'_, impl Client>) -> bool {
+        if self.tx_syn == TxSynState::None || sender.client.rx_mtu() == 0 {
+            return false;
+        }
+
+        let ack_number = (self.tx_syn == TxSynState::SynAck).then_some(self.rx_seq);
+        self.emit_syn(sender, self.tx_acked, ack_number);
+        self.stats.retransmitted_segments.increment();
+        true
+    }
+
+    #[must_use]
+    fn send_zero_window_probe(&mut self, sender: &mut Sender<'_, impl Client>) -> bool {
+        if self.tx_buffer.is_empty() {
+            return false;
+        }
+
+        let rx_mtu = sender.client.rx_mtu();
+        let ip_header_len = match sender.ft.dst {
+            SocketAddr::V4(_) => IPV4_HEADER_LEN,
+            SocketAddr::V6(_) => IPV6_HEADER_LEN,
+        };
+        let header_len = ETHERNET_HEADER_LEN + ip_header_len + 20;
+        if rx_mtu.min(sender.state.buffer.len()) <= header_len {
+            return false;
+        }
+
+        let window_len = self.rx_window_len();
+        let tcp = TcpRepr {
+            src_port: sender.ft.dst.port(),
+            dst_port: sender.ft.src.port(),
+            control: TcpControl::None,
+            seq_number: self.tx_acked,
+            ack_number: Some(self.rx_seq),
+            window_len,
+            window_scale: None,
+            max_seg_size: None,
+            sack_permitted: false,
+            sack_ranges: [None, None, None],
+            timestamp: None,
+            payload: &[],
+        };
+        let payload = self.tx_buffer.view(0..1);
+        trace_tcp_packet(sender.ft, &tcp, payload.len(), "zero window probe");
+        sender.send_packet(&tcp, Some(payload));
+        if self.tx_send == self.tx_acked {
+            self.tx_send += 1;
+        } else {
+            self.stats.retransmitted_segments.increment();
+            self.stats.retransmitted_bytes.increment();
+        }
+        self.stats.pkts_tx_to_guest.increment();
+        self.stats.bytes_tx_to_guest.increment();
+        self.stats.tx_segment_size.add_sample(1_u64);
+        self.record_advertised_window(window_len);
+        true
+    }
+
+    fn emit_syn(
+        &mut self,
+        sender: &mut Sender<'_, impl Client>,
+        sequence_number: TcpSeqNumber,
+        ack_number: Option<TcpSeqNumber>,
+    ) {
+        let window_scale = self.enable_window_scaling.then_some(self.rx_window_scale);
+        let window_len = if ack_number.is_some() {
+            self.rx_window_avail().min(u16::MAX as usize) as u16
+        } else {
+            0
+        };
+        let tcp = TcpRepr {
+            src_port: sender.ft.dst.port(),
+            dst_port: sender.ft.src.port(),
+            control: TcpControl::Syn,
+            seq_number: sequence_number,
+            ack_number,
+            window_len,
+            window_scale,
+            max_seg_size: Some(u16::MAX),
+            sack_permitted: false,
+            sack_ranges: [None, None, None],
+            timestamp: None,
+            payload: &[],
+        };
+        trace_tcp_packet(sender.ft, &tcp, 0, "retransmit");
+        sender.send_packet(&tcp, None);
     }
 
     /// Send an ACK using the current state of the connection.
@@ -1491,6 +2526,20 @@ impl TcpConnectionInner {
     /// shouldn't be combined with data so that they are interpreted correctly
     /// by the peer.
     fn ack(&mut self, sender: &mut Sender<'_, impl Client>) {
+        let _ = self.try_ack(sender);
+    }
+
+    fn ack_or_defer(&mut self, sender: &mut Sender<'_, impl Client>) {
+        if !self.try_ack(sender) {
+            self.needs_ack = true;
+        }
+    }
+
+    fn try_ack(&mut self, sender: &mut Sender<'_, impl Client>) -> bool {
+        if sender.client.rx_mtu() == 0 {
+            return false;
+        }
+
         let window_len = self.rx_window_len();
         let tcp = TcpRepr {
             src_port: sender.ft.dst.port(),
@@ -1512,6 +2561,7 @@ impl TcpConnectionInner {
         sender.send_packet(&tcp, None);
         self.stats.standalone_acks_tx.increment();
         self.record_advertised_window(window_len);
+        true
     }
 
     fn handle_listen_syn(
@@ -1519,27 +2569,62 @@ impl TcpConnectionInner {
         sender: &mut Sender<'_, impl Client>,
         tcp: &TcpRepr<'_>,
     ) -> Result<bool, DropReason> {
+        let ack_acceptable = tcp
+            .ack_number
+            .is_some_and(|ack| ack > self.tx_acked && ack <= self.tx_send);
+
+        if let Some(ack_number) = tcp.ack_number
+            && !ack_acceptable
+        {
+            if tcp.control != TcpControl::Rst {
+                if sender.try_rst(ack_number, None) {
+                    self.stats.rsts_tx.increment();
+                }
+            }
+            return Ok(true);
+        }
+
+        if tcp.control == TcpControl::Rst {
+            if ack_acceptable {
+                tracing::debug!(
+                    src = %sender.ft.src,
+                    dst = %sender.ft.dst,
+                    "connection reset while waiting for SYN"
+                );
+                self.last_close_reason = ConnectionCloseReason::PeerRst;
+                return Ok(false);
+            }
+            return Ok(true);
+        }
+
         if tcp.control != TcpControl::Syn || tcp.segment_len() != 1 {
-            tracing::error!(?tcp.control, "invalid packet waiting for syn, drop connection");
-            return Ok(false);
+            return Ok(true);
         }
+        let ack_number = tcp
+            .ack_number
+            .ok_or_else(|| TcpError::new(*sender.ft, TcpErrorKind::MissingAck))?;
+        self.initialize_from_first_client_packet(*sender.ft, tcp)?;
 
-        let ack_number = tcp.ack_number.ok_or(TcpError::MissingAck)?;
-        if ack_number <= self.tx_acked || ack_number > self.tx_send {
-            sender.rst(ack_number, None);
-            self.stats.rsts_tx.increment();
-            return Ok(false);
-        }
         self.tx_acked = ack_number;
+        self.tx_syn = TxSynState::None;
+        self.retransmission
+            .on_ack(ack_number, self.tx_send, TimerInstant::now());
+        self.retransmission.on_handshake_complete();
 
-        self.initialize_from_first_client_packet(tcp)?;
         self.tx_window_tx_seq = ack_number;
         self.tx_window_len = tcp.window_len;
 
         // Send an ACK to complete the initial SYN handshake.
-        self.ack(sender);
+        self.ack_or_defer(sender);
 
-        self.state = TcpState::Established;
+        if !self.tx_fin.is_pending() {
+            self.lifetime_timer = LifetimeTimer::None;
+        }
+        self.state = if self.tx_fin.is_pending() {
+            TcpState::FinWait1
+        } else {
+            TcpState::Established
+        };
         Ok(true)
     }
 
@@ -1552,7 +2637,7 @@ impl TcpConnectionInner {
             // We have not yet sent a syn (we are still deciding whether we are
             // in LISTEN or CLOSED state), so we can't send a reasonable
             // response to this. Just drop the packet.
-            return Err(TcpError::StillConnecting.into());
+            return Err(TcpError::new(*sender.ft, TcpErrorKind::StillConnecting).into());
         } else if self.state == TcpState::SynSent {
             return self.handle_listen_syn(sender, tcp);
         }
@@ -1560,6 +2645,19 @@ impl TcpConnectionInner {
         let rx_window_len = self.rx_window_cap - self.rx_buffer.len();
         let rx_window_end = self.rx_seq + rx_window_len;
         let segment_end = tcp.seq_number + tcp.segment_len();
+
+        // RFC 9293 section 3.10.7.4: ACK a retransmitted FIN in TIME-WAIT
+        // and restart the 2*MSL timer. The FIN is one byte to the left of
+        // RCV.NXT, so handle it before the normal sequence acceptability test.
+        if self.state == TcpState::TimeWait
+            && tcp.control == TcpControl::Fin
+            && tcp.segment_len() == 1
+            && tcp.seq_number + 1 == self.rx_seq
+        {
+            self.ack_or_defer(sender);
+            self.restart_time_wait(sender.state.params.tcp_close_timeout);
+            return Ok(true);
+        }
 
         // Validate the sequence number per RFC 793.
         let seq_acceptable = if rx_window_len != 0 {
@@ -1575,7 +2673,7 @@ impl TcpConnectionInner {
             if !seq_acceptable {
                 // Silently drop--don't send an ACK--since the peer would then
                 // immediately respond with a valid RST.
-                return Err(TcpError::Unacceptable.into());
+                return Err(TcpError::new(*sender.ft, TcpErrorKind::Unacceptable).into());
             }
 
             // RFC 5961
@@ -1586,7 +2684,11 @@ impl TcpConnectionInner {
             }
 
             // This is a valid RST. Drop the connection.
-            tracing::debug!("connection reset");
+            tracing::debug!(
+                src = %sender.ft.src,
+                dst = %sender.ft.dst,
+                "connection reset"
+            );
             self.last_close_reason = ConnectionCloseReason::PeerRst;
             return Ok(false);
         }
@@ -1594,14 +2696,29 @@ impl TcpConnectionInner {
         // Send ack and drop packets with unacceptable sequence numbers.
         if !seq_acceptable {
             self.stats.out_of_window_pkts.increment();
+            let is_zero_window_probe = rx_window_len == 0
+                && matches!(tcp.control, TcpControl::None | TcpControl::Psh)
+                && tcp.ack_number.is_some()
+                && tcp.payload.len() <= 1
+                && (tcp.seq_number == self.rx_seq || tcp.seq_number + 1 == self.rx_seq);
+            if is_zero_window_probe {
+                self.refresh_close_deadline(
+                    TimerInstant::now(),
+                    sender.state.params.tcp_close_timeout,
+                );
+            }
             self.ack(sender);
-            return Err(TcpError::Unacceptable.into());
+            return Err(TcpError::new(*sender.ft, TcpErrorKind::Unacceptable).into());
         }
 
         // SYN should not be set for in-window segments.
         if tcp.control == TcpControl::Syn {
             if self.state == TcpState::SynReceived {
-                tracing::debug!("invalid syn, drop connection");
+                tracing::debug!(
+                    src = %sender.ft.src,
+                    dst = %sender.ft.dst,
+                    "invalid syn, drop connection"
+                );
                 return Ok(false);
             }
             // RFC 5961, send a challenge ACK.
@@ -1610,39 +2727,62 @@ impl TcpConnectionInner {
         }
 
         // ACK should always be set at this point.
-        let ack_number = tcp.ack_number.ok_or(TcpError::MissingAck)?;
+        let ack_number = tcp
+            .ack_number
+            .ok_or_else(|| TcpError::new(*sender.ft, TcpErrorKind::MissingAck))?;
+        let previous_tx_acked = self.tx_acked;
+        let tx_window_was_zero = self.tx_window_len == 0;
+        let previous_tx_window_len = self.tx_window_len;
+        let mut packet_now = None;
 
         // FUTURE: validate ack number per RFC 5961.
 
         // Handle ACK of our SYN.
         if self.state == TcpState::SynReceived {
             if ack_number <= self.tx_acked || ack_number > self.tx_send {
-                sender.rst(ack_number, None);
-                self.stats.rsts_tx.increment();
+                if sender.try_rst(ack_number, None) {
+                    self.stats.rsts_tx.increment();
+                }
                 return Ok(false);
             }
             self.tx_window_len = tcp.window_len;
             self.tx_window_rx_seq = tcp.seq_number;
             self.tx_window_tx_seq = ack_number;
             self.tx_acked += 1;
-            self.state = TcpState::Established;
+            self.tx_syn = TxSynState::None;
+            if !self.tx_fin.is_pending() {
+                self.lifetime_timer = LifetimeTimer::None;
+            }
+            self.state = if self.tx_fin.is_pending() {
+                TcpState::FinWait1
+            } else {
+                TcpState::Established
+            };
+            self.retransmission.on_handshake_complete();
         }
 
         // Ignore ACKs for segments that have not been sent.
         if ack_number > self.tx_send {
             self.ack(sender);
-            return Err(TcpError::AckPastSequence.into());
+            return Err(TcpError::new(*sender.ft, TcpErrorKind::AckPastSequence).into());
         }
 
         // Retire the ACKed segments.
         if ack_number > self.tx_acked {
             let mut consumed = ack_number - self.tx_acked;
-            if self.tx_fin_buffered && ack_number == self.tx_acked + self.tx_buffer.len() + 1 {
-                self.tx_fin_buffered = false;
+            if self.tx_fin == TxFinState::Sent
+                && ack_number == self.tx_acked + self.tx_buffer.len() + 1
+            {
+                self.tx_fin = TxFinState::None;
                 consumed -= 1;
                 match self.state {
-                    TcpState::FinWait1 => self.state = TcpState::FinWait2,
-                    TcpState::Closing => self.state = TcpState::TimeWait,
+                    TcpState::FinWait1 => {
+                        self.state = TcpState::FinWait2;
+                    }
+                    TcpState::Closing => {
+                        self.state = TcpState::TimeWait;
+                        self.restart_time_wait(sender.state.params.tcp_close_timeout);
+                    }
                     TcpState::LastAck => {
                         self.last_close_reason = ConnectionCloseReason::Normal;
                         return Ok(false);
@@ -1653,6 +2793,30 @@ impl TcpConnectionInner {
             self.tx_buffer.consume(consumed);
             self.tx_acked = ack_number;
         }
+        if self.tx_acked > previous_tx_acked {
+            let now = *packet_now.get_or_insert_with(TimerInstant::now);
+            self.retransmission.on_ack(self.tx_acked, self.tx_send, now);
+            self.refresh_close_deadline(now, sender.state.params.tcp_close_timeout);
+        } else if ack_number == self.tx_acked
+            && (self.tx_acked < self.tx_send || !self.tx_buffer.is_empty())
+            && tcp.control == TcpControl::None
+            && tcp.payload.is_empty()
+        {
+            // A pure ACK for pending data confirms that a flow-controlled peer
+            // is still responsive, even when its zero window prevents the ACK
+            // number from advancing.
+            let now = *packet_now.get_or_insert_with(TimerInstant::now);
+            self.refresh_close_deadline(now, sender.state.params.tcp_close_timeout);
+        }
+
+        let is_duplicate_ack = self.tx_acked == previous_tx_acked
+            && ack_number == self.tx_acked
+            && self.tx_acked < self.tx_send
+            && previous_tx_window_len != 0
+            && tcp.window_len == previous_tx_window_len
+            && tcp.control == TcpControl::None
+            && tcp.payload.is_empty();
+        let fast_retransmit = self.retransmission.record_duplicate_ack(is_duplicate_ack);
 
         // Update the send window.
         if ack_number >= self.tx_acked
@@ -1665,6 +2829,27 @@ impl TcpConnectionInner {
             // RFC 1323 §2.2: window scaling becomes active after the
             // handshake. The SYN/SYN-ACK window field is unscaled.
             self.tx_window_scale_active = true;
+
+            if tx_window_was_zero
+                && tcp.window_len > 0
+                && self.tx_acked < self.tx_send
+                && self
+                    .retransmission
+                    .can_retransmit_on_window_reopen(self.tx_acked)
+                && self.retransmit_earliest(sender)
+            {
+                let now = *packet_now.get_or_insert_with(TimerInstant::now);
+                self.retransmission.on_early_retransmit(now, self.tx_acked);
+            }
+        }
+
+        if fast_retransmit {
+            if self.retransmit_earliest(sender) {
+                let now = *packet_now.get_or_insert_with(TimerInstant::now);
+                self.retransmission.on_fast_retransmit(now, self.tx_send);
+            } else {
+                self.retransmission.retry_fast_retransmit();
+            }
         }
 
         // Scope the data payload and FIN to the in-window portion of the segment.
@@ -1710,15 +2895,23 @@ impl TcpConnectionInner {
 
                     // Stage 2: Record the range in the assembler. Do this
                     // *before* writing to the ring so that rejected segments
-                    // (TooManyGaps) don't leave stale bytes in unwritten
+                    // don't leave stale bytes in unwritten
                     // ring space.
+                    let made_progress = self.rx_assembler.would_make_progress(
+                        seq_offset as u32,
+                        payload.len() as u32,
+                        fin,
+                    );
                     let (rx_consumed, assembler_fin, accepted) =
                         match self
                             .rx_assembler
                             .add(seq_offset as u32, payload.len() as u32, fin)
                         {
                             Ok(result) => (result.consumed as usize, result.fin, true),
-                            Err(assembler::TooManyGaps) => (0, false, false),
+                            Err(err) => {
+                                tracing::trace!(?err, "assembler rejected segment");
+                                (0, false, false)
+                            }
                         };
 
                     // Stage 3: Write payload into the ring and advance the
@@ -1726,6 +2919,14 @@ impl TcpConnectionInner {
                     // accepted the segment.
                     if accepted && !payload.is_empty() {
                         self.rx_buffer.write_at(ring_offset, payload);
+                    }
+                    if accepted
+                        && made_progress
+                        && (!payload.is_empty() || fin)
+                        && matches!(self.lifetime_timer, LifetimeTimer::Close(_))
+                    {
+                        let now = *packet_now.get_or_insert_with(TimerInstant::now);
+                        self.refresh_close_deadline(now, sender.state.params.tcp_close_timeout);
                     }
                     self.rx_buffer.extend_by(rx_consumed);
                     self.rx_seq += rx_consumed;
@@ -1740,8 +2941,7 @@ impl TcpConnectionInner {
             }
             TcpState::CloseWait | TcpState::Closing | TcpState::LastAck => {}
             TcpState::TimeWait => {
-                self.ack(sender);
-                // TODO: restart timer
+                self.ack_or_defer(sender);
             }
         }
 
@@ -1757,13 +2957,21 @@ impl TcpConnectionInner {
                 }
                 TcpState::FinWait2 => {
                     self.state = TcpState::TimeWait;
-                    // TODO: start timer
+                    self.restart_time_wait(sender.state.params.tcp_close_timeout);
                 }
                 TcpState::CloseWait
                 | TcpState::Closing
                 | TcpState::LastAck
                 | TcpState::TimeWait => {}
             }
+        }
+
+        if matches!(
+            self.retransmission.timer,
+            RetransmissionTimer::Recovery { .. }
+        ) {
+            let now = *packet_now.get_or_insert_with(TimerInstant::now);
+            self.process_recovery_retransmit(now, sender);
         }
 
         Ok(true)
@@ -1790,6 +2998,7 @@ impl TcpListener {
         if let Err(err) = socket.listen(10) {
             tracing::warn!(
                 error = &err as &dyn std::error::Error,
+                host_port,
                 "socket listen error"
             );
             return Err(BindError::Io(err));
@@ -1806,13 +3015,21 @@ impl TcpListener {
                 Ok((socket, address)) => match address.as_socket() {
                     Some(addr) => Ok(Some((socket, addr))),
                     None => {
-                        tracing::warn!(?address, "Unknown address from accept");
+                        tracing::warn!(
+                            host_port = self.host_port,
+                            ?address,
+                            "Unknown address from accept"
+                        );
                         Ok(None)
                     }
                 },
                 Err(_) => {
                     let err = take_socket_error(&self.socket);
-                    tracing::warn!(error = &err as &dyn std::error::Error, "listen failure");
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        host_port = self.host_port,
+                        "listen failure"
+                    );
                     Err(DropReason::Io(err))
                 }
             },
@@ -1845,6 +3062,78 @@ fn trace_tcp_packet(ft: &FourTuple, tcp: &TcpRepr<'_>, payload_len: usize, label
         payload_len,
         "tcp packet",
     );
+}
+
+// RFC 1071 primitives vendored from smoltcp (0BSD); replace with a `use` of
+// smoltcp::wire::checksum once smoltcp-rs/smoltcp#1172 exposes it.
+mod checksum {
+    use smoltcp::wire::IpAddress;
+    use smoltcp::wire::IpProtocol;
+
+    const fn propagate_carries(word: u32) -> u16 {
+        let sum = (word >> 16) + (word & 0xffff);
+        ((sum >> 16) as u16) + (sum as u16)
+    }
+
+    pub fn data(mut data: &[u8]) -> u16 {
+        let mut accum: u32 = 0;
+        const CHUNK_SIZE: usize = 32;
+        while data.len() >= CHUNK_SIZE {
+            let mut d = &data[..CHUNK_SIZE];
+            while d.len() >= 2 {
+                accum = accum.wrapping_add(u16::from_be_bytes([d[0], d[1]]) as u32);
+                d = &d[2..];
+            }
+            data = &data[CHUNK_SIZE..];
+        }
+        while data.len() >= 2 {
+            accum = accum.wrapping_add(u16::from_be_bytes([data[0], data[1]]) as u32);
+            data = &data[2..];
+        }
+        if let Some(&value) = data.first() {
+            accum = accum.wrapping_add((value as u32) << 8);
+        }
+        propagate_carries(accum)
+    }
+
+    pub fn combine(checksums: &[u16]) -> u16 {
+        let mut accum: u32 = 0;
+        for &word in checksums {
+            accum = accum.wrapping_add(word as u32);
+        }
+        propagate_carries(accum)
+    }
+
+    pub fn pseudo_header(
+        src_addr: &IpAddress,
+        dst_addr: &IpAddress,
+        next_header: IpProtocol,
+        length: u32,
+    ) -> u16 {
+        match (src_addr, dst_addr) {
+            (IpAddress::Ipv4(src_addr), IpAddress::Ipv4(dst_addr)) => {
+                let mut proto_len = [0u8; 4];
+                proto_len[1] = next_header.into();
+                proto_len[2..4].copy_from_slice(&(length as u16).to_be_bytes());
+                combine(&[
+                    data(&src_addr.octets()),
+                    data(&dst_addr.octets()),
+                    data(&proto_len),
+                ])
+            }
+            (IpAddress::Ipv6(src_addr), IpAddress::Ipv6(dst_addr)) => {
+                let mut len_proto = [0u8; 8];
+                len_proto[0..4].copy_from_slice(&length.to_be_bytes());
+                len_proto[7] = next_header.into();
+                combine(&[
+                    data(&src_addr.octets()),
+                    data(&dst_addr.octets()),
+                    data(&len_proto),
+                ])
+            }
+            _ => unreachable!("mismatched IP address families"),
+        }
+    }
 }
 
 fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {
@@ -1918,8 +3207,12 @@ fn seq_min<const N: usize>(seqs: [TcpSeqNumber; N]) -> TcpSeqNumber {
 }
 
 /// Check if a TCP connection targets the gateway's DNS port.
-fn is_gateway_dns_tcp(ft: &FourTuple, params: &crate::ConsommeParams, dns_available: bool) -> bool {
-    if !dns_available || ft.dst.port() != crate::DNS_PORT {
+fn is_gateway_dns_tcp(
+    ft: &FourTuple,
+    params: &crate::ConsommeParams,
+    can_answer_queries: bool,
+) -> bool {
+    if !can_answer_queries || ft.dst.port() != crate::DNS_PORT {
         return false;
     }
     match ft.dst.ip() {

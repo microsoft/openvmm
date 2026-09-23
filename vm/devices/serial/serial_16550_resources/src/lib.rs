@@ -26,6 +26,10 @@ pub struct Serial16550DeviceHandle {
     /// transmitting data to it. Otherwise, relay data from `io` even if
     /// the guest does not appear to be ready.
     pub wait_for_rts: bool,
+    /// If true, insert a debugger-mode relay between the emulator and the
+    /// backend that keeps the backend drained, dropping bytes instead of
+    /// applying backpressure. Intended for WinDbg / KD-over-serial.
+    pub debugger_mode: bool,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for Serial16550DeviceHandle {
@@ -76,6 +80,7 @@ impl Serial16550DeviceHandle {
             irq: com_port.irq().into(),
             io,
             wait_for_rts: false,
+            debugger_mode: false,
         }
     }
 

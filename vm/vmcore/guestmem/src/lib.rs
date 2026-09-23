@@ -638,6 +638,23 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     fn sharing(&self) -> Option<GuestMemorySharing> {
         None
     }
+
+    /// Returns whether this backing supports locking pages via
+    /// [`lock_gpns`](Self::lock_gpns).
+    ///
+    /// Locking requires a stable host mapping (see
+    /// [`mapping`](Self::mapping)), so the default returns whether a mapping
+    /// is present. Backings that translate each access on demand (e.g., memory
+    /// behind an emulated IOMMU) have no mapping and thus report `false`.
+    /// Callers that use locking as a zero-copy fast path should check this and
+    /// fall back to a copying path when it returns `false`.
+    ///
+    /// This is authoritative: when it returns `false`, the corresponding
+    /// [`GuestMemory`] locking APIs fail without invoking
+    /// [`lock_gpns`](Self::lock_gpns).
+    fn supports_locking(&self) -> bool {
+        self.mapping().is_some()
+    }
 }
 
 trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
@@ -1179,6 +1196,9 @@ struct GuestMemoryInner<T: ?Sized = dyn DynGuestMemoryAccess> {
     regions: Vec<MemoryRegion>,
     debug_name: Arc<str>,
     allocated: bool,
+    /// Cached result of [`GuestMemoryAccess::supports_locking`], since it is
+    /// queried on hot zero-copy paths and never changes for a given backing.
+    supports_locking: bool,
     imp: T,
 }
 
@@ -1202,10 +1222,15 @@ struct MemoryRegion {
     base_iova: Option<u64>,
 }
 
-/// The access type. The values correspond to bitmap indexes.
+/// The type of access that guest memory will be used for.
+///
+/// The discriminants correspond to bitmap indexes (read = 0, write = 1) and
+/// must not be reordered.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum AccessType {
+pub enum AccessType {
+    /// Read access.
     Read = 0,
+    /// Write access.
     Write = 1,
 }
 
@@ -1315,6 +1340,12 @@ unsafe impl GuestMemoryAccess for Empty {
     fn max_address(&self) -> u64 {
         0
     }
+
+    fn supports_locking(&self) -> bool {
+        // This implementation trivially supports locking since there are no
+        // pages to lock.
+        true
+    }
 }
 
 #[derive(Debug, Error)]
@@ -1366,6 +1397,7 @@ impl GuestMemory {
 
     fn new_inner(debug_name: Arc<str>, imp: impl GuestMemoryAccess, allocated: bool) -> Self {
         let regions = vec![MemoryRegion::new(&imp)];
+        let supports_locking = imp.supports_locking();
         Self {
             inner: Arc::new(GuestMemoryInner {
                 imp,
@@ -1377,6 +1409,7 @@ impl GuestMemory {
                 },
                 regions,
                 allocated,
+                supports_locking,
             }),
         }
     }
@@ -1447,6 +1480,11 @@ impl GuestMemory {
         };
 
         imps.resize_with(region_count, || None);
+        // Locking is only supported if every backing region supports it.
+        let supports_locking = imps
+            .iter()
+            .flatten()
+            .all(GuestMemoryAccess::supports_locking);
         let imp = MultiRegionGuestMemoryAccess { imps, region_def };
 
         let inner = GuestMemoryInner {
@@ -1455,6 +1493,7 @@ impl GuestMemory {
             regions,
             imp,
             allocated: false,
+            supports_locking,
         };
 
         Ok(Self {
@@ -1605,6 +1644,18 @@ impl GuestMemory {
     /// file-based sharing. See [`GuestMemorySharing`].
     pub fn sharing(&self) -> Option<GuestMemorySharing> {
         self.inner.imp.sharing()
+    }
+
+    /// Returns whether this memory supports locking pages via
+    /// [`lock_gpns`](Self::lock_gpns) and [`lock_range`](Self::lock_range).
+    ///
+    /// Memory behind an emulated IOMMU has no stable host mapping and cannot
+    /// be locked; zero-copy callers should check this and fall back to a
+    /// copying path when it returns `false`. This is authoritative: when it
+    /// returns `false`, [`lock_gpns`](Self::lock_gpns) and
+    /// [`lock_range`](Self::lock_range) fail with a `NotLockable` error.
+    pub fn supports_locking(&self) -> bool {
+        self.inner.supports_locking
     }
 
     /// Gets a pointer to the VA range for `gpa..gpa+len`.
@@ -1978,6 +2029,7 @@ impl GuestMemory {
 
     fn probe_page_for_lock(
         &self,
+        access: AccessType,
         with_kernel_access: bool,
         gpa: u64,
     ) -> Result<*const AtomicU8, GuestMemoryBackingError> {
@@ -1989,25 +2041,92 @@ impl GuestMemory {
         if with_kernel_access {
             self.inner.imp.expose_va(gpa, 1)?;
         }
-        // FUTURE: check the correct bitmap for the access type, which needs to
-        // be passed in.
-        self.read_plain_inner::<u8>(gpa)?;
+        // Fault the page in for the access the caller will perform through the
+        // returned pointer. A write lock must fault for *write* so that a
+        // read-only-until-write backing (e.g. Windows soft large pages, which
+        // map guest RAM read-only until the first write raises it to
+        // read-write) is made writable before the caller writes; otherwise the
+        // write would hit a read-only page and access-violate. A read-only lock
+        // only faults for read, so it neither forces writability (which
+        // genuinely read-only memory would reject) nor needlessly promotes soft
+        // large pages.
+        match access {
+            AccessType::Read => {
+                self.read_plain_inner::<u8>(gpa)?;
+            }
+            AccessType::Write => {
+                self.probe_mapped_page_writable(gpa)?;
+            }
+        }
         // SAFETY: the read_at call includes a check that ensures that
         // `gpa` is in the VA range.
         let page = unsafe { ptr.as_ptr().add(offset as usize) };
         Ok(page.cast())
     }
 
+    /// Faults a single **mapped** guest page in for write without changing its
+    /// contents, so that a read-only-until-write backing (e.g. Windows soft
+    /// large pages) is raised to read-write before a write lock hands out a
+    /// pointer to it.
+    ///
+    /// This is a helper for the locking path and requires the page to be backed
+    /// by a host mapping. It works by performing a no-op compare-exchange
+    /// against the mapping: on a read-only page the locked read-modify-write
+    /// triggers the write fault handler (raising the window to read-write), and
+    /// once writable the exchange leaves the value unchanged (writing back the
+    /// same value on a match and nothing on a mismatch).
+    ///
+    /// It deliberately does **not** fall back to
+    /// [`GuestMemoryAccess::compare_exchange_fallback`]: the write-probe is
+    /// meaningless without a mapping (there is nothing to fault in), and not all
+    /// backings implement that fallback. Callers must only reach this after
+    /// confirming the page is mapped, as the lock path does via
+    /// [`GuestMemory::supports_locking`]. A non-mapping backing therefore fails
+    /// with a clear error rather than silently taking an unsupported path.
+    fn probe_mapped_page_writable(&self, gpa: u64) -> Result<(), GuestMemoryBackingError> {
+        self.run_on_mapping(
+            AccessType::Write,
+            gpa,
+            1,
+            (),
+            |(), dest| {
+                // SAFETY: dest points to a reserved VA range of at least one byte.
+                unsafe { trycopy::try_compare_exchange::<u8>(dest.cast(), 0, 0).map(|_| ()) }
+            },
+            |()| {
+                // Only reachable without a mapping (or if a backing's
+                // `page_fault` requests the fallback). The write-probe only
+                // makes sense for mapping-based backings, so fail clearly here
+                // instead of invoking `compare_exchange_fallback`, which many
+                // backings do not implement.
+                Err(GuestMemoryBackingError::other(gpa, NotLockable))
+            },
+        )
+    }
+
+    /// Locks the specified guest pages (by GPN), returning handles that expose
+    /// their host VA for zero-copy access.
+    ///
+    /// `access` selects whether the pages will be read from or written to: a
+    /// write lock faults each page in for write so that a
+    /// read-only-until-write backing (e.g. Windows soft large pages) is raised
+    /// to read-write before the caller writes through the returned pointer,
+    /// while a read-only lock (e.g. read-only DMA) only faults for read.
     pub fn lock_gpns(
         &self,
+        access: AccessType,
         with_kernel_access: bool,
         gpns: &[u64],
     ) -> Result<LockedPages, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
+            if !self.inner.supports_locking {
+                let gpa = gpns.first().map_or(0, |&gpn| gpn.wrapping_mul(PAGE_SIZE64));
+                return Err(GuestMemoryBackingError::other(gpa, NotLockable));
+            }
             let mut pages = Vec::with_capacity(gpns.len());
             for &gpn in gpns {
                 let gpa = gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?;
-                let page = self.probe_page_for_lock(with_kernel_access, gpa)?;
+                let page = self.probe_page_for_lock(access, with_kernel_access, gpa)?;
                 pages.push(PagePtr(page));
             }
             let store_gpns = self.inner.imp.lock_gpns(gpns)?;
@@ -2171,19 +2290,29 @@ impl GuestMemory {
     /// Locks the guest pages spanned by the specified `PagedRange`.
     ///
     /// # Arguments
+    /// * 'access' - Whether the locked pages will be read from or written to.
+    ///   A write lock faults each page in for write so that a
+    ///   read-only-until-write backing (e.g. Windows soft large pages) is
+    ///   raised to read-write before the caller writes through the returned
+    ///   VA; a read-only lock (e.g. read-only DMA) only faults for read.
     /// * 'paged_range' - The guest memory range to lock.
     /// * 'locked_range' - Receives a list of VA ranges to which each contiguous physical sub-range in `paged_range`
     ///   has been mapped. Must be initially empty.
     pub fn lock_range<'a, T: LockedRange<'a>>(
         &'a self,
+        access: AccessType,
         paged_range: PagedRange<'_>,
         mut locked_range: T,
     ) -> Result<LockedRangeImpl<'a, T>, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
             let gpns = paged_range.gpns();
+            if !self.inner.supports_locking {
+                let gpa = gpns.first().map_or(0, |&gpn| gpn.wrapping_mul(PAGE_SIZE64));
+                return Err(GuestMemoryBackingError::other(gpa, NotLockable));
+            }
             for &gpn in gpns {
                 let gpa = gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?;
-                self.probe_page_for_lock(true, gpa)?;
+                self.probe_page_for_lock(access, true, gpa)?;
             }
             for range in paged_range.ranges() {
                 let range = range.map_err(GuestMemoryBackingError::gpn)?;
@@ -2850,5 +2979,75 @@ mod tests {
         drop(gm2);
         assert_eq!(gm.inner_buf_mut().unwrap(), &pattern);
         gm.into_inner_buf().unwrap();
+    }
+
+    /// A backing whose locking support can be toggled, used to exercise
+    /// [`GuestMemory::supports_locking`] aggregation. Backed by a real mapping
+    /// so it can participate in single- and multi-region construction.
+    struct ToggleLockMapping {
+        mapping: SparseMapping,
+        lockable: bool,
+    }
+
+    impl ToggleLockMapping {
+        fn new(size: usize, lockable: bool) -> Self {
+            let mapping = SparseMapping::new(size).unwrap();
+            mapping.alloc(0, size).unwrap();
+            Self { mapping, lockable }
+        }
+    }
+
+    // SAFETY: the mapping is valid for the full range reported by `max_address`.
+    unsafe impl crate::GuestMemoryAccess for ToggleLockMapping {
+        fn mapping(&self) -> Option<NonNull<u8>> {
+            NonNull::new(self.mapping.as_ptr().cast())
+        }
+
+        fn max_address(&self) -> u64 {
+            self.mapping.len() as u64
+        }
+
+        fn supports_locking(&self) -> bool {
+            self.lockable
+        }
+    }
+
+    #[test]
+    fn test_supports_locking() {
+        // A mapping-backed backing supports locking by default.
+        let gm = GuestMemory::allocate(0x10000);
+        assert!(gm.supports_locking());
+
+        // A backing that reports no locking support (e.g. on-demand
+        // translation behind an emulated IOMMU) does not support locking, and
+        // `supports_locking` is authoritative: locking fails without touching
+        // the backing's `lock_gpns`.
+        let gm = GuestMemory::new("nolock", ToggleLockMapping::new(SIZE_1MB, false));
+        assert!(!gm.supports_locking());
+        assert!(gm.lock_gpns(crate::AccessType::Write, false, &[0]).is_err());
+
+        // Multi-region: locking is supported only when every present backing
+        // supports it.
+        let gm = GuestMemory::new_multi_region(
+            "multi-lockable",
+            SIZE_1MB as u64,
+            vec![
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+            ],
+        )
+        .unwrap();
+        assert!(gm.supports_locking());
+
+        let gm = GuestMemory::new_multi_region(
+            "multi-mixed",
+            SIZE_1MB as u64,
+            vec![
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, true)),
+                Some(ToggleLockMapping::new(SIZE_1MB / 2, false)),
+            ],
+        )
+        .unwrap();
+        assert!(!gm.supports_locking());
     }
 }

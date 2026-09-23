@@ -52,11 +52,13 @@ impl BootProfile {
     /// Create a VM builder configured for this profile.
     ///
     /// Uses `PetriVmBuilder::minimal()` for minimal profiles and
-    /// `PetriVmBuilder::new()` for standard profiles, applying
-    /// profile-specific configuration (private memory, quiet serial).
+    /// `PetriVmBuilder::new()` for standard profiles, applying the
+    /// quiet-serial cmdline tweak for the `QuietSerial` profile.
     ///
-    /// The caller is responsible for setting topology, memory size,
-    /// and attaching an initrd (for minimal profiles).
+    /// The caller is responsible for setting topology, memory size and
+    /// backing (pass `MemoryConfig::private_memory` from
+    /// [`BootProfile::uses_private_memory`]), and attaching an initrd
+    /// (for minimal profiles).
     pub fn create_builder(
         &self,
         params: petri::PetriTestParams<'_>,
@@ -69,18 +71,7 @@ impl BootProfile {
             petri::PetriVmBuilder::new(params, artifacts, driver)?
         };
 
-        if self.uses_private_memory() {
-            builder = builder.modify_backend(|c| {
-                c.with_custom_config(|c| {
-                    for node in &mut c.numa.nodes {
-                        if let Some(mem) = &mut node.mem {
-                            mem.private_memory = true;
-                        }
-                    }
-                })
-            });
-        }
-
+        // Memory backing is selected by the caller via `with_memory`.
         if self.uses_quiet_serial() {
             builder = builder.modify_backend(|c| {
                 c.with_custom_config(|c| {
@@ -240,6 +231,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
             })
             .with_memory(petri::MemoryConfig {
                 startup_bytes: self.mem_mb * 1024 * 1024,
+                private_memory: Some(self.profile.uses_private_memory()),
                 ..Default::default()
             });
 

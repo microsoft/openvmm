@@ -2770,37 +2770,19 @@ impl Emulator {
     /// called when the graphics controller misc register value is
     /// changed.
     fn calculate_vga_address_range(&mut self) {
-        let range_start;
-        let range_end;
-
         let address_mode = (self.state.persistent_state.vga_graphics_regs
             [VgaGraphicsReg::MEMORY_MAP_MODE_CONTROL_REGISTER]
             >> 2)
             & 0x3;
 
         // Calculate the new host memory staring/ending addresses
-        match address_mode {
-            0 => {
-                range_start = 0xA0000;
-                range_end = 0xC0000;
-            }
-
-            1 => {
-                range_start = 0xA0000;
-                range_end = 0xB0000;
-            }
-
-            2 => {
-                range_start = 0xB0000;
-                range_end = 0xB8000;
-            }
-
-            3 => {
-                range_start = 0xB8000;
-                range_end = 0xC0000;
-            }
+        let (range_start, range_end) = match address_mode {
+            0 => (0xA0000, 0xC0000),
+            1 => (0xA0000, 0xB0000),
+            2 => (0xB0000, 0xB8000),
+            3 => (0xB8000, 0xC0000),
             _ => unreachable!(),
-        }
+        };
 
         self.state.video_start_bus_range_offset = range_start;
         self.state.video_end_bus_range_offset = range_end;

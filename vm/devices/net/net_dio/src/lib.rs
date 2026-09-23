@@ -25,6 +25,7 @@ use net_backend::TxSegment;
 use net_backend::next_packet;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::task::Context;
@@ -72,13 +73,20 @@ impl Endpoint for DioEndpoint {
     async fn stop(&mut self) {
         assert!(self.nic.lock().is_some(), "the queue has not been dropped");
     }
+
+    fn is_ordered(&self) -> bool {
+        // RX buffers are filled and TX packets are completed in the order they
+        // were made available (see `DioQueue`: `free` is drained FIFO, and
+        // `tx_avail` completes synchronously in order).
+        true
+    }
 }
 
 /// A DirectIO queue.
 pub struct DioQueue {
     slot: Arc<Mutex<Option<dio::DioNic>>>,
     nic: Option<dio::DioQueue>,
-    free: Vec<RxId>,
+    free: VecDeque<RxId>,
 }
 
 impl InspectMut for DioQueue {
@@ -100,7 +108,7 @@ impl DioQueue {
         Self {
             slot,
             nic: nic.map(|nic| dio::DioQueue::new(driver, nic)),
-            free: Vec::new(),
+            free: VecDeque::new(),
         }
     }
 }
@@ -127,7 +135,7 @@ impl Queue for DioQueue {
         if let Some(nic) = &mut self.nic {
             // Transmit incoming packets to the guest until there are no more available.
             for done_id in packets {
-                let id = if let Some(&id) = self.free.last() {
+                let id = if let Some(&id) = self.free.front() {
                     id
                 } else {
                     break;
@@ -144,7 +152,7 @@ impl Queue for DioQueue {
                     );
                 });
                 match result {
-                    Ok(()) => self.free.pop(),
+                    Ok(()) => self.free.pop_front(),
                     Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                     Err(e) => {
                         // The DIO endpoint is in a bad state.

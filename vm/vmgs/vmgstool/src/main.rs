@@ -1,8 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Host-side CLI for offline creation and manipulation of VM Guest State
+//! (VMGS) version 3 files.
+//!
+//! VMGS stores firmware and security state as numbered data files inside a VHD.
+//! This tool can create a store, read or replace its entries, inspect headers,
+//! edit UEFI NVRAM variables, import IGVM firmware from a resource DLL, and
+//! convert supported state to or from JSON. Builds with the `encryption`
+//! feature can also operate on encrypted stores when given the appropriate key.
+//!
+//! `vmgstool` is a direct Linux or Windows developer/provisioning utility. Run
+//! `vmgstool --help` or a subcommand's `--help` for the current file and key
+//! arguments; integration tests use a separate `test_helpers` build.
+
 #![forbid(unsafe_code)]
-#![expect(missing_docs)]
 
 #[cfg(all(not(test), feature = "encryption"))]
 crypto::ensure_single_backend!();
@@ -371,11 +383,12 @@ fn parse_file_id(file_id: &str) -> Result<FileId, std::num::ParseIntError> {
         "GUEST_WATCHDOG" => FileId::GUEST_WATCHDOG,
         "HW_KEY_PROTECTOR" => FileId::HW_KEY_PROTECTOR,
         "GUEST_SECRET_KEY" => FileId::GUEST_SECRET_KEY,
-        "HIBERNATION_FIRMWARE" => FileId::HIBERNATION_FIRMWARE,
+        "HIBERNATION_TOKEN" => FileId::HIBERNATION_TOKEN,
         "PLATFORM_SEED" => FileId::PLATFORM_SEED,
         "PROVENANCE_DOC" => FileId::PROVENANCE_DOC,
         "TPM_NVRAM_BACKUP" => FileId::TPM_NVRAM_BACKUP,
         "EXTENDED_FILE_TABLE" => FileId::EXTENDED_FILE_TABLE,
+        "TPM_185_NVRAM" => FileId::TPM_185_NVRAM,
         v => FileId(v.parse::<u32>()?),
     })
 }

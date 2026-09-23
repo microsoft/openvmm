@@ -278,13 +278,14 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
     }
 
     async fn reset(&mut self) {
-        self.in_flight_reads.clear();
-        self.in_flight_writes.clear();
-
         self.req_send
             .call(DeviceRequest::Reset, ())
             .await
-            .expect("failed to reset remote device")
+            .expect("failed to reset remote device");
+
+        self.in_flight_reads.clear();
+        self.in_flight_writes.clear();
+        while self.resp_recv.try_recv().is_ok() {}
     }
 }
 

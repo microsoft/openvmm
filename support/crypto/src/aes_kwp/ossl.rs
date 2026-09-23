@@ -42,21 +42,21 @@ impl AesKeyWrapInner {
 
     pub fn wrap_ctx(&self) -> Result<AesKeyWrapCtxInner<'_>, AesKeyWrapError> {
         let cipher = openssl_cipher(self.key.len())?;
-        let mut ctx =
-            openssl::cipher_ctx::CipherCtx::new().map_err(|e| err(e, "creating wrap context"))?;
+        let mut ctx = openssl::cipher_ctx::CipherCtx::new()
+            .map_err(|e| err(e, "creating the wrap context"))?;
         ctx.set_flags(openssl::cipher_ctx::CipherCtxFlags::FLAG_WRAP_ALLOW);
         ctx.encrypt_init(Some(cipher), Some(&self.key), None)
-            .map_err(|e| err(e, "wrap init"))?;
+            .map_err(|e| err(e, "initializing the wrap context"))?;
         Ok(AesKeyWrapCtxInner { ctx, _dummy: &() })
     }
 
     pub fn unwrap_ctx(&self) -> Result<AesKeyUnwrapCtxInner<'_>, AesKeyWrapError> {
         let cipher = openssl_cipher(self.key.len())?;
-        let mut ctx =
-            openssl::cipher_ctx::CipherCtx::new().map_err(|e| err(e, "creating unwrap context"))?;
+        let mut ctx = openssl::cipher_ctx::CipherCtx::new()
+            .map_err(|e| err(e, "creating the unwrap context"))?;
         ctx.set_flags(openssl::cipher_ctx::CipherCtxFlags::FLAG_WRAP_ALLOW);
         ctx.decrypt_init(Some(cipher), Some(&self.key), None)
-            .map_err(|e| err(e, "unwrap init"))?;
+            .map_err(|e| err(e, "initializing the unwrap context"))?;
         Ok(AesKeyUnwrapCtxInner { ctx, _dummy: &() })
     }
 }
@@ -66,10 +66,10 @@ impl AesKeyWrapCtxInner<'_> {
         let mut output = Vec::with_capacity(payload.len() + 16);
         self.ctx
             .cipher_update_vec(payload, &mut output)
-            .map_err(|e| err(e, "wrapping key"))?;
+            .map_err(|e| err(e, "wrapping the key"))?;
         self.ctx
             .cipher_final_vec(&mut output)
-            .map_err(|e| err(e, "finalizing key wrap"))?;
+            .map_err(|e| err(e, "finalizing the key wrap"))?;
         Ok(output)
     }
 }
@@ -79,10 +79,10 @@ impl AesKeyUnwrapCtxInner<'_> {
         let mut output = Vec::with_capacity(wrapped_payload.len() + 16);
         self.ctx
             .cipher_update_vec(wrapped_payload, &mut output)
-            .map_err(|e| err(e, "unwrapping key"))?;
+            .map_err(|e| err(e, "unwrapping the key"))?;
         self.ctx
             .cipher_final_vec(&mut output)
-            .map_err(|e| err(e, "finalizing key unwrap"))?;
+            .map_err(|e| err(e, "finalizing the key unwrap"))?;
         Ok(output)
     }
 }

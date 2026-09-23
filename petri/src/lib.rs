@@ -62,7 +62,7 @@ pub const SIZE_1_GB: u64 = 1024 * SIZE_1_MB;
 pub enum ShutdownKind {
     Shutdown,
     Reboot,
-    // TODO: Add hibernate?
+    Hibernate,
 }
 
 /// Error running command

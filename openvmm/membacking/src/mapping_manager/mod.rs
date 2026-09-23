@@ -12,6 +12,7 @@ pub use manager::MappingBacking;
 pub use manager::MappingManager;
 pub use manager::MappingManagerClient;
 pub use manager::MappingParams;
+pub use manager::MemoryPolicy;
 pub use mappable::Mappable;
 pub use va_mapper::VaMapper;
 pub use va_mapper::VaMapperError;

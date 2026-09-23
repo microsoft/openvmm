@@ -6,9 +6,11 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::TryFromBytes;
 
 /// Start input from the VMM to the TMK.
@@ -21,6 +23,18 @@ pub struct StartInput {
     pub test_index: u64,
 }
 
+/// Test metadata flags.
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TestFlags64 {
+    #[bits(1)]
+    pub expected_failure: bool,
+    #[bits(1)]
+    pub linux_only: bool,
+    #[bits(62)]
+    reserved: u64,
+}
+
 /// A 64-bit TMK test descriptor.
 #[repr(C)]
 #[derive(IntoBytes, FromBytes, Immutable)]
@@ -31,6 +45,8 @@ pub struct TestDescriptor64 {
     pub name_len: u64,
     /// The test entry point.
     pub entrypoint: u64,
+    /// Test metadata flags.
+    pub flags: TestFlags64,
 }
 
 /// TMK command.

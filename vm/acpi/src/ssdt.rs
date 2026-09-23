@@ -410,7 +410,7 @@ mod tests {
     use super::*;
     use crate::aml::test_helpers::verify_expected_bytes;
 
-    pub fn verify_header(bytes: &[u8]) {
+    fn verify_header(bytes: &[u8]) {
         assert!(bytes.len() >= 36);
 
         // signature
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    pub fn verify_pcie_name_encoding() {
+    fn verify_pcie_name_encoding() {
         assert_eq!(encode_pcie_name(0), b"PCI0".to_vec());
         assert_eq!(encode_pcie_name(1), b"PCI1".to_vec());
         assert_eq!(encode_pcie_name(2), b"PCI2".to_vec());
@@ -531,9 +531,7 @@ mod tests {
         verify_header(&bytes);
         // _PXM should NOT be present when vnode is None.
         assert!(
-            !bytes
-                .windows(4)
-                .any(|window| window == [b'_', b'P', b'X', b'M']),
+            !bytes.windows(4).any(|window| window == *b"_PXM"),
             "_PXM should not be emitted when vnode is None"
         );
     }

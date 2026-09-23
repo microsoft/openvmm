@@ -3,7 +3,7 @@
 
 import React, { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import "./styles/menu.css";
 
 // Menu component that opens from the left side

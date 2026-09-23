@@ -6,6 +6,7 @@
 use crate::Error;
 use crate::ErrorInner;
 use crate::LinuxMshv;
+use crate::MshvIsolationState;
 use crate::MshvPartition;
 use crate::MshvPartitionInner;
 use crate::MshvProcessor;
@@ -59,6 +60,7 @@ impl virt::Hypervisor for LinuxMshv {
             // TODO: query from hypervisor
             supports_gic_v3: true,
             supports_its: false,
+            device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Configurable,
         }
     }
 
@@ -66,6 +68,9 @@ impl virt::Hypervisor for LinuxMshv {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
+        if self.snp_disable_cpuid_offload {
+            return Err(ErrorInner::IsolationNotSupported.into());
+        }
         if config.isolation.is_isolated() {
             return Err(ErrorInner::IsolationNotSupported.into());
         }
@@ -105,6 +110,33 @@ impl virt::Hypervisor for LinuxMshv {
             config.processor_topology.virt_timer_ppi() as u64,
         )
         .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+
+        // When a GICv2m MSI frame is configured, disable LPI support
+        // (GICD_TYPER.LPIS=0) so Linux routes PCIe MSIs through the v2m frame
+        // (SPI-based) instead of looking for an ITS. Mirrors the WHP backend.
+        let gic_lpi_int_id_bits = if matches!(
+            config.processor_topology.gic_msi(),
+            vm_topology::processor::aarch64::GicMsiController::V2m(_)
+        ) {
+            0u64
+        } else {
+            1u64
+        };
+        vmfd.set_partition_property(
+            HvPartitionPropertyCode::GicLpiIntIdBits.0,
+            gic_lpi_int_id_bits,
+        )
+        .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+
+        // Tell the hypervisor which IOVA base its physical SMMU should reserve
+        // for assigned-device MSI writes.
+        if let Some(range) = config.device_assignment_msi_iova_range {
+            vmfd.set_partition_property(
+                HvPartitionPropertyCode::GitsTranslaterBaseAddress.0,
+                range.start(),
+            )
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+        }
 
         // Set the PMU PPI if the topology provides one.
         if let Some(pmu_gsiv) = config.processor_topology.pmu_gsiv() {
@@ -152,7 +184,12 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             vps: self.vps,
             caps,
             synic_ports: Default::default(),
+            isolation: MshvIsolationState::None,
             time_frozen: false.into(),
+            gic_msi: self.config.processor_topology.gic_msi(),
+            gsi_states: parking_lot::Mutex::new(Box::new(
+                [crate::irqfd::GsiState::Unallocated; crate::irqfd::NUM_GSIS],
+            )),
         });
 
         let partition = MshvPartition {
@@ -180,6 +217,10 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 // ---------------------------------------------------------------------------
 
 impl virt::Partition for MshvPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
         Some(self)
     }
@@ -197,6 +238,21 @@ impl virt::Partition for MshvPartition {
 
     fn request_msi(&self, _vtl: Vtl, request: MsiRequest) {
         self.inner.signal_msi(None, request.address, request.data);
+    }
+
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        let v2m = match &self.inner.gic_msi {
+            vm_topology::processor::aarch64::GicMsiController::V2m(v2m) => v2m,
+            _ => return None,
+        };
+        let irqcon = self.inner.clone() as Arc<dyn virt::irqcon::ControlGic>;
+        Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+            v2m, irqcon,
+        )))
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(Arc::new(crate::irqfd::MshvIrqFd::new(self.inner.clone())))
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -330,6 +386,15 @@ impl virt::BindProcessor for MshvProcessorBinder {
             }
             self.vcpufd.as_ref().unwrap()
         };
+
+        // Set the MPIDR for this VP; otherwise, the hypervisor assigns a value
+        // that would not match the identity firmware advertises.
+        vcpufd
+            .set_hvdef_regs(&[HvRegisterAssoc::from((
+                HvArm64RegisterName::MpidrEl1,
+                u64::from(inner.vp_info.mpidr),
+            ))])
+            .map_err(ErrorInner::Register)?;
 
         // Set the GIC redistributor base for this VP (GICv3 only).
         if let Some(gicr) = inner.vp_info.gicr {
@@ -557,6 +622,9 @@ impl MshvProcessor<'_> {
                     }
                     hvdef::HvArm64ResetType::REBOOT => {
                         return Err(VpHaltReason::Reset);
+                    }
+                    hvdef::HvArm64ResetType::HIBERNATE => {
+                        return Err(VpHaltReason::Hibernate);
                     }
                     _ => {
                         tracelimit::warn_ratelimited!(

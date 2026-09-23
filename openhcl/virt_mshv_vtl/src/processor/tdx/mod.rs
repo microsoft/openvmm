@@ -478,8 +478,9 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
         state.update_deadline = 0;
     }
 
-    /// Synchronize armed deadline state in the processor context.
-    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
+    fn begin_vtl_transition(&self, _vp: &mut UhProcessor<'_, TdxBacked>, _vtl: GuestVtl) {}
+
+    fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, TdxBacked>, _vtl: GuestVtl) {
         let vp_state = vp
             .backing
             .tsc_deadline_state
@@ -994,8 +995,10 @@ impl hv1_emulator::VtlProtectAccess for UntrustedSynicVtlProts<'_> {
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
     ) -> Result<guestmem::LockedPages, HvError> {
+        // Overlay pages are written through the returned locked pages, so lock
+        // them for write.
         self.0
-            .lock_gpns(false, &[gpn])
+            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
             .map_err(|_| HvError::OperationFailed)
     }
 
@@ -1733,6 +1736,8 @@ impl UhProcessor<'_, TdxBacked> {
 
         *self.runner.offload_flags_mut() = offload_flags;
 
+        self.shared.guest_timer.begin_vtl_transition(self, next_vtl);
+
         self.runner
             .write_private_regs(&self.backing.vtls[next_vtl].private_regs);
 
@@ -1750,8 +1755,9 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
 
-        // Synchronize timer deadline state
-        self.shared.guest_timer.sync_deadline_state(self);
+        self.shared
+            .guest_timer
+            .end_vtl_transition(self, entered_from_vtl);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {
@@ -2117,7 +2123,7 @@ impl UhProcessor<'_, TdxBacked> {
 
                     UhHypercallHandler::TDX_DISPATCHER.dispatch(
                         guest_memory,
-                        hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
+                        hv1_hypercall::X64RegisterIo::new(handler, is_64bit, true),
                     );
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.vmcall
@@ -2840,6 +2846,8 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_msr_tdx(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
+        hardware_cvm::validate_cvm_msr_write(msr, value, &self.partition.caps.xsave)?;
+
         let state = &mut self.backing.vtls[vtl].private_regs;
 
         match msr {
@@ -4360,7 +4368,7 @@ impl HypercallIo for TdHypercall<'_, '_> {
 impl hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, TdxBacked> {
     fn advance_ip(&mut self) {
         let long_mode = self.vp.long_mode(self.intercepted_vtl);
-        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode);
+        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode, true);
         io.advance_ip();
     }
 

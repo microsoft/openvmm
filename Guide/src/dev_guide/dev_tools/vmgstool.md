@@ -1,20 +1,40 @@
 # VmgsTool
 
-OpenHCL VMs store their firmware state and attributes (UEFI variables) in a special VM
-Guest State (VMGS) file. The OpenHCL interacts with and persists data in the VMGS file
-on behalf of the VM. The VMGS file is packaged as a VHD which the host OS interacts with.
-For Confidential OpenHCL VMs, this VHD can be encrypted before VM deployment, so that the
-host only interacts with an encrypted VHD and hence the file's contents are kept confidential from the host.
+`vmgstool` creates, inspects, and modifies version 3 VM Guest State (VMGS)
+files for provisioning and debugging.
 
-The VMGS file contains several elements called "files" (these are not strictly files, simply
-"chunks of data”, logical groupings of data). Each "file" has a unique, well known index;
-for example, vTPM state is stored in file id "3".
+OpenHCL uses VMGS v3 on both Hyper-V and OpenVMM. OpenVMM also uses VMGS v3 for
+VMs without OpenHCL. Hyper-V VMs without an HCL use a different state format.
 
-The VmgsTool is a tool that allows for offline manipulation of a VMGS (version 3) file
-for provisioning and debugging purposes. Basically, it's a tool to interact with the VMGS
-file, and it can help you perform operations such as reading, creating, modifying and
-removing "files" from the VMGS file and even creating an encrypted datastore to
-allow certain "files" to be encrypted as the scenario requires it.
+VMGS persists firmware variables and security state on behalf of a VM. The
+store is packaged as a VHD and contains numbered logical files. These are data
+slots rather than host filesystem files; for example, BIOS NVRAM and vTPM
+state occupy separate well-known file IDs.
+
+Confidential VMs can encrypt selected VMGS contents before deployment so the
+host handles encrypted state rather than plaintext guest secrets.
+
+## Data model
+
+A VMGS store contains redundant headers, a file table, and allocated data
+blocks. Commands identify logical data through either a numeric file ID or a
+known symbolic name. See [`vmgs_format::FileId`][] for the authoritative list
+of IDs and names.
+
+[`vmgs_format::FileId`]: https://github.com/microsoft/openvmm/blob/main/vm/vmgs/vmgs_format/src/lib.rs#L41-L65
+
+Use `dump-file-table` to discover which IDs are allocated before modifying a
+store:
+
+```powershell
+vmgstool.exe dump-file-table --file-path path\to\guest.vmgs
+```
+
+```admonish note
+`dump-file-table` can inspect an encrypted store without its key. However, its
+per-file encryption information can be inaccurate when the store was last
+modified by a pre-1.8 version of OpenHCL, VmgsTool, or OpenVMM.
+```
 
 ## Alternatively: Pre-Built Binaries
 
@@ -38,38 +58,62 @@ the appropriate `cargo run` command. For more details on building,
 see the [build](#building) section below.
 ```
 
-The VmgsTool commands are always evolving, so use `vmgstool.exe --help` to see the
-most up to date information about the available commands. Options for each command
-and subcommand are also available. For example: `vmgstool.exe uefi-nvram dump --help`
+VmgsTool commands continue to evolve, so use `vmgstool.exe --help` for the
+current interface. Every command and nested operation also has help:
+
+```powershell
+vmgstool.exe uefi-nvram dump --help
+```
+
+Except where explicitly documented, stdout and stderr are for humans and are
+not stable automation formats.
 
 ### Read and Write Raw Data
 
 To read raw data from a VMGS file, use the `dump` command. For example, to
 export the decrypted binary contents of the BIOS_NVRAM (`--fileid 1`) to a file:
 
-`vmgstool.exe dump --filepath <vmgs file path> --keypath <key file path> --datapath <data file path> --fileid 1`
+```powershell
+vmgstool.exe dump --filepath path\to\guest.vmgs `
+    --keypath path\to\key.bin --datapath path\to\nvram.bin --fileid 1
+```
 
 To write raw data to a VMGS file, use the `write` command. For example, to write
 those NVRAM variables to a different, unencrypted VMGS file:
 
-`vmgstool.exe write --filepath <vmgs file path> --datapath <data file path> --fileid 1`
+```powershell
+vmgstool.exe write --filepath path\to\guest.vmgs `
+    --datapath path\to\nvram.bin --fileid 1
+```
+
+By default, `write` refuses to replace a nonempty slot. Add
+`--allow-overwrite` only after confirming the destination ID.
+
+If `dump` has no `--data-path`, it writes an ASCII hexadecimal representation
+to stdout. `--raw-stdout` selects raw bytes and cannot be combined with an
+output path.
 
 ### Read and Parse UEFI NVRAM Variables
 
-Furthermore, the VmgsTool contains parsers to help debug issues with the UEFI NVRAM
-variables stored in the VMGS FileId 1 (BIOS_NVRAM). For example, to dump the NVRAM
-variables for an encrypted VMGS file, truncating the binary data contents of
-variables without parsers:
+Furthermore, VmgsTool contains parsers to help debug UEFI NVRAM variables in
+VMGS file ID 1 (`BIOS_NVRAM`). To dump the variables from an encrypted VMGS and
+truncate binary data without a parser:
 
-`vmgstool.exe uefi-nvram dump --filepath <vmgs file path> --keypath <key file path> --truncate`
+```powershell
+vmgstool.exe uefi-nvram dump --filepath path\to\guest.vmgs `
+    --keypath path\to\key.bin --truncate
+```
 
 ### Read DLL File to Write IGVMfile to VMGS
 
-Additionally, the VmgsTool contains a tool to read the IGVMfile from a DLL (passed in as a data file)
-and write it to VMGS FileId 8 (GUEST_FIRMWARE). To do this pass one of the resource codes
-(NONCONFIDENTIAL, SNP, TDX, SNP_NO_HCL, TDX_NO_HCL, OPENHCL) into the cmdline tool.
+VmgsTool can extract an IGVM from a resource DLL and write it to VMGS file ID 8
+(`GUEST_FIRMWARE`). Select one of `NONCONFIDENTIAL`, `SNP`, `TDX`,
+`SNP_NO_HCL`, `TDX_NO_HCL`, or `OPENHCL`:
 
-`vmgstool.exe copy-igvmfile --filepath <vmgs file path> --datapath <dll path> --resource-code <code>`
+```powershell
+vmgstool.exe copy-igvmfile --filepath path\to\guest.vmgs `
+    --datapath path\to\vmfirmwareigvm.dll --resource-code SNP
+```
 
 ### Delete Boot Variables to Recover a VM that Fails to Boot
 
@@ -79,15 +123,27 @@ Deleting the existing (invalid) boot entries using VmgsTool
 will trigger a default boot (which attempts to boot all available partitions and devices).
 
 To print the boot entries in an encrypted VMGS file:
-`vmgstool.exe uefi-nvram remove-boot-entries --filepath <vmgs file path> --keypath <key file path> --dry-run`
+
+```powershell
+vmgstool.exe uefi-nvram remove-boot-entries `
+    --filepath path\to\guest.vmgs --keypath path\to\key.bin --dry-run
+```
 
 To actually remove the boot entries from the VMGS file, remove `--dry-run`.
 This will remove all `Boot####` variables and the `BootOrder` variable.
 
-If you would like to remove a specific boot entry or any other UEFI NVRAM variable,
-use `remove-entry`. For example, to remove `Boot0000`:
+To remove a specific boot entry or another UEFI NVRAM variable, use
+`remove-entry`. For example, to remove `Boot0000`:
 
-`vmgstool.exe uefi-nvram remove-entry --filepath <vmgs file path>--keypath <key file path> --name Boot0000 --vendor 8be4df61-93ca-11d2-aa0d-00e098032b8c`
+```powershell
+vmgstool.exe uefi-nvram remove-entry --filepath path\to\guest.vmgs `
+    --keypath path\to\key.bin --name Boot0000 `
+    --vendor 8be4df61-93ca-11d2-aa0d-00e098032b8c
+```
+
+Always run `remove-boot-entries --dry-run` first. Removing all boot variables
+causes firmware to fall back to default boot enumeration and can change which
+disk starts.
 
 ## Troubleshooting
 

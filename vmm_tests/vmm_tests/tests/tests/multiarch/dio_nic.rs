@@ -156,28 +156,26 @@ async fn dio_nic(
         .await
         .context("networkctl reload failed")?;
     cmd!(sh, "networkctl reconfigure {iface}")
-        .ignore_status()
         .run()
-        .await?;
+        .await
+        .context("networkctl reconfigure failed")?;
 
-    // Poll for an IPv4 lease from the Default Switch's NAT.
-    let mut timer = PolledTimer::new(&driver);
-    let mut addr = String::new();
-    let mut got_lease = false;
-    for _ in 0..30 {
-        addr = cmd!(sh, "ip -4 -br addr show {iface}").read().await?;
-        if addr
-            .split_whitespace()
-            .any(|w| w.contains('/') && w.contains('.'))
-        {
-            got_lease = true;
-            break;
-        }
-        timer.sleep(Duration::from_secs(1)).await;
-    }
+    // Reconfiguration is asynchronous. Wait for networkd to finish the
+    // DHCP transaction, including installing its routes, before inspecting
+    // the resulting network state.
+    cmd!(
+        sh,
+        "/usr/lib/systemd/systemd-networkd-wait-online --interface={iface}:routable --ipv4 --timeout=30"
+    )
+    .run()
+    .await
+    .context("systemd-networkd did not configure the DIO-backed NIC")?;
+
+    let addr = cmd!(sh, "ip -4 -br addr show {iface}").read().await?;
     anyhow::ensure!(
-        got_lease,
-        "no IPv4 lease on {iface} after 30s; current addrs: {addr}"
+        addr.split_whitespace()
+            .any(|w| w.contains('/') && w.contains('.')),
+        "no IPv4 lease on {iface}; current addrs: {addr}"
     );
     tracing::info!(addr, "ipv4 lease on DIO-backed NIC");
 
@@ -196,6 +194,7 @@ async fn dio_nic(
     // and the host firewall blocks inbound echo by default. The ping below
     // is only used to provoke neighbor resolution, so its exit status is
     // ignored — the assertion is on the resulting neighbor entry.
+    let mut timer = PolledTimer::new(&driver);
     let mut neigh = String::new();
     let mut gw_mac = None;
     for _ in 0..15 {

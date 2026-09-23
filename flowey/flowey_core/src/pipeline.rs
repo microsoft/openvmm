@@ -7,6 +7,7 @@ mod artifact;
 
 pub use artifact::Artifact;
 pub use artifact::ArtifactType;
+pub use artifact::resolve;
 
 use self::internal::*;
 use crate::node::FlowArch;
@@ -42,6 +43,7 @@ pub mod user_facing {
     pub use super::AdoResourcesRepositoryType;
     pub use super::AdoScheduleTriggers;
     pub use super::GhCiTriggers;
+    pub use super::GhConcurrencyGroup;
     pub use super::GhPrTriggers;
     pub use super::GhRunner;
     pub use super::GhRunnerOsLabel;
@@ -255,6 +257,8 @@ pub enum AdoResourcesRepositoryRef<P = UseParameter<String>> {
 pub struct GhScheduleTriggers {
     /// Run the pipeline in a schedule, as specified by a cron string
     pub cron: String,
+    /// IANA timezone string
+    pub timezone: Option<String>,
 }
 
 /// Trigger Github Actions pipelines per PR
@@ -300,6 +304,18 @@ pub struct GhCiTriggers {
     /// Specify any paths which should be filtered out from the list of
     /// `paths` (supports glob syntax)
     pub paths_ignore: Vec<String>,
+    /// If set, only one pipeline run in this concurrency group runs at a time.
+    pub concurrency_group: Option<GhConcurrencyGroup>,
+}
+
+/// Settings for a Github concurrency group.
+#[derive(Debug, Default, Clone)]
+pub struct GhConcurrencyGroup {
+    /// The name of the concurrency group.
+    pub name: String,
+    /// Cancel the active run when a new run joins the concurrency group.
+    /// Defaults to `false`.
+    pub cancel_in_progress: bool,
 }
 
 impl GhPrTriggers {
@@ -658,6 +674,7 @@ impl Pipeline {
             gh_override_if: None,
             gh_global_env: BTreeMap::new(),
             gh_pool: None,
+            gh_concurrency_group: None,
             gh_permissions: BTreeMap::new(),
         });
 
@@ -1010,7 +1027,7 @@ impl PipelineJobCtx<'_> {
     ) -> ReadVar<T> {
         let artifact_path = self.use_artifact(&artifact.0);
         let (read, write) = self.new_artifact_map_vars::<T>();
-        self.helper_request(artifact::resolve::Request::new(artifact_path, write));
+        self.helper_request(resolve::Request::new(artifact_path, write));
         read
     }
 
@@ -1191,6 +1208,12 @@ impl PipelineJob<'_> {
     /// (GitHub Actions only) specify which Github runner this job will be run on.
     pub fn gh_set_pool(self, pool: GhRunner) -> Self {
         self.pipeline.jobs[self.job_idx].gh_pool = Some(pool);
+        self
+    }
+
+    /// (GitHub Actions only) Set the concurrency group for this job.
+    pub fn gh_set_concurrency_group(self, group: GhConcurrencyGroup) -> Self {
+        self.pipeline.jobs[self.job_idx].gh_concurrency_group = Some(group);
         self
     }
 
@@ -1547,6 +1570,7 @@ pub mod internal {
         pub ado_variables: BTreeMap<String, String>,
         pub gh_override_if: Option<String>,
         pub gh_pool: Option<GhRunner>,
+        pub gh_concurrency_group: Option<GhConcurrencyGroup>,
         pub gh_global_env: BTreeMap<String, String>,
         pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
     }

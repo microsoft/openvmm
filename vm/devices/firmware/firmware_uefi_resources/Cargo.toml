@@ -10,6 +10,7 @@ rust-version.workspace = true
 chipset_resources.workspace = true
 firmware_uefi_custom_vars.workspace = true
 hcl_compat_uefi_nvram_resources.workspace = true
+hyperv_secure_boot_templates.workspace = true
 uefi_specs.workspace = true
 watchdog_core.workspace = true
 

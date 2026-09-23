@@ -325,7 +325,8 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
         reg_page.dirty = 0.into();
 
         // Set the registers now that the register page is marked invalid.
-        if let Err(err) = runner.set_vp_registers(GuestVtl::Vtl0, regs.as_slice()) {
+        let vtl = reg_page.vtl.try_into().unwrap();
+        if let Err(err) = runner.set_vp_registers(vtl, regs.as_slice()) {
             panic!(
                 "Failed to flush register page: {}",
                 &err as &dyn std::error::Error

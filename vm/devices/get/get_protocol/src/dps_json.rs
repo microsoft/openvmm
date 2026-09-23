@@ -41,6 +41,7 @@ pub struct HclDevicePlatformSettings {
     pub enable_battery: bool,
     pub enable_processor_idle: bool,
     pub enable_tpm: bool,
+    pub enable_ipmi: bool,
     pub com1: HclUartSettings,
     pub com2: HclUartSettings,
     #[serde(with = "serde_helpers::as_string")]
@@ -177,11 +178,16 @@ pub enum HardwareSealingPolicy {
 #[serde(transparent)]
 pub struct ManagementVtlFeatures {
     pub strict_encryption_policy: bool,
-    pub _reserved1: bool,
+    /// The host supports the `LOAD_FIRMWARE` host request (VTL0 firmware
+    /// overload). Bit 1 (`0x00000002`).
+    pub load_firmware_supported: bool,
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
-    #[bits(59)]
+    _flag5: bool, // Reserved for NonMaskableDebugInterrupt
+    pub use_tpm_138_by_default: bool,
+    pub use_tpm_185_by_default: bool,
+    #[bits(56)]
     pub _reserved2: u64,
 }
 

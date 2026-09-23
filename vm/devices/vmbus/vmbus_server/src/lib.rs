@@ -139,6 +139,8 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     max_restore_version: Option<MaxVersionInfo>,
     enable_mnf: bool,
     force_confidential_external_memory: bool,
+    support_gpa_pinning: bool,
+    force_gpa_pinning: bool,
     send_messages_while_stopped: bool,
     channel_unstick_delay: Option<Duration>,
     use_absolute_channel_order: bool,
@@ -311,6 +313,8 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             max_restore_version: None,
             enable_mnf: false,
             force_confidential_external_memory: false,
+            support_gpa_pinning: false,
+            force_gpa_pinning: false,
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
             use_absolute_channel_order: false,
@@ -429,6 +433,19 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         self
     }
 
+    /// Indicates the current VM environment supports GPA pinning so the relevant feature flag can
+    /// be used.
+    pub fn support_gpa_pinning(mut self, support: bool) -> Self {
+        self.support_gpa_pinning = support;
+        self
+    }
+
+    /// Force all channels to use pinned GPA ranges. Used for testing purposes only.
+    pub fn force_gpa_pinning(mut self, force: bool) -> Self {
+        self.force_gpa_pinning = force;
+        self
+    }
+
     /// Send messages to the partition even while stopped, which can cause
     /// corrupted synic states across VM reset.
     ///
@@ -521,6 +538,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             send: offer_send,
             use_event: self.synic.prefer_os_events(),
             force_confidential_external_memory: self.force_confidential_external_memory,
+            force_gpa_pinning: self.force_gpa_pinning,
         });
 
         let mut server = channels::Server::new(
@@ -528,6 +546,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             connection_id,
             self.channel_id_offset,
             self.use_absolute_channel_order,
+            self.support_gpa_pinning,
         );
 
         // If MNF is handled by this server and this is a paravisor for an isolated VM, the monitor
@@ -698,13 +717,6 @@ impl VmbusServer {
     fn get_child_event_port_id(channel_id: protocol::ChannelId, sint_index: u8, vtl: Vtl) -> u32 {
         EVENT_PORT_ID | (vtl as u32) << 22 | channel_id.0 << 8 | (sint_index as u32) << 4
     }
-}
-
-#[derive(mesh::MeshPayload)]
-pub struct RestoreInfo {
-    open_data: Option<OpenData>,
-    gpadls: Vec<(GpadlId, u16, Vec<u64>)>,
-    interrupt: Option<Interrupt>,
 }
 
 #[derive(Default)]
@@ -1986,10 +1998,13 @@ impl ServerTaskInner {
             .get_mut(&offer_id)
             .expect("channel does not exist");
 
-        assert!(
-            channel.reserved_state.message_port.is_some(),
-            "channel is not reserved"
-        );
+        // There may be no message port when attempting to send an OpenResult message for a failed
+        // open that was caused by a failure to create the message port. In that case, there is no
+        // way to send the message, so we return None.
+        if channel.reserved_state.message_port.is_none() {
+            tracelimit::warn_ratelimited!(key = %channel.key, "channel has no reserved message port");
+            return None;
+        }
 
         // On close, the guest may have changed the message target it wants to use for the close
         // response. If so, update the message port.
@@ -2071,12 +2086,25 @@ pub struct VmbusServerControl {
     send: mesh::Sender<OfferRequest>,
     use_event: bool,
     force_confidential_external_memory: bool,
+    force_gpa_pinning: bool,
 }
 
 impl VmbusServerControl {
     /// Offers a channel to the vmbus server, where the flags and user_defined data are already set.
     /// This is used by the relay to forward the host's parameters.
-    pub async fn offer_core(&self, offer_info: OfferInfo) -> anyhow::Result<OfferResources> {
+    pub async fn offer_core(&self, mut offer_info: OfferInfo) -> anyhow::Result<OfferResources> {
+        if self.force_gpa_pinning {
+            tracing::warn!(
+                key = %offer_info.params.key(),
+                "forcing GPA pinning for channel"
+            );
+
+            offer_info
+                .params
+                .flags
+                .set_require_pinned_external_memory(true);
+        }
+
         let flags = offer_info.params.flags;
         self.send
             .call_failable(OfferRequest::Offer, offer_info)
@@ -2166,9 +2194,11 @@ fn gpadl_ring_size(gpadl: &AlignedGpadlView) -> usize {
 /// This allows us to lock a page in a `GuestMemory` that doesn't have a full mapping, but can
 /// create one for a subrange.
 fn lock_page_with_subrange(gm: &GuestMemory, offset: u64) -> anyhow::Result<guestmem::LockedPages> {
-    Ok(gm
-        .lockable_subrange(offset, PAGE_SIZE as u64)?
-        .lock_gpns(false, &[0])?)
+    Ok(gm.lockable_subrange(offset, PAGE_SIZE as u64)?.lock_gpns(
+        guestmem::AccessType::Write,
+        false,
+        &[0],
+    )?)
 }
 
 /// Helper to create a subrange before locking a single page from a gpn.

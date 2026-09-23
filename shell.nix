@@ -19,6 +19,9 @@ let
   mdbook_mermaid = pkgs.callPackage ./nix/mdbook_mermaid.nix { };
   protoc = pkgs.callPackage ./nix/protoc.nix { };
 
+  # Enable this when hcl-dev should be built independently.
+  enableDevKernel = false;
+
   # Helper to get openvmm_deps and uefi_mu_msvm by architecture
   mkBaseDepsForArch = arch: {
     openvmm_deps = pkgs.callPackage ./nix/openvmm_deps.nix { targetArch = arch; };
@@ -81,7 +84,7 @@ let
     let kernelFile = if arch == "x86_64" then "vmlinux" else "Image";
     in "--use-local-deps --custom-openvmm-deps ${baseDeps.openvmm_deps} --custom-uefi=${baseDeps.uefi_mu_msvm}/MSVM.fd --custom-kernel ${kernel}/${kernelFile} --custom-kernel-modules ${kernel}/modules --custom-protoc ${protoc}";
 
-in pkgs.mkShell {
+in pkgs.mkShell ({
   nativeBuildInputs = [
     rust
     mdbook
@@ -117,29 +120,12 @@ in pkgs.mkShell {
     baseDeps = x64BaseDeps;
     kernel = x64KernelCvm;
   };
-  CARGO_BUILD_ARGS_X64_DEVKERN = mkCargoBuildArgs {
-    arch = "x86_64";
-    baseDeps = x64BaseDeps;
-    kernel = x64KernelDev;
-  };
-  CARGO_BUILD_ARGS_X64_CVM_DEVKERN = mkCargoBuildArgs {
-    arch = "x86_64";
-    baseDeps = x64BaseDeps;
-    kernel = x64KernelCvmDev;
-  };
-
   # aarch64 recipe variants
   CARGO_BUILD_ARGS_AARCH64 = mkCargoBuildArgs {
     arch = "aarch64";
     baseDeps = aarch64BaseDeps;
     kernel = aarch64Kernel;
   };
-  CARGO_BUILD_ARGS_AARCH64_DEVKERN = mkCargoBuildArgs {
-    arch = "aarch64";
-    baseDeps = aarch64BaseDeps;
-    kernel = aarch64KernelDev;
-  };
-
   # Expose deps for reference in update-rootfs.py
   OPENVMM_DEPS_X64 = x64BaseDeps.openvmm_deps;
   OPENVMM_DEPS_AARCH64 = aarch64BaseDeps.openvmm_deps;
@@ -150,10 +136,7 @@ in pkgs.mkShell {
   NIX_UEFI_AARCH64 = "${aarch64BaseDeps.uefi_mu_msvm}/MSVM.fd";
   NIX_KERNEL_X64 = "${x64Kernel}";
   NIX_KERNEL_X64_CVM = "${x64KernelCvm}";
-  NIX_KERNEL_X64_DEV = "${x64KernelDev}";
-  NIX_KERNEL_X64_CVM_DEV = "${x64KernelCvmDev}";
   NIX_KERNEL_AARCH64 = "${aarch64Kernel}";
-  NIX_KERNEL_AARCH64_DEV = "${aarch64KernelDev}";
 
   RUST_BACKTRACE = 1;
   SOURCE_DATE_EPOCH = 12345;
@@ -189,4 +172,23 @@ in pkgs.mkShell {
     ''}
     export PATH="$NIX_CC_WRAPPER_DIR:$PATH"
   '';
-}
+} // pkgs.lib.optionalAttrs enableDevKernel {
+  CARGO_BUILD_ARGS_X64_DEVKERN = mkCargoBuildArgs {
+    arch = "x86_64";
+    baseDeps = x64BaseDeps;
+    kernel = x64KernelDev;
+  };
+  CARGO_BUILD_ARGS_X64_CVM_DEVKERN = mkCargoBuildArgs {
+    arch = "x86_64";
+    baseDeps = x64BaseDeps;
+    kernel = x64KernelCvmDev;
+  };
+  CARGO_BUILD_ARGS_AARCH64_DEVKERN = mkCargoBuildArgs {
+    arch = "aarch64";
+    baseDeps = aarch64BaseDeps;
+    kernel = aarch64KernelDev;
+  };
+  NIX_KERNEL_X64_DEV = "${x64KernelDev}";
+  NIX_KERNEL_X64_CVM_DEV = "${x64KernelCvmDev}";
+  NIX_KERNEL_AARCH64_DEV = "${aarch64KernelDev}";
+})

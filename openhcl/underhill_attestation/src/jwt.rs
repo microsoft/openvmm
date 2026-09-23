@@ -53,7 +53,9 @@ pub(crate) enum CertificateChainValidationError {
     #[error("certificate chain is empty")]
     CertChainIsEmpty,
     #[error("failed to get public key from the certificate")]
-    GetPublicKeyFromCertificate(#[source] crypto::rsa::RsaError),
+    GetPublicKeyFromCertificate(#[source] crypto::x509::X509Error),
+    #[error("certificate public key is not an RSA key")]
+    PublicKeyNotRsa,
     #[error("failed to verify the child certificate signature with parent public key")]
     VerifyChildSignatureWithParentPublicKey(#[source] crypto::rsa::RsaError),
     #[error("cert chain validation failed -- signature mismatch")]
@@ -244,7 +246,9 @@ fn validate_cert_chain(
             let parent = &cert_chain[i + 1];
             let public_key = parent
                 .public_key()
-                .map_err(CertificateChainValidationError::GetPublicKeyFromCertificate)?;
+                .map_err(CertificateChainValidationError::GetPublicKeyFromCertificate)?
+                .rsa()
+                .ok_or(CertificateChainValidationError::PublicKeyNotRsa)?;
 
             let verified = child.verify(&public_key).map_err(
                 CertificateChainValidationError::VerifyChildSignatureWithParentPublicKey,
@@ -264,7 +268,9 @@ fn validate_cert_chain(
 
     cert_chain[0]
         .public_key()
-        .map_err(CertificateChainValidationError::GetPublicKeyFromCertificate)
+        .map_err(CertificateChainValidationError::GetPublicKeyFromCertificate)?
+        .rsa()
+        .ok_or(CertificateChainValidationError::PublicKeyNotRsa)
 }
 
 #[cfg(test)]
@@ -400,7 +406,7 @@ mod tests {
             .unwrap();
 
         let cert = crate::test_helpers::generate_x509(&rsa_key);
-        let public = cert.public_key().unwrap();
+        let public = cert.public_key().unwrap().rsa().unwrap();
 
         let verification_succeeded = verify_jwt_signature(
             &JwtAlgorithm::RS256,

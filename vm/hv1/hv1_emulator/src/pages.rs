@@ -113,6 +113,16 @@ impl OverlayPage {
         *self = OverlayPage::Local(new_page);
     }
 
+    /// Releases any mapped guest page and returns the overlay to its initial
+    /// unmapped, zeroed state.
+    ///
+    /// Unlike [`unmap`](Self::unmap), the contents are discarded rather than
+    /// carried into the VMM-owned buffer, since a reset clears them anyway.
+    pub fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
+        self.unlock_prev_gpn(prot_access);
+        *self = Self::default();
+    }
+
     fn unlock_prev_gpn(&mut self, prot_access: &mut dyn VtlProtectAccess) {
         if let Self::Mapped(page) = self {
             prot_access.unlock_overlay_page(page.gpn).unwrap();

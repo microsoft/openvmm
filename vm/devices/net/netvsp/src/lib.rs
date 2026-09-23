@@ -217,7 +217,14 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 .merge(&state.state.stats);
             }
 
-            resp.field("packet_filter", worker.channel.packet_filter);
+            resp.field("packet_filter", worker.channel.packet_filter)
+                .field(
+                    "packet_size",
+                    match worker.channel.packet_size {
+                        PacketSize::V1 => protocol::PACKET_SIZE_V1,
+                        PacketSize::V61 => protocol::PACKET_SIZE_V61,
+                    },
+                );
         }
 
         if let Some(queue_state) = &mut self.queue_state {
@@ -468,12 +475,22 @@ struct NetChannel<T: RingMem> {
 }
 
 // Use an enum to give the compiler more visibility into the packet size.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum PacketSize {
     /// [`protocol::PACKET_SIZE_V1`]
     V1,
     /// [`protocol::PACKET_SIZE_V61`]
     V61,
+}
+
+impl From<Version> for PacketSize {
+    fn from(v: Version) -> Self {
+        if v >= Version::V61 {
+            PacketSize::V61
+        } else {
+            PacketSize::V1
+        }
+    }
 }
 
 /// Buffers used during packet processing.
@@ -1494,6 +1511,14 @@ impl Nic {
             .clone();
         driver.retarget_vp(open_request.open_data.target_vp.unwrap_or_default());
 
+        let packet_size = match &state {
+            WorkerState::Init(Some(init)) => init.version.into(),
+            WorkerState::Ready(ready) | WorkerState::WaitingForCoordinator(Some(ready)) => {
+                ready.buffers.version.into()
+            }
+            WorkerState::Init(None) | WorkerState::WaitingForCoordinator(None) => PacketSize::V1,
+        };
+
         let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)
             .map_err(OpenError::Ring)?;
         let mut queue = Queue::new(raw).map_err(OpenError::Queue)?;
@@ -1511,7 +1536,7 @@ impl Nic {
                 adapter: self.adapter.clone(),
                 queue,
                 gpadl_map: self.resources.gpadl_map.clone(),
-                packet_size: PacketSize::V1,
+                packet_size,
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
@@ -2007,6 +2032,18 @@ impl Nic {
 }
 
 #[derive(Debug, Error)]
+enum MessageComponentError {
+    #[error("header")]
+    Header,
+    #[error("per-packet information")]
+    PerPacketInfo,
+    #[error("message body")]
+    Data,
+    #[error("control message")]
+    Control,
+}
+
+#[derive(Debug, Error)]
 enum WorkerError {
     #[error("packet error")]
     Packet(#[source] PacketError),
@@ -2018,8 +2055,11 @@ enum WorkerError {
     NonRndisPacketAfterPacket(u32),
     #[error("memory access error")]
     Access(#[from] AccessError),
-    #[error("rndis message too small")]
-    RndisMessageTooSmall,
+    #[error("rndis message too small: {0}")]
+    RndisMessageTooSmall(#[source] MessageComponentError),
+    // See https://lkml.org/lkml/2025/5/12/1565 for more information.
+    #[error("rndis headers missing or split across a page")]
+    RndisBadHeaders,
     #[error("unsupported rndis behavior")]
     UnsupportedRndisBehavior,
     #[error("vmbus queue error")]
@@ -2144,7 +2184,10 @@ impl Packet<'_> {
 fn read_packet_data<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
     reader: &mut impl MemoryRead,
 ) -> Result<T, PacketError> {
-    reader.read_plain().map_err(PacketError::Access)
+    reader
+        .read_plain()
+        .map_err(PacketError::Access)
+        .inspect_err(|_| tracelimit::info_ratelimited!("read_packet_data"))
 }
 
 fn parse_packet<'a, T: RingMem>(
@@ -2163,8 +2206,15 @@ fn parse_packet<'a, T: RingMem>(
                 PacketData::SwitchDataPathCompletion
             } else {
                 let mut reader = completion.reader();
-                let header: protocol::MessageHeader =
-                    reader.read_plain().map_err(PacketError::Access)?;
+                let header: protocol::MessageHeader = reader
+                    .read_plain()
+                    .map_err(PacketError::Access)
+                    .inspect_err(|_| {
+                        tracelimit::info_ratelimited!(
+                            tx_id = completion.transaction_id(),
+                            "parsing completion header"
+                        )
+                    })?;
                 match header.message_type {
                     protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE => {
                         PacketData::RndisPacketComplete(read_packet_data(&mut reader)?)
@@ -2181,7 +2231,10 @@ fn parse_packet<'a, T: RingMem>(
     };
 
     let mut reader = packet.reader();
-    let header: protocol::MessageHeader = reader.read_plain().map_err(PacketError::Access)?;
+    let header: protocol::MessageHeader = reader
+        .read_plain()
+        .map_err(PacketError::Access)
+        .inspect_err(|_| tracelimit::info_ratelimited!("parsing data packet header"))?;
     let data = match header.message_type {
         protocol::MESSAGE_TYPE_INIT => PacketData::Init(read_packet_data(&mut reader)?),
         protocol::MESSAGE1_TYPE_SEND_NDIS_VERSION if version >= Some(Version::V1) => {
@@ -2456,7 +2509,9 @@ impl<T: RingMem> NetChannel<T> {
         // process the queue as suballocations become available.
         const CONTROL_MESSAGE_MAX_QUEUED_BYTES: usize = 100 * 1024;
         if reader.len() == 0 {
-            return Err(WorkerError::RndisMessageTooSmall);
+            return Err(WorkerError::RndisMessageTooSmall(
+                MessageComponentError::Control,
+            ));
         }
         // Do not let the queue get too large--the guest should not be
         // sending very many control messages at a time.
@@ -2496,7 +2551,9 @@ impl<T: RingMem> NetChannel<T> {
         loop {
             let next_message_offset = message_len
                 .checked_sub(size_of::<rndisprot::MessageHeader>())
-                .ok_or(WorkerError::RndisMessageTooSmall)?;
+                .ok_or(WorkerError::RndisMessageTooSmall(
+                    MessageComponentError::Header,
+                ))?;
 
             self.handle_rndis_packet_message(
                 id,
@@ -2535,7 +2592,7 @@ impl<T: RingMem> NetChannel<T> {
             .into_inner()
             .paged_ranges()
             .next()
-            .ok_or(WorkerError::RndisMessageTooSmall)?;
+            .ok_or(WorkerError::RndisBadHeaders)?;
         let mut data = reader.into_inner();
         let request: rndisprot::Packet = headers.reader(mem).read_plain()?;
         if request.num_oob_data_elements != 0
@@ -2550,7 +2607,9 @@ impl<T: RingMem> NetChannel<T> {
             || (data.len() - request.data_offset as usize) < request.data_length as usize
             || request.data_length == 0
         {
-            return Err(WorkerError::RndisMessageTooSmall);
+            return Err(WorkerError::RndisMessageTooSmall(
+                MessageComponentError::Data,
+            ));
         }
 
         data.skip(request.data_offset as usize);
@@ -2568,18 +2627,26 @@ impl<T: RingMem> NetChannel<T> {
                     request.per_packet_info_offset as usize,
                     request.per_packet_info_length as usize,
                 )
-                .ok_or(WorkerError::RndisMessageTooSmall)?;
+                .ok_or(WorkerError::RndisMessageTooSmall(
+                    MessageComponentError::PerPacketInfo,
+                ))?;
             while !ppi.is_empty() {
                 let h: rndisprot::PerPacketInfo = ppi.reader(mem).read_plain()?;
                 if h.size == 0 {
-                    return Err(WorkerError::RndisMessageTooSmall);
+                    return Err(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::PerPacketInfo,
+                    ));
                 }
-                let (this, rest) = ppi
-                    .try_split(h.size as usize)
-                    .ok_or(WorkerError::RndisMessageTooSmall)?;
+                let (this, rest) =
+                    ppi.try_split(h.size as usize)
+                        .ok_or(WorkerError::RndisMessageTooSmall(
+                            MessageComponentError::PerPacketInfo,
+                        ))?;
                 let (_, d) = this
                     .try_split(h.per_packet_information_offset as usize)
-                    .ok_or(WorkerError::RndisMessageTooSmall)?;
+                    .ok_or(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::PerPacketInfo,
+                    ))?;
                 match h.typ {
                     rndisprot::PPI_TCP_IP_CHECKSUM => {
                         let n: rndisprot::TxTcpIpChecksumInfo = d.reader(mem).read_plain()?;
@@ -3064,7 +3131,9 @@ impl<T: RingMem> NetChannel<T> {
                         size_of::<rndisprot::MessageHeader>()
                             + size_of::<rndisprot::QueryComplete>(),
                     )
-                    .ok_or(WorkerError::RndisMessageTooSmall)?;
+                    .ok_or(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::Header,
+                    ))?;
                 let (status, tx) = match self.adapter.handle_oid_query(
                     buffers,
                     primary,
@@ -4810,6 +4879,8 @@ impl Coordinator {
             self.num_queues = num_queues;
         }
 
+        // Determining packet size before taking mutable borrows
+        let packet_size = state.buffers.version.into();
         self.active_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
         for (((worker, mut queue), rx_buffer), initial) in self
@@ -4838,6 +4909,10 @@ impl Coordinator {
                     ready_state.state.pending_rx_packets.clear();
                     ready_state.reset_tx_after_endpoint_stop();
                 }
+
+                // Ensure we're sending the negotiated packet size.
+                // Guests with less-compatible, older, or more stringent netvsc would drop packets otherwise.
+                worker.channel.packet_size = packet_size;
             }
         }
 
@@ -5232,11 +5307,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         if let Some(version) = version {
                             tracelimit::info_ratelimited!(?version, "network negotiated");
 
-                            if version >= Version::V61 {
-                                // Update the packet size so that the appropriate padding is
-                                // appended for picky Windows guests.
-                                self.packet_size = PacketSize::V61;
-                            }
+                            // Ensure packet size is set appropriately for the protocol version.
+                            self.packet_size = version.into();
+
                             *initializing = Some(InitState {
                                 version,
                                 ndis_config: None,

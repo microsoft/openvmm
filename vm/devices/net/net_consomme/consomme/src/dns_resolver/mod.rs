@@ -13,6 +13,14 @@ use std::task::Poll;
 use crate::DropReason;
 
 pub mod dns_tcp;
+mod static_records;
+
+pub(crate) use static_records::MAX_DNS_UDP_RESPONSE_LEN;
+pub use static_records::StaticDnsRecord;
+pub use static_records::StaticDnsRecordError;
+use static_records::StaticDnsRecords;
+#[cfg(test)]
+pub(crate) use static_records::build_query;
 
 #[cfg(unix)]
 mod unix;
@@ -74,7 +82,9 @@ pub(crate) trait DnsBackend: Send + Sync {
 #[derive(Inspect)]
 pub struct DnsResolver<B: DnsBackend = PlatformDnsBackend> {
     #[inspect(skip)]
-    backend: Arc<B>,
+    backend: Option<Arc<B>>,
+    #[inspect(skip)]
+    static_records: StaticDnsRecords,
     /// Channel receiver for UDP DNS responses. Each call to
     /// [`Self::submit_udp_query`] sends the response back through this
     /// channel so that [`Self::poll_udp_response`] can retrieve it.
@@ -100,7 +110,8 @@ impl DnsResolver {
 
         let udp_receiver = Receiver::new();
         Ok(Self {
-            backend: Arc::new(WindowsDnsResolverBackend::new()?),
+            backend: Some(Arc::new(WindowsDnsResolverBackend::new()?)),
+            static_records: StaticDnsRecords::default(),
             udp_receiver,
             pending_requests: 0,
             max_pending_requests,
@@ -118,17 +129,55 @@ impl DnsResolver {
 
         let udp_receiver = Receiver::new();
         Ok(Self {
-            backend: Arc::new(UnixDnsResolverBackend::new()?),
+            backend: Some(Arc::new(UnixDnsResolverBackend::new()?)),
+            static_records: StaticDnsRecords::default(),
             udp_receiver,
             pending_requests: 0,
             max_pending_requests,
             next_query_id: 0,
         })
     }
+
+    pub(crate) fn without_backend(max_pending_requests: usize) -> Self {
+        let udp_receiver = Receiver::new();
+        Self {
+            backend: None,
+            static_records: StaticDnsRecords::default(),
+            udp_receiver,
+            pending_requests: 0,
+            max_pending_requests,
+            next_query_id: 0,
+        }
+    }
 }
 
 impl<B: DnsBackend> DnsResolver<B> {
     // ── Shared ───────────────────────────────────────────────────────
+
+    pub fn is_available(&self) -> bool {
+        self.backend.is_some()
+    }
+
+    /// Returns whether the resolver can answer through its backend or static records.
+    pub fn can_answer_queries(&self) -> bool {
+        self.is_available() || !self.static_records.is_empty()
+    }
+
+    pub(crate) fn should_intercept_static_queries(&self) -> bool {
+        !self.is_available() && !self.static_records.is_empty()
+    }
+
+    pub fn add_static_record(
+        &mut self,
+        record: StaticDnsRecord,
+        name: &str,
+    ) -> Result<(), StaticDnsRecordError> {
+        self.static_records.add(record, name)
+    }
+
+    pub fn build_static_response(&self, query: &[u8], max_len: usize) -> Option<Vec<u8>> {
+        self.static_records.build_response(query, max_len)
+    }
 
     /// Submit a DNS query to the backend with a caller-supplied response
     /// sender.  Returns `true` if accepted, `false` if the pending-request
@@ -139,10 +188,13 @@ impl<B: DnsBackend> DnsResolver<B> {
         response_sender: Sender<DnsResponse>,
     ) -> bool {
         if self.pending_requests < self.max_pending_requests {
+            let Some(backend) = &self.backend else {
+                return false;
+            };
             let query_id = self.next_query_id;
             self.next_query_id += 1;
             self.pending_requests += 1;
-            self.backend.query(request, response_sender, query_id);
+            backend.query(request, response_sender, query_id);
             true
         } else {
             tracelimit::warn_ratelimited!(
@@ -158,9 +210,9 @@ impl<B: DnsBackend> DnsResolver<B> {
     ///
     /// Returns `Ok(None)` when the query was accepted and the response will
     /// arrive via [`Self::poll_udp_response`].  Returns `Ok(Some(response))`
-    /// with a synthetic SERVFAIL when the pending-request limit has been
-    /// reached — the caller should emit this packet immediately rather than
-    /// queuing it, to avoid unbounded memory growth under sustained load.
+    /// with a synthetic SERVFAIL when no backend is available or the
+    /// pending-request limit has been reached — the caller should emit this
+    /// packet immediately rather than queuing it.
     pub fn submit_udp_query(
         &mut self,
         request: &DnsRequest<'_>,
@@ -171,8 +223,8 @@ impl<B: DnsBackend> DnsResolver<B> {
 
         let sender = self.udp_receiver.sender();
         if !self.submit_query(request, sender) {
-            // Rate-limited: return a SERVFAIL directly so the caller can
-            // emit it immediately without going through the async channel.
+            // Return a SERVFAIL directly so the caller can emit it immediately
+            // without going through the async channel.
             return Ok(Some(DnsResponse {
                 flow: request.flow.clone(),
                 response_data: build_servfail_response(request.dns_query),
@@ -221,7 +273,8 @@ impl<B: DnsBackend> DnsResolver<B> {
     pub(crate) fn new_for_test(backend: Arc<B>) -> Self {
         let udp_receiver = Receiver::new();
         Self {
-            backend,
+            backend: Some(backend),
+            static_records: StaticDnsRecords::default(),
             udp_receiver,
             pending_requests: 0,
             max_pending_requests: DEFAULT_MAX_PENDING_DNS_REQUESTS,

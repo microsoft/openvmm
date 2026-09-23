@@ -20,6 +20,7 @@ thiserror.workspace = true
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 pal_async.workspace = true
+storage_tests.workspace = true
 vmgs = { workspace = true, features = ["encryption"] }
 vmgs_broker.workspace = true
 

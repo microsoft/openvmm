@@ -7,11 +7,9 @@ To enter OpenVMM's interactive command mode, launch OpenVMM, and type `ctrl-q`.
 
 You can then type the following commands (followed by return):
 
-```admonish danger title="Disclaimer"
-The following list is not exhaustive and may be out of date.
-
-The most up to date reference is always the code itself. For a full list of
-commands, please invoke the `help` command.
+```admonish note title="Command reference"
+This page summarizes the interactive commands. Enter `help` in the interactive
+console for the commands supported by the running binary.
 ```
 
 * `q` / `quit`: quit the program.
