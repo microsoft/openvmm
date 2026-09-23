@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [features]
 gdb = ["vmm_core/gdb"]
+virt_mshv = ["dep:virt_mshv"]
 
 [dev-dependencies]
 test_with_tracing.workspace = true
@@ -117,6 +118,7 @@ virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+virt_mshv = { workspace = true, optional = true }
 vfio_assigned_device.workspace = true
 vfio_assigned_device_resources.workspace = true
 vmgs_broker = { workspace = true, features = ["encryption"] }

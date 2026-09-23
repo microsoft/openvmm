@@ -151,6 +151,8 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
                         iommufd,
                         iommu_id: "iommu0".into(),
                         bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                        direct_iommu: false,
+                        direct_ats_pasid: false,
                     }
                     .into_resource(),
                 });
@@ -497,6 +499,8 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
                         iommufd,
                         iommu_id: "iommu0".into(),
                         bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                        direct_iommu: false,
+                        direct_ats_pasid: false,
                     }
                     .into_resource(),
                 });
@@ -508,6 +512,8 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
                         iommufd: iommufd2,
                         iommu_id: "iommu0".into(),
                         bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                        direct_iommu: false,
+                        direct_ats_pasid: false,
                     }
                     .into_resource(),
                 });

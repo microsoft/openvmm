@@ -34,6 +34,10 @@ pub struct Config {
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pub pcie_ecam_below_4gb: bool,
     pub pcie_devices: Vec<PcieDeviceConfig>,
+    #[cfg(target_os = "linux")]
+    pub direct_iommus: Vec<String>,
+    #[cfg(target_os = "linux")]
+    pub direct_assigned_devices: Vec<DirectAssignedDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
     pub pcie_generic_initiators: Vec<PcieGenericInitiatorConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
@@ -329,6 +333,13 @@ pub struct PcieDeviceConfig {
     pub resource: Resource<PciDeviceHandleKind>,
 }
 
+/// Identity metadata for a VFIO device using the DIRECT iommufd path.
+#[derive(Debug, MeshPayload, Clone)]
+pub struct DirectAssignedDeviceConfig {
+    pub port_name: String,
+    pub host_pci_id: String,
+}
+
 #[derive(Debug, MeshPayload)]
 pub struct VpciDeviceConfig {
     pub vtl: DeviceVtl,
@@ -404,9 +415,12 @@ pub enum PcieIommuConfig {
     AmdVi,
     /// Arm SMMUv3 for aarch64 guests.
     Smmu {
-        /// Enable HW-accelerated nested translation (iommufd). Requires VFIO
-        /// devices with `iommu=` behind this SMMU.
+        /// Use the Hyper-V-owned guest SMMUv3 path.
         accel: bool,
+        /// Advertise ATS and use the DIRECT ATS/PASID HWPT path.
+        ats: bool,
+        /// SMMUv3 substream/PASID width.
+        ssid_bits: u8,
         /// Output address size (OAS) resolution policy.
         oas: SmmuOas,
     },
