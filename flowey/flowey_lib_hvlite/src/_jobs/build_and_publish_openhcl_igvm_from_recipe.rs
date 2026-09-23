@@ -28,6 +28,8 @@ pub struct OpenhclIgvmBuildParams {
     pub custom_target: Option<CommonTriple>,
     /// Additional features to enable on top of the recipe's defaults.
     pub extra_features: BTreeSet<OpenvmmHclFeature>,
+    /// Append to the measured OpenHCL command line before generating the IGVM.
+    pub extra_command_line: Option<String>,
     /// Whether to use release configuration (release manifests, no gdb, etc.).
     pub release_cfg: bool,
     /// Add the confidential debug flag to the measured OpenHCL command line,
@@ -84,6 +86,7 @@ impl SimpleFlowNode for Node {
                 recipe,
                 custom_target,
                 extra_features,
+                extra_command_line,
                 release_cfg,
                 confidential_debug,
             },
@@ -97,6 +100,7 @@ impl SimpleFlowNode for Node {
                 release_cfg,
                 recipe: OpenhclIgvmRecipeType::WellKnown(recipe.clone()),
                 extra_features: extra_features.clone(),
+                extra_command_line,
                 disable_secure_avic: false,
                 confidential_debug,
                 openhcl_igvm,

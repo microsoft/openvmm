@@ -17,6 +17,7 @@ use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::build_vmfirmwareigvm_dll::VmfirmwareigvmDllOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::common::CommonArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
@@ -57,6 +58,7 @@ define_vmm_tests_built_artifacts!(
     openhcl_standard => OpenhclIgvmOutput,
     openhcl_standard_dev => OpenhclIgvmOutput,
     openhcl_cvm => OpenhclIgvmOutput,
+    vmfirmwareigvm_cvm_x64 => VmfirmwareigvmDllOutput,
     openhcl_linux_direct => OpenhclIgvmOutput,
     tmks => TmksOutput,
     tmk_vmm => TmkVmmOutput,
@@ -232,6 +234,7 @@ impl SimpleFlowNode for Node {
             openhcl_standard,
             openhcl_standard_dev,
             openhcl_cvm,
+            vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct,
             tmks,
             tmk_vmm,
@@ -271,6 +274,7 @@ impl SimpleFlowNode for Node {
                     pipette_linux_musl,
                     guest_test_uefi,
                     openhcl_igvm_files,
+                    vmfirmwareigvm_cvm_x64,
                     tmks,
                     tmk_vmm,
                     tmk_vmm_linux_musl,
@@ -452,6 +456,15 @@ impl SimpleFlowNode for Node {
                     // OK, they should be the same. Fix this when the resolver
                     // can handle multiple different outputs with the same name.
                     fs_err::copy(bin, test_content_dir.join("tmk_vmm"))?;
+                }
+
+                if let Some(vmfirmwareigvm_cvm_x64) = vmfirmwareigvm_cvm_x64 {
+                    fs_err::copy(
+                        rt.read(vmfirmwareigvm_cvm_x64).dll,
+                        test_content_dir.join(
+                            petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64_FILE_NAME,
+                        ),
+                    )?;
                 }
 
                 if let Some(vmgstool) = vmgstool {

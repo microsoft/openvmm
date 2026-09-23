@@ -824,8 +824,6 @@ jobs:
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
         flowey e 11 flowey_core::pipeline::artifact::publish 1
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
       shell: bash
     - name: unpack openvmm-test-linux archives
       run: flowey e 11 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
@@ -833,30 +831,32 @@ jobs:
     - name: unpack openvmm-test-initrd archives
       run: |-
         flowey e 11 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 25
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 2
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 27
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
       shell: bash
     - name: building openhcl initrd
       run: |-
         flowey e 11 flowey_lib_hvlite::build_openhcl_initrd 2
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 32
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35
       shell: bash
     - name: building igvm file
       run: |-
         flowey e 11 flowey_lib_hvlite::run_igvmfilegen 0
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 38
         flowey e 11 flowey_core::pipeline::artifact::publish 2
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37
         flowey e 11 flowey_core::pipeline::artifact::publish 3
       shell: bash
     - name: extract and resolve kernel package
@@ -880,13 +880,16 @@ jobs:
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
       shell: bash
+    - name: extend measured OpenHCL command line
+      run: flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
+      shell: bash
     - name: building igvm file
       run: |-
         flowey e 11 flowey_lib_hvlite::run_igvmfilegen 2
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 25
         flowey e 11 flowey_core::pipeline::artifact::publish 4
-        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
         flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
+        flowey e 11 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
         flowey e 11 flowey_core::pipeline::artifact::publish 5
       shell: bash
     - name: 'validate cache entry: gh-release-download'
@@ -3261,9 +3264,9 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-7,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-8,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -3272,7 +3275,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8/flowey.exe
 
         echo '"debug"' | flowey.exe v 19 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey.exe v 19 '_internal_WORKING_DIR' --is-raw-string update
@@ -3750,9 +3753,9 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-7,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-mi-secure-openhcl-igvm,x64-mi-secure-openhcl-igvm-cvm,x64-mi-secure-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-8,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-mi-secure-openhcl-igvm,x64-mi-secure-openhcl-igvm-cvm,x64-mi-secure-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -3761,7 +3764,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8/flowey.exe
 
         echo '"debug"' | flowey.exe v 20 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey.exe v 20 '_internal_WORKING_DIR' --is-raw-string update
@@ -4046,9 +4049,9 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-7,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-8,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -4057,7 +4060,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8/flowey.exe
 
         echo '"debug"' | flowey.exe v 21 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey.exe v 21 '_internal_WORKING_DIR' --is-raw-string update
@@ -4347,9 +4350,9 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-7,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-8,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -4358,7 +4361,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8/flowey.exe
 
         echo '"debug"' | flowey.exe v 22 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey.exe v 22 '_internal_WORKING_DIR' --is-raw-string update
@@ -4642,15 +4645,16 @@ jobs:
     - job11
     - job2
     - job3
+    - job34
     - job7
     if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-7,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-8,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-openhcl-igvm-cvm,x64-openhcl-igvm-test-linux-direct,x64-tmks,x64-vmfirmwareigvm-cvm,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmgstool-dev,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -4659,7 +4663,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8/flowey.exe
 
         echo '"debug"' | flowey.exe v 23 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey.exe v 23 '_internal_WORKING_DIR' --is-raw-string update
@@ -4675,6 +4679,7 @@ jobs:
         echo "${{ runner.temp }}\\used_artifacts\\x64-openhcl-igvm-cvm" | flowey.exe v 23 'artifact_use_from_x64-openhcl-igvm-cvm' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-openhcl-igvm-test-linux-direct" | flowey.exe v 23 'artifact_use_from_x64-openhcl-igvm-test-linux-direct' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-tmks" | flowey.exe v 23 'artifact_use_from_x64-tmks' --is-raw-string update
+        echo "${{ runner.temp }}\\used_artifacts\\x64-vmfirmwareigvm-cvm" | flowey.exe v 23 'artifact_use_from_x64-vmfirmwareigvm-cvm' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-openvmm" | flowey.exe v 23 'artifact_use_from_x64-windows-openvmm' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-pipette" | flowey.exe v 23 'artifact_use_from_x64-windows-pipette' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-windows-prep_steps" | flowey.exe v 23 'artifact_use_from_x64-windows-prep_steps' --is-raw-string update
@@ -4727,14 +4732,14 @@ jobs:
         EOF
         flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 8
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 9
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 12
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 14
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 15
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 10
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 13
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 15
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 16
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 14
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 3
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 11
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 12
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 4
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 5
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 6
@@ -4742,6 +4747,7 @@ jobs:
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 2
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 0
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 7
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 8
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
@@ -4857,13 +4863,13 @@ jobs:
         flowey.exe e 23 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 4
         flowey.exe e 23 flowey_lib_hvlite::run_cargo_nextest_run 0
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 16
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 17
         flowey.exe e 23 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: generate nextest command
       run: |-
         flowey.exe e 23 flowey_lib_common::gen_cargo_nextest_run_cmd 0
-        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 10
+        flowey.exe e 23 flowey_core::pipeline::artifact::resolve 11
       shell: bash
     - name: install vmm tests deps (windows)
       run: |-
@@ -6822,9 +6828,9 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-7,x64-windows-openvmm,x64-windows-vmm-perf-runner}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-8,x64-windows-openvmm,x64-windows-vmm-perf-runner}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -6833,7 +6839,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8/flowey.exe
 
         echo '"debug"' | flowey.exe v 30 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey.exe v 30 '_internal_WORKING_DIR' --is-raw-string update
@@ -6947,9 +6953,9 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-7,x64-windows-openvmm,x64-windows-vmm-perf-runner}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-8,x64-windows-openvmm,x64-windows-vmm-perf-runner}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -6958,7 +6964,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-7/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-8/flowey.exe
 
         echo '"debug"' | flowey.exe v 31 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey.exe v 31 '_internal_WORKING_DIR' --is-raw-string update
@@ -7207,6 +7213,193 @@ jobs:
     - name: build openvmm in a distribution configuration
       run: flowey e 33 flowey_lib_hvlite::_jobs::check_distro_build 0
       shell: bash
+  job34:
+    name: build vmfirmwareigvm cvm [x64-windows]
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.ImageOverride=win-amd64-v2
+    - JobId=job34-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+    - job0
+    - job11
+    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    steps:
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+        . "$HOME/.cargo/env"
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        rustup show
+      if: runner.os == 'Linux'
+      name: rustup (Linux)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+        ./rustup-init.exe -y --default-toolchain=1.95.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'X64'
+      name: rustup (Windows X64)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
+        ./rustup-init.exe -y --default-toolchain=1.95.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      name: rustup (Windows ARM64)
+      shell: bash
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        path: flowey_bootstrap
+    - name: Build flowey
+      run: |
+        set -x
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+        OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr-release.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: 🌼📦 Download artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: x64-openhcl-igvm-cvm
+        path: ${{ runner.temp }}/used_artifacts/x64-openhcl-igvm-cvm/
+    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
+      shell: bash
+      name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-pr-release.yaml ci checkin-gates --config=pr-release
+      shell: bash
+    - name: 🌼🛫 Initialize job
+      run: |
+        AgentTempDirNormal="${{ runner.temp }}"
+        AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
+
+        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
+
+        echo '"debug"' | flowey.exe v 34 'FLOWEY_LOG' update
+        echo "${{ runner.temp }}/work" | flowey.exe v 34 '_internal_WORKING_DIR' --is-raw-string update
+
+        cat <<'EOF' | flowey.exe v 34 'verbose' update
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        EOF
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-vmfirmwareigvm-cvm"
+        echo "${{ runner.temp }}\\publish_artifacts\\x64-vmfirmwareigvm-cvm" | flowey.exe v 34 'artifact_publish_from_x64-vmfirmwareigvm-cvm' --is-raw-string update
+        echo "${{ runner.temp }}\\used_artifacts\\x64-openhcl-igvm-cvm" | flowey.exe v 34 'artifact_use_from_x64-openhcl-igvm-cvm' --is-raw-string update
+      shell: bash
+    - name: add default cargo home to path
+      run: flowey.exe e 34 flowey_lib_common::install_rust 0
+      shell: bash
+    - name: install Rust
+      run: flowey.exe e 34 flowey_lib_common::install_rust 1
+      shell: bash
+    - name: detect active toolchain
+      run: |-
+        flowey.exe e 34 flowey_lib_common::install_rust 2
+        flowey.exe e 34 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: check if openvmm needs to be cloned
+      run: |-
+        flowey.exe e 34 flowey_lib_common::git_checkout 0
+        flowey.exe v 34 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env github floweyvar1
+        flowey.exe v 34 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__git_checkout__1
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        fetch-depth: '1'
+        path: repo0
+        persist-credentials: ${{ env.floweyvar1 }}
+      name: checkout repo openvmm
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: report cloned repo directories
+      run: |-
+        flowey.exe v 34 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs' --is-raw-string update --env-source github.workspace <<EOF
+        ${{ github.workspace }}
+        EOF
+        flowey.exe e 34 flowey_lib_common::git_checkout 3
+      shell: bash
+    - name: print system info
+      run: |-
+        flowey.exe e 34 flowey_lib_common::system_info 0
+        flowey.exe e 34 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      shell: bash
+    - name: set '-Dwarnings' in .cargo/config.toml
+      run: flowey.exe e 34 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+      shell: bash
+    - name: create gh-release-download cache dir
+      run: flowey.exe e 34 flowey_lib_common::download_gh_release 0
+      shell: bash
+    - name: Pre-processing cache vars
+      run: |-
+        flowey.exe e 34 flowey_lib_common::cache 0
+        flowey.exe v 34 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar2
+        flowey.exe v 34 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar3
+      shell: bash
+    - id: flowey_lib_common__cache__1
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+      with:
+        key: ${{ env.floweyvar2 }}
+        path: ${{ env.floweyvar3 }}
+      name: 'Restore cache: gh-release-download'
+    - name: download artifacts from github releases
+      run: |-
+        flowey.exe v 34 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs' --is-raw-string update --env-source steps.flowey_lib_common__cache__1.outputs.cache-hit <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
+        flowey.exe e 34 flowey_lib_common::cache 2
+        flowey.exe e 34 flowey_lib_common::download_gh_release 1
+      shell: bash
+    - name: unpack protoc
+      run: |-
+        flowey.exe e 34 flowey_lib_common::resolve_protoc 0
+        flowey.exe e 34 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+      shell: bash
+    - name: symlink protoc
+      run: |-
+        flowey.exe e 34 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+        flowey.exe e 34 flowey_core::pipeline::artifact::resolve 0
+        flowey.exe e 34 flowey_lib_hvlite::build_vmfirmwareigvm_dll 0
+      shell: bash
+    - name: determine vmfirmwareigvm_dll env vars
+      run: |-
+        flowey.exe e 34 flowey_lib_hvlite::build_vmfirmwareigvm_dll 1
+        flowey.exe e 34 flowey_lib_hvlite::init_cross_build 0
+        flowey.exe e 34 flowey_lib_hvlite::run_cargo_build 0
+        flowey.exe e 34 flowey_lib_hvlite::run_cargo_build 1
+      shell: bash
+    - name: cargo build vmfirmwareigvm_dll
+      run: |-
+        flowey.exe e 34 flowey_lib_common::run_cargo_build 0
+        flowey.exe e 34 flowey_lib_hvlite::run_cargo_build 2
+        flowey.exe e 34 flowey_lib_hvlite::build_vmfirmwareigvm_dll 2
+        flowey.exe e 34 flowey_core::pipeline::artifact::publish 0
+      shell: bash
+    - name: 'validate cache entry: gh-release-download'
+      run: flowey.exe e 34 flowey_lib_common::cache 3
+      shell: bash
+    - name: 🌼📦 Publish x64-vmfirmwareigvm-cvm
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-vmfirmwareigvm-cvm
+        path: ${{ runner.temp }}/publish_artifacts/x64-vmfirmwareigvm-cvm/
+        include-hidden-files: true
   job4:
     name: build artifacts (not for VMM tests) [aarch64-windows]
     runs-on:
@@ -8335,7 +8528,7 @@ jobs:
     - name: 🌼🥾 Publish bootstrapped flowey
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-7
+        name: _internal-flowey-bootstrap-x86_64-windows-uid-8
         path: ${{ runner.temp }}/bootstrapped-flowey
   job8:
     name: build artifacts (for VMM tests) [aarch64-linux]

@@ -42,6 +42,7 @@ impl SimpleFlowNode for Node {
                     openhcl_standard,
                     openhcl_standard_dev,
                     openhcl_cvm,
+                    vmfirmwareigvm_cvm_x64,
                     openhcl_linux_direct,
                     tmks,
                     tmk_vmm,
@@ -189,6 +190,15 @@ impl SimpleFlowNode for Node {
                 format!("{arch_tag}-openhcl-igvm-cvm"),
                 run_id.clone(),
                 openhcl_cvm,
+            );
+        }
+
+        if let Some(vmfirmwareigvm_cvm_x64) = vmfirmwareigvm_cvm_x64 {
+            download_artifact(
+                ctx,
+                "x64-vmfirmwareigvm-cvm".into(),
+                run_id.clone(),
+                vmfirmwareigvm_cvm_x64,
             );
         }
 

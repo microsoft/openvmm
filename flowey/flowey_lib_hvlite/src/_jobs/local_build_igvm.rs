@@ -258,6 +258,7 @@ impl SimpleFlowNode for Node {
             recipe: OpenhclIgvmRecipeType::LocalOnlyCustom(recipe_details),
             custom_target: None,
             extra_features: BTreeSet::new(),
+            extra_command_line: None,
             disable_secure_avic,
             confidential_debug,
             openhcl_igvm: write_openhcl_igvm,

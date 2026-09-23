@@ -577,6 +577,8 @@ flowey_request! {
         pub custom_target: Option<CommonTriple>,
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
+        /// Append to the measured OpenHCL command line before generating the IGVM.
+        pub extra_command_line: Option<String>,
         pub disable_secure_avic: bool,
         /// Add the confidential debug flag to the measured OpenHCL command
         /// line, enabling confidential diagnostics on CVM builds.
@@ -615,6 +617,7 @@ impl SimpleFlowNode for Node {
             recipe,
             custom_target,
             extra_features,
+            extra_command_line,
             disable_secure_avic,
             confidential_debug,
             openhcl_igvm,
@@ -959,6 +962,23 @@ impl SimpleFlowNode for Node {
             IgvmManifestPath::LocalOnlyCustom(p) => ReadVar::from_static(p),
         };
 
+        let manifest = if let Some(extra_command_line) = extra_command_line {
+            ctx.emit_rust_stepv("extend measured OpenHCL command line", |ctx| {
+                let manifest = manifest.claim(ctx);
+                move |rt| {
+                    let manifest = rt.read(manifest);
+                    let mut config = serde_json::from_slice(&fs_err::read(&manifest)?)
+                        .context("reading IGVM manifest")?;
+                    append_openhcl_command_line(&mut config, &extra_command_line)?;
+                    let path = std::env::current_dir()?.join("igvm-manifest.json");
+                    fs_err::write(&path, serde_json::to_vec_pretty(&config)?)?;
+                    Ok(path)
+                }
+            })
+        } else {
+            manifest
+        };
+
         let igvm = ctx.reqv(|v| crate::run_igvmfilegen::Request {
             igvmfilegen,
             manifest,
@@ -1006,6 +1026,28 @@ impl SimpleFlowNode for Node {
 
         Ok(())
     }
+}
+
+fn append_openhcl_command_line(
+    config: &mut igvmfilegen_config::Config,
+    extra_command_line: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !extra_command_line.trim().is_empty(),
+        "extra OpenHCL command line must not be empty"
+    );
+    let mut found_openhcl = false;
+    for guest in &mut config.guest_configs {
+        if let igvmfilegen_config::Image::Openhcl { command_line, .. } = &mut guest.image {
+            if !command_line.is_empty() {
+                command_line.push(' ');
+            }
+            command_line.push_str(extra_command_line);
+            found_openhcl = true;
+        }
+    }
+    anyhow::ensure!(found_openhcl, "IGVM manifest contains no OpenHCL image");
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1060,5 +1102,87 @@ impl Vtl0KernelResource<VarClaimed> {
         let initrd = rt.read(self.initrd);
         resources.insert(ResourceType::LinuxKernel, kernel);
         resources.insert(ResourceType::LinuxInitrd, initrd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_openhcl_command_line;
+    use igvmfilegen_config::Config;
+    use petri_artifacts_vmm_test::artifacts::vmfw_dll::CVM_X64_BOOT_MARKER;
+    use serde_json::json;
+    use test_with_tracing::test;
+
+    #[test]
+    fn append_vmgs_marker_preserves_manifest() {
+        let mut expected = json!({
+            "guest_arch": "x64",
+            "guest_configs": [
+                {
+                    "guest_svn": 1,
+                    "max_vtl": 2,
+                    "isolation_type": {"snp": {
+                        "shared_gpa_boundary_bits": 46,
+                        "policy": 196639,
+                        "enable_debug": true,
+                        "injection_type": "normal",
+                        "secure_avic": "enabled"
+                    }},
+                    "image": {"openhcl": {
+                        "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
+                        "memory_page_count": 262144,
+                        "memory_page_base": 32768,
+                        "uefi": true
+                    }}
+                },
+                {
+                    "guest_svn": 1,
+                    "max_vtl": 2,
+                    "isolation_type": {"vbs": {"enable_debug": true}},
+                    "image": {"openhcl": {
+                        "command_line": "",
+                        "static_command_line": true,
+                        "memory_page_count": 163840
+                    }}
+                },
+                {
+                    "guest_svn": 1,
+                    "max_vtl": 0,
+                    "isolation_type": "none",
+                    "image": "none"
+                }
+            ]
+        });
+        let mut config: Config = serde_json::from_value(expected.clone()).unwrap();
+        append_openhcl_command_line(&mut config, CVM_X64_BOOT_MARKER).unwrap();
+
+        expected["guest_configs"][0]["image"]["openhcl"]["command_line"] =
+            format!("OPENHCL_CONFIDENTIAL_DEBUG=1 {CVM_X64_BOOT_MARKER}").into();
+        expected["guest_configs"][1]["image"]["openhcl"]["command_line"] =
+            CVM_X64_BOOT_MARKER.into();
+        assert_eq!(serde_json::to_value(config).unwrap(), expected);
+    }
+
+    #[test]
+    fn extra_command_line_requires_openhcl_image() {
+        let mut config = Config {
+            guest_arch: igvmfilegen_config::GuestArch::X64,
+            guest_configs: Vec::new(),
+        };
+        let error = append_openhcl_command_line(&mut config, CVM_X64_BOOT_MARKER).unwrap_err();
+        assert_eq!(error.to_string(), "IGVM manifest contains no OpenHCL image");
+    }
+
+    #[test]
+    fn extra_command_line_must_not_be_empty() {
+        let mut config = Config {
+            guest_arch: igvmfilegen_config::GuestArch::X64,
+            guest_configs: Vec::new(),
+        };
+        let error = append_openhcl_command_line(&mut config, " \t").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "extra OpenHCL command line must not be empty"
+        );
     }
 }

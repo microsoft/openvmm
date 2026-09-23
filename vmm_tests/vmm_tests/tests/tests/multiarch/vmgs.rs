@@ -9,6 +9,10 @@ use petri::ResolvedArtifact;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::vmfw_dll::CVM_X64_BOOT_MARKER;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_NATIVE;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use std::path::Path;
@@ -146,6 +150,71 @@ async fn vmgstool_create<T: PetriVmmBackend>(
     run_vmgstool_verification(vmgstool_path, &vmgs_path, None, &temp_dir).await?;
 
     vm.teardown().await?;
+
+    Ok(())
+}
+
+/// Verifies `copy-igvmfile` by booting OpenHCL from the resulting VMGS.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[VMGSTOOL_NATIVE, LATEST_CVM_X64],
+)]
+async fn vmgstool_copy_igvmfile<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (vmgstool, vmfw_dll): (
+        ResolvedArtifact<impl IsVmgsTool>,
+        ResolvedArtifact<LATEST_CVM_X64>,
+    ),
+) -> Result<(), anyhow::Error> {
+    const VMGS_HEADROOM: u64 = 64 * 1024 * 1024;
+
+    // The DLL bounds the IGVM size; reserve space for metadata and other guest state.
+    let firmware_dll_size = fs_err::metadata(vmfw_dll.get())?.len();
+    let vmgs_capacity = firmware_dll_size
+        .checked_add(VMGS_HEADROOM)
+        .and_then(|size| size.checked_next_multiple_of(1024 * 1024))
+        .ok_or_else(|| anyhow::anyhow!("firmware DLL is too large to size the VMGS"))?;
+    tracing::info!(firmware_dll_size, vmgs_capacity, "sizing VMGS for firmware");
+
+    let temp_dir = tempfile::tempdir()?;
+    let vmgs_path = temp_dir.path().join("test.vmgs");
+    let vmgstool_path = vmgstool.get();
+
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("create")
+        .arg("--filepath")
+        .arg(&vmgs_path)
+        .arg("--file-size")
+        .arg(vmgs_capacity.to_string());
+    run_host_cmd(cmd).await?;
+
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("copy-igvmfile")
+        .arg("--filepath")
+        .arg(&vmgs_path)
+        .arg("--data-path")
+        .arg(vmfw_dll.get())
+        .arg("--resource-code")
+        .arg("SNP");
+    run_host_cmd(cmd).await?;
+
+    let (mut vm, agent) = config
+        .with_openhcl_from_vmgs()
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_persistent_vmgs(&vmgs_path)
+        .run()
+        .await?;
+
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+    let command_line = vtl2_agent.unix_shell().read_file("/proc/cmdline").await?;
+    anyhow::ensure!(
+        command_line
+            .split_ascii_whitespace()
+            .any(|arg| arg == CVM_X64_BOOT_MARKER),
+        "OpenHCL did not boot the VMGS test firmware: missing measured marker {CVM_X64_BOOT_MARKER:?} in {command_line:?}"
+    );
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }

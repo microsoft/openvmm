@@ -2343,6 +2343,7 @@ dependencies = [
  "serde",
  "serde_json",
  "target-lexicon",
+ "test_with_tracing",
  "vmm_test_images",
 ]
 
@@ -2378,12 +2379,14 @@ dependencies = [
  "log",
  "opentmk_disk",
  "paste",
+ "petri_artifacts_vmm_test",
  "powershell_builder",
  "serde",
  "serde_json",
  "sha2",
  "target-lexicon",
  "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "vmm_test_images",
  "which 8.0.0",
