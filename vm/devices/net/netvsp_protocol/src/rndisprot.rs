@@ -4,6 +4,7 @@
 #![expect(dead_code)]
 
 use bitfield_struct::bitfield;
+use net_backend_core::VlanMetadata;
 use open_enum::open_enum;
 use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
@@ -718,6 +719,24 @@ pub struct EthVlanInfo {
     #[bits(12)]
     pub vlan_id: u16,
     _reserved: u16,
+}
+
+impl From<VlanMetadata> for EthVlanInfo {
+    fn from(value: VlanMetadata) -> Self {
+        EthVlanInfo::new()
+            .with_priority(value.priority())
+            .with_drop_eligible_indicator(value.drop_eligible_indicator())
+            .with_vlan_id(value.vlan_id())
+    }
+}
+
+impl From<EthVlanInfo> for VlanMetadata {
+    fn from(value: EthVlanInfo) -> VlanMetadata {
+        VlanMetadata::new()
+            .with_priority(value.priority())
+            .with_drop_eligible_indicator(value.drop_eligible_indicator())
+            .with_vlan_id(value.vlan_id())
+    }
 }
 
 pub const PPI_TCP_IP_CHECKSUM: u32 = 0;

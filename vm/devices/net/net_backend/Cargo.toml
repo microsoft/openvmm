@@ -7,8 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+net_backend_core.workspace = true
 net_backend_resources.workspace = true
-netvsp_protocol.workspace = true
 guestmem.workspace = true
 vm_resource.workspace = true
 memory_range = { workspace = true, features = ["inspect"] }
@@ -20,7 +20,6 @@ pal_async.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-bitfield-struct.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true

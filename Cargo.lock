@@ -5004,7 +5004,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -5012,8 +5011,8 @@ dependencies = [
  "inspect_counters",
  "memory_range",
  "mesh",
+ "net_backend_core",
  "net_backend_resources",
- "netvsp_protocol",
  "pal_async",
  "parking_lot",
  "test_with_tracing",
@@ -5021,6 +5020,13 @@ dependencies = [
  "tracing",
  "vm_resource",
  "vm_topology",
+]
+
+[[package]]
+name = "net_backend_core"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
 ]
 
 [[package]]
@@ -5185,6 +5191,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "inspect",
+ "net_backend_core",
  "open_enum",
  "static_assertions",
  "vmbus_core",

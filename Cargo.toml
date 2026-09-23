@@ -296,6 +296,7 @@ linux_net_bindings = { path = "vm/devices/net/linux_net_bindings" }
 mana_driver = { path = "vm/devices/net/mana_driver" }
 vfio_sys = { path = "vm/devices/user_driver/vfio_sys" }
 net_backend = { path = "vm/devices/net/net_backend" }
+net_backend_core = { path = "vm/devices/net/net_backend_core" }
 net_backend_resources = { path = "vm/devices/net/net_backend_resources" }
 net_consomme = { path = "vm/devices/net/net_consomme" }
 consomme = { path = "vm/devices/net/net_consomme/consomme" }
