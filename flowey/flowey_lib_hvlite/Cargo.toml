@@ -28,6 +28,7 @@ which.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["windows"] }

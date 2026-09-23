@@ -17,6 +17,7 @@ pub mod cca_tests;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod openvmm_source_release;
+pub mod patina_nightly;
 pub mod restore_packages;
 pub mod vmm_perf;
 pub mod vmm_tests_run;
@@ -65,6 +66,7 @@ pub enum OpenvmmPipelinesCi {
     /// Assemble, validate, and draft an OpenVMM source release.
     OpenvmmSourceRelease(openvmm_source_release::OpenvmmSourceReleaseCli),
     BurnIn(burn_in::BurnInCli),
+    PatinaNightly(patina_nightly::PatinaNightlyCli),
 }
 
 impl IntoPipeline for OpenvmmPipelines {
@@ -95,6 +97,7 @@ impl IntoPipeline for OpenvmmPipelines {
                 OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::OpenvmmSourceRelease(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::BurnIn(cmd) => cmd.into_pipeline(pipeline_hint),
+                OpenvmmPipelinesCi::PatinaNightly(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),

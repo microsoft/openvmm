@@ -8,6 +8,16 @@ The OpenVMM PR and CI pipelines will run the full test suite on all supported
 platforms; you'd typically run only the tests relevant to the changes you're
 working on.
 
+## Scheduled Pipelines
+
+The **OpenVMM Burn In** workflow repeatedly runs Windows x64 VMM tests using
+artifacts from a successful CI run on `main` to measure failure frequency.
+
+The **OpenVMM Patina Nightly** workflow runs the CI VMM-test matrix on x64 and
+ARM64 using the latest published `mu_msvm` RELEASE ClangPDB Patina firmware
+for standalone OpenVMM UEFI tests and newly built OpenHCL images. You can also
+start it manually using GitHub Actions' **Run workflow**.
+
 ## Writing VMM Tests
 
 To streamline the process of booting and interacting with VMs during VMM tests, the
