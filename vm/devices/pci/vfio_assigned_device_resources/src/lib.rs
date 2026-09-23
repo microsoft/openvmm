@@ -57,8 +57,10 @@ pub struct VfioCdevDeviceHandle {
     pub bar_addresses: [BarAddressConfig; 6],
     /// Use direct vIOMMU/vDEVICE/HWPT attach for this cdev.
     pub direct_iommu: bool,
-    /// Enable ATS/PASID on the direct HWPT.
-    pub direct_ats_pasid: bool,
+    /// Enable the DIRECT HWPT PASID/SVA path for this device.
+    pub direct_pasid: bool,
+    /// Enable endpoint ATS/ATC on the DIRECT HWPT.
+    pub direct_ats: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for VfioCdevDeviceHandle {

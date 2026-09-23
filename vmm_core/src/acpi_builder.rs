@@ -2093,7 +2093,7 @@ mod test {
     }
 
     #[test]
-    fn test_iort_direct_smmu_ats_identity_and_msi_rmr() {
+    fn test_iort_direct_smmu_pasid_and_ats_modes() {
         use acpi_spec::iort;
 
         let mem = new_mem();
@@ -2116,10 +2116,25 @@ mod test {
         let AcpiArchConfig::Aarch64 { smmu, .. } = &mut builder.arch else {
             unreachable!();
         };
-        smmu[0].ats_supported = true;
         smmu[0].device_stream_ids = vec![0x100, 0x200];
         smmu[0].reserved_iova_ranges = vec![MemoryRange::new(0xEFF6_8000..0xEFF7_8000)];
 
+        let data = builder.build_iort().unwrap();
+        let mut offset = iort::IORT_NODE_OFFSET as usize;
+        let mut pasid_only_rc = None;
+        for _ in 0..u32_at(&data, 36) {
+            if data[offset] == iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX {
+                pasid_only_rc = Some(offset);
+                break;
+            }
+            offset += u16_at(&data, offset + 1) as usize;
+        }
+        assert_eq!(u32_at(&data, pasid_only_rc.unwrap() + 24), 0);
+
+        let AcpiArchConfig::Aarch64 { smmu, .. } = &mut builder.arch else {
+            unreachable!();
+        };
+        smmu[0].ats_supported = true;
         let data = builder.build_iort().unwrap();
         let mut nodes = Vec::new();
         let mut offset = iort::IORT_NODE_OFFSET as usize;

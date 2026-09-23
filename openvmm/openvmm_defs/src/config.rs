@@ -417,7 +417,7 @@ pub enum PcieIommuConfig {
     Smmu {
         /// Use the Hyper-V-owned guest SMMUv3 path.
         accel: bool,
-        /// Advertise ATS and use the DIRECT ATS/PASID HWPT path.
+        /// Advertise ATS and add it to the DIRECT PASID HWPT path.
         ats: bool,
         /// SMMUv3 substream/PASID width.
         ssid_bits: u8,
