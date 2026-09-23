@@ -299,6 +299,11 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             memory_mapper,
             bar_addresses,
             accel_stream,
+            crate::DirectCapabilityMediation {
+                direct: direct_iommu,
+                pasid: direct_pasid,
+                ats: direct_ats,
+            },
         )
         .await?;
 

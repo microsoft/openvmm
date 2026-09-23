@@ -22,7 +22,7 @@ use pcie::PciePortSettings;
 ///
 /// When PASID is enabled, advertise support for up to four TLP prefixes to
 /// work for both switch and root ports.
-fn build_port_settings(port_cfg: &PciePortConfig) -> PciePortSettings {
+fn build_port_settings(port_cfg: &PciePortConfig, inherited_pasid: bool) -> PciePortSettings {
     PciePortSettings {
         acs_capabilities_supported: port_cfg
             .acs_capabilities_supported
@@ -32,13 +32,17 @@ fn build_port_settings(port_cfg: &PciePortConfig) -> PciePortSettings {
                 .with_cache_capable(true)
                 .with_mem_capable(true),
         ),
-        tlp_prefixing_supported: port_cfg.pasid.then_some(MaxEndEndTlpPrefixes::Four),
+        tlp_prefixing_supported: (port_cfg.pasid || inherited_pasid)
+            .then_some(MaxEndEndTlpPrefixes::Four),
     }
 }
 
 /// Converts a manifest port entry into the runtime port definition.
-pub(super) fn build_port_definition(port_cfg: &PciePortConfig) -> GenericPciePortDefinition {
-    let settings = build_port_settings(port_cfg);
+pub(super) fn build_port_definition(
+    port_cfg: &PciePortConfig,
+    inherited_pasid: bool,
+) -> GenericPciePortDefinition {
+    let settings = build_port_settings(port_cfg, inherited_pasid);
 
     GenericPciePortDefinition {
         name: port_cfg.name.as_str().into(),
@@ -129,5 +133,38 @@ mod tests {
     fn rejects_overlapping_ranges_on_same_segment() {
         let rcs = [rc("rc0", 0, 0, 4), rc("rc1", 0, 4, 8)];
         assert!(validate_pcie_root_complexes(&rcs).is_err());
+    }
+
+    #[test]
+    fn combines_explicit_and_inherited_pasid_support() {
+        let mut port = PciePortConfig {
+            name: "rp0".to_string(),
+            devfn: None,
+            hotplug: false,
+            acs_capabilities_supported: None,
+            cxl: false,
+            pasid: false,
+        };
+
+        assert!(
+            build_port_settings(&port, false)
+                .tlp_prefixing_supported
+                .is_none()
+        );
+        assert_eq!(
+            build_port_settings(&port, true)
+                .tlp_prefixing_supported
+                .unwrap()
+                .into_bits(),
+            MaxEndEndTlpPrefixes::Four.into_bits()
+        );
+        port.pasid = true;
+        assert_eq!(
+            build_port_settings(&port, false)
+                .tlp_prefixing_supported
+                .unwrap()
+                .into_bits(),
+            MaxEndEndTlpPrefixes::Four.into_bits()
+        );
     }
 }
