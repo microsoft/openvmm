@@ -85,6 +85,8 @@ pub struct GenericInitiator {
     pub function: u8,
     /// Proximity domain (NUMA node) this initiator is associated with.
     pub vnode: u32,
+    /// Optional coherent-memory aperture to expose in the same proximity domain.
+    pub memory_range: Option<MemoryRange>,
 }
 
 /// Builder to construct a set of [`BuiltAcpiTables`]
@@ -502,6 +504,17 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 )
                 .as_bytes(),
             );
+            if let Some(memory_range) = gi.memory_range {
+                let mut coherent = acpi_spec::srat::SratMemory::new(
+                    memory_range.start(),
+                    memory_range.len(),
+                    gi.vnode,
+                );
+                coherent.flags = (acpi_spec::srat::SratMemoryFlags::ENABLED.0
+                    | acpi_spec::srat::SratMemoryFlags::HOT_PLUGGABLE.0)
+                    .into();
+                srat_extra.extend_from_slice(coherent.as_bytes());
+            }
         }
 
         (f)(&acpi::builder::Table::new_dyn(

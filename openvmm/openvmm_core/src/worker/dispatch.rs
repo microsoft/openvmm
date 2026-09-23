@@ -1093,6 +1093,8 @@ struct GenericInitiatorSource {
     segment: u16,
     /// Proximity domain (NUMA node) the device is a generic initiator for.
     vnode: u32,
+    /// Optional coherent-memory range associated with the device.
+    memory_range: Option<MemoryRange>,
 }
 
 impl InitializedVm {
@@ -2508,6 +2510,7 @@ impl InitializedVm {
                 bus_range: pi.bus_range.clone(),
                 segment: pi.segment,
                 vnode: gi.node,
+                memory_range: gi.memory_range,
             });
         }
 
@@ -3283,6 +3286,7 @@ impl LoadedVmInner {
                     device: 0,
                     function: 0,
                     vnode: s.vnode,
+                    memory_range: s.memory_range,
                 }
             })
             .collect();
