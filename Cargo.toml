@@ -442,6 +442,7 @@ x86emu = { path = "vm/x86/x86emu" }
 # vmcore
 build_rs_guest_arch = { path = "vm/vmcore/build_rs_guest_arch" }
 guestmem = { path = "vm/vmcore/guestmem" }
+guestmem_core = { path = "vm/vmcore/guestmem_core" }
 memory_range = { path = "vm/vmcore/memory_range" }
 save_restore_derive = { path = "vm/vmcore/save_restore_derive" }
 vm_resource = { path = "vm/vmcore/vm_resource" }

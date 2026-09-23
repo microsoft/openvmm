@@ -3223,12 +3223,21 @@ name = "guestmem"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "guestmem_core",
  "inspect",
  "minircu",
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.16",
  "trycopy",
+ "zerocopy",
+]
+
+[[package]]
+name = "guestmem_core"
+version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.16",
  "zerocopy",
 ]
 
@@ -10483,7 +10492,7 @@ name = "vmbus_ring"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "guestmem",
+ "guestmem_core",
  "inspect",
  "safeatomic",
  "thiserror 2.0.16",

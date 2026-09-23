@@ -18,14 +18,12 @@
 
 extern crate alloc;
 
-#[cfg(feature = "guestmem-adapters")]
 pub mod gparange;
 
 pub use pipe_protocol::*;
 pub use protocol::PAGE_SIZE;
 pub use protocol::TransferPageRange;
 
-#[cfg(feature = "guestmem-adapters")]
 use crate::gparange::GpaRange;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -34,14 +32,10 @@ use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
-#[cfg(feature = "guestmem-adapters")]
-use guestmem::AccessError;
-#[cfg(feature = "guestmem-adapters")]
-use guestmem::MemoryRead;
-#[cfg(feature = "guestmem-adapters")]
-use guestmem::MemoryWrite;
-#[cfg(feature = "guestmem-adapters")]
-use guestmem::ranges::PagedRange;
+use guestmem_core::AccessError;
+use guestmem_core::MemoryRead;
+use guestmem_core::MemoryWrite;
+use guestmem_core::ranges::PagedRange;
 use inspect::Inspect;
 use protocol::*;
 use safeatomic::AtomicSliceOps;
@@ -109,8 +103,8 @@ mod protocol {
     pub struct Control<'a>(pub &'a [AtomicU32; CONTROL_WORD_COUNT]);
 
     impl<'a> Control<'a> {
-        #[cfg(feature = "guestmem-adapters")]
-        pub fn from_page(page: &'a guestmem::Page) -> Option<Self> {
+        
+        pub fn from_page(page: &'a guestmem_core::Page) -> Option<Self> {
             let slice = page.as_atomic_slice()?[..CONTROL_WORD_COUNT]
                 .try_into()
                 .unwrap();
@@ -260,7 +254,7 @@ impl RingRange {
     }
 
     /// Retrieves a `MemoryWrite` that allows for writing to the range.
-    #[cfg(feature = "guestmem-adapters")]
+    
     pub fn writer<'a, T: Ring>(&self, ring: &'a T) -> RingRangeWriter<'a, T::Memory> {
         RingRangeWriter {
             start: self.off,
@@ -279,7 +273,7 @@ impl RingRange {
     }
 
     /// Retrieves a `MemoryRead` that allows for writing to the range.
-    #[cfg(feature = "guestmem-adapters")]
+    
     pub fn reader<'a, T: Ring>(&self, ring: &'a T) -> RingRangeReader<'a, T::Memory> {
         RingRangeReader {
             start: self.off,
@@ -300,14 +294,14 @@ impl RingRange {
 }
 
 /// A type implementing `MemoryRead` accessing a `RingRange`.
-#[cfg(feature = "guestmem-adapters")]
+
 pub struct RingRangeReader<'a, T> {
     start: u32,
     end: u32,
     mem: &'a T,
 }
 
-#[cfg(feature = "guestmem-adapters")]
+
 impl<T: RingMem> MemoryRead for RingRangeReader<'_, T> {
     fn read(&mut self, data: &mut [u8]) -> Result<&mut Self, AccessError> {
         if self.len() < data.len() {
@@ -332,14 +326,14 @@ impl<T: RingMem> MemoryRead for RingRangeReader<'_, T> {
 }
 
 /// A type implementing `MemoryWrite` accessing a `RingRange`.
-#[cfg(feature = "guestmem-adapters")]
+
 pub struct RingRangeWriter<'a, T> {
     start: u32,
     end: u32,
     mem: &'a T,
 }
 
-#[cfg(feature = "guestmem-adapters")]
+
 impl<T: RingMem> MemoryWrite for RingRangeWriter<'_, T> {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError> {
         if self.len() < data.len() {
@@ -778,7 +772,7 @@ pub enum OutgoingPacketType<'a> {
     /// A GPA direct packet, which can reference memory outside the ring by address.
     ///
     /// Not supported on the host side of the ring.
-    #[cfg(feature = "guestmem-adapters")]
+    
     GpaDirect(&'a [PagedRange<'a>]),
     /// A transfer page packet, which can reference memory outside the ring by a
     /// buffer ID and a set of offsets into some pre-established buffer
@@ -1141,7 +1135,7 @@ impl<M: RingMem> OutgoingRing<M> {
                 PACKET_FLAG_COMPLETION_REQUESTED,
             ),
             OutgoingPacketType::Completion => (PACKET_TYPE_COMPLETION, DESCRIPTOR_SIZE, 0),
-            #[cfg(feature = "guestmem-adapters")]
+            
             OutgoingPacketType::GpaDirect(ranges) => (
                 PACKET_TYPE_GPA_DIRECT,
                 DESCRIPTOR_SIZE
@@ -1189,7 +1183,7 @@ impl<M: RingMem> OutgoingRing<M> {
         let off = inp as usize;
         self.inner.mem.write_aligned(off, desc.as_bytes());
         match packet.typ {
-            #[cfg(feature = "guestmem-adapters")]
+            
             OutgoingPacketType::GpaDirect(ranges) => {
                 let mut writer = RingRange {
                     off: (off + DESCRIPTOR_SIZE) as u32,
@@ -1266,16 +1260,16 @@ impl<M: RingMem> Inspect for InnerRing<M> {
 /// # Panics
 ///
 /// Panics if control_page is not aligned.
-#[cfg(feature = "guestmem-adapters")]
-pub fn inspect_ring(control_page: &guestmem::Page, response: &mut inspect::Response<'_>) {
+
+pub fn inspect_ring(control_page: &guestmem_core::Page, response: &mut inspect::Response<'_>) {
     let control = Control::from_page(control_page).expect("control page is not aligned");
     response.field("control", control);
 }
 
 /// Returns whether a ring buffer is in a state where the receiving end might
 /// need a signal.
-#[cfg(feature = "guestmem-adapters")]
-pub fn reader_needs_signal(control_page: &guestmem::Page) -> bool {
+
+pub fn reader_needs_signal(control_page: &guestmem_core::Page) -> bool {
     Control::from_page(control_page).is_some_and(|control| {
         control.interrupt_mask().load(Ordering::Relaxed) == 0
             && (control.inp().load(Ordering::Relaxed) != control.outp().load(Ordering::Relaxed))
@@ -1284,8 +1278,8 @@ pub fn reader_needs_signal(control_page: &guestmem::Page) -> bool {
 
 /// Returns whether a ring buffer is in a state where the sending end might need
 /// a signal.
-#[cfg(feature = "guestmem-adapters")]
-pub fn writer_needs_signal(control_page: &guestmem::Page, ring_size: u32) -> bool {
+
+pub fn writer_needs_signal(control_page: &guestmem_core::Page, ring_size: u32) -> bool {
     Control::from_page(control_page).is_some_and(|control| {
         let pending_size = control.pending_send_size().load(Ordering::Relaxed);
         pending_size != 0

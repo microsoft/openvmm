@@ -3,7 +3,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use guestmem::ranges::PagedRange;
+use guestmem_core::ranges::PagedRange;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
