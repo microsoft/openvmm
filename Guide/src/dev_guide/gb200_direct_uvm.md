@@ -111,10 +111,11 @@ FLR while direct ATS is configured and disables ATS before
 `VFIO_DEVICE_RESET`, because physical ATS must not remain enabled while the
 endpoint is reset.
 
-Pause, reset, and final stop retry ATS operations for a bounded interval. Stop
-continues into kernel-quarantined teardown after a failure, while reset skips
-`VFIO_DEVICE_RESET` unless ATS disable is confirmed. Resume aborts the VMM if
-ATS replay still fails after the bounded interval.
+Pause, reset, and final stop retry ATS operations for a bounded interval.
+OpenVMM stops assigned devices before unbinding them from the Hyper-V vIOMMU
+and aborts the VMM if ATS cannot be disabled. Reset skips `VFIO_DEVICE_RESET`
+unless ATS disable is confirmed. Resume aborts the VMM if ATS replay still
+fails after the bounded interval.
 
 Hyper-V currently has no virtual-IOMMU destroy hypercall. OpenVMM therefore
 unbinds every logical device and relies on partition teardown to reclaim the

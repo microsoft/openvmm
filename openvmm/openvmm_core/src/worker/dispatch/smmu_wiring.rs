@@ -30,6 +30,23 @@ fn smmu_backend(accel: bool, direct: bool) -> SmmuBackend {
     }
 }
 
+fn validate_backend_capabilities(
+    accel: bool,
+    direct: bool,
+    ats: bool,
+    ssid_bits: u8,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !direct || accel,
+        "direct assignment requires accelerated translation"
+    );
+    anyhow::ensure!(
+        direct || (!ats && ssid_bits == 0),
+        "ATS and SSID/PASID support require direct assignment"
+    );
+    Ok(())
+}
+
 /// Default advertised OAS (in bits) for an `oas=auto` SMMU.
 ///
 /// This is a fixed sizing policy, not a computed maximum: rather than sizing
@@ -198,11 +215,8 @@ pub(super) fn setup_smmu(
             "SMMU on root complex {}: accelerated translation requires ACPI",
             rc.name
         );
-        anyhow::ensure!(
-            !direct || accel,
-            "SMMU on root complex {}: direct assignment requires accelerated translation",
-            rc.name
-        );
+        validate_backend_capabilities(accel, direct, ats, ssid_bits)
+            .with_context(|| format!("SMMU on root complex {}", rc.name))?;
 
         let oas_bits = match oas {
             openvmm_defs::config::SmmuOas::Auto => DEFAULT_AUTO_OAS_BITS,
@@ -308,7 +322,7 @@ pub(super) fn setup_smmu(
             event_gsiv: smmu.evtq_intid,
             gerr_gsiv: smmu.gerr_intid,
             reserved_iova_ranges,
-            ats_supported: ats,
+            ats_supported: false,
             device_stream_ids: Vec::new(),
         });
     }
@@ -354,6 +368,20 @@ mod tests {
         assert_eq!(smmu_backend(true, true), SmmuBackend::HyperV);
         assert_eq!(smmu_backend(true, false), SmmuBackend::Local);
         assert_eq!(smmu_backend(false, false), SmmuBackend::Local);
+    }
+
+    #[test]
+    fn direct_backend_retains_cuda_ats_capabilities() {
+        validate_backend_capabilities(true, true, true, 14).unwrap();
+        validate_backend_capabilities(true, true, false, 14).unwrap();
+    }
+
+    #[test]
+    fn local_backend_rejects_direct_only_capabilities() {
+        validate_backend_capabilities(true, false, false, 0).unwrap();
+        assert!(validate_backend_capabilities(true, false, true, 14).is_err());
+        assert!(validate_backend_capabilities(true, false, false, 14).is_err());
+        assert!(validate_backend_capabilities(false, true, false, 0).is_err());
     }
 
     #[test]

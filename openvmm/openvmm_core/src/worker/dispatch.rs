@@ -4599,6 +4599,10 @@ impl LoadedVm {
         while let Some(entry) = self.inner.dynamic_vpci_devices.pop() {
             entry.device.remove().await;
         }
+        if self.state_units.is_running() {
+            self.state_units.stop().await;
+            self.running = false;
+        }
         #[cfg(guest_arch = "aarch64")]
         for _ in 0..3 {
             if self.unbind_virtual_iommu_bindings().is_ok() {
@@ -4725,6 +4729,10 @@ impl LoadedVm {
         shared_memory: Option<SharedMemoryBacking>,
         saved_state: SavedState,
     ) -> RestartState {
+        if self.state_units.is_running() {
+            self.state_units.stop().await;
+            self.running = false;
+        }
         #[cfg(guest_arch = "aarch64")]
         for _ in 0..3 {
             if self.unbind_virtual_iommu_bindings().is_ok() {
