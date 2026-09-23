@@ -616,7 +616,7 @@ fn opentmk_efi_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
         MachineArch::Aarch64 => "aarch64-unknown-uefi",
     };
     get_path(
-        format!("target/{target}/debug"),
+        format!("target/{target}/{}", cargo_build_profile()),
         "opentmk.efi",
         MissingCommand::Build {
             package: "opentmk",
