@@ -1,7 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! DOC-TODO
+//! [`GuestMemory`]-backed readers and writers for guest memory ranges.
+//!
+//! The core range descriptors — [`PagedRange`] and [`PagedRanges`] — live in
+//! [`guestmem_core::ranges`] so they can be used from `no_std` contexts. This
+//! module supplies the `std`-only bridge between those descriptors and
+//! [`GuestMemory`].
 
 pub use guestmem_core::ranges::PagedRange;
 pub use guestmem_core::ranges::PagedRanges;
@@ -11,7 +16,24 @@ use super::GuestMemory;
 use super::MemoryRead;
 use super::MemoryWrite;
 
-/// DOC-TODO
+/// Adapter trait attaching a [`GuestMemory`] backing to a range descriptor to
+/// produce byte-oriented readers and writers.
+///
+/// This trait is the extension point that lets [`PagedRange`] and
+/// [`PagedRanges`] — which by themselves are pure address-space descriptors
+/// with no attached memory — be read from or written to. It is implemented for
+/// both range types in this module and is not intended to be implemented by
+/// downstream crates.
+///
+/// The typical call pattern is:
+///
+/// ```ignore
+/// use guestmem::MemoryRead;
+/// use guestmem::ranges::GuestMemoryView;
+///
+/// let mut reader = range.reader(&mem);
+/// let value: MyStruct = reader.read_plain()?;
+/// ```
 pub trait GuestMemoryView<'a> {
     /// The [`MemoryRead`] implementation type
     type Reader: MemoryRead;
