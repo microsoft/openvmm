@@ -3187,14 +3187,22 @@ impl Firmware {
     fn boot_drive(&self) -> Option<Drive> {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
-            Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
-                Some((guest.disk_path(), guest.is_dvd()))
+            Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => Some(Drive::new(
+                Some(Disk::Differencing(guest.disk_path())),
+                guest.is_dvd(),
+            )),
+            Firmware::Uefi {
+                guest: UefiGuest::OpenTmk(guest),
+                ..
             }
-            Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => {
-                guest.disk_path().map(|dp| (dp, false))
-            }
+            | Firmware::OpenhclUefi {
+                guest: UefiGuest::OpenTmk(guest),
+                ..
+            } => Some(Drive::new(Some(Disk::Temporary(guest.image())), false)),
+            Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => guest
+                .disk_path()
+                .map(|disk_path| Drive::new(Some(Disk::Differencing(disk_path)), false)),
         }
-        .map(|(disk_path, is_dvd)| Drive::new(Some(Disk::Differencing(disk_path)), is_dvd))
     }
 
     fn vtl2_settings(&mut self) -> Option<&mut Vtl2Settings> {
@@ -3327,8 +3335,7 @@ impl UefiGuest {
         match self {
             UefiGuest::Vhd(vhd) => Some(vhd.disk_path()),
             UefiGuest::GuestTestUefi(p) => Some(DiskPath::Local(p.get().to_path_buf())),
-            UefiGuest::OpenTmk(g) => Some(DiskPath::Local(g.image().to_path_buf())),
-            UefiGuest::None => None,
+            UefiGuest::OpenTmk(_) | UefiGuest::None => None,
         }
     }
 }
