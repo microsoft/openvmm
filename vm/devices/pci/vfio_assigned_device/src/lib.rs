@@ -33,6 +33,7 @@ use guestmem::MemoryMapper;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use pal_async::timer::PolledTimer;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::capabilities::PciCapability;
 use pci_core::capabilities::msix::MsixEmulator;
@@ -58,6 +59,14 @@ use vmcore::save_restore::SavedStateNotSupported;
 
 const ATS_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const ATS_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Copy, Debug, Default)]
+enum AtsResumeState {
+    #[default]
+    None,
+    Enabled,
+    Unknown,
+}
 
 fn retry_until_timeout<T, E>(
     timeout: Duration,
@@ -265,14 +274,21 @@ pub(crate) struct VfioAssignedPciDevice {
     #[inspect(hex)]
     managed_af_control_offset: Option<u16>,
     kernel_owned_ats: bool,
-    ats_restore_on_start: bool,
+    #[inspect(debug)]
+    ats_resume_state: AtsResumeState,
+    #[inspect(skip)]
+    retry_timer: PolledTimer,
+
+    // Must drop before `binding` so final teardown disables ATS first.
+    #[inspect(skip)]
+    _ats_drop_guard: Option<AtsDropGuard>,
 
     /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
     /// (cdev) fds alive and cleans up on drop.
     binding: manager::VfioBinding,
 }
 
-#[derive(Inspect)]
+#[derive(Clone, Inspect)]
 struct VfioPciDevice {
     /// The VFIO device, used for config space, BAR MMIO, and MSI-X mapping.
     ///
@@ -315,6 +331,60 @@ impl ConfigSpaceRead for VfioPciDevice {
     }
 }
 
+struct AtsDropGuard {
+    pci_id: String,
+    vfio_device: VfioPciDevice,
+    control_offset: u16,
+}
+
+impl Drop for AtsDropGuard {
+    fn drop(&mut self) {
+        if let Err(err) = retry_until_timeout(ATS_RETRY_TIMEOUT, ATS_RETRY_INTERVAL, || {
+            set_ats_enabled(&self.vfio_device, Some(self.control_offset), false)
+        }) {
+            tracing::error!(
+                pci_id = self.pci_id.as_str(),
+                error = err.as_ref() as &dyn std::error::Error,
+                "ATS disable failed during final device teardown; relying on kernel quarantine"
+            );
+        }
+    }
+}
+
+fn ats_enabled(device: &VfioPciDevice, control_offset: Option<u16>) -> anyhow::Result<bool> {
+    let Some(offset) = control_offset else {
+        return Ok(false);
+    };
+
+    let mut control = 0;
+    device.read_config(
+        offset,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut control),
+    )?;
+    Ok(control & 0x8000_0000 != 0)
+}
+
+fn set_ats_enabled(
+    device: &VfioPciDevice,
+    control_offset: Option<u16>,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    let Some(offset) = control_offset else {
+        return Ok(());
+    };
+
+    let value = if enabled { 0x8000_0000 } else { 0 };
+    device.write_config(
+        offset,
+        ByteEnabledDwordWrite::new(value, PciConfigByteEnable::HIGH_WORD),
+    )?;
+    anyhow::ensure!(
+        ats_enabled(device, control_offset)? == enabled,
+        "ATS control readback did not match requested state"
+    );
+    Ok(())
+}
+
 impl VfioPciDevice {
     fn write_config(&self, offset: u16, value: ByteEnabledDwordWrite) -> anyhow::Result<()> {
         let (byte_offset, len) = value.byte_enable().to_byte_offset_len();
@@ -349,6 +419,7 @@ impl VfioAssignedPciDevice {
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
+        retry_timer: PolledTimer,
     ) -> anyhow::Result<Self> {
         let vfio_device = binding
             .group()
@@ -365,6 +436,7 @@ impl VfioAssignedPciDevice {
             bar_addresses,
             None,
             DirectCapabilityMediation::default(),
+            retry_timer,
         )
         .await
     }
@@ -380,6 +452,7 @@ impl VfioAssignedPciDevice {
         bar_addresses: [BarAddressConfig; 6],
         accel_stream: Option<iommufd_nesting::AccelStream>,
         direct_capabilities: DirectCapabilityMediation,
+        retry_timer: PolledTimer,
     ) -> anyhow::Result<Self> {
         Self::from_device(
             device,
@@ -391,6 +464,7 @@ impl VfioAssignedPciDevice {
             bar_addresses,
             accel_stream,
             direct_capabilities,
+            retry_timer,
         )
         .await
     }
@@ -405,6 +479,7 @@ impl VfioAssignedPciDevice {
         bar_addresses: [BarAddressConfig; 6],
         accel_stream: Option<iommufd_nesting::AccelStream>,
         direct_capabilities: DirectCapabilityMediation,
+        retry_timer: PolledTimer,
     ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
@@ -627,6 +702,17 @@ impl VfioAssignedPciDevice {
         let bars = apply_bar_addresses(&pci_id, &bar_flags, &bar_masks, &bar_addresses)?;
         let bar_reset_defaults = bars;
 
+        let kernel_owned_ats = direct_capabilities.direct && direct_capabilities.ats;
+        let ats_drop_guard =
+            kernel_owned_ats
+                .then(|| ats_control_offset)
+                .flatten()
+                .map(|control_offset| AtsDropGuard {
+                    pci_id: pci_id.clone(),
+                    vfio_device: vfio_device.clone(),
+                    control_offset,
+                });
+
         Ok(Self {
             pci_id,
             vfio_device,
@@ -651,8 +737,10 @@ impl VfioAssignedPciDevice {
             ats_control_offset,
             managed_pcie_device_control_offset,
             managed_af_control_offset,
-            kernel_owned_ats: direct_capabilities.direct && direct_capabilities.ats,
-            ats_restore_on_start: false,
+            kernel_owned_ats,
+            ats_resume_state: AtsResumeState::None,
+            retry_timer,
+            _ats_drop_guard: ats_drop_guard,
             binding,
         })
     }
@@ -669,38 +757,11 @@ impl VfioAssignedPciDevice {
     }
 
     fn ats_enabled(&self) -> anyhow::Result<bool> {
-        let Some(offset) = self.ats_control_offset else {
-            return Ok(false);
-        };
-
-        let mut control = 0;
-        self.vfio_device.read_config(
-            offset,
-            ByteEnabledDwordRead::with_all_bytes_enabled(&mut control),
-        )?;
-        Ok(control & 0x8000_0000 != 0)
+        ats_enabled(&self.vfio_device, self.ats_control_offset)
     }
 
     fn set_ats_enabled(&self, enabled: bool) -> anyhow::Result<()> {
-        let Some(offset) = self.ats_control_offset else {
-            return Ok(());
-        };
-
-        let value = if enabled { 0x8000_0000 } else { 0 };
-        self.vfio_device.write_config(
-            offset,
-            ByteEnabledDwordWrite::new(value, PciConfigByteEnable::HIGH_WORD),
-        )?;
-        anyhow::ensure!(
-            self.ats_enabled()? == enabled,
-            "ATS control readback did not match requested state"
-        );
-        Ok(())
-    }
-
-    fn ats_enabled_retry(&self, transition: &str) -> anyhow::Result<bool> {
-        retry_until_timeout(ATS_RETRY_TIMEOUT, ATS_RETRY_INTERVAL, || self.ats_enabled())
-            .with_context(|| format!("failed to read ATS state during {transition}"))
+        set_ats_enabled(&self.vfio_device, self.ats_control_offset, enabled)
     }
 
     fn set_ats_enabled_retry(&self, enabled: bool, transition: &str) -> anyhow::Result<()> {
@@ -713,6 +774,53 @@ impl VfioAssignedPciDevice {
                 if enabled { "enabled" } else { "disabled" }
             )
         })
+    }
+
+    async fn ats_enabled_retry_async(&mut self, transition: &str) -> anyhow::Result<bool> {
+        let start = Instant::now();
+        loop {
+            match self.ats_enabled() {
+                Ok(value) => return Ok(value),
+                Err(err) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= ATS_RETRY_TIMEOUT {
+                        return Err(err).with_context(|| {
+                            format!("failed to read ATS state during {transition}")
+                        });
+                    }
+                    self.retry_timer
+                        .sleep(ATS_RETRY_INTERVAL.min(ATS_RETRY_TIMEOUT - elapsed))
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn set_ats_enabled_retry_async(
+        &mut self,
+        enabled: bool,
+        transition: &str,
+    ) -> anyhow::Result<()> {
+        let start = Instant::now();
+        loop {
+            match self.set_ats_enabled(enabled) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= ATS_RETRY_TIMEOUT {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "failed to set ATS {} during {transition}",
+                                if enabled { "enabled" } else { "disabled" }
+                            )
+                        });
+                    }
+                    self.retry_timer
+                        .sleep(ATS_RETRY_INTERVAL.min(ATS_RETRY_TIMEOUT - elapsed))
+                        .await;
+                }
+            }
+        }
     }
 
     fn write_phys_config(&self, offset: u16, value: ByteEnabledDwordWrite) {
@@ -1517,8 +1625,15 @@ fn write_msix_emulator(emulator: &mut MsixEmulator, offset: u64, data: &[u8]) {
 
 impl ChangeDeviceState for VfioAssignedPciDevice {
     fn start(&mut self) {
-        if !self.ats_restore_on_start {
-            return;
+        match self.ats_resume_state {
+            AtsResumeState::None => return,
+            AtsResumeState::Enabled => {}
+            AtsResumeState::Unknown => {
+                panic!(
+                    "cannot resume VFIO device {} after ATS state became unknown during stop",
+                    self.pci_id
+                );
+            }
         }
 
         if let Err(err) = self.set_ats_enabled_retry(true, "VM resume") {
@@ -1528,15 +1643,15 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             );
         }
 
-        self.ats_restore_on_start = false;
+        self.ats_resume_state = AtsResumeState::None;
     }
 
     async fn stop(&mut self) {
-        match self.ats_enabled_retry("VM stop") {
-            Ok(false) => self.ats_restore_on_start = false,
+        match self.ats_enabled_retry_async("VM stop").await {
+            Ok(false) => self.ats_resume_state = AtsResumeState::None,
             Ok(true) => {
-                self.ats_restore_on_start = true;
-                if let Err(err) = self.set_ats_enabled_retry(false, "VM stop") {
+                self.ats_resume_state = AtsResumeState::Enabled;
+                if let Err(err) = self.set_ats_enabled_retry_async(false, "VM stop").await {
                     tracing::error!(
                         pci_id = self.pci_id.as_str(),
                         error = err.as_ref() as &dyn std::error::Error,
@@ -1550,6 +1665,14 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
                     error = err.as_ref() as &dyn std::error::Error,
                     "ATS state read failed; continuing device stop for kernel quarantine"
                 );
+                self.ats_resume_state = AtsResumeState::Unknown;
+                if let Err(disable_err) = self.set_ats_enabled_retry_async(false, "VM stop").await {
+                    tracing::error!(
+                        pci_id = self.pci_id.as_str(),
+                        error = disable_err.as_ref() as &dyn std::error::Error,
+                        "ATS disable after state read failure also failed; continuing device stop for kernel quarantine"
+                    );
+                }
             }
         }
     }
@@ -1564,12 +1687,13 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         self.update_bar_mappings();
 
         let ats_disabled = if self.kernel_owned_ats {
-            match self.set_ats_enabled_retry(false, "VM reset") {
+            match self.set_ats_enabled_retry_async(false, "VM reset").await {
                 Ok(()) => {
-                    self.ats_restore_on_start = false;
+                    self.ats_resume_state = AtsResumeState::None;
                     true
                 }
                 Err(err) => {
+                    self.ats_resume_state = AtsResumeState::Unknown;
                     tracing::error!(
                         pci_id = self.pci_id.as_str(),
                         error = err.as_ref() as &dyn std::error::Error,
@@ -1607,7 +1731,9 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             managed_pcie_device_control_offset: _,
             managed_af_control_offset: _,
             kernel_owned_ats: _,
-            ats_restore_on_start: _,
+            ats_resume_state: _,
+            retry_timer: _,
+            _ats_drop_guard: _,
             ref mut accel_stream,
             binding: _,
         } = *self;

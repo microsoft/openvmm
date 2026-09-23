@@ -331,7 +331,6 @@ fn root_complex_for_port(
     None
 }
 
-#[cfg(guest_arch = "aarch64")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DirectSmmuCapabilities {
     pasid: bool,
@@ -362,8 +361,8 @@ fn validate_smmu_vfio_mode(smmu: &cli_args::SmmuCli, direct: bool) -> anyhow::Re
         "nonzero SMMU ssid-bits requires VFIO devices to use a --direct-iommu context"
     );
     anyhow::ensure!(
-        !smmu.accel || direct,
-        "an accelerated SMMU requires VFIO devices to use a --direct-iommu context"
+        !direct || smmu.accel,
+        "a VFIO device using --direct-iommu requires an accelerated SMMU"
     );
     Ok(())
 }
@@ -1190,45 +1189,41 @@ async fn vm_config_from_command_line(
             );
         }
 
-        for smmu in opt.smmu.iter().filter(|smmu| smmu.accel) {
-            let has_direct_device = opt.vfio.iter().any(|vfio| {
-                root_complex_for_port(&vfio.port_name, &opt.pcie_root_port, &pcie_switches)
-                    .is_some_and(|rc| rc == smmu.rc_name)
-                    && vfio
-                        .iommu
-                        .as_ref()
-                        .is_some_and(|iommu| direct_iommus.contains(iommu))
-            });
-            anyhow::ensure!(
-                has_direct_device,
-                "--smmu rc={},accel requires a VFIO device on that root complex using a --direct-iommu context",
-                smmu.rc_name
-            );
-        }
+        #[cfg(not(guest_arch = "aarch64"))]
+        anyhow::ensure!(
+            direct_iommus.is_empty(),
+            "--direct-iommu is only supported for aarch64 guests"
+        );
 
         opt.vfio
             .iter()
             .map(|cli_cfg| {
                 let sysfs_path = Path::new("/sys/bus/pci/devices").join(&cli_cfg.pci_id);
+                #[cfg(guest_arch = "aarch64")]
                 let rc_name =
                     root_complex_for_port(&cli_cfg.port_name, &opt.pcie_root_port, &pcie_switches);
-                let smmu = rc_name
-                    .as_deref()
-                    .and_then(|name| opt.smmu.iter().find(|smmu| smmu.rc_name == name));
                 let direct = cli_cfg
                     .iommu
                     .as_ref()
                     .is_some_and(|iommu| direct_iommus.contains(iommu));
-                if let Some(smmu) = smmu {
-                    validate_smmu_vfio_mode(smmu, direct).with_context(|| {
-                        format!(
-                            "VFIO device {} on SMMU root complex {}",
-                            cli_cfg.pci_id,
-                            rc_name.as_deref().unwrap_or("<unknown>")
-                        )
-                    })?;
-                }
-                let direct_capabilities = direct_smmu_capabilities(smmu, direct);
+                #[cfg(guest_arch = "aarch64")]
+                let direct_capabilities = {
+                    let smmu = rc_name
+                        .as_deref()
+                        .and_then(|name| opt.smmu.iter().find(|smmu| smmu.rc_name == name));
+                    if let Some(smmu) = smmu {
+                        validate_smmu_vfio_mode(smmu, direct).with_context(|| {
+                            format!(
+                                "VFIO device {} on SMMU root complex {}",
+                                cli_cfg.pci_id,
+                                rc_name.as_deref().unwrap_or("<unknown>")
+                            )
+                        })?;
+                    }
+                    direct_smmu_capabilities(smmu, direct)
+                };
+                #[cfg(not(guest_arch = "aarch64"))]
+                let direct_capabilities = DirectSmmuCapabilities::default();
 
                 if let Some(iommu_id) = &cli_cfg.iommu {
                     // cdev + iommufd path
@@ -3367,11 +3362,14 @@ mod tests {
 
     #[cfg(guest_arch = "aarch64")]
     #[test]
-    fn accelerated_smmu_requires_direct_vfio() {
+    fn accelerated_smmu_supports_nested_and_direct_vfio() {
         use std::str::FromStr as _;
         let smmu = cli_args::SmmuCli::from_str("rc=rc0,accel").unwrap();
-        assert!(validate_smmu_vfio_mode(&smmu, false).is_err());
+        validate_smmu_vfio_mode(&smmu, false).unwrap();
         validate_smmu_vfio_mode(&smmu, true).unwrap();
+
+        let smmu = cli_args::SmmuCli::from_str("rc=rc0").unwrap();
+        assert!(validate_smmu_vfio_mode(&smmu, true).is_err());
     }
 
     #[cfg(guest_arch = "aarch64")]

@@ -460,11 +460,15 @@ as a generic initiator for a NUMA node:
   --pcie-generic-initiator port=rp0,node=1
 ```
 
-- Syntax: `port=<port_name>,node=<node>`.
+- Syntax:
+  `port=<port_name>,node=<node>[,memory_base=<addr>,memory_length=<size>]`.
 - `port=<port_name>` may be a root port name or a switch downstream port name
   (e.g. `switch0-downstream-1`); it is resolved against the live topology.
 - `node=<node>` is the NUMA node the device is a generic initiator for, and
   should typically be a CPU-less and memory-less node created via `--numa`.
+- `memory_base=<addr>` and `memory_length=<size>` optionally add an enabled,
+  hot-pluggable SRAT memory-affinity range to the same proximity domain. They
+  must be specified together. Decimal and `0x`-prefixed values are accepted.
 
 
 ### Attaching devices to PCIe
@@ -530,9 +534,20 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 # Modern VFIO cdev + iommufd path (Linux >= 6.6):
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 
+# Direct aarch64 vIOMMU/VDEVICE/HWPT path:
+--iommu id=iommu0 --direct-iommu iommu=iommu0 \
+  --smmu rc=rc0,accel,ssid-bits=14 \
+  --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+
 # Pin BAR0 to its physical address for P2P DMA:
 --vfio host=0000:01:00.0,port=rp0,bar0=host
 ```
+
+`--direct-iommu iommu=<id>` selects direct mode for one declared `--iommu`
+context. It requires an aarch64 MSHV backend. Every VFIO device using that
+context must be behind an accelerated SMMU. A direct context cannot be mixed
+with ordinary IOAS devices, and a Hyper-V-backed root complex cannot mix
+direct and non-direct assigned devices.
 
 ### SMMU (aarch64 only)
 
@@ -545,15 +560,20 @@ translation for DMA and MSI addresses. See
 The syntax is a comma-separated key/value list:
 
 ```sh
---smmu rc=<name>[,accel][,oas=auto|N]
+--smmu rc=<name>[,accel][,ats][,ssid-bits=N][,oas=auto|N]
 ```
 
 - `rc=<name>` (required): the PCIe root complex this SMMU covers.
-- `accel` (optional): delegate stage-1 translation to the host IOMMU via
-  iommufd nesting, so VFIO-assigned devices behind this root complex are
-  translated in hardware. Requires ACPI, a nesting-capable host SMMUv3, and
-  that the devices use the `--iommu` cdev path with a single shared context.
-  Without it, assigning a VFIO device behind an SMMU is rejected.
+- `accel` (optional): enable hardware-accelerated translation. Ordinary
+  `--iommu` devices retain the local emulated-SMMU/iommufd-nesting path.
+  Devices using a `--direct-iommu` context instead use the Hyper-V-owned
+  virtual SMMU path. Both modes require ACPI and the VFIO cdev path.
+- `ssid-bits=N` (optional, default `0`): advertise an SSID/PASID width from
+  1 through 20. A nonzero value requires `accel` and direct assignment, and
+  requests PASID ownership from the direct HWPT.
+- `ats` (optional, default off): advertise ATS and mediate guest ATS Control
+  transitions through VFIO. It requires `accel`, a nonzero `ssid-bits`, and a
+  VFIO device using a `--direct-iommu` context.
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
   `auto` (the default) starts at 48 bits, which covers typical configurations.
   Under `accel`, a device attached before VM start changes it to the physical
@@ -577,6 +597,11 @@ The syntax is a comma-separated key/value list:
 # Assign a VFIO device behind an accelerated SMMU
 --smmu rc=rc0,accel --iommu id=iommu0 \
   --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+
+# Assign a direct PASID device and mediate guest-triggered ATS
+--smmu rc=rc0,accel,ats,ssid-bits=14 \
+  --iommu id=iommu0 --direct-iommu iommu=iommu0 \
+  --vfio host=0008:06:00.0,port=rp0,iommu=iommu0
 ```
 
 ### AMD IOMMU (x86_64 only)

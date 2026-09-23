@@ -1415,8 +1415,7 @@ Enable direct VIOMMU/VDEVICE/HWPT attach for a declared --iommu context.
 This only applies to VFIO cdev devices that reference the same iommufd context
 with --vfio ...,iommu=<id>. Legacy VFIO group/container devices are unaffected.
 
-Requires a hypervisor backend that can provide a VM fd (KVM or MSHV) and a
-kernel with the direct iommufd UAPI.
+Requires an aarch64 MSHV backend and a kernel with the direct iommufd UAPI.
 
 Examples:
     --iommu id=iommu0 --direct-iommu iommu=iommu0 \

@@ -10,6 +10,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use membacking::DmaMapperClient;
 use pal_async::task::Spawn as _;
+use pal_async::timer::PolledTimer;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use std::sync::Arc;
@@ -101,6 +102,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             input.dma_target.msi_target(),
             memory_mapper,
             bar_addresses,
+            PolledTimer::new(&input.driver_source.simple()),
         )
         .await?;
 
@@ -304,6 +306,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 pasid: direct_pasid,
                 ats: direct_ats,
             },
+            PolledTimer::new(&input.driver_source.simple()),
         )
         .await?;
 
