@@ -36,6 +36,7 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::GuestMemoryView;
 use guestmem::ranges::PagedRange;
 use guestmem::ranges::PagedRanges;
 use guestmem::ranges::PagedRangesReader;

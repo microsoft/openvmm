@@ -25,6 +25,8 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+pub mod ranges;
+
 /// Effective page size for page-related operations shared with `guestmem`.
 pub const PAGE_SIZE: usize = 4096;
 pub(crate) const PAGE_SIZE64: u64 = 4096;

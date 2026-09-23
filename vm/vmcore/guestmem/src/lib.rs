@@ -9,7 +9,7 @@
 
 pub mod ranges;
 
-use self::ranges::PagedRange;
+use guestmem_core::ranges::PagedRange;
 use inspect::Inspect;
 use pal_event::Event;
 use sparse_mmap::AsMappableRef;
