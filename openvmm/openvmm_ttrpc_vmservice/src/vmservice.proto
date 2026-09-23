@@ -556,6 +556,9 @@ message PciePort {
     optional uint32 devfn = 4;
     // ACS capability bits exposed by this port. Absent => default capabilities.
     optional uint32 acs_capabilities_supported = 5;
+    // Advertise End-to-End TLP Prefix support for downstream PASID use.
+    // Defaults to false. All downstream ports of a switch must agree.
+    bool pasid = 6;
 }
 
 // A PCIe switch: a set of downstream ports, each of which may have its own
@@ -634,6 +637,11 @@ message VMConfig {
     // teardown, including when unused or after their last device is removed,
     // so AddPcieDevice can reference them. No runtime context add/remove.
     repeated IommufdConfig iommufds = 15;
+    // Run without VMBus. Incompatible with VMBus devices and HVSocket.
+    bool disable_vmbus = 16;
+    // Do not expose Hyper-V (HV#1) enlightenments. Requires disable_vmbus.
+    // Unsupported for x86_64 UEFI boot.
+    bool disable_hv = 17;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

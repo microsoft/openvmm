@@ -604,6 +604,49 @@ impl IommufdContexts {
     }
 }
 
+fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !config.disable_hv || config.disable_vmbus,
+        "disable_hv requires disable_vmbus"
+    );
+    anyhow::ensure!(
+        !(config.disable_hv
+            && cfg!(guest_arch = "x86_64")
+            && matches!(
+                config.boot_config,
+                Some(vmservice::vm_config::BootConfig::Uefi(_))
+            )),
+        "disabling Hyper-V enlightenments for UEFI boot is not supported on x86_64"
+    );
+    if config.disable_vmbus {
+        anyhow::ensure!(
+            config.hvsocket_config.is_none(),
+            "HVSocket requires VMBus to be enabled"
+        );
+        if let Some(devices) = &config.devices_config {
+            anyhow::ensure!(
+                devices.scsi_disks.is_empty(),
+                "SCSI disks require VMBus; use PCIe NVMe or virtio-blk instead"
+            );
+            anyhow::ensure!(
+                devices.nic_config.is_empty(),
+                "NICConfig requires VMBus; use PCIe virtio-net instead"
+            );
+            if cfg!(windows) || cfg!(target_os = "macos") {
+                anyhow::ensure!(
+                    devices.virtiofs_config.is_empty()
+                        && devices
+                            .virtio_console
+                            .as_ref()
+                            .is_none_or(|console| console.socket_path.is_empty()),
+                    "legacy virtio-fs and console configuration requires VMBus on this host; use PCIe devices instead"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 enum VmLifecycle {
     Uninitialized,
     Running,
@@ -804,6 +847,8 @@ impl VmService {
             bail!("VM already created");
         }
 
+        validate_platform_config(&req_config)?;
+
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
         // Snapshot the fd registry so tap NIC backends can resolve descriptors
@@ -908,7 +953,8 @@ impl VmService {
                         // VM with no graphics adapter.
                         uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
                         smbios,
-                        enable_vmbus: true,
+                        enable_vmbus: !req_config.disable_vmbus,
+                        enable_hv: !req_config.disable_hv,
                         // Everything below is fixed for now. The proto has no
                         // way to express these yet; fields will be added as
                         // callers need them.
@@ -924,7 +970,6 @@ impl VmService {
                         enable_vpci_boot: false,
                         default_boot_always_attempt: false,
                         force_dma_bounce: false,
-                        enable_hv: true,
                         hibernation_enabled: true,
                         force_firmware_version: false,
                     },
@@ -936,6 +981,9 @@ impl VmService {
 
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if req_config.disable_vmbus {
+            chipset_builder = chipset_builder.without_vmbus();
+        }
         if let Some((base_template, secure_boot_enabled)) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
             // runtime services, so it is required for a UEFI boot. The store is
@@ -1027,7 +1075,7 @@ impl VmService {
                 arch,
             },
             hypervisor: HypervisorConfig {
-                with_hv: true,
+                with_hv: !req_config.disable_hv,
                 ..Default::default()
             },
             #[cfg(windows)]
@@ -1037,7 +1085,7 @@ impl VmService {
             vga_firmware: None,
             vtl2_gfx: false,
             virtio_devices: vec![],
-            vmbus: Some(VmbusConfig::default()),
+            vmbus: (!req_config.disable_vmbus).then(VmbusConfig::default),
             vtl2_vmbus: None,
             vmbus_devices: vec![],
             #[cfg(windows)]
@@ -1161,11 +1209,15 @@ impl VmService {
         }
 
         if let Some(hvsocket_config) = req_config.hvsocket_config {
+            let vmbus = config
+                .vmbus
+                .as_mut()
+                .context("HVSocket requires VMBus to be enabled")?;
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
                 format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
-            config.vmbus.as_mut().unwrap().vsock_listener = Some(listener);
-            config.vmbus.as_mut().unwrap().vsock_path = Some(hvsocket_config.path);
+            vmbus.vsock_listener = Some(listener);
+            vmbus.vsock_path = Some(hvsocket_config.path);
         }
 
         let (send, recv) = mesh::channel();
@@ -1878,6 +1930,7 @@ async fn build_pcie_topology(
                 attached,
                 devfn,
                 acs_capabilities_supported,
+                pasid,
             } = root_port;
             ports.push(PciePortConfig {
                 name: port_name.clone(),
@@ -1889,7 +1942,7 @@ async fn build_pcie_topology(
                     .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                     .transpose()?,
                 cxl: false,
-                pasid: false,
+                pasid,
             });
             if let Some(attached) = attached {
                 walk_pcie_attachment(port_name, attached, &mut switches, &mut pending_devices)?;
@@ -1989,6 +2042,7 @@ fn walk_pcie_attachment(
                     attached,
                     devfn,
                     acs_capabilities_supported,
+                    pasid,
                 } = downstream;
                 ports.push(PciePortConfig {
                     name: downstream_name.clone(),
@@ -2000,7 +2054,7 @@ fn walk_pcie_attachment(
                         .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                         .transpose()?,
                     cxl: false,
-                    pasid: false,
+                    pasid,
                 });
                 if let Some(attached) = attached {
                     children.push((downstream_name, attached));
@@ -2432,6 +2486,66 @@ mod tests {
     use vmservice::vfio_bar_address::Source;
 
     #[test]
+    fn platform_config_flags() {
+        for disable_vmbus in [false, true] {
+            for disable_hv in [false, true] {
+                for boot_config in [
+                    vmservice::vm_config::BootConfig::DirectBoot(Default::default()),
+                    vmservice::vm_config::BootConfig::Uefi(Default::default()),
+                ] {
+                    let is_uefi = matches!(boot_config, vmservice::vm_config::BootConfig::Uefi(_));
+                    let config = vmservice::VmConfig {
+                        disable_vmbus,
+                        disable_hv,
+                        boot_config: Some(boot_config),
+                        ..Default::default()
+                    };
+                    let valid =
+                        !disable_hv || (disable_vmbus && !(is_uefi && cfg!(guest_arch = "x86_64")));
+                    assert_eq!(validate_platform_config(&config).is_ok(), valid);
+                }
+            }
+        }
+        let defaults = vmservice::VmConfig::default();
+        assert!(!defaults.disable_vmbus);
+        assert!(!defaults.disable_hv);
+        assert!(validate_platform_config(&defaults).is_ok());
+    }
+
+    #[test]
+    fn platform_config_rejects_vmbus_devices() {
+        for config in [
+            vmservice::VmConfig {
+                hvsocket_config: Some(Default::default()),
+                ..Default::default()
+            },
+            vmservice::VmConfig {
+                devices_config: Some(vmservice::DevicesConfig {
+                    scsi_disks: vec![Default::default()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            vmservice::VmConfig {
+                devices_config: Some(vmservice::DevicesConfig {
+                    nic_config: vec![Default::default()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ] {
+            assert!(validate_platform_config(&config).is_ok());
+            assert!(
+                validate_platform_config(&vmservice::VmConfig {
+                    disable_vmbus: true,
+                    ..config
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn validate_iommufd_contexts() {
         assert!(IommufdContexts::new(vec![]).unwrap().files.is_empty());
         assert!(
@@ -2581,6 +2695,53 @@ mod tests {
                 assert!(result.is_err());
             } else {
                 assert_eq!(result.unwrap().root_complexes[0].iommu.is_some(), has_iommu);
+            }
+        }
+    }
+
+    #[test]
+    fn pcie_topology_pasid() {
+        for pasid in [None, Some(false), Some(true)] {
+            let mut attached = None;
+            for name in ["nested", "switch", "root"] {
+                let mut port = vmservice::PciePort {
+                    name: name.into(),
+                    attached,
+                    ..Default::default()
+                };
+                if let Some(pasid) = pasid {
+                    port.pasid = pasid;
+                }
+                if name == "root" {
+                    let topology = futures::executor::block_on(build_pcie_topology(
+                        vmservice::PcieTopologyConfig {
+                            root_complexes: vec![vmservice::PcieRootComplex {
+                                name: "rc0".into(),
+                                root_ports: vec![port],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                        &FdRegistry::default(),
+                        &IommufdContexts::default(),
+                    ))
+                    .unwrap();
+                    let expected = pasid.unwrap_or(false);
+                    assert_eq!(topology.root_complexes[0].ports[0].pasid, expected);
+                    assert_eq!(topology.switches.len(), 2);
+                    for switch in topology.switches {
+                        assert_eq!(switch.ports[0].pasid, expected);
+                    }
+                    break;
+                }
+                attached = Some(vmservice::PcieAttachment {
+                    kind: Some(vmservice::pcie_attachment::Kind::Switch(
+                        vmservice::PcieSwitch {
+                            name: format!("{name}-switch"),
+                            downstream_ports: vec![port],
+                        },
+                    )),
+                });
             }
         }
     }

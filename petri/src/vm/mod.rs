@@ -20,6 +20,7 @@ use crate::vtl2_settings::Vtl2LunBuilder;
 use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use async_trait::async_trait;
+use futures::FutureExt as _;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use mesh::CancelContext;
@@ -47,6 +48,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -192,7 +194,12 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     no_vmbus: bool,
     // Disable the hypervisor (HV#1) enlightenments. Implies `no_vmbus`.
     no_hv: bool,
+    // Capture the VM's inspect output on test failure.
+    capture_inspect_on_failure: bool,
 }
+
+/// How long to wait on a single inspect before giving up on it.
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -418,7 +425,7 @@ pub(crate) const PETRI_PCIE_NVME_AGENT_NSID: u32 = 1;
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
     resources: PetriVmResources,
-    runtime: T::VmRuntime,
+    runtime: PetriVmRuntimeGuard<T::VmRuntime>,
     watchdog_tasks: Vec<Task<()>>,
     openhcl_diag_handler: Option<OpenHclDiagHandler>,
 
@@ -428,6 +435,91 @@ pub struct PetriVm<T: PetriVmmBackend> {
     expected_boot_event: Option<FirmwareEvent>,
 
     config: PetriVmRuntimeConfig,
+}
+
+/// Wrapper around the VMM backend's runtime that captures inspect state if the
+/// VM is dropped without being torn down, which is what happens when a test
+/// fails partway through.
+struct PetriVmRuntimeGuard<T: PetriVmRuntime> {
+    runtime: Option<T>,
+    driver: DefaultDriver,
+    log_source: PetriLogSource,
+    capture_inspect_on_drop: bool,
+}
+
+impl<T: PetriVmRuntime> PetriVmRuntimeGuard<T> {
+    fn take_for_teardown(&mut self) -> T {
+        self.runtime.take().expect("runtime has already been taken")
+    }
+}
+
+impl<T: PetriVmRuntime> std::ops::Deref for PetriVmRuntimeGuard<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.runtime
+            .as_ref()
+            .expect("runtime has already been taken")
+    }
+}
+
+impl<T: PetriVmRuntime> std::ops::DerefMut for PetriVmRuntimeGuard<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.runtime
+            .as_mut()
+            .expect("runtime has already been taken")
+    }
+}
+
+impl<T: PetriVmRuntime> Drop for PetriVmRuntimeGuard<T> {
+    fn drop(&mut self) {
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        if !self.capture_inspect_on_drop {
+            return;
+        }
+        let inspector = runtime.inspector();
+        let openhcl_diag_handler = runtime.openhcl_diag();
+        if inspector.is_none() && openhcl_diag_handler.is_none() {
+            return;
+        }
+        let log_source = self.log_source.clone();
+
+        let capture = async move {
+            let vmm = async {
+                if let Some(inspector) = &inspector {
+                    collect_inspect("vmm", inspector.inspect(""), &log_source, "failure").await;
+                }
+            };
+            let openhcl = async {
+                if let Some(diag) = &openhcl_diag_handler {
+                    collect_inspect(
+                        "openhcl",
+                        diag.inspect("", None, None),
+                        &log_source,
+                        "failure",
+                    )
+                    .await;
+                }
+            };
+            futures::future::join(vmm, openhcl).await;
+            drop(runtime);
+        };
+
+        // `SimpleTest::new_async` joins the test body with the task pool, so
+        // the pool keeps polling detached tasks until they complete. This
+        // finishes before the post-test hooks run.
+        self.driver
+            .spawn("petri-inspect-on-drop", async move {
+                // A panic here would propagate out of the task pool and replace
+                // the failure the test is already reporting.
+                if let Err(e) = AssertUnwindSafe(capture).catch_unwind().await {
+                    tracing::error!(?e, "panicked while collecting inspect state");
+                }
+            })
+            .detach();
+    }
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -500,6 +592,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
             no_hv: false,
+            capture_inspect_on_failure: true,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
@@ -583,6 +676,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             vhost_vsock_guest_cid: None,
             no_vmbus: false,
             no_hv: false,
+            capture_inspect_on_failure: false,
         })
     }
 
@@ -1130,8 +1224,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             Self::start_watchdog_tasks(&self.resources, &mut runtime, self.enable_screenshots)?;
 
         let mut vm = PetriVm {
+            runtime: PetriVmRuntimeGuard {
+                runtime: Some(runtime),
+                driver: self.resources.driver.clone(),
+                log_source: self.resources.log_source.clone(),
+                capture_inspect_on_drop: self.capture_inspect_on_failure,
+            },
             resources: self.resources,
-            runtime,
             watchdog_tasks,
             openhcl_diag_handler,
 
@@ -1185,38 +1284,15 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         {
             const TIMEOUT_DURATION_MINUTES: u64 = 10;
             const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60);
-            let log_source = resources.log_source.clone();
-            let inspect_task =
-                |name,
-                 driver: &DefaultDriver,
-                 inspect: std::pin::Pin<Box<dyn Future<Output = _> + Send>>| {
-                    driver.spawn(format!("petri-watchdog-inspect-{name}"), async move {
-                        if CancelContext::new()
-                            .with_timeout(Duration::from_secs(10))
-                            .until_cancelled(save_inspect(name, inspect, &log_source))
-                            .await
-                            .is_err()
-                        {
-                            tracing::warn!(name, "Failed to collect inspect data within timeout");
-                        }
-                    })
-                };
 
+            // The panic unwinds out of the task pool, which drops the VM and
+            // triggers the same inspect capture as any other failure.
             let driver = resources.driver.clone();
-            let vmm_inspector = runtime.inspector();
-            let openhcl_diag_handler = runtime.openhcl_diag();
             tasks.push(resources.driver.spawn("timer-watchdog", async move {
                 PolledTimer::new(&driver).sleep(TIMER_DURATION).await;
-                tracing::warn!("Test timeout reached after {TIMEOUT_DURATION_MINUTES} minutes, collecting diagnostics.");
-                let mut timeout_tasks = Vec::new();
-                if let Some(inspector) = vmm_inspector {
-                    timeout_tasks.push(inspect_task.clone()("vmm", &driver, Box::pin(async move { inspector.inspect("").await })) );
-                }
-                if let Some(openhcl_diag_handler) = openhcl_diag_handler {
-                    timeout_tasks.push(inspect_task("openhcl", &driver, Box::pin(async move { openhcl_diag_handler.inspect("", None, None).await })));
-                }
-                futures::future::join_all(timeout_tasks).await;
-                tracing::error!("Test time out diagnostics collection complete, aborting.");
+                tracing::error!(
+                    "Test timeout reached after {TIMEOUT_DURATION_MINUTES} minutes, aborting."
+                );
                 panic!("Test timed out");
             }));
         }
@@ -1829,9 +1905,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
 impl<T: PetriVmmBackend> PetriVm<T> {
     /// Immediately tear down the VM.
-    pub async fn teardown(self) -> anyhow::Result<()> {
+    pub async fn teardown(mut self) -> anyhow::Result<()> {
         tracing::info!("Tearing down VM...");
-        self.runtime.teardown().await
+        self.runtime.take_for_teardown().teardown().await
     }
 
     /// Wait for the VM to halt, returning the reason for the halt.
@@ -2041,10 +2117,11 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
             tracing::error!("Did not get boot event in required time, resetting...");
             if let Some(inspector) = self.runtime.inspector() {
-                save_inspect(
+                collect_inspect(
                     "vmm",
                     Box::pin(async move { inspector.inspect("").await }),
                     &self.resources.log_source,
+                    "timeout",
                 )
                 .await;
             }
@@ -3540,27 +3617,34 @@ fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {
     }
 }
 
-async fn save_inspect(
-    name: &str,
-    inspect: std::pin::Pin<Box<dyn Future<Output = anyhow::Result<inspect::Node>> + Send>>,
+async fn collect_inspect(
+    name: &'static str,
+    inspect: impl Future<Output = anyhow::Result<inspect::Node>>,
     log_source: &PetriLogSource,
+    prefix: &str,
 ) {
-    tracing::info!("Collecting {name} inspect details.");
-    let node = match inspect.await {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::error!(?e, "Failed to get {name}");
+    let node = match CancelContext::new()
+        .with_timeout(INSPECT_TIMEOUT)
+        .until_cancelled(inspect)
+        .await
+    {
+        Ok(Ok(node)) => node,
+        Ok(Err(e)) => {
+            tracing::warn!(name, ?e, "failed to collect inspect state");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(name, "timed out collecting inspect state");
             return;
         }
     };
+
     if let Err(e) = log_source.write_attachment(
-        &format!("timeout_inspect_{name}.log"),
+        &format!("{prefix}_inspect_{name}.log"),
         format!("{node:#}").as_bytes(),
     ) {
-        tracing::error!(?e, "Failed to save {name} inspect log");
-        return;
+        tracing::error!(name, ?e, "failed to save inspect log");
     }
-    tracing::info!("{name} inspect task finished.");
 }
 
 /// Wrapper for modification functions with stubbed out debug impl
@@ -3701,11 +3785,199 @@ pub(crate) fn petri_disk_cache_dir() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::make_vm_safe_name;
+    use super::*;
     use crate::Drive;
     use crate::VmbusStorageController;
     use crate::VmbusStorageType;
     use crate::Vtl;
+
+    #[derive(Clone, Copy)]
+    enum TestInspectBehavior {
+        Success,
+        Error,
+        Panic,
+    }
+
+    #[derive(Clone)]
+    struct TestInspector(TestInspectBehavior);
+
+    #[async_trait::async_trait]
+    impl PetriVmInspector for TestInspector {
+        async fn inspect(&self, _path: &str) -> anyhow::Result<inspect::Node> {
+            match self.0 {
+                TestInspectBehavior::Success => Ok(inspect::Node::Unevaluated),
+                TestInspectBehavior::Error => anyhow::bail!("inspect failed"),
+                TestInspectBehavior::Panic => panic!("inspect panicked"),
+            }
+        }
+    }
+
+    struct TestFramebuffer;
+
+    #[async_trait::async_trait]
+    impl PetriVmFramebufferAccess for TestFramebuffer {
+        async fn screenshot(
+            &mut self,
+            _image: &mut Vec<u8>,
+        ) -> anyhow::Result<Option<VmScreenshotMeta>> {
+            unreachable!()
+        }
+    }
+
+    struct TestRuntime(TestInspectBehavior);
+
+    #[async_trait::async_trait]
+    impl PetriVmRuntime for TestRuntime {
+        type VmInspector = TestInspector;
+        type VmFramebufferAccess = TestFramebuffer;
+
+        async fn teardown(self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn wait_for_halt(
+            &mut self,
+            _allow_reset: bool,
+        ) -> anyhow::Result<PetriHaltReasonDetail> {
+            unreachable!()
+        }
+
+        async fn wait_for_agent(&mut self, _set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+            unreachable!()
+        }
+
+        fn openhcl_diag(&self) -> Option<OpenHclDiagHandler> {
+            None
+        }
+
+        async fn wait_for_boot_event(
+            &mut self,
+            _timeout: Option<Duration>,
+        ) -> anyhow::Result<Option<FirmwareEvent>> {
+            unreachable!()
+        }
+
+        async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn send_enlightened_shutdown(&mut self, _kind: ShutdownKind) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn restart_openhcl(
+            &mut self,
+            _new_openhcl: &ResolvedArtifact,
+            _flags: OpenHclServicingFlags,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn save_openhcl(
+            &mut self,
+            _new_openhcl: &ResolvedArtifact,
+            _flags: OpenHclServicingFlags,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn update_command_line(&mut self, _command_line: &str) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        fn inspector(&self) -> Option<Self::VmInspector> {
+            Some(TestInspector(self.0))
+        }
+
+        async fn reset(&mut self) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn set_vtl2_settings(&mut self, _settings: &Vtl2Settings) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn set_vmbus_drive(
+            &mut self,
+            _disk: &Drive,
+            _controller_id: &Guid,
+            _controller_location: u32,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+    }
+
+    fn test_runtime_guard(
+        driver: DefaultDriver,
+        log_source: &PetriLogSource,
+        behavior: TestInspectBehavior,
+    ) -> PetriVmRuntimeGuard<TestRuntime> {
+        PetriVmRuntimeGuard {
+            runtime: Some(TestRuntime(behavior)),
+            driver,
+            log_source: log_source.clone(),
+            capture_inspect_on_drop: true,
+        }
+    }
+
+    fn run_failed_test(
+        log_source: &PetriLogSource,
+        behavior: TestInspectBehavior,
+    ) -> anyhow::Result<()> {
+        let pool = pal_async::DefaultPool::new();
+        let driver = pool.driver();
+        drop(test_runtime_guard(driver.clone(), log_source, behavior));
+        drop(driver);
+        pool.run();
+        anyhow::bail!("original test failure")
+    }
+
+    fn inspect_attachment_count(log_source: &PetriLogSource) -> usize {
+        fs_err::read_dir(log_source.output_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("failure_inspect_vmm")
+            })
+            .count()
+    }
+
+    #[test]
+    fn test_runtime_guard_failure_capture() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_source = crate::tracing::try_init_tracing(
+            temp_dir.path(),
+            tracing::level_filters::LevelFilter::DEBUG,
+        )
+        .unwrap();
+
+        let error = run_failed_test(&log_source, TestInspectBehavior::Success).unwrap_err();
+        assert_eq!(error.to_string(), "original test failure");
+        assert_eq!(inspect_attachment_count(&log_source), 1);
+
+        let pool = pal_async::DefaultPool::new();
+        let driver = pool.driver();
+        let mut guard =
+            test_runtime_guard(driver.clone(), &log_source, TestInspectBehavior::Success);
+        let _runtime = guard.take_for_teardown();
+        drop(guard);
+        drop(driver);
+        pool.run();
+        assert_eq!(inspect_attachment_count(&log_source), 1);
+
+        for behavior in [TestInspectBehavior::Error, TestInspectBehavior::Panic] {
+            let error = run_failed_test(&log_source, behavior).unwrap_err();
+            assert_eq!(error.to_string(), "original test failure");
+            assert_eq!(inspect_attachment_count(&log_source), 1);
+        }
+    }
 
     #[test]
     fn test_short_names_unchanged() {
