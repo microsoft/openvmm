@@ -475,14 +475,6 @@ impl MshvPartitionInner {
     }
 }
 
-/// Returns the Hyper-V logical device ID for a PCI function.
-pub fn logical_device_id(segment: u16, bus: u8, device: u8, function: u8) -> u64 {
-    ((segment as u64) << 16)
-        | ((bus as u64) << 8)
-        | (((device & 0x1f) as u64) << 3)
-        | ((function & 0x7) as u64)
-}
-
 impl MshvPartition {
     /// Creates a virtual IOMMU in this partition.
     pub fn create_virtual_iommu(

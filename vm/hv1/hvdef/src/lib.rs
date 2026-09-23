@@ -1328,6 +1328,21 @@ pub mod hypercall {
     use core::ops::RangeInclusive;
     use zerocopy::Unalign;
 
+    /// Computes the Hyper-V logical device ID for a PCI device.
+    ///
+    /// This is the identity used by the root IOMMU direct-attach ABI.
+    pub const fn pci_logical_device_id(
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Option<u64> {
+        if device >= 32 || function >= 8 {
+            return None;
+        }
+        Some((segment as u64) << 16 | (bus as u64) << 8 | (device as u64) << 3 | function as u64)
+    }
+
     /// The hypercall input value.
     #[bitfield(u64)]
     pub struct Control {
@@ -4645,6 +4660,14 @@ pub struct HvX64InterruptControllerState {
 #[cfg(test)]
 mod gb200_viommu_tests {
     use super::hypercall::*;
+
+    #[test]
+    fn pci_logical_device_identity_is_checked() {
+        assert_eq!(pci_logical_device_id(0x0008, 0x06, 0x00, 0), Some(0x8_0600));
+        assert_eq!(pci_logical_device_id(0x0001, 0x7f, 0x1f, 7), Some(0x1_7fff));
+        assert_eq!(pci_logical_device_id(0, 0, 32, 0), None);
+        assert_eq!(pci_logical_device_id(0, 0, 0, 8), None);
+    }
 
     #[test]
     fn generic_viommu_pasid_only_preserves_ssid_and_ats_is_opt_in() {

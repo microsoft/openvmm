@@ -9485,6 +9485,7 @@ dependencies = [
  "async-trait",
  "chipset_device",
  "guestmem",
+ "hvdef",
  "inspect",
  "membacking",
  "memory_range",

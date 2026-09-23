@@ -3924,7 +3924,11 @@ impl LoadedVm {
                 let (segment, bus, device, function) = parse_host_pci_id(&binding.host_pci_id)
                     .with_context(|| format!("invalid host PCI address {}", binding.host_pci_id))?;
                 let logical_device_id =
-                    virt_mshv::logical_device_id(segment, bus, device, function);
+                    hvdef::hypercall::pci_logical_device_id(segment, bus, device, function)
+                        .context("PCI device must be less than 32 and function must be less than 8")
+                        .with_context(|| {
+                            format!("invalid host PCI address {}", binding.host_pci_id)
+                        })?;
                 let (secondary, _) = binding.bus_range.bus_range();
                 let stream_id = guest_requester_id(secondary, 0, 0);
 
