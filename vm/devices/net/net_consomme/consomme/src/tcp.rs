@@ -89,23 +89,31 @@ pub(crate) struct Tcp {
     ready: Arc<ReadyList>,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct ReadyKey {
+    ft: FourTuple,
+    // Distinguishes a replacement connection from stale queue entries and
+    // wakers that still reference the same tuple.
+    generation: u64,
+}
+
 #[derive(Default)]
 struct TimerDeadlines {
-    by_deadline: BTreeMap<TimerInstant, HashSet<FourTuple>>,
-    by_connection: HashMap<FourTuple, TimerInstant>,
+    by_deadline: BTreeMap<TimerInstant, HashSet<ReadyKey>>,
+    by_connection: HashMap<ReadyKey, TimerInstant>,
 }
 
 impl TimerDeadlines {
-    fn update(&mut self, ft: FourTuple, deadline: Option<TimerInstant>) {
-        self.remove(ft);
+    fn update(&mut self, key: ReadyKey, deadline: Option<TimerInstant>) {
+        self.remove(key);
         if let Some(deadline) = deadline {
-            assert!(self.by_connection.insert(ft, deadline).is_none());
-            assert!(self.by_deadline.entry(deadline).or_default().insert(ft));
+            assert!(self.by_connection.insert(key, deadline).is_none());
+            assert!(self.by_deadline.entry(deadline).or_default().insert(key));
         }
     }
 
-    fn remove(&mut self, ft: FourTuple) {
-        let Some(deadline) = self.by_connection.remove(&ft) else {
+    fn remove(&mut self, key: ReadyKey) {
+        let Some(deadline) = self.by_connection.remove(&key) else {
             return;
         };
         let remove_deadline = {
@@ -113,7 +121,7 @@ impl TimerDeadlines {
                 .by_deadline
                 .get_mut(&deadline)
                 .expect("deadline index is inconsistent");
-            assert!(connections.remove(&ft));
+            assert!(connections.remove(&key));
             connections.is_empty()
         };
         if remove_deadline {
@@ -127,17 +135,17 @@ impl TimerDeadlines {
             .map(|(&deadline, _)| deadline)
     }
 
-    fn pop_expired(&mut self, now: TimerInstant) -> Option<FourTuple> {
+    fn pop_expired(&mut self, now: TimerInstant) -> Option<ReadyKey> {
         let (&deadline, connections) = self.by_deadline.first_key_value()?;
         if deadline > now {
             return None;
         }
-        let ft = *connections
+        let key = *connections
             .iter()
             .next()
             .expect("deadline index contains an empty entry");
-        self.remove(ft);
-        Some(ft)
+        self.remove(key);
+        Some(key)
     }
 }
 
@@ -153,73 +161,83 @@ struct ReadyList {
 
 #[derive(Default)]
 struct ReadyInner {
-    queue: VecDeque<FourTuple>,
-    queued: HashSet<FourTuple>,
-    blocked_on_rx: HashSet<FourTuple>,
-    retry_timer_on_rx: HashSet<FourTuple>,
+    queue: VecDeque<ReadyKey>,
+    queued: HashSet<ReadyKey>,
+    blocked_on_rx: HashSet<ReadyKey>,
+    // The active generation for each tuple. Stale entries are discarded when
+    // they are enqueued or drained instead of scanning the queue on removal.
+    current: HashMap<FourTuple, u64>,
+    next_generation: u64,
     outer: Option<Waker>,
 }
 
 impl ReadyList {
+    fn new_key(&self, ft: FourTuple) -> ReadyKey {
+        let mut inner = self.inner.lock();
+        inner.next_generation = inner
+            .next_generation
+            .checked_add(1)
+            .expect("TCP ready generation exhausted");
+        ReadyKey {
+            ft,
+            generation: inner.next_generation,
+        }
+    }
+
+    fn register(&self, key: ReadyKey) {
+        let mut inner = self.inner.lock();
+        assert!(inner.current.insert(key.ft, key.generation).is_none());
+    }
+
+    fn is_current(inner: &ReadyInner, key: ReadyKey) -> bool {
+        inner.current.get(&key.ft) == Some(&key.generation)
+    }
+
     /// Enqueues a connection for polling without waking the outer task. Used
     /// from within a poll cycle, where `poll_tcp` drains the queue regardless.
-    fn enqueue(&self, ft: FourTuple) {
+    fn enqueue(&self, key: ReadyKey) {
         let mut inner = self.inner.lock();
-        if inner.queued.insert(ft) {
-            inner.queue.push_back(ft);
+        if Self::is_current(&inner, key) && inner.queued.insert(key) {
+            inner.queue.push_back(key);
         }
     }
 
     /// Records a connection that could not make progress because the client
     /// had no receive capacity.
-    fn block_on_rx(&self, ft: FourTuple, retry_timer: bool) {
+    fn block_on_rx(&self, key: ReadyKey) {
         let mut inner = self.inner.lock();
-        inner.blocked_on_rx.insert(ft);
-        if retry_timer {
-            inner.retry_timer_on_rx.insert(ft);
+        if Self::is_current(&inner, key) {
+            inner.blocked_on_rx.insert(key);
         }
     }
 
-    fn forget(&self, ft: FourTuple) {
+    fn forget(&self, key: ReadyKey) {
         let mut inner = self.inner.lock();
-        inner.queued.remove(&ft);
-        inner.queue.retain(|queued| *queued != ft);
-        inner.blocked_on_rx.remove(&ft);
-        inner.retry_timer_on_rx.remove(&ft);
+        if Self::is_current(&inner, key) {
+            inner.current.remove(&key.ft);
+        }
+        inner.queued.remove(&key);
+        inner.blocked_on_rx.remove(&key);
     }
 
     /// Re-enqueues connections that were blocked on client receive capacity.
     fn retry_rx_blocked(&self) {
         let mut inner = self.inner.lock();
-        for ft in std::mem::take(&mut inner.blocked_on_rx) {
-            if inner.queued.insert(ft) {
-                inner.queue.push_back(ft);
+        for key in std::mem::take(&mut inner.blocked_on_rx) {
+            if Self::is_current(&inner, key) && inner.queued.insert(key) {
+                inner.queue.push_back(key);
             }
-        }
-    }
-
-    fn take_timer_retry(&self, ft: FourTuple, rx_ready: bool) -> bool {
-        let mut inner = self.inner.lock();
-        if !inner.retry_timer_on_rx.contains(&ft) {
-            return false;
-        }
-        if rx_ready {
-            inner.retry_timer_on_rx.remove(&ft);
-            true
-        } else {
-            inner.blocked_on_rx.insert(ft);
-            false
         }
     }
 
     /// Enqueues a connection and wakes the outer task so a new poll cycle
     /// runs. Used from connection wakers fired by socket or DNS readiness,
     /// which may happen on another thread.
-    fn wake(&self, ft: FourTuple) {
+    fn wake(&self, key: ReadyKey) {
         let outer = {
             let mut inner = self.inner.lock();
-            if inner.queued.insert(ft) {
-                inner.queue.push_back(ft);
+            if Self::is_current(&inner, key) && inner.queued.insert(key) {
+                inner.queue.push_back(key);
                 inner.outer.clone()
             } else {
                 // Already queued, so a poll cycle is already pending to service
@@ -242,18 +260,20 @@ impl ReadyList {
     }
 
     /// Takes the set of connections that need polling this cycle.
-    fn drain(&self) -> VecDeque<FourTuple> {
+    fn drain(&self) -> VecDeque<ReadyKey> {
         let mut inner = self.inner.lock();
         inner.queued.clear();
-        std::mem::take(&mut inner.queue)
+        let mut queue = std::mem::take(&mut inner.queue);
+        queue.retain(|key| Self::is_current(&inner, *key));
+        queue
     }
 
-    /// Builds a [`Waker`] that re-enqueues `ft` when the connection's socket or
-    /// DNS backend signals readiness.
-    fn waker_for(self: &Arc<Self>, ft: FourTuple) -> Waker {
+    /// Builds a [`Waker`] that re-enqueues `key` when the connection's socket
+    /// or DNS backend signals readiness.
+    fn waker_for(self: &Arc<Self>, key: ReadyKey) -> Waker {
         Waker::from(Arc::new(ConnWaker {
             ready: self.clone(),
-            ft,
+            key,
         }))
     }
 }
@@ -262,16 +282,16 @@ impl ReadyList {
 /// `poll_tcp` cycle.
 struct ConnWaker {
     ready: Arc<ReadyList>,
-    ft: FourTuple,
+    key: ReadyKey,
 }
 
 impl Wake for ConnWaker {
     fn wake(self: Arc<Self>) {
-        self.ready.wake(self.ft);
+        self.ready.wake(self.key);
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.ready.wake(self.ft);
+        self.ready.wake(self.key);
     }
 }
 
@@ -458,10 +478,16 @@ struct TcpConnection {
     backend: TcpBackend,
     #[inspect(flatten)]
     inner: TcpConnectionInner,
+    #[inspect(skip)]
+    ready_key: ReadyKey,
     /// Per-connection waker used to re-enqueue this connection when its socket
     /// or DNS backend becomes ready. Created lazily on first poll.
     #[inspect(skip)]
     waker: Option<Waker>,
+    /// The re-armed timer produced by a send attempt that ran out of guest RX
+    /// capacity. A later timer change invalidates this snapshot.
+    #[inspect(skip)]
+    retry_timer_on_rx: Option<RetransmissionTimer>,
 }
 
 #[derive(Inspect)]
@@ -557,7 +583,7 @@ enum TxSynState {
     SynAck,
 }
 
-#[derive(Clone, Copy, Default, Inspect, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Inspect, PartialEq, Eq)]
 enum TxFinState {
     #[default]
     None,
@@ -571,7 +597,7 @@ impl TxFinState {
     }
 }
 
-#[derive(Clone, Copy, Default, Inspect)]
+#[derive(Clone, Copy, Debug, Default, Inspect, PartialEq, Eq)]
 #[inspect(tag = "kind")]
 enum RetransmissionTimer {
     #[default]
@@ -1034,6 +1060,7 @@ impl<T: Client> Access<'_, T> {
 
                         match self.inner.tcp.connections.entry(ft) {
                             hash_map::Entry::Vacant(e) => {
+                                let ready_key = ready.new_key(ft);
                                 let mut sender = Sender {
                                     ft: &ft,
                                     client: self.client,
@@ -1045,6 +1072,7 @@ impl<T: Client> Access<'_, T> {
                                     &mut sender,
                                     socket,
                                     &self.inner.tcp.connection_params,
+                                    ready_key,
                                 ) {
                                     Ok(conn) => conn,
                                     Err(err) => {
@@ -1063,8 +1091,9 @@ impl<T: Client> Access<'_, T> {
                                     "TCP connection established"
                                 );
                                 e.insert(conn);
+                                ready.register(ready_key);
                                 self.inner.tcp.aggregate_stats.connections_accepted.increment();
-                                ready.enqueue(ft);
+                                ready.enqueue(ready_key);
                             }
                             hash_map::Entry::Occupied(_) => {
                                 tracing::warn!(
@@ -1093,20 +1122,23 @@ impl<T: Client> Access<'_, T> {
                 aggregate_stats,
                 ..
             } = tcp;
-            while let Some(ft) = timer_deadlines.pop_expired(now) {
-                let conn = connections
-                    .get_mut(&ft)
-                    .expect("timer deadline references a missing connection");
+            while let Some(key) = timer_deadlines.pop_expired(now) {
+                let Some(conn) = connections
+                    .get_mut(&key.ft)
+                    .filter(|conn| conn.ready_key == key)
+                else {
+                    continue;
+                };
                 let mut sender = Sender {
-                    ft: &ft,
+                    ft: &key.ft,
                     state,
                     client: self.client,
                     rx_blocked: false,
                 };
                 if conn.inner.process_expired_timers(now, &mut sender) {
                     tracing::debug!(
-                        src = %ft.src,
-                        dst = %ft.dst,
+                        src = %key.ft.src,
+                        dst = %key.ft.dst,
                         state = ?conn.inner.state,
                         "TCP connection timer expired, reclaiming connection",
                     );
@@ -1136,13 +1168,14 @@ impl<T: Client> Access<'_, T> {
                             aggregate_stats.record_timeout_close();
                         }
                     }
-                    connections.remove(&ft);
-                    ready.forget(ft);
+                    connections.remove(&key.ft);
+                    ready.forget(key);
                 } else {
                     if sender.rx_blocked {
-                        ready.block_on_rx(ft, true);
+                        conn.record_blocked_timer(conn.inner.retransmission.timer);
+                        ready.block_on_rx(key);
                     }
-                    timer_deadlines.update(ft, conn.inner.next_timer_deadline());
+                    timer_deadlines.update(key, conn.inner.next_timer_deadline());
                 }
             }
         }
@@ -1152,40 +1185,41 @@ impl<T: Client> Access<'_, T> {
         // firing. Each connection is polled with its own waker so a later
         // readiness event re-enqueues just that connection instead of forcing a
         // walk of every connection.
-        for ft in ready.drain() {
+        for key in ready.drain() {
             let super::Consomme {
                 tcp, state, dns, ..
             } = &mut *self.inner;
-            tcp.timer_deadlines.remove(ft);
-            let Some(conn) = tcp.connections.get_mut(&ft) else {
+            tcp.timer_deadlines.remove(key);
+            let Some(conn) = tcp
+                .connections
+                .get_mut(&key.ft)
+                .filter(|conn| conn.ready_key == key)
+            else {
                 continue;
             };
             let conn_waker = conn
                 .waker
-                .get_or_insert_with(|| ready.waker_for(ft))
+                .get_or_insert_with(|| ready.waker_for(key))
                 .clone();
             let mut conn_cx = Context::from_waker(&conn_waker);
             let mut sender = Sender {
-                ft: &ft,
+                ft: &key.ft,
                 state,
                 client: self.client,
                 rx_blocked: false,
             };
-            let retry_timer = ready.take_timer_retry(ft, sender.client.rx_mtu() != 0);
-            if retry_timer {
-                conn.inner.retransmission.retry_now(TimerInstant::now());
-            }
+            let timer_retry_blocked = conn.prepare_timer_retry(sender.client.rx_mtu() != 0);
             let expired_at = conn.inner.next_timer_deadline().and_then(|deadline| {
                 let now = TimerInstant::now();
                 (deadline <= now).then_some(now)
             });
             let timed_out =
                 expired_at.is_some_and(|now| conn.inner.process_expired_timers(now, &mut sender));
-            let timer_rx_blocked = sender.rx_blocked;
+            let blocked_timer = sender.rx_blocked.then_some(conn.inner.retransmission.timer);
             let keep = if timed_out {
                 tracing::debug!(
-                    src = %ft.src,
-                    dst = %ft.dst,
+                    src = %key.ft.src,
+                    dst = %key.ft.dst,
                     state = ?conn.inner.state,
                     "TCP connection timer expired, reclaiming connection",
                 );
@@ -1224,8 +1258,8 @@ impl<T: Client> Access<'_, T> {
                                 .poll_dns_backend(&mut conn_cx, &mut sender, dns_handler, dns)
                         } else {
                             tracelimit::warn_ratelimited!(
-                                src = %ft.src,
-                                dst = %ft.dst,
+                                src = %key.ft.src,
+                                dst = %key.ft.dst,
                                 "DNS TCP connection without an answer source, dropping"
                             );
                             false
@@ -1245,14 +1279,17 @@ impl<T: Client> Access<'_, T> {
                     tcp.aggregate_stats
                         .record_close(conn.inner.last_close_reason);
                 }
-                tcp.connections.remove(&ft);
-                ready.forget(ft);
+                tcp.connections.remove(&key.ft);
+                ready.forget(key);
             } else {
-                if sender.rx_blocked {
-                    ready.block_on_rx(ft, timer_rx_blocked);
+                if sender.rx_blocked || timer_retry_blocked {
+                    if let Some(timer) = blocked_timer {
+                        conn.record_blocked_timer(timer);
+                    }
+                    ready.block_on_rx(key);
                 }
                 tcp.timer_deadlines
-                    .update(ft, conn.inner.next_timer_deadline());
+                    .update(key, conn.inner.next_timer_deadline());
             }
         }
 
@@ -1303,8 +1340,8 @@ impl<T: Client> Access<'_, T> {
                         dst = %ft.dst,
                         "failed to update driver for tcp connection"
                     );
-                    ready.forget(*ft);
-                    timer_deadlines.remove(*ft);
+                    ready.forget(conn.ready_key);
+                    timer_deadlines.remove(conn.ready_key);
                     false
                 }
             }
@@ -1313,8 +1350,8 @@ impl<T: Client> Access<'_, T> {
         // The sockets were rebuilt on a new driver, so any previously
         // registered readiness wakeups are gone. Mark every connection ready so
         // the next poll re-registers each one with the new driver.
-        for ft in self.inner.tcp.connections.keys() {
-            ready.enqueue(*ft);
+        for conn in self.inner.tcp.connections.values() {
+            ready.enqueue(conn.ready_key);
         }
     }
 
@@ -1359,8 +1396,8 @@ impl<T: Client> Access<'_, T> {
                 conn.inner.state == TcpState::TimeWait && tcp.seq_number > conn.inner.rx_seq
             });
         if replace_time_wait && let Some(conn) = self.inner.tcp.connections.remove(&ft) {
-            ready.forget(ft);
-            self.inner.tcp.timer_deadlines.remove(ft);
+            ready.forget(conn.ready_key);
+            self.inner.tcp.timer_deadlines.remove(conn.ready_key);
             if matches!(
                 conn.backend,
                 TcpBackend::Dns(ref handler) if handler.is_in_flight()
@@ -1380,18 +1417,19 @@ impl<T: Client> Access<'_, T> {
             rx_blocked: false,
         };
 
-        let mut mark_ready = false;
+        let mut mark_ready = None;
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
+                let ready_key = e.get().ready_key;
                 let keep = match e.get_mut().inner.handle_packet(&mut sender, &tcp) {
                     Ok(keep) => keep,
                     Err(err) => {
                         self.inner
                             .tcp
                             .timer_deadlines
-                            .update(ft, e.get().inner.next_timer_deadline());
+                            .update(ready_key, e.get().inner.next_timer_deadline());
                         if sender.rx_blocked {
-                            ready.block_on_rx(ft, false);
+                            ready.block_on_rx(ready_key);
                         }
                         return Err(err);
                     }
@@ -1409,7 +1447,7 @@ impl<T: Client> Access<'_, T> {
                     // every guest packet would trigger a zero-payload ACK back,
                     // doubling packet rate and creating an ACK storm.
                     e.get_mut().inner.send_next(&mut sender, AckPolicy::Defer);
-                    mark_ready = true;
+                    mark_ready = Some(ready_key);
                 } else {
                     self.inner
                         .tcp
@@ -1419,9 +1457,9 @@ impl<T: Client> Access<'_, T> {
                         e.get().backend,
                         TcpBackend::Dns(ref h) if h.is_in_flight()
                     );
-                    e.remove();
-                    ready.forget(ft);
-                    self.inner.tcp.timer_deadlines.remove(ft);
+                    let conn = e.remove();
+                    ready.forget(conn.ready_key);
+                    self.inner.tcp.timer_deadlines.remove(conn.ready_key);
                     if dns_in_flight {
                         self.inner.dns.complete_tcp_query();
                     }
@@ -1434,11 +1472,13 @@ impl<T: Client> Access<'_, T> {
                     // This is for an old connection. Send reset.
                     sender.rst(ack, None);
                 } else if tcp.control == TcpControl::Syn {
+                    let ready_key = ready.new_key(ft);
                     let conn = if is_dns_tcp {
                         TcpConnection::new_dns(
                             &mut sender,
                             &tcp,
                             &self.inner.tcp.connection_params,
+                            ready_key,
                         )?
                     } else {
                         // Resolve virtual mapped addresses back to real host
@@ -1476,22 +1516,24 @@ impl<T: Client> Access<'_, T> {
                             &self.inner.tcp.connection_params,
                             is_local_address,
                             inspect_static_dns,
+                            ready_key,
                         )?
                     };
                     e.insert(conn);
+                    ready.register(ready_key);
                     self.inner
                         .tcp
                         .aggregate_stats
                         .connections_initiated
                         .increment();
-                    mark_ready = true;
+                    mark_ready = Some(ready_key);
                 } else {
                     // Ignore the packet.
                 }
             }
         }
-        if mark_ready {
-            ready.enqueue(ft);
+        if let Some(ready_key) = mark_ready {
+            ready.enqueue(ready_key);
         }
         Ok(())
     }
@@ -1689,6 +1731,28 @@ impl<T: Client> Sender<'_, T> {
 }
 
 impl TcpConnection {
+    fn prepare_timer_retry(&mut self, rx_ready: bool) -> bool {
+        let Some(expected_timer) = self.retry_timer_on_rx else {
+            return false;
+        };
+        if self.inner.retransmission.timer != expected_timer {
+            self.retry_timer_on_rx = None;
+            false
+        } else if rx_ready {
+            self.retry_timer_on_rx = None;
+            self.inner.retransmission.retry_now(TimerInstant::now());
+            false
+        } else {
+            true
+        }
+    }
+
+    fn record_blocked_timer(&mut self, timer: RetransmissionTimer) {
+        if self.inner.retransmission.timer == timer {
+            self.retry_timer_on_rx = Some(timer);
+        }
+    }
+
     fn new_base(params: &ConnectionParams) -> TcpConnectionInner {
         let mut rx_tx_seq = [0; 8];
         getrandom::fill(&mut rx_tx_seq[..]).expect("prng failure");
@@ -1747,6 +1811,7 @@ impl TcpConnection {
         params: &ConnectionParams,
         is_local_address: bool,
         inspect_static_dns: bool,
+        ready_key: ReadyKey,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
         inner.initialize_from_first_client_packet(*sender.ft, tcp)?;
@@ -1812,7 +1877,9 @@ impl TcpConnection {
                 static_dns: inspect_static_dns.then(StaticDnsTcpInspection::default),
             },
             inner,
+            ready_key,
             waker: None,
+            retry_timer_on_rx: None,
         })
     }
 
@@ -1820,6 +1887,7 @@ impl TcpConnection {
         sender: &mut Sender<'_, impl Client>,
         socket: Socket,
         params: &ConnectionParams,
+        ready_key: ReadyKey,
     ) -> Result<Self, DropReason> {
         // Disable Nagle's algorithm to reduce latency for small packets.
         socket.set_tcp_nodelay(true).map_err(DropReason::Io)?;
@@ -1838,7 +1906,9 @@ impl TcpConnection {
                 static_dns: None,
             },
             inner,
+            ready_key,
             waker: None,
+            retry_timer_on_rx: None,
         })
     }
 
@@ -1849,6 +1919,7 @@ impl TcpConnection {
         sender: &mut Sender<'_, impl Client>,
         tcp: &TcpRepr<'_>,
         params: &ConnectionParams,
+        ready_key: ReadyKey,
     ) -> Result<Self, DropReason> {
         let mut inner = Self::new_base(params);
         inner.initialize_from_first_client_packet(*sender.ft, tcp)?;
@@ -1868,7 +1939,9 @@ impl TcpConnection {
         Ok(Self {
             backend: TcpBackend::Dns(DnsTcpHandler::new(flow)),
             inner,
+            ready_key,
             waker: None,
+            retry_timer_on_rx: None,
         })
     }
 }

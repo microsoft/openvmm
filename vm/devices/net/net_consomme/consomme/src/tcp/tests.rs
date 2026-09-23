@@ -36,6 +36,7 @@ struct TestClient {
     driver: DefaultDriver,
     received_packets: Arc<Mutex<Vec<Vec<u8>>>>,
     rx_buffers: Option<usize>,
+    rx_mtu_sequence: VecDeque<usize>,
 }
 
 #[test]
@@ -53,6 +54,14 @@ fn timer_deadlines_replace_stale_minimum() {
     let second_deadline = now + Duration::from_secs(2);
     let postponed_deadline = now + Duration::from_secs(3);
     let mut deadlines = TimerDeadlines::default();
+    let first = ReadyKey {
+        ft: first,
+        generation: 1,
+    };
+    let second = ReadyKey {
+        ft: second,
+        generation: 2,
+    };
 
     deadlines.update(first, Some(first_deadline));
     deadlines.update(second, Some(second_deadline));
@@ -69,38 +78,24 @@ fn timer_deadlines_replace_stale_minimum() {
 }
 
 #[test]
-fn ready_list_forget_removes_queued_connection() {
+fn ready_list_discards_stale_generation() {
     let ft = FourTuple {
         src: "192.0.2.1:1".parse().unwrap(),
         dst: "192.0.2.2:2".parse().unwrap(),
     };
     let ready = ReadyList::default();
 
-    ready.enqueue(ft);
-    ready.forget(ft);
-    ready.enqueue(ft);
+    let stale = ready.new_key(ft);
+    ready.register(stale);
+    ready.enqueue(stale);
+    ready.forget(stale);
 
-    assert_eq!(ready.drain().into_iter().collect::<Vec<_>>(), [ft]);
-}
+    let current = ready.new_key(ft);
+    ready.register(current);
+    ready.wake(stale);
+    ready.enqueue(current);
 
-#[test]
-fn timer_retry_waits_for_rx_capacity() {
-    let ft = FourTuple {
-        src: "192.0.2.1:1".parse().unwrap(),
-        dst: "192.0.2.2:2".parse().unwrap(),
-    };
-    let ready = ReadyList::default();
-
-    ready.block_on_rx(ft, true);
-    assert!(!ready.take_timer_retry(ft, false));
-    {
-        let inner = ready.inner.lock();
-        assert!(inner.blocked_on_rx.contains(&ft));
-        assert!(inner.retry_timer_on_rx.contains(&ft));
-    }
-
-    assert!(ready.take_timer_retry(ft, true));
-    assert!(!ready.inner.lock().retry_timer_on_rx.contains(&ft));
+    assert_eq!(ready.drain().into_iter().collect::<Vec<_>>(), [current]);
 }
 
 #[test]
@@ -324,6 +319,7 @@ impl TestClient {
             driver,
             received_packets: Arc::new(Mutex::new(Vec::new())),
             rx_buffers: None,
+            rx_mtu_sequence: VecDeque::new(),
         }
     }
 
@@ -332,11 +328,16 @@ impl TestClient {
             driver,
             received_packets: Arc::new(Mutex::new(Vec::new())),
             rx_buffers: Some(rx_buffers),
+            rx_mtu_sequence: VecDeque::new(),
         }
     }
 
     fn add_rx_buffers(&mut self, count: usize) {
         *self.rx_buffers.as_mut().unwrap() += count;
+    }
+
+    fn set_rx_mtu_sequence(&mut self, sequence: impl IntoIterator<Item = usize>) {
+        self.rx_mtu_sequence = sequence.into_iter().collect();
     }
 }
 
@@ -354,7 +355,9 @@ impl Client for TestClient {
     }
 
     fn rx_mtu(&mut self) -> usize {
-        if self.rx_buffers == Some(0) { 0 } else { 1514 }
+        self.rx_mtu_sequence
+            .pop_front()
+            .unwrap_or_else(|| if self.rx_buffers == Some(0) { 0 } else { 1514 })
     }
 }
 
@@ -822,7 +825,11 @@ impl TcpTestHarness {
     }
 
     fn mark_connection_ready(&self) {
-        self.consomme.tcp.ready.enqueue(self.four_tuple());
+        let ft = self.four_tuple();
+        self.consomme
+            .tcp
+            .ready
+            .enqueue(self.consomme.tcp.connections[&ft].ready_key);
     }
 
     /// Borrow the established connection's inner state for assertions.
@@ -1306,8 +1313,8 @@ async fn test_tcp_port_forward_defers_initial_syn_without_rx_buffer(driver: Defa
     ));
     connection.inner.lifetime_timer =
         LifetimeTimer::Handshake(TimerInstant::now() - Duration::from_millis(1));
-    let ft = *consomme.tcp.connections.keys().next().unwrap();
-    consomme.tcp.ready.enqueue(ft);
+    let ready_key = consomme.tcp.connections.values().next().unwrap().ready_key;
+    consomme.tcp.ready.enqueue(ready_key);
     received.lock().clear();
     client.add_rx_buffers(1);
     std::future::poll_fn(|cx| {
@@ -1339,6 +1346,7 @@ async fn test_tcp_port_forward_defers_initial_syn_without_rx_buffer(driver: Defa
 async fn test_idle_tcp_connection_is_not_rx_blocked(driver: DefaultDriver) {
     let mut h = TcpTestHarness::connect(driver).await;
     let ft = h.four_tuple();
+    let ready_key = h.consomme.tcp.connections[&ft].ready_key;
     h.clear_guest_packets();
     h.client.rx_buffers = Some(0);
     h.mark_connection_ready();
@@ -1356,7 +1364,7 @@ async fn test_idle_tcp_connection_is_not_rx_blocked(driver: DefaultDriver) {
             .inner
             .lock()
             .blocked_on_rx
-            .contains(&ft)
+            .contains(&ready_key)
     );
 }
 
@@ -2995,12 +3003,13 @@ async fn test_tcp_fin_wait_zero_window_probes_refresh_timeout(driver: DefaultDri
     );
 
     let expected_deadline = h.connection_inner().next_timer_deadline();
+    let ready_key = h.consomme.tcp.connections[&ft].ready_key;
     assert_eq!(
         h.consomme
             .tcp
             .timer_deadlines
             .by_connection
-            .get(&ft)
+            .get(&ready_key)
             .copied(),
         expected_deadline,
         "the deadline index must update before returning the packet error"
@@ -3420,11 +3429,15 @@ async fn test_tcp_zero_window_persist_probe(driver: DefaultDriver) {
         RetransmissionTimer::Persist { backoff: 1, .. }
     ));
     let ft = h.four_tuple();
+    let ready_key = h.consomme.tcp.connections[&ft].ready_key;
     {
         let ready = h.consomme.tcp.ready.inner.lock();
-        assert!(ready.blocked_on_rx.contains(&ft));
-        assert!(ready.retry_timer_on_rx.contains(&ft));
+        assert!(ready.blocked_on_rx.contains(&ready_key));
     }
+    assert_eq!(
+        h.consomme.tcp.connections[&ft].retry_timer_on_rx,
+        Some(h.connection_inner().retransmission.timer)
+    );
 
     h.client.add_rx_buffers(1);
     h.clear_guest_packets();
@@ -3467,6 +3480,153 @@ async fn test_tcp_zero_window_persist_probe(driver: DefaultDriver) {
         h.connection_inner().retransmission.timer,
         RetransmissionTimer::Rto { recover: None, .. }
     ));
+}
+
+#[pal_async::async_test]
+async fn test_tcp_ack_invalidates_blocked_timer_retry(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    h.clear_guest_packets();
+    h.host_write(&[0x5a; 2 * 536]).await;
+    h.poll_until(|inner| inner.tx_send == inner.tx_acked + 2 * 536)
+        .await;
+
+    let first_sequence = h.connection_inner().tx_acked;
+    {
+        let conn = h.consomme.tcp.connections.get_mut(&h.four_tuple()).unwrap();
+        conn.inner.retransmission.timer = RetransmissionTimer::Rto {
+            deadline: Instant::now() - Duration::from_millis(1),
+            recover: None,
+        };
+    }
+    h.mark_connection_ready();
+    h.client.rx_buffers = Some(0);
+    h.clear_guest_packets();
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+    assert!(
+        h.consomme.tcp.connections[&h.four_tuple()]
+            .retry_timer_on_rx
+            .is_some()
+    );
+
+    h.server_ack = first_sequence + 536;
+    h.send_segment(TcpControl::None, h.guest_seq, &[]);
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+    assert!(
+        h.consomme.tcp.connections[&h.four_tuple()]
+            .retry_timer_on_rx
+            .is_none(),
+        "a new ACK-derived timer must invalidate the blocked retry"
+    );
+    let ack_deadline = h.connection_inner().retransmission.timer.deadline();
+    assert!(ack_deadline > Some(Instant::now()));
+
+    h.client.add_rx_buffers(1);
+    h.clear_guest_packets();
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+    assert!(
+        h.client.received_packets.lock().is_empty(),
+        "returning RX capacity must not retransmit before the new RTO"
+    );
+    assert_eq!(
+        h.connection_inner().retransmission.timer.deadline(),
+        ack_deadline
+    );
+}
+
+#[pal_async::async_test]
+async fn test_tcp_timer_retry_survives_rx_capacity_race(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect(driver).await;
+    h.clear_guest_packets();
+    h.host_write(&[0x5a; 536]).await;
+    h.poll_until(|inner| inner.tx_send == inner.tx_acked + 536)
+        .await;
+
+    {
+        let conn = h.consomme.tcp.connections.get_mut(&h.four_tuple()).unwrap();
+        conn.inner.retransmission.timer = RetransmissionTimer::Rto {
+            deadline: Instant::now() - Duration::from_millis(1),
+            recover: None,
+        };
+    }
+    h.mark_connection_ready();
+    h.client.rx_buffers = Some(0);
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+    assert!(
+        h.consomme.tcp.connections[&h.four_tuple()]
+            .retry_timer_on_rx
+            .is_some()
+    );
+
+    // Capacity is visible when blocked connections are re-enqueued, but is
+    // consumed before this connection selects its retry.
+    h.client.set_rx_mtu_sequence([1514, 0]);
+    h.clear_guest_packets();
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+
+    let ft = h.four_tuple();
+    let conn = &h.consomme.tcp.connections[&ft];
+    assert_eq!(
+        conn.retry_timer_on_rx,
+        Some(conn.inner.retransmission.timer),
+        "a retry that cannot start must remain pending"
+    );
+    assert!(
+        h.consomme
+            .tcp
+            .ready
+            .inner
+            .lock()
+            .blocked_on_rx
+            .contains(&conn.ready_key)
+    );
+    assert!(h.client.received_packets.lock().is_empty());
+
+    // Capacity is visible when the retry is selected, but disappears before
+    // the retransmit attempt.
+    h.client.set_rx_mtu_sequence([1514, 1514, 0]);
+    h.clear_guest_packets();
+    std::future::poll_fn(|cx| {
+        h.consomme.access(&mut h.client).poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+
+    let conn = &h.consomme.tcp.connections[&ft];
+    assert_eq!(
+        conn.retry_timer_on_rx,
+        Some(conn.inner.retransmission.timer),
+        "a failed retry must remain pending for the next RX buffer"
+    );
+    assert!(
+        h.consomme
+            .tcp
+            .ready
+            .inner
+            .lock()
+            .blocked_on_rx
+            .contains(&conn.ready_key)
+    );
+    assert!(h.client.received_packets.lock().is_empty());
 }
 
 #[pal_async::async_test]
