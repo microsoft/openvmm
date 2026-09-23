@@ -33,7 +33,6 @@ pub use guestmem_core::AccessError;
 pub use guestmem_core::GuestMemoryBackingError;
 pub use guestmem_core::GuestMemoryError;
 pub use guestmem_core::GuestMemoryErrorKind;
-pub use guestmem_core::GuestMemoryIo;
 pub use guestmem_core::GuestMemoryOperation;
 pub use guestmem_core::InvalidGpn;
 pub use guestmem_core::Limit;
@@ -2169,20 +2168,6 @@ impl GuestMemory {
                 inner: locked_range,
             })
         })
-    }
-}
-
-impl GuestMemoryIo for GuestMemory {
-    fn read_range(&self, range: &PagedRange<'_>, data: &mut [u8]) -> Result<(), GuestMemoryError> {
-        GuestMemory::read_range(self, range, data)
-    }
-
-    fn write_range(&self, range: &PagedRange<'_>, data: &[u8]) -> Result<(), GuestMemoryError> {
-        GuestMemory::write_range(self, range, data)
-    }
-
-    fn fill_range(&self, range: &PagedRange<'_>, val: u8) -> Result<(), GuestMemoryError> {
-        GuestMemory::fill_range(self, range, val)
     }
 }
 

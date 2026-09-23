@@ -5,14 +5,11 @@
 //! guest-side crates that need to describe or access guest memory.
 //!
 //! [`guestmem`]: https://microsoft.github.io/openvmm/api/guestmem
-//! [`guestmem::GuestMemory`]: https://microsoft.github.io/openvmm/api/guestmem/struct.GuestMemory.html
 
 #![no_std]
 #![expect(missing_docs)]
 
 extern crate alloc;
-
-pub mod ranges;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -400,25 +397,4 @@ impl<T: MemoryWrite> MemoryWrite for Limit<T> {
     fn len(&self) -> usize {
         self.len
     }
-}
-
-/// A trait describing the subset of guest memory operations needed to service
-/// [`PagedRange`](ranges::PagedRange) reads and writes.
-pub trait GuestMemoryIo {
-    /// Reads `data.len()` bytes from `range` into `data`.
-    fn read_range(
-        &self,
-        range: &ranges::PagedRange<'_>,
-        data: &mut [u8],
-    ) -> Result<(), GuestMemoryError>;
-
-    /// Writes `data.len()` bytes from `data` into `range`.
-    fn write_range(
-        &self,
-        range: &ranges::PagedRange<'_>,
-        data: &[u8],
-    ) -> Result<(), GuestMemoryError>;
-
-    /// Fills `range` with `val`.
-    fn fill_range(&self, range: &ranges::PagedRange<'_>, val: u8) -> Result<(), GuestMemoryError>;
 }
