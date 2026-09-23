@@ -3331,7 +3331,6 @@ impl UefiGuest {
             UefiGuest::None => None,
         }
     }
-
 }
 
 /// Type-tags for [`BootImageConfig`](super::BootImageConfig)
