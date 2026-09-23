@@ -2,10 +2,6 @@
 // Licensed under the MIT License.
 
 //! `Stream` combinators shared across the vmbus channel/client stack.
-//!
-//! Historically these lived in `vmbus_core`, but they're pure async
-//! utilities with no protocol content, so they belong here where the
-//! host-side `futures`/`std` dependency is already in scope.
 
 use core::pin::Pin;
 use core::task::Context;

@@ -18,27 +18,6 @@ mod test;
 pub use netvsp_protocol::protocol;
 pub use netvsp_protocol::rndisprot;
 
-// `net_backend::VlanMetadata` <-> `rndisprot::EthVlanInfo` conversions. Both
-// types come from external crates so the orphan rule blocks `From` impls;
-// use free functions instead.
-mod vlan_adapters {
-    use crate::rndisprot::EthVlanInfo;
-
-    pub fn eth_vlan_info_from_metadata(metadata: net_backend::VlanMetadata) -> EthVlanInfo {
-        EthVlanInfo::new()
-            .with_priority(metadata.priority())
-            .with_drop_eligible_indicator(metadata.drop_eligible_indicator())
-            .with_vlan_id(metadata.vlan_id())
-    }
-
-    pub fn metadata_from_eth_vlan_info(val: EthVlanInfo) -> net_backend::VlanMetadata {
-        net_backend::VlanMetadata::new()
-            .with_priority(val.priority())
-            .with_drop_eligible_indicator(val.drop_eligible_indicator())
-            .with_vlan_id(val.vlan_id())
-    }
-}
-
 use crate::buffers::GuestBuffers;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
 use crate::protocol::Version;
@@ -2703,7 +2682,7 @@ impl<T: RingMem> NetChannel<T> {
                     rndisprot::PPI_VLAN => {
                         let n: rndisprot::EthVlanInfo = d.reader(mem).read_plain()?;
 
-                        metadata.vlan = Some(vlan_adapters::metadata_from_eth_vlan_info(n));
+                        metadata.vlan = Some(n.into());
                     }
                     _ => {}
                 }

@@ -9,6 +9,7 @@ rust-version.workspace = true
 [features]
 default = []
 mesh = ["mesh_protobuf"]
+getrandom = ["dep:getrandom"]
 
 [dependencies]
 inspect = { workspace = true, optional = true }

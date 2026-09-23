@@ -53,6 +53,7 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+use netvsp_protocol::rndisprot::EthVlanInfo;
 use null::NullEndpoint;
 use pal_async::driver::Driver;
 use std::future::pending;
@@ -330,6 +331,24 @@ pub struct VlanMetadata {
     /// The 802.1Q ID for this transmission.
     #[bits(12)]
     pub vlan_id: u16,
+}
+
+impl From<VlanMetadata> for EthVlanInfo {
+    fn from(value: VlanMetadata) -> Self {
+        EthVlanInfo::new()
+            .with_priority(value.priority())
+            .with_drop_eligible_indicator(value.drop_eligible_indicator())
+            .with_vlan_id(value.vlan_id())
+    }
+}
+
+impl From<EthVlanInfo> for VlanMetadata {
+    fn from(value: EthVlanInfo) -> VlanMetadata {
+        VlanMetadata::new()
+            .with_priority(value.priority())
+            .with_drop_eligible_indicator(value.drop_eligible_indicator())
+            .with_vlan_id(value.vlan_id())
+    }
 }
 
 /// A receive buffer ID.

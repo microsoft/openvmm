@@ -5013,6 +5013,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "net_backend_resources",
+ "netvsp_protocol",
  "pal_async",
  "parking_lot",
  "test_with_tracing",
