@@ -12,8 +12,8 @@ test_tpm = ["dep:ms-tpm-20-ref", "dep:ms-tcg-tpm-sys"]
 
 [dependencies]
 tpm_protocol.workspace = true
-ms-tpm-20-ref = { optional = true, workspace = true }
-ms-tcg-tpm-sys = { optional = true, workspace = true }
+ms-tpm-20-ref = { optional = true, workspace = true, features = ["openssl", "vendored"] }
+ms-tcg-tpm-sys = { optional = true, workspace = true, features = ["openssl", "vendored"] }
 cvm_tracing.workspace = true
 inspect.workspace = true
 

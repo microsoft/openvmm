@@ -103,7 +103,6 @@ mod protocol {
     pub struct Control<'a>(pub &'a [AtomicU32; CONTROL_WORD_COUNT]);
 
     impl<'a> Control<'a> {
-        
         pub fn from_page(page: &'a guestmem_core::Page) -> Option<Self> {
             let slice = page.as_atomic_slice()?[..CONTROL_WORD_COUNT]
                 .try_into()
@@ -254,7 +253,6 @@ impl RingRange {
     }
 
     /// Retrieves a `MemoryWrite` that allows for writing to the range.
-    
     pub fn writer<'a, T: Ring>(&self, ring: &'a T) -> RingRangeWriter<'a, T::Memory> {
         RingRangeWriter {
             start: self.off,
@@ -273,7 +271,6 @@ impl RingRange {
     }
 
     /// Retrieves a `MemoryRead` that allows for writing to the range.
-    
     pub fn reader<'a, T: Ring>(&self, ring: &'a T) -> RingRangeReader<'a, T::Memory> {
         RingRangeReader {
             start: self.off,
@@ -294,13 +291,11 @@ impl RingRange {
 }
 
 /// A type implementing `MemoryRead` accessing a `RingRange`.
-
 pub struct RingRangeReader<'a, T> {
     start: u32,
     end: u32,
     mem: &'a T,
 }
-
 
 impl<T: RingMem> MemoryRead for RingRangeReader<'_, T> {
     fn read(&mut self, data: &mut [u8]) -> Result<&mut Self, AccessError> {
@@ -326,13 +321,11 @@ impl<T: RingMem> MemoryRead for RingRangeReader<'_, T> {
 }
 
 /// A type implementing `MemoryWrite` accessing a `RingRange`.
-
 pub struct RingRangeWriter<'a, T> {
     start: u32,
     end: u32,
     mem: &'a T,
 }
-
 
 impl<T: RingMem> MemoryWrite for RingRangeWriter<'_, T> {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError> {
@@ -772,7 +765,6 @@ pub enum OutgoingPacketType<'a> {
     /// A GPA direct packet, which can reference memory outside the ring by address.
     ///
     /// Not supported on the host side of the ring.
-    
     GpaDirect(&'a [PagedRange<'a>]),
     /// A transfer page packet, which can reference memory outside the ring by a
     /// buffer ID and a set of offsets into some pre-established buffer
@@ -1135,7 +1127,6 @@ impl<M: RingMem> OutgoingRing<M> {
                 PACKET_FLAG_COMPLETION_REQUESTED,
             ),
             OutgoingPacketType::Completion => (PACKET_TYPE_COMPLETION, DESCRIPTOR_SIZE, 0),
-            
             OutgoingPacketType::GpaDirect(ranges) => (
                 PACKET_TYPE_GPA_DIRECT,
                 DESCRIPTOR_SIZE
@@ -1183,7 +1174,6 @@ impl<M: RingMem> OutgoingRing<M> {
         let off = inp as usize;
         self.inner.mem.write_aligned(off, desc.as_bytes());
         match packet.typ {
-            
             OutgoingPacketType::GpaDirect(ranges) => {
                 let mut writer = RingRange {
                     off: (off + DESCRIPTOR_SIZE) as u32,

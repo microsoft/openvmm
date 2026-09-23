@@ -2173,19 +2173,11 @@ impl GuestMemory {
 }
 
 impl GuestMemoryIo for GuestMemory {
-    fn read_range(
-        &self,
-        range: &PagedRange<'_>,
-        data: &mut [u8],
-    ) -> Result<(), GuestMemoryError> {
+    fn read_range(&self, range: &PagedRange<'_>, data: &mut [u8]) -> Result<(), GuestMemoryError> {
         GuestMemory::read_range(self, range, data)
     }
 
-    fn write_range(
-        &self,
-        range: &PagedRange<'_>,
-        data: &[u8],
-    ) -> Result<(), GuestMemoryError> {
+    fn write_range(&self, range: &PagedRange<'_>, data: &[u8]) -> Result<(), GuestMemoryError> {
         GuestMemory::write_range(self, range, data)
     }
 

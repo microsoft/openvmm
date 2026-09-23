@@ -15,13 +15,11 @@ pub use guestmem_core::ranges::PagedRangesIter;
 
 /// A [`crate::MemoryRead`] implementation for a [`PagedRange`] over
 /// [`crate::GuestMemory`].
-pub type PagedRangeReader<'a> =
-    guestmem_core::ranges::PagedRangeReader<'a, crate::GuestMemory>;
+pub type PagedRangeReader<'a> = guestmem_core::ranges::PagedRangeReader<'a, crate::GuestMemory>;
 
 /// A [`crate::MemoryWrite`] implementation for a [`PagedRange`] over
 /// [`crate::GuestMemory`].
-pub type PagedRangeWriter<'a> =
-    guestmem_core::ranges::PagedRangeWriter<'a, crate::GuestMemory>;
+pub type PagedRangeWriter<'a> = guestmem_core::ranges::PagedRangeWriter<'a, crate::GuestMemory>;
 
 /// A [`crate::MemoryRead`] implementation for a [`PagedRanges`] over
 /// [`crate::GuestMemory`].
