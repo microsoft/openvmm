@@ -2117,6 +2117,16 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime.remove_pcie_device(port_name).await
     }
 
+    /// Scan the guest's COM1 output for OpenTMK results, returning once the run
+    /// completes or `timeout` elapses. Requires a [`UefiGuest::OpenTmk`] guest.
+    pub async fn wait_for_opentmk(
+        &mut self,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::opentmk::OpenTmkRun> {
+        tracing::info!("Waiting for OpenTMK results on COM1...");
+        self.runtime.wait_for_opentmk(timeout).await
+    }
+
     /// Instruct the OpenHCL to save the state of the VTL2 paravisor. Will fail if the VM
     /// is not running OpenHCL. Will also fail if the VM is not running or if this is called twice in succession
     pub async fn save_openhcl(
@@ -2313,6 +2323,15 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
         let _ = port_name;
         anyhow::bail!("PCIe hotplug not supported by this backend")
+    }
+    /// Scan the guest's COM1 output for OpenTMK results, returning once the run
+    /// completes or `timeout` elapses.
+    async fn wait_for_opentmk(
+        &mut self,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::opentmk::OpenTmkRun> {
+        let _ = timeout;
+        anyhow::bail!("OpenTMK serial capture not supported by this backend")
     }
 }
 
@@ -2976,15 +2995,31 @@ impl Firmware {
         }
     }
 
+    /// Whether the guest is an OpenTMK test image (results streamed over COM1).
+    // Dead code attribute will be removed with on integration with openvmm on linux
+    #[cfg_attr(not(windows), expect(dead_code))]
+    pub(crate) fn is_opentmk(&self) -> bool {
+        matches!(
+            self,
+            Firmware::Uefi {
+                guest: UefiGuest::OpenTmk(_),
+                ..
+            } | Firmware::OpenhclUefi {
+                guest: UefiGuest::OpenTmk(_),
+                ..
+            }
+        )
+    }
+
     fn os_flavor(&self) -> OsFlavor {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => OsFlavor::Linux,
             Firmware::Uefi {
-                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::None,
+                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::OpenTmk(_) | UefiGuest::None,
                 ..
             }
             | Firmware::OpenhclUefi {
-                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::None,
+                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::OpenTmk(_) | UefiGuest::None,
                 ..
             } => OsFlavor::Uefi,
             Firmware::Pcat {
@@ -3041,11 +3076,11 @@ impl Firmware {
             Firmware::LinuxDirect { .. }
             | Firmware::OpenhclLinuxDirect { .. }
             | Firmware::Uefi {
-                guest: UefiGuest::GuestTestUefi(_),
+                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::OpenTmk(_),
                 ..
             }
             | Firmware::OpenhclUefi {
-                guest: UefiGuest::GuestTestUefi(_),
+                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::OpenTmk(_),
                 ..
             } => None,
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => {
@@ -3152,14 +3187,22 @@ impl Firmware {
     fn boot_drive(&self) -> Option<Drive> {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
-            Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
-                Some((guest.disk_path(), guest.is_dvd()))
+            Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => Some(Drive::new(
+                Some(Disk::Differencing(guest.disk_path())),
+                guest.is_dvd(),
+            )),
+            Firmware::Uefi {
+                guest: UefiGuest::OpenTmk(guest),
+                ..
             }
-            Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => {
-                guest.disk_path().map(|dp| (dp, false))
-            }
+            | Firmware::OpenhclUefi {
+                guest: UefiGuest::OpenTmk(guest),
+                ..
+            } => Some(Drive::new(Some(Disk::Temporary(guest.image())), false)),
+            Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => guest
+                .disk_path()
+                .map(|disk_path| Drive::new(Some(Disk::Differencing(disk_path)), false)),
         }
-        .map(|(disk_path, is_dvd)| Drive::new(Some(Disk::Differencing(disk_path)), is_dvd))
     }
 
     fn vtl2_settings(&mut self) -> Option<&mut Vtl2Settings> {
@@ -3217,8 +3260,44 @@ pub enum UefiGuest {
     Vhd(BootImageConfig<boot_image_type::Vhd>),
     /// The UEFI test image produced by our guest-test infrastructure.
     GuestTestUefi(ResolvedArtifact),
+    /// The OpenTMK UEFI test application, booted from a runtime-built disk image.
+    OpenTmk(OpenTmkGuest),
     /// No guest, just the firmware.
     None,
+}
+
+/// A lazily-built OpenTMK boot disk.
+///
+/// Holds the `.efi` artifact and per-test config to patch into it. The VHD is
+/// built the first time the boot drive is requested and deleted on drop.
+#[derive(Debug)]
+pub struct OpenTmkGuest {
+    efi: ResolvedArtifact,
+    arch: MachineArch,
+    config_json: Vec<u8>,
+    image: std::sync::OnceLock<Arc<TempPath>>,
+}
+
+impl OpenTmkGuest {
+    /// Build (once) and return the bootable OpenTMK VHD.
+    ///
+    /// Panics on read/patch/build failure: these are test-setup failures on
+    /// trusted artifacts, so failing fast keeps the boot-drive path infallible.
+    fn image(&self) -> Arc<TempPath> {
+        self.image
+            .get_or_init(|| {
+                let efi = fs_err::read(self.efi.get()).expect("failed to read opentmk efi");
+                let arch = match self.arch {
+                    MachineArch::X86_64 => opentmk_disk::Arch::X86_64,
+                    MachineArch::Aarch64 => opentmk_disk::Arch::Aarch64,
+                };
+                let image =
+                    opentmk_disk::build_opentmk_vhd_with_config(&efi, arch, &self.config_json)
+                        .expect("failed to build opentmk boot image");
+                Arc::new(image.into_temp_path())
+            })
+            .clone()
+    }
 }
 
 impl UefiGuest {
@@ -3232,11 +3311,31 @@ impl UefiGuest {
         UefiGuest::GuestTestUefi(artifact)
     }
 
+    /// Construct a [`UefiGuest::OpenTmk`] configuration.
+    ///
+    /// Registers the `.efi` for `arch` and records `config_json` to patch into
+    /// it; the VHD is built lazily when the boot drive is first requested, so
+    /// this is safe to call while only collecting artifact requirements.
+    /// `config_json` must be a valid `opentmk_protocol::TestConfig`.
+    pub fn opentmk(resolver: &ArtifactResolver<'_>, arch: MachineArch, config_json: &[u8]) -> Self {
+        use petri_artifacts_vmm_test::artifacts::opentmk::*;
+        let efi = match arch {
+            MachineArch::X86_64 => resolver.require(OPENTMK_EFI_X64).erase(),
+            MachineArch::Aarch64 => resolver.require(OPENTMK_EFI_AARCH64).erase(),
+        };
+        UefiGuest::OpenTmk(OpenTmkGuest {
+            efi,
+            arch,
+            config_json: config_json.to_vec(),
+            image: std::sync::OnceLock::new(),
+        })
+    }
+
     fn disk_path(&self) -> Option<DiskPath> {
         match self {
             UefiGuest::Vhd(vhd) => Some(vhd.disk_path()),
             UefiGuest::GuestTestUefi(p) => Some(DiskPath::Local(p.get().to_path_buf())),
-            UefiGuest::None => None,
+            UefiGuest::OpenTmk(_) | UefiGuest::None => None,
         }
     }
 }

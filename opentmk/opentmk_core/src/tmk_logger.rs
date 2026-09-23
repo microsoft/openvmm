@@ -14,13 +14,11 @@ use core::fmt::Write;
 use log::SetLoggerError;
 use serde::Serialize;
 use spin::Mutex;
-use spin::MutexGuard;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::serial::InstrIoAccess;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::serial::Serial;
-#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::SerialPort;
 #[cfg(target_arch = "aarch64")]
 use minimal_rt::arch::Serial;
@@ -65,28 +63,30 @@ pub struct TmkLogger<T> {
     writer: T,
 }
 
-impl<T> TmkLogger<Mutex<T>>
+impl<T> TmkLogger<Mutex<Option<T>>>
 where
     T: Write + Send,
 {
-    /// Creates a new `TmkLogger` instance with the provided writer.
-    pub const fn new(provider: T) -> Self {
+    /// Creates a new `TmkLogger` instance without a writer.
+    pub const fn new() -> Self {
         TmkLogger {
-            writer: Mutex::new(provider),
+            writer: Mutex::new(None),
         }
     }
 
-    /// Returns a lock guard to the underlying writer.
-    /// This allows direct access to the writer for custom logging operations.
-    pub fn get_writer(&self) -> MutexGuard<'_, T>
-    where
-        T: Write + Send,
-    {
-        self.writer.lock()
+    fn set_writer(&self, writer: T) {
+        *self.writer.lock() = Some(writer);
+    }
+
+    /// Writes a preformatted string if the logger has been initialized.
+    pub fn write_str(&self, value: &str) {
+        if let Some(writer) = self.writer.lock().as_mut() {
+            _ = writer.write_str(value);
+        }
     }
 }
 
-impl<T> log::Log for TmkLogger<Mutex<T>>
+impl<T> log::Log for TmkLogger<Mutex<Option<T>>>
 where
     T: Write + Send,
 {
@@ -102,7 +102,7 @@ where
             record.line().unwrap_or_default()
         );
         let str = format_log_string_to_json(&str, &line, true, record.level());
-        _ = self.writer.lock().write_str(str.as_str());
+        self.write_str(&str);
     }
 
     fn flush(&self) {}
@@ -111,15 +111,23 @@ where
 #[cfg(target_arch = "x86_64")]
 type SerialPortWriter = Serial<InstrIoAccess>;
 #[cfg(target_arch = "x86_64")]
-/// The global logger instance for x86_64 architecture, using COM2 serial port.
-pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
-    TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
+/// The global logger instance for x86_64 architecture.
+pub static LOGGER: TmkLogger<Mutex<Option<SerialPortWriter>>> = TmkLogger::new();
 
 #[cfg(target_arch = "aarch64")]
-/// The global logger instance for aarch64 architecture, using the default serial implementation.
-pub static LOGGER: TmkLogger<Mutex<Serial>> = TmkLogger::new(Serial {});
+/// The global logger instance for aarch64 architecture.
+pub static LOGGER: TmkLogger<Mutex<Option<Serial>>> = TmkLogger::new();
 
-/// Initializes the global logger.
-pub fn init() -> Result<(), SetLoggerError> {
+/// Initializes the global logger on the specified serial port.
+pub fn init(port: SerialPort) -> Result<(), SetLoggerError> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        LOGGER.set_writer(SerialPortWriter::new(port, InstrIoAccess));
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = port;
+        LOGGER.set_writer(Serial {});
+    }
     log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Debug))
 }

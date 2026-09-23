@@ -32,8 +32,11 @@ fn uefi_entry() -> uefi::Status {
 }
 
 fn main() {
+    use opentmk_core::arch::serial::SerialPort;
+
     #[cfg(target_os = "uefi")]
     {
+        use opentmk_core::uefi::init::InitParams;
         use uefi::println;
 
         _ = uefi::helpers::init();
@@ -43,7 +46,9 @@ fn main() {
         // Note: println() will no longer work after this step
         // since init() will exit boot services where enabled.
         // use log from henceforth for SERIAL port 2 logging
-        match opentmk_core::uefi::init::init() {
+        match opentmk_core::uefi::init::init(InitParams {
+            logging_port: SerialPort::COM2,
+        }) {
             Ok(_) => log::info!("OpenTMK initialization complete!"),
             Err(e) => {
                 log::info!("OpenTMK initialization failed! - {:?}", e);
@@ -51,8 +56,6 @@ fn main() {
             }
         }
     }
-
-    use opentmk_core::arch::serial::SerialPort;
 
     let mut exec = executor::Executor::new(SerialPort::COM1);
 

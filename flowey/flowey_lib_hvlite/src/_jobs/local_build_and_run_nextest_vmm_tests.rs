@@ -52,6 +52,7 @@ pub struct BuildSelections {
     pub prep_steps_standard: bool,
     pub prep_steps_no_vmbus: bool,
     pub guest_test_uefi: bool,
+    pub opentmk: bool,
     pub tmks: bool,
     pub tmk_vmm_windows: bool,
     pub tmk_vmm_linux: bool,
@@ -122,6 +123,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
+        ctx.import::<crate::build_opentmk::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::build_tpm_guest_tests::Node>();
@@ -361,6 +363,19 @@ impl SimpleFlowNode for Node {
             });
             if copy_extras {
                 copy_to_dir.push((extras_dir.to_owned(), output.map(ctx, |x| Some(x.efi))));
+                copy_to_dir.push((extras_dir.to_owned(), output.map(ctx, |x| Some(x.pdb))));
+            }
+            output
+        });
+
+        let register_opentmk = build.opentmk.then(|| {
+            let output = ctx.reqv(|v| crate::build_opentmk::Request {
+                arch,
+                profile: CommonProfile::from_release(release),
+                out_name: None,
+                opentmk: v,
+            });
+            if copy_extras {
                 copy_to_dir.push((extras_dir.to_owned(), output.map(ctx, |x| Some(x.pdb))));
             }
             output
@@ -650,6 +665,7 @@ impl SimpleFlowNode for Node {
             pipette_windows: register_pipette_windows,
             pipette_linux_musl: register_pipette_linux_musl,
             guest_test_uefi: register_guest_test_uefi,
+            opentmk: register_opentmk,
             openhcl_standard: register_openhcl_standard,
             openhcl_standard_dev: register_openhcl_standard_dev,
             openhcl_cvm: register_openhcl_cvm,

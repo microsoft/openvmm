@@ -444,6 +444,9 @@ impl IntoPipeline for CheckinGatesCli {
         let (pub_incubator, use_incubator) = pipeline.new_typed_artifact("x64-linux-incubator");
         vmm_tests_artifacts_linux_aarch64_tcg.use_incubator = Some(use_incubator);
 
+        let (pub_opentmk, use_opentmk) = pipeline.new_typed_artifact("x64-opentmk");
+        vmm_tests_artifacts_windows_x86.use_opentmk = Some(use_opentmk);
+
         let mut shared_linux_job = pipeline
             .new_job(
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -512,6 +515,15 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_LINUX_GNU,
                 profile: CommonProfile::from_release(release),
                 incubator,
+            }
+        });
+
+        shared_linux_job = shared_linux_job.publish(pub_opentmk, |opentmk| {
+            flowey_lib_hvlite::build_opentmk::Request {
+                arch: CommonArch::X86_64,
+                profile: CommonProfile::from_release(release),
+                out_name: None,
+                opentmk,
             }
         });
 
@@ -1535,6 +1547,10 @@ impl IntoPipeline for CheckinGatesCli {
             if isolation_type == "snp" {
                 filter = format!("({filter}) & !test(pcat)")
             }
+
+            // The opentmk CVM TPM scenarios are not yet reliable on the CI CVM
+            // runners. Run them locally via `cargo xflowey vmm-tests-run`.
+            filter = format!("({filter}) & !test(opentmk_hyperv_openhcl_tpm)");
             filter
         };
 

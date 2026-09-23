@@ -9,6 +9,7 @@ use crate::build_incubator::IncubatorOutput;
 use crate::build_incubator::incubator_profile_dir;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
+use crate::build_opentmk::OpentmkOutput;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_openvmm_vhost::OpenvmmVhostOutput;
 use crate::build_pipette::PipetteOutput;
@@ -54,6 +55,7 @@ define_vmm_tests_built_artifacts!(
     pipette_windows => PipetteOutput,
     pipette_linux_musl => PipetteOutput,
     guest_test_uefi => GuestTestUefiOutput,
+    opentmk => OpentmkOutput,
     openhcl_standard => OpenhclIgvmOutput,
     openhcl_standard_dev => OpenhclIgvmOutput,
     openhcl_cvm => OpenhclIgvmOutput,
@@ -229,6 +231,7 @@ impl SimpleFlowNode for Node {
             pipette_windows,
             pipette_linux_musl,
             guest_test_uefi,
+            opentmk,
             openhcl_standard,
             openhcl_standard_dev,
             openhcl_cvm,
@@ -270,6 +273,7 @@ impl SimpleFlowNode for Node {
                     pipette_windows,
                     pipette_linux_musl,
                     guest_test_uefi,
+                    opentmk,
                     openhcl_igvm_files,
                     tmks,
                     tmk_vmm,
@@ -424,6 +428,11 @@ impl SimpleFlowNode for Node {
                         img,
                     } = rt.read(guest_test_uefi);
                     fs_err::copy(img, test_content_dir.join("guest_test_uefi.img"))?;
+                }
+
+                if let Some(opentmk) = opentmk {
+                    let OpentmkOutput { efi, pdb: _ } = rt.read(opentmk);
+                    fs_err::copy(efi, test_content_dir.join("opentmk.efi"))?;
                 }
 
                 if let Some(tmks) = tmks {
@@ -654,6 +663,7 @@ pub mod vmm_tests_artifact_builders {
             tmk_vmm_linux_musl => TmkVmmOutput,
             // any machine
             guest_test_uefi => GuestTestUefiOutput,
+            opentmk => OpentmkOutput,
             tmks => TmksOutput,
         )
     );

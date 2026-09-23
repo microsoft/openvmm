@@ -39,6 +39,7 @@ impl SimpleFlowNode for Node {
                     pipette_windows,
                     pipette_linux_musl,
                     guest_test_uefi,
+                    opentmk,
                     openhcl_standard,
                     openhcl_standard_dev,
                     openhcl_cvm,
@@ -163,6 +164,10 @@ impl SimpleFlowNode for Node {
                 run_id.clone(),
                 guest_test_uefi,
             );
+        }
+
+        if let Some(opentmk) = opentmk {
+            download_artifact(ctx, format!("{arch_tag}-opentmk"), run_id.clone(), opentmk);
         }
 
         if let Some(openhcl_standard) = openhcl_standard {
