@@ -332,14 +332,38 @@ fn root_complex_for_port(
 }
 
 #[cfg(guest_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DirectSmmuCapabilities {
+    pasid: bool,
+    ats: bool,
+}
+
+#[cfg(guest_arch = "aarch64")]
+fn direct_smmu_capabilities(
+    smmu: Option<&cli_args::SmmuCli>,
+    direct: bool,
+) -> DirectSmmuCapabilities {
+    let capabilities = DirectSmmuCapabilities {
+        pasid: direct && smmu.is_some_and(|smmu| smmu.ssid_bits != 0),
+        ats: direct && smmu.is_some_and(|smmu| smmu.ats),
+    };
+    debug_assert!(!capabilities.ats || capabilities.pasid);
+    capabilities
+}
+
+#[cfg(guest_arch = "aarch64")]
 fn validate_smmu_vfio_mode(smmu: &cli_args::SmmuCli, direct: bool) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !smmu.accel || direct,
-        "an accelerated SMMU requires VFIO devices to use a --direct-iommu context"
-    );
     anyhow::ensure!(
         !smmu.ats || direct,
         "SMMU ATS requires a VFIO device using a --direct-iommu context"
+    );
+    anyhow::ensure!(
+        smmu.ssid_bits == 0 || direct,
+        "nonzero SMMU ssid-bits requires VFIO devices to use a --direct-iommu context"
+    );
+    anyhow::ensure!(
+        !smmu.accel || direct,
+        "an accelerated SMMU requires VFIO devices to use a --direct-iommu context"
     );
     Ok(())
 }
@@ -1204,6 +1228,7 @@ async fn vm_config_from_command_line(
                         )
                     })?;
                 }
+                let direct_capabilities = direct_smmu_capabilities(smmu, direct);
 
                 if let Some(iommu_id) = &cli_cfg.iommu {
                     // cdev + iommufd path
@@ -1251,7 +1276,8 @@ async fn vm_config_from_command_line(
                             iommu_id: iommu_id.clone(),
                             bar_addresses: cli_cfg.bar_addresses,
                             direct_iommu: direct,
-                            direct_ats_pasid: direct && smmu.is_some_and(|smmu| smmu.ats),
+                            direct_pasid: direct_capabilities.pasid,
+                            direct_ats: direct_capabilities.ats,
                         }
                         .into_resource(),
                     })
@@ -3350,10 +3376,58 @@ mod tests {
 
     #[cfg(guest_arch = "aarch64")]
     #[test]
+    fn pasid_smmu_requires_direct_vfio() {
+        use std::str::FromStr as _;
+        let smmu = cli_args::SmmuCli::from_str("rc=rc0,accel,ssid-bits=14").unwrap();
+        assert!(validate_smmu_vfio_mode(&smmu, false).is_err());
+        validate_smmu_vfio_mode(&smmu, true).unwrap();
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
     fn ats_smmu_requires_direct_vfio() {
         use std::str::FromStr as _;
         let smmu = cli_args::SmmuCli::from_str("rc=rc0,accel,ats,ssid-bits=14").unwrap();
         assert!(validate_smmu_vfio_mode(&smmu, false).is_err());
         validate_smmu_vfio_mode(&smmu, true).unwrap();
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn direct_smmu_resource_capabilities_are_separate() {
+        use std::str::FromStr as _;
+
+        assert_eq!(
+            direct_smmu_capabilities(None, true),
+            DirectSmmuCapabilities::default()
+        );
+
+        let none = cli_args::SmmuCli::from_str("rc=rc0,accel").unwrap();
+        assert_eq!(
+            direct_smmu_capabilities(Some(&none), true),
+            DirectSmmuCapabilities::default()
+        );
+
+        let pasid = cli_args::SmmuCli::from_str("rc=rc0,accel,ssid-bits=14").unwrap();
+        assert_eq!(
+            direct_smmu_capabilities(Some(&pasid), true),
+            DirectSmmuCapabilities {
+                pasid: true,
+                ats: false,
+            }
+        );
+
+        let ats = cli_args::SmmuCli::from_str("rc=rc0,accel,ats,ssid-bits=14").unwrap();
+        assert_eq!(
+            direct_smmu_capabilities(Some(&ats), true),
+            DirectSmmuCapabilities {
+                pasid: true,
+                ats: true,
+            }
+        );
+        assert_eq!(
+            direct_smmu_capabilities(Some(&ats), false),
+            DirectSmmuCapabilities::default()
+        );
     }
 }

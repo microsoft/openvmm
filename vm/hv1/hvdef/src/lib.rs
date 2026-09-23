@@ -4647,7 +4647,7 @@ mod gb200_viommu_tests {
     use super::hypercall::*;
 
     #[test]
-    fn generic_viommu_ats_is_opt_in_and_ssid_is_explicit() {
+    fn generic_viommu_pasid_only_preserves_ssid_and_ats_is_opt_in() {
         let off = VirtIommuFeatureSet::generic_smmuv3(false, 14, 48).unwrap();
         assert_eq!(off.idr0 & HV_VIRT_IOMMU_IDR0_ATS, 0);
         assert_eq!(off.idr1 & 0x3f, u32::from(HV_VIRT_IOMMU_SID_BITS));
@@ -4656,6 +4656,7 @@ mod gb200_viommu_tests {
 
         let on = VirtIommuFeatureSet::generic_smmuv3(true, 14, 48).unwrap();
         assert_ne!(on.idr0 & HV_VIRT_IOMMU_IDR0_ATS, 0);
+        assert_eq!((on.idr1 >> 6) & 0x1f, 14);
         assert!(VirtIommuFeatureSet::generic_smmuv3(true, 21, 48).is_none());
         assert!(VirtIommuFeatureSet::generic_smmuv3(false, 0, 50).is_none());
     }

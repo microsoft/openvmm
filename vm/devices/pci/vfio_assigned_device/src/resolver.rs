@@ -108,6 +108,19 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
     }
 }
 
+fn direct_hwpt_flags(pasid: bool, ats: bool) -> anyhow::Result<u32> {
+    anyhow::ensure!(!ats || pasid, "direct ATS requires PASID/SSID support");
+    Ok(if pasid {
+        vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_PASID
+    } else {
+        0
+    } | if ats {
+        vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_ATS
+    } else {
+        0
+    })
+}
+
 /// Resource resolver for [`VfioCdevDeviceHandle`] (cdev + iommufd path).
 ///
 /// Spawns a `VfioCdevManager` task internally and communicates with it via RPC
@@ -166,7 +179,8 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             iommu_id,
             bar_addresses,
             direct_iommu,
-            direct_ats_pasid,
+            direct_pasid,
+            direct_ats,
         } = resource;
 
         let direct_vm_fd = if direct_iommu {
@@ -230,11 +244,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 iommu_id,
                 vsmmu,
                 direct_vm_fd,
-                direct_hwpt_flags: if direct_ats_pasid {
-                    vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_ATS_PASID
-                } else {
-                    0
-                },
+                direct_hwpt_flags: direct_hwpt_flags(direct_pasid, direct_ats)?,
             })
             .await
             .context("VFIO cdev manager failed")?;
@@ -293,5 +303,25 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
         .await?;
 
         Ok(assigned.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_capabilities_map_to_exact_uapi_flags() {
+        assert_eq!(direct_hwpt_flags(false, false).unwrap(), 0);
+        assert_eq!(
+            direct_hwpt_flags(true, false).unwrap(),
+            vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_PASID
+        );
+        assert_eq!(
+            direct_hwpt_flags(true, true).unwrap(),
+            vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_PASID
+                | vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_ATS
+        );
+        assert!(direct_hwpt_flags(false, true).is_err());
     }
 }

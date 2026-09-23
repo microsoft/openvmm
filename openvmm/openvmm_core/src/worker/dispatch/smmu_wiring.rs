@@ -103,9 +103,9 @@ pub struct VirtIommuSetup {
     pub gerr_intid: u32,
     /// Index of the root complex this virtual IOMMU covers.
     pub rc_index: u32,
-    /// Advertise ATS and permit PASID-tagged traffic.
+    /// Advertise endpoint ATS. PASID-tagged traffic is controlled separately.
     pub ats: bool,
-    /// Guest substream/PASID width.
+    /// Guest substream/PASID width; nonzero requests PASID/SVA.
     pub ssid_bits: u8,
     /// Guest output address width.
     pub oas_bits: u8,

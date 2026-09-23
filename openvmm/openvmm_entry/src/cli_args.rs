@@ -1420,8 +1420,11 @@ kernel with the direct iommufd UAPI.
 
 Examples:
     --iommu id=iommu0 --direct-iommu iommu=iommu0 \
-      --smmu rc=rc0,accel,ats,ssid-bits=14 \
+      --smmu rc=rc0,accel,ssid-bits=14 \
       --vfio host=0008:06:00.0,port=rp0,iommu=iommu0
+
+Add `ats` only when endpoint ATS is explicitly required and has passed the
+platform safety gate.
 
 Syntax: iommu=<name>
 "#)]
@@ -3723,7 +3726,7 @@ pub struct SmmuCli {
     pub rc_name: String,
     /// Use the Hyper-V-owned guest SMMUv3 path.
     pub accel: bool,
-    /// Advertise and enable ATS/PASID for DIRECT devices.
+    /// Advertise and enable endpoint ATS for DIRECT devices.
     pub ats: bool,
     /// SMMUv3 substream/PASID width.
     pub ssid_bits: u8,
@@ -3740,7 +3743,7 @@ struct SmmuArgs {
     accel: bool,
     #[kv(flag)]
     ats: bool,
-    #[kv(default)]
+    #[kv(key = "ssid-bits", default)]
     ssid_bits: u8,
     #[kv(default)]
     oas: SmmuOasCli,
@@ -3755,6 +3758,10 @@ impl FromStr for SmmuCli {
         anyhow::ensure!(
             args.ssid_bits <= 20,
             "--smmu: ssid-bits must be between 0 and 20"
+        );
+        anyhow::ensure!(
+            args.ssid_bits == 0 || args.accel,
+            "--smmu: nonzero ssid-bits requires accel"
         );
         anyhow::ensure!(!args.ats || args.accel, "--smmu: ats requires accel");
         anyhow::ensure!(
@@ -6455,7 +6462,13 @@ mod tests {
         assert_eq!(s.ssid_bits, 0);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
 
-        // ATS requires acceleration and a nonzero SSID width.
+        // PASID/SVA-only mode uses an SSID width without ATS.
+        let s = SmmuCli::from_str("rc=pcie0,accel,ssid-bits=14").unwrap();
+        assert!(s.accel);
+        assert!(!s.ats);
+        assert_eq!(s.ssid_bits, 14);
+
+        // ATS is an additional explicit opt-in.
         let s = SmmuCli::from_str("rc=pcie0,accel,ats,ssid-bits=14").unwrap();
         assert!(s.accel);
         assert!(s.ats);
@@ -6488,7 +6501,8 @@ mod tests {
         // Non-numeric oas value.
         assert!(SmmuCli::from_str("rc=pcie0,oas=big").is_err());
 
-        // Invalid ATS/PASID combinations.
+        // Invalid PASID/ATS combinations.
+        assert!(SmmuCli::from_str("rc=pcie0,ssid-bits=14").is_err());
         assert!(SmmuCli::from_str("rc=pcie0,ats,ssid-bits=14").is_err());
         assert!(SmmuCli::from_str("rc=pcie0,accel,ats").is_err());
         assert!(SmmuCli::from_str("rc=pcie0,accel,ats,ssid-bits=0").is_err());
