@@ -35,10 +35,6 @@ pub struct Config {
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pub pcie_ecam_below_4gb: bool,
     pub pcie_devices: Vec<PcieDeviceConfig>,
-    #[cfg(target_os = "linux")]
-    pub direct_iommus: Vec<String>,
-    #[cfg(target_os = "linux")]
-    pub direct_assigned_devices: Vec<DirectAssignedDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
     pub pcie_generic_initiators: Vec<PcieGenericInitiatorConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
@@ -71,6 +67,10 @@ pub struct Config {
     pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
+    #[cfg(target_os = "linux")]
+    pub direct_iommus: Vec<String>,
+    #[cfg(target_os = "linux")]
+    pub direct_assigned_devices: Vec<DirectAssignedDeviceConfig>,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
@@ -434,12 +434,12 @@ pub enum PcieIommuConfig {
     Smmu {
         /// Use the Hyper-V-owned guest SMMUv3 path.
         accel: bool,
+        /// Output address size (OAS) resolution policy.
+        oas: SmmuOas,
         /// Advertise ATS and add it to the DIRECT PASID HWPT path.
         ats: bool,
         /// SMMUv3 substream/PASID width.
         ssid_bits: u8,
-        /// Output address size (OAS) resolution policy.
-        oas: SmmuOas,
         /// SubstreamID width (SSIDSIZE) resolution policy.
         ssidsize: SmmuSsidSize,
     },
