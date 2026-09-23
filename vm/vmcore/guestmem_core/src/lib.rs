@@ -4,12 +4,6 @@
 //! `no_std`-compatible primitives shared by [`guestmem`] and by embedded
 //! guest-side crates that need to describe or access guest memory.
 //!
-//! This crate contains the error types, byte-oriented traits ([`MemoryRead`]
-//! and [`MemoryWrite`]), page-related constants, and the [`ranges::PagedRange`]
-//! description of a scattered guest byte range. It does not contain the
-//! mmap-backed [`guestmem::GuestMemory`] type or any of its infrastructure;
-//! those remain in `guestmem`.
-//!
 //! [`guestmem`]: https://microsoft.github.io/openvmm/api/guestmem
 //! [`guestmem::GuestMemory`]: https://microsoft.github.io/openvmm/api/guestmem/struct.GuestMemory.html
 
@@ -410,10 +404,6 @@ impl<T: MemoryWrite> MemoryWrite for Limit<T> {
 
 /// A trait describing the subset of guest memory operations needed to service
 /// [`PagedRange`](ranges::PagedRange) reads and writes.
-///
-/// This is implemented for the mmap-backed `guestmem::GuestMemory` type;
-/// downstream no_std consumers can implement it against their own page-backed
-/// memory to reuse the generic reader/writer plumbing in this crate.
 pub trait GuestMemoryIo {
     /// Reads `data.len()` bytes from `range` into `data`.
     fn read_range(
