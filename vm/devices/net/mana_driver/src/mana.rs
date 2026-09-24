@@ -194,7 +194,6 @@ impl<T: DeviceBacking> ManaDevice<T> {
                 (Ok(Some(mana_saved_state)), driver.into_device())
             }
             Ok(None) => {
-                tracing::info!("MANA device save skipped");
                 (Ok(None), driver.into_device())
             }
             Err(err) => {
