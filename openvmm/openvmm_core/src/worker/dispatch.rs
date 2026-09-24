@@ -2933,7 +2933,11 @@ impl InitializedVm {
         let virt_iommu_bindings = Vec::new();
 
         #[cfg(target_os = "linux")]
-        let has_direct_iommus = !cfg.direct_iommus.is_empty();
+        let direct_device_ports: std::collections::HashSet<String> = cfg
+            .direct_assigned_devices
+            .iter()
+            .map(|device| device.port_name.clone())
+            .collect();
 
         try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
             let chipset_builder = &chipset_builder;
@@ -2945,6 +2949,8 @@ impl InitializedVm {
             let port_info = &port_info;
             let processor_topology = &processor_topology;
             let iommu_devices = &iommu_devices;
+            #[cfg(target_os = "linux")]
+            let direct_device_ports = &direct_device_ports;
             async move {
                 let port_name: Arc<str> = dev_cfg.port_name.into();
                 let pi = port_info.get(&port_name).ok_or_else(|| {
@@ -2986,7 +2992,7 @@ impl InitializedVm {
                     port_name.clone(),
                     &pcie_ctx.dma_target,
                     #[cfg(target_os = "linux")]
-                    if !has_direct_iommus {
+                    if !direct_device_ports.contains(port_name.as_ref()) {
                         None
                     } else {
                         Some(
@@ -3503,6 +3509,9 @@ impl InitializedVm {
             this.restore(saved_state)
                 .await
                 .context("loadedvm restore failed")?;
+            #[cfg(guest_arch = "aarch64")]
+            this.setup_virtual_iommus()
+                .context("failed to restore Hyper-V virtual IOMMU bindings")?;
         } else {
             // Assign PCI bus numbers/BARs before building firmware so that the
             // ACPI tables (specifically the SRAT generic-initiator entries) can
