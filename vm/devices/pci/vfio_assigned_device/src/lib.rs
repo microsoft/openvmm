@@ -20,6 +20,7 @@ pub mod resolver;
 
 use anyhow::Context as _;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
@@ -748,14 +749,19 @@ impl VfioAssignedPciDevice {
         let bar_reset_defaults = bars;
 
         let kernel_owned_ats = direct_capabilities.direct && direct_capabilities.ats;
-        let ats_drop_guard = kernel_owned_ats
-            .then_some(ats_control_offset)
-            .flatten()
-            .map(|control_offset| AtsDropGuard {
+        let ats_drop_guard = if kernel_owned_ats {
+            let control_offset = ats_control_offset
+                .context("direct ATS requested but the ATS capability was not discovered")?;
+            set_ats_enabled(&vfio_device, Some(control_offset), false)
+                .context("failed to disable ATS before assigning the device")?;
+            Some(AtsDropGuard {
                 pci_id: pci_id.clone(),
                 vfio_device: vfio_device.clone(),
                 control_offset,
-            });
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
             pci_id,
@@ -2140,6 +2146,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                             enabled,
                             "guest ATS transition failed"
                         );
+                        return IoResult::Err(IoError::NoResponse);
                     }
                 }
                 return IoResult::Ok;
