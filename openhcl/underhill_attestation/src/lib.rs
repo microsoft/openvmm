@@ -1829,7 +1829,7 @@ fn get_derived_keys_by_id(
 // / Verify the InitData hash in the attestation report
 /// against the asserted InitData hash.
 ///   For SNP, this is the host data.
-///   For TDX, this is the mr_config.
+///   For TDX, this is MRCONFIGID.
 ///   For other attestation types, this is not supported.
 /// Takes the asserted InitData hash and the appropriate
 /// TEE call interface as arguments.
@@ -1870,18 +1870,18 @@ fn verify_init_data_inner(
             }
         }
         AttestationType::Tdx => {
-            // compare hash of the encoded settings with the mr_config
+            // Compare the hash of the encoded settings with MRCONFIGID.
             let tdreport = x86defs::tdx::TdReport::mut_from_bytes(&mut report.report[..])
                 .map_err(|_e| InitDataError::InvalidAttestationReport)?;
-            let mr_config = tdreport.td_info.td_info_base.mr_owner_config;
-            tracing::info!(CVM_ALLOWED, "MR owner config: {:?}", mr_config);
+            let mr_config_id = tdreport.td_info.td_info_base.mr_config_id;
+            tracing::info!(CVM_ALLOWED, "MR config ID: {:?}", mr_config_id);
             tracing::info!(CVM_ALLOWED, "Asserted init data: {:?}", asserted_init_data);
-            if tdx_init_data_matches(&mr_config, &asserted_init_data) {
+            if tdx_init_data_matches(&mr_config_id, &asserted_init_data) {
                 Ok(())
             } else {
                 tracing::error!(
                     CVM_ALLOWED,
-                    actual = ?mr_config,
+                    actual = ?mr_config_id,
                     asserted = ?asserted_init_data,
                     "init data does not match the asserted value"
                 );
@@ -1901,8 +1901,8 @@ fn verify_init_data_inner(
     }
 }
 
-fn tdx_init_data_matches(mr_owner_config: &[u8; 48], asserted_init_data: &[u8; 32]) -> bool {
-    let (init_data, padding) = mr_owner_config.split_at(asserted_init_data.len());
+fn tdx_init_data_matches(mr_config_id: &[u8; 48], asserted_init_data: &[u8; 32]) -> bool {
+    let (init_data, padding) = mr_config_id.split_at(asserted_init_data.len());
     init_data == asserted_init_data && padding.iter().all(|&byte| byte == 0)
 }
 
@@ -5004,35 +5004,29 @@ mod tests {
     #[test]
     fn tdx_init_data_matches_zero_padded_hash() {
         let asserted_init_data = [0x5a; 32];
-        let mut mr_owner_config = [0u8; 48];
-        mr_owner_config[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
+        let mut mr_config_id = [0u8; 48];
+        mr_config_id[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
 
-        assert!(tdx_init_data_matches(&mr_owner_config, &asserted_init_data));
+        assert!(tdx_init_data_matches(&mr_config_id, &asserted_init_data));
     }
 
     #[test]
     fn tdx_init_data_rejects_hash_mismatch() {
         let asserted_init_data = [0x5a; 32];
-        let mut mr_owner_config = [0u8; 48];
-        mr_owner_config[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
-        mr_owner_config[0] ^= 1;
+        let mut mr_config_id = [0u8; 48];
+        mr_config_id[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
+        mr_config_id[0] ^= 1;
 
-        assert!(!tdx_init_data_matches(
-            &mr_owner_config,
-            &asserted_init_data
-        ));
+        assert!(!tdx_init_data_matches(&mr_config_id, &asserted_init_data));
     }
 
     #[test]
     fn tdx_init_data_rejects_nonzero_padding() {
         let asserted_init_data = [0x5a; 32];
-        let mut mr_owner_config = [0u8; 48];
-        mr_owner_config[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
-        mr_owner_config[asserted_init_data.len()] = 1;
+        let mut mr_config_id = [0u8; 48];
+        mr_config_id[..asserted_init_data.len()].copy_from_slice(&asserted_init_data);
+        mr_config_id[asserted_init_data.len()] = 1;
 
-        assert!(!tdx_init_data_matches(
-            &mr_owner_config,
-            &asserted_init_data
-        ));
+        assert!(!tdx_init_data_matches(&mr_config_id, &asserted_init_data));
     }
 }
