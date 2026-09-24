@@ -11,14 +11,19 @@ disk_backend.workspace = true
 disk_backend_resources.workspace = true
 scsi_buffers.workspace = true
 guestmem.workspace = true
+pal_async.workspace = true
+parking_lot.workspace = true
 vm_resource.workspace = true
 
 inspect = { workspace = true, features = ["filepath"] }
 blocking.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring.workspace = true
+libc.workspace = true
+
 [dev-dependencies]
-pal_async.workspace = true
 storage_tests.workspace = true
 tempfile.workspace = true
 
