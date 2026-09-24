@@ -37,98 +37,27 @@ use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
 use crate::ring::SendRing;
 use core::hint::spin_loop;
-use guid::Guid;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::FromBytes;
-use zerocopy::Immutable;
 use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
 
-/// `f912ad6d-2b17-48ea-bd65-f927a61c7684` — VMBus interface GUID for
-/// the Hyper-V synthetic keyboard.
-pub const INTERFACE_GUID: Guid = Guid {
-    data1: 0xf912ad6d,
-    data2: 0x2b17,
-    data3: 0x48ea,
-    data4: [0xbd, 0x65, 0xf9, 0x27, 0xa6, 0x1c, 0x76, 0x84],
-};
-
-/// Protocol version — `major << 16 | minor`.
-pub const VERSION_WIN8: u32 = 1u32 << 16;
-
-/// Guest request to negotiate a keyboard protocol version.
-pub const MESSAGE_PROTOCOL_REQUEST: u32 = 1;
-/// Host response to a keyboard protocol version request.
-pub const MESSAGE_PROTOCOL_RESPONSE: u32 = 2;
-/// Host notification containing a keyboard event.
-pub const MESSAGE_EVENT: u32 = 3;
-/// Guest request to update the keyboard LED state.
-pub const MESSAGE_SET_LED_INDICATORS: u32 = 4;
-
-/// The make code contains a Unicode character rather than a scan code.
-pub const KEYSTROKE_IS_UNICODE: u32 = 1 << 0;
-/// The event releases a key rather than pressing it.
-pub const KEYSTROKE_IS_BREAK: u32 = 1 << 1;
-/// The scan code has an `E0` prefix.
-pub const KEYSTROKE_IS_E0: u32 = 1 << 2;
-/// The scan code has an `E1` prefix.
-pub const KEYSTROKE_IS_E1: u32 = 1 << 3;
-
-/// Maximum bytes we expect any keyboard message to occupy (see
-/// `MAXIMUM_MESSAGE_SIZE` in the openvmm device).
-pub const MAXIMUM_MESSAGE_SIZE: usize = 256;
-
-/// Wire header for every keyboard packet.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct MessageHeader {
-    /// Identifies the body layout that follows this header.
-    pub message_type: u32,
-}
-
-/// `MESSAGE_PROTOCOL_REQUEST` body — guest → host.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct MessageProtocolRequest {
-    /// Requested protocol version encoded as `major << 16 | minor`.
-    pub version: u32,
-}
-
-/// `MESSAGE_PROTOCOL_RESPONSE` body — host → guest.
-///
-/// `accepted != 0` means the host is willing to speak the requested
-/// version.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct MessageProtocolResponse {
-    /// Nonzero when the host accepts the requested protocol version.
-    pub accepted: u32,
-}
-
-/// `MESSAGE_EVENT` body — host → guest, one PS/2 make/break code
-/// per packet.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct MessageKeystroke {
-    /// PS/2 make code, or a Unicode character when flagged as Unicode.
-    pub make_code: u16,
-    /// Reserved padding; must be zero.
-    pub padding: u16,
-    /// Bitwise combination of the `KEYSTROKE_*` flags.
-    pub flags: u32,
-}
-
-/// `MESSAGE_SET_LED_INDICATORS` body — guest → host. Bit-mask of the
-/// LEDs the guest wants lit.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct MessageLedIndicatorsState {
-    /// Bit mask describing which keyboard LEDs should be lit.
-    pub led_flags: u16,
-    /// Reserved padding; must be zero.
-    pub padding: u16,
-}
+pub use hyperv_keyboard_protocol::INTERFACE_GUID;
+pub use hyperv_keyboard_protocol::KEYSTROKE_IS_BREAK;
+pub use hyperv_keyboard_protocol::KEYSTROKE_IS_E0;
+pub use hyperv_keyboard_protocol::KEYSTROKE_IS_E1;
+pub use hyperv_keyboard_protocol::KEYSTROKE_IS_UNICODE;
+pub use hyperv_keyboard_protocol::MAXIMUM_MESSAGE_SIZE;
+pub use hyperv_keyboard_protocol::MESSAGE_EVENT;
+pub use hyperv_keyboard_protocol::MESSAGE_PROTOCOL_REQUEST;
+pub use hyperv_keyboard_protocol::MESSAGE_PROTOCOL_RESPONSE;
+pub use hyperv_keyboard_protocol::MESSAGE_SET_LED_INDICATORS;
+pub use hyperv_keyboard_protocol::MessageHeader;
+pub use hyperv_keyboard_protocol::MessageKeystroke;
+pub use hyperv_keyboard_protocol::MessageLedIndicatorsState;
+pub use hyperv_keyboard_protocol::MessageProtocolRequest;
+pub use hyperv_keyboard_protocol::MessageProtocolResponse;
+pub use hyperv_keyboard_protocol::VERSION_WIN8;
 
 /// A parsed inbound keyboard packet.
 #[derive(Copy, Clone, Debug)]

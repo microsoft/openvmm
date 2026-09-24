@@ -10439,6 +10439,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "guid",
  "hvdef",
+ "hyperv_keyboard_protocol",
  "log",
  "open_enum",
  "opentmk_core",
