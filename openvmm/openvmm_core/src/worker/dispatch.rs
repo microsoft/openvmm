@@ -3259,6 +3259,11 @@ impl LoadedVmInner {
     }
 
     async fn load_firmware(&mut self, vtl2_only: bool) -> anyhow::Result<()> {
+        #[cfg(guest_arch = "aarch64")]
+        if let IommuDevices::Smmu(devices) = &mut self.iommu_devices {
+            devices.refresh_acpi_capabilities();
+        }
+
         let cache_topology = if cfg!(guest_arch = "aarch64") {
             Some(
                 cache_topology::CacheTopology::from_host()
