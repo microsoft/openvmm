@@ -4374,6 +4374,13 @@ impl LoadedVm {
                                     rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
                                 })
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
+                            #[cfg(guest_arch = "aarch64")]
+                            anyhow::ensure!(
+                                !self.inner.virt_iommus.iter().any(|viommu| {
+                                    viommu.rc_index == self.inner.pcie_host_bridges[rc_idx].index
+                                }),
+                                "PCIe hotplug is not supported on a direct Hyper-V vIOMMU root complex"
+                            );
 
                             // Get the bus_range from the port's config space emulator.
                             let bus_range = rc.lock()
@@ -4826,9 +4833,27 @@ impl LoadedVm {
 
         // Load again
         if reload_firmware {
+            #[cfg(guest_arch = "aarch64")]
+            self.unbind_virtual_iommu_bindings()
+                .context("failed to unbind virtual IOMMU devices before PCI reassignment")?;
             // Assign PCI resources before rebuilding firmware so the ACPI
             // tables reflect the freshly assigned bus numbers.
             self.assign_pci_resources().await?;
+            #[cfg(guest_arch = "aarch64")]
+            self.setup_virtual_iommus()
+                .context("failed to rebind virtual IOMMU devices after PCI reassignment")?;
+            #[cfg(guest_arch = "aarch64")]
+            {
+                if let Err(error) = self.inner.load_firmware(false).await {
+                    return match self.unbind_virtual_iommu_bindings() {
+                        Ok(()) => Err(error.context("firmware reload failed after vIOMMU setup")),
+                        Err(rollback) => Err(error.context(format!(
+                            "firmware reload failed and Hyper-V unbind rollback remains pending: {rollback:#}"
+                        ))),
+                    };
+                }
+            }
+            #[cfg(not(guest_arch = "aarch64"))]
             self.inner.load_firmware(false).await?;
         }
 

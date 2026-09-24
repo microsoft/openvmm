@@ -62,6 +62,7 @@ const ATS_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 // PCI_ATS_CTRL_ENABLE is bit 15 of the 16-bit ATS Control register, which is
 // the upper word of the dword at capability offset + 4.
 const ATS_CONTROL_ENABLE: u32 = 0x8000_0000;
+const SRIOV_CAPABILITY_SIZE: u16 = 0x40;
 
 #[derive(Clone, Copy, Debug, Default)]
 enum AtsResumeState {
@@ -346,6 +347,8 @@ pub(crate) struct VfioAssignedPciDevice {
         with = "|m| inspect::iter_by_key(m.iter().map(|(k, v)| (format!(\"{k:#06x}\"), v)))"
     )]
     config_patches: BTreeMap<u16, ConfigPatch>,
+    #[inspect(with = "|r| r.as_ref().map(|r| format!(\"{:#x}-{:#x}\", r.start, r.end))")]
+    managed_sriov_range: Option<Range<u16>>,
 
     /// Synthetic PASID capability exposed for an accelerated IOMMUFD device.
     synthetic_pasid: Option<SyntheticPasidCapability>,
@@ -446,8 +449,12 @@ impl Drop for AtsDropGuard {
 }
 
 fn ats_enabled(device: &VfioPciDevice, control_offset: Option<u16>) -> anyhow::Result<bool> {
+    Ok(read_ats_control(device, control_offset)? & ATS_CONTROL_ENABLE != 0)
+}
+
+fn read_ats_control(device: &VfioPciDevice, control_offset: Option<u16>) -> anyhow::Result<u32> {
     let Some(offset) = control_offset else {
-        return Ok(false);
+        return Ok(0);
     };
 
     let mut control = 0;
@@ -455,7 +462,7 @@ fn ats_enabled(device: &VfioPciDevice, control_offset: Option<u16>) -> anyhow::R
         offset,
         ByteEnabledDwordRead::with_all_bytes_enabled(&mut control),
     )?;
-    Ok(control & ATS_CONTROL_ENABLE != 0)
+    Ok(control)
 }
 
 fn set_ats_enabled(
@@ -463,11 +470,30 @@ fn set_ats_enabled(
     control_offset: Option<u16>,
     enabled: bool,
 ) -> anyhow::Result<()> {
+    set_ats_control(device, control_offset, enabled, None)
+}
+
+fn set_guest_ats_control(
+    device: &VfioPciDevice,
+    control_offset: Option<u16>,
+    enabled: bool,
+    guest_write: ByteEnabledDwordWrite,
+) -> anyhow::Result<()> {
+    set_ats_control(device, control_offset, enabled, Some(guest_write))
+}
+
+fn set_ats_control(
+    device: &VfioPciDevice,
+    control_offset: Option<u16>,
+    enabled: bool,
+    guest_write: Option<ByteEnabledDwordWrite>,
+) -> anyhow::Result<()> {
     let Some(offset) = control_offset else {
         return Ok(());
     };
 
-    let value = if enabled { ATS_CONTROL_ENABLE } else { 0 };
+    let value = read_ats_control(device, control_offset)?;
+    let value = merge_ats_control(value, enabled, guest_write);
     device.write_config(
         offset,
         ByteEnabledDwordWrite::new(value, PciConfigByteEnable::HIGH_WORD),
@@ -477,6 +503,18 @@ fn set_ats_enabled(
         "ATS control readback did not match requested state"
     );
     Ok(())
+}
+
+fn merge_ats_control(
+    mut value: u32,
+    enabled: bool,
+    guest_write: Option<ByteEnabledDwordWrite>,
+) -> u32 {
+    if let Some(guest_write) = guest_write {
+        let mask = guest_write.valid_mask() & 0xffff_0000;
+        value = (value & !mask) | (guest_write.extract() & mask);
+    }
+    (value & !ATS_CONTROL_ENABLE) | if enabled { ATS_CONTROL_ENABLE } else { 0 }
 }
 
 impl VfioPciDevice {
@@ -673,6 +711,7 @@ impl VfioAssignedPciDevice {
             vfio_device.config_size,
             pasid_capabilities,
         )?;
+        let managed_sriov_range = caps.managed_sriov_range;
         let managed_pasid_control_offset = caps.managed_pasid_control_offset;
         let managed_ats_control_offset = caps.managed_ats_control_offset;
         let ats_control_offset = caps.ats_control_offset;
@@ -843,6 +882,7 @@ impl VfioAssignedPciDevice {
             bar_direct_maps,
             config_patches,
             synthetic_pasid,
+            managed_sriov_range,
             accel_stream,
             managed_pasid_control_offset,
             managed_ats_control_offset,
@@ -1344,6 +1384,7 @@ struct DiscoveredCapabilities {
     last_ext_cap_offset: Option<u16>,
     /// Existing PASID capability offset, if VFIO exposes one in the future.
     pasid_cap_offset: Option<u16>,
+    managed_sriov_range: Option<Range<u16>>,
     managed_pasid_control_offset: Option<u16>,
     managed_ats_control_offset: Option<u16>,
     ats_control_offset: Option<u16>,
@@ -1381,6 +1422,7 @@ fn discover_capabilities_with_policy(
         config_patches: BTreeMap::new(),
         last_ext_cap_offset: None,
         pasid_cap_offset: None,
+        managed_sriov_range: None,
         managed_pasid_control_offset: None,
         managed_ats_control_offset: None,
         ats_control_offset: None,
@@ -1622,11 +1664,26 @@ fn discover_capabilities_with_policy(
             );
 
             match cap_id {
-                // The GB200 PF driver requires SR-IOV capability discovery.
-                caps::ExtendedCapabilityId::SRIOV if is_gb200_pf => {}
-                caps::ExtendedCapabilityId::SRIOV
-                | caps::ExtendedCapabilityId::ARI
-                | caps::ExtendedCapabilityId::REBAR => {
+                caps::ExtendedCapabilityId::SRIOV => {
+                    result.managed_sriov_range =
+                        Some(offset..offset.saturating_add(SRIOV_CAPABILITY_SIZE));
+                    // The GB200 PF driver requires read-only SR-IOV discovery.
+                    if !is_gb200_pf {
+                        tracing::info!(
+                            ?cap_id,
+                            offset = format_args!("{offset:#x}"),
+                            "filtering extended capability from guest view"
+                        );
+                        result.config_patches.insert(
+                            offset,
+                            ConfigPatch {
+                                mask: 0x0000_FFFF,
+                                value: 0,
+                            },
+                        );
+                    }
+                }
+                caps::ExtendedCapabilityId::ARI | caps::ExtendedCapabilityId::REBAR => {
                     tracing::info!(
                         ?cap_id,
                         offset = format_args!("{offset:#x}"),
@@ -1921,6 +1978,7 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             supports_reset,
             config_patches: _, // immutable — built at init
             ref mut synthetic_pasid,
+            managed_sriov_range: _,
             managed_pasid_control_offset: _,
             managed_ats_control_offset: _,
             ats_control_offset: _,
@@ -2278,15 +2336,32 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                             enabled,
                             "ignored guest ATS transition because direct ATS is disabled"
                         );
-                    } else if let Err(err) =
-                        self.set_ats_enabled_retry(enabled, "guest ATS control write")
-                    {
-                        panic!(
-                            "cannot update ATS for VFIO device {} after guest config write: {err:#}",
-                            self.pci_id
+                    } else if let Err(err) = set_guest_ats_control(
+                        &self.vfio_device,
+                        self.ats_control_offset,
+                        enabled,
+                        value,
+                    ) {
+                        tracing::error!(
+                            pci_id = self.pci_id.as_str(),
+                            error = err.as_ref() as &dyn std::error::Error,
+                            enabled,
+                            "guest ATS transition failed"
                         );
                     }
                 }
+                return IoResult::Ok;
+            }
+            _ if self
+                .managed_sriov_range
+                .as_ref()
+                .is_some_and(|range| range.contains(&offset)) =>
+            {
+                tracing::trace!(
+                    pci_id = self.pci_id.as_str(),
+                    offset = format_args!("{offset:#x}"),
+                    "ignored guest write to read-only SR-IOV capability"
+                );
                 return IoResult::Ok;
             }
             _ if Some(offset) == self.managed_pcie_device_control_offset => {
@@ -2839,6 +2914,7 @@ mod tests {
             !caps.config_patches.contains_key(&0x100),
             "SR-IOV must remain visible for the GB200 PF driver"
         );
+        assert_eq!(caps.managed_sriov_range, Some(0x100..0x140));
     }
 
     #[test]
@@ -2854,6 +2930,7 @@ mod tests {
             caps.config_patches.contains_key(&0x100),
             "SR-IOV must remain hidden for other VFIO devices"
         );
+        assert_eq!(caps.managed_sriov_range, Some(0x100..0x140));
     }
 
     #[test]
@@ -3061,6 +3138,18 @@ mod tests {
             )),
             None
         );
+        assert_eq!(
+            merge_ats_control(
+                0x001f_0000,
+                true,
+                Some(ByteEnabledDwordWrite::new(
+                    0x8005_0000,
+                    PciConfigByteEnable::HIGH_WORD,
+                )),
+            ),
+            0x8005_0000
+        );
+        assert_eq!(merge_ats_control(0x801f_0000, false, None), 0x001f_0000);
     }
 
     #[test]
