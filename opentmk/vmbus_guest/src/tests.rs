@@ -17,11 +17,11 @@ use zerocopy::IntoBytes;
 
 fn roundtrip<T>(msg: &T)
 where
-    T: IntoBytes + FromBytes + PartialEq + core::fmt::Debug + zerocopy::Immutable,
+    T: IntoBytes + FromBytes + zerocopy::Immutable,
 {
     let bytes = msg.as_bytes();
     let (parsed, _) = T::read_from_prefix(bytes).unwrap();
-    assert_eq!(&parsed, msg);
+    assert_eq!(parsed.as_bytes(), bytes);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn packet_type_open_enum_roundtrip() {
 
 #[test]
 fn version_ladder_ordered() {
-    let ladder = Version::NEGOTIATION_LADDER;
+    let ladder = NEGOTIATION_LADDER;
     assert_eq!(ladder[0], Version::Copper);
     assert_eq!(*ladder.last().unwrap(), Version::Win8);
     // Strictly descending.
@@ -107,7 +107,7 @@ fn version_ladder_ordered() {
 
 #[test]
 fn feature_flags_supported_bits() {
-    let flags = FeatureFlags::supported();
+    let flags = supported_feature_flags();
     assert!(flags.guest_specified_signal_parameters());
     assert!(flags.channel_interrupt_redirection());
     assert!(flags.modify_connection());
@@ -140,17 +140,17 @@ fn zerocopy_roundtrips() {
     roundtrip(&ModifyConnection::new_zeroed());
     roundtrip(&ModifyConnectionResponse::new_zeroed());
     roundtrip(&TlConnectResult::new_zeroed());
-    roundtrip(&RequestOffers);
-    roundtrip(&AllOffersDelivered);
-    roundtrip(&Unload);
-    roundtrip(&UnloadComplete);
+    roundtrip(&RequestOffers {});
+    roundtrip(&AllOffersDelivered {});
+    roundtrip(&Unload {});
+    roundtrip(&UnloadComplete {});
 }
 
 #[test]
 fn message_encode_decode() {
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
     let ic = InitiateContact {
-        version_requested: Version::Copper.raw(),
+        version_requested: version_raw(Version::Copper),
         target_message_vp: 0,
         interrupt_page_or_target_info: 0,
         parent_to_child_monitor_page_gpa: 0,
@@ -443,7 +443,7 @@ mod completion_tests {
         let key = completion_key_for(&buf[..used]).unwrap().unwrap();
         assert_eq!(key, CompletionKey::GpadlTorndown(GpadlId(9)));
 
-        let used = encode(&UnloadComplete, &mut buf);
+        let used = encode(&UnloadComplete {}, &mut buf);
         let key = completion_key_for(&buf[..used]).unwrap().unwrap();
         assert_eq!(key, CompletionKey::UnloadComplete);
     }
@@ -489,6 +489,8 @@ mod connection_tests {
     use crate::protocol::Version;
     use crate::protocol::VersionResponse;
     use crate::protocol::VersionResponse2;
+    use crate::protocol::supported_feature_flags;
+    use crate::protocol::version_raw;
     use alloc::vec::Vec;
     use core::mem::size_of;
     use hvdef::HvError;
@@ -568,15 +570,15 @@ mod connection_tests {
     #[test]
     fn encode_initiate_contact_pre_copper_no_client_id() {
         let bytes =
-            encode_initiate_contact(Version::Win10Rs5, None, FeatureFlags::supported(), (0, 0));
+            encode_initiate_contact(Version::Win10Rs5, None, supported_feature_flags(), (0, 0));
         assert_eq!(bytes.len(), HEADER_SIZE + size_of::<InitiateContact>());
         let ic: InitiateContact = crate::message::parse(&bytes).unwrap();
-        assert_eq!(ic.version_requested, Version::Win10Rs5.raw());
+        assert_eq!(ic.version_requested, version_raw(Version::Win10Rs5));
         // For ≥ 5.0, interrupt_page_or_target_info is a TargetInfo.
         let ti = TargetInfo::from(ic.interrupt_page_or_target_info);
         assert_eq!(ti.sint(), crate::synic::VMBUS_SINT);
         assert_eq!(ti.vtl(), 0);
-        assert_eq!(ti.feature_flags(), FeatureFlags::supported().into_bits());
+        assert_eq!(ti.feature_flags(), supported_feature_flags().into_bits());
     }
 
     #[test]
@@ -584,14 +586,14 @@ mod connection_tests {
         let bytes = encode_initiate_contact(
             Version::Copper,
             Some(CLIENT_ID),
-            FeatureFlags::supported(),
+            supported_feature_flags(),
             (0, 0),
         );
         assert_eq!(bytes.len(), HEADER_SIZE + size_of::<InitiateContact2>());
         let ic2: InitiateContact2 = crate::message::parse(&bytes).unwrap();
         assert_eq!(
             ic2.initiate_contact.version_requested,
-            Version::Copper.raw()
+            version_raw(Version::Copper)
         );
         assert_eq!(ic2.client_id, CLIENT_ID);
     }
@@ -599,7 +601,7 @@ mod connection_tests {
     #[test]
     fn encode_initiate_contact_v1_no_target_info() {
         let bytes =
-            encode_initiate_contact(Version::Win10, None, FeatureFlags::supported(), (0, 0));
+            encode_initiate_contact(Version::Win10, None, supported_feature_flags(), (0, 0));
         let ic: InitiateContact = crate::message::parse(&bytes).unwrap();
         assert_eq!(ic.interrupt_page_or_target_info, 0);
     }
@@ -628,11 +630,11 @@ mod connection_tests {
                 padding: 0,
                 selected_version_or_connection_id: 4,
             },
-            supported_features: FeatureFlags::supported().into_bits(),
+            supported_features: supported_feature_flags().into_bits(),
         };
         let bytes = encode_message(&vr2);
         let parsed = parse_version_response(&bytes).unwrap();
-        assert_eq!(parsed.supported_features, FeatureFlags::supported());
+        assert_eq!(parsed.supported_features, supported_feature_flags());
     }
 
     fn make_success_response(version: Version, conn_id: u32) -> Vec<u8> {
@@ -644,7 +646,7 @@ mod connection_tests {
                     padding: 0,
                     selected_version_or_connection_id: conn_id,
                 },
-                supported_features: FeatureFlags::supported().into_bits(),
+                supported_features: supported_feature_flags().into_bits(),
             };
             encode_message(&vr2)
         } else {
@@ -685,7 +687,7 @@ mod connection_tests {
             negotiate_version(&mut ctx, &table, &mut pump, CLIENT_ID, &[Version::Copper]).unwrap();
         assert_eq!(state.selected_version, Version::Copper);
         assert_eq!(state.post_message_connection_id, 0xABCD);
-        assert_eq!(state.feature_flags, FeatureFlags::supported());
+        assert_eq!(state.feature_flags, supported_feature_flags());
 
         // ctx captured a single post_message hypercall for InitiateContact.
         assert_eq!(ctx.calls.len(), 1);
@@ -769,7 +771,7 @@ mod connection_tests {
             table: table.clone(),
             script: alloc::vec![(
                 CompletionKey::AllOffersDelivered,
-                encode_message(&AllOffersDelivered),
+                encode_message(&AllOffersDelivered {}),
             )],
             offers: alloc::vec![offer_bytes_a, offer_bytes_b],
         };
@@ -805,13 +807,13 @@ mod hvsock_tests {
     use crate::hvsock::dispatch_connect_result;
     use crate::hvsock::encode_tl_connect_request;
     use crate::hvsock::set_connect_result_handler;
-    use crate::protocol::FeatureFlags;
     use crate::protocol::Guid;
     use crate::protocol::HEADER_SIZE;
     use crate::protocol::TlConnectRequest;
     use crate::protocol::TlConnectRequest2;
     use crate::protocol::TlConnectResult;
     use crate::protocol::Version;
+    use crate::protocol::supported_feature_flags;
     use core::mem::size_of;
     use core::sync::atomic::AtomicU32;
     use core::sync::atomic::Ordering;
@@ -902,7 +904,7 @@ mod hvsock_tests {
         *crate::connection::connection() = Some(ConnectionState {
             selected_version: Version::Copper,
             post_message_connection_id: 4,
-            feature_flags: FeatureFlags::supported(),
+            feature_flags: supported_feature_flags(),
             parent_to_child_monitor_page_gpa: 0,
             child_to_parent_monitor_page_gpa: 0,
         });
@@ -944,6 +946,7 @@ mod channel_tests {
     use crate::protocol::OpenChannelFlags;
     use crate::protocol::OpenResult;
     use crate::protocol::Version;
+    use crate::protocol::supported_feature_flags;
     use alloc::vec::Vec;
     use core::mem::size_of;
     use opentmk_core::context::HypercallPlatformTrait;
@@ -1008,7 +1011,7 @@ mod channel_tests {
         *crate::connection::connection() = Some(ConnectionState {
             selected_version: Version::Copper,
             post_message_connection_id: 4,
-            feature_flags: FeatureFlags::supported(),
+            feature_flags: supported_feature_flags(),
             parent_to_child_monitor_page_gpa: 0,
             child_to_parent_monitor_page_gpa: 0,
         });

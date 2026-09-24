@@ -42,7 +42,7 @@
 //!     table,
 //!     &mut pump,
 //!     CLIENT_ID,
-//!     Version::NEGOTIATION_LADDER,
+//!     crate::protocol::NEGOTIATION_LADDER,
 //! )?;
 //! let connection_id = state.connection_id;
 //!
@@ -171,7 +171,7 @@ pub fn encode_initiate_contact(
     };
 
     let base = InitiateContact {
-        version_requested: version.raw(),
+        version_requested: crate::protocol::version_raw(version),
         target_message_vp: 0,
         interrupt_page_or_target_info,
         parent_to_child_monitor_page_gpa: monitor_pages.0,
@@ -320,7 +320,7 @@ where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: MessagePump,
 {
-    let advertised_flags = FeatureFlags::supported();
+    let advertised_flags = crate::protocol::supported_feature_flags();
     let mut discard = OfferCollector::default();
     for &version in ladder {
         let handle = table.register(CompletionKey::VersionResponse);
@@ -394,7 +394,7 @@ where
     let handle = table.register(CompletionKey::AllOffersDelivered);
 
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
-    let used = encode(&RequestOffers, &mut buf);
+    let used = encode(&RequestOffers {}, &mut buf);
     post_message(ctx, connection_id, &buf[..used])?;
 
     pump.poll_until(ctx, &handle, sink)?;
@@ -431,7 +431,7 @@ pub fn initiate<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         table,
         &mut pump,
         CLIENT_ID,
-        Version::NEGOTIATION_LADDER,
+        crate::protocol::NEGOTIATION_LADDER,
     )?;
     *CONNECTION.lock() = Some(state);
     Ok(())
@@ -475,7 +475,7 @@ where
     let handle = table.register(CompletionKey::UnloadComplete);
 
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
-    let used = encode(&Unload, &mut buf);
+    let used = encode(&Unload {}, &mut buf);
     post_message(ctx, state.post_message_connection_id, &buf[..used])?;
 
     pump.poll_until(ctx, &handle, sink)?;

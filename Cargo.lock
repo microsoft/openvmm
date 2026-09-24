@@ -10437,12 +10437,14 @@ name = "vmbus_guest"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
+ "guid",
  "hvdef",
  "log",
  "open_enum",
  "opentmk_core",
  "spin",
  "thiserror 2.0.16",
+ "vmbus_core",
  "zerocopy",
 ]
 

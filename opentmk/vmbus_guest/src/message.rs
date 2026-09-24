@@ -47,7 +47,7 @@
 //!     &table,
 //!     &mut pump,
 //!     CLIENT_ID,
-//!     Version::NEGOTIATION_LADDER,
+//!     crate::protocol::NEGOTIATION_LADDER,
 //! )?;
 //! # Ok::<_, vmbus_guest::Error>(())
 //! ```
@@ -79,6 +79,7 @@ use core::sync::atomic::Ordering;
 use spin::Mutex;
 use spin::Once;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 
 /// Process-wide completion table, lazily created on first access.
@@ -96,7 +97,10 @@ pub fn completion_table() -> &'static CompletionTable {
 
 /// Encode `msg` into a `HV_MESSAGE_PAYLOAD_SIZE`-sized buffer along with
 /// its `MessageHeader`. Returns the number of used bytes.
-pub fn encode<M: VmbusMessage>(msg: &M, out: &mut [u8; MAX_MESSAGE_SIZE]) -> usize {
+pub fn encode<M: VmbusMessage + IntoBytes + Immutable>(
+    msg: &M,
+    out: &mut [u8; MAX_MESSAGE_SIZE],
+) -> usize {
     assert!(M::MESSAGE_SIZE <= MAX_MESSAGE_SIZE);
     let header = MessageHeader::new(M::MESSAGE_TYPE);
     out.fill(0);
@@ -341,7 +345,7 @@ pub fn completion_key_for(bytes: &[u8]) -> Result<Option<CompletionKey>> {
             let msg: ModifyChannelResponse = parse(bytes)?;
             Some(CompletionKey::ModifyChannelResponse(msg.channel_id))
         }
-        MessageType::TL_CONNECT_RESULT => {
+        MessageType::TL_CONNECT_REQUEST_RESULT => {
             let msg: TlConnectResult = parse(bytes)?;
             Some(CompletionKey::TlConnectResult(guid_to_key(
                 &msg.endpoint_id,
@@ -403,7 +407,7 @@ pub fn route_message<S: MessageSink + ?Sized>(
         _ => {}
     }
     if let Some(key) = completion_key_for(bytes)? {
-        if let MessageType::TL_CONNECT_RESULT = ty {
+        if let MessageType::TL_CONNECT_REQUEST_RESULT = ty {
             let result: TlConnectResult = parse(bytes)?;
             sink.tl_connect_result(&result);
             dispatch_connect_result(&result);

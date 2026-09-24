@@ -8,12 +8,14 @@ rust-version.workspace = true
 
 [dependencies]
 bitfield-struct.workspace = true
+guid.workspace = true
 hvdef.workspace = true
 log.workspace = true
 open_enum.workspace = true
 opentmk_core.workspace = true
 spin.workspace = true
 thiserror.workspace = true
+vmbus_core.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "uefi")'.dependencies]

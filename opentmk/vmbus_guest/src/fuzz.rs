@@ -108,7 +108,7 @@ pub fn resolve_connection_id(requested: u64) -> u32 {
         // Not yet negotiated: pick the default for the newest version
         // we would ask for, matching `initial_connection_id`.
         None => {
-            if Version::NEGOTIATION_LADDER
+            if crate::protocol::NEGOTIATION_LADDER
                 .first()
                 .is_some_and(|v| *v < Version::Win10Rs3_1)
             {
