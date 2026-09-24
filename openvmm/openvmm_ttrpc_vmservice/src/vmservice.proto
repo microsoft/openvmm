@@ -73,6 +73,34 @@ message DirectBoot {
     string kernel_cmdline = 3;
 }
 
+// Boot from an IGVM file.
+message IgvmBoot {
+    enum Personality {
+        // Linux direct boot with Hyper-V enlightenments.
+        LINUX_DIRECT = 0;
+        // Reserved for UEFI IGVM boot.
+        UEFI = 1;
+    }
+
+    // Path to the IGVM file on the host.
+    string igvm_path = 1;
+    // Guest boot environment.
+    Personality personality = 2;
+}
+
+// Confidential-computing isolation configuration.
+message IsolationConfig {
+    enum Type {
+        // No confidential-computing isolation.
+        NONE = 0;
+        // AMD SEV-SNP isolation.
+        SNP = 1;
+    }
+
+    // Isolation mode.
+    Type isolation_type = 1;
+}
+
 message UEFI {
     // Variables used to initialize an empty UEFI variable store. These are
     // ignored when the store already contains any variables.
@@ -610,6 +638,7 @@ message VMConfig {
     oneof BootConfig {
         DirectBoot direct_boot = 5;
         UEFI uefi = 6;
+        IgvmBoot igvm = 18;
     }
     WindowsOptions windows_options = 7;
     // Field 8 was previously map<string, string> extra_data.
@@ -628,7 +657,7 @@ message VMConfig {
 
     // SMBIOS (DMI) identity overrides. Applied to whichever boot type is
     // selected; note that PCAT boot honors only the system UUID and serial
-    // number.
+    // number. IGVM boot does not support these overrides.
     SMBIOSConfig smbios_config = 13;
 
     optional string crash_dump_path = 14;
@@ -642,6 +671,8 @@ message VMConfig {
     // Do not expose Hyper-V (HV#1) enlightenments. Requires disable_vmbus.
     // Unsupported for x86_64 UEFI boot.
     bool disable_hv = 17;
+    // Confidential-computing isolation mode.
+    IsolationConfig isolation_config = 19;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
