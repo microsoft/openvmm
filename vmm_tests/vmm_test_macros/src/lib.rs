@@ -23,7 +23,7 @@ use syn::parse_macro_input;
 use syn::spanned::Spanned;
 
 struct Config {
-    vmm: Option<Vmm>,
+    vmm: Option<TestVmm>,
     firmware: Firmware,
     arch: MachineArch,
     span: Span,
@@ -35,7 +35,7 @@ struct Config {
 }
 
 struct ResolvedConfig {
-    vmm: Vmm,
+    vmm: TestVmm,
     firmware: Firmware,
     arch: MachineArch,
     extra_deps: Vec<Path>,
@@ -46,7 +46,7 @@ struct ResolvedConfig {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Vmm {
+enum TestVmm {
     OpenVmm,
     HyperV,
     Qemu,
@@ -106,7 +106,7 @@ struct Args {
 
 struct ArgsWithOverrides {
     args: Args,
-    vmm: Option<Vmm>,
+    vmm: Option<TestVmm>,
     unstable: Option<String>,
     ignored: Option<String>,
     with_vtl0_pipette: bool,
@@ -138,9 +138,9 @@ impl ResolvedConfig {
         let arch_prefix = arch_to_str(self.arch);
 
         let vmm_prefix = match self.vmm {
-            Vmm::OpenVmm => "openvmm",
-            Vmm::HyperV => "hyperv",
-            Vmm::Qemu => "qemu",
+            TestVmm::OpenVmm => "openvmm",
+            TestVmm::HyperV => "hyperv",
+            TestVmm::Qemu => "qemu",
         };
 
         let firmware_prefix = match &self.firmware {
@@ -320,9 +320,9 @@ impl Parse for ArgsWithOverrides {
                         ));
                     }
                     overrides.vmm = match ident_string.as_str() {
-                        "openvmm" => Some(Vmm::OpenVmm),
-                        "hyperv" => Some(Vmm::HyperV),
-                        "qemu" => Some(Vmm::Qemu),
+                        "openvmm" => Some(TestVmm::OpenVmm),
+                        "hyperv" => Some(TestVmm::HyperV),
+                        "qemu" => Some(TestVmm::Qemu),
                         _ => unreachable!(),
                     };
                 }
@@ -358,7 +358,7 @@ impl Parse for ArgsWithOverrides {
 }
 
 struct ParsedOverrides {
-    vmm: Option<Vmm>,
+    vmm: Option<TestVmm>,
     unstable: Option<String>,
     ignored: Option<String>,
     with_vtl0_pipette: Option<bool>,
@@ -482,15 +482,15 @@ impl ArgsWithOverrides {
         for config in configs.into_iter() {
             resolved_configs.push(ResolvedConfig {
                 vmm: match (vmm, config.vmm) {
-                    (Some(Vmm::HyperV), Some(Vmm::HyperV))
-                    | (Some(Vmm::HyperV), None)
-                    | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
-                    (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
-                    | (Some(Vmm::OpenVmm), None)
-                    | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
-                    (Some(Vmm::Qemu), Some(Vmm::Qemu))
-                    | (Some(Vmm::Qemu), None)
-                    | (None, Some(Vmm::Qemu)) => Vmm::Qemu,
+                    (Some(TestVmm::HyperV), Some(TestVmm::HyperV))
+                    | (Some(TestVmm::HyperV), None)
+                    | (None, Some(TestVmm::HyperV)) => TestVmm::HyperV,
+                    (Some(TestVmm::OpenVmm), Some(TestVmm::OpenVmm))
+                    | (Some(TestVmm::OpenVmm), None)
+                    | (None, Some(TestVmm::OpenVmm)) => TestVmm::OpenVmm,
+                    (Some(TestVmm::Qemu), Some(TestVmm::Qemu))
+                    | (Some(TestVmm::Qemu), None)
+                    | (None, Some(TestVmm::Qemu)) => TestVmm::Qemu,
                     (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
                     _ => return Err(Error::new(config.span, "vmm mismatch")),
                 },
@@ -587,11 +587,11 @@ impl Parse for Config {
         }
 
         let (vmm, remainder) = if let Some(remainder) = word_string.strip_prefix("hyperv_") {
-            (Some(Vmm::HyperV), remainder)
+            (Some(TestVmm::HyperV), remainder)
         } else if let Some(remainder) = word_string.strip_prefix("openvmm_") {
-            (Some(Vmm::OpenVmm), remainder)
+            (Some(TestVmm::OpenVmm), remainder)
         } else if let Some(remainder) = word_string.strip_prefix("qemu_") {
-            (Some(Vmm::Qemu), remainder)
+            (Some(TestVmm::Qemu), remainder)
         } else {
             (None, word_string.as_str())
         };
@@ -1036,7 +1036,7 @@ pub fn openvmm_test(
 ) -> proc_macro::TokenStream {
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
-        vmm: Some(Vmm::OpenVmm),
+        vmm: Some(TestVmm::OpenVmm),
         unstable: None,
         ignored: None,
         with_vtl0_pipette: true,
@@ -1058,7 +1058,7 @@ pub fn openvmm_test_no_agent(
 ) -> proc_macro::TokenStream {
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
-        vmm: Some(Vmm::OpenVmm),
+        vmm: Some(TestVmm::OpenVmm),
         unstable: None,
         ignored: None,
         with_vtl0_pipette: false,
@@ -1112,17 +1112,17 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let arch = arch_to_tokens(config.arch);
 
         let (cfg_conditions, artifacts, petri_vm_config) = match config.vmm {
-            Vmm::HyperV => (
+            TestVmm::HyperV => (
                 quote!(#[cfg(windows)]),
                 quote!(::petri::PetriVmArtifacts::<::petri::hyperv::HyperVPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::hyperv::HyperVPetriBackend>),
             ),
-            Vmm::OpenVmm => (
+            TestVmm::OpenVmm => (
                 quote!(),
                 quote!(::petri::PetriVmArtifacts::<::petri::openvmm::OpenVmmPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::openvmm::OpenVmmPetriBackend>),
             ),
-            Vmm::Qemu => (
+            TestVmm::Qemu => (
                 quote!(),
                 quote!(::petri::PetriVmArtifacts::<::petri::qemu::QemuPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::qemu::QemuPetriBackend>),
@@ -1130,9 +1130,9 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         };
 
         let remote_access = match config.vmm {
-            Vmm::HyperV => quote!(::petri::RemoteAccess::LocalOnly),
-            Vmm::OpenVmm => quote!(::petri::RemoteAccess::Allow),
-            Vmm::Qemu => quote!(::petri::RemoteAccess::LocalOnly),
+            TestVmm::HyperV => quote!(::petri::RemoteAccess::LocalOnly),
+            TestVmm::OpenVmm => quote!(::petri::RemoteAccess::Allow),
+            TestVmm::Qemu => quote!(::petri::RemoteAccess::LocalOnly),
         };
 
         let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
@@ -1181,7 +1181,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 // Helper to build requirements TokenStream for firmware and resolved VMM
 fn build_requirements(
     firmware: &Firmware,
-    resolved_vmm: Vmm,
+    resolved_vmm: TestVmm,
     requires_host_vendor: Option<HostVendor>,
     requires_capabilities: &[&'static str],
 ) -> TokenStream {
@@ -1213,7 +1213,7 @@ fn build_requirements(
         requirement_expr = quote!(#requirement_expr.and(#isolation_requirement));
     }
 
-    let is_hyperv = resolved_vmm == Vmm::HyperV;
+    let is_hyperv = resolved_vmm == TestVmm::HyperV;
 
     if is_hyperv && is_vbs {
         requirement_expr = quote!(#requirement_expr.and(
@@ -1235,9 +1235,9 @@ fn build_requirements(
 
     for capability in requires_capabilities {
         let vmm = match resolved_vmm {
-            Vmm::OpenVmm => quote!(::petri::requirements::VmmType::OpenVmm),
-            Vmm::HyperV => quote!(::petri::requirements::VmmType::HyperV),
-            Vmm::Qemu => quote!(::petri::requirements::VmmType::Qemu),
+            TestVmm::OpenVmm => quote!(::petri::requirements::VmmType::OpenVmm),
+            TestVmm::HyperV => quote!(::petri::requirements::VmmType::HyperV),
+            TestVmm::Qemu => quote!(::petri::requirements::VmmType::Qemu),
         };
         requirement_expr = quote!(#requirement_expr.and(
             ::petri::requirements::TestRequirement::RequiresCapability {
