@@ -3521,9 +3521,9 @@ impl InitializedVm {
             // Final bus numbers determine the guest StreamIDs.
             #[cfg(guest_arch = "aarch64")]
             this.setup_virtual_iommus()?;
-            if let Err(error) = this.inner.load_firmware(false).await {
-                #[cfg(guest_arch = "aarch64")]
-                {
+            #[cfg(guest_arch = "aarch64")]
+            {
+                if let Err(error) = this.inner.load_firmware(false).await {
                     return match this.unbind_virtual_iommu_bindings() {
                         Ok(()) => Err(error.context("firmware load failed after vIOMMU setup")),
                         Err(rollback) => Err(error.context(format!(
@@ -3531,9 +3531,9 @@ impl InitializedVm {
                         ))),
                     };
                 }
-                #[cfg(not(guest_arch = "aarch64"))]
-                return Err(error);
             }
+            #[cfg(not(guest_arch = "aarch64"))]
+            this.inner.load_firmware(false).await?;
         }
 
         Ok(this)
@@ -4093,7 +4093,7 @@ impl LoadedVm {
                     "bound DIRECT device to Hyper-V virtual IOMMU"
                 );
             }
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(all(target_os = "linux", feature = "virt_mshv")))]
