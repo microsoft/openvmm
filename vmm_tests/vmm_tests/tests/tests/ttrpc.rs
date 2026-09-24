@@ -133,6 +133,7 @@ async fn test_ttrpc_no_vmbus(
                                         vmservice::virtio_device::Kind::Vsock(
                                             vmservice::VirtioVsock {
                                                 socket_path: vsock_path.to_string_lossy().into(),
+                                                guest_cid: Some(42),
                                             },
                                         ),
                                     ))),
@@ -197,6 +198,11 @@ async fn test_ttrpc_no_vmbus(
             })
             .await
             .context("timed out connecting to pipette over virtio-vsock")??;
+        assert_eq!(
+            agent.local_vsock_cid(),
+            Some(42),
+            "guest did not observe the configured virtio-vsock CID"
+        );
         let shell = agent.unix_shell();
         let acpi_devices = cmd!(shell, "ls /sys/bus/acpi/devices").read().await?;
         assert!(

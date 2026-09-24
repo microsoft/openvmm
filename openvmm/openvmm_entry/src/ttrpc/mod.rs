@@ -2270,13 +2270,15 @@ async fn build_virtio_device(
         Kind::Rng(vmservice::VirtioRng {}) => {
             virtio_resources::rng::VirtioRngHandle.into_resource()
         }
-        Kind::Vsock(vmservice::VirtioVsock { socket_path }) => {
+        Kind::Vsock(vmservice::VirtioVsock {
+            socket_path,
+            guest_cid,
+        }) => {
+            let guest_cid = virtio_vsock_guest_cid(guest_cid)?;
             let listener = UnixListener::bind(&socket_path)
                 .with_context(|| format!("failed to bind virtio-vsock socket: {socket_path}"))?;
             virtio_resources::vsock::VirtioVsockHandle {
-                // The guest CID does not matter for the UDS relay; it just needs
-                // to be a non-reserved value.
-                guest_cid: 0x3,
+                guest_cid,
                 base_path: socket_path,
                 listener,
             }
@@ -2289,6 +2291,16 @@ async fn build_virtio_device(
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
         Kind::Fs(config) => build_virtio_fs(config)?.into_resource(),
     })
+}
+
+fn virtio_vsock_guest_cid(guest_cid: Option<u64>) -> anyhow::Result<u64> {
+    let guest_cid = guest_cid.unwrap_or(3);
+    anyhow::ensure!(
+        (3..u64::from(u32::MAX)).contains(&guest_cid),
+        "virtio-vsock guest CID must be between 3 and {}",
+        u32::MAX - 1
+    );
+    Ok(guest_cid)
 }
 
 fn build_virtio_fs(
@@ -2510,6 +2522,19 @@ mod tests {
         assert!(!defaults.disable_vmbus);
         assert!(!defaults.disable_hv);
         assert!(validate_platform_config(&defaults).is_ok());
+    }
+
+    #[test]
+    fn validates_virtio_vsock_guest_cid() {
+        assert_eq!(virtio_vsock_guest_cid(None).unwrap(), 3);
+        assert_eq!(virtio_vsock_guest_cid(Some(3)).unwrap(), 3);
+        assert_eq!(
+            virtio_vsock_guest_cid(Some(u64::from(u32::MAX - 1))).unwrap(),
+            u64::from(u32::MAX - 1)
+        );
+        assert!(virtio_vsock_guest_cid(Some(2)).is_err());
+        assert!(virtio_vsock_guest_cid(Some(u64::from(u32::MAX))).is_err());
+        assert!(virtio_vsock_guest_cid(Some(u64::from(u32::MAX) + 1)).is_err());
     }
 
     #[test]
