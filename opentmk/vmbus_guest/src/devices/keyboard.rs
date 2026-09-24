@@ -10,7 +10,7 @@
 //! # Flow
 //!
 //! 1. Caller identifies the keyboard offer in the
-//!    [`OfferChannel`](crate::protocol::OfferChannel) list returned
+//!    [`OfferChannel`](vmbus_core::protocol::OfferChannel) list returned
 //!    by [`crate::request_offers`] (interface GUID
 //!    [`INTERFACE_GUID`]).
 //! 2. Caller allocates a 4-page ring region (send-ctrl, send-data,
@@ -32,12 +32,12 @@ use crate::Error;
 use crate::Result;
 use crate::channel::Channel;
 use crate::channel::ChannelState;
-use crate::protocol::Guid;
 use crate::ring::PacketFlags;
 use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
 use crate::ring::SendRing;
 use core::hint::spin_loop;
+use guid::Guid;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use zerocopy::FromBytes;

@@ -1,16 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! VMBus wire types.
+//! Guest-side VMBus wire types that do not live in `vmbus_core::protocol`.
 //!
-//! Most items in this module are re-exported from the canonical
-//! `no_std` crates in openvmm:
-//!
-//! * Channel-manager messages, `MessageHeader`, `MessageType`,
-//!   `VmbusMessage`, `Version`, `Guid`, and status/version constants
-//!   come from [`vmbus_core::protocol`].
-//!
-//! Two categories of definitions remain local:
+//! Two categories of definitions:
 //!
 //! 1. Ring-buffer packet descriptors (`PacketDescriptor`,
 //!    `GpaDirectHeader`, `TransferPageHeader`, `TransferPageRange`,
@@ -24,59 +17,23 @@
 //!    guest conveniences ([`NEGOTIATION_LADDER`],
 //!    [`supported_feature_flags`], [`version_raw`]) that have no
 //!    authoritative home upstream.
+//!
+//! Channel-manager wire types (`MessageHeader`, `MessageType`,
+//! `VmbusMessage`, `Version`, `InitiateContact*`, `VersionResponse*`,
+//! `OfferChannel`, `OpenChannel*`, `OpenResult`, `Gpadl*`, `Close*`,
+//! `Modify*`, `Tl*`, `Unload*`, `RequestOffers`, `AllOffersDelivered`,
+//! `RelIdReleased`, `RescindChannelOffer`, `TargetInfo`, `ChannelId`,
+//! `GpadlId`, `FeatureFlags`, `OpenChannelFlags`,
+//! `HvsockUserDefinedParameters`, `HvsockParametersVersion`,
+//! `UserDefinedData`, `ConnectionState`, `HEADER_SIZE`,
+//! `MAX_MESSAGE_SIZE`, and the `STATUS_*` constants) come directly
+//! from [`vmbus_core::protocol`]. `Guid` comes from the workspace
+//! [`guid`] crate.
 
 #![expect(missing_docs)]
 
-// -- Re-exports from vmbus_core::protocol ------------------------------------
-
-pub use vmbus_core::protocol::AllOffersDelivered;
-pub use vmbus_core::protocol::ChannelId;
-pub use vmbus_core::protocol::CloseChannel;
-pub use vmbus_core::protocol::ConnectionState;
-pub use vmbus_core::protocol::FeatureFlags;
-pub use vmbus_core::protocol::GpadlBody;
-pub use vmbus_core::protocol::GpadlCreated;
-pub use vmbus_core::protocol::GpadlHeader;
-pub use vmbus_core::protocol::GpadlId;
-pub use vmbus_core::protocol::GpadlTeardown;
-pub use vmbus_core::protocol::GpadlTorndown;
-pub use vmbus_core::protocol::HEADER_SIZE;
-pub use vmbus_core::protocol::HvsockParametersVersion;
-pub use vmbus_core::protocol::HvsockUserDefinedParameters;
-pub use vmbus_core::protocol::InitiateContact;
-pub use vmbus_core::protocol::InitiateContact2;
-pub use vmbus_core::protocol::MAX_MESSAGE_SIZE;
-pub use vmbus_core::protocol::MessageHeader;
-pub use vmbus_core::protocol::MessageType;
-pub use vmbus_core::protocol::ModifyChannel;
-pub use vmbus_core::protocol::ModifyChannelResponse;
-pub use vmbus_core::protocol::ModifyConnection;
-pub use vmbus_core::protocol::ModifyConnectionResponse;
-pub use vmbus_core::protocol::OfferChannel;
-pub use vmbus_core::protocol::OpenChannel;
-pub use vmbus_core::protocol::OpenChannel2;
-pub use vmbus_core::protocol::OpenChannelFlags;
-pub use vmbus_core::protocol::OpenResult;
-pub use vmbus_core::protocol::RelIdReleased;
-pub use vmbus_core::protocol::RequestOffers;
-pub use vmbus_core::protocol::RescindChannelOffer;
-pub use vmbus_core::protocol::STATUS_CONNECTION_REFUSED;
-pub use vmbus_core::protocol::STATUS_SUCCESS;
-pub use vmbus_core::protocol::STATUS_UNSUCCESSFUL;
-pub use vmbus_core::protocol::TargetInfo;
-pub use vmbus_core::protocol::TlConnectRequest;
-pub use vmbus_core::protocol::TlConnectRequest2;
-pub use vmbus_core::protocol::TlConnectResult;
-pub use vmbus_core::protocol::Unload;
-pub use vmbus_core::protocol::UnloadComplete;
-pub use vmbus_core::protocol::UserDefinedData;
-pub use vmbus_core::protocol::Version;
-pub use vmbus_core::protocol::VersionResponse;
-pub use vmbus_core::protocol::VersionResponse2;
-pub use vmbus_core::protocol::VersionResponse3;
-pub use vmbus_core::protocol::VmbusMessage;
-
-pub use guid::Guid;
+use vmbus_core::protocol::FeatureFlags;
+use vmbus_core::protocol::Version;
 
 // -- Guest-side hypercall constants -----------------------------------------
 
@@ -110,8 +67,8 @@ pub const NEGOTIATION_LADDER: &[Version] = &[
 ];
 
 /// Guest-side extension: the feature flags this driver advertises to
-/// the host in an `InitiateContact2`. Kept as a free function to keep
-/// the re-exported [`FeatureFlags`] type unaltered.
+/// the host in an `InitiateContact2`. Kept as a free function so the
+/// [`FeatureFlags`] type stays unaltered by the guest.
 pub fn supported_feature_flags() -> FeatureFlags {
     FeatureFlags::new()
         .with_guest_specified_signal_parameters(true)

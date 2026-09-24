@@ -11,6 +11,7 @@
 use crate::message;
 use crate::protocol::*;
 use core::mem::size_of;
+use vmbus_core::protocol::*;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -208,12 +209,12 @@ mod gpadl_tests {
     use crate::gpadl::build_single_range_payload;
     use crate::gpadl::encode_gpadl_messages;
     use crate::message;
-    use crate::protocol::ChannelId;
-    use crate::protocol::GpadlBody;
-    use crate::protocol::GpadlHeader;
-    use crate::protocol::GpadlId;
-    use crate::protocol::MessageType;
     use alloc::vec::Vec;
+    use vmbus_core::protocol::ChannelId;
+    use vmbus_core::protocol::GpadlBody;
+    use vmbus_core::protocol::GpadlHeader;
+    use vmbus_core::protocol::GpadlId;
+    use vmbus_core::protocol::MessageType;
 
     #[test]
     fn header_capacity_matches_spec() {
@@ -322,7 +323,7 @@ mod gpadl_tests {
         let msgs = encode_gpadl_messages(ChannelId(1), GpadlId(2), 1, &payload);
         for m in &msgs.messages {
             assert!(
-                m.len() <= crate::protocol::MAX_MESSAGE_SIZE,
+                m.len() <= vmbus_core::protocol::MAX_MESSAGE_SIZE,
                 "GPADL message oversized: {}",
                 m.len()
             );
@@ -346,14 +347,14 @@ mod completion_tests {
     use crate::message::CompletionTable;
     use crate::message::completion_key_for;
     use crate::message::encode;
-    use crate::protocol::ChannelId;
-    use crate::protocol::GpadlCreated;
-    use crate::protocol::GpadlId;
-    use crate::protocol::GpadlTorndown;
-    use crate::protocol::MAX_MESSAGE_SIZE;
-    use crate::protocol::OpenResult;
-    use crate::protocol::UnloadComplete;
-    use crate::protocol::VersionResponse;
+    use vmbus_core::protocol::ChannelId;
+    use vmbus_core::protocol::GpadlCreated;
+    use vmbus_core::protocol::GpadlId;
+    use vmbus_core::protocol::GpadlTorndown;
+    use vmbus_core::protocol::MAX_MESSAGE_SIZE;
+    use vmbus_core::protocol::OpenResult;
+    use vmbus_core::protocol::UnloadComplete;
+    use vmbus_core::protocol::VersionResponse;
     use zerocopy::FromZeros;
 
     #[test]
@@ -452,7 +453,7 @@ mod completion_tests {
     fn completion_key_for_non_completion_returns_none() {
         let mut buf = [0u8; MAX_MESSAGE_SIZE];
         // OfferChannel is not a completion.
-        let oc = crate::protocol::OfferChannel::new_zeroed();
+        let oc = vmbus_core::protocol::OfferChannel::new_zeroed();
         let used = encode(&oc, &mut buf);
         assert!(completion_key_for(&buf[..used]).unwrap().is_none());
     }
@@ -476,19 +477,8 @@ mod connection_tests {
     use crate::message::CompletionTable;
     use crate::message::MessageSink;
     use crate::message::encode;
-    use crate::protocol::AllOffersDelivered;
-    use crate::protocol::FeatureFlags;
-    use crate::protocol::HEADER_SIZE;
-    use crate::protocol::InitiateContact;
-    use crate::protocol::InitiateContact2;
-    use crate::protocol::MAX_MESSAGE_SIZE;
-    use crate::protocol::OfferChannel;
-    use crate::protocol::TargetInfo;
     use crate::protocol::VMBUS_CONNECTION_ID_LEGACY;
     use crate::protocol::VMBUS_CONNECTION_ID_MODERN;
-    use crate::protocol::Version;
-    use crate::protocol::VersionResponse;
-    use crate::protocol::VersionResponse2;
     use crate::protocol::supported_feature_flags;
     use crate::protocol::version_raw;
     use alloc::vec::Vec;
@@ -497,6 +487,17 @@ mod connection_tests {
     use opentmk_core::context::HypercallPlatformTrait;
     use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
     use opentmk_core::tmkdefs::TmkResult;
+    use vmbus_core::protocol::AllOffersDelivered;
+    use vmbus_core::protocol::FeatureFlags;
+    use vmbus_core::protocol::HEADER_SIZE;
+    use vmbus_core::protocol::InitiateContact;
+    use vmbus_core::protocol::InitiateContact2;
+    use vmbus_core::protocol::MAX_MESSAGE_SIZE;
+    use vmbus_core::protocol::OfferChannel;
+    use vmbus_core::protocol::TargetInfo;
+    use vmbus_core::protocol::Version;
+    use vmbus_core::protocol::VersionResponse;
+    use vmbus_core::protocol::VersionResponse2;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -559,7 +560,7 @@ mod connection_tests {
         }
     }
 
-    fn encode_message<M: crate::protocol::VmbusMessage + IntoBytes + zerocopy::Immutable>(
+    fn encode_message<M: vmbus_core::protocol::VmbusMessage + IntoBytes + zerocopy::Immutable>(
         msg: &M,
     ) -> Vec<u8> {
         let mut buf = [0u8; MAX_MESSAGE_SIZE];
@@ -610,7 +611,7 @@ mod connection_tests {
     fn parse_version_response_v1_layout() {
         let vr = VersionResponse {
             version_supported: 1,
-            connection_state: crate::protocol::ConnectionState::SUCCESSFUL,
+            connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
             padding: 0,
             selected_version_or_connection_id: 42,
         };
@@ -626,7 +627,7 @@ mod connection_tests {
         let vr2 = VersionResponse2 {
             version_response: VersionResponse {
                 version_supported: 1,
-                connection_state: crate::protocol::ConnectionState::SUCCESSFUL,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
                 padding: 0,
                 selected_version_or_connection_id: 4,
             },
@@ -642,7 +643,7 @@ mod connection_tests {
             let vr2 = VersionResponse2 {
                 version_response: VersionResponse {
                     version_supported: 1,
-                    connection_state: crate::protocol::ConnectionState::SUCCESSFUL,
+                    connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
                     padding: 0,
                     selected_version_or_connection_id: conn_id,
                 },
@@ -652,7 +653,7 @@ mod connection_tests {
         } else {
             let vr = VersionResponse {
                 version_supported: 1,
-                connection_state: crate::protocol::ConnectionState::SUCCESSFUL,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
                 padding: 0,
                 selected_version_or_connection_id: conn_id,
             };
@@ -663,7 +664,7 @@ mod connection_tests {
     fn make_fail_response() -> Vec<u8> {
         let vr = VersionResponse {
             version_supported: 0,
-            connection_state: crate::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+            connection_state: vmbus_core::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
             padding: 0,
             selected_version_or_connection_id: 0,
         };
@@ -764,7 +765,7 @@ mod connection_tests {
         let table = CompletionTable::new();
         let offer_a = OfferChannel::new_zeroed();
         let mut offer_b = OfferChannel::new_zeroed();
-        offer_b.channel_id = crate::protocol::ChannelId(7);
+        offer_b.channel_id = vmbus_core::protocol::ChannelId(7);
         let offer_bytes_a = encode_message(&offer_a);
         let offer_bytes_b = encode_message(&offer_b);
         let mut pump = ScriptedPump {
@@ -779,7 +780,10 @@ mod connection_tests {
         let mut sink = OfferCollector::default();
         request_offers_with(&mut ctx, &table, &mut pump, &mut sink, 4).unwrap();
         assert_eq!(sink.offers.len(), 2);
-        assert_eq!(sink.offers[1].channel_id, crate::protocol::ChannelId(7));
+        assert_eq!(
+            sink.offers[1].channel_id,
+            vmbus_core::protocol::ChannelId(7)
+        );
         assert!(sink.rescinds.is_empty());
     }
 
@@ -807,16 +811,16 @@ mod hvsock_tests {
     use crate::hvsock::dispatch_connect_result;
     use crate::hvsock::encode_tl_connect_request;
     use crate::hvsock::set_connect_result_handler;
-    use crate::protocol::Guid;
-    use crate::protocol::HEADER_SIZE;
-    use crate::protocol::TlConnectRequest;
-    use crate::protocol::TlConnectRequest2;
-    use crate::protocol::TlConnectResult;
-    use crate::protocol::Version;
     use crate::protocol::supported_feature_flags;
     use core::mem::size_of;
     use core::sync::atomic::AtomicU32;
     use core::sync::atomic::Ordering;
+    use guid::Guid;
+    use vmbus_core::protocol::HEADER_SIZE;
+    use vmbus_core::protocol::TlConnectRequest;
+    use vmbus_core::protocol::TlConnectRequest2;
+    use vmbus_core::protocol::TlConnectResult;
+    use vmbus_core::protocol::Version;
 
     #[test]
     fn encode_tl_connect_request_v1_no_silo() {
@@ -933,19 +937,6 @@ mod channel_tests {
     use crate::message::CompletionTable;
     use crate::message::MessageSink;
     use crate::message::encode;
-    use crate::protocol::ChannelId;
-    use crate::protocol::FeatureFlags;
-    use crate::protocol::GpadlCreated;
-    use crate::protocol::GpadlId;
-    use crate::protocol::GpadlTorndown;
-    use crate::protocol::HEADER_SIZE;
-    use crate::protocol::MAX_MESSAGE_SIZE;
-    use crate::protocol::OfferChannel;
-    use crate::protocol::OpenChannel;
-    use crate::protocol::OpenChannel2;
-    use crate::protocol::OpenChannelFlags;
-    use crate::protocol::OpenResult;
-    use crate::protocol::Version;
     use crate::protocol::supported_feature_flags;
     use alloc::vec::Vec;
     use core::mem::size_of;
@@ -953,6 +944,19 @@ mod channel_tests {
     use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
     use opentmk_core::tmkdefs::TmkResult;
     use spin::Mutex;
+    use vmbus_core::protocol::ChannelId;
+    use vmbus_core::protocol::FeatureFlags;
+    use vmbus_core::protocol::GpadlCreated;
+    use vmbus_core::protocol::GpadlId;
+    use vmbus_core::protocol::GpadlTorndown;
+    use vmbus_core::protocol::HEADER_SIZE;
+    use vmbus_core::protocol::MAX_MESSAGE_SIZE;
+    use vmbus_core::protocol::OfferChannel;
+    use vmbus_core::protocol::OpenChannel;
+    use vmbus_core::protocol::OpenChannel2;
+    use vmbus_core::protocol::OpenChannelFlags;
+    use vmbus_core::protocol::OpenResult;
+    use vmbus_core::protocol::Version;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -999,7 +1003,7 @@ mod channel_tests {
         }
     }
 
-    fn encode_msg<M: crate::protocol::VmbusMessage + IntoBytes + zerocopy::Immutable>(
+    fn encode_msg<M: vmbus_core::protocol::VmbusMessage + IntoBytes + zerocopy::Immutable>(
         msg: &M,
     ) -> Vec<u8> {
         let mut buf = [0u8; MAX_MESSAGE_SIZE];
@@ -1300,8 +1304,6 @@ mod interrupt_tests {
     use crate::message::CompletionTable;
     use crate::message::MessageSink;
     use crate::message::encode;
-    use crate::protocol::MAX_MESSAGE_SIZE;
-    use crate::protocol::VersionResponse;
     use alloc::vec::Vec;
     use hvdef::HV_MESSAGE_SIZE;
     use hvdef::HvMessageType;
@@ -1309,13 +1311,15 @@ mod interrupt_tests {
     use opentmk_core::context::HypercallPlatformTrait;
     use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
     use opentmk_core::tmkdefs::TmkResult;
+    use vmbus_core::protocol::MAX_MESSAGE_SIZE;
+    use vmbus_core::protocol::VersionResponse;
     use zerocopy::FromZeros;
 
     #[derive(Default)]
     struct NullSink;
     impl MessageSink for NullSink {
-        fn offer(&mut self, _: &crate::protocol::OfferChannel) {}
-        fn rescind(&mut self, _: &crate::protocol::RescindChannelOffer) {}
+        fn offer(&mut self, _: &vmbus_core::protocol::OfferChannel) {}
+        fn rescind(&mut self, _: &vmbus_core::protocol::RescindChannelOffer) {}
     }
 
     #[derive(Default)]

@@ -7,8 +7,8 @@
 //! `.github/copilot-instructions.md`), host input is treated as untrusted
 //! and never causes a panic; every failing path returns [`Error`] instead.
 
-use crate::protocol::MessageType;
 use opentmk_core::tmkdefs::TmkError;
+use vmbus_core::protocol::MessageType;
 
 /// Convenience alias.
 pub type Result<T> = core::result::Result<T, Error>;

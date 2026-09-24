@@ -20,23 +20,23 @@ use crate::Error;
 use crate::Result;
 use crate::connection::connection;
 use crate::hypercalls::post_message;
-use crate::protocol::Guid;
-use crate::protocol::HEADER_SIZE;
-use crate::protocol::MessageHeader;
-use crate::protocol::MessageType;
-use crate::protocol::TlConnectRequest;
-use crate::protocol::TlConnectRequest2;
-use crate::protocol::TlConnectResult;
-use crate::protocol::Version;
 use alloc::vec::Vec;
 use core::mem::size_of;
+use guid::Guid;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use spin::Mutex;
+use vmbus_core::protocol::HEADER_SIZE;
+use vmbus_core::protocol::MessageHeader;
+use vmbus_core::protocol::MessageType;
+use vmbus_core::protocol::TlConnectRequest;
+use vmbus_core::protocol::TlConnectRequest2;
+use vmbus_core::protocol::TlConnectResult;
+use vmbus_core::protocol::Version;
 use zerocopy::IntoBytes;
 
-pub use crate::protocol::HvsockParametersVersion;
-pub use crate::protocol::HvsockUserDefinedParameters;
+pub use vmbus_core::protocol::HvsockParametersVersion;
+pub use vmbus_core::protocol::HvsockUserDefinedParameters;
 
 /// Callback fired when the host sends `TlConnectResult`.
 pub type ConnectResultHandler = fn(&TlConnectResult);

@@ -371,13 +371,13 @@ pub fn init<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(ctx: &mut
 /// until `AllOffersDelivered` is received.
 ///
 /// Returns the offers in the order the host delivered them. Compare
-/// [`OfferChannel::interface_id`](protocol::OfferChannel::interface_id)
+/// [`OfferChannel::interface_id`](vmbus_core::protocol::OfferChannel::interface_id)
 /// against a known device GUID (e.g.
 /// [`devices::keyboard::INTERFACE_GUID`] or
 /// [`devices::netvsp::INTERFACE_GUID`]) to pick the offer you want.
 pub fn request_offers<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
-) -> Result<Vec<protocol::OfferChannel>> {
+) -> Result<Vec<vmbus_core::protocol::OfferChannel>> {
     connection::request_offers(ctx)
 }
 

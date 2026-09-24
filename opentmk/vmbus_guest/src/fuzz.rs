@@ -51,14 +51,11 @@ use crate::hypercalls::post_message;
     expect(unused_imports, reason = "used only by the UEFI SIMP drain")
 )]
 use crate::message::completion_table;
-use crate::protocol::MAX_MESSAGE_SIZE;
 use crate::protocol::NEGOTIATION_LADDER;
-use crate::protocol::OfferChannel;
 use crate::protocol::PacketFlags;
 use crate::protocol::PacketType;
 use crate::protocol::VMBUS_CONNECTION_ID_LEGACY;
 use crate::protocol::VMBUS_CONNECTION_ID_MODERN;
-use crate::protocol::Version;
 use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
 use crate::ring::SendRing;
@@ -66,6 +63,9 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
+use vmbus_core::protocol::MAX_MESSAGE_SIZE;
+use vmbus_core::protocol::OfferChannel;
+use vmbus_core::protocol::Version;
 
 /// Size of the wire [`crate::protocol::PacketDescriptor`], and hence
 /// the length of the caller-supplied descriptor accepted by
@@ -125,7 +125,7 @@ pub fn resolve_connection_id(requested: u64) -> u32 {
 ///
 /// No encoding, no validation, no completion registration: the bytes
 /// are whatever the fuzzer produced, starting at what the host will
-/// read as a [`crate::protocol::MessageHeader`]. Payloads longer than
+/// read as a [`vmbus_core::protocol::MessageHeader`]. Payloads longer than
 /// [`MAX_MESSAGE_SIZE`] are truncated rather than rejected so the host
 /// still gets to parse the leading bytes.
 pub fn post_raw_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
@@ -534,7 +534,7 @@ fn poll_capture<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ChannelId;
+    use vmbus_core::protocol::ChannelId;
     use zerocopy::FromZeros;
 
     #[test]
