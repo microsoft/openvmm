@@ -109,7 +109,7 @@ pub(super) fn resolve_smmu_resources(
 
 /// Configuration for a hypervisor-managed virtual IOMMU.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(all(target_os = "linux", feature = "virt_mshv")), allow(dead_code))]
+#[cfg_attr(not(target_os = "linux"), expect(dead_code))]
 pub struct VirtIommuSetup {
     /// ID unique within the partition.
     pub virt_iommu_id: u32,
