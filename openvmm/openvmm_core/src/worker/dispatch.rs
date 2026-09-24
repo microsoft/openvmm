@@ -910,7 +910,7 @@ fn parse_host_pci_id(id: &str) -> anyhow::Result<(u16, u8, u8, u8)> {
 }
 
 #[cfg(guest_arch = "aarch64")]
-#[cfg_attr(not(target_os = "linux"), expect(dead_code))]
+#[cfg_attr(all(not(target_os = "linux"), not(test)), expect(dead_code))]
 fn guest_requester_id(bus: u8, device: u8, function: u8) -> u32 {
     (u32::from(bus) << 8) | (u32::from(device & 0x1f) << 3) | u32::from(function & 0x7)
 }
