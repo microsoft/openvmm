@@ -323,13 +323,15 @@ impl Queue for TapQueue {
                 // The virtio vnet header has no mechanism for IPv4 header
                 // checksum offload, so we compute it in software. This
                 // also covers NDIS/netvsp LSO packets, where the guest
-                // driver zeroes ip_check (NDIS convention); the kernel's
-                // TAP GSO engine requires a valid checksum to segment
-                // the packet correctly.
+                // driver zeroes ip_check (NDIS convention). The host
+                // validates the IPv4 header when the frame enters its IP
+                // stack or a br_netfilter bridge, before segmentation, and
+                // drops the frame if the checksum is wrong.
                 // Same NDIS/LSO convention for IPv6: the guest zeroes the IPv6
                 // payload-length field on segmentation-offload frames. IPv6 has
                 // no header checksum (so the IPv4 fixup above never runs for it);
-                // fix the length here so the kernel TAP GSO engine can segment.
+                // fix the length here, or the host's IPv6 input validation
+                // truncates the frame to its header before segmentation.
                 if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
                     fixup_ipv4_header_checksum(&mut packet, meta.l2_len as usize);
                 }
@@ -449,8 +451,10 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
 /// offload engine to fill it (the same convention under which IPv4 guests zero
 /// the total-length and header checksum -- see [`fixup_ipv4_header_checksum`]).
 /// IPv6 has no header checksum, so there is nothing to piggyback on; set the
-/// field directly. Without it the kernel TAP GSO engine sees a zero-length IPv6
-/// datagram and drops the super-frame instead of segmenting it, collapsing TX.
+/// field directly. Without it the host's IPv6 input validation (`ip6_rcv_core`,
+/// and `br_validate_ipv6` on a br_netfilter bridge) trims the frame to its bare
+/// header before segmentation, collapsing TX. Linux accepts a zero payload
+/// length only on a TCP GSO frame, and only from 7.0.
 fn fixup_ipv6_payload_length(packet: &mut [u8], l2_len: usize) {
     // IPv6 fixed header is 40 bytes; the payload-length field (bytes 4-5)
     // covers everything after it.
@@ -970,7 +974,7 @@ mod tests {
     fn ipv4_lso_total_length_fixup() {
         // NDIS/netvsp LSO guests zero the IPv4 total-length field, expecting
         // the offload engine to fill it. The fixup must set it to the full
-        // datagram length so the kernel TAP GSO engine can segment the frame.
+        // datagram length so the host's IP input validation accepts the frame.
         let mut packet = vec![
             // Ethernet header (14 bytes)
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00,
