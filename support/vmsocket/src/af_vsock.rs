@@ -14,9 +14,29 @@ use socket2::Domain;
 use socket2::SockAddr;
 use socket2::Socket;
 use socket2::Type;
+use std::fs::File;
 use std::io;
 use std::os::unix::prelude::*;
 use std::time::Duration;
+
+pub fn local_cid() -> io::Result<u32> {
+    const IOCTL_VM_SOCKETS_GET_LOCAL_CID: u32 = 0x7b9;
+
+    let vsock = File::open("/dev/vsock")?;
+    let mut cid = 0;
+    // SAFETY: The fd refers to /dev/vsock and the ioctl writes a u32 to the supplied pointer.
+    if unsafe {
+        libc::ioctl(
+            vsock.as_raw_fd(),
+            IOCTL_VM_SOCKETS_GET_LOCAL_CID as _,
+            &mut cid,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(cid)
+}
 
 #[derive(Debug)]
 pub struct Address {
