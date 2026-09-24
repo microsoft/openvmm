@@ -867,7 +867,10 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             for &range in &cfg.reserved_iova_ranges {
                 let (base, length) = if direct {
                     let base = range.start() & !(RMR_ALIGN - 1);
-                    let end = range.end().next_multiple_of(RMR_ALIGN);
+                    let end = range
+                        .end()
+                        .checked_next_multiple_of(RMR_ALIGN)
+                        .unwrap_or(u64::MAX);
                     (base, end - base)
                 } else {
                     (range.start(), range.len())

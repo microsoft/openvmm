@@ -164,9 +164,14 @@ fn reserved_iova_ranges(
     if !accel {
         return Ok(Vec::new());
     }
-    Ok(vec![device_assignment_msi_iova_range.context(
+    let range = device_assignment_msi_iova_range.context(
         "the hypervisor does not support an accelerated device-assignment MSI IOVA reservation",
-    )?])
+    )?;
+    range
+        .end()
+        .checked_next_multiple_of(0x1_0000)
+        .context("device-assignment MSI IOVA reservation alignment overflow")?;
+    Ok(vec![range])
 }
 
 /// Instantiate SMMU chipset devices for root complexes that have SMMU
@@ -362,6 +367,13 @@ mod tests {
     #[test]
     fn accelerated_smmu_requires_reserved_iova_range() {
         assert!(reserved_iova_ranges(true, None).is_err());
+    }
+
+    #[test]
+    fn accelerated_smmu_rejects_rmr_alignment_overflow() {
+        let end = u64::MAX - 0xfff;
+        let range = memory_range::MemoryRange::new((end - 0x1000)..end);
+        assert!(reserved_iova_ranges(true, Some(range)).is_err());
     }
 
     #[test]
