@@ -12,6 +12,7 @@ guid.workspace = true
 hvdef.workspace = true
 hyperv_keyboard_protocol.workspace = true
 log.workspace = true
+netvsp_protocol.workspace = true
 open_enum.workspace = true
 opentmk_core.workspace = true
 spin.workspace = true

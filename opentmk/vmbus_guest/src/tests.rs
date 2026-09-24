@@ -2030,18 +2030,45 @@ mod netvsp_tests {
     fn wire_body_sizes() {
         // Sizes match Windows `nvspprotocol.h` /
         // openvmm `vm/devices/net/netvsp/src/protocol.rs`.
-        assert_eq!(size_of::<netvsp::MessageHeader>(), 4);
-        assert_eq!(size_of::<netvsp::NvspMsgInit>(), 8);
-        assert_eq!(size_of::<netvsp::NvspMsgInitComplete>(), 12);
-        assert_eq!(size_of::<netvsp::Nvsp1MsgSendNdisVersion>(), 8);
-        assert_eq!(size_of::<netvsp::Nvsp1MsgSendBuffer>(), 8);
-        assert_eq!(size_of::<netvsp::Nvsp1ReceiveBufferSection>(), 16);
+        assert_eq!(size_of::<netvsp_protocol::protocol::MessageHeader>(), 4);
+        assert_eq!(size_of::<netvsp_protocol::protocol::MessageInit>(), 8);
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::MessageInitComplete>(),
+            12
+        );
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::Message1SendNdisVersion>(),
+            8
+        );
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::Message1SendReceiveBuffer>(),
+            8
+        );
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::ReceiveBufferSection>(),
+            16
+        );
         // status + num_sections + 1×section = 4 + 4 + 16 = 24
-        assert_eq!(size_of::<netvsp::Nvsp1MsgSendRecvBufComplete>(), 24);
-        assert_eq!(size_of::<netvsp::Nvsp1MsgSendSendBufComplete>(), 8);
-        assert_eq!(size_of::<netvsp::Nvsp1MsgSendRndisPacket>(), 12);
-        assert_eq!(size_of::<netvsp::Nvsp1MsgSendRndisPacketComplete>(), 4);
-        assert_eq!(size_of::<netvsp::Nvsp2MsgSendNdisConfig>(), 16);
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::Message1SendReceiveBufferComplete>(),
+            24
+        );
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::Message1SendSendBufferComplete>(),
+            8
+        );
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::Message1SendRndisPacket>(),
+            12
+        );
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::Message1SendRndisPacketComplete>(),
+            4
+        );
+        assert_eq!(
+            size_of::<netvsp_protocol::protocol::Message2SendNdisConfig>(),
+            16
+        );
     }
 
     #[test]
@@ -2058,7 +2085,7 @@ mod netvsp_tests {
         let mut buf = [0xFFu8; 64];
         let n = netvsp::encode_message(
             netvsp::msg_type::INIT,
-            &netvsp::NvspMsgInit {
+            &netvsp_protocol::protocol::MessageInit {
                 protocol_version: netvsp::Version::V61 as u32,
                 protocol_version2: netvsp::Version::V61 as u32,
             },
@@ -2085,7 +2112,7 @@ mod netvsp_tests {
         let mut buf = [0u8; 20];
         let r = netvsp::encode_message(
             netvsp::msg_type::INIT,
-            &netvsp::NvspMsgInit {
+            &netvsp_protocol::protocol::MessageInit {
                 protocol_version: 0,
                 protocol_version2: 0,
             },
@@ -2100,10 +2127,10 @@ mod netvsp_tests {
         let mut buf = [0u8; netvsp::NVSP_LEGACY_MESSAGE_SIZE];
         netvsp::encode_message(
             netvsp::msg_type::INIT_COMPLETE,
-            &netvsp::NvspMsgInitComplete {
+            &netvsp_protocol::protocol::MessageInitComplete {
                 deprecated: 0,
                 maximum_mdl_chain_length: 0x400,
-                status: netvsp::status::SUCCESS,
+                status: netvsp_protocol::protocol::Status::SUCCESS,
             },
             netvsp::Version::V6,
             &mut buf,
@@ -2111,8 +2138,9 @@ mod netvsp_tests {
         .unwrap();
         let (ty, body) = netvsp::parse_header(&buf).unwrap();
         assert_eq!(ty, netvsp::msg_type::INIT_COMPLETE);
-        let (parsed, _) = netvsp::NvspMsgInitComplete::read_from_prefix(body).unwrap();
-        assert_eq!(parsed.status, netvsp::status::SUCCESS);
+        let (parsed, _) =
+            netvsp_protocol::protocol::MessageInitComplete::read_from_prefix(body).unwrap();
+        assert_eq!(parsed.status, netvsp_protocol::protocol::Status::SUCCESS);
         assert_eq!(parsed.maximum_mdl_chain_length, 0x400);
     }
 

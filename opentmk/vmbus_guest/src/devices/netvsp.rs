@@ -59,10 +59,10 @@
 //!
 //! // Matches Linux rndis_filter_open. PROMISCUOUS is only needed if
 //! // the ARP source MAC we send doesn't match the vNIC's assigned MAC.
-//! let filter = rndis::NDIS_PACKET_TYPE_DIRECTED
-//!     | rndis::NDIS_PACKET_TYPE_BROADCAST
-//!     | rndis::NDIS_PACKET_TYPE_ALL_MULTICAST
-//!     | rndis::NDIS_PACKET_TYPE_PROMISCUOUS;
+//! let filter = rndisprot::NDIS_PACKET_TYPE_DIRECTED
+//!     | rndisprot::NDIS_PACKET_TYPE_BROADCAST
+//!     | rndisprot::NDIS_PACKET_TYPE_ALL_MULTICAST
+//!     | rndis_extras::NDIS_PACKET_TYPE_PROMISCUOUS;
 //! nic.set_packet_filter(&mut ctx, filter)?;
 //!
 //! // 3a. Round-trip send — waits for the paired VM_PKT_COMP and
@@ -134,6 +134,9 @@ use core::slice::from_raw_parts;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use guid::Guid;
+use netvsp_protocol::protocol as nvsp;
+use netvsp_protocol::protocol::Status;
+use netvsp_protocol::rndisprot;
 use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use vmbus_core::protocol::ChannelId;
@@ -256,22 +259,6 @@ pub mod msg_type {
 }
 
 // ---------------------------------------------------------------------
-// NVSP status codes
-// ---------------------------------------------------------------------
-
-/// NVSP status codes returned in completion messages.
-pub mod status {
-    #![expect(missing_docs, reason = "self-describing values from spec")]
-
-    pub const NONE: u32 = 0;
-    pub const SUCCESS: u32 = 1;
-    pub const FAILURE: u32 = 2;
-    pub const INVALID_RNDIS_PACKET: u32 = 5;
-    pub const BUSY: u32 = 6;
-    pub const PROTOCOL_VERSION_UNSUPPORTED: u32 = 7;
-}
-
-// ---------------------------------------------------------------------
 // Buffer id constants
 // ---------------------------------------------------------------------
 
@@ -283,7 +270,7 @@ pub const NETVSC_RECEIVE_BUFFER_ID: u16 = 0xcafe;
 pub const NETVSC_SEND_BUFFER_ID: u16 = 0x0;
 
 /// Sentinel meaning "not using a send-buffer section" in
-/// `Nvsp1SendRndisPacket::send_buf_section_index`. External data
+/// `Nvsp1SendRndisPacket::send_buffer_section_index`. External data
 /// (GPA-direct) is being used instead.
 pub const NETVSC_INVALID_INDEX: u32 = 0xFFFF_FFFF;
 
@@ -311,158 +298,7 @@ pub const RMC_CONTROL: u32 = 1;
 // Wire types
 // ---------------------------------------------------------------------
 
-/// Every NVSP packet starts with this 4-byte header.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct MessageHeader {
-    /// One of [`msg_type`].
-    pub message_type: u32,
-}
-
-/// `NvspMessageTypeInit` body (VSC → VSP).
-///
-/// Both fields carry the same version — historical hosts used them
-/// as a min/max range, but modern behaviour is to set both to the
-/// requested version and try one at a time.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct NvspMsgInit {
-    /// Requested version.
-    pub protocol_version: u32,
-    /// Same as [`Self::protocol_version`] on modern flows.
-    pub protocol_version2: u32,
-}
-
-/// `NvspMessageTypeInitComplete` body (VSP → VSC).
-///
-/// `status` == [`status::SUCCESS`] on acceptance; anything else
-/// means try the next version in the ladder.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct NvspMsgInitComplete {
-    /// Deprecated — was `negotiated_protocol_ver` up through Win6.
-    pub deprecated: u32,
-    /// Max MDL chain length; informational.
-    pub maximum_mdl_chain_length: u32,
-    /// See [`status`].
-    pub status: u32,
-}
-
-/// `Nvsp1MessageSendNdisVersion` body (VSC → VSP, no completion).
-///
-/// Sent immediately after `NvspMsgInit` succeeds and after
-/// [`Nvsp2MsgSendNdisConfig`] (V2+ only). Standard values are
-/// major=6, minor=0x1e (30) for V5+ or minor=1 for V4-.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp1MsgSendNdisVersion {
-    /// NDIS major version.
-    pub ndis_major_version: u32,
-    /// NDIS minor version.
-    pub ndis_minor_version: u32,
-}
-
-/// `Nvsp1MessageSendReceiveBuffer` body (VSC → VSP).
-///
-/// The `pad` field is not on the wire per Windows, but openvmm
-/// explicitly reserves it as `u16` after `id` to avoid unsafe
-/// `#[repr(packed)]` field references. Total body = 8 bytes.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp1MsgSendBuffer {
-    /// GPADL handle for the buffer (from
-    /// `establish_gpadl`).
-    pub gpadl_handle: u32,
-    /// Buffer identifier — [`NETVSC_RECEIVE_BUFFER_ID`] or
-    /// [`NETVSC_SEND_BUFFER_ID`].
-    pub id: u16,
-    /// Padding to `u32` alignment.
-    pub pad: u16,
-}
-
-/// One entry in [`Nvsp1MsgSendRecvBufComplete::sections`].
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp1ReceiveBufferSection {
-    /// Offset from buffer start where this section begins.
-    pub offset: u32,
-    /// Size of each sub-allocation.
-    pub sub_alloc_size: u32,
-    /// Number of sub-allocations.
-    pub num_sub_allocs: u32,
-    /// Offset one-past-end of the section.
-    pub end_offset: u32,
-}
-
-/// `Nvsp1MessageSendReceiveBufferComplete` body (VSP → VSC).
-///
-/// **Note**: `sections` is a `[T; 1]` per spec — the Windows and
-/// openvmm sources both note "no VSP has ever sent more than 1".
-/// Callers should assert `num_sections == 1` on receipt.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp1MsgSendRecvBufComplete {
-    /// See [`status`].
-    pub status: u32,
-    /// Number of sections; always 1 in practice.
-    pub num_sections: u32,
-    /// The single (in practice) section descriptor.
-    pub sections: [Nvsp1ReceiveBufferSection; 1],
-}
-
-/// `Nvsp1MessageRevokeReceiveBuffer` body.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp1MsgRevokeRecvBuf {
-    /// Must match the id used at [`Nvsp1MsgSendBuffer::id`].
-    pub id: u16,
-    /// Padding.
-    pub pad: u16,
-}
-
-/// `Nvsp1MessageSendSendBufferComplete` body (VSP → VSC).
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp1MsgSendSendBufComplete {
-    /// See [`status`].
-    pub status: u32,
-    /// VSP-chosen section size for the send buffer.
-    pub section_size: u32,
-}
-
-/// `Nvsp1MessageSendRndisPacket` body (bidirectional).
-///
-/// For phase-3 RNDIS init we send this with
-/// `send_buf_section_index = NETVSC_INVALID_INDEX` and
-/// `send_buf_section_size = 0`, indicating the RNDIS payload
-/// travels via a GPA-direct external buffer.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp1MsgSendRndisPacket {
-    /// [`RMC_CONTROL`] for init/query/set, [`RMC_DATA`] for
-    /// packet frames.
-    pub channel_type: u32,
-    /// Send-buffer section index, or [`NETVSC_INVALID_INDEX`] to
-    /// use GPA-direct.
-    pub send_buf_section_index: u32,
-    /// Section size in bytes, or 0 when
-    /// `send_buf_section_index == NETVSC_INVALID_INDEX`.
-    pub send_buf_section_size: u32,
-}
-
-/// `Nvsp1MessageSendRndisPacketComplete` body.
-///
-/// Only acknowledges the outgoing NVSP resource — the RNDIS
-/// response itself arrives via `VM_PKT_DATA_USING_XFER_PAGES`
-/// referencing the recv buffer.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp1MsgSendRndisPacketComplete {
-    /// See [`status`].
-    pub status: u32,
-}
-
-/// NDIS capability bits for [`Nvsp2MsgSendNdisConfig::capabilities`].
+/// NDIS capability bits for [`nvsp::Message2SendNdisConfig::capabilities`].
 ///
 /// Bit positions match Windows `NVSP_2_NETVSC_CAPABILITIES`. Bit 4
 /// (`correlation_id`) is intentionally never set from the guest per
@@ -515,190 +351,25 @@ impl BitOrAssign<u64> for NdisCapabilities {
     }
 }
 
-/// `Nvsp2MessageSendNdisConfig` body (VSC → VSP, no completion).
-///
-/// Sent right after `NvspMsgInit` succeeds on V2+.
-/// Fire-and-forget — the VSP does not reply.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Nvsp2MsgSendNdisConfig {
-    /// Maximum Transmission Unit including Ethernet header.
-    pub mtu: u32,
-    /// Reserved, must be 0.
-    pub reserved: u32,
-    /// Bitfield of [`NdisCapabilities`].
-    pub capabilities: u64,
-}
-
 // ---------------------------------------------------------------------
 // RNDIS wire types (Phase 3)
 // ---------------------------------------------------------------------
 
-/// RNDIS message-type identifiers. See openvmm
-/// `rndisprot.rs::MESSAGE_TYPE_*` and MS-RNDIS §2.2.
-pub mod rndis {
-    #![expect(missing_docs, reason = "self-documenting constants from MS-RNDIS")]
-
-    // Request messages.
-    pub const MESSAGE_TYPE_PACKET_MSG: u32 = 0x0000_0001;
-    pub const MESSAGE_TYPE_INITIALIZE_MSG: u32 = 0x0000_0002;
-    pub const MESSAGE_TYPE_HALT_MSG: u32 = 0x0000_0003;
-    pub const MESSAGE_TYPE_QUERY_MSG: u32 = 0x0000_0004;
-    pub const MESSAGE_TYPE_SET_MSG: u32 = 0x0000_0005;
-
-    // Response messages.
-    pub const MESSAGE_TYPE_INITIALIZE_CMPLT: u32 = 0x8000_0002;
-    pub const MESSAGE_TYPE_QUERY_CMPLT: u32 = 0x8000_0004;
-    pub const MESSAGE_TYPE_SET_CMPLT: u32 = 0x8000_0005;
-
-    pub const STATUS_SUCCESS: u32 = 0x0000_0000;
-
-    // RNDIS init version we advertise.
-    pub const MAJOR_VERSION: u32 = 1;
-    pub const MINOR_VERSION: u32 = 0;
-
+/// Guest-side RNDIS extras that don't have a canonical home in
+/// [`netvsp_protocol::rndisprot`].
+///
+/// * [`rndis_extras::MAX_TRANSFER_SIZE`] — guest-picked ceiling
+///   (16 KiB, matches puppet and Linux drivers).
+/// * [`rndis_extras::NDIS_PACKET_TYPE_PROMISCUOUS`] — upstream
+///   lists the other filter bits but not this one.
+pub mod rndis_extras {
     /// Max transfer size we request in `InitializeRequest`. 16 KiB
     /// matches puppet + Linux.
     pub const MAX_TRANSFER_SIZE: u32 = 0x4000;
 
-    // ---------- NDIS OIDs ----------
-
-    /// `OID_GEN_CURRENT_PACKET_FILTER` — the master packet-acceptance
-    /// filter. Until the driver sets a non-zero value, NDIS accepts
-    /// zero frames. Standard value bits below.
-    pub const OID_GEN_CURRENT_PACKET_FILTER: u32 = 0x0001_010E;
-
-    /// Accept frames whose destination MAC matches ours.
-    pub const NDIS_PACKET_TYPE_DIRECTED: u32 = 0x0001;
-    /// Accept specific multicasts (with a MAC list; not needed here).
-    pub const NDIS_PACKET_TYPE_MULTICAST: u32 = 0x0002;
-    /// Accept all multicasts.
-    pub const NDIS_PACKET_TYPE_ALL_MULTICAST: u32 = 0x0004;
-    /// Accept broadcast frames.
-    pub const NDIS_PACKET_TYPE_BROADCAST: u32 = 0x0008;
-    /// Accept every frame regardless of MAC.
+    /// Accept every frame regardless of MAC. Upstream omits this
+    /// bit; MS-RNDIS §2.2 defines it as 0x0020.
     pub const NDIS_PACKET_TYPE_PROMISCUOUS: u32 = 0x0020;
-}
-
-/// Common 8-byte header on every RNDIS message.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct RndisMessageHeader {
-    /// One of [`rndis`] `MESSAGE_TYPE_*`.
-    pub message_type: u32,
-    /// Total message length in bytes including this header.
-    pub message_length: u32,
-}
-
-/// `MESSAGE_TYPE_INITIALIZE_MSG` body (VSC → VSP), sent inside a
-/// `V1_SEND_RNDIS_PKT(RMC_CONTROL)` on the netvsp channel.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct RndisInitializeRequest {
-    /// Guest-chosen id echoed back in the completion.
-    pub request_id: u32,
-    /// RNDIS major version — we advertise
-    /// [`rndis::MAJOR_VERSION`].
-    pub major_version: u32,
-    /// RNDIS minor version.
-    pub minor_version: u32,
-    /// Max transfer size we support (bytes).
-    pub max_transfer_size: u32,
-}
-
-/// `MESSAGE_TYPE_INITIALIZE_CMPLT` body (VSP → VSC), delivered via
-/// `VM_PKT_DATA_USING_XFER_PAGES` referencing the recv buffer.
-///
-/// Field layout matches openvmm `rndisprot::InitializeComplete`.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct RndisInitializeComplete {
-    /// Echoes the `request_id` from the paired request.
-    pub request_id: u32,
-    /// [`rndis::STATUS_SUCCESS`] on success.
-    pub status: u32,
-    /// RNDIS major version the host is speaking.
-    pub major_version: u32,
-    /// RNDIS minor version.
-    pub minor_version: u32,
-    /// `DF_CONNECTIONLESS` etc.
-    pub device_flags: u32,
-    /// Medium — 0 for 802.3.
-    pub medium: u32,
-    /// Max RNDIS packets per netvsp message.
-    pub max_packets_per_message: u32,
-    /// Max transfer size the VSP accepts.
-    pub max_transfer_size: u32,
-    /// Log2 alignment factor for RNDIS packets.
-    pub packet_alignment_factor: u32,
-    /// Address-family list offset (unused for Ethernet).
-    pub af_list_offset: u32,
-    /// Address-family list size (unused).
-    pub af_list_size: u32,
-}
-
-/// `MESSAGE_TYPE_PACKET_MSG` body — the RNDIS wrapper around a
-/// single Ethernet frame. Sent VSC → VSP for TX and VSP → VSC for RX.
-///
-/// Wire layout (36 bytes) matches openvmm `rndisprot::Packet`. The
-/// data buffer follows this struct at the offset specified by
-/// `data_offset` (measured from the start of this `Packet` struct,
-/// **not** the RNDIS `MessageHeader`).
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct RndisPacket {
-    /// Offset of the Ethernet frame relative to the start of this
-    /// `Packet` struct.
-    pub data_offset: u32,
-    /// Length of the Ethernet frame in bytes.
-    pub data_length: u32,
-    /// Offset of the OOB data buffer (unused: 0).
-    pub oob_data_offset: u32,
-    /// Length of the OOB data (unused: 0).
-    pub oob_data_length: u32,
-    /// Number of OOB elements (unused: 0).
-    pub num_oob_data_elements: u32,
-    /// Offset of the per-packet-info buffer (unused: 0).
-    pub per_packet_info_offset: u32,
-    /// Length of the per-packet-info buffer (unused: 0).
-    pub per_packet_info_length: u32,
-    /// VC handle (0 for connectionless).
-    pub vc_handle: u32,
-    /// Reserved (0).
-    pub reserved: u32,
-}
-
-/// `MESSAGE_TYPE_SET_MSG` body — set a single NDIS OID on the
-/// remote device.
-///
-/// Matches openvmm `rndisprot::SetRequest`. The information buffer
-/// follows this struct at `information_buffer_offset` (measured
-/// from start of `RndisSetRequest`, per RNDIS spec).
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct RndisSetRequest {
-    /// Guest-chosen id echoed back in the completion.
-    pub request_id: u32,
-    /// OID identifier — e.g. [`rndis::OID_GEN_CURRENT_PACKET_FILTER`].
-    pub oid: u32,
-    /// Length of the information buffer in bytes.
-    pub information_buffer_length: u32,
-    /// Offset from the start of THIS struct to the information
-    /// buffer. Standard value = `size_of::<RndisSetRequest>()` for
-    /// an appended buffer.
-    pub information_buffer_offset: u32,
-    /// Device VC handle (unused, 0).
-    pub device_vc_handle: u32,
-}
-
-/// `MESSAGE_TYPE_SET_CMPLT` body.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct RndisSetComplete {
-    /// Echoes the `request_id` from the paired request.
-    pub request_id: u32,
-    /// [`rndis::STATUS_SUCCESS`] on success.
-    pub status: u32,
 }
 
 /// Encode a NVSP message: header + body copied into a
@@ -717,7 +388,7 @@ pub fn encode_message<T: IntoBytes + Immutable>(
     if out.len() < frame_size {
         return Err(());
     }
-    let hdr = MessageHeader { message_type };
+    let hdr = nvsp::MessageHeader { message_type };
     let hdr_bytes = hdr.as_bytes();
     let body_bytes = body.as_bytes();
     if hdr_bytes.len() + body_bytes.len() > frame_size {
@@ -740,7 +411,7 @@ pub fn encode_message<T: IntoBytes + Immutable>(
 /// use `zerocopy::FromBytes::read_from_prefix` on the body and
 /// ignore the tail.
 pub fn parse_header(frame: &[u8]) -> core::result::Result<(u32, &[u8]), ()> {
-    let (hdr, rest) = MessageHeader::read_from_prefix(frame).map_err(|_| ())?;
+    let (hdr, rest) = nvsp::MessageHeader::read_from_prefix(frame).map_err(|_| ())?;
     Ok((hdr.message_type, rest))
 }
 
@@ -893,7 +564,7 @@ pub struct Netvsp {
     /// Guest-owned receive buffer + GPADL registered with the VSP.
     /// Populated by [`Self::establish_recv_buffer`].
     recv_buf: Option<OwnedBuf>,
-    /// `sub_alloc_size` reported by the host in the recv-buf
+    /// `sub_allocation_size` reported by the host in the recv-buf
     /// completion. Non-zero means the recv buffer is live.
     recv_section_size: u32,
     /// Number of receive sub-allocations.
@@ -1120,7 +791,7 @@ impl Netvsp {
         Err(Error::VersionMismatch)
     }
 
-    /// Send `NvspMsgInit` for `version` and await `InitComplete`.
+    /// Send `nvsp::MessageInit` for `version` and await `InitComplete`.
     /// Returns `Ok(true)` if the host accepted, `Ok(false)` if the
     /// host returned a non-success status.
     fn try_init<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
@@ -1128,7 +799,7 @@ impl Netvsp {
         ctx: &mut C,
         version: Version,
     ) -> Result<bool> {
-        // NvspMsgInit is 8 bytes. `INIT` messages **always** go out
+        // nvsp::MessageInit is 8 bytes. `INIT` messages **always** go out
         // as `NVSP_LEGACY_MESSAGE_SIZE (28)` regardless of the
         // requested version — Windows: "Init message has always size
         // of NVSP_LEGACY_MESSAGE_SIZE in order to be able to
@@ -1139,7 +810,7 @@ impl Netvsp {
         // negotiated so `frame_size_for(self.version)` would panic.
         encode_message(
             msg_type::INIT,
-            &NvspMsgInit {
+            &nvsp::MessageInit {
                 protocol_version: version as u32,
                 protocol_version2: version as u32,
             },
@@ -1163,11 +834,11 @@ impl Netvsp {
             });
         }
         let (parsed, _) =
-            NvspMsgInitComplete::read_from_prefix(body).map_err(|_| Error::Parse {
+            nvsp::MessageInitComplete::read_from_prefix(body).map_err(|_| Error::Parse {
                 ty: None,
                 reason: "parse INIT_COMPLETE body",
             })?;
-        Ok(parsed.status == status::SUCCESS)
+        Ok(parsed.status == Status::SUCCESS)
     }
 
     /// Send `Nvsp2SendNdisConfig` (V2+ only). Fire-and-forget, no
@@ -1188,10 +859,10 @@ impl Netvsp {
         let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
         let n = encode_message(
             msg_type::V2_SEND_NDIS_CONFIG,
-            &Nvsp2MsgSendNdisConfig {
+            &nvsp::Message2SendNdisConfig {
                 mtu,
                 reserved: 0,
-                capabilities: caps.0,
+                capabilities: nvsp::NdisConfigCapabilities::from(caps.0),
             },
             version,
             &mut frame,
@@ -1216,7 +887,7 @@ impl Netvsp {
         let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
         let n = encode_message(
             msg_type::V1_SEND_NDIS_VERSION,
-            &Nvsp1MsgSendNdisVersion {
+            &nvsp::Message1SendNdisVersion {
                 ndis_major_version: 6,
                 ndis_minor_version: ndis_minor,
             },
@@ -1238,8 +909,8 @@ impl Netvsp {
     /// * `status == SUCCESS`
     /// * `num_sections == 1` (spec quirk: no VSP has ever sent more)
     /// * `sections[0].offset == 0`
-    /// * `sub_alloc_size >= NETVSC_MTU_MIN`
-    /// * `u64(sub_alloc_size) * u64(num_sub_allocs) <= size`
+    /// * `sub_allocation_size >= NETVSC_MTU_MIN`
+    /// * `u64(sub_allocation_size) * u64(num_sub_allocations) <= size`
     ///
     /// A 16 MiB buffer produces ~147 `GpadlBody` messages posted
     /// back-to-back — this is the first real exercise of the
@@ -1265,10 +936,10 @@ impl Netvsp {
         let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
         let n = encode_message(
             msg_type::V1_SEND_RECV_BUF,
-            &Nvsp1MsgSendBuffer {
-                gpadl_handle: buf.gpadl.id().0,
+            &nvsp::Message1SendReceiveBuffer {
+                gpadl_handle: buf.gpadl.id(),
                 id: NETVSC_RECEIVE_BUFFER_ID,
-                pad: 0,
+                reserved: 0,
             },
             self.version_typed()?,
             &mut frame,
@@ -1290,14 +961,16 @@ impl Netvsp {
             });
         }
         let (parsed, _) =
-            Nvsp1MsgSendRecvBufComplete::read_from_prefix(body).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "parse SEND_RECV_BUF_COMPLETE body",
+            nvsp::Message1SendReceiveBufferComplete::read_from_prefix(body).map_err(|_| {
+                Error::Parse {
+                    ty: None,
+                    reason: "parse SEND_RECV_BUF_COMPLETE body",
+                }
             })?;
 
-        if parsed.status != status::SUCCESS {
+        if parsed.status != Status::SUCCESS {
             log::warn!(
-                "netvsp: recv-buf complete status = {} (not SUCCESS)",
+                "netvsp: recv-buf complete status = {:?} (not SUCCESS)",
                 parsed.status
             );
             return Err(Error::Parse {
@@ -1322,34 +995,34 @@ impl Netvsp {
                 reason: "recv-buf section offset != 0",
             });
         }
-        if sec.sub_alloc_size < NETVSC_MTU_MIN {
+        if sec.sub_allocation_size < NETVSC_MTU_MIN {
             log::warn!(
-                "netvsp: recv-buf sub_alloc_size = {} (< MTU_MIN={})",
-                sec.sub_alloc_size,
+                "netvsp: recv-buf sub_allocation_size = {} (< MTU_MIN={})",
+                sec.sub_allocation_size,
                 NETVSC_MTU_MIN
             );
             return Err(Error::Parse {
                 ty: None,
-                reason: "recv-buf sub_alloc_size < MTU_MIN",
+                reason: "recv-buf sub_allocation_size < MTU_MIN",
             });
         }
-        let used = (sec.sub_alloc_size as u64) * (sec.num_sub_allocs as u64);
+        let used = (sec.sub_allocation_size as u64) * (sec.num_sub_allocations as u64);
         if used > size as u64 {
             return Err(Error::Parse {
                 ty: None,
-                reason: "recv-buf sub_alloc_size * count > allocation",
+                reason: "recv-buf sub_allocation_size * count > allocation",
             });
         }
         log::debug!(
-            "netvsp: recv-buf established: sub_alloc_size={}, num_sub_allocs={}, used={}/{}",
-            sec.sub_alloc_size,
-            sec.num_sub_allocs,
+            "netvsp: recv-buf established: sub_allocation_size={}, num_sub_allocations={}, used={}/{}",
+            sec.sub_allocation_size,
+            sec.num_sub_allocations,
             used,
             size,
         );
 
-        self.recv_section_size = sec.sub_alloc_size;
-        self.recv_section_count = sec.num_sub_allocs;
+        self.recv_section_size = sec.sub_allocation_size;
+        self.recv_section_count = sec.num_sub_allocations;
         self.recv_buf = Some(buf);
         Ok(())
     }
@@ -1382,10 +1055,10 @@ impl Netvsp {
         let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
         let n = encode_message(
             msg_type::V1_SEND_SEND_BUF,
-            &Nvsp1MsgSendBuffer {
-                gpadl_handle: buf.gpadl.id().0,
+            &nvsp::Message1SendSendBuffer {
+                gpadl_handle: buf.gpadl.id(),
                 id: NETVSC_SEND_BUFFER_ID,
-                pad: 0,
+                reserved: 0,
             },
             self.version_typed()?,
             &mut frame,
@@ -1407,11 +1080,13 @@ impl Netvsp {
             });
         }
         let (parsed, _) =
-            Nvsp1MsgSendSendBufComplete::read_from_prefix(body).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "parse SEND_SEND_BUF_COMPLETE body",
+            nvsp::Message1SendSendBufferComplete::read_from_prefix(body).map_err(|_| {
+                Error::Parse {
+                    ty: None,
+                    reason: "parse SEND_SEND_BUF_COMPLETE body",
+                }
             })?;
-        if parsed.status != status::SUCCESS {
+        if parsed.status != Status::SUCCESS {
             return Err(Error::Parse {
                 ty: None,
                 reason: "send-buf complete non-success status",
@@ -1473,7 +1148,7 @@ impl Netvsp {
     ///
     /// Sequence:
     /// 1. Allocate a page-aligned buffer, write
-    ///    `RndisMessageHeader + RndisInitializeRequest`.
+    ///    `rndisprot::MessageHeader + rndisprot::InitializeRequest`.
     /// 2. Send `V1_SEND_RNDIS_PKT(RMC_CONTROL)` via
     ///    `SendRing::write_gpa_direct` with the RNDIS bytes carried
     ///    as external GPA-direct data. Completion-requested flag set.
@@ -1482,7 +1157,7 @@ impl Netvsp {
     /// 4. Wait for the RNDIS response arriving as a
     ///    `VM_PKT_DATA_USING_XFER_PAGES` referencing our recv buffer.
     /// 5. Parse the transfer-page header + range, read
-    ///    `RndisInitializeComplete` from recv_buf + range.byte_offset,
+    ///    `rndisprot::InitializeComplete` from recv_buf + range.byte_offset,
     ///    verify `status == STATUS_SUCCESS`.
     /// 6. Send `VM_PKT_COMP` back so the host can free its transfer
     ///    pages.
@@ -1520,16 +1195,16 @@ impl Netvsp {
 
         // Build RNDIS message: header + InitializeRequest.
         let request_id: u32 = 1;
-        let hdr = RndisMessageHeader {
-            message_type: rndis::MESSAGE_TYPE_INITIALIZE_MSG,
-            message_length: (size_of::<RndisMessageHeader>() + size_of::<RndisInitializeRequest>())
-                as u32,
+        let hdr = rndisprot::MessageHeader {
+            message_type: rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            message_length: (size_of::<rndisprot::MessageHeader>()
+                + size_of::<rndisprot::InitializeRequest>()) as u32,
         };
-        let req = RndisInitializeRequest {
+        let req = rndisprot::InitializeRequest {
             request_id,
-            major_version: rndis::MAJOR_VERSION,
-            minor_version: rndis::MINOR_VERSION,
-            max_transfer_size: rndis::MAX_TRANSFER_SIZE,
+            major_version: rndisprot::MAJOR_VERSION,
+            minor_version: rndisprot::MINOR_VERSION,
+            max_transfer_size: rndis_extras::MAX_TRANSFER_SIZE,
         };
         let hdr_bytes = hdr.as_bytes();
         let req_bytes = req.as_bytes();
@@ -1555,10 +1230,10 @@ impl Netvsp {
         let mut nvsp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
         let n = encode_message(
             msg_type::V1_SEND_RNDIS_PKT,
-            &Nvsp1MsgSendRndisPacket {
+            &nvsp::Message1SendRndisPacket {
                 channel_type: RMC_CONTROL,
-                send_buf_section_index: NETVSC_INVALID_INDEX,
-                send_buf_section_size: 0,
+                send_buffer_section_index: NETVSC_INVALID_INDEX,
+                send_buffer_section_size: 0,
             },
             self.version_typed()?,
             &mut nvsp_frame,
@@ -1672,27 +1347,29 @@ impl Netvsp {
                                     range0.byte_count as usize,
                                 )
                             };
-                            let (rhdr, rest) = RndisMessageHeader::read_from_prefix(rndis_msg)
-                                .map_err(|_| Error::Parse {
-                                    ty: None,
-                                    reason: "parse RndisMessageHeader",
-                                })?;
+                            let (rhdr, rest) = rndisprot::MessageHeader::read_from_prefix(
+                                rndis_msg,
+                            )
+                            .map_err(|_| Error::Parse {
+                                ty: None,
+                                reason: "parse rndisprot::MessageHeader",
+                            })?;
                             log::debug!(
                                 "netvsp: RNDIS response type={:#x} len={}",
                                 rhdr.message_type,
                                 rhdr.message_length,
                             );
-                            if rhdr.message_type != rndis::MESSAGE_TYPE_INITIALIZE_CMPLT {
+                            if rhdr.message_type != rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT {
                                 return Err(Error::Parse {
                                     ty: None,
                                     reason: "expected RNDIS_INITIALIZE_CMPLT",
                                 });
                             }
-                            let (comp, _) = RndisInitializeComplete::read_from_prefix(rest)
+                            let (comp, _) = rndisprot::InitializeComplete::read_from_prefix(rest)
                                 .map_err(|_| Error::Parse {
-                                    ty: None,
-                                    reason: "parse RndisInitializeComplete",
-                                })?;
+                                ty: None,
+                                reason: "parse rndisprot::InitializeComplete",
+                            })?;
                             log::debug!(
                                 "netvsp: RNDIS init complete status={:#x} request_id={:#x} \
                                  major={} minor={} device_flags={:#x} medium={} \
@@ -1706,7 +1383,7 @@ impl Netvsp {
                                 comp.max_packets_per_message,
                                 comp.max_transfer_size,
                             );
-                            if comp.status != rndis::STATUS_SUCCESS {
+                            if comp.status != rndisprot::STATUS_SUCCESS {
                                 return Err(Error::Parse {
                                     ty: None,
                                     reason: "RNDIS init status != SUCCESS",
@@ -1721,13 +1398,13 @@ impl Netvsp {
 
                             // Send VM_PKT_COMP back so the host can
                             // free its transfer pages. Payload =
-                            // Nvsp1MsgSendRndisPacketComplete { SUCCESS }
+                            // nvsp::Message1SendRndisPacketComplete { SUCCESS }
                             // per puppet's convention.
                             let mut comp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
                             let m = encode_message(
                                 msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
-                                &Nvsp1MsgSendRndisPacketComplete {
-                                    status: status::SUCCESS,
+                                &nvsp::Message1SendRndisPacketComplete {
+                                    status: Status::SUCCESS,
                                 },
                                 self.version_typed()?,
                                 &mut comp_frame,
@@ -1784,8 +1461,8 @@ impl Netvsp {
     /// `rndis_filter_open`.
     ///
     /// Sequence:
-    /// 1. Allocate a page-aligned buffer, write `RndisMessageHeader
-    ///    + RndisSetRequest + [filter u32]`.
+    /// 1. Allocate a page-aligned buffer, write `rndisprot::MessageHeader
+    ///    + rndisprot::SetRequest + [filter u32]`.
     /// 2. Send via GPA-direct wrapped in `V1_SEND_RNDIS_PKT(RMC_CONTROL)`.
     /// 3. Wait for `V1_SEND_RNDIS_PKT_COMPLETE` (NVSP-level ack).
     /// 4. Wait for `RNDIS_SET_CMPLT` on the xfer-page path.
@@ -1818,19 +1495,19 @@ impl Netvsp {
             });
         }
 
-        let hdr_size = size_of::<RndisMessageHeader>();
-        let req_size = size_of::<RndisSetRequest>();
+        let hdr_size = size_of::<rndisprot::MessageHeader>();
+        let req_size = size_of::<rndisprot::SetRequest>();
         let info_size = size_of::<u32>();
         let total_len = (hdr_size + req_size + info_size) as u32;
 
         let request_id: u32 = 2;
-        let rndis_hdr = RndisMessageHeader {
-            message_type: rndis::MESSAGE_TYPE_SET_MSG,
+        let rndis_hdr = rndisprot::MessageHeader {
+            message_type: rndisprot::MESSAGE_TYPE_SET_MSG,
             message_length: total_len,
         };
-        let set_req = RndisSetRequest {
+        let set_req = rndisprot::SetRequest {
             request_id,
-            oid: rndis::OID_GEN_CURRENT_PACKET_FILTER,
+            oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
             information_buffer_length: info_size as u32,
             information_buffer_offset: req_size as u32,
             device_vc_handle: 0,
@@ -1857,10 +1534,10 @@ impl Netvsp {
         let mut nvsp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
         let n = encode_message(
             msg_type::V1_SEND_RNDIS_PKT,
-            &Nvsp1MsgSendRndisPacket {
+            &nvsp::Message1SendRndisPacket {
                 channel_type: RMC_CONTROL,
-                send_buf_section_index: NETVSC_INVALID_INDEX,
-                send_buf_section_size: 0,
+                send_buffer_section_index: NETVSC_INVALID_INDEX,
+                send_buffer_section_size: 0,
             },
             self.version_typed()?,
             &mut nvsp_frame,
@@ -1937,25 +1614,25 @@ impl Netvsp {
                                     r0.byte_count as usize,
                                 )
                             };
-                            let (rhdr, rest) = RndisMessageHeader::read_from_prefix(rndis_msg)
-                                .map_err(|_| Error::Parse {
-                                    ty: None,
-                                    reason: "parse RndisMessageHeader",
-                                })?;
-                            if rhdr.message_type == rndis::MESSAGE_TYPE_SET_CMPLT {
-                                let (sc, _) =
-                                    RndisSetComplete::read_from_prefix(rest).map_err(|_| {
-                                        Error::Parse {
-                                            ty: None,
-                                            reason: "parse RndisSetComplete",
-                                        }
+                            let (rhdr, rest) = rndisprot::MessageHeader::read_from_prefix(
+                                rndis_msg,
+                            )
+                            .map_err(|_| Error::Parse {
+                                ty: None,
+                                reason: "parse rndisprot::MessageHeader",
+                            })?;
+                            if rhdr.message_type == rndisprot::MESSAGE_TYPE_SET_CMPLT {
+                                let (sc, _) = rndisprot::SetComplete::read_from_prefix(rest)
+                                    .map_err(|_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse rndisprot::SetComplete",
                                     })?;
                                 log::debug!(
                                     "netvsp: RNDIS SET_CMPLT request_id={:#x} status={:#x}",
                                     sc.request_id,
                                     sc.status,
                                 );
-                                if sc.status != rndis::STATUS_SUCCESS {
+                                if sc.status != rndisprot::STATUS_SUCCESS {
                                     return Err(Error::Parse {
                                         ty: None,
                                         reason: "RNDIS SET status != SUCCESS",
@@ -1975,8 +1652,8 @@ impl Netvsp {
                             let mut cf = [0u8; NVSP_V61_MESSAGE_SIZE];
                             let m = encode_message(
                                 msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
-                                &Nvsp1MsgSendRndisPacketComplete {
-                                    status: status::SUCCESS,
+                                &nvsp::Message1SendRndisPacketComplete {
+                                    status: Status::SUCCESS,
                                 },
                                 self.version_typed()?,
                                 &mut cf,
@@ -2015,7 +1692,7 @@ impl Netvsp {
     }
 
     /// Send a raw Ethernet frame via RNDIS `PACKET_MSG` wrapped in
-    /// `Nvsp1MsgSendRndisPacket(RMC_DATA)`, using a GPA-direct
+    /// `nvsp::Message1SendRndisPacket(RMC_DATA)`, using a GPA-direct
     /// external buffer for the RNDIS message.
     ///
     /// This is the TX equivalent of what puppet's `send_eth_packet`
@@ -2038,20 +1715,20 @@ impl Netvsp {
     ///
     /// The RNDIS message written to the buffer:
     /// ```text
-    /// RndisMessageHeader { PACKET_MSG, message_length }
-    /// RndisPacket { data_offset = size_of::<Packet>, data_length = frame.len() }
+    /// rndisprot::MessageHeader { PACKET_MSG, message_length }
+    /// rndisprot::Packet { data_offset = size_of::<Packet>, data_length = frame.len() }
     /// [frame bytes]
     /// ```
-    /// `data_offset` is measured from the start of the `RndisPacket`
+    /// `data_offset` is measured from the start of the `rndisprot::Packet`
     /// struct (openvmm convention). Note that per_packet_info /
     /// oob_data all zero for a plain unadorned frame.
     ///
     /// The NVSP wrapper:
     /// ```text
-    /// Nvsp1MsgSendRndisPacket {
+    /// nvsp::Message1SendRndisPacket {
     ///   channel_type = RMC_DATA (0),
-    ///   send_buf_section_index = NETVSC_INVALID_INDEX,
-    ///   send_buf_section_size = 0,
+    ///   send_buffer_section_index = NETVSC_INVALID_INDEX,
+    ///   send_buffer_section_size = 0,
     /// }
     /// ```
     pub fn send_ethernet<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
@@ -2074,8 +1751,8 @@ impl Netvsp {
         }
 
         // Allocate a page-aligned buffer. Layout inside:
-        //   [0..8)   RndisMessageHeader
-        //   [8..44)  RndisPacket (36 bytes)
+        //   [0..8)   rndisprot::MessageHeader
+        //   [8..44)  rndisprot::Packet (36 bytes)
         //   [44..)   Ethernet frame
         let rndis_layout = Layout::from_size_align(4096, 4096).map_err(|_| Error::Parse {
             ty: None,
@@ -2090,19 +1767,19 @@ impl Netvsp {
                 reason: "rndis buffer alloc failed",
             });
         }
-        let hdr_size = size_of::<RndisMessageHeader>();
-        let pkt_size = size_of::<RndisPacket>();
+        let hdr_size = size_of::<rndisprot::MessageHeader>();
+        let pkt_size = size_of::<rndisprot::Packet>();
         let total_len = (hdr_size + pkt_size + frame.len()) as u32;
 
-        let rndis_hdr = RndisMessageHeader {
-            message_type: rndis::MESSAGE_TYPE_PACKET_MSG,
+        let rndis_hdr = rndisprot::MessageHeader {
+            message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
             message_length: total_len,
         };
-        // data_offset is measured from the START of RndisPacket,
+        // data_offset is measured from the START of rndisprot::Packet,
         // not from the start of the whole RNDIS message. So it's
         // just pkt_size (the frame sits immediately after the Packet
         // struct).
-        let rndis_pkt = RndisPacket {
+        let rndis_pkt = rndisprot::Packet {
             data_offset: pkt_size as u32,
             data_length: frame.len() as u32,
             oob_data_offset: 0,
@@ -2136,10 +1813,10 @@ impl Netvsp {
         let mut nvsp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
         let n = encode_message(
             msg_type::V1_SEND_RNDIS_PKT,
-            &Nvsp1MsgSendRndisPacket {
+            &nvsp::Message1SendRndisPacket {
                 channel_type: RMC_DATA,
-                send_buf_section_index: NETVSC_INVALID_INDEX,
-                send_buf_section_size: 0,
+                send_buffer_section_index: NETVSC_INVALID_INDEX,
+                send_buffer_section_size: 0,
             },
             self.version_typed()?,
             &mut nvsp_frame,
@@ -2237,12 +1914,13 @@ impl Netvsp {
                                     ty: None,
                                     reason: "parse SEND_RNDIS_PKT_COMPLETE hdr",
                                 })?;
-                            let (comp, _) = Nvsp1MsgSendRndisPacketComplete::read_from_prefix(body)
-                                .map_err(|_| Error::Parse {
-                                    ty: None,
-                                    reason: "parse SEND_RNDIS_PKT_COMPLETE body",
-                                })?;
-                            let ok = comp.status == status::SUCCESS;
+                            let (comp, _) =
+                                nvsp::Message1SendRndisPacketComplete::read_from_prefix(body)
+                                    .map_err(|_| Error::Parse {
+                                        ty: None,
+                                        reason: "parse SEND_RNDIS_PKT_COMPLETE body",
+                                    })?;
+                            let ok = comp.status == Status::SUCCESS;
                             let _ = self.free_completed_tx(tid);
                             if !ok {
                                 return Err(Error::Parse {
@@ -2342,19 +2020,17 @@ impl Netvsp {
                                     r.byte_count as usize,
                                 )
                             };
-                            let (rhdr, rest) =
-                                RndisMessageHeader::read_from_prefix(msg).map_err(|_| {
-                                    Error::Parse {
-                                        ty: None,
-                                        reason: "parse RndisMessageHeader",
-                                    }
+                            let (rhdr, rest) = rndisprot::MessageHeader::read_from_prefix(msg)
+                                .map_err(|_| Error::Parse {
+                                    ty: None,
+                                    reason: "parse rndisprot::MessageHeader",
                                 })?;
-                            if rhdr.message_type == rndis::MESSAGE_TYPE_PACKET_MSG {
+                            if rhdr.message_type == rndisprot::MESSAGE_TYPE_PACKET_MSG {
                                 let (rp, _) =
-                                    RndisPacket::read_from_prefix(rest).map_err(|_| {
+                                    rndisprot::Packet::read_from_prefix(rest).map_err(|_| {
                                         Error::Parse {
                                             ty: None,
-                                            reason: "parse RndisPacket",
+                                            reason: "parse rndisprot::Packet",
                                         }
                                     })?;
                                 let frame_off = rp.data_offset as usize;
@@ -2375,8 +2051,8 @@ impl Netvsp {
                         let mut comp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
                         let m = encode_message(
                             msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
-                            &Nvsp1MsgSendRndisPacketComplete {
-                                status: status::SUCCESS,
+                            &nvsp::Message1SendRndisPacketComplete {
+                                status: Status::SUCCESS,
                             },
                             self.version_typed()?,
                             &mut comp_frame,
@@ -2454,7 +2130,7 @@ impl Netvsp {
     ///
     /// This backs the fuzzer's `send_rndis` call: `rndis` is the
     /// complete RNDIS message (starting with its
-    /// `RndisMessageHeader`), copied verbatim into a fresh
+    /// `rndisprot::MessageHeader`), copied verbatim into a fresh
     /// page-aligned buffer whose GPA range is handed to the host.
     /// `channel_type` selects [`RMC_DATA`] vs [`RMC_CONTROL`]. When
     /// `completion` is set we wait for the
@@ -2511,10 +2187,10 @@ impl Netvsp {
             let mut nvsp_frame = [0u8; NVSP_V61_MESSAGE_SIZE];
             let n = encode_message(
                 msg_type::V1_SEND_RNDIS_PKT,
-                &Nvsp1MsgSendRndisPacket {
+                &nvsp::Message1SendRndisPacket {
                     channel_type,
-                    send_buf_section_index: NETVSC_INVALID_INDEX,
-                    send_buf_section_size: 0,
+                    send_buffer_section_index: NETVSC_INVALID_INDEX,
+                    send_buffer_section_size: 0,
                 },
                 version,
                 &mut nvsp_frame,
@@ -2637,7 +2313,7 @@ impl Netvsp {
         ctx: &mut C,
     ) -> Result<()> {
         let gpadl_handle = match &self.recv_buf {
-            Some(b) => b.gpadl.id().0,
+            Some(b) => b.gpadl.id(),
             None => {
                 return Err(Error::Parse {
                     ty: None,
@@ -2649,9 +2325,8 @@ impl Netvsp {
         let mut frame = [0u8; NVSP_V61_MESSAGE_SIZE];
         let n = encode_message(
             msg_type::V1_REVOKE_RECV_BUF,
-            &Nvsp1MsgRevokeRecvBuf {
+            &nvsp::Message1RevokeReceiveBuffer {
                 id: NETVSC_RECEIVE_BUFFER_ID,
-                pad: 0,
             },
             self.version_typed()?,
             &mut frame,
@@ -2666,10 +2341,10 @@ impl Netvsp {
 
         let n = encode_message(
             msg_type::V1_SEND_RECV_BUF,
-            &Nvsp1MsgSendBuffer {
+            &nvsp::Message1SendReceiveBuffer {
                 gpadl_handle,
                 id: NETVSC_RECEIVE_BUFFER_ID,
-                pad: 0,
+                reserved: 0,
             },
             self.version_typed()?,
             &mut frame,
@@ -2690,19 +2365,21 @@ impl Netvsp {
             });
         }
         let (parsed, _) =
-            Nvsp1MsgSendRecvBufComplete::read_from_prefix(body).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "parse SEND_RECV_BUF_COMPLETE body (renew)",
+            nvsp::Message1SendReceiveBufferComplete::read_from_prefix(body).map_err(|_| {
+                Error::Parse {
+                    ty: None,
+                    reason: "parse SEND_RECV_BUF_COMPLETE body (renew)",
+                }
             })?;
-        if parsed.status != status::SUCCESS || parsed.num_sections != 1 {
+        if parsed.status != Status::SUCCESS || parsed.num_sections != 1 {
             return Err(Error::Parse {
                 ty: None,
                 reason: "recv-buf renew non-success / bad num_sections",
             });
         }
         let sec = &parsed.sections[0];
-        self.recv_section_size = sec.sub_alloc_size;
-        self.recv_section_count = sec.num_sub_allocs;
+        self.recv_section_size = sec.sub_allocation_size;
+        self.recv_section_count = sec.num_sub_allocations;
         Ok(())
     }
 
@@ -2715,7 +2392,7 @@ impl Netvsp {
         ctx: &mut C,
     ) -> Result<()> {
         let gpadl_handle = match &self.send_buf {
-            Some(b) => b.gpadl.id().0,
+            Some(b) => b.gpadl.id(),
             None => {
                 return Err(Error::Parse {
                     ty: None,
@@ -2729,9 +2406,8 @@ impl Netvsp {
         // struct with the send-buffer id.
         let n = encode_message(
             msg_type::V1_REVOKE_SEND_BUF,
-            &Nvsp1MsgRevokeRecvBuf {
+            &nvsp::Message1RevokeReceiveBuffer {
                 id: NETVSC_SEND_BUFFER_ID,
-                pad: 0,
             },
             self.version_typed()?,
             &mut frame,
@@ -2746,10 +2422,10 @@ impl Netvsp {
 
         let n = encode_message(
             msg_type::V1_SEND_SEND_BUF,
-            &Nvsp1MsgSendBuffer {
+            &nvsp::Message1SendSendBuffer {
                 gpadl_handle,
                 id: NETVSC_SEND_BUFFER_ID,
-                pad: 0,
+                reserved: 0,
             },
             self.version_typed()?,
             &mut frame,
@@ -2770,11 +2446,13 @@ impl Netvsp {
             });
         }
         let (parsed, _) =
-            Nvsp1MsgSendSendBufComplete::read_from_prefix(body).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "parse SEND_SEND_BUF_COMPLETE body (renew)",
+            nvsp::Message1SendSendBufferComplete::read_from_prefix(body).map_err(|_| {
+                Error::Parse {
+                    ty: None,
+                    reason: "parse SEND_SEND_BUF_COMPLETE body (renew)",
+                }
             })?;
-        if parsed.status != status::SUCCESS || parsed.section_size == 0 {
+        if parsed.status != Status::SUCCESS || parsed.section_size == 0 {
             return Err(Error::Parse {
                 ty: None,
                 reason: "send-buf renew non-success / zero section_size",
@@ -2912,8 +2590,8 @@ impl Netvsp {
         let mut cf = [0u8; NVSP_V61_MESSAGE_SIZE];
         let m = encode_message(
             msg_type::V1_SEND_RNDIS_PKT_COMPLETE,
-            &Nvsp1MsgSendRndisPacketComplete {
-                status: status::SUCCESS,
+            &nvsp::Message1SendRndisPacketComplete {
+                status: Status::SUCCESS,
             },
             self.version_typed()?,
             &mut cf,
