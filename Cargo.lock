@@ -5825,7 +5825,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crypto",
  "embed-resource",
@@ -5838,7 +5838,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_build_info"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "test_with_tracing",
 ]
