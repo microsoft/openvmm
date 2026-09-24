@@ -52,6 +52,7 @@ use crate::hypercalls::post_message;
 )]
 use crate::message::completion_table;
 use crate::protocol::MAX_MESSAGE_SIZE;
+use crate::protocol::NEGOTIATION_LADDER;
 use crate::protocol::OfferChannel;
 use crate::protocol::PacketFlags;
 use crate::protocol::PacketType;
@@ -108,7 +109,7 @@ pub fn resolve_connection_id(requested: u64) -> u32 {
         // Not yet negotiated: pick the default for the newest version
         // we would ask for, matching `initial_connection_id`.
         None => {
-            if crate::protocol::NEGOTIATION_LADDER
+            if NEGOTIATION_LADDER
                 .first()
                 .is_some_and(|v| *v < Version::Win10Rs3_1)
             {
@@ -533,6 +534,7 @@ fn poll_capture<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::ChannelId;
     use zerocopy::FromZeros;
 
     #[test]
@@ -553,9 +555,9 @@ mod tests {
     #[test]
     fn relids_projects_channel_ids() {
         let mut a = OfferChannel::new_zeroed();
-        a.channel_id = crate::protocol::ChannelId(7);
+        a.channel_id = ChannelId(7);
         let mut b = OfferChannel::new_zeroed();
-        b.channel_id = crate::protocol::ChannelId(9);
+        b.channel_id = ChannelId(9);
         assert_eq!(relids(&[a, b]), alloc::vec![7, 9]);
     }
 }

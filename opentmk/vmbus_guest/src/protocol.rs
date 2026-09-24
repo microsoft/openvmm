@@ -224,7 +224,7 @@ pub struct TransferPageHeader {
 /// One entry in a `VM_PKT_DATA_USING_XFER_PAGES` packet describing
 /// where in the recv buffer the host wrote a single sub-message.
 ///
-/// Matches [`vmbus_ring::TransferPageRange`] on the wire.
+/// Matches `vmbus_ring::TransferPageRange` on the wire.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct TransferPageRange {
@@ -237,7 +237,7 @@ pub struct TransferPageRange {
 /// GPA range as it appears on the wire for `VM_PKT_DATA_USING_GPA_DIRECT`
 /// and inside `GpadlHeader` bodies.
 ///
-/// Wire-equivalent to [`vmbus_ring::gparange::GpaRange`]; guest-local
+/// Wire-equivalent to `vmbus_ring::gparange::GpaRange`; guest-local
 /// only because the field names (`byte_count`/`byte_offset`) differ
 /// from upstream (`len`/`offset`).
 #[repr(C)]

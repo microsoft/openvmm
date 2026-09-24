@@ -29,7 +29,7 @@
 //! };
 //! use vmbus_guest::interrupt::SimpPump;
 //! use vmbus_guest::message::completion_table;
-//! use vmbus_guest::protocol::Version;
+//! use vmbus_guest::protocol::{NEGOTIATION_LADDER, Version};
 //!
 //! // 1. Bring up SynIC (or reuse an existing bring-up).
 //! vmbus_guest::synic::init_synic(&mut ctx)?;
@@ -42,7 +42,7 @@
 //!     table,
 //!     &mut pump,
 //!     CLIENT_ID,
-//!     crate::protocol::NEGOTIATION_LADDER,
+//!     NEGOTIATION_LADDER,
 //! )?;
 //! let connection_id = state.connection_id;
 //!
@@ -83,6 +83,7 @@ use crate::protocol::InitiateContact2;
 use crate::protocol::MAX_MESSAGE_SIZE;
 use crate::protocol::MessageHeader;
 use crate::protocol::MessageType;
+use crate::protocol::NEGOTIATION_LADDER;
 use crate::protocol::OfferChannel;
 use crate::protocol::RequestOffers;
 use crate::protocol::RescindChannelOffer;
@@ -95,6 +96,8 @@ use crate::protocol::Version;
 use crate::protocol::VersionResponse;
 use crate::protocol::VersionResponse2;
 use crate::protocol::VersionResponse3;
+use crate::protocol::supported_feature_flags;
+use crate::protocol::version_raw;
 use crate::synic::VMBUS_SINT;
 use crate::synic::synic_pages;
 use alloc::vec::Vec;
@@ -171,7 +174,7 @@ pub fn encode_initiate_contact(
     };
 
     let base = InitiateContact {
-        version_requested: crate::protocol::version_raw(version),
+        version_requested: version_raw(version),
         target_message_vp: 0,
         interrupt_page_or_target_info,
         parent_to_child_monitor_page_gpa: monitor_pages.0,
@@ -320,7 +323,7 @@ where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: MessagePump,
 {
-    let advertised_flags = crate::protocol::supported_feature_flags();
+    let advertised_flags = supported_feature_flags();
     let mut discard = OfferCollector::default();
     for &version in ladder {
         let handle = table.register(CompletionKey::VersionResponse);
@@ -426,13 +429,7 @@ pub fn initiate<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     let pages = synic_pages().ok_or(Error::VersionMismatch)?;
     let table = completion_table();
     let mut pump = SimpPump::new(pages.simp_gpa);
-    let state = negotiate_version(
-        ctx,
-        table,
-        &mut pump,
-        CLIENT_ID,
-        crate::protocol::NEGOTIATION_LADDER,
-    )?;
+    let state = negotiate_version(ctx, table, &mut pump, CLIENT_ID, NEGOTIATION_LADDER)?;
     *CONNECTION.lock() = Some(state);
     Ok(())
 }

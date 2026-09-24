@@ -34,7 +34,7 @@
 //! use vmbus_guest::connection::{negotiate_version, CLIENT_ID};
 //! use vmbus_guest::interrupt::SimpPump;
 //! use vmbus_guest::message::CompletionTable;
-//! use vmbus_guest::protocol::Version;
+//! use vmbus_guest::protocol::{NEGOTIATION_LADDER, Version};
 //!
 //! let table = CompletionTable::new();
 //! let mut pump = SimpPump::new(simp_gpa);
@@ -47,7 +47,7 @@
 //!     &table,
 //!     &mut pump,
 //!     CLIENT_ID,
-//!     crate::protocol::NEGOTIATION_LADDER,
+//!     NEGOTIATION_LADDER,
 //! )?;
 //! # Ok::<_, vmbus_guest::Error>(())
 //! ```
