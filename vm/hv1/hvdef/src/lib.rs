@@ -1567,6 +1567,7 @@ pub mod hypercall {
         pub partition_id: u64,
         pub virt_iommu_id: u32,
         pub interrupts: VirtIommuInterrupts,
+        /// Reserved field following the 16-byte interrupt union.
         pub reserved: u32,
         pub base_gpa_page: u64,
         pub feature_set: VirtIommuFeatureSet,
@@ -1576,6 +1577,8 @@ pub mod hypercall {
     const _: () = assert!(core::mem::offset_of!(VirtIommuFeatureSet, idr0) == 8);
     const _: () = assert!(core::mem::offset_of!(VirtIommuFeatureSet, idr3) == 20);
     const _: () = assert!(size_of::<CreateVirtualIommu>() == 80);
+    const _: () = assert!(core::mem::offset_of!(CreateVirtualIommu, interrupts) == 12);
+    const _: () = assert!(core::mem::offset_of!(CreateVirtualIommu, reserved) == 28);
     const _: () = assert!(core::mem::offset_of!(CreateVirtualIommu, base_gpa_page) == 32);
     const _: () = assert!(core::mem::offset_of!(CreateVirtualIommu, feature_set) == 40);
 
