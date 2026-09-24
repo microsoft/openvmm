@@ -2703,6 +2703,43 @@ async fn verify_split_queue_indirect(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_queue_indirect_inner(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)).await;
 }
+
+/// A packed chain must notify when the driver event lies inside the chain.
+#[async_test]
+async fn verify_packed_queue_chained_completion_wakes_for_interior_event(driver: DefaultDriver) {
+    const CHAIN_LEN: u16 = 2;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true);
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(work.payload.len(), CHAIN_LEN as usize);
+                    queue.complete(work, 123);
+                },
+            ),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    // Arm at position 1 of the chain covering positions 0 and 1.
+    guest.enable_interrupt(0, Some(1));
+    guest.add_linked_to_avail_queue(0, CHAIN_LEN);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(500)).await;
+
+    let (_, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(len, 123);
+    queues[0].stop().await;
+}
+
 #[async_test]
 async fn verify_packed_queue_indirect(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
