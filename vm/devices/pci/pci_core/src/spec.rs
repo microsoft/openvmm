@@ -461,6 +461,7 @@ pub mod caps {
             ARI   = 0x0E,
             SRIOV = 0x10,
             REBAR = 0x15,
+            PASID = 0x1B,
             DVSEC = 0x23,
             SIOV  = 0x38,
         }
