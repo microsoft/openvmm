@@ -709,15 +709,14 @@ impl VfioAssignedPciDevice {
         let bar_reset_defaults = bars;
 
         let kernel_owned_ats = direct_capabilities.direct && direct_capabilities.ats;
-        let ats_drop_guard =
-            kernel_owned_ats
-                .then(|| ats_control_offset)
-                .flatten()
-                .map(|control_offset| AtsDropGuard {
-                    pci_id: pci_id.clone(),
-                    vfio_device: vfio_device.clone(),
-                    control_offset,
-                });
+        let ats_drop_guard = kernel_owned_ats
+            .then_some(ats_control_offset)
+            .flatten()
+            .map(|control_offset| AtsDropGuard {
+                pci_id: pci_id.clone(),
+                vfio_device: vfio_device.clone(),
+                control_offset,
+            });
 
         Ok(Self {
             pci_id,
