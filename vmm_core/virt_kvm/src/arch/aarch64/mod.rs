@@ -940,10 +940,6 @@ impl virt::Partition for KvmPartition {
         Some(self.irqfd_state.clone())
     }
 
-    fn direct_iommu_vm_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
-        Some(self.inner.kvm.vm_fd())
-    }
-
     fn request_yield(&self, vp_index: VpIndex) {
         let vp = &self.inner.vps[vp_index.index() as usize];
         if vp.needs_yield.request_yield() {

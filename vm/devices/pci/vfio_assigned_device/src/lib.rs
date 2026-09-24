@@ -271,6 +271,8 @@ pub(crate) struct VfioAssignedPciDevice {
     #[inspect(hex)]
     managed_pasid_control_offset: Option<u16>,
     #[inspect(hex)]
+    managed_ats_control_offset: Option<u16>,
+    #[inspect(hex)]
     ats_control_offset: Option<u16>,
     #[inspect(hex)]
     managed_pcie_device_control_offset: Option<u16>,
@@ -567,6 +569,7 @@ impl VfioAssignedPciDevice {
         let af_flr_control_offset = caps.af_flr_control_offset;
         let config_patches = caps.config_patches;
         let managed_pasid_control_offset = caps.managed_pasid_control_offset;
+        let managed_ats_control_offset = caps.managed_ats_control_offset;
         let ats_control_offset = caps.ats_control_offset;
         let managed_pcie_device_control_offset = caps.managed_pcie_device_control_offset;
         let managed_af_control_offset = caps.managed_af_control_offset;
@@ -737,6 +740,7 @@ impl VfioAssignedPciDevice {
             config_patches,
             accel_stream,
             managed_pasid_control_offset,
+            managed_ats_control_offset,
             ats_control_offset,
             managed_pcie_device_control_offset,
             managed_af_control_offset,
@@ -1232,6 +1236,7 @@ struct DiscoveredCapabilities {
     /// Config space patch table for filtering capabilities from the guest.
     config_patches: BTreeMap<u16, ConfigPatch>,
     managed_pasid_control_offset: Option<u16>,
+    managed_ats_control_offset: Option<u16>,
     ats_control_offset: Option<u16>,
     managed_pcie_device_control_offset: Option<u16>,
     managed_af_control_offset: Option<u16>,
@@ -1266,6 +1271,7 @@ fn discover_capabilities_with_policy(
         af_flr_control_offset: None,
         config_patches: BTreeMap::new(),
         managed_pasid_control_offset: None,
+        managed_ats_control_offset: None,
         ats_control_offset: None,
         managed_pcie_device_control_offset: None,
         managed_af_control_offset: None,
@@ -1523,6 +1529,8 @@ fn discover_capabilities_with_policy(
                     );
                 }
                 caps::ExtendedCapabilityId::ATS if direct_capabilities.direct => {
+                    let control_offset = offset + 4;
+                    result.managed_ats_control_offset = Some(control_offset);
                     if !direct_capabilities.ats {
                         result.config_patches.insert(
                             offset,
@@ -1532,7 +1540,7 @@ fn discover_capabilities_with_policy(
                             },
                         );
                     } else {
-                        result.ats_control_offset = Some(offset + 4);
+                        result.ats_control_offset = Some(control_offset);
                     }
                     // VFIO commits the ordered kernel ATS transition before readback changes.
                 }
@@ -1728,6 +1736,7 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             supports_reset,
             config_patches: _,
             managed_pasid_control_offset: _,
+            managed_ats_control_offset: _,
             ats_control_offset: _,
             managed_pcie_device_control_offset: _,
             managed_af_control_offset: _,
@@ -2054,6 +2063,25 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 );
                 return IoResult::Ok;
             }
+            _ if Some(offset) == self.managed_ats_control_offset => {
+                if let Some(enabled) = requested_ats_state(value) {
+                    if !self.kernel_owned_ats {
+                        tracing::trace!(
+                            pci_id = self.pci_id.as_str(),
+                            enabled,
+                            "ignored guest ATS transition because direct ATS is disabled"
+                        );
+                    } else if let Err(err) =
+                        self.set_ats_enabled_retry(enabled, "guest ATS control write")
+                    {
+                        panic!(
+                            "cannot update ATS for VFIO device {} after guest config write: {err:#}",
+                            self.pci_id
+                        );
+                    }
+                }
+                return IoResult::Ok;
+            }
             _ if Some(offset) == self.managed_pcie_device_control_offset => {
                 self.write_phys_config(offset, without_flr_request(value));
                 return IoResult::Ok;
@@ -2072,6 +2100,11 @@ fn is_managed_capability_write(
     af_control_offset: Option<u16>,
 ) -> bool {
     Some(offset) == pasid_control_offset || Some(offset) == af_control_offset
+}
+
+fn requested_ats_state(value: ByteEnabledDwordWrite) -> Option<bool> {
+    (value.valid_mask() & ATS_CONTROL_ENABLE != 0)
+        .then(|| value.extract() & ATS_CONTROL_ENABLE != 0)
 }
 
 fn without_flr_request(value: ByteEnabledDwordWrite) -> ByteEnabledDwordWrite {
@@ -2665,6 +2698,7 @@ mod tests {
                 ats: false,
             },
         );
+        assert_eq!(pasid_only.managed_ats_control_offset, Some(0x104));
         assert_eq!(pasid_only.ats_control_offset, None);
         assert_eq!(pasid_only.managed_pasid_control_offset, Some(0x124));
         assert_eq!(pasid_only.config_patches[&0x100].mask, 0x0000_ffff);
@@ -2681,6 +2715,7 @@ mod tests {
                 ats: true,
             },
         );
+        assert_eq!(pasid_ats.managed_ats_control_offset, Some(0x104));
         assert_eq!(pasid_ats.ats_control_offset, Some(0x104));
         assert!(!pasid_ats.config_patches.contains_key(&0x100));
         assert!(!pasid_ats.config_patches.contains_key(&0x104));
@@ -2691,6 +2726,27 @@ mod tests {
     #[test]
     fn ats_enable_mask_matches_pci_control_register() {
         assert_eq!(ATS_CONTROL_ENABLE >> 16, 0x8000);
+        assert_eq!(
+            requested_ats_state(ByteEnabledDwordWrite::new(
+                ATS_CONTROL_ENABLE,
+                PciConfigByteEnable::HIGH_WORD,
+            )),
+            Some(true)
+        );
+        assert_eq!(
+            requested_ats_state(ByteEnabledDwordWrite::new(
+                0,
+                PciConfigByteEnable::HIGH_WORD,
+            )),
+            Some(false)
+        );
+        assert_eq!(
+            requested_ats_state(ByteEnabledDwordWrite::new(
+                u32::MAX,
+                PciConfigByteEnable::LOW_WORD,
+            )),
+            None
+        );
     }
 
     #[test]
@@ -2708,6 +2764,7 @@ mod tests {
         let msi = MsiTarget::disconnected();
 
         let discovered = discover_capabilities(&cfg, &msi);
+        assert_eq!(discovered.managed_ats_control_offset, None);
         assert_eq!(discovered.ats_control_offset, None);
         assert_eq!(discovered.managed_pasid_control_offset, None);
         assert!(!discovered.config_patches.contains_key(&0x100));

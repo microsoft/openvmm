@@ -795,10 +795,6 @@ impl Partition for KvmPartition {
         Some(self.irqfd_state.clone())
     }
 
-    fn direct_iommu_vm_fd(&self) -> Option<BorrowedFd<'_>> {
-        Some(self.inner.kvm.vm_fd())
-    }
-
     fn caps(&self) -> &virt::PartitionCapabilities {
         &self.inner.caps
     }

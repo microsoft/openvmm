@@ -1196,6 +1196,35 @@ async fn vm_config_from_command_line(
             direct_iommus.is_empty(),
             "--direct-iommu is only supported for aarch64 guests"
         );
+        #[cfg(guest_arch = "aarch64")]
+        {
+            let mut direct_iommu_root_complexes: HashMap<&str, String> = HashMap::new();
+            for vfio in &opt.vfio {
+                let Some(iommu_id) = vfio
+                    .iommu
+                    .as_deref()
+                    .filter(|iommu| direct_iommus.contains(*iommu))
+                else {
+                    continue;
+                };
+                let rc_name =
+                    root_complex_for_port(&vfio.port_name, &opt.pcie_root_port, &pcie_switches)
+                        .with_context(|| {
+                            format!(
+                                "direct VFIO device {} references unresolved port {}",
+                                vfio.pci_id, vfio.port_name
+                            )
+                        })?;
+                if let Some(existing) =
+                    direct_iommu_root_complexes.insert(iommu_id, rc_name.clone())
+                {
+                    anyhow::ensure!(
+                        existing == rc_name,
+                        "--direct-iommu context {iommu_id} cannot span root complexes {existing} and {rc_name}"
+                    );
+                }
+            }
+        }
 
         opt.vfio
             .iter()
