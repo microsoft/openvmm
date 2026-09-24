@@ -4908,7 +4908,7 @@ dependencies = [
 [[package]]
 name = "ms-tcg-tpm-sys"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=90d23db6e415fa7f88d917b448f46f2e6a90ca56#90d23db6e415fa7f88d917b448f46f2e6a90ca56"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=517ae1a64aeb990019d809b963ac2c2726080e24#517ae1a64aeb990019d809b963ac2c2726080e24"
 dependencies = [
  "bitfield-struct 0.13.0",
  "cmake",
