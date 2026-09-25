@@ -439,6 +439,10 @@ fn virtio_mmio_config(
             openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
             openvmm_defs::microvm::microvm_virtio_net_irq(None)?,
         ),
+        "virtiofs" => (
+            openvmm_defs::microvm::MICROVM_VIRTIO_FS_MMIO_BASE,
+            openvmm_defs::microvm::MICROVM_VIRTIO_FS_IRQ,
+        ),
         "virtio-console" => (
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ,
@@ -455,6 +459,7 @@ fn virtio_mmio_config(
     );
     let disabled_features = match id {
         "virtio-net" => !openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES,
+        "virtiofs" => !openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES,
         _ => 1 << 34,
     };
     let interrupt_mode = VirtioMmioInterruptMode::SharedStatus {
