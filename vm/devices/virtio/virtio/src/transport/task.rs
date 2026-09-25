@@ -8,6 +8,8 @@
 //! The transports become thin MMIO/PCI forwarders that send RPCs to
 //! the task.
 
+pub(super) mod restore;
+
 use crate::DynVirtioDevice;
 use crate::QueueResources;
 use crate::queue::QueueState;
@@ -26,6 +28,7 @@ use mesh::rpc::RpcSend;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use vmcore::save_restore::SavedStateBlob;
 
 /// Commands sent from the transport to the device task.
 pub enum DeviceCommand {
@@ -35,10 +38,13 @@ pub enum DeviceCommand {
     Enable(Rpc<EnableParams, bool>),
     /// Guest writes status=0 — stop all queues, reset device.
     Disable(Rpc<(), ()>),
-    /// ChangeDeviceState::stop() — stop queues, return states for resume.
-    Stop(Rpc<(), Vec<Option<QueueState>>>),
+    /// ChangeDeviceState::stop() — stop queues, return their states and the
+    /// device-private state.
+    Stop(Rpc<(), restore::StopResult>),
     /// ChangeDeviceState::start() — restart queues with saved states.
     Start(FailableRpc<StartParams, ()>),
+    /// Restore device-private state into the stopped device.
+    Restore(FailableRpc<Option<SavedStateBlob>, ()>),
     /// ChangeDeviceState::reset() — stop queues, reset device.
     Reset(Rpc<(), ()>),
     /// Drop the stopped backend and exit, acknowledging after destruction.
@@ -76,7 +82,7 @@ pub enum ConfigReadCompletion {
 
 /// Parameters for the Enable command.
 pub struct EnableParams {
-    pub queues: Vec<(u16, QueueResources)>,
+    pub queues: Vec<(u16, QueueResources, Option<QueueState>)>,
     pub features: VirtioDeviceFeatures,
 }
 
@@ -131,7 +137,7 @@ impl TransportState {
     pub fn start_enable(
         &mut self,
         sender: &mesh::Sender<DeviceCommand>,
-        queues: Vec<(u16, QueueResources)>,
+        queues: Vec<(u16, QueueResources, Option<QueueState>)>,
         features: VirtioDeviceFeatures,
     ) {
         assert!(!self.is_busy());
@@ -188,14 +194,47 @@ impl TransportState {
 struct DeviceTask {
     device: Box<dyn DynVirtioDevice>,
     max_queues: u16,
+    /// The device type reported by restore lifecycle traces.
+    device_type: u16,
+    /// Per queue, whether it is started.
+    started: Vec<bool>,
 }
 
 impl DeviceTask {
+    /// Starts one queue and records whether it started.
+    async fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+        trigger: &'static str,
+    ) -> anyhow::Result<()> {
+        let restored_progress = initial_state.is_some();
+        let result = self
+            .device
+            .start_queue(idx, resources, features, initial_state)
+            .await;
+        tracing::debug!(
+            target: "virtio_restore",
+            event = "queue_start",
+            device_type = self.device_type,
+            trigger,
+            queue_index = i32::from(idx),
+            restored_progress,
+            success = result.is_ok(),
+            "virtio restore lifecycle"
+        );
+        if result.is_ok() {
+            self.started[idx as usize] = true;
+        }
+        result
+    }
+
     async fn enable(&mut self, params: EnableParams) -> bool {
-        for (idx, resources) in params.queues {
+        for (idx, resources, initial_state) in params.queues {
             if let Err(err) = self
-                .device
-                .start_queue(idx, resources, &params.features, None)
+                .start_queue(idx, resources, &params.features, initial_state, "driver-ok")
                 .await
             {
                 tracelimit::error_ratelimited!(
@@ -216,27 +255,37 @@ impl DeviceTask {
         self.device.reset().await;
     }
 
-    async fn stop(&mut self) -> Vec<Option<QueueState>> {
+    async fn stop(&mut self) -> restore::StopResult {
         let mut states = vec![None; self.max_queues as usize];
         for idx in 0..self.max_queues {
             states[idx as usize] = self.device.stop_queue(idx).await;
         }
-        states
+        self.stop_result(states)
     }
 
+    /// Restarts the queues of a running device. If one fails to start, stops
+    /// the queues that did, so that the device processes nothing until the
+    /// guest resets it.
     async fn start(&mut self, params: StartParams) -> anyhow::Result<()> {
         for (idx, resources, initial_state) in params.queues {
-            self.device
-                .start_queue(idx, resources, &params.features, initial_state)
+            if let Err(err) = self
+                .start_queue(
+                    idx,
+                    resources,
+                    &params.features,
+                    initial_state,
+                    "active-start",
+                )
                 .await
-                .map_err(|err| {
-                    tracelimit::error_ratelimited!(
-                        error = &*err as &dyn std::error::Error,
-                        idx,
-                        "virtio device start_queue failed on resume"
-                    );
-                    err
-                })?;
+            {
+                tracelimit::error_ratelimited!(
+                    error = &*err as &dyn std::error::Error,
+                    idx,
+                    "virtio device start_queue failed on resume"
+                );
+                self.stop_all_queues().await;
+                return Err(err);
+            }
         }
         Ok(())
     }
@@ -249,6 +298,7 @@ impl DeviceTask {
     async fn stop_all_queues(&mut self) {
         for idx in 0..self.max_queues {
             self.device.stop_queue(idx).await;
+            self.started[idx as usize] = false;
         }
     }
 }
@@ -258,8 +308,11 @@ pub async fn run_device_task(
     device: Box<dyn DynVirtioDevice>,
     mut recv: mesh::Receiver<DeviceCommand>,
 ) {
+    let traits = device.traits();
     let mut task = DeviceTask {
-        max_queues: device.traits().max_queues,
+        max_queues: traits.max_queues,
+        device_type: traits.device_id.0,
+        started: vec![false; traits.max_queues as usize],
         device,
     };
 
@@ -275,12 +328,11 @@ pub async fn run_device_task(
                 rpc.handle(async |()| task.stop().await).await;
             }
             DeviceCommand::Start(rpc) => {
-                // Start is used by ChangeDeviceState::start(), which is
-                // sync and uses Rpc::detached() — errors are logged here
-                // but not propagated to the transport.
-                // TODO: update ChangeDeviceState to allow async start()
-                // so failures can be handled by the transport.
                 rpc.handle_failable(async |params| task.start(params).await)
+                    .await;
+            }
+            DeviceCommand::Restore(rpc) => {
+                rpc.handle_failable(async |state| task.restore_device(state))
                     .await;
             }
             DeviceCommand::Reset(rpc) => {

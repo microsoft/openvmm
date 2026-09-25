@@ -6,6 +6,8 @@
 #![expect(unsafe_code)]
 #![cfg(test)]
 
+mod saved_state;
+
 use crate::DeviceTraits;
 use crate::DynVirtioDevice;
 use crate::PciInterruptModel;
@@ -79,7 +81,7 @@ const VIRTIO_ACKNOWLEDGE: u32 = 1;
 const VIRTIO_DRIVER: u32 = 2;
 const VIRTIO_DRIVER_OK: u32 = 4;
 const VIRTIO_FEATURES_OK: u32 = 8;
-const _VIRTIO_DEVICE_NEEDS_RESET: u32 = 0x40;
+const VIRTIO_DEVICE_NEEDS_RESET: u32 = 0x40;
 const _VIRTIO_FAILED: u32 = 0x80;
 
 async fn must_recv_in_timeout<T: 'static + Send>(
@@ -4855,7 +4857,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
 async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     use crate::spec::mmio::VirtioMmioRegister;
     use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
@@ -4895,9 +4897,11 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     dev.stop().await;
 
     // Save state.
-    let saved = dev.save().expect("save should succeed");
+    let mut saved = dev.save().await.expect("save should succeed");
     assert_eq!(saved.queues.len(), 1);
     assert!(saved.queues[0].common.enable);
+    saved_state::check_restored_queue_validation(&mut saved, guest.queue_features(), &mem);
+    drop(dev);
 
     // Create a new device and restore into it.
     let interrupt2 = LineInterrupt::detached();
@@ -4923,7 +4927,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     )
     .unwrap();
 
-    dev2.restore(saved).expect("restore should succeed");
+    dev2.restore(saved).await.expect("restore should succeed");
     // Verify device is active after restore — read STATUS register.
     assert_ne!(
         dev2.read_u32(VirtioMmioRegister::STATUS.0 as u64) & VIRTIO_DRIVER_OK,
@@ -5019,7 +5023,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
 
 #[async_test]
 async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let interrupt = LineInterrupt::detached();
 
@@ -5042,7 +5046,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
     )
     .unwrap();
 
-    let result = dev.save();
+    let result = dev.save().await;
     assert!(result.is_err(), "save should fail for unsupported device");
 }
 
@@ -5118,7 +5122,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
 
 #[async_test]
 async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
@@ -5163,7 +5167,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
 
     // Stop, save, restore into a new device.
     dev.stop().await;
-    let saved = dev.save().expect("save should succeed");
+    let saved = dev.save().await.expect("save should succeed");
 
     let interrupt2 = LineInterrupt::detached();
     let mut dev2 = VirtioMmioDevice::new(
@@ -5190,7 +5194,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
 
     // Reset counter to isolate restore behavior.
     test_mem.doorbell_count.store(0, Ordering::Relaxed);
-    dev2.restore(saved).expect("restore should succeed");
+    dev2.restore(saved).await.expect("restore should succeed");
 
     // Doorbells must be reinstalled during restore.
     let doorbells_after_restore = test_mem.doorbell_count.load(Ordering::Relaxed);
