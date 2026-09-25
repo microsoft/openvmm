@@ -10,6 +10,7 @@
 #[cfg(guest_arch = "aarch64")]
 mod aarch64;
 mod run_vp;
+mod timing;
 #[cfg(guest_arch = "x86_64")]
 mod x86_64;
 
@@ -143,6 +144,7 @@ impl<'a> MshvProtoPartition<'a> {
     /// Performs the post-init partition setup common to both architectures:
     /// creates VPs, BSP, installs intercepts, sets up the signal handler,
     /// and checks for unsupported VTL2 configuration.
+    /// On x86_64, the BSP is instead created when partition memory is finalized.
     fn new(config: ProtoPartitionConfig<'a>, vmfd: VmFd) -> Result<Self, Error> {
         if config.processor_topology.vp_count() > u8::MAX as u32 {
             return Err(ErrorInner::TooManyVps(config.processor_topology.vp_count()).into());
@@ -161,6 +163,7 @@ impl<'a> MshvProtoPartition<'a> {
             })
             .collect();
 
+        #[cfg(guest_arch = "aarch64")]
         let bsp = vmfd
             .create_vcpu(0)
             .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
@@ -203,6 +206,7 @@ impl<'a> MshvProtoPartition<'a> {
             isolation: arch::MshvProtoPartitionIsolation::None,
             vmfd,
             vps,
+            #[cfg(guest_arch = "aarch64")]
             bsp,
         })
     }
@@ -224,6 +228,7 @@ pub struct MshvProtoPartition<'a> {
     isolation: arch::MshvProtoPartitionIsolation,
     vmfd: VmFd,
     vps: Vec<MshvVpInner>,
+    #[cfg(guest_arch = "aarch64")]
     bsp: VcpuFd,
 }
 
@@ -296,8 +301,12 @@ struct MshvPartitionInner {
     vmfd: VmFd,
     /// The BSP's VcpuFd, retained for partition-level register access
     /// (VM state get/set). Only used while VPs are stopped.
+    #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     bsp_vcpufd: VcpuFd,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(rename = "memory_finalized", with = "|x| x.get().is_some()")]
+    finalized: std::sync::OnceLock<arch::finalize::MshvFinalizedPartition>,
     #[inspect(skip)]
     memory: Mutex<MshvMemoryRangeState>,
     gm: GuestMemory,
@@ -308,8 +317,12 @@ struct MshvPartitionInner {
     irq_routes: virt::irqcon::IrqRoutes,
     #[inspect(skip)]
     gsi_states: Mutex<Box<[irqfd::GsiState; irqfd::NUM_GSIS]>>,
+    #[cfg(guest_arch = "aarch64")]
     caps: virt::PartitionCapabilities,
     synic_ports: virt::synic::SynicPortMap,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(flatten)]
+    config: arch::finalize::CreationConfig,
     #[cfg(guest_arch = "x86_64")]
     software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
     #[inspect(skip)]
@@ -732,6 +745,15 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error(transparent)]
     Snp(#[from] arch::SnpError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("guest memory is not attached")]
+    GuestMemoryNotAttached,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("partition memory has not been finalized")]
+    PartitionNotFinalized,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("partition memory was already finalized")]
+    PartitionAlreadyFinalized,
     #[error("vtl2 not supported")]
     Vtl2NotSupported,
     #[error("isolation not supported")]
@@ -993,7 +1015,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             exec,
         )
         .entered();
-        let mapped = self.isolation.map_user_memory(&self.vmfd, mem_region)?;
+        let mapped = self.isolation.map_memory_timed(&self.vmfd, mem_region)?;
         state.ranges[slot_to_use] = Some(MshvMemoryRange {
             region: mem_region,
             mapped,

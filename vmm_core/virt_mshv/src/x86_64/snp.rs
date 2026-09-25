@@ -773,7 +773,8 @@ impl MshvPartitionInner {
 
         let sev_control =
             mshv_bindings::snp::get_sev_control_register(vmsa_gpa / hvdef::HV_PAGE_SIZE);
-        self.bsp_vcpufd
+        self.finalized()?
+            .bsp_vcpufd
             .set_hvdef_regs(&[HvRegisterAssoc::from((
                 HvX64RegisterName::SevControl,
                 sev_control,
@@ -791,7 +792,8 @@ impl MshvPartitionInner {
         if count > x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX {
             return Err(SnpError::TooManyCpuidEntries(count).into());
         }
-        if self.caps.hv1 {
+        let finalized = self.finalized()?;
+        if finalized.caps.hv1 {
             // TODO: Determine the correct long-term strategy for exposing
             // synthetic Hyper-V CPUID leaves to direct-boot SNP guests: include
             // them in the measured CPUID page, rely on GHCB CPUID fallback, or
@@ -826,12 +828,12 @@ impl MshvPartitionInner {
 
         for leaf in &mut page.cpuid_leaf_info[..count] {
             let values = get_snp_cpuid_values(
-                &self.bsp_vcpufd,
+                &finalized.bsp_vcpufd,
                 leaf.eax_in,
                 leaf.ecx_in,
                 leaf.xfem_in,
                 leaf.xss_in,
-                self.caps.hv1,
+                finalized.caps.hv1,
             )
             .map_err(|e| SnpError::Cpuid(e.into()))?;
             leaf.eax_out = values[0];
@@ -1346,7 +1348,7 @@ impl MshvProcessor<'_> {
                     0,
                     0,
                     0,
-                    self.partition.caps.hv1,
+                    self.partition.caps().hv1,
                 )
                 .map_err(|err| {
                     tracelimit::error_ratelimited!(
@@ -1525,7 +1527,7 @@ impl MshvProcessor<'_> {
                     index,
                     xfem,
                     xss,
-                    self.partition.caps.hv1,
+                    self.partition.caps().hv1,
                 )
                 .map_err(|err| {
                     tracelimit::error_ratelimited!(

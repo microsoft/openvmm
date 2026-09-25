@@ -181,7 +181,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     type Error = Error;
 
     fn caps(&self) -> &virt::PartitionCapabilities {
-        &self.partition.caps
+        self.partition.caps()
     }
 
     fn commit(&mut self) -> Result<(), Self::Error> {
@@ -219,11 +219,11 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     fn xsave(&mut self) -> Result<vp::Xsave, Self::Error> {
         let xsave = self.get_state(
             mshv_bindings::MSHV_VP_STATE_XSAVE,
-            self.partition.caps.xsave.compact_len as usize,
+            self.partition.caps().xsave.compact_len as usize,
         )?;
         Ok(vp::Xsave::from_compact(
             xsave.as_bytes(),
-            &self.partition.caps,
+            self.partition.caps(),
         ))
     }
 

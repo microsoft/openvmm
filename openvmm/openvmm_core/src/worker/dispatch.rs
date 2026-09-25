@@ -1559,6 +1559,19 @@ impl InitializedVm {
                 .context("failed to attach memory to VTL2")?;
         }
 
+        let finalize_result = {
+            let _span = tracing::info_span!("post-memory partition finalization").entered();
+            let started = std::time::Instant::now();
+            let result = partition.finalize_memory();
+            tracing::info!(
+                elapsed_us = started.elapsed().as_micros() as u64,
+                success = result.is_ok(),
+                "post-memory partition finalization completed"
+            );
+            result
+        };
+        finalize_result.context("failed to finalize partition memory")?;
+
         Ok(Self {
             partition,
             vps,
