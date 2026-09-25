@@ -53,6 +53,7 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+use net_backend_resources::egress::EgressPolicy;
 use null::NullEndpoint;
 use pal_async::driver::Driver;
 use std::future::pending;
@@ -93,6 +94,19 @@ pub trait Endpoint: Send + Sync + InspectMut {
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()>;
+
+    /// Configures a run-scoped egress policy before queues are created.
+    ///
+    /// Backends that accept an active policy must apply it to the immutable
+    /// packet bytes immediately before externally visible transmission.
+    fn set_egress_policy(&mut self, policy: EgressPolicy) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !policy.is_active(),
+            "network backend '{}' does not support active egress policy",
+            self.endpoint_type()
+        );
+        Ok(())
+    }
 
     /// Stops the endpoint.
     ///
