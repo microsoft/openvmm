@@ -9,6 +9,9 @@ use super::console::ConsoleEndpoint;
 use super::console::effective_microvm_console;
 use super::console::microvm_console_socket_cleanup;
 use super::console::validate_microvm_console_attachment_namespace;
+use super::filesystem::EffectiveMicrovmFilesystem;
+use super::filesystem::MICROVM_FILESYSTEM_STABLE_ID;
+use super::filesystem::effective_microvm_filesystem;
 use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
 use super::network::microvm_network_endpoint;
@@ -35,6 +38,7 @@ use openvmm_defs::microvm::build_microvm_command_line;
 use pal_async::DefaultDriver;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
@@ -55,6 +59,7 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     restore: &'a MicrovmRestore,
     active: bool,
     network: Option<EffectiveMicrovmNetwork>,
+    filesystem: Option<EffectiveMicrovmFilesystem>,
     gateway_dns: bool,
     console: Option<ConsoleEndpoint>,
     portb: Option<Resource<SerialBackendHandle>>,
@@ -72,6 +77,14 @@ impl<'a> MicrovmConfigBuilder<'a> {
         opt.validate_microvm_options()?;
         let network = if active {
             effective_microvm_network(opt, restore_machine_contract)?
+        } else {
+            None
+        };
+        let filesystem = if active {
+            effective_microvm_filesystem(
+                opt.microvm.microvm_mount.as_ref(),
+                restore_machine_contract,
+            )?
         } else {
             None
         };
@@ -109,6 +122,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .map(|(_, _, attachment)| attachment.clone()),
             network_attachment: network.as_ref().map(|network| network.attachment.clone()),
+            filesystem_root_path: filesystem
+                .as_ref()
+                .map(|filesystem| PathBuf::from(&filesystem.root_path)),
             ..Default::default()
         };
 
@@ -117,6 +133,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             restore,
             active,
             network,
+            filesystem,
             gateway_dns,
             console,
             portb: None,
@@ -332,7 +349,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
     }
 
-    /// Adds the fixed-slot virtio-net device.
+    /// Adds the fixed-slot virtio-net and virtio-fs devices.
     pub(crate) fn add_virtio_devices(
         &mut self,
         add_virtio_device: &mut impl FnMut(VirtioBusCli, Resource<VirtioDeviceHandle>),
@@ -355,6 +372,25 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         gateway_mac: config.gateway_mac,
                     }),
                     effective_features: Some(openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES),
+                }
+                .into_resource(),
+            );
+        }
+
+        if let Some(filesystem) = &self.filesystem {
+            add_virtio_device(
+                VirtioBusCli::Mmio,
+                virtio_resources::fs::VirtioFsHandle {
+                    tag: "microvm".to_owned(),
+                    fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+                        root_path: filesystem.root_path.clone(),
+                        mount_options: String::new(),
+                    },
+                    profile: virtio_resources::fs::microvm::VirtioFsProfile::Microvm {
+                        stable_id: MICROVM_FILESYSTEM_STABLE_ID.to_owned(),
+                        root_identity: filesystem.attachment.identity.clone(),
+                        read_only: filesystem.config.access.is_read_only(),
+                    },
                 }
                 .into_resource(),
             );
@@ -408,6 +444,10 @@ impl<'a> MicrovmConfigBuilder<'a> {
             }
         }
         cfg.microvm.network = self.network.as_ref().map(|network| network.config.clone());
+        cfg.microvm.filesystem = self
+            .filesystem
+            .as_ref()
+            .map(|filesystem| filesystem.config.clone());
 
         let requested_hypervisor = opt
             .hypervisor
@@ -440,7 +480,12 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .zip(network_irq)
                 .map(|(network, irq)| (network, irq, self.gateway_dns));
-            openvmm_defs::microvm::append_microvm_virtio_discovery(cmdline, network, has_console)?;
+            openvmm_defs::microvm::append_microvm_virtio_discovery(
+                cmdline,
+                network,
+                cfg.microvm.filesystem.as_ref(),
+                has_console,
+            )?;
         }
         openvmm_defs::microvm::validate_machine_config(cfg, requested_hypervisor)?;
 
