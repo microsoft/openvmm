@@ -34,9 +34,10 @@
 
 #![forbid(unsafe_code)]
 
+mod broker;
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "the broker worker drives the state machine")
+    expect(dead_code, reason = "saved state consumes the broker snapshot")
 )]
 pub(crate) mod control_session_broker;
 pub(crate) mod control_session_protocol;
@@ -252,6 +253,8 @@ enum WorkerError {
     Serial(#[source] std::io::Error),
     #[error("guest memory error")]
     GuestMemory(#[source] guestmem::GuestMemoryError),
+    #[error("control-session broker error")]
+    Broker(#[source] control_session_broker::BrokerError),
 }
 
 impl ConsoleWorker {
@@ -261,11 +264,13 @@ impl ConsoleWorker {
     /// So, be careful not to leave any state in a weird intermediate state across
     /// an await point.
     async fn run_loop(&mut self, state: &mut ConsoleWorkerState) -> Result<(), WorkerError> {
-        let direct::ConsoleWorkerMode::Direct {
-            io: serial_io,
-            disconnect_policy,
-        } = &mut self.mode;
-        let disconnect_policy = *disconnect_policy;
+        let (serial_io, disconnect_policy) = match &mut self.mode {
+            direct::ConsoleWorkerMode::Direct {
+                io,
+                disconnect_policy,
+            } => (io, *disconnect_policy),
+            direct::ConsoleWorkerMode::Broker(mode) => return mode.run_loop(state).await,
+        };
         let mut connected: bool = serial_io.is_connected();
         let receiveq = &mut state.receiveq;
         let transmitq = &mut state.transmitq;

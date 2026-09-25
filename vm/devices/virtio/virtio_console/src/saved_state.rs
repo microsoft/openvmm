@@ -38,12 +38,15 @@ impl VirtioConsoleDevice {
     /// Resets the private state that persists across queue restarts.
     pub(crate) fn reset_private_state(&mut self) {
         self.config = VirtioConsoleConfig::default();
-        let (_, mut state) = self.worker.get_mut();
+        let (worker, mut state) = self.worker.get_mut();
         let state = state.as_mut().unwrap();
         state.partial_transmit = 0;
         state.staged_rx.clear();
         state.input_gated = false;
         state.mem = GuestMemory::empty();
+        if let ConsoleWorkerMode::Broker(mode) = &mut worker.mode {
+            mode.reset_for_device();
+        }
     }
 
     /// Stops or resumes accepting new host input, preserving device and queue
@@ -73,7 +76,10 @@ impl VirtioConsoleDevice {
         }
         let ConsoleWorkerMode::Direct {
             disconnect_policy, ..
-        } = &worker.mode;
+        } = &worker.mode
+        else {
+            return Err(SaveError::NotSupported);
+        };
         Ok(Some(SavedStateBlob::new(SavedState {
             schema_version: DIRECT_SAVED_STATE_VERSION,
             columns: self.config.cols.into(),
@@ -151,14 +157,17 @@ pub(crate) fn check_restored_tx_offset(
 #[derive(Clone, Copy)]
 enum SavedStateMode {
     Direct(VirtioConsoleDisconnectPolicy),
+    Broker,
 }
 
 impl ConsoleWorkerMode {
     fn validation_mode(&self) -> SavedStateMode {
-        let Self::Direct {
-            disconnect_policy, ..
-        } = self;
-        SavedStateMode::Direct(*disconnect_policy)
+        match self {
+            Self::Direct {
+                disconnect_policy, ..
+            } => SavedStateMode::Direct(*disconnect_policy),
+            Self::Broker(_) => SavedStateMode::Broker,
+        }
     }
 }
 
@@ -184,7 +193,9 @@ fn validate_saved_state(
         ));
     }
     let saved: SavedState = state.parse()?;
-    let SavedStateMode::Direct(disconnect_policy) = mode;
+    let SavedStateMode::Direct(disconnect_policy) = mode else {
+        return Err(RestoreError::SavedStateNotSupported);
+    };
     if saved.schema_version != DIRECT_SAVED_STATE_VERSION {
         return Err(invalid_saved_state(format!(
             "direct console requires schema version {DIRECT_SAVED_STATE_VERSION}, got {}",

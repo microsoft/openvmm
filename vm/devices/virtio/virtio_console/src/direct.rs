@@ -3,8 +3,9 @@
 
 //! Console worker modes and the direct forwarding mode.
 //!
-//! The worker runs in a [`ConsoleWorkerMode`]: direct forwarding between the
-//! virtio queues and a [`SerialIo`] backend. In direct mode a
+//! The worker runs in one of two [`ConsoleWorkerMode`]s: direct forwarding
+//! between the virtio queues and a [`SerialIo`] backend, or the control-session
+//! broker (see [`crate::broker`]). In direct mode a
 //! [`VirtioConsoleDisconnectPolicy`] selects whether guest output is discarded
 //! or retained while the backend is disconnected, and host input is staged in
 //! the worker state before it is copied to a guest buffer, so input already
@@ -15,9 +16,11 @@ use crate::ConsoleWorker;
 use crate::ConsoleWorkerState;
 use crate::VirtioConsoleDevice;
 use crate::WorkerError;
+use crate::broker::BrokerWorker;
 use crate::spec::VirtioConsoleConfig;
 use futures::AsyncRead;
 use guestmem::GuestMemory;
+use inspect::Inspect;
 use inspect::InspectMut;
 use serial_core::SerialIo;
 use std::collections::VecDeque;
@@ -34,12 +37,17 @@ pub(crate) enum ConsoleWorkerMode {
         io: Box<dyn SerialIo>,
         disconnect_policy: VirtioConsoleDisconnectPolicy,
     },
+    Broker(Box<BrokerWorker>),
 }
 
 impl InspectMut for ConsoleWorker {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        let ConsoleWorkerMode::Direct { io, .. } = &mut self.mode;
-        req.respond().field("mode", "direct").field_mut("io", io);
+        match &mut self.mode {
+            ConsoleWorkerMode::Direct { io, .. } => {
+                req.respond().field("mode", "direct").field_mut("io", io);
+            }
+            ConsoleWorkerMode::Broker(mode) => mode.inspect(req),
+        }
     }
 }
 
