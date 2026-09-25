@@ -508,6 +508,7 @@ impl VmController {
             page_size: crate::system_page_size(),
             architecture: crate::GUEST_ARCH.to_string(),
             snapshot_id,
+            ..Default::default()
         };
 
         // Write snapshot directory.
