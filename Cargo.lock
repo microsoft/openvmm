@@ -10404,6 +10404,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmbus_client_core"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "vmbus_core",
+]
+
+[[package]]
 name = "vmbus_client_hcl"
 version = "0.0.0"
 dependencies = [

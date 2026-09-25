@@ -64,6 +64,8 @@ members = [
   "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
+  # bootstrapping — remove from members once vmbus_client depends on this crate
+  "vm/devices/vmbus/vmbus_client_core",
 ]
 exclude = [
   "xsync",
