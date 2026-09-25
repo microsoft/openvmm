@@ -1,14 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared single-VP fixture without mapped RAM or VP execution.
+//! Shared single-VP fixture with one mapped page of RAM but no VP execution.
+
+// UNSAFETY: Mapping the fixture's RAM into the partition.
+#![expect(unsafe_code)]
 
 use anyhow::Context as _;
 use guestmem::GuestMemory;
+use hvdef::Vtl;
 use pal_async::DefaultDriver;
 use virt::BindProcessor;
 use virt::Hypervisor;
 use virt::Partition;
+use virt::PartitionMemoryMapper;
 use virt::ProtoPartition as _;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
@@ -50,7 +55,7 @@ impl Fixture {
         hv1: bool,
     ) -> anyhow::Result<(H::Partition, impl BindProcessor)>
     where
-        H::Partition: Partition,
+        H::Partition: Partition + PartitionMemoryMapper,
     {
         let proto = hv.new_partition(virt::ProtoPartitionConfig {
             processor_topology: &self.topology,
@@ -69,6 +74,29 @@ impl Fixture {
             vtl0_alias_map: None,
             fault_resolver: None,
         })?;
+        // An MSHV partition creates its BSP and discovers its capabilities
+        // only once guest memory is attached, as at the start of a VM, so
+        // attach the RAM and finalize the partition before any VP or
+        // capability access.
+        let ram = self
+            .memory
+            .inner_buf()
+            .context("the fixture's RAM is not a heap allocation")?;
+        // SAFETY: the fixture's RAM outlives the partition, which every
+        // caller drops before the fixture.
+        unsafe {
+            partition.memory_mapper(Vtl::Vtl0).map_range(
+                ram.as_ptr().cast_mut().cast(),
+                ram.len(),
+                0,
+                true,
+                true,
+            )
+        }
+        .context("failed to map the fixture's RAM")?;
+        partition
+            .finalize_memory()
+            .context("failed to finalize partition memory")?;
         let [binder] = binders
             .try_into()
             .ok()
