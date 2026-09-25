@@ -31,6 +31,8 @@ pub(crate) struct MicrovmController {
     pub(crate) effective_command_line: Option<String>,
     /// Host attachments and cleanup guards of the microVM devices.
     pub(crate) resources: MicrovmResources,
+    /// Static identity of the microVM virtio-net device.
+    pub(crate) network: Option<openvmm_defs::microvm::MicrovmNetworkConfig>,
     /// Automatic RAM backing created for snapshot capture.
     pub(crate) snapshot_memory_file: Option<tempfile::NamedTempFile>,
 }
@@ -141,10 +143,16 @@ impl VmController {
         let command_line = response.effective_command_line;
 
         let result = (|| -> anyhow::Result<()> {
+            let network = self
+                .microvm
+                .network
+                .as_ref()
+                .zip(self.microvm.resources.network_attachment.clone());
             let machine_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
                 &self.microvm.source_hypervisor,
                 openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
                 command_line,
+                network,
                 self.microvm.resources.console_attachment.clone(),
                 self.processors,
                 self.memory,
