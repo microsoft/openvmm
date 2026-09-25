@@ -737,6 +737,15 @@ impl Partition {
         self.get_property(partition_prop::ReferenceTime)
     }
 
+    pub fn extended_vm_exits(&self) -> Result<abi::WHV_EXTENDED_VM_EXITS> {
+        self.get_property(partition_prop::ExtendedVmExits)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn x64_msr_exit_bitmap(&self) -> Result<abi::WHV_X64_MSR_EXIT_BITMAP> {
+        self.get_property(partition_prop::X64MsrExitBitmap)
+    }
+
     pub fn physical_address_width(&self) -> Result<u32> {
         self.get_property(partition_prop::PhysicalAddressWidth)
     }

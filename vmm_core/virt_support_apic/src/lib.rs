@@ -43,7 +43,8 @@ use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
 
 const NANOS_PER_TICK: u64 = 5; // 200Mhz
-const TIMER_FREQUENCY: u64 = 1_000_000_000 / NANOS_PER_TICK;
+/// The emulated LAPIC timer bus frequency in Hz, before its clock divider.
+pub const TIMER_FREQUENCY: u64 = 1_000_000_000 / NANOS_PER_TICK;
 const APIC_VERSION: u32 = 0x50014;
 
 const ICR_LOW_MASK: Icr = Icr::new()
