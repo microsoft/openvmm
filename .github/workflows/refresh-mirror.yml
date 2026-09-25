@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   QueueBuild:
+    if: github.repository == 'microsoft/openvmm'
     runs-on: ubuntu-latest
     steps:
       - uses: Azure/login@cb79c773a3cfa27f31f25eb3f677781210c9ce3d # v1.6.1

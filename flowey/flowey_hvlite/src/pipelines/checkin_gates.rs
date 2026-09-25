@@ -60,6 +60,40 @@ enum PipelineConfig {
     PatinaNightly,
 }
 
+trait CheckinGatesJobExt {
+    fn gh_set_pool_with_fork_gate(self, pool: GhRunner, config: PipelineConfig) -> Self;
+}
+
+impl CheckinGatesJobExt for PipelineJob<'_> {
+    fn gh_set_pool_with_fork_gate(self, pool: GhRunner, config: PipelineConfig) -> Self {
+        let is_upstream_only =
+            matches!(pool, GhRunner::SelfHosted(_) | GhRunner::RunnerGroup { .. });
+        let job = self.gh_set_pool(pool);
+
+        let condition = match (config, is_upstream_only) {
+            (PipelineConfig::Pr, true) => Some(
+                "github.repository == 'microsoft/openvmm' && github.event.pull_request.draft == false",
+            ),
+            (PipelineConfig::Ci, true) => Some("github.repository == 'microsoft/openvmm'"),
+            (PipelineConfig::PatinaNightly, true) => {
+                Some("github.repository == 'microsoft/openvmm'")
+            }
+            (PipelineConfig::PrRelease, true) => Some(
+                "github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false",
+            ),
+            (PipelineConfig::PrRelease, false) => Some(
+                "contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false",
+            ),
+            _ => None,
+        };
+
+        match condition {
+            Some(condition) => job.gh_dangerous_override_if(condition),
+            None => job,
+        }
+    }
+}
+
 /// A unified pipeline defining all checkin gates required to land a commit in
 /// the OpenVMM repo.
 #[derive(clap::Args)]
@@ -182,8 +216,7 @@ impl IntoPipeline for CheckinGatesCli {
         )?;
 
         pipeline.inject_all_jobs_with(move |job| {
-            let mut job = job
-                .dep_on(&cfg_common_params)
+            job.dep_on(&cfg_common_params)
                 .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
@@ -197,16 +230,7 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_grant_permissions::<flowey_lib_common::gh_task_azure_login::Node>([(
                     GhPermission::IdToken,
                     GhPermissionValue::Write,
-                )]);
-
-            // For the release pipeline, only run if the "release-ci-required" label is present and PR is not draft
-            if matches!(config, PipelineConfig::PrRelease) {
-                job = job.gh_dangerous_override_if(
-                    "contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false",
-                );
-            }
-
-            job
+                )])
         });
 
         let openhcl_musl_target = |arch: CommonArch| -> Triple {
@@ -264,7 +288,8 @@ impl IntoPipeline for CheckinGatesCli {
 
         // Quick check gate
         //
-        // Combined fmt + clippy on one self-hosted linux machine.
+        // Combined fmt + clippy on one GitHub-hosted linux machine so that it
+        // can bootstrap the remaining fork-capable jobs.
         // Catches the most common failures quickly before fanning out expensive jobs.
         let quick_check_job = if matches!(config, PipelineConfig::Pr | PipelineConfig::PrRelease) {
             let job = pipeline
@@ -273,7 +298,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "quick check [fmt, clippy x64-linux]",
                 )
-                .gh_set_pool(gh_pools::default_linux())
+                .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
                 .ado_set_pool(ado_pools::default_linux())
                 // 1. xtask fmt (linux)
                 .side_effect(|done| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
@@ -303,7 +328,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "xtask fmt (windows)",
                 )
-                .gh_set_pool(gh_pools::windows_x64_gh())
+                .gh_set_pool_with_fork_gate(gh_pools::windows_x64_gh(), config)
                 .ado_set_pool(ado_pools::default_windows())
                 .side_effect(|done| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
                     target: CommonTriple::X86_64_WINDOWS_MSVC,
@@ -322,7 +347,7 @@ impl IntoPipeline for CheckinGatesCli {
                         FlowArch::X86_64,
                         "xtask fmt (linux)",
                     )
-                    .gh_set_pool(gh_pools::linux_x64_gh())
+                    .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
                     .ado_set_pool(ado_pools::default_linux())
                     .side_effect(|done| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
                         target: CommonTriple::X86_64_LINUX_GNU,
@@ -347,7 +372,7 @@ impl IntoPipeline for CheckinGatesCli {
                 FlowArch::X86_64,
                 "cargo hack (linux)",
             )
-            .gh_set_pool(gh_pools::linux_x64_gh())
+            .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
             .ado_set_pool(ado_pools::default_linux())
             .side_effect(|done| flowey_lib_hvlite::_jobs::check_cargo_hack::Request {
                 profile: CommonProfile::from_release(release),
@@ -396,7 +421,7 @@ impl IntoPipeline for CheckinGatesCli {
                 FlowArch::X86_64,
                 "build artifacts (shared VMM tests) [windows]",
             )
-            .gh_set_pool(gh_pools::default_windows())
+            .gh_set_pool_with_fork_gate(gh_pools::default_windows(), config)
             .ado_set_pool(ado_pools::default_windows());
         for (arch, pub_pipette_windows) in shared_win_pipette_artifacts {
             shared_win_job = shared_win_job.publish(pub_pipette_windows, |pipette| {
@@ -496,7 +521,7 @@ impl IntoPipeline for CheckinGatesCli {
                 FlowArch::X86_64,
                 "build artifacts (shared VMM tests) [linux]",
             )
-            .gh_set_pool(gh_pools::linux_intel_v6_1es())
+            .gh_set_pool_with_fork_gate(gh_pools::linux_intel_v6_1es(), config)
             .ado_set_pool(ado_pools::default_linux());
         for (
             arch,
@@ -658,7 +683,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (not for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(gh_pools::default_windows())
+                .gh_set_pool_with_fork_gate(gh_pools::default_windows(), config)
                 .ado_set_pool(ado_pools::default_windows())
                 .publish(pub_hypestv, |hypestv| {
                     flowey_lib_hvlite::build_hypestv::Request {
@@ -734,7 +759,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(gh_pools::default_windows())
+                .gh_set_pool_with_fork_gate(gh_pools::default_windows(), config)
                 .ado_set_pool(ado_pools::default_windows())
                 .publish(pub_openvmm, |openvmm| {
                     flowey_lib_hvlite::build_openvmm::Request {
@@ -926,7 +951,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (for VMM tests) [{arch_tag}-linux]"),
                 )
-                .gh_set_pool(gh_pools::default_linux())
+                .gh_set_pool_with_fork_gate(gh_pools::default_linux(), config)
                 .ado_set_pool(ado_pools::default_linux())
                 .publish(pub_openvmm, |openvmm| {
                     flowey_lib_hvlite::build_openvmm::Request {
@@ -1184,7 +1209,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     build_openhcl_job_tag(arch_tag, mi_secure),
                 )
-                .gh_set_pool(gh_pools::default_linux())
+                .gh_set_pool_with_fork_gate(gh_pools::default_linux(), config)
                 .ado_set_pool(ado_pools::default_linux())
                 .dep_on(|ctx| {
                     let mut pub_openhcl_baseline = pub_openhcl_baseline;
@@ -1264,7 +1289,10 @@ impl IntoPipeline for CheckinGatesCli {
                         FlowArch::X86_64,
                         format!("verify openhcl binary size [{}]", arch_tag),
                     )
-                    .gh_set_pool(gh_pools::linux_x64_gh())
+                    .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
+                    .gh_dangerous_override_if(
+                        "github.repository == 'microsoft/openvmm' && github.event.pull_request.draft == false",
+                    )
                     .side_effect(|done| {
                         flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
                             target: CommonTriple::Common {
@@ -1422,7 +1450,7 @@ impl IntoPipeline for CheckinGatesCli {
 
             let mut clippy_unit_test_job = pipeline
                 .new_job(platform, arch, job_name)
-                .gh_set_pool(gh_pool);
+                .gh_set_pool_with_fork_gate(gh_pool, config);
 
             if let Some(pool) = ado_pool {
                 clippy_unit_test_job = clippy_unit_test_job.ado_set_pool(pool);
@@ -1825,7 +1853,7 @@ impl IntoPipeline for CheckinGatesCli {
 
             let mut vmm_tests_run_job = pipeline
                 .new_job(platform, arch, format!("run vmm-tests [{label}]"))
-                .gh_set_pool(gh_pool);
+                .gh_set_pool_with_fork_gate(gh_pool, config);
 
             if let Some(pool) = ado_pool {
                 vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(pool);
@@ -1969,7 +1997,7 @@ impl IntoPipeline for CheckinGatesCli {
             ] {
                 let job = pipeline
                     .new_job(platform, flow_arch, format!("run vmm-perf [{label}]"))
-                    .gh_set_pool(pool)
+                    .gh_set_pool_with_fork_gate(pool, config)
                     .with_timeout_in_minutes(120)
                     .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
                     .dep_on(
@@ -2001,7 +2029,7 @@ impl IntoPipeline for CheckinGatesCli {
                         FlowArch::X86_64,
                         "test flowey local backend",
                     )
-                    .gh_set_pool(gh_pools::linux_x64_gh())
+                    .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
                     .side_effect(|done| {
                         flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm::Request {
                             base_recipe: OpenhclIgvmRecipe::X64,
@@ -2021,7 +2049,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "build openvmm [distribution config, x64-linux-gnu]",
                 )
-                .gh_set_pool(gh_pools::linux_x64_gh())
+                .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
                 .ado_set_pool(ado_pools::default_linux())
                 .side_effect(|done| {
                     flowey_lib_hvlite::_jobs::check_distro_build_from_checkout::Request { done }
@@ -2057,7 +2085,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "openvmm checkin gates",
                 )
-                .gh_set_pool(gh_pools::linux_x64_gh())
+                .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
                 // always run this job, regardless whether or not any previous jobs failed
                 .gh_dangerous_override_if("always() && github.event.pull_request.draft == false")
                 .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
@@ -2085,7 +2113,7 @@ impl IntoPipeline for CheckinGatesCli {
                     GhPermission::Contents,
                     GhPermissionValue::Write,
                 )])
-                .gh_set_pool(gh_pools::linux_x64_gh())
+                .gh_set_pool_with_fork_gate(gh_pools::linux_x64_gh(), config)
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release::Request {
                         vmgstools: vmgstools
@@ -2104,5 +2132,27 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         Ok(pipeline)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_with_tracing::test;
+
+    #[test]
+    fn release_pr_jobs_keep_the_release_label_gate() {
+        let workflow = include_str!("../../../../.github/workflows/openvmm-pr-release.yaml");
+        let conditions: Vec<_> = workflow
+            .lines()
+            .filter(|line| line.starts_with("    if: "))
+            .collect();
+
+        assert!(!conditions.is_empty());
+        for condition in conditions {
+            assert!(
+                condition.contains("release-ci-required"),
+                "release PR job is missing the release label gate: {condition}"
+            );
+        }
     }
 }
