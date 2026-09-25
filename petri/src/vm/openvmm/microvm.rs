@@ -146,7 +146,12 @@ pub(super) fn attach_chipset_devices(
     chipset_devices.extend([
         ChipsetDeviceHandle {
             name: MicrovmPortbHandle::ID.to_owned(),
-            resource: MicrovmPortbHandle { io }.into_resource(),
+            resource: MicrovmPortbHandle {
+                io,
+                generation_id: [0x5a; 16],
+                restore_entropy: Vec::new(),
+            }
+            .into_resource(),
         },
         ChipsetDeviceHandle {
             name: MicrovmShutdownHandle::ID.to_owned(),
