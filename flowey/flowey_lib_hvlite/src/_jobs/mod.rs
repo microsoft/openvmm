@@ -20,6 +20,7 @@ pub mod check_clippy;
 pub mod check_distro_build;
 pub mod check_distro_build_from_checkout;
 pub mod check_openvmm_hcl_size;
+pub mod check_openvmm_release_commit;
 pub mod check_xtask_fmt;
 pub mod consolidate_and_publish_gh_pages;
 pub mod consume_and_test_nextest_unit_tests_archive;
