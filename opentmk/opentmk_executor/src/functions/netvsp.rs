@@ -26,10 +26,11 @@
 use crate::functions::{FuzzFunctionVariable, VerifyFuzzVariables};
 use crate::prelude::*;
 use hvdef::Vtl;
+use netvsp_protocol::rndisprot as rndis;
 use opentmk_core::platform::hyperv::ctx::HvTestCtx;
 use opentmk_decoder::SafeMemoryMap;
 use spin::Mutex;
-use vmbus_guest::devices::netvsp::{self, Netvsp, RMC_CONTROL, RMC_DATA, rndis};
+use vmbus_guest::devices::netvsp::{self, Netvsp, RMC_CONTROL, RMC_DATA};
 
 /// Bit 0 of a `send_nvsp` / `send_rndis` flags argument: request a
 /// completion for the posted packet (guest spins for the paired
@@ -71,7 +72,7 @@ const DEFAULT_MTU: u32 = 1514;
 /// only the netvsp channel itself is churned.
 struct NetvspSession {
     ctx: Box<HvTestCtx>,
-    offer: vmbus_guest::protocol::OfferChannel,
+    offer: vmbus_core::protocol::OfferChannel,
     nic: Netvsp,
 }
 
@@ -96,7 +97,7 @@ static NETVSP: Mutex<SessionCell> = Mutex::new(SessionCell { session: None });
 /// This is the *persistent* half of bring-up (SynIC + VMBus
 /// negotiation + channel enumeration); it is done once and reused
 /// across per-testcase channel resets.
-fn bring_up_vmbus() -> Result<(Box<HvTestCtx>, vmbus_guest::protocol::OfferChannel), String> {
+fn bring_up_vmbus() -> Result<(Box<HvTestCtx>, vmbus_core::protocol::OfferChannel), String> {
     // `HvTestCtx` embeds two inline 4 KiB hypercall pages (~8 KiB). Keep it
     // boxed so the context never lands on the guest stack: as a by-value
     // local, its frame overflowed the bare-metal (non-growable) UEFI stack
@@ -126,7 +127,7 @@ fn bring_up_vmbus() -> Result<(Box<HvTestCtx>, vmbus_guest::protocol::OfferChann
 /// so the previous channel's [`NetvspBacking`] must be freed first.
 fn open_netvsp_channel(
     ctx: &mut HvTestCtx,
-    offer: &vmbus_guest::protocol::OfferChannel,
+    offer: &vmbus_core::protocol::OfferChannel,
 ) -> Result<Netvsp, String> {
     let mut nic = Netvsp::open(ctx, offer).map_err(|e| format!("netvsp: open failed: {e:?}"))?;
     nic.negotiate_version(ctx)

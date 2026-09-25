@@ -35,8 +35,9 @@ use hvdef::Vtl;
 use opentmk_core::platform::hyperv::ctx::HvTestCtx;
 use opentmk_decoder::SafeMemoryMap;
 use spin::Mutex;
+use vmbus_core::protocol::OfferChannel;
 use vmbus_guest::fuzz::{self, PACKET_DESCRIPTOR_SIZE, RawChannel};
-use vmbus_guest::protocol::{OfferChannel, PacketFlags, PacketType};
+use vmbus_guest::protocol::{PacketFlags, PacketType};
 
 /// Upper bound on a fuzzer-supplied message length before we stage it.
 ///
@@ -354,7 +355,7 @@ pub fn vmbus_msg_comp(
 ///
 /// * `pkt` / `pkt_len` — the packet payload.
 /// * `pkt_desc` — pointer to a 16-byte
-///   [`vmbus_guest::protocol::PacketDescriptor`] to emit **verbatim**,
+/// [`vmbus_guest::protocol::PacketDescriptor`] to emit **verbatim**,
 ///   or `0` to have the ring build a self-consistent one.
 /// * `pkt_type` — the packet type. When `pkt_desc` is supplied, this
 ///   overwrites the descriptor's type field, so the grammar's typed

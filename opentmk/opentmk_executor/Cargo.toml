@@ -10,6 +10,7 @@ rust-version.workspace = true
 cfg-if.workspace = true
 hvdef.workspace = true
 log.workspace = true
+netvsp_protocol.workspace = true
 opentmk_core.workspace = true
 spin.workspace = true
 zerocopy.workspace = true
@@ -17,6 +18,7 @@ postcard = { workspace = true, features = ["alloc"] }
 opentmk_exec_packet.workspace = true
 opentmk_decoder.workspace = true
 uefi = { workspace = true, features = ["alloc"] }
+vmbus_core.workspace = true
 vmbus_guest.workspace = true
 
 [lints]
