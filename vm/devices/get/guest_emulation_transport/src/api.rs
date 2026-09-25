@@ -89,6 +89,7 @@ pub mod platform_settings {
         pub battery_enabled: bool,
         pub processor_idle_enabled: bool,
         pub tpm_enabled: bool,
+        pub ipmi_enabled: bool,
 
         pub com1_enabled: bool,
         pub com1_debugger_mode: bool,

@@ -4,9 +4,15 @@
 //! openvmm_vhost: a vhost-user backend binary that hosts OpenVMM virtio
 //! devices over a Unix domain socket.
 //!
-//! This is primarily a test vehicle at this time, but it could be extended to
-//! support all OpenVMM virtio devices for use in production scenarios in the
-//! future.
+//! The process resolves an OpenVMM virtio device, accepts one vhost-user
+//! frontend connection, maps the frontend's shared guest memory, and services
+//! its virtqueues until the connection closes. The current CLI exposes a file
+//! as a virtio-blk device; OpenVMM connects to it with its `--vhost-user`
+//! option.
+//!
+//! This is primarily a test vehicle rather than a production daemon. Start it
+//! as `openvmm_vhost --socket <path> blk --disk <image>` before launching the
+//! frontend VMM.
 //!
 //! This binary is Linux-only (vhost-user requires Unix domain sockets with
 //! SCM_RIGHTS fd passing).

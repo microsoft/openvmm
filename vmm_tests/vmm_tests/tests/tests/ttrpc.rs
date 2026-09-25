@@ -49,6 +49,190 @@ petri::test!(test_ttrpc_interface, |resolver| {
     Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
 });
 
+petri::test!(test_ttrpc_no_vmbus, |resolver| {
+    // Restrict this test to aarch64 for now: without Hyper-V enlightenments,
+    // x64 guests rely on legacy timer calibration. PIT calibration is unreliable
+    // across backends and can stall boot before pipette starts.
+    if petri_artifacts_common::tags::MachineArch::host()
+        != petri_artifacts_common::tags::MachineArch::Aarch64
+    {
+        return None;
+    }
+    let pipette = match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => resolver
+            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64)
+            .erase(),
+        petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
+            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64)
+            .erase(),
+    };
+    Some([
+        resolver.require(artifacts::OPENVMM_NATIVE).erase(),
+        resolver
+            .require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE)
+            .erase(),
+        resolver
+            .require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE)
+            .erase(),
+        pipette,
+    ])
+});
+
+async fn test_ttrpc_no_vmbus(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
+) -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        &params,
+        &openvmm,
+        &tempdir.path().join("ttrpc.sock"),
+        &tempdir.path().join("openvmm.pid"),
+    )
+    .await?;
+    let initrd = std::fs::read(initrd_path.get())?;
+    let pipette = std::fs::read(pipette_path.get())?;
+    let boot_initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)?;
+    let mut initrd_file = tempfile::NamedTempFile::new_in(tempdir.path())?;
+    initrd_file.write_all(&boot_initrd)?;
+    let console = match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
+        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
+    };
+    for disable_hv in [false, true] {
+        let vsock_path = tempdir.path().join(format!("vsock-{disable_hv}"));
+        let mut pipette_listener = PolledSocket::new(
+            &driver,
+            UnixListener::bind(format!(
+                "{}_{}",
+                vsock_path.to_string_lossy(),
+                pipette_client::PIPETTE_PORT
+            ))?,
+        )?;
+        let com1_path = tempdir.path().join(format!("com1-{disable_hv}.sock"));
+        client
+            .call()
+            .start(
+                vmservice::Vm::CreateVm,
+                vmservice::CreateVmRequest {
+                    config: Some(vmservice::VmConfig {
+                        disable_vmbus: true,
+                        disable_hv,
+                        pcie: Some(vmservice::PcieTopologyConfig {
+                            root_complexes: vec![vmservice::PcieRootComplex {
+                                name: "rc0".into(),
+                                end_bus: 255,
+                                low_mmio: 64 * 1024 * 1024,
+                                high_mmio: 1024 * 1024 * 1024,
+                                root_ports: vec![pcie_root_port(
+                                    "vsock",
+                                    false,
+                                    Some(attachment_device(virtio_device(
+                                        vmservice::virtio_device::Kind::Vsock(
+                                            vmservice::VirtioVsock {
+                                                socket_path: vsock_path.to_string_lossy().into(),
+                                            },
+                                        ),
+                                    ))),
+                                )],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }),
+                        memory_config: Some(vmservice::MemoryConfig {
+                            memory_mb: 256,
+                            ..Default::default()
+                        }),
+                        boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                            vmservice::DirectBoot {
+                                kernel_path: kernel_path.get().to_string_lossy().into(),
+                                initrd_path: initrd_file.path().to_string_lossy().into(),
+                                kernel_cmdline: format!(
+                                    "console={console} rdinit=/pipette panic=-1 initcall_blacklist=hv_sock_init"
+                                ),
+                            },
+                        )),
+                        serial_config: Some(vmservice::SerialConfig {
+                            ports: vec![vmservice::serial_config::Config {
+                                port: 0,
+                                socket_path: com1_path.to_string_lossy().into(),
+                                connect: false,
+                            }],
+                        }),
+                        ..Default::default()
+                    }),
+                    log_id: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let _com1_task = driver.spawn(
+            "com1",
+            petri::log_task(
+                params
+                    .log_source
+                    .log_file(&format!("no-vmbus-disable-hv-{disable_hv}"))?,
+                PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                "linux com1",
+            ),
+        );
+        let waiter = client.call().start(vmservice::Vm::WaitVm, ());
+        client
+            .call()
+            .start(vmservice::Vm::ResumeVm, ())
+            .await
+            .unwrap();
+        let agent = CancelContext::new()
+            .with_timeout(Duration::from_secs(60))
+            .until_cancelled(async {
+                let (conn, _) = pipette_listener.accept().await?;
+                pipette_client::PipetteClient::new(
+                    &driver,
+                    PolledSocket::new(&driver, conn)?,
+                    params.log_source.output_dir(),
+                )
+                .await
+            })
+            .await
+            .context("timed out connecting to pipette over virtio-vsock")??;
+        let shell = agent.unix_shell();
+        let acpi_devices = cmd!(shell, "ls /sys/bus/acpi/devices").read().await?;
+        assert!(
+            !acpi_devices.to_ascii_lowercase().contains("vmbus"),
+            "guest ACPI advertised VMBus despite disable_vmbus:\n{acpi_devices}"
+        );
+        if disable_hv {
+            let dmesg = cmd!(shell, "dmesg").read().await?;
+            let hyperv_detection_lines: Vec<_> = dmesg
+                .lines()
+                .filter(|line| line.contains("Hyper-V:") || line.contains("Microsoft Hyper-V"))
+                .collect();
+            assert!(
+                hyperv_detection_lines.is_empty(),
+                "guest detected Hyper-V despite disable_hv:\n{}",
+                hyperv_detection_lines.join("\n")
+            );
+        }
+        agent.power_off().await?;
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(60))
+            .until_cancelled(waiter)
+            .await
+            .context("timed out waiting for guest poweroff")?
+            .unwrap();
+        client
+            .call()
+            .start(vmservice::Vm::TeardownVm, ())
+            .await
+            .unwrap();
+    }
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+    assert!(child.wait().await?.success());
+    Ok(())
+}
+
 async fn test_ttrpc_interface(
     params: petri::PetriTestParams<'_>,
     driver: DefaultDriver,
@@ -221,6 +405,7 @@ async fn test_ttrpc_interface(
                         ))),
                         acs_capabilities_supported: Some(1),
                         devfn: None,
+                        pasid: false,
                     },
                     vmservice::PciePort {
                         name: "sw0-dp1".to_string(),
@@ -228,6 +413,7 @@ async fn test_ttrpc_interface(
                         attached: None,
                         devfn: None,
                         acs_capabilities_supported: None,
+                        pasid: false,
                     },
                 ],
             };
@@ -649,7 +835,7 @@ async fn test_ttrpc_interface(
         let _com1_task = driver.spawn(
             "com1",
             petri::log_task(
-                params.logger.log_file("linux").unwrap(),
+                params.log_source.log_file("linux").unwrap(),
                 PolledSocket::new(&driver, com1).unwrap(),
                 "linux com1",
             ),
@@ -658,7 +844,7 @@ async fn test_ttrpc_interface(
         let _console_task = driver.spawn(
             "console",
             petri::log_task(
-                params.logger.log_file("virtio-console").unwrap(),
+                params.log_source.log_file("virtio-console").unwrap(),
                 PolledSocket::new(&driver, console).unwrap(),
                 "virtio console",
             ),
@@ -699,7 +885,7 @@ async fn test_ttrpc_interface(
                     let agent = pipette_client::PipetteClient::new(
                         &driver,
                         conn,
-                        params.logger.output_dir(),
+                        params.log_source.output_dir(),
                     )
                     .await?;
                     validate_pcie_config(&agent).await?;
@@ -932,7 +1118,7 @@ async fn test_ttrpc_uefi_boot(
     let _com1_task = driver.spawn(
         "com1",
         log_serial(
-            params.logger.log_file("uefi")?,
+            params.log_source.log_file("uefi")?,
             com1,
             UEFI_BANNER,
             marker_send,
@@ -1083,6 +1269,7 @@ fn pcie_root_port(
         attached,
         devfn: None,
         acs_capabilities_supported: None,
+        pasid: false,
     }
 }
 
@@ -1308,7 +1495,7 @@ async fn launch_openvmm(
     let stderr_task = driver.spawn(
         "stderr",
         petri::log_task(
-            params.logger.log_file("stderr")?,
+            params.log_source.log_file("stderr")?,
             PolledPipe::new(driver, stderr_read)?,
             "openvmm stderr",
         ),

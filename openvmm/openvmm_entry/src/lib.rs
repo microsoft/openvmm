@@ -248,7 +248,7 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
         BaseChipsetType::EnlightenedLinuxDirect
     } else if opt.pcat {
         BaseChipsetType::HypervGen1
-    } else if opt.uefi {
+    } else if opt.uefi.is_some() {
         BaseChipsetType::HypervGen2Uefi
     } else if opt.hv {
         BaseChipsetType::HyperVGen2LinuxDirect
@@ -322,6 +322,9 @@ async fn vm_config_from_command_line(
     opt.validate_igvm_options()?;
 
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
+    let uefi = opt.effective_uefi()?;
+    let default_uefi = cli_args::UefiCli::default();
+    let uefi_options = uefi.as_ref().unwrap_or(&default_uefi);
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2
@@ -1280,10 +1283,8 @@ async fn vm_config_from_command_line(
         (base_template, custom_uefi_json)
     };
 
-    if (opt.uefi && opt.igvm.is_none() && !opt.pcat)
-        || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi))
-    {
-        let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
+    if uefi.is_some() || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi)) {
+        let log_level = match uefi_options.diagnostics.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
             EfiDiagnosticsLogLevelCli::Full => firmware_uefi_resources::LogLevel::make_full(),
@@ -1339,6 +1340,26 @@ async fn vm_config_from_command_line(
         load_mode = LoadMode::None;
         with_hv = true;
     } else if let Some(path) = &opt.igvm {
+        let cli_args::UefiCli {
+            firmware,
+            debug: _,
+            enable_memory_protections: _,
+            force_dma_bounce: _,
+            force_firmware_version,
+            disable_frontpage: _,
+            console: _,
+            diagnostics: _,
+            default_boot_always_attempt: _,
+        } = uefi_options;
+
+        anyhow::ensure!(
+            firmware.is_none(),
+            "--uefi firmware is not supported with --igvm"
+        );
+        anyhow::ensure!(
+            !force_firmware_version,
+            "--uefi force_firmware_version is not supported with --igvm"
+        );
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
@@ -1389,8 +1410,20 @@ async fn vm_config_from_command_line(
             hibernation_enabled: opt.hibernation,
             smbios,
         };
-    } else if opt.uefi {
+    } else if let Some(uefi_options) = &uefi {
         use openvmm_defs::config::UefiConsoleMode;
+
+        let cli_args::UefiCli {
+            firmware,
+            debug,
+            enable_memory_protections,
+            force_dma_bounce,
+            force_firmware_version,
+            disable_frontpage,
+            console,
+            diagnostics: _,
+            default_boot_always_attempt,
+        } = uefi_options;
 
         if opt.no_hv && cfg!(guest_arch = "x86_64") {
             anyhow::bail!("--no-hv is not supported on x86_64");
@@ -1398,9 +1431,11 @@ async fn vm_config_from_command_line(
 
         with_hv = !opt.no_hv;
 
+        let default_firmware = cli_args::default_uefi_firmware();
         let firmware = fs_err::File::open(
-            (opt.uefi_firmware.0)
+            firmware
                 .as_ref()
+                .or(default_firmware.as_ref())
                 .context("must provide uefi firmware when booting with uefi")?,
         )
         .context("failed to open uefi firmware")?;
@@ -1409,25 +1444,26 @@ async fn vm_config_from_command_line(
         //       appears to be a GRUB memory protection fault. Memory protections are therefore only enabled if configured.
         load_mode = LoadMode::Uefi {
             firmware: firmware.into(),
-            enable_debugging: opt.uefi_debug,
-            enable_memory_protections: opt.uefi_enable_memory_protections,
-            disable_frontpage: opt.disable_frontpage,
+            enable_debugging: *debug,
+            enable_memory_protections: *enable_memory_protections,
+            disable_frontpage: *disable_frontpage,
             tpm_version,
             enable_battery: opt.battery,
             enable_serial: any_serial_configured,
             enable_vpci_boot: false,
-            uefi_console_mode: opt.uefi_console_mode.map(|m| match m {
+            uefi_console_mode: console.map(|m| match m {
                 UefiConsoleModeCli::Default => UefiConsoleMode::Default,
                 UefiConsoleModeCli::Com1 => UefiConsoleMode::Com1,
                 UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
-            default_boot_always_attempt: opt.default_boot_always_attempt,
+            default_boot_always_attempt: *default_boot_always_attempt,
             smbios,
             enable_vmbus: !opt.no_vmbus,
-            force_dma_bounce: opt.uefi_force_dma_bounce,
+            force_dma_bounce: *force_dma_bounce,
             enable_hv: !opt.no_hv,
             hibernation_enabled: opt.hibernation,
+            force_firmware_version: *force_firmware_version,
         };
     } else {
         // Linux Direct
@@ -1555,15 +1591,16 @@ async fn vm_config_from_command_line(
 
                         get_resources::ged::GuestFirmwareConfig::Uefi {
                             enable_vpci_boot: has_vtl0_nvme,
-                            firmware_debug: opt.uefi_debug,
-                            disable_frontpage: opt.disable_frontpage,
-                            console_mode: match opt.uefi_console_mode.unwrap_or(UefiConsoleModeCli::Default) {
+                            firmware_debug: uefi_options.debug,
+                            enable_memory_protections: uefi_options.enable_memory_protections,
+                            disable_frontpage: uefi_options.disable_frontpage,
+                            console_mode: match uefi_options.console.unwrap_or(UefiConsoleModeCli::Default) {
                                 UefiConsoleModeCli::Default => UefiConsoleMode::Default,
                                 UefiConsoleModeCli::Com1 => UefiConsoleMode::COM1,
                                 UefiConsoleModeCli::Com2 => UefiConsoleMode::COM2,
                                 UefiConsoleModeCli::None => UefiConsoleMode::None,
                             },
-                            default_boot_always_attempt: opt.default_boot_always_attempt,
+                            default_boot_always_attempt: uefi_options.default_boot_always_attempt,
                         }
                     },
                     com1: with_vmbus_com1_serial,
@@ -1581,6 +1618,7 @@ async fn vm_config_from_command_line(
                         TpmVersion::V185 => get_resources::ged::GedTpmVersion::V185,
                     }),
                     firmware_event_send: None,
+                    ipmi_sel_event_send: None,
                     secure_boot_enabled: opt.secure_boot,
                     secure_boot_template: match opt.secure_boot_template {
                         Some(SecureBootTemplateCli::Windows) => {
@@ -1594,18 +1632,19 @@ async fn vm_config_from_command_line(
                         },
                     },
                     enable_battery: opt.battery,
+                    enable_ipmi: false,
                     enable_hibernation: opt.hibernation,
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
                     efi_diagnostics_log_level: {
-                        match opt.efi_diagnostics_log_level.unwrap_or_default() {
+                        match uefi_options.diagnostics.unwrap_or_default() {
                             EfiDiagnosticsLogLevelCli::Default => get_resources::ged::EfiDiagnosticsLogLevelType::Default,
                             EfiDiagnosticsLogLevelCli::Info => get_resources::ged::EfiDiagnosticsLogLevelType::Info,
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
-                    force_dma_bounce_enabled: opt.uefi_force_dma_bounce,
+                    force_dma_bounce_enabled: uefi_options.force_dma_bounce,
                     smbios: ged_smbios,
                 }
                 .into_resource(),
@@ -2662,6 +2701,11 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     meshworker::run_vmm_mesh_host()?;
 
     let opt = cli_args::parse_options();
+
+    // Print the version number. This comes after argument parsing to not interfere
+    // with --version and --help.
+    tracing::info!(version = openvmm_build_info::get().version());
+
     if let Some(path) = &opt.write_saved_state_proto {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)

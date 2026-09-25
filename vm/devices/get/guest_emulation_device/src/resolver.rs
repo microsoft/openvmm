@@ -145,12 +145,14 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     GuestFirmwareConfig::Uefi {
                         enable_vpci_boot,
                         firmware_debug,
+                        enable_memory_protections,
                         disable_frontpage,
                         console_mode,
                         default_boot_always_attempt,
                     } => crate::GuestFirmwareConfig::Uefi {
                         enable_vpci_boot,
                         firmware_debug,
+                        enable_memory_protections,
                         disable_frontpage,
                         console_mode: match console_mode {
                             UefiConsoleMode::Default => get_protocol::UefiConsoleMode::DEFAULT,
@@ -196,6 +198,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     }
                 },
                 enable_battery: resource.enable_battery,
+                enable_ipmi: resource.enable_ipmi,
                 enable_hibernation: resource.enable_hibernation,
                 no_persistent_secrets: resource.no_persistent_secrets,
                 guest_state_lifetime,
@@ -224,6 +227,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             },
             halt,
             resource.firmware_event_send,
+            resource.ipmi_sel_event_send,
             resource.guest_request_recv,
             framebuffer_control,
             vmgs_disk,

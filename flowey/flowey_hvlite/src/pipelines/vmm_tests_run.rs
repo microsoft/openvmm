@@ -12,11 +12,12 @@
 use anyhow::Context as _;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
-use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
 use flowey_lib_hvlite::build_incubator::IncubatorProfileNameOrPath;
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonTriple;
+use flowey_lib_hvlite::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsSelections;
+use flowey_lib_hvlite::init_vmm_tests_content_dir::VmmTestsPreBuiltArtifactsSelections;
 use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
@@ -155,14 +156,16 @@ struct RustSuite {
 #[derive(Default, Debug)]
 struct ResolvedArtifactSelections {
     /// What to build
-    build: BuildSelections,
+    build: VmmTestsBuiltArtifactsSelections,
+    /// Prebuilt artifacts to download
+    prebuilt_artifacts: VmmTestsPreBuiltArtifactsSelections,
+    /// Prep steps variants
+    prep_steps_variants: Vec<String>,
     /// What to download
     downloads: BTreeSet<KnownTestArtifacts>,
     /// Downloads that must happen even when lazy fetch is enabled (e.g.
     /// VHDs needed by prep_steps, which copies them to create prepped images).
     force_downloads: BTreeSet<KnownTestArtifacts>,
-    /// Whether any tests need release IGVM files from GitHub
-    needs_release_igvm: bool,
     /// Whether any of the tests require Hyper-V
     needs_hyperv: bool,
     /// Whether any of the tests require hardware isolation
@@ -708,16 +711,28 @@ fn selections_from_resolved(
     resolved: ResolvedArtifactSelections,
     target_os: target_lexicon::OperatingSystem,
 ) -> VmmTestSelections {
+    let ResolvedArtifactSelections {
+        build,
+        prebuilt_artifacts,
+        prep_steps_variants,
+        downloads,
+        force_downloads: _,
+        needs_hyperv,
+        needs_hardware_isolation,
+    } = resolved;
+    let needs_whp = build.openvmm;
     VmmTestSelections {
         filter,
-        downloaded_artifacts: resolved.downloads.into_iter().collect(),
-        build: resolved.build.clone(),
+        downloaded_artifacts: downloads.into_iter().collect(),
+        build,
+        prebuilt_artifacts,
+        prep_steps_variants,
         external_deps: match target_os {
             target_lexicon::OperatingSystem::Windows => {
                 VmmTestsExternalDeps::Windows(VmmTestsExternalDepsWindows {
-                    hyperv: resolved.needs_hyperv,
-                    whp: resolved.build.openvmm,
-                    hardware_isolation: resolved.needs_hardware_isolation,
+                    hyperv: needs_hyperv,
+                    whp: needs_whp,
+                    hardware_isolation: needs_hardware_isolation,
                 })
             }
             target_lexicon::OperatingSystem::Linux => {
@@ -728,148 +743,157 @@ fn selections_from_resolved(
             }
             _ => unreachable!(),
         },
-        needs_release_igvm: resolved.needs_release_igvm,
     }
 }
 
 impl ResolvedArtifactSelections {
     /// Resolve a single artifact ID and update selections.
     fn resolve_artifact(&mut self, id: &str) -> anyhow::Result<()> {
+        use petri_artifacts_common::artifacts::*;
+        use petri_artifacts_vmm_test::artifacts::*;
+
         match id {
             // OpenVMM binary
-            petri_artifacts_vmm_test::artifacts::OPENVMM_WIN_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::OPENVMM_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::OPENVMM_WIN_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::OPENVMM_LINUX_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::OPENVMM_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+            OPENVMM_WIN_X64::GLOBAL_UNIQUE_ID
+            | OPENVMM_LINUX_X64::GLOBAL_UNIQUE_ID
+            | OPENVMM_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | OPENVMM_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.openvmm = true;
             }
 
             // OpenVMM vhost binary (Linux only)
-            petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_LINUX_AARCH64 ::GLOBAL_UNIQUE_ID => {
+            OPENVMM_VHOST_LINUX_X64::GLOBAL_UNIQUE_ID
+            | OPENVMM_VHOST_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.openvmm_vhost = true;
             }
 
+            // QEMU
+            QEMU_SYSTEM_AARCH64_LINUX_X64::GLOBAL_UNIQUE_ID => {
+                self.prebuilt_artifacts.qemu_system_aarch64 = true;
+            }
+
             // OpenHCL IGVM files
-            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64::GLOBAL_UNIQUE_ID =>
-            {
+            openhcl_igvm::LATEST_STANDARD_X64::GLOBAL_UNIQUE_ID
+            | openhcl_igvm::LATEST_STANDARD_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.openhcl_standard = true;
             }
-            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64::GLOBAL_UNIQUE_ID => {
+            openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64::GLOBAL_UNIQUE_ID
+            | openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.openhcl_standard_dev = true;
             }
-            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64::GLOBAL_UNIQUE_ID
-             =>
-            {
+            openhcl_igvm::LATEST_CVM_X64::GLOBAL_UNIQUE_ID => {
                 self.build.openhcl_cvm = true;
             }
-            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>
-            {
+            openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID => {
                 self.build.openhcl_linux_direct = true;
             }
 
             // Release IGVM files (downloaded, not built)
-            petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64::GLOBAL_UNIQUE_ID =>
-            {
+            openhcl_igvm::LATEST_RELEASE_STANDARD_X64::GLOBAL_UNIQUE_ID
+            | openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64::GLOBAL_UNIQUE_ID
+            | openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64::GLOBAL_UNIQUE_ID => {
                 // These are downloaded from GitHub releases, not built
-                self.needs_release_igvm = true;
+                self.prebuilt_artifacts.release_igvm = true;
             }
 
             // Guest test UEFI
-            petri_artifacts_vmm_test::artifacts::test_vhd::GUEST_TEST_UEFI_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::test_vhd::GUEST_TEST_UEFI_AARCH64 ::GLOBAL_UNIQUE_ID => {
+            test_vhd::GUEST_TEST_UEFI_X64::GLOBAL_UNIQUE_ID
+            | test_vhd::GUEST_TEST_UEFI_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.guest_test_uefi = true;
             }
 
             // TMKs
-            petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64 ::GLOBAL_UNIQUE_ID => {
+            tmks::SIMPLE_TMK_X64::GLOBAL_UNIQUE_ID | tmks::SIMPLE_TMK_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.tmks = true;
             }
 
             // TMK VMM
-            petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_WIN_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_WIN_AARCH64::GLOBAL_UNIQUE_ID => {
-                self.build.tmk_vmm_windows = true;
+            tmks::TMK_VMM_WIN_X64::GLOBAL_UNIQUE_ID
+            | tmks::TMK_VMM_WIN_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.tmk_vmm = true;
             }
-            petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64_MUSL::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64_MUSL::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
-                self.build.tmk_vmm_linux = true;
+
+            tmks::TMK_VMM_LINUX_X64_MUSL::GLOBAL_UNIQUE_ID
+            | tmks::TMK_VMM_LINUX_AARCH64_MUSL::GLOBAL_UNIQUE_ID
+            // throwing the non-musl variants in here is a hack to get around
+            // the lack of multi-target artifact resolution
+            | tmks::TMK_VMM_LINUX_X64::GLOBAL_UNIQUE_ID
+            | tmks::TMK_VMM_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.tmk_vmm_linux_musl = true;
             }
 
             // VmgsTool
-            petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+            vmgstool::VMGSTOOL_WIN_X64::GLOBAL_UNIQUE_ID
+            | vmgstool::VMGSTOOL_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | vmgstool::VMGSTOOL_LINUX_X64::GLOBAL_UNIQUE_ID
+            | vmgstool::VMGSTOOL_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.vmgstool = true;
             }
 
             // VmgsTool-Dev
-            petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_WIN_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_WIN_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_LINUX_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_MACOS_AARCH64::GLOBAL_UNIQUE_ID => {
+            vmgstool::VMGSTOOL_DEV_WIN_X64::GLOBAL_UNIQUE_ID
+            | vmgstool::VMGSTOOL_DEV_WIN_AARCH64::GLOBAL_UNIQUE_ID
+            | vmgstool::VMGSTOOL_DEV_LINUX_X64::GLOBAL_UNIQUE_ID
+            | vmgstool::VMGSTOOL_DEV_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.vmgstool_dev = true;
             }
 
             // TPM guest tests
-            petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64::GLOBAL_UNIQUE_ID => {
+            guest_tools::TPM_GUEST_TESTS_WINDOWS_X64::GLOBAL_UNIQUE_ID => {
                 self.build.tpm_guest_tests_windows = true;
             }
-            petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64::GLOBAL_UNIQUE_ID => {
+            guest_tools::TPM_GUEST_TESTS_LINUX_X64::GLOBAL_UNIQUE_ID => {
                 self.build.tpm_guest_tests_linux = true;
             }
 
             // Host tools
-            petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64::GLOBAL_UNIQUE_ID =>
-            {
+            host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64::GLOBAL_UNIQUE_ID => {
                 self.build.test_igvm_agent_rpc_server = true;
             }
 
             // Loadable firmware artifacts (these come from deps, not built)
-            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_BZIMAGE_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_AARCH64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::loadable::PCAT_FIRMWARE_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::loadable::SVGA_FIRMWARE_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_AARCH64::GLOBAL_UNIQUE_ID => {
-                // These are resolved from OpenVMM deps, always available
+            loadable::LINUX_DIRECT_TEST_KERNEL_X64::GLOBAL_UNIQUE_ID => {
+                self.prebuilt_artifacts.test_linux_kernel_x64 = true;
+            }
+            loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.prebuilt_artifacts.test_linux_kernel_aarch64 = true;
+            }
+            loadable::LINUX_DIRECT_TEST_INITRD_X64::GLOBAL_UNIQUE_ID => {
+                self.prebuilt_artifacts.test_linux_initrd_x64 = true;
+            }
+            loadable::LINUX_DIRECT_TEST_INITRD_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.prebuilt_artifacts.test_linux_initrd_aarch64 = true;
+            }
+            loadable::LINUX_DIRECT_TEST_BZIMAGE_X64::GLOBAL_UNIQUE_ID => {
+                self.prebuilt_artifacts.test_linux_bzimage_x64 = true;
+            }
+            loadable::UEFI_FIRMWARE_X64::GLOBAL_UNIQUE_ID
+            | loadable::UEFI_FIRMWARE_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.prebuilt_artifacts.uefi = true;
+            }
+            loadable::PCAT_FIRMWARE_X64::GLOBAL_UNIQUE_ID
+            | loadable::SVGA_FIRMWARE_X64::GLOBAL_UNIQUE_ID => {
+                // We can't legally distribute these, so hope they are already
+                // on the host (which should always be the case for windows).
             }
 
             // Test VHDs
-            petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::GLOBAL_UNIQUE_ID =>
-            {
+            test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::GLOBAL_UNIQUE_ID =>
-            {
+            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::GLOBAL_UNIQUE_ID =>
-            {
+            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED::GLOBAL_UNIQUE_ID =>
-            {
+            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED::GLOBAL_UNIQUE_ID => {
                 self.build.openvmm = true;
-                self.build.prep_steps_standard = true;
+                self.build.prep_steps = true;
+                self.prep_steps_variants.push("standard".into());
                 // prep_steps needs actual VHD files on disk to copy them.
                 // Force download even when lazy fetch is enabled.
                 self.force_downloads
@@ -877,73 +901,74 @@ impl ResolvedArtifactSelections {
                 self.force_downloads
                     .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID =>
-            {
+            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID => {
                 self.build.openvmm = true;
-                self.build.prep_steps_no_vmbus = true;
+                self.build.prep_steps = true;
+                self.prep_steps_variants.push("no-vmbus".into());
                 self.force_downloads
                     .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64::GLOBAL_UNIQUE_ID => {
+            test_vhd::FREE_BSD_13_2_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads.insert(KnownTestArtifacts::FreeBsd13_2X64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::GLOBAL_UNIQUE_ID => {
+            test_vhd::ALPINE_3_23_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads.insert(KnownTestArtifacts::Alpine323X64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::GLOBAL_UNIQUE_ID => {
+            test_vhd::ALPINE_3_23_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::Alpine323Aarch64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64::GLOBAL_UNIQUE_ID => {
+            test_vhd::UBUNTU_2404_SERVER_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64::GLOBAL_UNIQUE_ID => {
+            test_vhd::UBUNTU_2504_SERVER_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64::GLOBAL_UNIQUE_ID => {
+            test_vhd::UBUNTU_2404_SERVER_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd);
             }
-            petri_artifacts_vmm_test::artifacts::test_vhd::WINDOWS_11_ENTERPRISE_AARCH64::GLOBAL_UNIQUE_ID => {
+            test_vhd::WINDOWS_11_ENTERPRISE_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.downloads
                     .insert(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx);
             }
 
             // Test ISOs (downloaded)
-            petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::GLOBAL_UNIQUE_ID => {
+            test_iso::FREE_BSD_13_2_X64::GLOBAL_UNIQUE_ID => {
                 self.downloads.insert(KnownTestArtifacts::FreeBsd13_2X64Iso);
             }
 
             // Test VMGS files
-            petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::GLOBAL_UNIQUE_ID => {
+            test_vmgs::VMGS_WITH_BOOT_ENTRY::GLOBAL_UNIQUE_ID => {
                 self.downloads.insert(KnownTestArtifacts::VmgsWithBootEntry);
             }
-            petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM::GLOBAL_UNIQUE_ID => {
+            test_vmgs::VMGS_WITH_16K_TPM::GLOBAL_UNIQUE_ID => {
                 self.downloads.insert(KnownTestArtifacts::VmgsWith16kTpm);
             }
 
             // OpenHCL usermode binaries (built as part of IGVM)
-            petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_vmm_test::artifacts::openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID =>
-            {
+            openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID
+            | openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID => {
                 self.build.openhcl_linux_direct = true;
             }
 
             // Common artifacts (always available, no build needed)
-            petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY::GLOBAL_UNIQUE_ID => {}
+            TEST_LOG_DIRECTORY::GLOBAL_UNIQUE_ID => {}
 
-            // Virtio-win drivers (downloaded from openvmm-deps, always available)
-            petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS::GLOBAL_UNIQUE_ID => {}
+            // Virtio-win drivers (downloaded from openvmm-deps)
+            virtio_win::VIRTIO_WIN_DRIVERS::GLOBAL_UNIQUE_ID => {
+                self.prebuilt_artifacts.virtio_win_drivers = true;
+            }
 
             // Pipette binaries (from petri_artifacts_common)
-            petri_artifacts_common::artifacts::PIPETTE_LINUX_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
-                self.build.pipette_linux = true;
+            PIPETTE_LINUX_X64::GLOBAL_UNIQUE_ID => self.build.pipette_linux_musl_x64 = true,
+
+            PIPETTE_LINUX_AARCH64::GLOBAL_UNIQUE_ID => {
+                self.build.pipette_linux_musl_aarch64 = true;
             }
-            petri_artifacts_common::artifacts::PIPETTE_WINDOWS_X64::GLOBAL_UNIQUE_ID
-            | petri_artifacts_common::artifacts::PIPETTE_WINDOWS_AARCH64::GLOBAL_UNIQUE_ID => {
+            PIPETTE_WINDOWS_X64::GLOBAL_UNIQUE_ID | PIPETTE_WINDOWS_AARCH64::GLOBAL_UNIQUE_ID => {
                 self.build.pipette_windows = true;
             }
 

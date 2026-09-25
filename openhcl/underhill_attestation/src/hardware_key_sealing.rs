@@ -358,6 +358,7 @@ mod tests {
             root_cert_thumbprint: "".to_string(),
             console_enabled: false,
             interactive_console_enabled: false,
+            ipmi_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
             tpm_version: AttestationTpmVersion::V138,

@@ -9,6 +9,7 @@ resource file and run `igvmfilegen manifest` directly.
 - a simple `processor_count`; the default profile uses one virtual processor,
   while `snp-linux-direct-multi-vp.json` uses two
 - 160 MiB of contiguous RAM (40,960 4-KiB pages)
+- one NUMA node (node 0), containing all CPUs and all RAM
 - COM1 serial ACPI and the fixed, no-PCIe platform profile
 - no shared GPA boundary, normal interrupt injection, and secure AVIC disabled
 - base SNP policy `0x30000`; `enable_debug` adds the debug bit to produce the
@@ -83,3 +84,37 @@ The standard outputs are:
 - `snp-linux-direct.bin`
 - `snp-linux-direct.bin.map`
 - `snp-linux-direct-snp.json`
+
+### Launching the fixed profile on MSHV
+
+The image embeds its CPU APIC IDs, NUMA affinities, and RAM layout in measured
+ACPI tables. OpenVMM launch arguments do not rewrite those tables. Regenerate
+the IGVM after changing the manifest or updating the generator's topology
+logic; existing images retain their old tables and launch measurements.
+
+Use one memory node and match both the VP count and memory size to the image:
+
+- `--processors` must equal the manifest's `processor_count`.
+- `--memory` must equal `memory_page_count * 4096` bytes.
+- Use `--vps-per-socket` equal to the VP count for a single-socket launch with
+  the image's contiguous APIC IDs starting at 0. Leave the APIC ID offset at
+  its default of 0.
+- Use `--memory`, not a multi-node `--numa` configuration. The fixed profile
+  assigns every CPU and memory range to NUMA node 0.
+- SMT can remain `auto`; it does not require separate NUMA nodes.
+
+For an image generated from `snp-linux-direct-multi-vp.json`:
+
+```bash
+openvmm --hypervisor mshv --isolation snp \
+  --igvm path/to/snp-linux-direct-multi-vp.bin \
+  --igvm-personality linux-direct --hv --no-vmbus \
+  --memory 160MB --processors 2 --vps-per-socket 2 --smt auto \
+  --com1 console
+```
+
+For larger images, change the manifest's `processor_count`, regenerate the
+image, and use that count for both `--processors` and `--vps-per-socket`.
+Keep COM1 for the profile's `console=ttyS0` kernel command line. This profile
+does not embed PCIe host bridges, so adding PCIe devices at launch does not
+supply the missing ACPI description.

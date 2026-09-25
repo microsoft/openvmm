@@ -168,6 +168,10 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
 
         // Wait for the serial relay to finish flushing.
         relay_task.await;
+        if exit_code.is_none() {
+            let stdout_output = fs_err::read(&serial_log)?;
+            tracing::error!(stdout = %String::from_utf8_lossy(&stdout_output).to_string(), "QEMU stdout output");
+        }
 
         // Log any QEMU stderr output.
         let stderr_output = stderr_task.await;

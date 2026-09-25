@@ -14,7 +14,7 @@ guestmem.workspace = true
 scsi_buffers.workspace = true
 vm_resource.workspace = true
 
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 
 anyhow.workspace = true
 event-listener.workspace = true

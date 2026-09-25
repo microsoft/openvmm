@@ -190,7 +190,7 @@ impl Test {
             self.test.0.run(
                 PetriTestParams {
                     test_name: &name,
-                    logger: &logger,
+                    log_source: &logger,
                     post_test_hooks: &mut post_test_hooks,
                 },
                 &artifacts,
@@ -330,7 +330,7 @@ pub struct PetriTestParams<'a> {
     /// The name of the running test.
     pub test_name: &'a str,
     /// The logger for the test.
-    pub logger: &'a PetriLogSource,
+    pub log_source: &'a PetriLogSource,
     /// Any hooks that want to run after the test completes.
     pub post_test_hooks: &'a mut Vec<PetriPostTestHook>,
 }

@@ -82,11 +82,10 @@ pub struct HyperVPetriRuntime {
 impl PetriVmmBackend for HyperVPetriBackend {
     type VmmConfig = ();
     type VmRuntime = HyperVPetriRuntime;
+    const SUPPORTS_VMBUS: bool = true;
 
-    fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
-        arch == MachineArch::host()
-            && !firmware.is_linux_direct()
-            && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
+    fn check_compat(_firmware: &Firmware, _arch: MachineArch) -> bool {
+        true
     }
 
     fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
@@ -162,7 +161,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
         Ok(Some((crash_disk_path, disk_opener)))
     }
 
-    fn new(_resolver: &ArtifactResolver<'_>) -> Self {
+    fn build_custom_init_script(_pipette_path: &str) -> Option<String> {
+        None
+    }
+
+    fn new(_resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
+        // Hyper-V guests must have the same arch as the host
+        assert_eq!(arch, MachineArch::host());
         HyperVPetriBackend {}
     }
 
@@ -173,7 +178,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
         resources: &PetriVmResources,
         properties: PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
-        let PetriVmResources { driver, log_source } = resources;
+        let PetriVmResources {
+            driver,
+            log_source,
+            prebuilt_initrd,
+        } = resources;
+        // Hyper-V petri backend doesn't support linux direct
+        assert!(prebuilt_initrd.is_none());
 
         assert!(matches!(
             config.host_log_levels,
@@ -275,8 +286,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 todo!("hyperv nvme boot");
             }
         }
-
-        // TODO: Set vTPM version via WMI
 
         // Map VMBus storage controllers (SCSI and NVMe).
         let mut storage_controllers = HashMap::new();

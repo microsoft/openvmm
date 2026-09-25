@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use guestmem::ranges::PagedRange;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use guestmem_core::ranges::PagedRange;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -107,7 +109,7 @@ impl MultiPagedRangeBuf {
     fn resize_buffer(&mut self, new_size: usize) {
         // Use `Vec`'s resizing logic to get appropriate growth behavior, but
         // initialize all the data to make updating it easier.
-        let mut buf: Vec<u64> = std::mem::take(&mut self.buf).into();
+        let mut buf: Vec<u64> = core::mem::take(&mut self.buf).into();
         buf.resize(new_size, 0);
         // Initialize the rest of the capacity that `Vec` allocated.
         buf.resize(buf.capacity(), 0);

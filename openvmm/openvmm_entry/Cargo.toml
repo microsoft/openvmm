@@ -65,7 +65,7 @@ pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 inspect_proto.workspace = true
 mesh.workspace = true

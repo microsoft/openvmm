@@ -1,8 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This is the petri pipette agent, which runs on the guest and executes
-//! commands and other requests from the host.
+//! In-guest agent used by the Petri VM test framework.
+//!
+//! Pipette accepts host requests over VSock or TCP, executes processes, and
+//! provides guest operations such as file transfer, tracing, crash handling,
+//! and shutdown. On Linux it can also run as PID 1 and perform the minimal init
+//! work needed by direct-boot test images; on Windows it can run as a service.
+//!
+//! The binary is normally cross-compiled and injected into a test guest by the
+//! VMM-test artifact pipeline rather than launched by a developer on the host.
+//! `--transport tcp|vsock` selects the connection transport, and Windows builds
+//! additionally accept `--service`.
 
 // UNSAFETY: init.rs requires unsafe for libc calls (fork, mount, reboot, waitpid)
 // on Linux; shutdown.rs requires unsafe for the Windows shutdown API.

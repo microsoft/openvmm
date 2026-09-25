@@ -7,12 +7,16 @@
 #![forbid(unsafe_code)]
 
 mod buffers;
-mod protocol;
 pub mod resolver;
-mod rndisprot;
 mod rx_bufs;
 mod saved_state;
 mod test;
+
+// Re-export the shared wire modules from `netvsp_protocol` so existing
+// `crate::protocol` and `crate::rndisprot` paths keep resolving after the
+// extraction. All wire types are canonically defined in `netvsp_protocol`.
+pub use netvsp_protocol::protocol;
+pub use netvsp_protocol::rndisprot;
 
 use crate::buffers::GuestBuffers;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
@@ -32,6 +36,7 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::GuestMemoryView;
 use guestmem::ranges::PagedRange;
 use guestmem::ranges::PagedRanges;
 use guestmem::ranges::PagedRangesReader;

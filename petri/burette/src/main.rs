@@ -3,8 +3,14 @@
 
 //! OpenVMM performance test runner.
 //!
-//! A standalone binary that runs performance benchmarks against OpenVMM
-//! using the petri test framework, producing JSON reports.
+//! This host-side CLI runs repeatable performance benchmarks against an
+//! OpenVMM executable using the Petri test framework. It boots real test VMs,
+//! measures boot, scaling, memory, network, disk, and virtio-fs behavior, and
+//! writes JSON reports that can be compared between builds.
+//!
+//! Burette is intended for direct developer use and can package its binaries
+//! and guest artifacts for execution on another machine. The host must provide
+//! a usable hypervisor and the OpenVMM/Pipette/test-image artifacts needed.
 //!
 //! # Usage
 //!

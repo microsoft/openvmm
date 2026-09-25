@@ -5,6 +5,7 @@
 
 use crate::build_incubator::IncubatorProfileNameOrPath;
 use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts;
+use crate::init_vmm_tests_content_dir::VmmTestsPreBuiltArtifactsSelections;
 use crate::init_vmm_tests_env::PetriParams;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use crate::run_cargo_nextest_run::NextestProfile;
@@ -28,8 +29,8 @@ pub enum TestContentConfig {
         test_content_dir: Option<ReadVar<PathBuf>>,
         /// Built artifacts used by the tests
         built_artifacts: VmmTestsBuiltArtifacts,
-        /// Whether to download release IGVM files
-        needs_release_igvm: bool,
+        /// Artifacts to download that are pre-built as part of OpenVMM deps
+        prebuilt_artifacts: VmmTestsPreBuiltArtifactsSelections,
     },
 }
 
@@ -156,7 +157,7 @@ impl SimpleFlowNode for Node {
             TestContentConfig::Uninitialized {
                 test_content_dir,
                 mut built_artifacts,
-                needs_release_igvm,
+                prebuilt_artifacts,
             } => {
                 // use a test content dir with
                 // - short path name to avoid issues with long paths
@@ -191,8 +192,8 @@ impl SimpleFlowNode for Node {
                     test_content_dir: test_content_dir.clone(),
                     vmm_tests_target: target.clone(),
                     built_artifacts,
+                    prebuilt_artifacts,
                     is_repo_root: test_content_dir_as_repo_root,
-                    needs_release_igvm,
                     needs_incubator_profiles: needs_incubator,
                     done: v,
                 });

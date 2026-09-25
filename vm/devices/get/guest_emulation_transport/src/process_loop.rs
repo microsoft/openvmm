@@ -347,6 +347,11 @@ pub(crate) mod msg {
         // Host Notifications (don't require a response)
         /// Report an event to the host.
         EventLog(Protocol<get_protocol::EventLogId>),
+        /// Forward a completed IPMI System Event Log record to the host.
+        IpmiSel {
+            record_id: u16,
+            record: [u8; get_protocol::IPMI_SEL_RECORD_SIZE],
+        },
         /// Report a power state change to the host.
         PowerState(PowerState),
         /// Report the result of a restore operation to the host.
@@ -1292,6 +1297,13 @@ impl<T: RingMem> ProcessLoop<T> {
                 // any pending requests.
                 self.send_message(
                     get_protocol::EventLogNotification::new(event_log_id.0)
+                        .as_bytes()
+                        .to_vec(),
+                );
+            }
+            Msg::IpmiSel { record_id, record } => {
+                self.send_message(
+                    get_protocol::IpmiSelNotification::new(record_id, record)
                         .as_bytes()
                         .to_vec(),
                 );

@@ -4,6 +4,7 @@
 #![expect(dead_code)]
 
 use bitfield_struct::bitfield;
+use net_backend_core::VlanMetadata;
 use open_enum::open_enum;
 use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
@@ -720,21 +721,21 @@ pub struct EthVlanInfo {
     _reserved: u16,
 }
 
-impl From<net_backend::VlanMetadata> for EthVlanInfo {
-    fn from(metadata: net_backend::VlanMetadata) -> Self {
+impl From<VlanMetadata> for EthVlanInfo {
+    fn from(value: VlanMetadata) -> Self {
         EthVlanInfo::new()
-            .with_priority(metadata.priority())
-            .with_drop_eligible_indicator(metadata.drop_eligible_indicator())
-            .with_vlan_id(metadata.vlan_id())
+            .with_priority(value.priority())
+            .with_drop_eligible_indicator(value.drop_eligible_indicator())
+            .with_vlan_id(value.vlan_id())
     }
 }
 
-impl From<EthVlanInfo> for net_backend::VlanMetadata {
-    fn from(val: EthVlanInfo) -> Self {
-        net_backend::VlanMetadata::new()
-            .with_priority(val.priority())
-            .with_drop_eligible_indicator(val.drop_eligible_indicator())
-            .with_vlan_id(val.vlan_id())
+impl From<EthVlanInfo> for VlanMetadata {
+    fn from(value: EthVlanInfo) -> VlanMetadata {
+        VlanMetadata::new()
+            .with_priority(value.priority())
+            .with_drop_eligible_indicator(value.drop_eligible_indicator())
+            .with_vlan_id(value.vlan_id())
     }
 }
 
@@ -931,11 +932,12 @@ pub struct NdisOffload {
 }
 
 pub const NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_1: usize =
-    std::mem::offset_of!(NdisOffload, flags) + size_of::<u32>();
+    core::mem::offset_of!(NdisOffload, flags) + size_of::<u32>();
 const_assert_eq!(NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_1, 112);
 
 pub const NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_3: usize =
-    std::mem::offset_of!(NdisOffload, encapsulated_packet_task_offload_gre) + size_of::<[u32; 2]>();
+    core::mem::offset_of!(NdisOffload, encapsulated_packet_task_offload_gre)
+        + size_of::<[u32; 2]>();
 const_assert_eq!(NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_3, 156);
 
 #[repr(C)]

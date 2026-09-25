@@ -1,6 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! UEFI Test Microkernel payload for low-level Hyper-V and OpenHCL tests.
+//!
+//! OpenTMK runs without a general-purpose operating system and dispatches the
+//! test selected by an embedded configuration region. Host build tooling
+//! patches that region before placing the UEFI image into a VM. It is normally
+//! built with `cargo xflowey build-opentmk`, not invoked as a host CLI.
+
 // UNSAFETY: This crate defines the config region patched by host tooling, and its tests use inline assembly.
 #![expect(unsafe_code)]
 #![doc = include_str!("../README.md")]

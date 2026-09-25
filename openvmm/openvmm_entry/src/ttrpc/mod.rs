@@ -547,6 +547,104 @@ struct Vm {
     worker_rpc: mesh::Sender<VmRpc>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
+    iommufds: Arc<IommufdContexts>,
+}
+
+#[derive(Default)]
+struct IommufdContexts {
+    #[cfg(target_os = "linux")]
+    files: std::collections::HashMap<String, File>,
+}
+
+impl IommufdContexts {
+    fn new(configs: Vec<vmservice::IommufdConfig>) -> anyhow::Result<Self> {
+        let mut ids = std::collections::HashSet::new();
+        for config in &configs {
+            anyhow::ensure!(
+                !config.id.is_empty(),
+                "iommufd context ID must not be empty"
+            );
+            anyhow::ensure!(
+                ids.insert(&config.id),
+                "duplicate iommufd context ID {}",
+                config.id
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let files = configs
+                .into_iter()
+                .map(|config| {
+                    let file = File::options()
+                        .read(true)
+                        .write(true)
+                        .open("/dev/iommu")
+                        .with_context(|| format!("failed to open /dev/iommu for {}", config.id))?;
+                    Ok((config.id, file))
+                })
+                .collect::<anyhow::Result<_>>()?;
+            Ok(Self { files })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            anyhow::ensure!(configs.is_empty(), "iommufd is only supported on Linux");
+            Ok(Self::default())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get(&self, id: &str) -> anyhow::Result<File> {
+        anyhow::ensure!(!id.is_empty(), "iommufd context ID must not be empty");
+        self.files
+            .get(id)
+            .with_context(|| format!("unknown iommufd context ID {id}"))?
+            .try_clone()
+            .with_context(|| format!("failed to duplicate iommufd context {id}"))
+    }
+}
+
+fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !config.disable_hv || config.disable_vmbus,
+        "disable_hv requires disable_vmbus"
+    );
+    anyhow::ensure!(
+        !(config.disable_hv
+            && cfg!(guest_arch = "x86_64")
+            && matches!(
+                config.boot_config,
+                Some(vmservice::vm_config::BootConfig::Uefi(_))
+            )),
+        "disabling Hyper-V enlightenments for UEFI boot is not supported on x86_64"
+    );
+    if config.disable_vmbus {
+        anyhow::ensure!(
+            config.hvsocket_config.is_none(),
+            "HVSocket requires VMBus to be enabled"
+        );
+        if let Some(devices) = &config.devices_config {
+            anyhow::ensure!(
+                devices.scsi_disks.is_empty(),
+                "SCSI disks require VMBus; use PCIe NVMe or virtio-blk instead"
+            );
+            anyhow::ensure!(
+                devices.nic_config.is_empty(),
+                "NICConfig requires VMBus; use PCIe virtio-net instead"
+            );
+            if cfg!(windows) || cfg!(target_os = "macos") {
+                anyhow::ensure!(
+                    devices.virtiofs_config.is_empty()
+                        && devices
+                            .virtio_console
+                            .as_ref()
+                            .is_none_or(|console| console.socket_path.is_empty()),
+                    "legacy virtio-fs and console configuration requires VMBus on this host; use PCIe devices instead"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 enum VmLifecycle {
@@ -749,6 +847,10 @@ impl VmService {
             bail!("VM already created");
         }
 
+        validate_platform_config(&req_config)?;
+
+        let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
+
         // Snapshot the fd registry so tap NIC backends can resolve descriptors
         // passed in over the fd-passing protocol.
         let registry = self.registry.clone();
@@ -851,7 +953,8 @@ impl VmService {
                         // VM with no graphics adapter.
                         uefi_console_mode: com1_configured.then_some(UefiConsoleMode::Com1),
                         smbios,
-                        enable_vmbus: true,
+                        enable_vmbus: !req_config.disable_vmbus,
+                        enable_hv: !req_config.disable_hv,
                         // Everything below is fixed for now. The proto has no
                         // way to express these yet; fields will be added as
                         // callers need them.
@@ -867,8 +970,8 @@ impl VmService {
                         enable_vpci_boot: false,
                         default_boot_always_attempt: false,
                         force_dma_bounce: false,
-                        enable_hv: true,
                         hibernation_enabled: true,
+                        force_firmware_version: false,
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
                     Some((base_template, uefi.secure_boot_enabled)),
@@ -878,6 +981,9 @@ impl VmService {
 
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if req_config.disable_vmbus {
+            chipset_builder = chipset_builder.without_vmbus();
+        }
         if let Some((base_template, secure_boot_enabled)) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
             // runtime services, so it is required for a UEFI boot. The store is
@@ -944,7 +1050,7 @@ impl VmService {
         // Build the PCIe topology (root complexes, switches, and the devices
         // attached behind their ports).
         let pcie = if let Some(pcie) = req_config.pcie.take() {
-            build_pcie_topology(pcie, &registry).await?
+            build_pcie_topology(pcie, &registry, &iommufds).await?
         } else {
             BuiltPcieTopology::default()
         };
@@ -969,7 +1075,7 @@ impl VmService {
                 arch,
             },
             hypervisor: HypervisorConfig {
-                with_hv: true,
+                with_hv: !req_config.disable_hv,
                 ..Default::default()
             },
             #[cfg(windows)]
@@ -979,7 +1085,7 @@ impl VmService {
             vga_firmware: None,
             vtl2_gfx: false,
             virtio_devices: vec![],
-            vmbus: Some(VmbusConfig::default()),
+            vmbus: (!req_config.disable_vmbus).then(VmbusConfig::default),
             vtl2_vmbus: None,
             vmbus_devices: vec![],
             #[cfg(windows)]
@@ -1103,11 +1209,15 @@ impl VmService {
         }
 
         if let Some(hvsocket_config) = req_config.hvsocket_config {
+            let vmbus = config
+                .vmbus
+                .as_mut()
+                .context("HVSocket requires VMBus to be enabled")?;
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
                 format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
-            config.vmbus.as_mut().unwrap().vsock_listener = Some(listener);
-            config.vmbus.as_mut().unwrap().vsock_path = Some(hvsocket_config.path);
+            vmbus.vsock_listener = Some(listener);
+            vmbus.vsock_path = Some(hvsocket_config.path);
         }
 
         let (send, recv) = mesh::channel();
@@ -1174,6 +1284,7 @@ impl VmService {
             scsi_rpc,
             consomme_rpc,
             worker_rpc: send,
+            iommufds: Arc::new(iommufds),
         }));
         self.lifecycle = VmLifecycle::Paused;
         Ok(())
@@ -1316,16 +1427,14 @@ impl VmService {
         &self,
         request: vmservice::AddPcieDeviceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
-        let worker_rpc = self
-            .vm
-            .as_ref()
-            .context("VM not created yet")?
-            .worker_rpc
-            .clone();
+        let vm = self.vm.as_ref().context("VM not created yet")?;
+        let worker_rpc = vm.worker_rpc.clone();
+        let iommufds = vm.iommufds.clone();
         let registry = self.registry.clone();
         Ok(async move {
             let vmservice::AddPcieDeviceRequest { port_name, device } = request;
-            let resource = build_pci_device(device.context("missing device")?, &registry).await?;
+            let resource =
+                build_pci_device(device.context("missing device")?, &registry, &iommufds).await?;
             worker_rpc
                 .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
                 .await
@@ -1350,20 +1459,21 @@ impl VmService {
         &self,
         request: vmservice::AddVpciDeviceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
-        let worker_rpc = self
-            .vm
-            .as_ref()
-            .context("VM not created yet")?
-            .worker_rpc
-            .clone();
+        let vm = self.vm.as_ref().context("VM not created yet")?;
+        let worker_rpc = vm.worker_rpc.clone();
+        let iommufds = vm.iommufds.clone();
         let registry = self.registry.clone();
         Ok(async move {
             let instance_id = request
                 .instance_id
                 .parse()
                 .context("invalid VPCI instance ID")?;
-            let resource =
-                build_pci_device(request.device.context("missing device")?, &registry).await?;
+            let resource = build_pci_device(
+                request.device.context("missing device")?,
+                &registry,
+                &iommufds,
+            )
+            .await?;
             worker_rpc
                 .call_failable(VmRpc::AddVpciDevice, (instance_id, resource))
                 .await
@@ -1785,6 +1895,7 @@ struct BuiltPcieTopology {
 async fn build_pcie_topology(
     topology: vmservice::PcieTopologyConfig,
     registry: &FdRegistry,
+    iommufds: &IommufdContexts,
 ) -> anyhow::Result<BuiltPcieTopology> {
     let vmservice::PcieTopologyConfig {
         root_complexes: proto_root_complexes,
@@ -1809,6 +1920,7 @@ async fn build_pcie_topology(
             preserve_bars,
             node,
             root_ports,
+            iommu,
         } = rc;
         let mut ports = Vec::new();
         for root_port in root_ports {
@@ -1818,6 +1930,7 @@ async fn build_pcie_topology(
                 attached,
                 devfn,
                 acs_capabilities_supported,
+                pasid,
             } = root_port;
             ports.push(PciePortConfig {
                 name: port_name.clone(),
@@ -1829,7 +1942,7 @@ async fn build_pcie_topology(
                     .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                     .transpose()?,
                 cxl: false,
-                pasid: false,
+                pasid,
             });
             if let Some(attached) = attached {
                 walk_pcie_attachment(port_name, attached, &mut switches, &mut pending_devices)?;
@@ -1846,7 +1959,7 @@ async fn build_pcie_topology(
             high_mmio: pcie_mmio_range_config(high_mmio, high_mmio_base)?,
             ports,
             cxl: None,
-            iommu: None,
+            iommu: iommu.map(parse_pcie_iommu).transpose()?,
             vnode: node,
             preserve_bars,
         });
@@ -1854,7 +1967,7 @@ async fn build_pcie_topology(
 
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
-        let resource = build_pci_device(device, registry).await?;
+        let resource = build_pci_device(device, registry, iommufds).await?;
         devices.push(PcieDeviceConfig {
             port_name,
             resource,
@@ -1875,6 +1988,31 @@ async fn build_pcie_topology(
         devices,
         generic_initiators,
     })
+}
+
+fn parse_pcie_iommu(
+    config: vmservice::PcieIommuConfig,
+) -> anyhow::Result<openvmm_defs::config::PcieIommuConfig> {
+    use openvmm_defs::config::PcieIommuConfig;
+    use openvmm_defs::config::SmmuOas;
+    use vmservice::pcie_iommu_config::Kind;
+
+    match config.kind.context("missing PCIe IOMMU kind")? {
+        Kind::Smmu(config) => {
+            anyhow::ensure!(
+                cfg!(guest_arch = "aarch64"),
+                "SMMU is only supported for aarch64 guests"
+            );
+            let oas = match config.oas_bits {
+                None => SmmuOas::Auto,
+                Some(bits) => SmmuOas::Fixed(bits.try_into().context("SMMU OAS out of range")?),
+            };
+            Ok(PcieIommuConfig::Smmu {
+                accel: config.accel,
+                oas,
+            })
+        }
+    }
 }
 
 /// Walks a single proto `PcieAttachment` (the thing behind one port): either an
@@ -1904,6 +2042,7 @@ fn walk_pcie_attachment(
                     attached,
                     devfn,
                     acs_capabilities_supported,
+                    pasid,
                 } = downstream;
                 ports.push(PciePortConfig {
                     name: downstream_name.clone(),
@@ -1915,7 +2054,7 @@ fn walk_pcie_attachment(
                         .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                         .transpose()?,
                     cxl: false,
-                    pasid: false,
+                    pasid,
                 });
                 if let Some(attached) = attached {
                     children.push((downstream_name, attached));
@@ -1939,6 +2078,7 @@ fn walk_pcie_attachment(
 async fn build_pci_device(
     device: vmservice::PcieDeviceKind,
     registry: &FdRegistry,
+    iommufds: &IommufdContexts,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     use vmservice::pcie_device_kind::Kind;
     let vmservice::PcieDeviceKind { kind } = device;
@@ -1948,20 +2088,23 @@ async fn build_pci_device(
             VirtioPciDeviceHandle(resource).into_resource()
         }
         Kind::Nvme(nvme) => build_nvme_controller(nvme).await?,
-        Kind::Vfio(vfio) => build_vfio_device(vfio)?,
+        Kind::Vfio(vfio) => build_vfio_device(vfio, iommufds)?,
     })
 }
 
 /// Builds a VFIO-assigned host PCI device resource from the proto `VfioDevice`.
 ///
-/// Uses the legacy VFIO group/container path: the device's IOMMU group is
-/// resolved from sysfs and the corresponding `/dev/vfio/<group_id>` file is
-/// opened. The device must already be bound to `vfio-pci` on the host.
+/// Uses VFIO cdev assignment when an iommufd context is referenced, otherwise
+/// the legacy group/container path. The device must be bound to `vfio-pci`.
 #[cfg(target_os = "linux")]
-fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
+fn build_vfio_device(
+    vfio: vmservice::VfioDevice,
+    iommufds: &IommufdContexts,
+) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     let vmservice::VfioDevice {
         host_pci_address,
         bar_addresses,
+        iommufd_id,
     } = vfio;
     let bar_addresses = parse_vfio_bar_addresses(bar_addresses)?;
     // The address is joined into a sysfs path below; reject path separators so
@@ -1971,6 +2114,34 @@ fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<Pci
         anyhow::bail!("PCI address must not contain path separators");
     }
     let sysfs_path = std::path::Path::new("/sys/bus/pci/devices").join(&host_pci_address);
+    if let Some(iommu_id) = iommufd_id {
+        let iommufd = iommufds.get(&iommu_id)?;
+        let vfio_dev_dir = sysfs_path.join("vfio-dev");
+        let entry = std::fs::read_dir(&vfio_dev_dir)
+            .with_context(|| {
+                format!(
+                    "failed to read {} (is the device bound to vfio-pci?)",
+                    vfio_dev_dir.display()
+                )
+            })?
+            .next()
+            .context("no vfio-dev entry found")?
+            .context("failed to read vfio-dev entry")?;
+        let dev_path = std::path::Path::new("/dev/vfio/devices").join(entry.file_name());
+        let cdev = File::options()
+            .read(true)
+            .write(true)
+            .open(&dev_path)
+            .with_context(|| format!("failed to open {}", dev_path.display()))?;
+        return Ok(vfio_assigned_device_resources::VfioCdevDeviceHandle {
+            pci_id: host_pci_address,
+            cdev,
+            iommufd,
+            iommu_id,
+            bar_addresses,
+        }
+        .into_resource());
+    }
     let iommu_group_link =
         std::fs::read_link(sysfs_path.join("iommu_group")).with_context(|| {
             format!("failed to read IOMMU group for {host_pci_address} (is it bound to vfio-pci?)")
@@ -2027,6 +2198,7 @@ fn parse_vfio_bar_addresses(
 #[cfg(not(target_os = "linux"))]
 fn build_vfio_device(
     _vfio: vmservice::VfioDevice,
+    _iommufds: &IommufdContexts,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     anyhow::bail!("VFIO device assignment is only supported on Linux")
 }
@@ -2309,8 +2481,270 @@ fn build_vhost_user_device(
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
     use vfio_assigned_device_resources::BarAddressConfig;
     use vmservice::vfio_bar_address::Source;
+
+    #[test]
+    fn platform_config_flags() {
+        for disable_vmbus in [false, true] {
+            for disable_hv in [false, true] {
+                for boot_config in [
+                    vmservice::vm_config::BootConfig::DirectBoot(Default::default()),
+                    vmservice::vm_config::BootConfig::Uefi(Default::default()),
+                ] {
+                    let is_uefi = matches!(boot_config, vmservice::vm_config::BootConfig::Uefi(_));
+                    let config = vmservice::VmConfig {
+                        disable_vmbus,
+                        disable_hv,
+                        boot_config: Some(boot_config),
+                        ..Default::default()
+                    };
+                    let valid =
+                        !disable_hv || (disable_vmbus && !(is_uefi && cfg!(guest_arch = "x86_64")));
+                    assert_eq!(validate_platform_config(&config).is_ok(), valid);
+                }
+            }
+        }
+        let defaults = vmservice::VmConfig::default();
+        assert!(!defaults.disable_vmbus);
+        assert!(!defaults.disable_hv);
+        assert!(validate_platform_config(&defaults).is_ok());
+    }
+
+    #[test]
+    fn platform_config_rejects_vmbus_devices() {
+        for config in [
+            vmservice::VmConfig {
+                hvsocket_config: Some(Default::default()),
+                ..Default::default()
+            },
+            vmservice::VmConfig {
+                devices_config: Some(vmservice::DevicesConfig {
+                    scsi_disks: vec![Default::default()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            vmservice::VmConfig {
+                devices_config: Some(vmservice::DevicesConfig {
+                    nic_config: vec![Default::default()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ] {
+            assert!(validate_platform_config(&config).is_ok());
+            assert!(
+                validate_platform_config(&vmservice::VmConfig {
+                    disable_vmbus: true,
+                    ..config
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn validate_iommufd_contexts() {
+        assert!(IommufdContexts::new(vec![]).unwrap().files.is_empty());
+        assert!(
+            IommufdContexts::new(vec![vmservice::IommufdConfig { id: String::new() }])
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("must not be empty")
+        );
+        assert!(
+            IommufdContexts::new(vec![
+                vmservice::IommufdConfig {
+                    id: "shared".into()
+                },
+                vmservice::IommufdConfig {
+                    id: "shared".into()
+                },
+            ])
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("duplicate")
+        );
+    }
+
+    #[test]
+    fn iommufd_context_references_share_open_file() {
+        use std::io::Seek;
+        use std::io::SeekFrom;
+
+        let contexts = IommufdContexts {
+            files: [(
+                "shared".into(),
+                File::open(std::env::current_exe().unwrap()).unwrap(),
+            )]
+            .into(),
+        };
+        let mut first = contexts.get("shared").unwrap();
+        let mut second = contexts.get("shared").unwrap();
+        first.seek(SeekFrom::Start(17)).unwrap();
+        assert_eq!(second.stream_position().unwrap(), 17);
+        drop(first);
+        drop(second);
+        assert_eq!(
+            contexts.get("shared").unwrap().stream_position().unwrap(),
+            17
+        );
+        assert!(contexts.get("").is_err());
+        assert!(contexts.get("undeclared").is_err());
+    }
+
+    #[test]
+    fn vfio_rejects_invalid_iommufd_reference_without_fallback() {
+        for id in ["", "undeclared"] {
+            let error = build_vfio_device(
+                vmservice::VfioDevice {
+                    host_pci_address: "0000:01:00.0".into(),
+                    iommufd_id: Some(id.into()),
+                    ..Default::default()
+                },
+                &IommufdContexts::default(),
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains("iommufd context ID"));
+        }
+    }
+
+    #[test]
+    fn parse_smmu_config() {
+        use openvmm_defs::config::PcieIommuConfig;
+        use openvmm_defs::config::SmmuOas;
+        use vmservice::pcie_iommu_config::Kind;
+
+        assert!(parse_pcie_iommu(vmservice::PcieIommuConfig::default()).is_err());
+        for accel in [false, true] {
+            for oas_bits in [
+                None,
+                Some(48),
+                Some(0),
+                Some(33),
+                Some(u32::from(u8::MAX)),
+                Some(256),
+                Some(u32::MAX),
+            ] {
+                let result = parse_pcie_iommu(vmservice::PcieIommuConfig {
+                    kind: Some(Kind::Smmu(vmservice::SmmuConfig { accel, oas_bits })),
+                });
+                if !cfg!(guest_arch = "aarch64") {
+                    assert!(result.err().unwrap().to_string().contains("aarch64"));
+                } else if oas_bits.is_none_or(|bits| u8::try_from(bits).is_ok()) {
+                    let PcieIommuConfig::Smmu {
+                        accel: actual_accel,
+                        oas,
+                    } = result.unwrap()
+                    else {
+                        panic!("expected SMMU configuration");
+                    };
+                    assert_eq!(actual_accel, accel);
+                    match (oas, oas_bits) {
+                        (SmmuOas::Auto, None) => {}
+                        (SmmuOas::Fixed(actual), Some(expected)) => {
+                            assert_eq!(u32::from(actual), expected)
+                        }
+                        _ => panic!("unexpected OAS policy"),
+                    }
+                } else {
+                    assert!(
+                        result
+                            .err()
+                            .unwrap()
+                            .to_string()
+                            .contains("SMMU OAS out of range")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pcie_topology_iommu_selection() {
+        use vmservice::pcie_iommu_config::Kind;
+
+        for iommu in [
+            None,
+            Some(vmservice::PcieIommuConfig {
+                kind: Some(Kind::Smmu(vmservice::SmmuConfig {
+                    accel: true,
+                    oas_bits: Some(48),
+                })),
+            }),
+        ] {
+            let has_iommu = iommu.is_some();
+            let result = futures::executor::block_on(build_pcie_topology(
+                vmservice::PcieTopologyConfig {
+                    root_complexes: vec![vmservice::PcieRootComplex {
+                        name: "rc0".into(),
+                        iommu,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                &FdRegistry::default(),
+                &IommufdContexts::default(),
+            ));
+            if has_iommu && !cfg!(guest_arch = "aarch64") {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap().root_complexes[0].iommu.is_some(), has_iommu);
+            }
+        }
+    }
+
+    #[test]
+    fn pcie_topology_pasid() {
+        for pasid in [None, Some(false), Some(true)] {
+            let mut attached = None;
+            for name in ["nested", "switch", "root"] {
+                let mut port = vmservice::PciePort {
+                    name: name.into(),
+                    attached,
+                    ..Default::default()
+                };
+                if let Some(pasid) = pasid {
+                    port.pasid = pasid;
+                }
+                if name == "root" {
+                    let topology = futures::executor::block_on(build_pcie_topology(
+                        vmservice::PcieTopologyConfig {
+                            root_complexes: vec![vmservice::PcieRootComplex {
+                                name: "rc0".into(),
+                                root_ports: vec![port],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                        &FdRegistry::default(),
+                        &IommufdContexts::default(),
+                    ))
+                    .unwrap();
+                    let expected = pasid.unwrap_or(false);
+                    assert_eq!(topology.root_complexes[0].ports[0].pasid, expected);
+                    assert_eq!(topology.switches.len(), 2);
+                    for switch in topology.switches {
+                        assert_eq!(switch.ports[0].pasid, expected);
+                    }
+                    break;
+                }
+                attached = Some(vmservice::PcieAttachment {
+                    kind: Some(vmservice::pcie_attachment::Kind::Switch(
+                        vmservice::PcieSwitch {
+                            name: format!("{name}-switch"),
+                            downstream_ports: vec![port],
+                        },
+                    )),
+                });
+            }
+        }
+    }
 
     fn vfio_bar_address(bar_index: u32, source: Option<Source>) -> vmservice::VfioBarAddress {
         vmservice::VfioBarAddress { bar_index, source }

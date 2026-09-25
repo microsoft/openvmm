@@ -22,7 +22,7 @@ x86defs.workspace = true
 
 cfg-if.workspace = true
 safe_intrinsics.workspace = true
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 pal_event.workspace = true
 
 anyhow.workspace = true

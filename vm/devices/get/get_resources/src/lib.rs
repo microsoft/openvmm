@@ -81,12 +81,16 @@ pub mod ged {
         pub guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         /// Notification of firmware events.
         pub firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
+        /// Optional Petri observer for IPMI SEL notifications already received over GET.
+        pub ipmi_sel_event_send: Option<mesh::Sender<IpmiSelEvent>>,
         /// Enable secure boot.
         pub secure_boot_enabled: bool,
         /// The secure boot template type.
         pub secure_boot_template: GuestSecureBootTemplateType,
         /// Enable battery.
         pub enable_battery: bool,
+        /// Enable the IPMI KCS interface.
+        pub enable_ipmi: bool,
         /// Suppress attestation and disable TPM state persistence.
         pub no_persistent_secrets: bool,
         /// Test configuration for IGVM Attest message.
@@ -103,6 +107,15 @@ pub mod ged {
         pub smbios: smbios_defs::SmbiosConfig,
     }
 
+    /// An IPMI SEL notification received from OpenHCL.
+    #[derive(Debug, Clone, Copy, MeshPayload, PartialEq, Eq)]
+    pub struct IpmiSelEvent {
+        /// BMC-assigned SEL record identifier.
+        pub record_id: u16,
+        /// Completed SEL record.
+        pub record: ipmi_protocol::SelRecord,
+    }
+
     /// The firmware and chipset configuration for the guest.
     #[derive(MeshPayload)]
     pub enum GuestFirmwareConfig {
@@ -112,6 +125,8 @@ pub mod ged {
             enable_vpci_boot: bool,
             /// Enable UEFI firmware debugging for VTL0.
             firmware_debug: bool,
+            /// Enable UEFI memory protections for VTL0.
+            enable_memory_protections: bool,
             /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
             disable_frontpage: bool,
             /// Where to send UEFI console output
