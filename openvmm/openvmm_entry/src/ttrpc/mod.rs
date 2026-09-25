@@ -993,10 +993,7 @@ impl VmService {
             chipset_builder = chipset_builder.without_vmbus();
         }
         if arch == vm_manifest_builder::MachineArch::X86_64
-            && pcie
-                .root_complexes
-                .iter()
-                .any(|rc| rc.segment == 0 && rc.start_bus == 0 && rc.end_bus == u8::MAX)
+            && openvmm_defs::config::legacy_pci_config_io_enabled(&pcie.root_complexes)
         {
             chipset_builder = chipset_builder.with_legacy_pci_config_io();
         }

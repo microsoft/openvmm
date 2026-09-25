@@ -59,10 +59,7 @@ impl PetriVmConfigOpenVmm {
         }
 
         if arch == MachineArch::X86_64
-            && config
-                .pcie_root_complexes
-                .iter()
-                .any(|rc| rc.segment == 0 && rc.start_bus == 0 && rc.end_bus == u8::MAX)
+            && openvmm_defs::config::legacy_pci_config_io_enabled(&config.pcie_root_complexes)
         {
             config
                 .chipset_devices

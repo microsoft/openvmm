@@ -2206,6 +2206,8 @@ impl InitializedVm {
 
         let (mut pcie_host_bridges, pcie_root_complexes) = {
             pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
+            let legacy_pci_config_io =
+                openvmm_defs::config::legacy_pci_config_io_enabled(&cfg.pcie_root_complexes);
             let mut pcie_host_bridges = Vec::new();
             let mut pcie_root_complexes = Vec::new();
 
@@ -2318,12 +2320,11 @@ impl InitializedVm {
                                 ranges.ecam_range,
                             );
                             #[cfg(guest_arch = "x86_64")]
-                            let builder =
-                                if rc.segment == 0 && rc.start_bus == 0 && rc.end_bus == u8::MAX {
-                                    builder.pci_config_io(&mut register_pio)
-                                } else {
-                                    builder
-                                };
+                            let builder = if legacy_pci_config_io {
+                                builder.pci_config_io(&mut register_pio)
+                            } else {
+                                builder
+                            };
                             builder
                                 .root_ports(
                                     root_port_definitions,
