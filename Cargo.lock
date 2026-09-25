@@ -2350,6 +2350,7 @@ dependencies = [
  "serde",
  "serde_json",
  "target-lexicon",
+ "test_with_tracing",
 ]
 
 [[package]]
