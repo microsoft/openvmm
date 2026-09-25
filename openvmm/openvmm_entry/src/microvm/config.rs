@@ -4,6 +4,7 @@
 //! MicroVM parts of the VM configuration built from the command line.
 
 use super::MicrovmResources;
+use super::MicrovmRestore;
 use crate::ConsoleState;
 use crate::Options;
 use crate::VmResources;
@@ -40,6 +41,7 @@ use vmotherboard::ChipsetDeviceHandle;
 /// line. All methods are no-ops for the standard machine profile.
 pub(crate) struct MicrovmConfigBuilder<'a> {
     opt: &'a Options,
+    restore: &'a MicrovmRestore,
     active: bool,
     console: Option<SerialConfigCli>,
     portb: Option<Resource<SerialBackendHandle>>,
@@ -48,8 +50,12 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
 
 impl<'a> MicrovmConfigBuilder<'a> {
     /// Validates the microVM options.
-    pub(crate) fn new(opt: &'a Options) -> anyhow::Result<Self> {
+    pub(crate) fn new(opt: &'a Options, restore: &'a MicrovmRestore) -> anyhow::Result<Self> {
         let active = opt.machine == MachineProfileCli::Microvm;
+        let restore_machine_contract = restore.machine_contract.as_ref();
+        if let Some(contract) = restore_machine_contract {
+            openvmm_helpers::snapshot::microvm::validate_supported_microvm_contract(contract)?;
+        }
         opt.validate_microvm_options()?;
 
         if active
@@ -72,6 +78,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
 
         Ok(Self {
             opt,
+            restore,
             active,
             console,
             portb: None,
@@ -201,26 +208,39 @@ impl<'a> MicrovmConfigBuilder<'a> {
             bail!("the microVM profile requires Linux direct boot");
         }
 
-        let kernel = fs_err::File::open(
-            (opt.kernel.0)
+        let (kernel, initrd, cmdline) = if let Some(contract) = &self.restore.machine_contract {
+            (
+                tempfile::tempfile().context("failed to create inert restore kernel handle")?,
+                None,
+                contract.effective_command_line.clone(),
+            )
+        } else {
+            let kernel = fs_err::File::open(
+                (opt.kernel.0)
+                    .as_ref()
+                    .context("must provide a Linux kernel when using --machine microvm")?,
+            )
+            .context("failed to open Linux kernel")?;
+            let initrd = (opt.initrd.0)
                 .as_ref()
-                .context("must provide a Linux kernel when using --machine microvm")?,
-        )
-        .context("failed to open Linux kernel")?;
-        let initrd = (opt.initrd.0)
-            .as_ref()
-            .map(fs_err::File::open)
-            .transpose()
-            .context("failed to open Linux initrd")?;
+                .map(fs_err::File::open)
+                .transpose()
+                .context("failed to open Linux initrd")?;
+            (
+                kernel.into(),
+                initrd.map(Into::into),
+                build_effective_microvm_command_line(
+                    &opt.cmdline,
+                    opt.processors,
+                    self.console.is_some(),
+                )?,
+            )
+        };
 
         Ok(Some(LoadMode::Linux {
-            kernel: kernel.into(),
-            initrd: initrd.map(Into::into),
-            cmdline: build_effective_microvm_command_line(
-                &opt.cmdline,
-                opt.processors,
-                self.console.is_some(),
-            )?,
+            kernel,
+            initrd,
+            cmdline,
             enable_serial: false,
             isolation: openvmm_defs::config::LinuxIsolationConfig::None,
             boot_mode: openvmm_defs::config::LinuxDirectBootMode::MpTable,
@@ -272,6 +292,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
         resources: &mut VmResources,
     ) -> anyhow::Result<()> {
         let opt = self.opt;
+        let restore_machine_contract = self.restore.machine_contract.as_ref();
         if self.active {
             cfg.processor_topology.vps_per_socket = Some(opt.processors);
             cfg.processor_topology.enable_smt = Some(false);
@@ -290,7 +311,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             .hypervisor
             .as_deref()
             .and_then(|spec| spec.split(':').next());
-        if cfg.machine_profile == MachineProfile::Microvm {
+        if cfg.machine_profile == MachineProfile::Microvm && restore_machine_contract.is_none() {
             let cmdline = match &mut cfg.load_mode {
                 LoadMode::Linux {
                     cmdline,

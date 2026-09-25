@@ -324,10 +324,11 @@ async fn vm_config_from_command_line(
     spawner: impl Spawn,
     mesh: &VmmMesh,
     opt: &Options,
+    microvm_restore: &microvm::MicrovmRestore,
 ) -> anyhow::Result<(Config, VmResources)> {
     opt.validate_isolation_options()?;
     opt.validate_igvm_options()?;
-    let mut microvm = microvm::MicrovmConfigBuilder::new(opt)?;
+    let mut microvm = microvm::MicrovmConfigBuilder::new(opt, microvm_restore)?;
 
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
     let uefi = opt.effective_uefi()?;
@@ -2784,11 +2785,13 @@ async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<i32
 async fn run_control_inner(
     driver: &DefaultDriver,
     mesh_slot: &mut Option<VmmMesh>,
-    opt: Options,
+    mut opt: Options,
 ) -> anyhow::Result<i32> {
     let mesh = mesh_slot.as_ref().unwrap();
     let mut restore = snapshot_restore::SnapshotRestore::open(&opt)?;
-    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
+    let microvm_restore = microvm::prepare_restore(&mut opt, restore.snapshot())?;
+    let (mut vm_config, mut resources) =
+        vm_config_from_command_line(driver, mesh, &opt, &microvm_restore).await?;
     let mut microvm =
         microvm::MicrovmLaunch::new(&opt, &vm_config, std::mem::take(&mut resources.microvm))?;
 
@@ -2925,7 +2928,7 @@ async fn run_control_inner(
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
         let (shared_memory, saved_state) = if opt.restore_snapshot.is_some() {
-            let (fd, state_msg) = restore.prepare(&opt)?;
+            let (fd, state_msg) = restore.prepare(&opt, &microvm, &source_hypervisor)?;
             (Some(fd), Some(state_msg))
         } else if let Some(shared_memory) = microvm.capture_shared_memory()? {
             (Some(shared_memory), None)
@@ -2954,10 +2957,10 @@ async fn run_control_inner(
             snapshot_boundary_requests,
             snapshot_ready,
             snapshot_capture_enabled: microvm.snapshot_capture_enabled(),
-            restore_downtime: None,
-            restore_tsc_frequency_hz: None,
-            restore_apic_frequency_hz: None,
-            restore_cpu_contract: None,
+            restore_downtime: restore.downtime,
+            restore_tsc_frequency_hz: restore.tsc_frequency_hz,
+            restore_apic_frequency_hz: restore.apic_frequency_hz,
+            restore_cpu_contract: restore.cpu_contract,
             restore_ready_sink,
             rpc: rpc_recv,
             notify: notify_send,
@@ -3266,9 +3269,14 @@ mod tests {
             .unwrap();
             let mesh = VmmMesh::new(&driver, true).unwrap();
 
-            let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
-                .await
-                .unwrap();
+            let (config, _resources) = vm_config_from_command_line(
+                driver,
+                &mesh,
+                &opt,
+                &microvm::MicrovmRestore::default(),
+            )
+            .await
+            .unwrap();
 
             assert_eq!(config.pcie_devices.len(), 1);
             assert_eq!(config.pcie_devices[0].port_name, "custom");
@@ -3303,9 +3311,14 @@ mod tests {
             .unwrap();
             let mesh = VmmMesh::new(&driver, true).unwrap();
 
-            let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
-                .await
-                .unwrap();
+            let (config, _resources) = vm_config_from_command_line(
+                driver,
+                &mesh,
+                &opt,
+                &microvm::MicrovmRestore::default(),
+            )
+            .await
+            .unwrap();
 
             let port_names: Vec<_> = config
                 .pcie_devices
@@ -3342,10 +3355,15 @@ mod tests {
             .unwrap();
             let mesh = VmmMesh::new(&driver, true).unwrap();
 
-            let error = vm_config_from_command_line(driver, &mesh, &opt)
-                .await
-                .err()
-                .unwrap();
+            let error = vm_config_from_command_line(
+                driver,
+                &mesh,
+                &opt,
+                &microvm::MicrovmRestore::default(),
+            )
+            .await
+            .err()
+            .unwrap();
 
             assert_eq!(error.to_string(), "multiple devices use PCIe port 'custom'");
             mesh.shutdown().await;
@@ -3376,10 +3394,15 @@ mod tests {
             .unwrap();
             let mesh = VmmMesh::new(&driver, true).unwrap();
 
-            let error = vm_config_from_command_line(driver, &mesh, &opt)
-                .await
-                .err()
-                .unwrap();
+            let error = vm_config_from_command_line(
+                driver,
+                &mesh,
+                &opt,
+                &microvm::MicrovmRestore::default(),
+            )
+            .await
+            .err()
+            .unwrap();
 
             assert_eq!(error.to_string(), "multiple devices use PCIe port 'custom'");
             mesh.shutdown().await;

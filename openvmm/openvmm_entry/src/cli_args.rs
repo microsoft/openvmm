@@ -164,7 +164,7 @@ pub struct Options {
         short = 'm',
         long,
         value_name = "PARAMS",
-        default_value = "1GB",
+        default_value = "",
         value_parser = parse_memory_config,
         conflicts_with = "numa",
         long_help = r#"Configure guest RAM.
@@ -258,7 +258,7 @@ Examples:
     #[clap(
         long,
         value_name = "DIR",
-        conflicts_with_all = ["deprecated_memory_backing_file", "numa"]
+        conflicts_with_all = ["deprecated_memory_backing_file", "numa", "kernel", "initrd"]
     )]
     pub restore_snapshot: Option<PathBuf>,
 
@@ -2038,7 +2038,9 @@ fn parse_smbios(s: &str) -> anyhow::Result<SmbiosCli> {
 
 fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
     // Bare shortcut: `--memory 64G` sets only the size.
-    let memory = if !s.contains('=') && !s.contains(',') {
+    let memory = if s.is_empty() {
+        MemoryCli::default()
+    } else if !s.contains('=') && !s.contains(',') {
         MemoryCli {
             size: Some(s.parse::<vmm_cli::MemorySize>()?),
             ..Default::default()
