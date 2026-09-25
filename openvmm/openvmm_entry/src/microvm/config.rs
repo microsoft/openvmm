@@ -469,6 +469,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         stable_id: MICROVM_FILESYSTEM_STABLE_ID.to_owned(),
                         root_identity: filesystem.attachment.identity.clone(),
                         read_only: filesystem.config.access.is_read_only(),
+                        denied_paths: Vec::new(),
                     },
                 )
             } else {
