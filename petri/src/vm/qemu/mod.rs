@@ -473,6 +473,7 @@ pub fn build_qemu_command(
     let PetriVmConfig {
         name: _,
         arch,
+        machine_profile,
         host_log_levels,
         firmware,
         hibernation_enabled,
@@ -514,6 +515,10 @@ pub fn build_qemu_command(
 
     // make sure we aren't silently ignoring any configurations
     assert!(matches!(arch, MachineArch::Aarch64));
+    assert!(matches!(
+        machine_profile,
+        openvmm_defs::microvm::MachineProfile::Standard
+    ));
     assert!(matches!(
         host_log_levels,
         None | Some(crate::OpenvmmLogConfig::TestDefault)
