@@ -159,6 +159,9 @@ pub mod net {
         pub enable_rx_gso: bool,
         pub mac_address: MacAddress,
         pub endpoint: Resource<NetEndpointHandleKind>,
+        pub save_restore: bool,
+        pub static_ipv4: Option<net_backend_resources::consomme::static_ipv4::StaticIpv4Config>,
+        pub effective_features: Option<u64>,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioNetHandle {
