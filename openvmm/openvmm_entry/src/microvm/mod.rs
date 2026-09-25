@@ -30,4 +30,6 @@ pub(crate) struct MicrovmResources {
     pub(crate) console_attachment: Option<SnapshotAttachment>,
     /// Removes the boot console Unix socket on teardown.
     pub(crate) console_socket_cleanup: Option<MicrovmConsoleSocketCleanup>,
+    /// Snapshot identity of the portable network attachment.
+    pub(crate) network_attachment: Option<SnapshotAttachment>,
 }
