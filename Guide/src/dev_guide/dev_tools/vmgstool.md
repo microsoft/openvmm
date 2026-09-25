@@ -108,7 +108,7 @@ vmgstool.exe uefi-nvram dump --filepath path\to\guest.vmgs `
 
 VmgsTool can extract an IGVM from a resource DLL and write it to VMGS file ID 8
 (`GUEST_FIRMWARE`). Select one of `NONCONFIDENTIAL`, `SNP`, `TDX`,
-`SNP_NO_HCL`, or `TDX_NO_HCL`:
+`SNP_NO_HCL`, `TDX_NO_HCL`, or `OPENHCL`:
 
 ```powershell
 vmgstool.exe copy-igvmfile --filepath path\to\guest.vmgs `

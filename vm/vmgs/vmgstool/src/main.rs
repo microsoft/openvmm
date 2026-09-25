@@ -153,6 +153,8 @@ pub(crate) enum ResourceCode {
     Tdx = 13520,
     #[value(name = "TDX_NO_HCL")]
     TdxNoHcl = 13521,
+    #[value(name = "OPENHCL")]
+    OpenHcl = 1,
 }
 
 #[derive(Args)]
