@@ -175,24 +175,25 @@ impl PetriVmConfigOpenVmm {
             .as_mut()
             .expect("a VTL2 MANA VF requires OpenHCL firmware");
 
+        let vports = mac_addresses
+            .into_iter()
+            .map(|mac_address| VportDefinition {
+                mac_address,
+                endpoint: net_backend_resources::consomme::ConsommeHandle {
+                    cidr: None,
+                    ports: Vec::new(),
+                    recv: None,
+                }
+                .into_resource(),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!vports.is_empty(), "a MANA VF requires at least one vport");
+
         self.config.vpci_devices.push(VpciDeviceConfig {
             vtl: DeviceVtl::Vtl2,
             instance_id,
-            resource: GdmaDeviceHandle {
-                vports: mac_addresses
-                    .into_iter()
-                    .map(|mac_address| VportDefinition {
-                        mac_address,
-                        endpoint: net_backend_resources::consomme::ConsommeHandle {
-                            cidr: None,
-                            ports: Vec::new(),
-                            recv: None,
-                        }
-                        .into_resource(),
-                    })
-                    .collect(),
-            }
-            .into_resource(),
+            resource: GdmaDeviceHandle { vports }.into_resource(),
             vnode: None,
         });
         vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(

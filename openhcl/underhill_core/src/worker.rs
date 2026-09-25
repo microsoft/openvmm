@@ -376,13 +376,15 @@ pub struct NicConfig {
     pub max_sub_channels: Option<u16>,
 }
 
-fn netvsp_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
-    // Preserve the vport and MAC address in the instance ID for stable channel
-    // identity. Guest enumeration order is controlled separately by offer_order.
+fn netvsp_vmbus_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
+    // Some guest behaviors requires the nic interfaces to be enumerated in a
+    // particular order. vmbus channel offers are by default sorted using the
+    // instance id. `offer_order` will override the default sorting.
+    // Incorperating the vport index and MAC address for ease of search.
     Guid {
-        data1: 0xf8615163,
+        data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1`
         data2: vport_index as u16,
-        data3: 1 << 12,
+        data3: 1 << 12, // type 1 GUID
         data4: [
             0x20,
             0,
@@ -392,13 +394,12 @@ fn netvsp_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
             mac_address[3],
             mac_address[4],
             mac_address[5],
-        ],
+        ], // variant 2
     }
 }
 
-// Order VF managers by the upper 32 bits, then their vports by the lower 32
-// bits, so VMBus enumeration does not fall back to the instance GUID.
-fn netvsp_offer_order(base_adapter_index: u32, vport_index: usize) -> u64 {
+// Order NetVSP channel offers first by the adapter index, then by vport index.
+fn netvsp_vmbus_offer_order(base_adapter_index: u32, vport_index: usize) -> u64 {
     (u64::from(base_adapter_index) << 32) | vport_index as u64
 }
 
@@ -935,8 +936,8 @@ impl UhVmNetworkSettings {
             },
         ) in endpoints.into_iter().enumerate()
         {
-            let vmbus_instance_id = netvsp_instance_id(i, mac_address.to_bytes());
-            let offer_order = netvsp_offer_order(minimum_adapter_index, i);
+            let vmbus_instance_id = netvsp_vmbus_instance_id(i, mac_address.to_bytes());
+            let offer_order = netvsp_vmbus_offer_order(minimum_adapter_index, i);
             let p = partition.clone();
             let get_guest_os_id = move || -> HvGuestOsId {
                 p.vtl0_guest_os_id()

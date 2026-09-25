@@ -67,15 +67,14 @@ async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), any
     Ok(())
 }
 
-/// Verifies that vport 0 of a two-vport primary VTL2 MANA VF becomes `eth0`,
-/// even though a secondary VF's NetVSP instance GUID sorts first. All three
-/// NICs must remain present across OpenHCL servicing, with primary vport 0
-/// still at `eth0`; the other NICs may enumerate in either order.
+/// Verifies that vport 0 of the first two-vport VTL2 MANA VF becomes `eth0`,
+/// even though a secondary VF's NetVSP instance GUID sorts first. All three NICs
+/// remain present across OpenHCL servicing, with primary vport 0 still at `eth0`.
 ///
-/// Note: does not prove that `offer_order` is restored. Servicing rebuilds the
-/// NICs in the same configuration order.
+/// Servicing reconstructs the NICs from the same configuration. This test ensures
+/// the guest-visible order, but does not verify the exact `offer_order` values.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn two_mana_vfs_preserve_primary_nic_across_servicing(
+async fn mana_vfs_preserve_nic_order_across_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
