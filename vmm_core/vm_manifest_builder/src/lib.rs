@@ -17,6 +17,8 @@
 
 #![forbid(unsafe_code)]
 
+mod microvm;
+
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
@@ -178,6 +180,8 @@ pub enum BaseChipsetType {
     UnenlightenedLinuxDirect,
     /// Enlightened Linux VM with a minimal emulated chipset for direct boot.
     EnlightenedLinuxDirect,
+    /// microVM with only its allowlisted architectural devices.
+    Microvm,
 }
 
 /// The machine architecture of the VM.
@@ -282,6 +286,7 @@ impl VmManifestBuilder {
     /// architecture.
     pub fn new(ty: BaseChipsetType, arch: MachineArch) -> Self {
         let vmbus = !matches!(ty, BaseChipsetType::UnenlightenedLinuxDirect);
+        let vmbus = microvm::vmbus_enabled(&ty, vmbus);
         VmManifestBuilder {
             ty,
             arch,
@@ -599,6 +604,9 @@ impl VmManifestBuilder {
                     result.attach_guest_watchdog();
                 }
             }
+            BaseChipsetType::Microvm => {
+                microvm::build(self.arch, &mut result)?;
+            }
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
@@ -690,6 +698,7 @@ impl VmManifestBuilder {
                 chipset_high_mmio_size: if self.vmbus { default_high } else { 0 },
                 vtl2_chipset_mmio_size: 0,
             },
+            BaseChipsetType::Microvm => microvm::layout_config(),
             BaseChipsetType::HclHost => LayoutConfig {
                 chipset_low_mmio_size: default_low,
                 chipset_high_mmio_size: if self.vmbus { default_high } else { 0 },
