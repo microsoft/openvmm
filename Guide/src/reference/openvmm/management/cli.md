@@ -219,12 +219,24 @@ describes the source definitions.
   the private portb restore channel. The guest must consume the packet and
   explicitly reseed its RNG. Restoring cloned RNG state without this option is
   unsafe for cryptographic workloads and emits a warning.
+  Processor activation uses `OPENVMM_ENTROPY_V2`.
   Every microVM portb device also reports generation-ID support in status bit
   5. Writing `0xa6` to the status port and reading 16 bytes from the data port
   returns an opaque ID that is stable for that VM process and may be selected
   repeatedly. OpenVMM creates it before vCPU entry and does not serialize it.
   On restore, it is the first 16 bytes of the fresh entropy packet, allowing
   the guest repair path to update clone identity without additional port I/O.
+* `--restore-processors <COUNT>`: For an opt-in microVM snapshot, bring the
+  contiguous VP prefix `0..COUNT-1` online before restore readiness. The
+  snapshot's manifest VP count remains immutable capacity and must still match
+  `--processors`. The target must be 1, 2, 4, or 8 and satisfy
+  `boot-online <= target <= capacity`. This option implies a version-2 private
+  restore packet and the post-restore gate. Snapshots without activation
+  metadata reject it. An
+  explicit MSHV restore instantiates and binds only the requested prefix while
+  validating the full saved VP inventory; that reduced-prefix process cannot
+  be saved again. MSHV restores without this option, and KVM and WHP restores,
+  instantiate the full VP capacity.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose

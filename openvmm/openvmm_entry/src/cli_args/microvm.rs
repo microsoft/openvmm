@@ -87,6 +87,10 @@ pub struct MicrovmCli {
     #[clap(long, requires = "restore_snapshot")]
     pub restore_entropy: bool,
 
+    /// Bring this contiguous prefix of capacity VPs online before restore readiness.
+    #[clap(long, value_name = "COUNT", requires = "restore_snapshot")]
+    pub restore_processors: Option<u32>,
+
     /// Maximum time allowed for a microVM guest to complete post-restore repair.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 60000)]
     pub restore_gate_timeout_ms: u64,
@@ -218,8 +222,9 @@ impl Options {
             anyhow::ensure!(
                 self.microvm.network_profile.is_none()
                     && self.microvm.microvm_mount.is_none()
-                    && self.microvm.microvm_sandbox_block.is_empty(),
-                "--network-profile, --mount, and --microvm-sandbox-block require a microVM machine"
+                    && self.microvm.microvm_sandbox_block.is_empty()
+                    && self.microvm.restore_processors.is_none(),
+                "--network-profile, --mount, --microvm-sandbox-block, and --restore-processors require a microVM machine"
             );
             return Ok(());
         }
@@ -272,6 +277,12 @@ impl Options {
                 self.microvm.restore_gate_timeout_ms != 0,
                 "microVM post-restore gate timeout must be nonzero"
             );
+            if let Some(restore_processors) = self.microvm.restore_processors {
+                anyhow::ensure!(
+                    openvmm_defs::microvm::microvm_processor_count_supported(restore_processors,),
+                    "microVM does not support a restore-online count of {restore_processors}"
+                );
+            }
         }
         anyhow::ensure!(
             self.uefi.is_none() && !self.pcat && self.igvm.is_none() && !self.device_tree,
@@ -534,6 +545,31 @@ mod tests {
             .unwrap();
             assert!(options.validate_microvm_options().is_err());
         }
+
+        for restore_processors in [1, 2, 4, 8] {
+            let options = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--restore-snapshot",
+                "snapshot",
+                "--restore-processors",
+                &restore_processors.to_string(),
+            ])
+            .unwrap();
+            options.validate_microvm_options().unwrap();
+        }
+        let noncanonical_restore = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-processors",
+            "3",
+        ])
+        .unwrap();
+        assert!(noncanonical_restore.validate_microvm_options().is_err());
 
         for args in [
             vec!["openvmm", "--machine", "microvm", "--vps-per-socket", "1"],

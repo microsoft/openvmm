@@ -3008,6 +3008,7 @@ async fn run_control_inner(
             restore_cpu_contract: restore.cpu_contract,
             restore_ready_sink,
             restore_gate_timeout: microvm.restore_gate_timeout(&opt),
+            restore_vp_count: opt.microvm.restore_processors,
             rpc: rpc_recv,
             notify: notify_send,
         };
