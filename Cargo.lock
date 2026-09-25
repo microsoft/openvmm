@@ -5181,6 +5181,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "consomme",
+ "guestmem",
  "inspect",
  "inspect_counters",
  "mesh",

@@ -1,68 +1,100 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Egress processing of the Consomme queue.
+//! Egress policy enforcement of the Consomme endpoint.
 //!
-//! The queue's transmit path assembles each guest frame from guest memory and
-//! sends it to the Consomme stack.
+//! The endpoint accepts a run-scoped [`EgressPolicy`] while no queue is
+//! active. The queue's transmit path assembles each guest frame from guest
+//! memory and drops the frames that the policy denies before they reach the
+//! Consomme stack.
 
+use crate::ConsommeEndpoint;
 use crate::ConsommeQueue;
+use anyhow::Context as _;
 use consomme::ChecksumState;
 use net_backend::BufferAccess;
 use net_backend::TxSegmentType;
+use net_backend_resources::egress::EgressPolicy;
+
+impl ConsommeEndpoint {
+    /// Implements `set_egress_policy`.
+    pub(crate) fn install_egress_policy(&mut self, policy: EgressPolicy) -> anyhow::Result<()> {
+        self.endpoint_state
+            .lock()
+            .as_mut()
+            .context("cannot configure Consomme egress policy while a queue is active")?
+            .egress_policy = Some(policy);
+        Ok(())
+    }
+}
 
 impl ConsommeQueue {
-    /// Sends the queued guest frames to the Consomme stack and completes all of
-    /// them.
+    /// Sends the queued guest frames that the egress policy allows to the
+    /// Consomme stack and completes all of them.
     pub(crate) fn process_tx(&mut self, pool: &mut dyn BufferAccess) {
         while let Some(head) = self.state.tx_avail.front() {
-            let TxSegmentType::Head(meta) = &head.ty else {
+            let TxSegmentType::Head(metadata) = &head.ty else {
                 unreachable!()
             };
-            let tx_id = meta.id;
+            let tx_id = metadata.id;
             let checksum = ChecksumState {
-                ipv4: meta.flags.offload_ip_header_checksum(),
-                tcp: meta.flags.offload_tcp_checksum(),
-                udp: meta.flags.offload_udp_checksum(),
-                tso: meta
+                ipv4: metadata.flags.offload_ip_header_checksum(),
+                tcp: metadata.flags.offload_tcp_checksum(),
+                udp: metadata.flags.offload_udp_checksum(),
+                tso: metadata
                     .flags
                     .offload_tcp_segmentation()
-                    .then_some(meta.max_segment_size),
-                gso: meta
+                    .then_some(metadata.max_segment_size),
+                gso: metadata
                     .flags
                     .offload_udp_segmentation()
-                    .then_some(meta.max_segment_size),
+                    .then_some(metadata.max_segment_size),
             };
+            let segment_count = metadata.segment_count as usize;
+            let packet_len = metadata.len as usize;
 
-            // Reuse the scratch buffer to avoid per-packet heap allocation.
-            // TSO caps the assembled packet at 64 KiB; assert so a buggy
-            // upstream caller can't permanently inflate the scratch buffer
-            // (and thus the queue's steady-state memory) by feeding an
-            // oversized `meta.len`.
-            debug_assert!(
-                meta.len as usize <= 64 * 1024,
-                "tx packet len {} exceeds 64 KiB TSO bound",
-                meta.len
-            );
-            let mut buf = std::mem::take(&mut self.state.tx_scratch);
-            buf.clear();
-            buf.resize(meta.len as usize, 0);
-            let gm = pool.guest_memory();
-            let mut offset = 0;
-            for segment in self.state.tx_avail.drain(..meta.segment_count as usize) {
-                let dest = &mut buf[offset..offset + segment.len as usize];
-                if let Err(err) = gm.read_at(segment.gpa, dest) {
+            let mut buffer = std::mem::take(&mut self.state.tx_scratch);
+            buffer.clear();
+            buffer.resize(packet_len, 0);
+            let guest_memory = pool.guest_memory();
+            let mut offset = 0usize;
+            for segment in self.state.tx_avail.drain(..segment_count) {
+                let Some(end) = offset.checked_add(segment.len as usize) else {
+                    tracing::error!("network TX segment length overflow");
+                    break;
+                };
+                let Some(destination) = buffer.get_mut(offset..end) else {
+                    tracing::error!(packet_len, end, "network TX segments exceed packet length");
+                    break;
+                };
+                if let Err(error) = guest_memory.read_at(segment.gpa, destination) {
                     tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "memory write failure"
+                        error = &error as &dyn std::error::Error,
+                        "network TX guest-memory read failure"
                     );
                 }
-                offset += segment.len as usize;
+                offset = end;
             }
 
-            if let Err(err) = self.with_consomme(pool, |c| c.send(&buf, &checksum)) {
-                tracing::debug!(error = &err as &dyn std::error::Error, "tx packet ignored");
-                match err {
+            let policy_result = (offset == packet_len)
+                .then(|| {
+                    self.endpoint_state
+                        .as_ref()
+                        .and_then(|state| state.egress_policy.as_ref())
+                        .map(|policy| policy.authorize_frame(&buffer, buffer.len()))
+                })
+                .flatten();
+            if policy_result.is_some_and(|result| result.is_err()) {
+                self.stats.tx_dropped.increment();
+            } else if offset == packet_len
+                && let Err(error) =
+                    self.with_consomme(pool, |consomme| consomme.send(&buffer, &checksum))
+            {
+                tracing::debug!(
+                    error = &error as &dyn std::error::Error,
+                    "tx packet ignored"
+                );
+                match error {
                     consomme::DropReason::SendBufferFull
                     | consomme::DropReason::DestinationNotAllowed
                     | consomme::DropReason::TcpConnectionLimit
@@ -86,8 +118,7 @@ impl ConsommeQueue {
                     | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
                 }
             }
-            self.state.tx_scratch = buf;
-
+            self.state.tx_scratch = buffer;
             self.state.tx_ready.push_back(tx_id);
         }
     }
