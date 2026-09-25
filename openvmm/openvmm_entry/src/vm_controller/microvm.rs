@@ -4,6 +4,7 @@
 //! MicroVM snapshot capture handling of the VM controller.
 
 use super::VmController;
+use crate::microvm::MicrovmResources;
 use anyhow::Context;
 use mesh::rpc::RpcSend;
 use openvmm_defs::rpc::SnapshotQuiesceError;
@@ -28,6 +29,8 @@ pub(crate) struct MicrovmController {
     pub(crate) source_hypervisor: String,
     /// Effective kernel command line of the MP-table boot.
     pub(crate) effective_command_line: Option<String>,
+    /// Host attachments and cleanup guards of the microVM devices.
+    pub(crate) resources: MicrovmResources,
     /// Automatic RAM backing created for snapshot capture.
     pub(crate) snapshot_memory_file: Option<tempfile::NamedTempFile>,
 }
@@ -142,6 +145,7 @@ impl VmController {
                 &self.microvm.source_hypervisor,
                 openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
                 command_line,
+                self.microvm.resources.console_attachment.clone(),
                 self.processors,
                 self.memory,
                 response.state_unit_names,
@@ -217,6 +221,15 @@ impl VmController {
 
         match result {
             Ok(()) => {
+                if let Some(cleanup) = self.microvm.resources.console_socket_cleanup.take()
+                    && let Err(error) = cleanup.remove_if_owned()
+                {
+                    tracing::error!(
+                        error = error.as_ref() as &dyn std::error::Error,
+                        "snapshot committed but the source console socket could not be removed"
+                    );
+                    return GuestSnapshotAction::Terminate { exit_code: 1 };
+                }
                 tracing::info!(
                     path = %destination.display(),
                     "microVM snapshot committed; terminating source process"
@@ -227,6 +240,14 @@ impl VmController {
                 let write_error =
                     error.downcast_ref::<openvmm_helpers::snapshot::publish::SnapshotWriteError>();
                 if write_error.is_some_and(|error| error.is_committed()) {
+                    if let Some(cleanup) = self.microvm.resources.console_socket_cleanup.take()
+                        && let Err(cleanup_error) = cleanup.remove_if_owned()
+                    {
+                        tracing::error!(
+                            error = cleanup_error.as_ref() as &dyn std::error::Error,
+                            "committed snapshot console socket could not be removed"
+                        );
+                    }
                     tracing::error!(
                         error = error.as_ref() as &dyn std::error::Error,
                         path = %destination.display(),

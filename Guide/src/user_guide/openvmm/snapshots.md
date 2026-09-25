@@ -175,6 +175,15 @@ and restore requires the saved and current inventories to match exactly. A
 microVM manifest additionally records and validates the exact device inventory
 and order.
 
+For a phase-3 virtio console, the manifest also records its stable attachment
+ID, canonical endpoint identity, reconnect policy, requiredness, and timeout.
+Native socket, pipe, terminal, and file handles are never serialized. Restore
+recreates listeners, reconnects required clients, or requires an inherited
+replacement before starting the partition. Accepted host input and a partial
+guest transmit offset live in the device-private virtio payload, preserving
+their order across a new-process restore. Host input is gated before the vCPU
+snapshot boundary and resumed only if capture rolls back.
+
 The rules are:
 
 | Scenario | Result |
