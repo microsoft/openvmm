@@ -1851,7 +1851,7 @@ impl VmService {
         }
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
-            .call(VmRpc::Resume, ())
+            .call_failable(VmRpc::Resume, ())
             .await
             .map(drop)
             .context("resume failed")?;
