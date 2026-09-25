@@ -2207,7 +2207,7 @@ async fn new_underhill_vm(
         || dps.general.com2_vmbus_redirector;
     let interactive_console =
         console_enabled && !dps.general.management_vtl_features.tx_only_serial_port();
-    let attestation_vm_config = AttestationVmConfig {
+    let mut attestation_vm_config = AttestationVmConfig {
         current_time: None,
         // TODO CVM: Support vmgs provisioning config
         root_cert_thumbprint: String::new(),
@@ -2229,6 +2229,8 @@ async fn new_underhill_vm(
             && isolation.is_isolated(),
         vm_unique_id: dps.general.bios_guid.to_string(),
         vmgs_provisioner: prov_claims.clone(),
+        // Boot initialization adopts a response or authenticated protector context.
+        key_release_context_hash: None,
     };
 
     let tee_call: Option<Box<dyn tee_call::TeeCall>> = match isolation {
@@ -2294,9 +2296,15 @@ async fn new_underhill_vm(
                 agent_data: None,
                 guest_secret_key: None,
                 runtime_tcb_floor: None,
+                key_release_context_hash: None,
             }
         }
     };
+
+    attestation_vm_config.key_release_context_hash = platform_attestation_data
+        .key_release_context_hash
+        .as_ref()
+        .map(openhcl_attestation_protocol::igvm_attest::get::encode_key_release_context_hash);
 
     // Check VMGS ID from provisioner
     if let Some(prov) = prov_claims {
