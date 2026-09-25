@@ -24,7 +24,7 @@ pub(crate) struct Capabilities {
 // configuration-dependent restrictions such as MSHV Windows-guest reset.
 fn probe<H: Hypervisor>(mut hv: H, hv1: bool) -> anyhow::Result<Capabilities>
 where
-    H::Partition: virt::Partition,
+    H::Partition: virt::Partition + virt::PartitionMemoryMapper,
 {
     let mut pool = pal_async::DefaultPool::new();
     let driver = pool.driver();
