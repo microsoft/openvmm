@@ -94,20 +94,6 @@ async fn must_recv_in_timeout<T: 'static + Send>(
         .unwrap()
 }
 
-async fn assert_no_recv_in_timeout<T: 'static + Send>(
-    recv: &mut mesh::Receiver<T>,
-    timeout: Duration,
-) {
-    if mesh::CancelContext::new()
-        .with_timeout(timeout)
-        .until_cancelled(recv.next())
-        .await
-        .is_ok()
-    {
-        panic!("Expected timeout, but received a value");
-    }
-}
-
 /// Yield execution to the async executor, allowing spawned tasks to run.
 async fn yield_now() {
     let mut yielded = false;
@@ -2558,16 +2544,21 @@ async fn verify_packed_queue_simple(driver: DefaultDriver) {
 }
 
 async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest, with_index: bool) {
+    const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
+
     let (tx, mut rx) = mesh::mpsc_channel();
+    let (completed, mut completions) = mesh::mpsc_channel();
     let event = Event::new();
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
+        let completed = completed.clone();
         CreateDirectQueueParams {
             process_work: Box::new(
                 move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
                     assert_eq!(work.payload.len(), 1);
                     assert_eq!(work.payload[0].length, 0x1000);
                     queue.complete(work, 123);
+                    completed.send(());
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -2582,10 +2573,13 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
         guest.enable_interrupt(0, Some(1));
         guest.add_to_avail_queue(0);
         event.signal();
-        assert_no_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+        must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+        assert!(matches!(rx.try_recv(), Err(mesh::TryRecvError::Empty)));
         guest.add_to_avail_queue(0);
         event.signal();
-        must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+        must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+        assert_eq!(rx.try_recv().unwrap(), 0);
+        assert!(matches!(rx.try_recv(), Err(mesh::TryRecvError::Empty)));
 
         let (_, len) = guest.get_next_completed(0).unwrap();
         assert_eq!(len, 123);
@@ -2597,7 +2591,9 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
     guest.enable_interrupt(0, None);
     guest.add_to_avail_queue(0);
     event.signal();
-    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+    assert_eq!(rx.try_recv().unwrap(), 0);
+    assert!(matches!(rx.try_recv(), Err(mesh::TryRecvError::Empty)));
     let (_, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(len, 123);
     assert_eq!(guest.get_next_completed(0).is_none(), true);
@@ -2607,7 +2603,9 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
     guest.add_to_avail_queue(0);
     guest.add_to_avail_queue(0);
     event.signal();
-    assert_no_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+    must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+    assert!(matches!(rx.try_recv(), Err(mesh::TryRecvError::Empty)));
     let (_, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(len, 123);
     let (_, len) = guest.get_next_completed(0).unwrap();
