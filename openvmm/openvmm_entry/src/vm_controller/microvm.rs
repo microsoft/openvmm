@@ -74,7 +74,6 @@ impl MicrovmTeardownStatus {
 }
 
 #[derive(Debug)]
-#[expect(dead_code, reason = "the microVM outcome report reads the status")]
 pub(crate) struct MicrovmTeardownError(pub(crate) MicrovmTeardownStatus);
 
 impl std::fmt::Display for MicrovmTeardownError {

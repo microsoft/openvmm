@@ -6046,6 +6046,8 @@ dependencies = [
  "prost",
  "rustyline",
  "scsidisk_resources",
+ "serde",
+ "serde_json",
  "serial_16550_resources",
  "serial_core",
  "serial_socket",

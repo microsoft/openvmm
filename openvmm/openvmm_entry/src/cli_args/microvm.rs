@@ -248,6 +248,10 @@ pub struct MicrovmCli {
     #[clap(long, value_enum, value_name = "MODE")]
     pub microvm_lifecycle: Option<MicrovmLifecycleCli>,
 
+    /// Write one bounded local JSON outcome report after microVM teardown.
+    #[clap(long, value_name = "PATH")]
+    pub microvm_report: Option<PathBuf>,
+
     /// Required host-network implementation contract for microVM `--net`.
     #[clap(long, value_enum, value_name = "PROFILE")]
     pub network_profile: Option<MicrovmNetworkProfileCli>,
@@ -467,6 +471,7 @@ impl Options {
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.microvm_workload_identity.is_none()
                     && self.microvm.microvm_lifecycle.is_none()
+                    && self.microvm.microvm_report.is_none()
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
                     && self.microvm.memory_capacity.is_none()

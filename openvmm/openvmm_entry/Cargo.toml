@@ -94,6 +94,8 @@ prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
 shell-words.workspace = true
 socket2 = { workspace = true, features = ["all"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

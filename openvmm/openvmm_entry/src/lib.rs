@@ -2734,6 +2734,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     // with --version and --help.
     tracing::info!(version = openvmm_build_info::get().version());
 
+    microvm::report::validate_early_options(&opt)?;
     if let Some(path) = &opt.write_saved_state_proto {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
@@ -2796,7 +2797,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
         }
     }
 
-    DefaultPool::run_with(async |driver| run_control(&driver, opt).await)
+    DefaultPool::run_with(async |driver| microvm::report::run_control(&driver, opt).await)
 }
 
 fn new_hvsock_service_id(port: u32) -> Guid {
