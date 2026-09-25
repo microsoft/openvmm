@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+pub(crate) mod saved_state;
+
 use super::Fuse;
 use super::Mapper;
 use super::protocol::*;
@@ -119,6 +121,7 @@ impl Session {
         if self.initialized.swap(false, atomic::Ordering::AcqRel) {
             self.fs.destroy();
         }
+        *self.info.write() = SessionInfo::default();
     }
 
     /// Perform the actual dispatch. This allows the caller to send an error reply if any operation
@@ -481,7 +484,7 @@ impl Session {
 
         // Prepare the session info and call the file system to negotiate.
         info.major = init.major;
-        info.minor = init.minor;
+        info.minor = init.minor.min(FUSE_KERNEL_MINOR_VERSION);
         info.max_readahead = init.max_readahead;
         info.capable = init.flags;
         info.want = DEFAULT_FLAGS & init.flags;
@@ -606,7 +609,7 @@ impl Session {
 }
 
 /// Provides information about a session. Public fields may be modified during `init`.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct SessionInfo {
     major: u32,
     minor: u32,
@@ -650,6 +653,8 @@ enum OperationError {
 
 #[cfg(test)]
 mod tests {
+    mod saved_state;
+
     use super::*;
     use crate::request::tests::*;
     use parking_lot::Mutex;
