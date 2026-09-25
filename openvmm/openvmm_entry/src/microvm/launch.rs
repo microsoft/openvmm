@@ -4,6 +4,7 @@
 //! MicroVM launch state carried from the VM configuration to the VM worker
 //! and the VM controller.
 
+use super::ExpectedRestoreContract;
 use super::MicrovmResources;
 use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
@@ -156,6 +157,24 @@ impl MicrovmLaunch {
             snapshot_ready,
             snapshot_requests,
         )
+    }
+
+    /// Returns the machine contract a microVM snapshot must match to be
+    /// restored with this configuration.
+    pub(crate) fn expected_restore_contract<'a>(
+        &'a self,
+        opt: &Options,
+        expected_hypervisor: &'a str,
+    ) -> anyhow::Result<Option<ExpectedRestoreContract<'a>>> {
+        if opt.machine != MachineProfileCli::Microvm {
+            return Ok(None);
+        }
+        Ok(Some((
+            expected_hypervisor,
+            self.effective_command_line
+                .as_deref()
+                .context("microVM restore requires an effective command line")?,
+        )))
     }
 
     /// Returns the path of the file backing guest RAM, including the automatic
