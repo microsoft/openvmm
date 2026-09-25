@@ -400,7 +400,7 @@ impl Worker for VmWorker {
             LOADED_VM.store(&vm);
 
             if running {
-                vm.resume().await;
+                vm.resume().await?;
             }
             Ok(Self {
                 vm,
@@ -3679,18 +3679,16 @@ impl LoadedVmInner {
 }
 
 impl LoadedVm {
-    async fn resume(&mut self) -> bool {
+    async fn resume(&mut self) -> anyhow::Result<bool> {
         if self.running {
-            return false;
+            return Ok(false);
         }
-        // Resume cannot report a failure to its callers, so treat a unit that
-        // fails to start like any other unrecoverable state unit failure.
         self.state_units
             .start()
             .await
-            .expect("state units failed to start");
+            .context("VM state units failed to start")?;
         self.running = true;
-        true
+        Ok(true)
     }
 
     async fn pause(&mut self) -> bool {
@@ -3848,7 +3846,9 @@ impl LoadedVm {
                         rpc.handle(async |()| self.inner.partition_unit.clear_halt().await)
                             .await
                     }
-                    VmRpc::Resume(rpc) => rpc.handle(async |()| self.resume().await).await,
+                    VmRpc::Resume(rpc) => {
+                        rpc.handle_failable(async |()| self.resume().await).await
+                    }
                     VmRpc::Pause(rpc) => rpc.handle(async |()| self.pause().await).await,
                     VmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| self.save().await.map(ProtobufMessage::new))
@@ -3925,7 +3925,7 @@ impl LoadedVm {
                             self.save_reset_restore().await?;
 
                             if paused {
-                                self.resume().await;
+                                self.resume().await?;
                             }
                             Ok(())
                         })
@@ -4405,7 +4405,7 @@ impl LoadedVm {
         }
 
         if resume {
-            self.resume().await;
+            self.resume().await?;
         }
         Ok(())
     }
