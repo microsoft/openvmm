@@ -3,14 +3,16 @@
 
 //! Restore-side snapshot access: opening one published generation through a
 //! retained directory handle, structural validation against its manifest,
-//! and paired scratch verification.
+//! paired scratch verification, and single-use resume claims.
 
 use super::SnapshotManifest;
 use super::format::MANIFEST_FILE_NAME;
 use super::format::MAX_MANIFEST_SIZE_BYTES;
 use super::format::MAX_SAVED_STATE_SIZE_BYTES;
 use super::format::MEMORY_FILE_NAME;
+use super::format::RESUME_CLAIM_FILE_NAME;
 use super::format::SCRATCH_FILE_NAME;
+use super::format::SNAPSHOT_RESTORE_POLICY_RESUME;
 use super::format::STATE_FILE_NAME;
 use super::format::validate_manifest_header;
 use super::format::validate_manifest_version;
@@ -25,6 +27,7 @@ use super::fs::verify_file_digest;
 use super::microvm;
 use anyhow::Context;
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::Path;
 
 /// One structurally validated snapshot generation opened for restore.
@@ -118,6 +121,11 @@ impl OpenedSnapshot {
     /// Opens the paired scratch artifact relative to this snapshot generation.
     pub fn open_paired_scratch_file(&self) -> anyhow::Result<Option<std::fs::File>> {
         open_paired_scratch_file_in_directory(&self.directory, &self.manifest)
+    }
+
+    /// Claims this exact opened generation for a single-use resume.
+    pub fn claim_for_restore(&self) -> anyhow::Result<()> {
+        claim_snapshot_for_restore_in_directory(&self.directory, &self.manifest)
     }
 
     /// Duplicates the exact memory handle used to create a private mapping.
@@ -333,6 +341,52 @@ pub fn copy_verified_file(
     )
 }
 
+/// Atomically consumes a single-use resume snapshot.
+///
+/// Call this after artifact and configuration validation and before constructing
+/// execution-owned workers. A later startup failure does not roll back the claim.
+/// Clone snapshots are unchanged.
+pub fn claim_snapshot_for_restore(dir: &Path, manifest: &SnapshotManifest) -> anyhow::Result<()> {
+    let directory = OpenedSnapshotDirectory::open(dir)?;
+    claim_snapshot_for_restore_in_directory(&directory, manifest)
+}
+
+fn claim_snapshot_for_restore_in_directory(
+    directory: &OpenedSnapshotDirectory,
+    manifest: &SnapshotManifest,
+) -> anyhow::Result<()> {
+    validate_manifest_header(manifest)?;
+    validate_manifest_version(manifest)?;
+    if manifest.restore_policy != SNAPSHOT_RESTORE_POLICY_RESUME {
+        return Ok(());
+    }
+
+    let mut claim = match directory.create_new_file(RESUME_CLAIM_FILE_NAME) {
+        Ok(claim) => claim,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!("resume snapshot has already been claimed")
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to claim resume snapshot at {}",
+                    directory.display_path(RESUME_CLAIM_FILE_NAME).display()
+                )
+            });
+        }
+    };
+    claim
+        .write_all(b"OPENVMM_RESUME_CLAIM_V1\n")
+        .context("failed to write resume snapshot claim")?;
+    claim
+        .sync_all()
+        .context("failed to flush resume snapshot claim")?;
+    directory
+        .sync()
+        .context("failed to commit resume snapshot claim")?;
+    Ok(())
+}
+
 fn validate_snapshot_directory(
     directory: &OpenedSnapshotDirectory,
     manifest: &SnapshotManifest,
@@ -340,6 +394,11 @@ fn validate_snapshot_directory(
     let has_scratch = microvm::paired_scratch_block(manifest).is_some();
     let mut entries = HashSet::new();
     for name in directory.entry_names()? {
+        if name == RESUME_CLAIM_FILE_NAME
+            && manifest.restore_policy == SNAPSHOT_RESTORE_POLICY_RESUME
+        {
+            anyhow::bail!("resume snapshot has already been claimed");
+        }
         anyhow::ensure!(
             name == MANIFEST_FILE_NAME
                 || name == STATE_FILE_NAME
@@ -366,12 +425,45 @@ mod tests {
     use super::super::format::LEGACY_MANIFEST_VERSION;
     use super::super::format::LEGACY_SNAPSHOT_FORMAT_MAGIC;
     use super::super::format::SHA256_SIZE;
+    use super::super::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+    use super::super::microvm::paired_scratch_manifest;
     use super::super::publish::write_snapshot;
+    #[cfg(target_os = "linux")]
+    use super::super::publish::write_snapshot_from_memory_and_scratch_files;
     use super::super::tests::test_manifest;
     use super::*;
     use std::io::Read;
-    #[cfg(target_os = "linux")]
-    use std::io::Write;
+
+    #[test]
+    fn resume_snapshot_claim_is_single_use() {
+        let scratch = vec![0x5a; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        manifest.snapshot_tier = SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_RESUME.to_owned();
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .set_effective_command_line(
+                "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
+            );
+        let dir = tempfile::tempdir().unwrap();
+
+        claim_snapshot_for_restore(dir.path(), &manifest).unwrap();
+        let error = claim_snapshot_for_restore(dir.path(), &manifest).unwrap_err();
+        assert!(error.to_string().contains("already been claimed"));
+    }
+
+    #[test]
+    fn clone_snapshot_claim_is_a_noop() {
+        let scratch = vec![0x5a; 512];
+        let manifest = paired_scratch_manifest(&scratch);
+        let dir = tempfile::tempdir().unwrap();
+
+        claim_snapshot_for_restore(dir.path(), &manifest).unwrap();
+        claim_snapshot_for_restore(dir.path(), &manifest).unwrap();
+        assert!(!dir.path().join(RESUME_CLAIM_FILE_NAME).exists());
+    }
 
     #[test]
     fn read_snapshot_accepts_same_length_state_change_without_legacy_checksum_validation() {
@@ -630,6 +722,47 @@ mod tests {
         memory.read_to_end(&mut bytes).unwrap();
         assert_eq!(state, b"state");
         assert_eq!(bytes, vec![0x5a_u8; 1024]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resume_claim_targets_opened_directory_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let moved_dir = dir.path().join("opened-snapshot");
+        let memory_source = dir.path().join("memory-source.bin");
+        let scratch_source = dir.path().join("scratch-source.bin");
+        let scratch = vec![0x5a_u8; 512];
+        std::fs::write(&memory_source, vec![0_u8; 1024]).unwrap();
+        std::fs::write(&scratch_source, &scratch).unwrap();
+        let memory_file = std::fs::File::open(&memory_source).unwrap();
+        let scratch_file = std::fs::File::open(&scratch_source).unwrap();
+        let mut manifest = paired_scratch_manifest(&scratch);
+        manifest.snapshot_tier = SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_RESUME.to_owned();
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .set_effective_command_line(
+                "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
+            );
+        write_snapshot_from_memory_and_scratch_files(
+            &snap_dir,
+            &manifest,
+            b"state",
+            &memory_file,
+            Some(&scratch_file),
+        )
+        .unwrap();
+
+        let snapshot = OpenedSnapshot::open(&snap_dir).unwrap();
+        std::fs::rename(&snap_dir, &moved_dir).unwrap();
+        std::fs::create_dir(&snap_dir).unwrap();
+        snapshot.claim_for_restore().unwrap();
+
+        assert!(moved_dir.join(RESUME_CLAIM_FILE_NAME).exists());
+        assert!(!snap_dir.join(RESUME_CLAIM_FILE_NAME).exists());
     }
 
     #[cfg(target_os = "linux")]

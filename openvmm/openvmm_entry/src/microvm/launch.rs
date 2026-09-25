@@ -243,6 +243,7 @@ impl MicrovmLaunch {
     /// Hands the microVM state over to the VM controller.
     pub(crate) fn into_controller(
         self,
+        opt: &Options,
         source_hypervisor: String,
         snapshot_requests: Option<mesh::Receiver<MicrovmSnapshotScratchPolicy>>,
     ) -> MicrovmController {
@@ -251,6 +252,7 @@ impl MicrovmLaunch {
             snapshot_memory_handle: self.snapshot_memory_handle,
             snapshot_requests,
             snapshot_destination: self.snapshot_destination,
+            snapshot_tier: opt.microvm.snapshot_tier,
             source_hypervisor,
             effective_command_line: self.effective_command_line,
             resources: self.resources,
