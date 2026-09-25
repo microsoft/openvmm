@@ -45,12 +45,13 @@ describes the source definitions.
   anchored to UTC,
   the microVM portb console, lifecycle ports, and the optional fixed virtio
   devices described below. User arguments cannot override `earlycon=`,
-  `console=`, `virtio_mmio.device=`, or `nr_cpus=`.
+  `console=`, `virtio_mmio.device=`, `nr_cpus=`, or `virtnet_*=`.
 
-  One optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
-  IRQ 7 as the boot/log console (`hvc1`) and uses split rings. Firmware, ACPI,
+  One optional `--net <IPv4/PREFIX>` NIC is exposed at MMIO `0xd0000000`, and
+  one optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
+  IRQ 7 as the boot/log console (`hvc1`). Both use split rings. Firmware, ACPI,
   SMBIOS, PCI,
-  VMBus, UARTs, storage, networking, graphics, isolation, nested
+  VMBus, UARTs, storage, graphics, isolation, nested
   virtualization, and other devices are rejected. Linux discovers contiguous
   APIC IDs and the IOAPIC from Intel
   MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at `0x2000`, the command
@@ -61,6 +62,31 @@ describes the source definitions.
   with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.
   Guest-requested snapshot capture and new-process restore are available on
   Linux/KVM, Linux/MSHV, and Windows/WHP.
+* `--net <IPv4/PREFIX>`: With `--machine microvm`, attach one virtio-net NIC
+  at MMIO `0xd0000000`. KVM and MSHV use IRQ 10; WHP uses IRQ 5. Prefixes
+  `/1` through `/30` are accepted. The first usable subnet address becomes
+  the gateway; network, broadcast, and gateway addresses cannot be assigned
+  to the guest. Guest and gateway MAC addresses are derived as
+  `52:54:00:<second>:<third>:<fourth>` from their IPv4 addresses. Networking
+  requires the only supported capability profile, `--network-profile portable`;
+  omitting it rejects the command before OpenVMM opens host resources.
+
+  ```bash
+  openvmm --machine microvm --hypervisor whp \
+    --kernel vmlinux --initrd initramfs.cpio.gz \
+    --net 10.0.0.2/24 --network-profile portable
+  ```
+
+  `portable` uses an in-process Consomme endpoint on Linux/KVM, Linux/MSHV,
+  and Windows/WHP. It needs no TAP, root access, driver, or host network
+  configuration. The gateway provides DNS over UDP and
+  TCP, ICMP echo, and outbound TCP/UDP through ordinary host sockets. Consomme
+  rejects IPv4 fragments deterministically. Its per-connection TCP buffers start at 16 KiB and
+  are bounded at 4 MiB; UDP bindings expire after five minutes; and at most
+  256 DNS requests are pending at once. At most 128 TCP, 256 UDP, and 16 ICMP
+  guest flows are active at once; excess flows are deterministically rejected
+  before a host socket is created. Snapshot capture does not yet support a
+  microVM NIC.
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
   must already be a directory. OpenVMM automatically creates file-backed RAM
