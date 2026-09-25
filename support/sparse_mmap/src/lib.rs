@@ -190,6 +190,7 @@ impl SparseMapping {
 #[cfg(test)]
 mod tests {
     mod copy_on_write;
+    mod flush;
 
     use super::*;
 

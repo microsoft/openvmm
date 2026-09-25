@@ -6,6 +6,7 @@
 #![cfg(unix)]
 
 pub(crate) mod copy_on_write;
+mod flush;
 
 use pal::unix::SyscallResult;
 use std::ffi::c_void;
