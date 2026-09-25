@@ -174,6 +174,7 @@ impl MicrovmLaunch {
             self.effective_command_line
                 .as_deref()
                 .context("microVM restore requires an effective command line")?,
+            self.resources.console_attachment.as_ref(),
         )))
     }
 
@@ -204,6 +205,7 @@ impl MicrovmLaunch {
             ),
             source_hypervisor,
             effective_command_line: self.effective_command_line,
+            resources: self.resources,
             snapshot_memory_file: self.snapshot_memory_file,
         }
     }

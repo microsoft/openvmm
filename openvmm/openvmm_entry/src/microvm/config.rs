@@ -5,6 +5,10 @@
 
 use super::MicrovmResources;
 use super::MicrovmRestore;
+use super::console::ConsoleEndpoint;
+use super::console::effective_microvm_console;
+use super::console::microvm_console_socket_cleanup;
+use super::console::validate_microvm_console_attachment_namespace;
 use crate::ConsoleState;
 use crate::Options;
 use crate::VmResources;
@@ -29,6 +33,7 @@ use std::cell::RefCell;
 use std::thread;
 use std::time::Duration;
 use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
+use virtio_resources::console::attachment::VirtioConsoleReconnectPolicy;
 use vm_manifest_builder::MachineArch;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -43,7 +48,7 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     opt: &'a Options,
     restore: &'a MicrovmRestore,
     active: bool,
-    console: Option<SerialConfigCli>,
+    console: Option<ConsoleEndpoint>,
     portb: Option<Resource<SerialBackendHandle>>,
     resources: MicrovmResources,
 }
@@ -71,9 +76,24 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
 
         let console = if active {
-            opt.virtio_console.clone()
+            effective_microvm_console(opt.virtio_console.as_ref(), restore_machine_contract)?
         } else {
             None
+        };
+        if let Some((_, _, attachment)) = &console
+            && let Some(snapshot_dir) = opt
+                .restore_snapshot
+                .as_deref()
+                .or(opt.microvm.snapshot_destination.as_deref())
+        {
+            validate_microvm_console_attachment_namespace(attachment, snapshot_dir)?;
+        }
+
+        let resources = MicrovmResources {
+            console_attachment: console
+                .as_ref()
+                .map(|(_, _, attachment)| attachment.clone()),
+            ..Default::default()
         };
 
         Ok(Self {
@@ -82,7 +102,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             active,
             console,
             portb: None,
-            resources: MicrovmResources::default(),
+            resources,
         })
     }
 
@@ -112,7 +132,11 @@ impl<'a> MicrovmConfigBuilder<'a> {
         if !self.active {
             return Ok(());
         }
-        let backend = if matches!(self.console, Some(SerialConfigCli::Console)) {
+        let backend = if self
+            .console
+            .as_ref()
+            .is_some_and(|(config, _, _)| matches!(config, SerialConfigCli::Console))
+        {
             SerialConfigCli::Stderr
         } else {
             SerialConfigCli::Console
@@ -130,21 +154,48 @@ impl<'a> MicrovmConfigBuilder<'a> {
     /// Connects the host side of the boot virtio-console, returning its
     /// backend.
     pub(crate) fn setup_virtio_consoles(
-        &self,
+        &mut self,
         console_state: &RefCell<Option<ConsoleState<'static>>>,
         serial_driver: &DefaultDriver,
     ) -> anyhow::Result<Option<Resource<SerialBackendHandle>>> {
-        let virtio_console_backend = if let Some(serial_cfg) = self.console.clone() {
+        let virtio_console_backend = if let Some(serial_cfg) =
+            self.console.as_ref().map(|(config, _, _)| config.clone())
+        {
             match serial_cfg {
                 SerialConfigCli::Pipe(path) => {
-                    Some(serial_io::bind_serial(&path).with_context(|| {
-                        format!(
-                            "failed to bind microVM virtio console listener {}",
-                            path.display()
-                        )
-                    })?)
+                    let backend = serial_io::connect::bind_serial_without_cleanup(&path)
+                        .with_context(|| {
+                            format!(
+                                "failed to bind microVM virtio console listener {}",
+                                path.display()
+                            )
+                        })?;
+                    self.resources.console_socket_cleanup = microvm_console_socket_cleanup(path)?;
+                    Some(backend)
                 }
                 SerialConfigCli::Tcp(address) => Some(serial_io::bind_tcp_serial(&address)?),
+                SerialConfigCli::ConnectPipe(path) => Some(
+                    serial_io::connect::connect_serial_with_timeout(
+                        &path,
+                        Duration::from_millis(
+                            openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS,
+                        ),
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed to reconnect microVM virtio console client {}",
+                            path.display()
+                        )
+                    })?,
+                ),
+                SerialConfigCli::ConnectTcp(address) => {
+                    Some(serial_io::connect::connect_tcp_serial(
+                        &address,
+                        Duration::from_millis(
+                            openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS,
+                        ),
+                    )?)
+                }
                 SerialConfigCli::Console => Some(setup_host_console(
                     "virtio-console",
                     SerialConfigCli::Console,
@@ -153,7 +204,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     serial_driver,
                 )?),
                 SerialConfigCli::None => Some(DisconnectedSerialBackendHandle.into_resource()),
-                _ => unreachable!("microVM console backend was validated"),
+                _ => unreachable!("microVM console backend was validated as an attachment"),
             }
         } else {
             None
@@ -264,9 +315,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
     }
 
     /// Builds the boot virtio-console device handle.
-    ///
-    /// A microVM retains guest output until a listener's client connects; a
-    /// disconnected (`none`) console discards it.
     pub(crate) fn virtio_console_handle(
         &self,
         backend: Resource<SerialBackendHandle>,
@@ -274,13 +322,18 @@ impl<'a> MicrovmConfigBuilder<'a> {
         virtio_resources::console::VirtioConsoleHandle {
             backend,
             disconnect_policy: if self.active
-                && !matches!(self.console, Some(SerialConfigCli::None))
-            {
+                && !self.console.as_ref().is_some_and(|(_, attachment, _)| {
+                    attachment.reconnect_policy
+                        == VirtioConsoleReconnectPolicy::DiscardWhileDisconnected
+                }) {
                 VirtioConsoleDisconnectPolicy::Retain
             } else {
                 VirtioConsoleDisconnectPolicy::Discard
             },
-            attachment: None,
+            attachment: self
+                .console
+                .as_ref()
+                .map(|(_, attachment, _)| attachment.clone()),
         }
     }
 
