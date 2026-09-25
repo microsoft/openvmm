@@ -85,10 +85,12 @@ impl Options {
                 "microVM snapshot capture does not yet support --virtio-console"
             );
         }
-        anyhow::ensure!(
-            self.restore_snapshot.is_none(),
-            "microVM does not support snapshot restore"
-        );
+        if self.restore_snapshot.is_some() {
+            anyhow::ensure!(
+                self.virtio_console.is_none(),
+                "microVM snapshot restore does not yet support --virtio-console"
+            );
+        }
         anyhow::ensure!(
             self.uefi.is_none() && !self.pcat && self.igvm.is_none() && !self.device_tree,
             "microVM requires Linux direct boot"
@@ -350,6 +352,42 @@ mod tests {
             ])
             .is_err()
         );
+
+        let restore = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+        ])
+        .unwrap();
+        assert_eq!(restore.memory, Default::default());
+        restore.validate_microvm_options().unwrap();
+        let restore_with_console = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--virtio-console",
+            "none",
+        ])
+        .unwrap();
+        assert!(restore_with_console.validate_microvm_options().is_err());
+        for override_arg in ["--kernel", "--initrd"] {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--restore-snapshot",
+                    "snapshot",
+                    override_arg,
+                    "file",
+                ])
+                .is_err()
+            );
+        }
     }
 
     #[test]
@@ -436,13 +474,6 @@ mod tests {
                 "port0",
             ],
             vec!["openvmm", "--machine", "microvm", "--net", "consomme"],
-            vec![
-                "openvmm",
-                "--machine",
-                "microvm",
-                "--restore-snapshot",
-                "snapshot",
-            ],
         ] {
             let options = Options::try_parse_from(args).unwrap();
             assert!(options.validate_microvm_options().is_err());
