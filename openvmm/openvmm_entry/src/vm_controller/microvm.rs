@@ -19,6 +19,8 @@ pub(crate) struct MicrovmController {
     pub(crate) active: bool,
     /// Exact open handle of the file backing guest RAM for snapshot capture.
     pub(crate) snapshot_memory_handle: Option<std::fs::File>,
+    /// Immutable RAM capacity reserved in captured snapshots.
+    pub(crate) memory_capacity: Option<u64>,
     /// Guest-requested snapshot boundaries released by the VM worker.
     pub(crate) snapshot_requests:
         Option<mesh::Receiver<chipset_resources::microvm::MicrovmSnapshotScratchPolicy>>,
@@ -227,6 +229,7 @@ impl VmController {
                 blocks,
                 self.processors,
                 self.memory,
+                self.microvm.memory_capacity,
                 response.state_unit_names,
                 response.capture_wall_clock,
                 response.tsc_frequency_hz,
