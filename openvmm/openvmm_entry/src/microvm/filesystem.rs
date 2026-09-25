@@ -350,6 +350,7 @@ mod tests {
             true,
             Some((&filesystem, Path::new(&root_path), attachment)),
             None,
+            Vec::new(),
             1,
             1024,
             [
@@ -394,6 +395,7 @@ mod tests {
             true,
             None,
             None,
+            Vec::new(),
             1,
             1024,
             [
