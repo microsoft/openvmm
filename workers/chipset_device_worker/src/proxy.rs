@@ -278,6 +278,20 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
         Ok(())
     }
 
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        self.req_send
+            .call_failable(DeviceRequest::QuiesceInput, ())
+            .await?;
+        Ok(())
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.req_send
+            .call_failable(DeviceRequest::ResumeInput, ())
+            .await?;
+        Ok(())
+    }
+
     async fn stop(&mut self) {
         self.req_send
             .call(DeviceRequest::Stop, ())
