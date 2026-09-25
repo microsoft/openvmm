@@ -923,6 +923,11 @@ impl virt::Partition for UhPartition {
         virt::InitialVpStateSource::Registers
     }
 
+    #[cfg(guest_arch = "x86_64")]
+    fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
+        virt::x86::CpuCompatibilityContract::new(&self.inner.caps, &self.inner.cpuid)
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Self::Error>> {
         None
     }
