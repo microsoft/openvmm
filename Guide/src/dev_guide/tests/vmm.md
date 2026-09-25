@@ -134,6 +134,24 @@ To run a **specific test** (or set of tests), use `--filter` with a
 cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /tmp/vmm-tests-run
 ```
 
+### SEV-SNP Linux-direct test
+
+The `snp_linux_direct_x64` configuration boots a fixed-profile SEV-SNP IGVM
+with a Linux guest. It needs an x86_64 AMD host where OpenVMM selects MSHV.
+Petri skips the test if these host requirements are not met. The guest has one
+virtual processor and 160 MiB of RAM. Flowey embeds pipette in the measured
+IGVM initrd and starts it as PID 1. The guest uses PCIe virtio-vsock for
+pipette transport, without VMBus or an agent disk.
+
+```bash
+cargo xflowey vmm-tests-run --filter "test(openvmm_snp_linux_direct_x64_boot)"
+```
+
+Flowey builds the IGVM from the SNP guest kernel and shared test initrd in
+`openvmm-deps`. To build this test, the pinned `openvmm-deps` release must
+include the SNP guest kernel archive. The guest test checks kernel boot
+messages and runs shell commands through pipette.
+
 ### Targeting a Platform
 
 By default, `vmm-tests-run` builds for the current host. Use `--target` to
