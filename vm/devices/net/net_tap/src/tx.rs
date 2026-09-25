@@ -3,98 +3,153 @@
 
 //! Transmit path of a TAP queue.
 //!
-//! `tx_avail` writes the guest packets to the TAP interface synchronously and
-//! completes all of them, including the packets that the interface drops.
+//! Each `tx_avail` call writes at most one guest packet. When the TAP
+//! interface applies backpressure, the queue keeps the packet, and with it
+//! the ownership of its descriptors, until `poll_ready` writes it; `tx_poll`
+//! then completes it.
 
 use crate::TapQueue;
+use crate::VirtioNetHdr;
 use crate::build_vnet_hdr;
 use crate::fixup_ipv4_header_checksum;
 use crate::fixup_ipv6_payload_length;
+use anyhow::Context as _;
+use futures::io::AsyncWrite;
 use net_backend::BufferAccess;
 use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
 use net_backend::linearize;
 use net_backend::next_packet;
+use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::io::Write;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use zerocopy::IntoBytes;
 
+/// Transmit state of a [`TapQueue`].
+pub(crate) struct TxState {
+    pub(crate) pending: Option<PendingTx>,
+    pub(crate) ready: VecDeque<TxId>,
+    pub(crate) error: Option<std::io::Error>,
+}
+
+/// A packet accepted from the guest and not yet written to the TAP interface.
+pub(crate) struct PendingTx {
+    id: TxId,
+    header: VirtioNetHdr,
+    packet: Vec<u8>,
+}
+
+impl TxState {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: None,
+            ready: VecDeque::new(),
+            error: None,
+        }
+    }
+}
+
 impl TapQueue {
-    /// Implements `tx_avail`: writes the packets of `segments`.
+    /// Writes the pending packet, if any, and reports whether TX completions or a
+    /// TX error are ready.
+    pub(crate) fn poll_tx(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.poll_pending_tx(cx);
+        if !self.tx.ready.is_empty() || self.tx.error.is_some() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+
+    pub(crate) fn poll_pending_tx(&mut self, cx: &mut Context<'_>) {
+        let Some(pending) = self.tx.pending.as_ref() else {
+            return;
+        };
+        let Some(tap) = self.tap.as_mut() else {
+            return;
+        };
+        let header = pending.header.as_bytes();
+        let bufs = [
+            std::io::IoSlice::new(header),
+            std::io::IoSlice::new(&pending.packet),
+        ];
+        match Pin::new(tap).poll_write_vectored(cx, &bufs) {
+            Poll::Ready(Ok(bytes_written))
+                if bytes_written == header.len() + pending.packet.len() =>
+            {
+                let pending = self.tx.pending.take().unwrap();
+                self.tx.ready.push_back(pending.id);
+            }
+            Poll::Ready(Ok(bytes_written)) => {
+                self.tx.error = Some(std::io::Error::new(
+                    ErrorKind::WriteZero,
+                    format!(
+                        "partial TAP packet write: wrote {bytes_written} of {} bytes",
+                        header.len() + pending.packet.len()
+                    ),
+                ));
+            }
+            Poll::Ready(Err(error)) => self.tx.error = Some(error),
+            Poll::Pending => {}
+        }
+    }
+
+    /// Implements `tx_avail`: writes the next packet of `segments`.
     pub(crate) fn transmit(
         &mut self,
         pool: &mut dyn BufferAccess,
         segments: &mut &[TxSegment],
     ) -> anyhow::Result<(bool, usize)> {
-        let n = segments.len();
-        // Synchronously send packets received from the guest to host's network.
-        if let Some(tap) = self.tap.as_mut() {
-            while !segments.is_empty() {
-                let (meta, _segs, _rest) = next_packet(segments);
-                let hdr = build_vnet_hdr(meta);
-                let hdr_bytes = hdr.as_bytes();
-                let mut packet = linearize(pool, segments)?;
-
-                // Fix up the IPv4 header checksum when the frontend
-                // requested IPv4 header checksum offload.
-                //
-                // The virtio vnet header has no mechanism for IPv4 header
-                // checksum offload, so we compute it in software. This
-                // also covers NDIS/netvsp LSO packets, where the guest
-                // driver zeroes ip_check (NDIS convention); the kernel's
-                // TAP GSO engine requires a valid checksum to segment
-                // the packet correctly.
-                // Same NDIS/LSO convention for IPv6: the guest zeroes the IPv6
-                // payload-length field on segmentation-offload frames. IPv6 has
-                // no header checksum (so the IPv4 fixup above never runs for it);
-                // fix the length here so the kernel TAP GSO engine can segment.
-                if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
-                    fixup_ipv4_header_checksum(&mut packet, meta.l2_len as usize);
-                }
-                if meta.flags.offload_tcp_segmentation() && meta.flags.is_ipv6() {
-                    fixup_ipv6_payload_length(&mut packet, meta.l2_len as usize);
-                }
-
-                let bufs = [
-                    std::io::IoSlice::new(hdr_bytes),
-                    std::io::IoSlice::new(&packet),
-                ];
-                match tap.write_vectored(&bufs) {
-                    Ok(bytes_written) => {
-                        assert_eq!(
-                            bytes_written,
-                            hdr_bytes.len() + packet.len(),
-                            "TAP should never partial write"
-                        );
-                    }
-                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                        // dropped packet: buffer is full
-
-                        // TODO: return partial transmit here. This relies on
-                        // remembering this condition and polling for POLLOUT in
-                        // poll_ready().
-                    }
-                    Err(err) if err.raw_os_error() == Some(libc::EIO) => {
-                        // dropped packet: interface is not up
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            error = &err as &dyn std::error::Error,
-                            "write to TAP interface failed"
-                        );
-                    }
-                }
-            }
+        if segments.is_empty() || self.tx.pending.is_some() {
+            return Ok((false, 0));
         }
-        let completed_synchronously = true;
-        Ok((completed_synchronously, n))
+
+        let (metadata, packet_segments, _) = next_packet(segments);
+        let segment_count = packet_segments.len();
+        let id = metadata.id;
+        let header = build_vnet_hdr(metadata);
+        let mut packet = linearize(pool, segments)?;
+        if metadata.flags.offload_ip_header_checksum() && metadata.flags.is_ipv4() {
+            fixup_ipv4_header_checksum(&mut packet, metadata.l2_len as usize);
+        }
+        if metadata.flags.offload_tcp_segmentation() && metadata.flags.is_ipv6() {
+            fixup_ipv6_payload_length(&mut packet, metadata.l2_len as usize);
+        }
+        let tap = self.tap.as_mut().context("TAP queue is unavailable")?;
+        let header_bytes = header.as_bytes();
+        let bufs = [
+            std::io::IoSlice::new(header_bytes),
+            std::io::IoSlice::new(&packet),
+        ];
+        match tap.write_vectored(&bufs) {
+            Ok(bytes_written) if bytes_written == header_bytes.len() + packet.len() => {
+                Ok((true, segment_count))
+            }
+            Ok(bytes_written) => anyhow::bail!(
+                "partial TAP packet write: wrote {bytes_written} of {} bytes",
+                header_bytes.len() + packet.len()
+            ),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                self.tx.pending = Some(PendingTx { id, header, packet });
+                Ok((false, segment_count))
+            }
+            Err(error) => Err(error).context("failed to write TAP packet"),
+        }
     }
 
     /// Implements `tx_poll`.
-    pub(crate) fn poll_tx_done(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
-        // Packets are sent synchronously so there is no no need to check here if
-        // sending has been completed.
-        Ok(0)
+    pub(crate) fn poll_tx_done(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
+        if let Some(error) = self.tx.error.take() {
+            return Err(TxError::Fatal(error.into()));
+        }
+        let count = done.len().min(self.tx.ready.len());
+        for (destination, id) in done.iter_mut().zip(self.tx.ready.drain(..count)) {
+            *destination = id;
+        }
+        Ok(count)
     }
 }
