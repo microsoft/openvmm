@@ -220,7 +220,7 @@ impl AsyncRun<ConsoleWorkerState> for ConsoleWorker {
     ) -> Result<(), Cancelled> {
         stop.until_stopped(self.run_loop(state)).await.map(|r| {
             if let Err(err) = r {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     "virtio-console worker loop failed"
                 );
