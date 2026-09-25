@@ -285,6 +285,8 @@ pub struct MicrovmFilesystemConfig {
     pub guest_mount_target: String,
     /// Snapshot-authoritative access policy.
     pub access: MicrovmFilesystemAccess,
+    /// Canonical host-relative paths hidden by the virtio-fs server.
+    pub denied_paths: Vec<String>,
 }
 
 impl MicrovmFilesystemConfig {
@@ -312,7 +314,57 @@ impl MicrovmFilesystemConfig {
         Ok(Self {
             guest_mount_target,
             access,
+            denied_paths: Vec::new(),
         })
+    }
+
+    /// Adds a canonical, non-overlapping denied-path policy.
+    pub fn with_denied_paths(
+        mut self,
+        denied_paths: Vec<String>,
+    ) -> Result<Self, InvalidMicrovmFilesystemConfig> {
+        if denied_paths.len() > 128 {
+            return Err(InvalidMicrovmFilesystemConfig::TooManyDeniedPaths);
+        }
+        let total_bytes = denied_paths
+            .iter()
+            .try_fold(0usize, |total, path| total.checked_add(path.len()))
+            .ok_or(InvalidMicrovmFilesystemConfig::DeniedPathsTooLarge)?;
+        if total_bytes > 16 * 1024 {
+            return Err(InvalidMicrovmFilesystemConfig::DeniedPathsTooLarge);
+        }
+        for path in &denied_paths {
+            if path.is_empty()
+                || path.len() > 4096
+                || path.starts_with('/')
+                || path.ends_with('/')
+                || path.chars().any(|character| {
+                    character.is_whitespace() || matches!(character, '\0' | '\\' | ':')
+                })
+                || path
+                    .split('/')
+                    .any(|component| component.is_empty() || matches!(component, "." | ".."))
+            {
+                return Err(InvalidMicrovmFilesystemConfig::InvalidDeniedPath(
+                    path.clone(),
+                ));
+            }
+        }
+        let mut canonical = denied_paths.clone();
+        canonical.sort_unstable();
+        if canonical != denied_paths {
+            return Err(InvalidMicrovmFilesystemConfig::NonCanonicalDeniedPaths);
+        }
+        for pair in denied_paths.windows(2) {
+            if pair[1]
+                .strip_prefix(&pair[0])
+                .is_some_and(|suffix| suffix.starts_with('/'))
+            {
+                return Err(InvalidMicrovmFilesystemConfig::OverlappingDeniedPaths);
+            }
+        }
+        self.denied_paths = denied_paths;
+        Ok(self)
     }
 
     /// Returns the pinned guest bootstrap command-line tokens.
@@ -333,6 +385,23 @@ pub enum InvalidMicrovmFilesystemConfig {
         "invalid guest mount target '{0}': expected an absolute non-root Linux path without empty, dot, parent, whitespace, backslash, or '=' components"
     )]
     InvalidGuestTarget(String),
+    /// A denied path was not a canonical relative path.
+    #[error(
+        "invalid denied path '{0}': expected a relative path without empty, dot, parent, whitespace, backslash, or ':' components"
+    )]
+    InvalidDeniedPath(String),
+    /// The denied-path list exceeded its count bound.
+    #[error("microVM filesystem permits at most 128 denied paths")]
+    TooManyDeniedPaths,
+    /// The denied-path list exceeded its aggregate byte bound.
+    #[error("microVM filesystem denied paths exceed the 16-KiB aggregate limit")]
+    DeniedPathsTooLarge,
+    /// The denied-path list did not preserve canonical lexical order.
+    #[error("microVM filesystem denied paths are not in canonical order")]
+    NonCanonicalDeniedPaths,
+    /// One denied path contained another denied path.
+    #[error("microVM filesystem denied paths overlap")]
+    OverlappingDeniedPaths,
 }
 
 impl MicrovmNetworkConfig {

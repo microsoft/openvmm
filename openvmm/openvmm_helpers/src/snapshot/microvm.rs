@@ -248,6 +248,9 @@ pub struct SnapshotMicrovmFilesystem {
     /// Canonical absolute host export path.
     #[mesh(11)]
     pub canonical_host_path: String,
+    /// Canonical host-relative paths hidden by the virtio-fs server.
+    #[mesh(12)]
+    pub denied_paths: Vec<String>,
 }
 
 /// Authoritative identity and snapshot policy for a microVM sandbox block.
@@ -297,6 +300,7 @@ impl SnapshotMicrovmFilesystem {
             entry_cache_timeout_ns: 0,
             attribute_cache_timeout_ns: 0,
             canonical_host_path: canonical_host_path.to_owned(),
+            denied_paths: config.denied_paths.clone(),
         }
     }
 }
@@ -1461,6 +1465,7 @@ pub(super) fn validate_machine_contract_shape(
             filesystem.guest_mount_target.clone(),
             access,
         )
+        .and_then(|config| config.with_denied_paths(filesystem.denied_paths.clone()))
         .context("snapshot filesystem policy is invalid")?;
         anyhow::ensure!(
             *filesystem == SnapshotMicrovmFilesystem::new(&parsed, &filesystem.canonical_host_path),
@@ -2126,6 +2131,7 @@ mod tests {
             "/mnt/share".to_owned(),
             openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
         )
+        .and_then(|config| config.with_denied_paths(vec!["secrets".to_owned()]))
         .unwrap();
         let command_line = format!(
             "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:6 {}",
