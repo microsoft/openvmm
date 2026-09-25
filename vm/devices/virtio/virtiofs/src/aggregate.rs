@@ -242,7 +242,7 @@ impl VirtioFs {
     fn insert_child_root_entry(&self, volume: Arc<VirtioFsVolume>) -> lx::Result<fuse_entry_out> {
         let (inode, stat) = VirtioFsInode::new(volume, PathBuf::new())?;
         let attr = inode.attr_from_stat(&stat);
-        let (_, node_id) = self.insert_inode(inode);
+        let (_, node_id) = self.insert_inode(inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
