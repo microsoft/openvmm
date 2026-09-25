@@ -1882,6 +1882,9 @@ async fn vm_config_from_command_line(
             enable_rx_gso: vport.enable_rx_gso,
             mac_address: vport.mac_address,
             endpoint: vport.endpoint,
+            save_restore: false,
+            static_ipv4: None,
+            effective_features: None,
         }
         .into_resource();
         if let Some(pcie_port) = &cli_cfg.pcie_port {
