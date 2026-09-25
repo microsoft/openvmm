@@ -1,0 +1,240 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Test harness extensions for the quiesce and saved-state tests.
+//!
+//! [`ForkMockEndpoint`] wraps the mock endpoint and wraps each mock queue in a
+//! [`ForkMockQueue`], which supports quiesce.
+
+use super::MockEndpoint;
+use super::MockQueue;
+use super::MockQueueHandle;
+use super::QUEUE_SIZE;
+use super::RX_AVAIL_ADDR;
+use super::RX_DESC_ADDR;
+use super::RX_USED_ADDR;
+use super::TestHarness;
+use super::new_mock_queue;
+use crate::Device;
+use async_trait::async_trait;
+use futures::StreamExt;
+use inspect::InspectMut;
+use net_backend::Endpoint;
+use net_backend::EndpointAction;
+use net_backend::MultiQueueSupport;
+use net_backend::QueueConfig;
+use net_backend::RssConfig;
+use net_backend::RxId;
+use net_backend::TxError;
+use net_backend::TxId;
+use net_backend::TxOffloadSupport;
+use net_backend::TxSegment;
+use net_backend::quiesce::QueueQuiesceResult;
+use net_backend_resources::mac_address::MacAddress;
+use pal_async::DefaultDriver;
+use std::task::Context;
+use std::task::Poll;
+use std::time::Duration;
+use virtio::QueueResources;
+use virtio::VirtioDevice;
+use virtio::queue::QueueParams;
+use virtio::spec::VirtioDeviceFeatures;
+use vmcore::interrupt::Interrupt;
+use vmcore::vm_task::SingleDriverBackend;
+use vmcore::vm_task::VmTaskDriverSource;
+
+/// Controls of a [`MockQueueHandle`] for queues created by
+/// [`ForkMockEndpoint`].
+#[derive(Default)]
+pub(super) struct QueueHandleExt {
+    quiesce_notify: mesh::Receiver<()>,
+}
+
+impl MockQueueHandle {
+    pub(super) async fn wait_for_quiesce(&mut self) {
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(self.ext.quiesce_notify.next())
+            .await
+            .expect("timed out waiting for queue quiesce")
+            .expect("channel closed");
+    }
+}
+
+/// A [`MockEndpoint`] that creates [`ForkMockQueue`]s.
+struct ForkMockEndpoint {
+    endpoint: MockEndpoint,
+}
+
+impl InspectMut for ForkMockEndpoint {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        self.endpoint.inspect_mut(req);
+    }
+}
+
+#[async_trait]
+impl Endpoint for ForkMockEndpoint {
+    fn endpoint_type(&self) -> &'static str {
+        self.endpoint.endpoint_type()
+    }
+
+    async fn get_queues(
+        &mut self,
+        _config: Vec<QueueConfig>,
+        _rss: Option<&RssConfig<'_>>,
+        queues: &mut Vec<Box<dyn net_backend::Queue>>,
+    ) -> anyhow::Result<()> {
+        let (queue, mut handle) = new_mock_queue();
+        let queue = ForkMockQueue {
+            queue,
+            quiesce_notify: handle.ext.quiesce_notify.sender(),
+        };
+        self.endpoint.queue_tx.send(handle);
+        queues.push(Box::new(queue));
+        Ok(())
+    }
+
+    async fn stop(&mut self) {
+        self.endpoint.stop().await
+    }
+
+    fn is_ordered(&self) -> bool {
+        self.endpoint.is_ordered()
+    }
+
+    fn tx_offload_support(&self) -> TxOffloadSupport {
+        self.endpoint.tx_offload_support()
+    }
+
+    fn multiqueue_support(&self) -> MultiQueueSupport {
+        self.endpoint.multiqueue_support()
+    }
+
+    fn tx_fast_completions(&self) -> bool {
+        self.endpoint.tx_fast_completions()
+    }
+
+    async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
+        self.endpoint.wait_for_endpoint_action().await
+    }
+}
+
+/// A [`MockQueue`] that supports quiesce.
+struct ForkMockQueue {
+    queue: MockQueue,
+    quiesce_notify: mesh::Sender<()>,
+}
+
+impl InspectMut for ForkMockQueue {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        self.queue.inspect_mut(req);
+    }
+}
+
+#[async_trait]
+impl net_backend::Queue for ForkMockQueue {
+    fn poll_ready(
+        &mut self,
+        cx: &mut Context<'_>,
+        pool: &mut dyn net_backend::BufferAccess,
+    ) -> Poll<()> {
+        self.queue.poll_ready(cx, pool)
+    }
+
+    fn rx_avail(&mut self, pool: &mut dyn net_backend::BufferAccess, done: &[RxId]) {
+        self.queue.rx_avail(pool, done)
+    }
+
+    fn rx_poll(
+        &mut self,
+        pool: &mut dyn net_backend::BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
+        self.queue.rx_poll(pool, packets)
+    }
+
+    async fn quiesce(
+        &mut self,
+        _pool: &mut dyn net_backend::BufferAccess,
+    ) -> anyhow::Result<QueueQuiesceResult> {
+        self.quiesce_notify.send(());
+        self.queue.rx_pending.lock().clear();
+        Ok(QueueQuiesceResult {
+            rx_ready: self.queue.rx_ready.lock().len(),
+            tx_ready: self.queue.tx_completions.lock().iter().map(Vec::len).sum(),
+        })
+    }
+
+    fn tx_avail(
+        &mut self,
+        pool: &mut dyn net_backend::BufferAccess,
+        segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
+        self.queue.tx_avail(pool, segments)
+    }
+
+    fn tx_poll(
+        &mut self,
+        pool: &mut dyn net_backend::BufferAccess,
+        done: &mut [TxId],
+    ) -> Result<usize, TxError> {
+        self.queue.tx_poll(pool, done)
+    }
+}
+
+impl TestHarness {
+    /// Replaces the harness device with one built for save and restore over a
+    /// [`ForkMockEndpoint`].
+    pub(super) fn new_save_restore(driver: &DefaultDriver) -> Self {
+        let mut harness = Self::new(driver);
+        let (queue_tx, queue_handle_rx) = mesh::channel();
+        let endpoint = ForkMockEndpoint {
+            endpoint: MockEndpoint {
+                queue_tx,
+                is_ordered: true,
+            },
+        };
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let mac = MacAddress::new([0x52, 0x54, 0, 0, 0, 2]);
+        harness.device = Device::builder()
+            .save_restore(
+                net_backend_resources::consomme::static_ipv4::StaticIpv4Config {
+                    guest_ipv4: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                    prefix_length: 24,
+                    gateway_ipv4: std::net::Ipv4Addr::new(10, 0, 0, 1),
+                    gateway_mac: MacAddress::new([0x52, 0x54, 0, 0, 0, 1]),
+                },
+                (1 << 5) | (1 << 32),
+            )
+            .build(&driver_source, Box::new(endpoint), mac)
+            .unwrap();
+        harness.queue_handle_rx = queue_handle_rx;
+        harness
+    }
+
+    pub(super) async fn start_rx_queue(&mut self, features: &VirtioDeviceFeatures) {
+        let rx_interrupt = Interrupt::from_event(self.rx_interrupt_event.clone());
+
+        // Queue 0: RX
+        self.device
+            .start_queue(
+                0,
+                QueueResources {
+                    params: QueueParams {
+                        size: QUEUE_SIZE,
+                        enable: true,
+                        desc_addr: RX_DESC_ADDR,
+                        avail_addr: RX_AVAIL_ADDR,
+                        used_addr: RX_USED_ADDR,
+                    },
+                    notify: rx_interrupt,
+                    event: self.rx_event.clone(),
+                    guest_memory: self.mem.clone(),
+                },
+                features,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+}

@@ -46,6 +46,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu,
+            pcie_ports_without_save_restore,
         } = self;
 
         // Resolve deferred IOMMU assignments.
@@ -64,10 +65,13 @@ impl PetriVmConfigOpenVmm {
         // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
         // TODO: virtio vsock doesn't support save/restore yet
         // save/restore yet.
-        let has_unsupported_pcie_save_restore_device = config
-            .pcie_devices
-            .iter()
-            .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
+        // Other PCIe devices that do not support save/restore, such as
+        // virtio-net NICs without a save/restore contract, are recorded by
+        // port when they are added.
+        let has_unsupported_pcie_save_restore_device = config.pcie_devices.iter().any(|device| {
+            matches!(device.resource.id(), "nvme" | "gdma")
+                || pcie_ports_without_save_restore.contains(&device.port_name)
+        });
         let supports_save_restore = !resources.properties.is_openhcl
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)

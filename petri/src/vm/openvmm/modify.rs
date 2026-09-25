@@ -217,6 +217,9 @@ impl PetriVmConfigOpenVmm {
     ///
     /// This exposes a virtio-net device on a PCIe root port, suitable for
     /// guests running virtio drivers (e.g. Linux with UEFI boot).
+    ///
+    /// The NIC does not support save/restore, so the VM skips its startup
+    /// save/restore test.
     pub fn with_virtio_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
@@ -229,18 +232,17 @@ impl PetriVmConfigOpenVmm {
         }
         .into_resource();
 
-        self.config.pcie_devices.push(PcieDeviceConfig {
-            port_name: port_name.to_string(),
-            resource: virtio_resources::VirtioPciDeviceHandle(
-                virtio_resources::net::VirtioNetHandle {
-                    max_queues: None,
-                    mac_address,
-                    endpoint,
-                }
-                .into_resource(),
-            )
-            .into_resource(),
-        });
+        self.push_virtio_nic(
+            port_name,
+            virtio_resources::net::VirtioNetHandle {
+                max_queues: None,
+                mac_address,
+                endpoint,
+                save_restore: false,
+                static_ipv4: None,
+                effective_features: None,
+            },
+        );
 
         self
     }
@@ -252,6 +254,9 @@ impl PetriVmConfigOpenVmm {
     /// This configures consomme to forward the pipette TCP port from the
     /// host into the guest, so the petri framework can connect to the
     /// pipette agent over TCP.
+    ///
+    /// The NIC does not support save/restore, so the VM skips its startup
+    /// save/restore test.
     pub fn with_tcp_pipette_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let (port_send, port_recv) = mesh::oneshot();
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
@@ -271,20 +276,36 @@ impl PetriVmConfigOpenVmm {
             gateway_loopback_proxy_port: None,
         }
         .into_resource();
-        self.config.pcie_devices.push(PcieDeviceConfig {
-            port_name: port_name.to_string(),
-            resource: virtio_resources::VirtioPciDeviceHandle(
-                virtio_resources::net::VirtioNetHandle {
-                    max_queues: None,
-                    mac_address,
-                    endpoint,
-                }
-                .into_resource(),
-            )
-            .into_resource(),
-        });
+        self.push_virtio_nic(
+            port_name,
+            virtio_resources::net::VirtioNetHandle {
+                max_queues: None,
+                mac_address,
+                endpoint,
+                save_restore: false,
+                static_ipv4: None,
+                effective_features: None,
+            },
+        );
         self.resources.tcp_pipette_port = Some(port_recv);
         self
+    }
+
+    /// Add a virtio-net device on a PCIe root port.
+    ///
+    /// A virtio-net device supports save/restore only when its handle opts in
+    /// with a static IPv4 identity and a fixed feature contract. Saving a VM
+    /// with any other virtio-net device fails, so record the port to make the
+    /// VM skip its startup save/restore test while that device is configured.
+    fn push_virtio_nic(&mut self, port_name: &str, nic: virtio_resources::net::VirtioNetHandle) {
+        if !nic.save_restore {
+            self.pcie_ports_without_save_restore
+                .push(port_name.to_string());
+        }
+        self.config.pcie_devices.push(PcieDeviceConfig {
+            port_name: port_name.to_string(),
+            resource: virtio_resources::VirtioPciDeviceHandle(nic.into_resource()).into_resource(),
+        });
     }
 
     /// Request nested virtualization support from the host hypervisor.

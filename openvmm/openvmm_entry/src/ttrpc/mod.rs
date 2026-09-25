@@ -2341,6 +2341,9 @@ async fn build_virtio_device(
                     .parse::<MacAddress>()
                     .context("invalid mac address")?,
                 endpoint,
+                save_restore: false,
+                static_ipv4: None,
+                effective_features: None,
             }
             .into_resource()
         }
