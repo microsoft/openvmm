@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod addressing;
+
 use crate::ConsommeEndpoint;
 use crate::IpProtocol;
 use crate::PortForwardConfig;
@@ -29,6 +31,10 @@ pub enum ResolveConsommeError {
     Consomme(consomme::Error),
     #[error(transparent)]
     InvalidCidr(consomme::InvalidCidr),
+    #[error(transparent)]
+    InvalidStaticIpv4(consomme::static_ipv4::InvalidStaticIpv4),
+    #[error("Consomme CIDR and exact static IPv4 configuration are mutually exclusive")]
+    ConflictingIpv4Configuration,
     #[error("failed to create socket for port forward ({details})")]
     SocketCreation {
         #[source]
@@ -54,7 +60,7 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                 .set_cidr(cidr)
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
-        let params = resource.params;
+        let params = &resource.params;
         if let Some(client_ip) = params.client_ip {
             state.client_ip = client_ip;
         }
@@ -72,6 +78,9 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
             }
         }
         state.allow_host_local_access = params.allow_host_local_access;
+        // The exact static identity and the host access overrides apply last,
+        // so that the parameters cannot make the identity inexact.
+        addressing::configure(&mut state, &resource)?;
         let port_forwards: Vec<PortForwardConfig> = resource
             .ports
             .into_iter()
