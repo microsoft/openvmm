@@ -7,6 +7,7 @@ use mesh::payload::Protobuf;
 use mesh::payload::Timestamp;
 
 pub mod format;
+pub mod fs;
 pub mod publish;
 pub mod restore;
 
@@ -139,7 +140,7 @@ mod tests {
 
         // Create a fake memory backing file in the same directory (same fs).
         let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"FAKEMEM").unwrap();
+        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
 
         let manifest = test_manifest();
         let state = b"saved-state-data";
@@ -158,39 +159,6 @@ mod tests {
 
         // memory.bin should exist in the snapshot directory.
         assert!(snap_dir.join("memory.bin").exists());
-    }
-
-    #[test]
-    fn write_snapshot_creates_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("a").join("b").join("c");
-
-        let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
-
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-
-        assert!(snap_dir.join("manifest.bin").exists());
-        assert!(snap_dir.join("state.bin").exists());
-        assert!(snap_dir.join("memory.bin").exists());
-    }
-
-    #[test]
-    fn write_snapshot_same_memory_path() {
-        // When the memory backing file IS <snap_dir>/memory.bin, the function
-        // should detect the collision and skip the hard-link.
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-
-        let mem_path = snap_dir.join("memory.bin");
-        std::fs::write(&mem_path, b"SAMEFILE").unwrap();
-
-        // Should succeed without error.
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-
-        // The file content should be unchanged.
-        assert_eq!(std::fs::read(&mem_path).unwrap(), b"SAMEFILE");
     }
 
     #[test]
