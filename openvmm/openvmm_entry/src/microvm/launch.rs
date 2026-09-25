@@ -227,7 +227,9 @@ impl MicrovmLaunch {
                 .context("microVM restore requires an effective command line")?,
             self.network
                 .as_ref()
-                .zip(resources.network_attachment.as_ref()),
+                .zip(resources.egress_policy.as_ref())
+                .zip(resources.network_attachment.as_ref())
+                .map(|((network, policy), attachment)| (network, policy, attachment)),
             self.filesystem
                 .as_ref()
                 .zip(resources.filesystem_root_path.as_deref())
