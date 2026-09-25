@@ -424,6 +424,8 @@ mod save_restore {
             pub(super) index: u8,
             #[mesh(3)]
             pub(super) redirection_entries: Vec<u64>,
+            #[mesh(4)]
+            pub(super) line_levels: Vec<bool>,
         }
     }
 
@@ -446,6 +448,7 @@ mod save_restore {
 
             Ok(state::SavedState {
                 redirection_entries: irqs.iter().map(|irq| irq.redirection.into()).collect(),
+                line_levels: irqs.iter().map(|irq| irq.line_level).collect(),
                 index: index.0,
                 id: *id,
             })
@@ -454,21 +457,32 @@ mod save_restore {
         fn restore(&mut self, state: state::SavedState) -> Result<(), RestoreError> {
             let state::SavedState {
                 redirection_entries,
+                line_levels,
                 id,
                 index,
             } = state;
             if redirection_entries.len() != self.irqs.len() {
                 return Err(RestoreError::Other(WrongNumberOfRedirectionEntries.into()));
             }
-            for (n, (state, irq)) in redirection_entries
+            let line_levels = if line_levels.is_empty() {
+                vec![false; self.irqs.len()]
+            } else if line_levels.len() == self.irqs.len() {
+                line_levels
+            } else {
+                return Err(RestoreError::Other(WrongNumberOfRedirectionEntries.into()));
+            };
+            for (n, ((state, line_level), irq)) in redirection_entries
                 .into_iter()
+                .zip(line_levels)
                 .zip(self.irqs.iter_mut())
                 .enumerate()
             {
                 irq.redirection = RedirectionEntry::from(state);
+                irq.line_level = line_level;
                 let request = irq.redirection.as_msi();
                 self.routing.set_route(n as u8, request);
                 irq.registered_request = request;
+                irq.evaluate(self.routing.as_ref(), &mut self.stats, n as u8, false);
             }
             self.id = id;
             self.index = IndexRegister(index);
