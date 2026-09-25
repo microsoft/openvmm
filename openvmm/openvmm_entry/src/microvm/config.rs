@@ -71,7 +71,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
         opt.validate_microvm_options()?;
         let network = if active {
-            effective_microvm_network(opt)?
+            effective_microvm_network(opt, restore_machine_contract)?
         } else {
             None
         };
@@ -108,6 +108,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             console_attachment: console
                 .as_ref()
                 .map(|(_, _, attachment)| attachment.clone()),
+            network_attachment: network.as_ref().map(|network| network.attachment.clone()),
             ..Default::default()
         };
 
