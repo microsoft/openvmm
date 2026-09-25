@@ -112,9 +112,20 @@ impl WindowsPipeSerialBackend {
     }
 
     fn disconnect(&mut self) -> io::Result<()> {
+        if !matches!(self.state, PipeState::Connected(_)) {
+            return Ok(());
+        }
         if let PipeState::Connected(pipe) = std::mem::replace(&mut self.state, PipeState::Done) {
             let pipe = pipe.into_inner();
-            pipe.disconnect_pipe()?;
+            match pipe.disconnect_pipe() {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotConnected | io::ErrorKind::BrokenPipe
+                    ) => {}
+                Err(error) => return Err(error),
+            }
             self.state = PipeState::Listening(ListeningPipe::new(&self.driver, pipe)?);
         }
         Ok(())
@@ -195,11 +206,16 @@ impl AsyncWrite for WindowsPipeSerialBackend {
         match &mut self.state {
             PipeState::Done | PipeState::Listening(_) => Poll::Ready(Ok(buf.len())),
             PipeState::Connected(pipe) => {
-                let r = ready!(Pin::new(pipe).poll_write(cx, buf));
-                if matches!(&r, Err(err) if err.kind() == io::ErrorKind::BrokenPipe) {
-                    return Poll::Ready(Ok(buf.len()));
+                let result = ready!(Pin::new(pipe).poll_write(cx, buf));
+                if result.is_err()
+                    && let Err(error) = self.disconnect()
+                {
+                    tracing::error!(
+                        error = &error as &dyn std::error::Error,
+                        "failed to prepare named pipe after a write failure"
+                    );
                 }
-                Poll::Ready(r)
+                Poll::Ready(result)
             }
         }
     }
