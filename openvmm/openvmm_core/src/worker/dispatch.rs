@@ -3869,6 +3869,18 @@ impl LoadedVm {
                 (a, b, c, d).race().await
             };
 
+            let event = match event {
+                Event::VmRpc(Ok(message)) => match self.filter_vm_rpc(message) {
+                    Some(message) => Event::VmRpc(Ok(message)),
+                    None => continue,
+                },
+                Event::WorkerRpc(Ok(message)) => match self.filter_worker_rpc(message) {
+                    Some(message) => Event::WorkerRpc(Ok(message)),
+                    None => continue,
+                },
+                event => event,
+            };
+
             let wait_for_removal = match &event {
                 Event::WorkerRpc(Ok(WorkerRpc::Restart(_))) => true,
                 Event::VmRpc(Ok(rpc)) => !can_run_during_device_removal(rpc),
