@@ -26,10 +26,12 @@ pub(super) fn prepare_snapshot_restore(
     microvm: &microvm::MicrovmLaunch,
     expected_hypervisor: &str,
 ) -> anyhow::Result<PreparedSnapshotRestore> {
+    let base_memory_size = snapshot.manifest().memory_size_bytes;
     let expected_microvm_contract =
         microvm.expected_restore_contract(opt, snapshot.manifest(), expected_hypervisor)?;
     prepare_snapshot_restore_for_config(
         snapshot,
+        base_memory_size,
         opt.memory_size(),
         opt.processors,
         expected_microvm_contract,
@@ -39,6 +41,7 @@ pub(super) fn prepare_snapshot_restore(
 pub(crate) fn prepare_snapshot_restore_for_config(
     snapshot: openvmm_helpers::snapshot::restore::OpenedSnapshot,
     expected_memory_size: u64,
+    selected_memory_size: u64,
     expected_vp_count: u32,
     expected_microvm_contract: Option<microvm::ExpectedRestoreContract<'_>>,
 ) -> anyhow::Result<PreparedSnapshotRestore> {
@@ -87,7 +90,7 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         "restore",
         "artifact_prepare",
         openvmm_defs::profile::ProfileCounters {
-            logical_bytes: Some(expected_memory_size),
+            logical_bytes: Some(selected_memory_size),
             ..Default::default()
         },
     );
