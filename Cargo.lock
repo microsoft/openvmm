@@ -5592,7 +5592,9 @@ name = "openhcl_tdisp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "futures",
  "hvdef",
+ "inspect",
  "parking_lot",
  "tdisp",
  "tdisp_proto",

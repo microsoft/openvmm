@@ -28,7 +28,6 @@ use anyhow::Context as _;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigByteEnable;
-use openhcl_tdisp::TdispVirtualDeviceInterface;
 use pci_core::spec::cfg_space::BarEncodingBits;
 use pci_core::spec::cfg_space::Command;
 use pci_core::spec::cfg_space::HeaderType00;
@@ -40,7 +39,6 @@ use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
 use vpci_client::MemoryAccess;
 use vpci_client::VpciDevice;
-use vpci_client::tdisp::TdispVpciAttestationInterface;
 
 /// The BAR the emulated device keeps its registers behind, which is the range
 /// TDISP has to accept into the guest before it answers.
@@ -65,10 +63,11 @@ pub(crate) async fn run_test_flow(
         "tdisp_test_mock_flow: exercising TDISP flow because OPENHCL_TEST_CONFIG=TDISP_VPCI_FLOW_TEST was set"
     );
 
-    assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
+    assert_eq!(device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
 
     let device_interface_info = device
-        .tdisp_get_device_interface_info(TDISP_MOCK_GUEST_PROTOCOL)
+        .tdisp()
+        .get_device_interface_info(TDISP_MOCK_GUEST_PROTOCOL)
         .await
         .context("tdisp_test_mock_flow: failed to get device interface info over vpci")?;
 
@@ -86,7 +85,7 @@ pub(crate) async fn run_test_flow(
         device_interface_info.supported_features,
         TDISP_MOCK_SUPPORTED_FEATURES
     );
-    assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
+    assert_eq!(device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
 
     run_bar_access_flow(device.clone(), mmio_access, bar_mmio)
         .await
@@ -207,7 +206,8 @@ async fn run_bar_access_flow(
     // Attested, so the range can be accepted into the guest's context. This is
     // the same call the relay makes when a guest enables MMIO.
     device
-        .tdisp_on_mmio_reconfigured(REGISTER_BAR, bar_mmio, bar_length)
+        .tdisp()
+        .on_mmio_reconfigured(REGISTER_BAR, bar_mmio, bar_length)
         .await
         .context("tdisp_test_mock_flow: failed to unblock the register BAR")?;
 
@@ -224,8 +224,11 @@ async fn run_bar_access_flow(
 
     // Unbinding takes the range away again, which is what leaves the device
     // safe for the guest that follows.
-    device.tdisp_unbind(TdispGuestUnbindReason::Graceful).await;
-    assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
+    device
+        .tdisp()
+        .unbind(TdispGuestUnbindReason::Graceful)
+        .await;
+    assert_eq!(device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
 
     let reblocked = read_registers(&mut bar);
     tracing::info!(reblocked, "tdisp_test_mock_flow: register BAR after unbind");
@@ -244,7 +247,8 @@ async fn run_bar_access_flow(
 async fn run_attest_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
     // Ensure the device appears to be tdisp capable
     let tdisp_capabilities = device
-        .tdisp_query_capabilities()
+        .tdisp()
+        .query_capabilities()
         .await
         .context("tdisp_test_mock_flow: failed to query TDISP capabilities over vpci")?;
 
@@ -257,15 +261,16 @@ async fn run_attest_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
         tdisp_capabilities.supported_features,
         TDISP_MOCK_SUPPORTED_FEATURES
     );
-    assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
+    assert_eq!(device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
 
     // If the above interface works, try to attest the device through the TDISP flow and ensure that it succeeds.
     device
-        .tdisp_attest_device(tdisp_capabilities)
+        .tdisp()
+        .attest(tdisp_capabilities)
         .await
         .context("tdisp_test_mock_flow: failed to attest device over vpci")?;
 
-    assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Run);
+    assert_eq!(device.tdisp().tdi_state().await, TdispTdiState::Run);
 
     Ok(())
 }

@@ -34,7 +34,6 @@ use futures::StreamExt as _;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
-use openhcl_tdisp::TdispVirtualDeviceInterface;
 use openhcl_tdisp::new_resource_validator;
 use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::hwid::HardwareIds;
@@ -66,7 +65,6 @@ use vpci_client::MemoryAccess;
 use vpci_client::VpciClient;
 use vpci_client::VpciDevice;
 use vpci_client::VpciDeviceEject;
-use vpci_client::tdisp::TdispVpciAttestationInterface;
 
 /// Trait for creating memory access instances.
 pub trait CreateMemoryAccess: 'static + Send + Sync {
@@ -145,9 +143,10 @@ impl RelayedDevice {
         self.device_unit.remove().await;
 
         // Unbind any TDI state if the device is a TDISP device.
-        if self.vpci_device.tdisp_tdi_state().await != TdispTdiState::Unlocked {
+        if self.vpci_device.tdisp().tdi_state().await != TdispTdiState::Unlocked {
             self.vpci_device
-                .tdisp_unbind(tdisp::TdispGuestUnbindReason::DeviceTeardown)
+                .tdisp()
+                .unbind(tdisp::TdispGuestUnbindReason::DeviceTeardown)
                 .await;
         }
 
@@ -410,12 +409,7 @@ impl VpciRelay {
                 .context("failed to create a TDISP resource validator")?;
 
         let (vpci_device, removed) = vpci_device
-            .init(
-                resource_validator,
-                self.isolation_type,
-                self.vtom.unwrap_or(0),
-                hvdef::Vtl::Vtl0,
-            )
+            .init(resource_validator, self.isolation_type, hvdef::Vtl::Vtl0)
             .await
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);
@@ -435,7 +429,7 @@ impl VpciRelay {
             // Do not mark tdisp_capable = true because the test is already done.
         } else {
             // Probe TDISP capability without attesting.
-            match vpci_device.tdisp_query_capabilities().await {
+            match vpci_device.tdisp().query_capabilities().await {
                 Ok(_) => {
                     tdisp_capable = true;
                     tracing::info!(
@@ -703,7 +697,8 @@ impl PollDevice for RelayedVpciDevice {
 }
 
 impl TdispRelayedDeviceTarget for RelayedVpciDevice {
-    // Builds a report of what device resources for vpci device in a CVM are isolated or shared.
+    // Builds a report for the guest of what device resources for vpci device in
+    // a CVM are isolated or shared.
     fn tdisp_isolation_report(
         &mut self,
     ) -> Pin<Box<dyn Future<Output = TdispIsolationReport> + Send + 'static>> {
@@ -717,7 +712,23 @@ impl TdispRelayedDeviceTarget for RelayedVpciDevice {
             }
 
             // This might fire an attestation flow if it hasn't already happened yet.
-            device.tdisp_isolation_snapshot().await
+            let report = device.tdisp().isolation_snapshot_attested().await;
+
+            // Typically, the guest needs to know the isolation report of the
+            // device's resources before attempting to configure resources. Once
+            // the report is retrieved, the device is unbound here and left in
+            // an unlocked state for resource programming and final
+            // configuration by the guest.
+            tracing::info!(
+                ?report,
+                "Unbinding after the isolation report to prepare for guest resource programming"
+            );
+            device
+                .tdisp()
+                .unbind(tdisp::TdispGuestUnbindReason::Graceful)
+                .await;
+
+            report
         })
     }
 }
