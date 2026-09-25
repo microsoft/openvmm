@@ -328,6 +328,7 @@ impl Worker for VmWorker {
     fn new(mut parameters: Self::Parameters) -> anyhow::Result<Self> {
         let worker_construct = openvmm_defs::profile::ProfileSpan::start();
         let restore_params = restore::RestoreParameters::take(&mut parameters)?;
+        let microvm_params = microvm::MicrovmParameters::take(&mut parameters)?;
         let (device_thread, device_driver) = new_device_thread();
 
         let manifest = Manifest::from_config(parameters.cfg);
@@ -339,7 +340,7 @@ impl Worker for VmWorker {
             .shared_memory
             .map(|fd| restore_params.shared_memory_backing(fd));
 
-        let vm = block_on(InitializedVm::new(
+        let mut vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
             hypervisor.0,
             manifest,
@@ -350,6 +351,7 @@ impl Worker for VmWorker {
             .map(|m| m.parse())
             .transpose()
             .context("failed to decode saved state")?;
+        microvm_params.prepare_cold_boot(&mut vm, saved_state.is_some())?;
 
         let vm = block_with_io(|_| vm.load(saved_state, parameters.notify, restore_params.state))?;
 
@@ -2159,7 +2161,7 @@ impl InitializedVm {
         .with_device_handles(cfg.chipset_devices)
         .with_pci_device_handles(cfg.pci_chipset_devices)
         .with_isa_dma_handle(cfg.isa_dma_controller)
-        .with_trace_unknown_pio(true) // todo: add CLI param?
+        .with_trace_unknown_pio(microvm::trace_unknown_pio(cfg.machine_profile))
         .build(&driver_source, &state_units, &resolver)
         .await?;
 
@@ -2606,8 +2608,11 @@ impl InitializedVm {
         #[cfg(guest_arch = "aarch64")]
         let smmu_devices = {
             let acpi_available = match &cfg.load_mode {
+                // MP-table boot is x86-only; loading the firmware rejects it.
                 LoadMode::Linux {
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                    boot_mode:
+                        openvmm_defs::config::LinuxDirectBootMode::DeviceTree
+                        | openvmm_defs::config::LinuxDirectBootMode::MpTable,
                     ..
                 } => false,
                 LoadMode::Linux {
@@ -3362,7 +3367,7 @@ impl LoadedVmInner {
                 with_pit: self.chipset_capabilities.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
-                level_triggered_irqs: &[],
+                level_triggered_irqs: microvm::level_triggered_irqs(self.machine_profile),
                 iommu: match &self.iommu_devices {
                     IommuDevices::AmdVi(devices) => {
                         Some(vmm_core::acpi_builder::X86IommuAcpiConfig::AmdVi(
@@ -3413,6 +3418,16 @@ impl LoadedVmInner {
                 ref kernel,
                 ref initrd,
                 ref cmdline,
+                isolation,
+                boot_mode: openvmm_defs::config::LinuxDirectBootMode::MpTable,
+                ref smbios,
+                ..
+            } => microvm::load_linux_x86_mptable(self, kernel, initrd, cmdline, isolation, smbios)?,
+            #[cfg(guest_arch = "x86_64")]
+            &LoadMode::Linux {
+                ref kernel,
+                ref initrd,
+                ref cmdline,
                 enable_serial,
                 isolation,
                 boot_mode,
@@ -3423,6 +3438,7 @@ impl LoadedVmInner {
                         anyhow::bail!("device tree boot mode is not supported on x86_64");
                     }
                     openvmm_defs::config::LinuxDirectBootMode::Acpi => {}
+                    openvmm_defs::config::LinuxDirectBootMode::MpTable => unreachable!(),
                 }
                 let isolation = match (isolation, self.hypervisor_cfg.with_isolation) {
                     (
@@ -3500,6 +3516,9 @@ impl LoadedVmInner {
 
                 if isolation != openvmm_defs::config::LinuxIsolationConfig::None {
                     anyhow::bail!("SNP Linux loader configuration is not supported on aarch64");
+                }
+                if boot_mode == LinuxDirectBootMode::MpTable {
+                    anyhow::bail!("MP-table boot mode is not supported on aarch64");
                 }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
