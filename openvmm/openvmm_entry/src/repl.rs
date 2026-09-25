@@ -69,6 +69,7 @@ use tracing_helpers::AnyhowValueExt;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 
+mod headless;
 pub(crate) mod launch;
 mod restore_ready;
 
@@ -481,6 +482,19 @@ where
     }
 }
 
+/// Handles the end of a stdin that is not a terminal in the stdio thread, whose
+/// return then closes the command channel and so ends the run. A run that
+/// outlasts its stdin, as a microVM's does, instead parks the thread for good,
+/// keeping the channel open until another event ends the run.
+fn end_of_stdin(ends_run: bool) {
+    if ends_run {
+        return;
+    }
+    loop {
+        thread::park();
+    }
+}
+
 /// Run the interactive REPL.
 pub(crate) async fn run_repl(
     driver: &DefaultDriver,
@@ -500,6 +514,11 @@ pub(crate) async fn run_repl(
         has_vtl2,
         mut launch,
     } = resources;
+
+    if !launch.stdin_enabled {
+        return headless::run(&mut vm_controller_events).await;
+    }
+    let stdin_eof_ends_run = launch.stdin_eof_ends_run;
 
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
@@ -587,13 +606,17 @@ pub(crate) async fn run_repl(
                         .expect("failed to disable raw console mode");
                 }
                 if input_end == Some(ConsoleInputEnd::Eof) {
+                    end_of_stdin(stdin_eof_ends_run);
                     return;
                 }
 
                 loop {
                     let line = match rl.readline("openvmm> ") {
                         Ok(line) => line,
-                        Err(rustyline::error::ReadlineError::Eof) if !terminal => return,
+                        Err(rustyline::error::ReadlineError::Eof) if !terminal => {
+                            end_of_stdin(stdin_eof_ends_run);
+                            return;
+                        }
                         Err(_) => break,
                     };
                     let trimmed = line.trim();
