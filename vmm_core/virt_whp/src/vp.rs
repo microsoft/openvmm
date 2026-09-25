@@ -719,6 +719,10 @@ mod x86 {
                 | GpaBackingType::Unaccepted => false,
             };
 
+            if self.map_deferred_ram(access, &backing_type) {
+                return Ok(());
+            }
+
             if !access.AccessInfo.GpaUnmapped() && should_populate {
                 // This is a mapped GPA that wasn't mapped in the SLAT. Tell the
                 // kernel to populate the SLAT.
